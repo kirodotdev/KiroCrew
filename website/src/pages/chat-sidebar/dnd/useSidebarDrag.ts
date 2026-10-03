@@ -1,7 +1,7 @@
 /** The drag lifecycle: the start/over/end/cancel handlers, the folder drop writes
  *  (sibling renumber, re-parent) and the move-undo offers they arm. Each haptic tap
  *  fires only past every refusal, so a no-op drop stays silent. */
-import { useCallback, type Dispatch, type SetStateAction, useRef, useEffect } from 'react'
+import { useCallback, type Dispatch, type SetStateAction, useRef, useEffect, useState } from 'react'
 import type { DragStartEvent, DragEndEvent, DragOverEvent } from '@dnd-kit/core'
 import type { QueryClient } from '@tanstack/react-query'
 import type { ChatFolder } from '../../../types'
@@ -202,6 +202,53 @@ export function useSidebarMoveUndo({ localSlots, folders, moveFolderTo, queryCli
     })
   }, [queryClient, armFolderMove, dismissDragMove])
   return { dragMove, undoDragMove, undoBar, folderMove, undoFolderMove, folderUndoBar, moveByDrag, moveFolderByDrag }
+}
+
+/** Which session card a board column is dragging with native HTML5 DnD -- the
+ *  counterpart of the facade's `activeDrag` mirror, which carries only dnd-kit
+ *  drags and cannot hold a native one (its reconciler clears any mirror no
+ *  DndContext reports). Read by the per-column unfile strip and by the dragged
+ *  row's `keepMounted`, so the card never stubs out from under its own drag.
+ *
+ *  The row reports the start; the END is read at the window. A drop that moves
+ *  the card remounts it under another block, and the browser then fires
+ *  `dragend` at a detached node React never hears from -- so the window's
+ *  capture-phase `drop` ends the mirror for every release on a target, and its
+ *  `dragend` ends it for a cancel or a release over nothing, where the row is
+ *  still attached.
+ *
+ *  The `drop` reset waits one macrotask, and that wait is load-bearing: the
+ *  window's capture listener runs before React's root listener, and a browser
+ *  runs a microtask checkpoint between the two, in which React commits a sync
+ *  state update. An immediate reset would unmount the strip under the release
+ *  in flight, the event would reach a detached target, and the strip's own
+ *  `onDrop` -- the unfile itself -- would never run. Same shape as the chat
+ *  pane's file-drop overlay. `dragend` can reset at once: it is dispatched to
+ *  the source row, which no target depends on.
+ *
+ *  `endNativeSessionDrag` is the third end, for the row itself to call when it
+ *  UNMOUNTS mid-drag: a card whose lane changes while it is in flight (a state
+ *  lane re-ranks on live runtime state) remounts under another column, and a
+ *  cancel after that fires `dragend` at the detached node, which reaches neither
+ *  the window nor React -- without this end the mirror would outlive the drag
+ *  and the strips would stay on screen with nothing in flight. */
+export function useNativeSessionDrag() {
+  const [nativeSessionDrag, setNativeSessionDrag] = useState<string | null>(null)
+  const endNativeSessionDrag = useCallback(() => setNativeSessionDrag(null), [])
+  useEffect(() => {
+    if (nativeSessionDrag === null) return
+    let pending: number | null = null
+    const reset = () => setNativeSessionDrag(null)
+    const resetAfterDispatch = () => { pending = window.setTimeout(reset, 0) }
+    window.addEventListener('dragend', reset, true)
+    window.addEventListener('drop', resetAfterDispatch, true)
+    return () => {
+      window.removeEventListener('dragend', reset, true)
+      window.removeEventListener('drop', resetAfterDispatch, true)
+      if (pending !== null) window.clearTimeout(pending)
+    }
+  }, [nativeSessionDrag])
+  return { nativeSessionDrag, startNativeSessionDrag: setNativeSessionDrag, endNativeSessionDrag }
 }
 
 /** The DndContext lifecycle handlers shared by every lane. */

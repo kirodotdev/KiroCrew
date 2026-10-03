@@ -156,6 +156,53 @@ export function RootDropHint() {
   )
 }
 
+/** The board column's escape hatch out of a folder: `RootDropHint`'s wording
+ *  and look as a strip at the foot of a column, shown only while a FILED session
+ *  card is in flight, and wired to the same unfile offer -- so the undo bar is
+ *  the list view's too. Native HTML5 DnD rather than a droppable, because that is
+ *  how a board card drags (the column's DndContext carries only folder
+ *  reorders), which is also why the root targets above never exist in a board.
+ *
+ *  A target of its own and not a drop on the column body: on a status lane the
+ *  body's release RETAGS the card, and one release must do one thing -- a filed
+ *  card stays retaggable without leaving its folder. Every handler stops
+ *  propagation so the column's drop never also sees the release; `dragover`
+ *  accepts only a session card (text/plain) and leaves anything else to the
+ *  column. The label is `pointer-events-none` so the pointer crossing onto it
+ *  does not fire a `dragleave` on the strip and flicker the ring. */
+export function BoardUnfileDropStrip({ columnId, onUnfile }: { columnId: string; onUnfile: (slotKey: string) => void }) {
+  const [over, setOver] = useState(false)
+  return (
+    // Mouse-only drop target with no keyboard analogue, like the folder header's
+    // native drop; the row's own menu is the keyboard path out of a folder.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+    <div
+      data-testid={`column-unfile-drop-${columnId}`}
+      className={`shrink-0 m-1.5 min-h-[36px] px-2 flex items-center justify-center text-center rounded-md border border-dashed transition-all ${over ? 'border-accent bg-accent/10 ring-2 ring-accent text-accent' : 'border-border text-muted'}`}
+      onDragOver={e => {
+        if (!e.dataTransfer.types.includes('text/plain')) return
+        e.preventDefault()
+        e.stopPropagation()
+        e.dataTransfer.dropEffect = 'move'
+        setOver(true)
+      }}
+      onDragLeave={e => { e.stopPropagation(); setOver(false) }}
+      onDrop={e => {
+        // Same gate as `dragover`: a release that is not a session card (a
+        // column reorder, which the column surface accepts) is the column's.
+        if (!e.dataTransfer.types.includes('text/plain')) return
+        e.preventDefault()
+        e.stopPropagation()
+        setOver(false)
+        const k = e.dataTransfer.getData('text/plain')
+        if (k) onUnfile(k)
+      }}
+    >
+      <span className="text-[12px] pointer-events-none">{i18nT('pages.chatSidebar.drop_here_to_remove_from_folder')}</span>
+    </div>
+  )
+}
+
 export function SortableFolderBlock({ folder, subtree, siblings, reorderable, dragWithheld, renderFolderBlock }: { folder: ChatFolder; subtree?: readonly string[]; siblings?: readonly string[]; reorderable: boolean; dragWithheld: boolean; renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[] }) {
   // Outside the custom folder order the row stays DRAGGABLE (the nest band on a
   // folder header still re-parents) but stops being a reorder TARGET: with its

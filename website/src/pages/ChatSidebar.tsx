@@ -97,7 +97,7 @@ import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 import { sidebarCollision } from './chat-sidebar/dnd/collision'
 export { sidebarCollision, isFolderNestBand } from './chat-sidebar/dnd/collision'
 export { boardSidebarWidth } from './chat-sidebar/board'
-import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, SortableSubfolderBlock, SortableColumnFolder, FolderDragGhost, SessionDragGhost } from './chat-sidebar/dnd/targets'
+import { ChatPaneDropZone, RootDropHint, BoardUnfileDropStrip, SortableFolderBlock, SortableSubfolderBlock, SortableColumnFolder, FolderDragGhost, SessionDragGhost } from './chat-sidebar/dnd/targets'
 import type { Slot, SourceLinkState, SidebarSourceLink, HistoryItem, AgentInfo, SessionFilterKey, RevealBlockingFilter, FilterDimension } from './chat-sidebar/types'
 import { HIDDEN_FOLDERS_LS_KEY, FOLDERS_SHELVED_LS_KEY, FLAT_VIEW_LS_KEY } from './chat-sidebar/persistence'
 import { SESSION_FILTERS, useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/filters'
@@ -117,7 +117,7 @@ import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMa
 import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
 import { useLineageSeed, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
-import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers } from './chat-sidebar/dnd/useSidebarDrag'
+import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNativeSessionDrag } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
 import { useFolderChatCreate, useSessionCreate } from './chat-sidebar/create'
 
@@ -842,6 +842,14 @@ interface SessionRowProps {
   dragInFlight: boolean
   activeDraggedKey: string | null
   activeDraggedPinnedIndex: number
+  /** A board card drags with native HTML5 DnD, outside every DndContext, so the
+   *  shell learns of that drag only from the row: called with the slot key at
+   *  `dragstart`. The end is read at the window (see `useNativeSessionDrag`). */
+  onNativeDragStart?: (key: string) => void
+  /** The one end the window cannot hear: the row unmounting while its own
+   *  native drag is still in flight (its lane changed under it), after which
+   *  the browser's `dragend` lands on a detached node. */
+  onNativeDragEnd?: () => void
   pinnedOrderIndex: number
   pinnedReorderEnabled: boolean
   onPinnedKeyboardReorder: (key: string, container: string, delta: -1 | 1, row: HTMLElement) => void
@@ -937,7 +945,7 @@ function adoptFailureText(err: unknown, crewName: string): string {
 const SessionRow = memo(function SessionRow({
   slot: s, showDivider, scope, navScope, holdContainer, conductor, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
-  isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
+  isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, onNativeDragStart, onNativeDragEnd, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
   defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
   renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
   onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onAdoptPeerSession, adoptPending, adoptError,
@@ -1102,6 +1110,11 @@ const SessionRow = memo(function SessionRow({
     // than handled per drop target. A remote-EXECUTED local slot is not excluded:
     // its slot is right here, and reordering it is as meaningful as any other.
     const dndRow = (scope === 'list' || scope === 'flat') && !foreignRow
+    // Whether THIS row's native drag is in flight, so the unmount cleanup below
+    // reports the drag's end only for the row that started it: every other row
+    // unmounts freely under the windowing, and must not end a drag it never began.
+    const nativeDragInFlight = useRef(false)
+    useEffect(() => () => { if (nativeDragInFlight.current) onNativeDragEnd?.() }, [onNativeDragEnd])
     const reorderContainer = scope === 'flat' ? 'flat' : (s.folder_id || 'root')
     const agentName = s.agent || defaultAgent || ''
     // What the row SHOWS, kept separate from `agentName` on purpose. That value
@@ -1829,7 +1842,10 @@ const SessionRow = memo(function SessionRow({
             dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
             onSelectSlot?.(s.key)
           }}
-          onDragStart={!dndRow ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move' }) : undefined}
+          onDragStart={!dndRow ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move'; nativeDragInFlight.current = true; onNativeDragStart?.(s.key) }) : undefined}
+          // Reaches the row only while it is still attached; the detached case is
+          // the unmount cleanup above.
+          onDragEnd={!dndRow ? (() => { nativeDragInFlight.current = false }) : undefined}
           // Chrome and Edge on Windows enter autoscroll on middle-button
           // MOUSEDOWN, before `auxclick` fires — so cancelling it in the
           // auxclick handler alone opens the tab AND leaves the pointer in
@@ -3265,6 +3281,8 @@ function ChatSidebar({
   const dndSensors = useDndSensors({ distance: 5, keyboard: true })
   // Tracks the item currently being dragged, for the DragOverlay preview.
   const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
+  // Its native counterpart: the board card in flight, which no DndContext sees.
+  const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
   const {
     reorderFolders, moveFolderTo,
   } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, updateFolderMutation })
@@ -3640,7 +3658,7 @@ function ChatSidebar({
     return (
       <WindowedSessionRow key={rowIdentity} rowId={rowIdentity} slotKey={s.key} navScope={navScope} holdContainer={holdContainer}
         title={s.title && s.title !== s.key ? s.title : s.key}
-        keepMounted={isActive || revealing || (!isPeer && renamingSlot === s.key) || (activeDrag?.type === 'session' && activeDrag.id === s.key)}>
+        keepMounted={isActive || revealing || (!isPeer && renamingSlot === s.key) || (activeDrag?.type === 'session' && activeDrag.id === s.key) || (!isPeer && nativeSessionDrag === s.key)}>
       <SessionRow slot={s} orderStamp={orderStamp}
         onAdoptPeerSession={adoptPeerSession}
         adoptPending={isPeer && !!adoptPending[rowIdentity]}
@@ -3658,6 +3676,8 @@ function ChatSidebar({
         dragInFlight={!!activeDrag}
         activeDraggedKey={activeDrag?.type === 'session' ? activeDrag.id : null}
         activeDraggedPinnedIndex={activeDrag?.type === 'session' ? (pinnedRank.get(activeDrag.id) ?? -1) : -1}
+        onNativeDragStart={startNativeSessionDrag}
+        onNativeDragEnd={endNativeSessionDrag}
         // `pinnedRank` is a local-pin ordering, so a peer row reports -1 (outside
         // the pinned band) and refuses keyboard reorder — the same stance as its
         // `isPinned={false}`. Without the mask a key collision would hand a peer
@@ -4350,6 +4370,10 @@ function ChatSidebar({
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
   const draggingFolderedSession = activeDrag?.type === 'session' && !!slotFolders[activeDrag.id]
+  // The board's reading of the same question, from the native mirror: a card
+  // drags with HTML5 DnD there, so `activeDrag` never carries it. Reveals the
+  // unfile strip at the foot of every column.
+  const boardDraggingFiledSession = nativeSessionDrag !== null && !!slotFolders[nativeSessionDrag]
   // WHY the session being dragged may not be referenced into the open chat, or
   // null when it may be. Carries the reason rather than a boolean because the two
   // refusals read differently to the user (a privacy guard vs a self-drop no-op).
@@ -6335,7 +6359,8 @@ function ChatSidebar({
                     document.body
                   )}
                   <SessionRowWindowScroller className="flex-1 overflow-y-auto scrollbar-none p-1.5 flex flex-col" style={{ scrollbarWidth: 'none' }}>
-                    {/* No onDrop here: folder assignment only changes via folder-header drop.
+                    {/* No onDrop here: folder assignment only changes via folder-header drop
+                        (into a folder) and the unfile strip below this scroller (out of one).
                         Cross-column drops are handled by the OUTER column onDrop
                         (which only mutates status tags, keeping folder_id intact). */}
                     {(() => {
@@ -6424,6 +6449,14 @@ function ChatSidebar({
                       )
                     })()}
                   </SessionRowWindowScroller>
+                  {/* The way back out of a folder, at the foot of the column and
+                    * outside the scroller so it stays in reach however far the
+                    * lane is scrolled. Only while a FILED card is in flight: an
+                    * unfiled card has nothing to leave, and a column reorder is
+                    * not a card. The strip's handlers stop propagation, so the
+                    * column onDrop above never sees this release -- the retag
+                    * and the unfile stay two gestures. */}
+                  {boardDraggingFiledSession && <BoardUnfileDropStrip columnId={col.id} onUnfile={k => moveByDrag(k, null)} />}
                 </div>
               )
             })}
