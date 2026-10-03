@@ -1953,3 +1953,18 @@ def test_tr_u_16n_the_degraded_warnings_do_not_promise_a_recovery_that_cannot_ha
         f"{blob.count('restart the gateway')} of the 3 expected (staging unusable, "
         "unsyncable directory, ordinary write fault)"
     )
+
+
+# -- A non-ASCII signature is a wrong signature, never a crash ----------------
+#
+# The refresh cookie is request-controlled, and hmac.compare_digest raises
+# TypeError on a str holding a non-ASCII character. "\udcff" is what a raw
+# non-UTF-8 header byte decodes to; "\ud800" is any lone surrogate.
+
+
+@pytest.mark.parametrize("bad", ["é", "\udcff", "\ud800"])
+def test_non_ascii_signature_is_a_bad_signature_not_a_crash(bad: str) -> None:
+    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    payload = token.split(".", 1)[0]
+    valid, _user, reason, _c, _j, _e = validate_refresh_token(f"{payload}.{bad}")
+    assert (valid, reason) == (False, "bad signature")
