@@ -95,7 +95,6 @@ _ENCODER_PARAMETER_VALUE_TYPE_LONG = 4
 #: nearest-neighbour scale makes small text unreadable, which defeats the point of
 #: attaching the image at all.
 _INTERPOLATION_HIGH_QUALITY_BICUBIC = 7
-_SMOOTHING_NONE = 3
 _PIXEL_OFFSET_HALF = 4
 
 #: A frame whose pixels are all identical is a failed capture, not a screenshot.
@@ -206,28 +205,11 @@ _GDI_FN_SPECS: tuple[tuple[str, str, Any, list[Any]], ...] = (
     ("gdi32", "SelectObject", ctypes.c_void_p, [_HDC, ctypes.c_void_p]),
     ("gdi32", "DeleteObject", ctypes.c_int, [ctypes.c_void_p]),
     (
-        "gdi32",
-        "BitBlt",
-        ctypes.c_int,
-        [
-            _HDC,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            _HDC,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint,
-        ],
-    ),
-    (
         "gdiplus",
         "GdiplusStartup",
         ctypes.c_int,
         [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p],
     ),
-    ("gdiplus", "GdiplusShutdown", None, [ctypes.c_void_p]),
     (
         "gdiplus",
         "GdipCreateBitmapFromHBITMAP",
@@ -680,7 +662,7 @@ def _encode_jpeg(
     stream = None
     try:
         longest = max(width, height)
-        if max_px > 0 and longest > max_px:
+        if longest > max_px:
             ratio = max_px / float(longest)
             target_w, target_h = max(1, int(width * ratio)), max(1, int(height * ratio))
             scaled = ctypes.c_void_p()
@@ -724,7 +706,7 @@ def _encode_jpeg(
         if ole32.CreateStreamOnHGlobal(None, True, ctypes.byref(stream)) != windows_ffi.S_OK:
             return b"", 0, 0
 
-        value = ctypes.c_long(max(0, min(100, quality)))
+        value = ctypes.c_long(quality)
         params = EncoderParameters()
         params.Count = 1
         params.Parameter[0].Guid = windows_ffi._guid(_ENCODER_QUALITY_GUID)
