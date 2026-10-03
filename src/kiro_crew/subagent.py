@@ -2863,6 +2863,10 @@ class SubagentInfo:
     # shutdown or the deadline only ends the run's tail early. A respawn would
     # re-run finished work and a failure would discard a whole answer.
     _ending_claimed: bool = False
+    # Set by the tail for a successful ending a reap in flight got to first:
+    # True when a complete event ended the answer, False when the stream just
+    # stopped. ``_run`` names the reap's ending from it.
+    _answer_finished: bool = False
     # True while a cancelled run is draining an in-flight off-loop state.json
     # write worker (every off-loop writer). _run's
     # unexpected-cancel recovery gate reads it: on Python 3.10 a second outer
@@ -3659,12 +3663,13 @@ class SubagentManager:
         # still live and its stale whole-file rewrite would roll back the
         # retention `keep` a promote / release writes on the loop.
         # `_conversation_busy` reports these as held, which defers both retention
-        # writes past the worker; each worker's own done-callback discards its id,
-        # so the set holds at most one entry per live zombie. It lives on the
+        # writes past the worker. Keyed by run id, each entry the run's workers
+        # still writing; each worker's own done-callback removes itself, and the
+        # id goes with the last one, so a run can hold several. It lives on the
         # MANAGER, not on the run's SubagentInfo, because `evict_completed_agents`
         # prunes completed runs out of `_agents` and an eviction must not silently
         # release the hold.
-        self._abandoned_state_writers: set[str] = set()
+        self._abandoned_state_writers: dict[str, set[asyncio.Future[Any]]] = {}
         # state.json is the source of truth for retention: give the
         # SessionManager's in-memory continuable cache a disk fallback so a
         # cache miss (restart window) cannot demote a promoted conversation.
@@ -5324,9 +5329,10 @@ class SubagentManager:
             if not task.done():
                 pending += 1
 
-        # A cancelled to_thread state write can outlive its run task. Its done
-        # callback removes this hold, so every entry is finite restart-sensitive
-        # work even though the worker Future has no retained awaitable here.
+        # A cancelled to_thread state write can outlive its run task. Each entry
+        # is a run with at least one such worker still writing, and the last of
+        # them to land removes it from its done-callback, so every entry is
+        # finite restart-sensitive work even though no awaitable is retained here.
         pending += len(self._abandoned_state_writers)
         return pending
 
@@ -6362,6 +6368,9 @@ class SubagentManager:
 
     async def _cap_unclaimed_result(self, info: SubagentInfo) -> None:
         await self._run_events._cap_unclaimed_result_impl(info)
+
+    def _record_reap_ending(self, info: SubagentInfo, unfinished: str) -> None:
+        self._run_events._record_reap_ending_impl(info, unfinished)
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         usage = _RunCreditAccounting(info)

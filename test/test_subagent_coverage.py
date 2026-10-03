@@ -1203,7 +1203,7 @@ class TestReadSurfaces:
         mgr._report_tasks = {report}
         mgr._followup_watchers = {"run": followup}
         mgr._reconcile_task = reconcile
-        mgr._abandoned_state_writers = {"state-writer"}
+        mgr._abandoned_state_writers = {"state-writer": {report}}
         try:
             # queue + recovery + report + follow-up + reconciliation + writer
             assert mgr.pending_work_count == 6

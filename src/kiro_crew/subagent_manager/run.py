@@ -267,9 +267,9 @@ class RunEventCoordinator(ManagerComponent):
         returned: the flag lands late or not at all, the safe direction.
 
         *hold_conversation* takes that hold for the whole write instead, for a
-        run that is already ``done``: ``_conversation_busy`` no longer counts
-        it, so a release landing mid-write would write ``keep`` on the loop
-        for this worker's whole-file rewrite to roll back.
+        run that is already ``done``: ``_conversation_busy`` does not count a
+        ``done`` run, so a release landing mid-write would write ``keep`` on
+        the loop for this worker's whole-file rewrite to roll back.
         """
         writer = asyncio.ensure_future(
             asyncio.to_thread(write_finished_result, info.id, text, update_state)
@@ -286,9 +286,13 @@ class RunEventCoordinator(ManagerComponent):
         *text* is everything the attempt has streamed: until a write succeeds
         each chunk retries the fresh write with all of it, so a first write
         the disk refused leaves no hole at the file's head. That write grows
-        with the answer, so it runs in a worker, drained like a state write:
-        the rename can then never land after ``_run``'s cap or a respawn's own
-        first write. True once the file is started.
+        with the answer, so it runs in a worker, drained like a state write,
+        and the chunk loop awaits it, so its rename lands before ``_run``'s
+        cap and before a respawn's own first write. The exception is a drain
+        that gives up at ``_STATE_DRAIN_TIMEOUT`` on cancellation: the worker
+        is left to finish detached and its rename can then land after the
+        cap. That drain consumes the one-shot recovery, so no respawn follows
+        it. True once the file is started.
         """
         writer = asyncio.ensure_future(
             asyncio.to_thread(write_result_chunk, info.id, text, fresh=True)
@@ -305,10 +309,12 @@ class RunEventCoordinator(ManagerComponent):
     ) -> bool:
         """Await a state-writing worker, drained and bounded on cancellation.
 
-        Shared by :meth:`_write_state_off_loop_impl`, whose docstring carries
-        the rationale, and :meth:`_write_finished_result_off_loop_impl`, which
+        Called by :meth:`_write_state_off_loop_impl`, whose docstring carries
+        the rationale, :meth:`_start_result_file_impl`, and
+        :meth:`_write_finished_result_off_loop_impl`, the one caller that
         passes *bound*: a limit on the UNCANCELLED wait too, past which the
-        worker is left to finish detached and False is returned.
+        worker is left to finish detached and False is returned. The
+        manager's ``_drain_state_writer`` forwards here unchanged.
         """
         try:
             if bound is None:
@@ -379,7 +385,10 @@ class RunEventCoordinator(ManagerComponent):
         """Hold this run's conversation until *writer* has landed.
 
         Taken for a worker no one awaits any more, and up front for the final
-        result write of a run that is already ``done``.
+        result write of a run that is already ``done``. The hold counts
+        writers, not runs: a run can have an earlier worker still detached
+        when its final cap starts another, and the hold lasts until the LAST
+        of them lands. Registering the same worker twice holds it once.
         """
         # Hold this run's conversation for the WHOLE window in which the
         # worker may still write, which starts here and not at the drain
@@ -393,7 +402,10 @@ class RunEventCoordinator(ManagerComponent):
         # worker does -- milliseconds on a healthy FS. Recorded on the
         # MANAGER, not on `info`: `evict_completed_agents` prunes completed
         # runs out of `_agents`, and an eviction must not release the hold.
-        self._manager._abandoned_state_writers.add(info.id)
+        held = self._manager._abandoned_state_writers.setdefault(info.id, set())
+        if writer in held:
+            return
+        held.add(writer)
 
         def _settled(
             fut: "asyncio.Future[Any]",
@@ -401,9 +413,14 @@ class RunEventCoordinator(ManagerComponent):
             _aid: str = info.id,
             _what: str = what,
         ) -> None:
-            # The worker has landed (drained or abandoned): the conversation
-            # is safe to promote or release again.
-            _mgr._abandoned_state_writers.discard(_aid)
+            # The worker has landed (drained or abandoned). The conversation
+            # is safe to promote or release again once no other worker of
+            # this run is still writing.
+            writers = _mgr._abandoned_state_writers.get(_aid)
+            if writers is not None:
+                writers.discard(fut)
+                if not writers:
+                    del _mgr._abandoned_state_writers[_aid]
             _mgr._run_events._forget_finished_live_state(info)
             # It may also have raised; retrieve it so it never surfaces as an
             # asynchronous "exception was never retrieved" warning.
@@ -738,6 +755,29 @@ class RunEventCoordinator(ManagerComponent):
                 # consumed the entry before cancelling this task).
                 self._manager._process_handles.pop(info.id, None)
 
+    def _record_reap_ending_impl(self, info: SubagentInfo, unfinished: str) -> None:
+        """Record the ending of a run whose reap got there first.
+
+        Setting ``done`` here wins the first-arrival record over the reaper's
+        own synthesis (guard 1 in ``_force_reap``), so the whole record --
+        error, stat, tombstone -- is written once. Neutrality follows the FIRST
+        stopper: a Stop that lands while a deadline reap already owns the
+        teardown sets ``user_stopped`` too; the record still belongs to the
+        deadline, so the flag is put back and the failure kept, named
+        ``"<origin> — <unfinished>"``.
+        """
+        neutral = info.stop_is_neutral
+        if not neutral:
+            info.user_stopped = False
+            if not info.error:
+                info.error = f"{info._stop_origin or 'the reaper'} — {unfinished}"
+        if not info.result and info.streaming_text:
+            info.result = info.streaming_text
+        info.done = True
+        if not neutral:
+            Stats().inc_subagent_failed()
+        self._manager._write_tombstone(info, info._reap_reason or "reaped")
+
     async def _run_impl(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
@@ -749,6 +789,20 @@ class RunEventCoordinator(ManagerComponent):
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )
+            if info._reap_started and not info.done:
+                # Returned with no ending while a reap is in flight -- the tail
+                # records nothing for a whole answer a reap got to first: the
+                # reap's ending, recorded and reported as for the runtime
+                # death below. Only a complete event finished the answer.
+                reap_owns_report = True
+                self._record_reap_ending_impl(
+                    info,
+                    (
+                        "the run was stopped as it finished its answer"
+                        if info._answer_finished
+                        else "the runtime was torn down before the run finished"
+                    ),
+                )
         except asyncio.TimeoutError:
             # ``done`` is first-arrival-wins in every arm below, as in
             # _force_reap: an ending already recorded -- a claimed completed
@@ -940,23 +994,9 @@ class RunEventCoordinator(ManagerComponent):
                 reap_owns_report = True
                 origin = info._stop_origin or "the reaper"
                 if not info.done:
-                    # Neutrality follows the FIRST stopper. A Stop that lands
-                    # while a deadline reap already owns the teardown sets
-                    # ``user_stopped`` too; the record still belongs to the
-                    # deadline, so the flag is put back and the failure kept.
-                    neutral = info.stop_is_neutral
-                    if not neutral:
-                        info.user_stopped = False
-                        if not info.error:
-                            info.error = (
-                                f"{origin} — the runtime was torn down before the run finished"
-                            )
-                    if not info.result and info.streaming_text:
-                        info.result = info.streaming_text
-                    info.done = True
-                    if not neutral:
-                        Stats().inc_subagent_failed()
-                    self._manager._write_tombstone(info, info._reap_reason or "reaped")
+                    self._record_reap_ending_impl(
+                        info, "the runtime was torn down before the run finished"
+                    )
                 # One attributable line, at the level the action deserves: a
                 # user's own stop is routine; a parent end or a deadline reap
                 # discarded live work the user did not ask to lose.
@@ -3262,12 +3302,31 @@ class RunEventCoordinator(ManagerComponent):
             return
         # Any other ending, including a whole answer a stop got to first: _run's
         # ``finally`` caps the streamed file and records no whole answer.
+        if _stop.is_success and info._reap_started and not info.done:
+            # A reap in flight got here first and owns this ending: ``_run``
+            # records the stop it is making and leaves the report to it, as for
+            # the runtime death its teardown causes. A bare ``done`` here would
+            # make the reap's record guard skip, so a deadline-stopped run would
+            # be reported completed. A stream that just stopped, with no
+            # complete event, had not finished its answer, and the record says so.
+            info._answer_finished = _complete_event is not None
+            logger.info(
+                "Subagent %s %s after a reap began",
+                info.id,
+                "finished its answer" if info._answer_finished else "stream ended",
+            )
+            return
+        was_done = info.done
         info.done = True
-        if _stop.is_success and not info.error:
-            _count_success()
-        elif info.user_stopped:
+        if info.user_stopped:
             # The user-stop path owns the tombstone/stat for this record.
             logger.info("Subagent %s stream ended by user stop (%s)", info.id, _stop.stop_reason)
+        elif _stop.is_success and not info.error:
+            if was_done:
+                # Another path recorded this run's ending first; it owns the stat.
+                logger.info("Subagent %s finished after its ending was recorded", info.id)
+            else:
+                _count_success()
         else:
             Stats().inc_subagent_failed()
             self._manager._write_tombstone(

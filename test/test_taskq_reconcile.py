@@ -684,6 +684,7 @@ _UNREADABLE = object()
         ({"cause": "reaped", "outcome": "failed"}, True, model.FAILED),
         ({"cause": "reaped"}, True, model.FAILED),
         ({"cause": "startup_timeout"}, True, model.FAILED),
+        ({"cause": "start_queue_saturated"}, True, model.FAILED),
         # A tombstone that is there but cannot be read records an ending this
         # probe cannot see, so it says nothing rather than reading the folder.
         (_UNREADABLE, True, None),
