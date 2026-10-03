@@ -65,6 +65,8 @@ ROSTER_ROW_KEYS = frozenset(
 # ``starred`` is a Crew Members roster preference that only ``GET /api/members``
 # renders (the crew manager has no star affordance).
 # ``member_id`` is execution attribution, not a template-picker field.
+# ``acp_backend`` is set in ``config.json`` and nothing in the dashboard reads it
+# yet; a crew-editor control that does would move it to the allowlist.
 WITHHELD_RECORD_FIELDS = frozenset(
     {
         "member_id",
@@ -72,6 +74,7 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "watchdog_tool_stall_hard_cap_secs",
         "telegram_account",
         "starred",
+        "acp_backend",
     }
 )
 
@@ -110,6 +113,7 @@ def _seed_config_with_every_field_set() -> dict:
                 "watchdog_tool_stall_suspect_secs": 111.0,
                 "watchdog_tool_stall_hard_cap_secs": 222.0,
                 "telegram_account": "probe-telegram-binding",
+                "acp_backend": "probe-backend",
             },
         },
         "default_agent": "roster-probe",

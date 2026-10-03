@@ -26,7 +26,7 @@ Missing history must never silently turn a private topic into Global memory.
 
 | File | Role |
 |---|---|
-| `src/kiro_crew/config/sections.py` | `KiroCrewAgentConfig` — the crew record: `kiro_agent`, `workspace`, `memory_store`, `model`, `reasoning_effort`, `description`, `triggers`, `source`, `session_color`, `avatar`, per-crew watchdog overrides |
+| `src/kiro_crew/config/sections.py` | `KiroCrewAgentConfig` — the crew record: `kiro_agent`, `workspace`, `memory_store`, `model`, `reasoning_effort`, `acp_backend`, `description`, `triggers`, `source`, `session_color`, `avatar`, per-crew watchdog overrides |
 | `src/kiro_crew/config/loader.py` | `resolve_agent_bindings` (crew to workspace / memory store / template) and `resolve_effective_model` (the default-model precedence) |
 | `src/kiro_crew/mcp_core.py` | `_do_select_crew` — the roster and bind bodies |
 | `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool declaration and dispatch |
@@ -863,9 +863,41 @@ bound kiro agent's pinned model (skipped for the built-in `kirocrew` agent), the
 global `agent.model`, then the installed agent file's model. A per-session pick
 outranks all four and is not considered there.
 
+A crew can also name the ACP harness its sessions run on, the way it names its
+model: `agents.<name>.acp_backend`, spelled as `agent.acp_backend`. It is the
+first input to the one selection gate, `members.select_provider_backend`: the
+crew's pin, then the member-DM route (`agent.member_acp_backend`), then
+`agent.acp_backend`. The pin goes through `resolve_selected_backend`, so an
+unknown or policy-denied value runs the session on kiro-cli with the gate's
+usual warning rather than falling through to a route (harness-parity H3). `""`
+is the default and is also kiro-cli's id, so a crew cannot pin kiro-cli over a
+non-kiro default.
+
+The crew is the `resolve_crew_identity` answer the provider factory already
+uses for effort, so the pin reaches every session that runs AS that crew: its DM
+thread, a dashboard chat bound to it, a cron or channel turn, and a
+`spawn_run(crew=...)` delegate, which always gets a dedicated process. A session
+bound to a template runs as no crew and keeps the routes, so a worker that
+`session_create` binds to a template does not take the dispatching member's
+engine (except under a legacy member with no persisted id, whose child keeps the
+member's selection). A child that `session_create` starts with no agent keeps the
+member's own selection, so it does run on the member's pin. The pin lives in
+the crew record, not in an agent spec, so kiro-cli never reads it and the
+`kirocrew-worker` spec derivation, which mirrors spec keys only, neither copies
+nor clears it; a crew bound to that template pins its own.
+
+Everything that must name the backend a session will get asks the same gate
+with the same pin: the warm pool bypasses a pinned crew (`bypass_backend`), the
+dashboard's cold-slot capabilities and `set_model` resolve the slot's crew
+through `session_crew_acp_backend`, the member operating-mode block checks the
+pinned engine's dispatch capability, and a `config.json` change to a pin
+rebuilds the provider factory (`SessionManager._crew_backend_pin_changed`).
+
 The loader is defensive about hand-edited config: a non-string `model` or
 `triggers` collapses to `""`, an unknown `reasoning_effort` collapses to inherit,
-and a junk watchdog override collapses to `0`.
+a non-string `acp_backend` collapses to inherit (an unselectable string is kept,
+so the gate can refuse it with its reason), and a junk watchdog override
+collapses to `0`.
 
 ### Crewmate conversation layout: switcher, Profile, Dashboard, Files
 

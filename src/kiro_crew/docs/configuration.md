@@ -151,6 +151,16 @@ per-harness capability matrix.
 Set a registered value with, for example,
 `kirocrew config set agent.acp_backend kas`.
 
+A Crew Member can run on its own harness: set `agents.<name>.acp_backend` to
+any value from the table, for example
+`kirocrew config set agents.reviewer.acp_backend claude`. The pin covers every
+session that runs as that crewmate — its DM thread, its schedules, channel
+turns and `spawn_run(crew=...)` delegates — and outranks both
+`agent.member_acp_backend` and `agent.acp_backend`. A session started from an
+agent template runs as no crewmate and keeps those two. Empty (the default)
+inherits them. A value this build cannot select runs the session on kiro-cli
+and logs why.
+
 ## Key Settings
 
 ```json

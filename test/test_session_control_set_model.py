@@ -216,7 +216,7 @@ def test_the_model_check_uses_the_targets_provider_seam(tmp_path, monkeypatch):
 
     monkeypatch.setattr(chat_handlers, "_model_rejected_reason", _reason)
     monkeypatch.setattr(sc, "is_claude_code", lambda p: p == "claude-seam")
-    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a: "claude-backend")
+    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a, **_k: "claude-backend")
     monkeypatch.setattr(
         sc,
         "capabilities_for",
@@ -336,7 +336,7 @@ def test_the_alias_correction_follows_the_targets_own_backend(tmp_path, monkeypa
     target_key = effective_session_key(target)
     seen: list[str | None] = []
 
-    def _select(session_key, _member_backend, _default):
+    def _select(session_key, _member_backend, _default, crew_backend=""):
         seen.append(session_key)
         return "member-kiro" if session_key == target_key else "default-other"
 
@@ -346,6 +346,37 @@ def test_the_alias_correction_follows_the_targets_own_backend(tmp_path, monkeypa
 
     assert seen == [target_key]
     assert out["model"] == "wire-sonnet"
+
+
+def test_the_targets_crew_backend_pin_reaches_the_gate(tmp_path, monkeypatch):
+    """A crew's own ``acp_backend`` pin outranks both routes in the factory, so the
+    model check must key on the pinned engine too -- read for the TARGET slot."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    monkeypatch.setattr(sc.model_registry, "acp_id_correction", lambda _m: None)
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = state.get_or_create_slot("chat-2")
+    target_key = effective_session_key(target)
+    asked: list[str] = []
+
+    def _pin(_cfg, session_key, _agent, _project=None):
+        asked.append(session_key)
+        return "pinned-engine"
+
+    seen: list[str] = []
+
+    def _select(_session_key, _member_backend, _default, crew_backend=""):
+        seen.append(crew_backend)
+        return ""
+
+    monkeypatch.setattr(sc, "session_crew_acp_backend", _pin)
+    monkeypatch.setattr(sc, "select_provider_backend", _select)
+
+    _set_model(state, caller, "chat-2", "sonnet")
+
+    assert asked == [target_key]
+    assert seen == ["pinned-engine"]
 
 
 def test_a_padded_model_is_stored_stripped(tmp_path, monkeypatch):

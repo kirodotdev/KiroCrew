@@ -935,6 +935,38 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
 
 
+def session_crew_acp_backend(
+    config, session_key: str, agent_name: str | None, project_dir: str | None = None
+) -> str:
+    """The ``acp_backend`` pin of the crew a session on this selection runs as, or ``""``.
+
+    For the dashboard's READERS of the backend-selection gate (cold-slot
+    capabilities, ``set_model``), which must name the backend the provider factory
+    will pick. The crew is derived the way the turn path derives the ``crew_agent``
+    it hands the factory (``chat_runner._run_chat``): the bound selection's alias,
+    except that a TEMPLATE selection runs as no crew, because its fallback alias
+    supplies defaults and not a member identity.
+
+    Blocking (the resolver reads the session's execution record), so callers run
+    it off the event loop. Any failure answers ``""``, the pre-pin route: a readout
+    must not fail because a selection could not be resolved, and the turn path
+    reports that failure itself.
+    """
+    # Deferred, like this module's other config-loader read: chat_utils imports
+    # nothing from the config layer at module scope.
+    from kiro_crew.config.loader import resolve_agent_bindings
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    try:
+        bindings = resolve_session_agent_bindings(
+            resolve_agent_bindings, config, session_key, agent_name, project_dir
+        )
+    except Exception:  # noqa: BLE001 - includes StopIteration; see docstring
+        return ""
+    crew = "" if bindings.selection_kind == "template" else bindings.resolved_alias
+    return config.crew_acp_backend(None, crew)
+
+
 def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     """Whether a different slot at *name* writes *slot*'s transcript file."""
     current = state._slots.get(name)

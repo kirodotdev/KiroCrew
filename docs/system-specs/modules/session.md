@@ -1430,7 +1430,10 @@ document validates. Otherwise it does three things, in order:
   `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
   `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, and `session.pool_size` / `pool_agent` /
-  `pool_ttl_secs`. `refresh_defaults` is the **live-session-preserving** path —
+  `pool_ttl_secs`. A crew's `agents.<name>.acp_backend` pin is factory-bound
+  too, but per crew, so `_crew_backend_pin_changed` checks it by value instead
+  of by prefix: a pin that changes value refreshes, while adding or removing a
+  crew that pins nothing does not. `refresh_defaults` is the **live-session-preserving** path —
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
   NEW sessions see the new defaults. `reload_provider_factory` (which retires

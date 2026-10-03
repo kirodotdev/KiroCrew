@@ -50,7 +50,11 @@ frontmatter key of the same name behaves identically.
 This is the axis every per-field answer hangs off, and it is two-dimensional.
 `agent.provider` picks the seam; `agent.acp_backend` picks the harness the ACP
 seam spawned (`src/kiro_crew/agent_sdk/provider_identity.py`,
-`src/kiro_crew/agent_sdk/backend_identity.py`).
+`src/kiro_crew/agent_sdk/backend_identity.py`). A Crew Member's
+`agents.<name>.acp_backend` can override the harness for that crewmate's own
+sessions ([Configuration](configuration.md#acp-backend)). It is a key of the
+crew record in `config.json`, not a spec field: no harness reads it from a spec,
+and the `kirocrew-worker` mirror below neither copies nor clears it.
 
 | Surface | Config | How the spec reaches it | Consequence |
 |---|---|---|---|

@@ -632,7 +632,7 @@ def test_overflow_keeps_mandatory_framing_not_optional_skills(rig, monkeypatch):
     cfg.skills.lazy_load = True
     memory.write_preferences("Required preference.\n" * ctx._CONTEXT_BUDGET_BASE)
     seed_skill(skills._dir, "optional-summary")
-    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg: True)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg, crew="": True)
     builder.conversation_log = Mock()
     builder.conversation_log.recent_with_provenance.return_value = []
     builder.conversation_log.recent.return_value = [

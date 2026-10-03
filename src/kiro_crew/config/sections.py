@@ -3210,6 +3210,21 @@ class KiroCrewAgentConfig:
             "is ignored, exactly as the global default is.",
         ),
     )
+    acp_backend: str = field(
+        default="",
+        metadata=_meta(
+            "ACP Backend",
+            "Which ACP agent runs sessions on this crew, spelled as agent.acp_backend "
+            "(e.g. 'kas', 'claude', 'deepseek'). Empty inherits: this crew's member DM "
+            "thread follows agent.member_acp_backend and every other session follows "
+            "agent.acp_backend. A value this build cannot select (unknown, or denied "
+            "by policy) runs the session on kiro-cli and logs why. kiro-cli's own id "
+            "is the empty value, so it cannot be pinned here over a non-kiro default.",
+            # Same no-enum reasoning as AgentConfig.acp_backend: the live selectable
+            # set comes from the registry via resolve_selected_backend, never a
+            # frozen literal (harness-parity H4).
+        ),
+    )
     display_name: str = field(
         default="",
         metadata=_meta(

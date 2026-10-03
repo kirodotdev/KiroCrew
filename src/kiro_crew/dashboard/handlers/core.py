@@ -167,6 +167,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "workspace",
     "memory_store",
     "model",
+    # Kept raw at load so the selection gate can refuse it with its reason, so
+    # any string can arrive here.
+    "acp_backend",
     "source",
     "telegram_account",
 )

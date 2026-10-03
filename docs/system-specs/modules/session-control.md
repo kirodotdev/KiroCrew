@@ -943,6 +943,9 @@ itself opened. Member sessions also bypass the provider warm pool
 (`bypass_member`): a pooled child was spawned with no session key on the
 default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
+unless the member's own crew record pins `agents.<name>.acp_backend`, which
+outranks it (see [crew-mode](crew-mode.md)); `set_model` resolves a target's
+backend through the same gate, pin included,
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
 claude seam, KAS, codex and opencode); kiro-cli v2 reads its template from disk and
 exposes no per-session channel, so a member session on it runs as plain chat —

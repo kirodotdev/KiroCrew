@@ -8661,6 +8661,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "ACP Backend",
+      "help": "Which ACP agent runs sessions on this crew, spelled as agent.acp_backend (e.g. 'kas', 'claude', 'deepseek'). Empty inherits: this crew's member DM thread follows agent.member_acp_backend and every other session follows agent.acp_backend. A value this build cannot select (unknown, or denied by policy) runs the session on kiro-cli and logs why. kiro-cli's own id is the empty value, so it cannot be pinned here over a non-kiro default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.display_name",
       "kind": "core",
       "type": "string",

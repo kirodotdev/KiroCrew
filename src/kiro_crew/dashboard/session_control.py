@@ -86,6 +86,7 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     drained_to_thread,
     effective_session_key,
+    session_crew_acp_backend,
     slot_history_key,
 )
 from kiro_crew.dashboard.create_rate_limit import (
@@ -4718,8 +4719,10 @@ async def set_model_target(
             status=400,
         )
     model_name = _normalize_model(model)
+    cfg: KiroCrewConfig | None = None
     try:
-        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        agent_cfg = cfg.agent
         provider = agent_cfg.provider
         member_backend, default_backend = agent_cfg.member_acp_backend, agent_cfg.acp_backend
     except Exception:  # pragma: no cover - config load is resilient
@@ -4747,8 +4750,25 @@ async def set_model_target(
     # The model check and the alias correction both key on the TARGET's backend,
     # resolved through the same member-aware gate the provider factory uses: a
     # member DM routes to agent.member_acp_backend, which can differ from the
-    # configured default, and a Claude backend takes canonical keys as wire ids.
-    backend = select_provider_backend(effective_session_key(slot), member_backend, default_backend)
+    # configured default, a crew's own acp_backend pin outranks both, and a
+    # Claude backend takes canonical keys as wire ids. Awaited before the busy
+    # and gate re-checks below, which already cover a turn or a replacement
+    # landing during an await.
+    target_session_key = effective_session_key(slot)
+    crew_backend = (
+        await asyncio.to_thread(
+            session_crew_acp_backend,
+            cfg,
+            target_session_key,
+            slot.agent or None,
+            slot.project or None,
+        )
+        if cfg is not None
+        else ""
+    )
+    backend = select_provider_backend(
+        target_session_key, member_backend, default_backend, crew_backend=crew_backend
+    )
     target_provider = (
         provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
     )

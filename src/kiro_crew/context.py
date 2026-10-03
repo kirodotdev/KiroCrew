@@ -772,7 +772,7 @@ def _board_safe_tag_name(raw: object) -> str:
 
 
 # Per-section limits are derived below; shared admission never sums them.
-def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
+def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None, crew: str = "") -> bool:
     """Whether the configured member backend can mount the dispatch tools.
 
     The member operating-mode block teaches ``session_*`` tools that arrive as
@@ -782,6 +782,12 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
     injecting instructions for tools the session does not hold would send the
     member chasing refusals. Fail-safe both ways: on any resolution error the
     block is withheld, which degrades to plain chat rather than to a lie.
+
+    *crew* names the member whose DM thread this is. Its own
+    ``agents.<name>.acp_backend`` pin outranks the member route exactly as it
+    does in ``members.select_provider_backend`` (pin, else member route, both
+    through the same resolver), so a member pinned to an engine that cannot
+    carry the mount gets plain chat too. ``""`` reads the member route alone.
 
     ``cfg`` lets a caller that already loaded the config share the handle —
     the context builder calls this once per member turn, so a second disk
@@ -797,7 +803,8 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
             from kiro_crew.config import KiroCrewConfig
 
             cfg = KiroCrewConfig.load()
-        backend = resolve_selected_backend(cfg.agent.member_acp_backend)
+        pin = cfg.crew_acp_backend(None, crew) if crew else ""
+        backend = resolve_selected_backend(pin or cfg.agent.member_acp_backend)
         return backend in ACP_BACKENDS_MEMBER_DISPATCH
     except Exception:
         logger.debug("member backend capability check failed", exc_info=True)
@@ -2377,7 +2384,7 @@ class ContextBuilder:
         # deliberately silent there.
         effective_groups = _config_scoped_groups(context_groups, _cfg)
 
-        if mode == _member_mode and _member_backend_can_dispatch(_cfg):
+        if mode == _member_mode and _member_backend_can_dispatch(_cfg, desk_member):
             append_required(_member.operating_mode_block(agent_label))
 
         # Legacy member-DM identity. Private V2 has already derived its owner

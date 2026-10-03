@@ -2087,6 +2087,28 @@ class SessionManager:
         "default_workspace",
     )
 
+    @staticmethod
+    def _crew_backend_pin_changed(change: ConfigChange) -> bool:
+        """Whether some crew's ``agents.<name>.acp_backend`` pin changed value.
+
+        A factory input like every path in ``_FACTORY_CONFIG_PATHS`` (the factory
+        reads it off the config it captured), but per crew, so no prefix there can
+        name it without also matching every other crew edit. Compared by VALUE
+        rather than by changed leaf: adding or removing a crew that pins nothing
+        changes the leaf but no answer, and must rebuild nothing.
+        """
+        suffix = ".acp_backend"
+        old_agents = change.old.agents if change.old is not None else {}
+        for path in change.under("agents"):
+            if not path.endswith(suffix):
+                continue
+            name = path[len("agents.") : -len(suffix)]
+            before = getattr(old_agents.get(name), "acp_backend", "")
+            after = getattr(change.new.agents.get(name), "acp_backend", "")
+            if before != after:
+                return True
+        return False
+
     async def _on_config_change(self, change: ConfigChange) -> None:
         """Hot-apply a ``config.json`` write observed by the config watcher.
 
@@ -2107,7 +2129,7 @@ class SessionManager:
         """
         if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
             raise live.ConfigDeferred(change.changed)
-        if change.touched(*self._FACTORY_CONFIG_PATHS):
+        if change.touched(*self._FACTORY_CONFIG_PATHS) or self._crew_backend_pin_changed(change):
             await self.refresh_defaults(cfg=change.new)
         else:
             async with self._lock:

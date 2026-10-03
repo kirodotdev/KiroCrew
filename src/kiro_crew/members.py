@@ -147,13 +147,23 @@ def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
+    crew_backend: str = "",
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: the member-DM auto-route, then the configured default. The
-    member arm goes through :func:`resolve_selected_backend` — the same
+    Precedence: the crew's own pin, then the member-DM auto-route, then the
+    configured default. ``crew_backend`` is the RAW ``agents.<name>.acp_backend``
+    of the crew the session runs as (``KiroCrewConfig.crew_acp_backend``); ``""``
+    means that crew pins nothing, which leaves the two routes below exactly as
+    they were before the pin existed.
+
+    Both pinned arms go through :func:`resolve_selected_backend` — the same
     governance/selectability gate the persisted field crosses, so a denied or
-    unknown value degrades to kiro and the member thread runs as plain chat.
+    unknown value degrades to kiro and the member thread runs as plain chat. A
+    refused crew pin degrades to kiro rather than falling through to the member
+    route on purpose: H3 says an unselectable persisted backend degrades to Kiro
+    with a logged reason, and quietly running the crew on another route instead
+    would hide that its pin was refused.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
@@ -162,6 +172,15 @@ def select_provider_backend(
     """
     from kiro_crew.acp_backends import resolve_selected_backend
 
+    if crew_backend:
+        backend = resolve_selected_backend(crew_backend)
+        logger.info(
+            "session %s: routing to acp_backend=%r (crew acp_backend=%r)",
+            session_key,
+            backend,
+            crew_backend,
+        )
+        return backend
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)
         logger.info(

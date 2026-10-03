@@ -31,6 +31,7 @@ page before you switch it on.
 | Memory store | The database its learned facts, rules and briefing live in | allocated for it at creation |
 | Model | Default model for its sessions | the template's pinned model, then the global default |
 | Reasoning effort | How long its sessions think before answering | the global default, or its role effort for a background worker crew; ignored by models that do not reason |
+| ACP backend (`acp_backend`) | The harness its sessions run on, e.g. `kas` or `claude`; set in `config.json`, see [ACP Backend](configuration.md#acp-backend) | its DM thread follows `agent.member_acp_backend`, its other sessions `agent.acp_backend` |
 | Description | One line about what it is for | no description shown |
 | Triggers (`triggers`) | Free text saying when work should go to it | never auto-selected; naming it still delegates to it |
 | Avatar | A ghost face with chosen traits, or an uploaded picture | a face derived from its name |
