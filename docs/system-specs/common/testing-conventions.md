@@ -286,6 +286,12 @@ which reads the unit on its own thread after every entry. Retention removes them
 `crew_log.eager.paused()`, which holds the folder between batches; a test does the same
 after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
 (`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
+That hold is only waited for off the event-loop thread: an `async def` test that calls
+`store.sweep_expired` or `store.remove_unit` directly proceeds without it, so the fold
+woken by the entry the test just flushed keeps the segment open and Windows reports
+the unit not removed (`assert (0, 1) == (1, 0)`). Call them through `off_loop(...)`,
+as the product's executor-thread caller does; `test_crew_log_off_loop_pin.py` fails
+the direct call.
 
 **Hold the eager folder before patching a store read it also makes.** The folder scans
 the session slot index on its own thread, and a scan that read the headers before a
