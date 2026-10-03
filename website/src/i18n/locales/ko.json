@@ -15258,7 +15258,13 @@
         "allow_system_notifications": "시스템 알림 허용",
         "system_notifications_blocked": "브라우저에서 차단되었습니다. 사이트 권한 설정에서 다시 켜세요.",
         "show_banner_for_new_notifications": "새 알림을 배너로 표시",
-        "show_banner_for_new_notifications_description": "알림이 오면 카드가 상단 바 아래로 미끄러져 나타난 뒤 벨 안으로 들어갑니다."
+        "show_banner_for_new_notifications_description": "알림이 오면 카드가 상단 바 아래로 미끄러져 나타난 뒤 벨 안으로 들어갑니다.",
+        "mouse_haptics": "마우스 햅틱",
+        "mouse_haptics_description": "알림음이 울릴 때마다 Logi Options+용 {{productName}} 플러그인을 통해 Logitech MX Master 4를 진동시킵니다. 진동은 음량과 관계없으므로 음량이 0%여도 소리 없이 알림을 느낄 수 있습니다.",
+        "mouse_haptics_checking": "{{productName}} 플러그인을 찾는 중…",
+        "mouse_haptics_connected": "플러그인이 연결되었습니다. 알림별 진동은 Logi Options+의 햅틱 피드백에서 선택하세요.",
+        "mouse_haptics_not_found": "플러그인을 찾을 수 없습니다. Logi Options+에서 MX Master 4 → 햅틱 피드백 → 플러그인 설치 및 제거를 연 다음, 그 페이지가 열려 있는 상태에서 플러그인 파일을 여세요. <guide>플러그인 받는 방법</guide>",
+        "mouse_haptics_loopback_only": "{{productName}} 데스크톱 앱에서, 또는 마우스가 연결된 컴퓨터의 브라우저에서 localhost 주소로 대시보드를 열었을 때만 작동합니다."
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

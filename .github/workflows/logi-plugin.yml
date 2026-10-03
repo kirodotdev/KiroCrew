@@ -1,0 +1,67 @@
+name: Logi Options+ Plugin
+
+# The Kiro Crew plugin for Logi Options+ (packages/kirocrew-logi-plugin) is a .NET
+# project that ships as its own .lplug4 package, outside the Python and npm
+# distributions, so no other suite builds or tests it. This is that run, and its
+# artifact is the package a user installs. Path-scoped: a change that touches
+# neither the plugin nor this file cannot change its result.
+
+on:
+  pull_request:
+    paths:
+      - "packages/kirocrew-logi-plugin/**"
+      - ".github/workflows/logi-plugin.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/kirocrew-logi-plugin/**"
+      - ".github/workflows/logi-plugin.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: logi-plugin-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Logi Options+ plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/kirocrew-logi-plugin
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      LOGI_PLUGIN_TOOL_VERSION: "6.1.4.22672"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install LogiPluginTool
+        run: dotnet tool install --global LogiPluginTool --version "$LOGI_PLUGIN_TOOL_VERSION"
+      - name: Stage PluginApi.dll
+        # Logitech ships PluginApi.dll inside Logi Plugin Service and inside LogiPluginTool.
+        # A runner has no Plugin Service, so the build compiles against the tool's copy.
+        run: |
+          mkdir -p lib
+          cp "$HOME/.dotnet/tools/.store/logiplugintool/$LOGI_PLUGIN_TOOL_VERSION/logiplugintool/$LOGI_PLUGIN_TOOL_VERSION/tools/net8.0/any/PluginApi.dll" lib/
+      - name: Test
+        run: dotnet test tests/KiroCrewPlugin.Tests.csproj
+      - name: Build
+        run: dotnet build src/KiroCrewPlugin.csproj -c Release
+      - name: Pack and verify
+        run: |
+          logiplugintool pack ./bin/Release ./KiroCrew.lplug4
+          logiplugintool verify ./KiroCrew.lplug4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kirocrew-logi-plugin
+          path: packages/kirocrew-logi-plugin/KiroCrew.lplug4
+          if-no-files-found: error

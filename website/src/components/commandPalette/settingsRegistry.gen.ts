@@ -2041,6 +2041,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "notifications.mouse-haptics",
+    "label": "Mouse haptics",
+    "labelKey": "pages.settings.notificationsPanel.mouse_haptics",
+    "description": "Buzzes a Logitech MX Master 4 whenever a notification sound plays, through the Kiro Crew plugin for Logi Options+. The buzz ignores the volume, so at 0% you feel alerts without hearing them.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
+  },
+  {
     "id": "notifications.notify-when-a-background-chat-finishes",
     "label": "Notify when a background chat finishes",
     "labelKey": "pages.settings.notificationsPanel.notify_when_a_background_chat_finishes",

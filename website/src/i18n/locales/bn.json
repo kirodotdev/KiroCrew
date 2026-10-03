@@ -15475,7 +15475,13 @@
         "allow_system_notifications": "সিস্টেম বিজ্ঞপ্তির অনুমতি দাও",
         "system_notifications_blocked": "তোমার ব্রাউজার এটি আটকে দিয়েছে। সাইটের অনুমতি সেটিংসে আবার চালু করো।",
         "show_banner_for_new_notifications": "নতুন বিজ্ঞপ্তির জন্য ব্যানার দেখাও",
-        "show_banner_for_new_notifications_description": "বিজ্ঞপ্তি এলে একটি কার্ড উপরের বারের নিচ থেকে ঢুকে আসে, তারপর ঘণ্টায় গুটিয়ে যায়।"
+        "show_banner_for_new_notifications_description": "বিজ্ঞপ্তি এলে একটি কার্ড উপরের বারের নিচ থেকে ঢুকে আসে, তারপর ঘণ্টায় গুটিয়ে যায়।",
+        "mouse_haptics": "মাউস হ্যাপটিক্স",
+        "mouse_haptics_description": "বিজ্ঞপ্তির শব্দ বাজলেই Logi Options+-এর {{productName}} প্লাগইনের মাধ্যমে Logitech MX Master 4 কেঁপে ওঠে। কম্পন ভলিউমের উপর নির্ভর করে না, তাই ভলিউম 0% রাখলেও শব্দ ছাড়াই সতর্কতা টের পাবে।",
+        "mouse_haptics_checking": "{{productName}} প্লাগইন খোঁজা হচ্ছে…",
+        "mouse_haptics_connected": "প্লাগইন সংযুক্ত হয়েছে। Logi Options+-এর Haptic feedback অংশে প্রতিটি সতর্কতার কম্পন বেছে নাও।",
+        "mouse_haptics_not_found": "প্লাগইন পাওয়া যায়নি। Logi Options+-এ MX Master 4 → Haptic feedback → Install and uninstall plugins খোলো, তারপর সেই পেজটি খোলা থাকা অবস্থায় প্লাগইন ফাইলটি খোলো। <guide>প্লাগইন কীভাবে পাবে</guide>",
+        "mouse_haptics_loopback_only": "শুধু {{productName}} ডেস্কটপ অ্যাপে কাজ করে, অথবা মাউস যে কম্পিউটারে যুক্ত সেখানে ব্রাউজারে localhost ঠিকানায় ড্যাশবোর্ড খুললে।"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

@@ -1203,6 +1203,13 @@
       "description": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
     },
     {
+      "id": "notifications.mouse-haptics",
+      "label": "Mouse haptics",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.mouse-haptics",
+      "description": "Buzzes a Logitech MX Master 4 whenever a notification sound plays, through the Kiro Crew plugin for Logi Options+. The buzz ignores the volume, so at 0% you feel alerts without hearing them."
+    },
+    {
       "id": "notifications.notify-when-a-background-chat-finishes",
       "label": "Notify when a background chat finishes",
       "tab": "notifications",

@@ -56,6 +56,17 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 
 Settings uses tabbed panels for Overview, Imports, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Instances, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
+#### Mouse haptics
+
+A Logitech MX Master 4 can buzz whenever a notification sound plays, which helps when the computer is muted. The dashboard sends each alert to the Kiro Crew plugin for Logi Options+, and Options+ plays the vibration. The dashboard needs no access to the mouse and no Input Monitoring permission.
+
+1. Get the plugin file, `KiroCrew.lplug4`. Until it is in the Logi Marketplace, it comes from GitHub. Signed in to GitHub, open the Kiro Crew repository's **Actions** tab, pick the latest **Logi Options+ Plugin** run on `main`, and download its `kirocrew-logi-plugin` artifact: a zip that holds the file. Developers can also build it from `packages/kirocrew-logi-plugin` with `logiplugintool pack`.
+2. In Logi Options+, open MX Master 4 → Haptic feedback → Install and uninstall plugins.
+3. With that page showing, open `KiroCrew.lplug4`. Opening the file from any other Options+ page does nothing.
+4. In Kiro Crew, open Settings → Notifications → Sound. Under **Mouse haptics** it says "Plugin connected".
+
+Choose the vibration for each kind of alert in Options+, under Haptic feedback: a finished conversation, a question or approval, and every other notification. The **Play sound on new notifications** switch and the categories set to Silent apply to the buzz too. The volume does not, so at 0% you feel alerts without hearing them. Haptics work only when the dashboard is open at `localhost` or `127.0.0.1` on the computer running Options+, which includes the desktop app. Turn **Mouse haptics** off to stop the buzz without uninstalling the plugin.
+
 ### Customize (`/capabilities`)
 
 Tabbed management for crewmates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.

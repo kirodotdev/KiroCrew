@@ -15475,7 +15475,13 @@
         "allow_system_notifications": "सिस्टम सूचनाओं की अनुमति दो",
         "system_notifications_blocked": "तुम्हारे ब्राउज़र ने इसे रोक दिया है। साइट की अनुमति सेटिंग में इसे फिर से चालू करो।",
         "show_banner_for_new_notifications": "नई सूचनाओं के लिए बैनर दिखाओ",
-        "show_banner_for_new_notifications_description": "सूचना आने पर एक कार्ड टॉप बार के नीचे से आता है, फिर घंटी में समा जाता है।"
+        "show_banner_for_new_notifications_description": "सूचना आने पर एक कार्ड टॉप बार के नीचे से आता है, फिर घंटी में समा जाता है।",
+        "mouse_haptics": "माउस हैप्टिक्स",
+        "mouse_haptics_description": "जब भी नोटिफिकेशन की ध्वनि बजती है, Logi Options+ के {{productName}} प्लगइन के ज़रिए Logitech MX Master 4 में कंपन होता है। कंपन पर वॉल्यूम का असर नहीं पड़ता, इसलिए वॉल्यूम 0% पर भी तुम्हें बिना आवाज़ के अलर्ट महसूस होंगे।",
+        "mouse_haptics_checking": "{{productName}} प्लगइन खोजा जा रहा है…",
+        "mouse_haptics_connected": "प्लगइन कनेक्ट हो गया। हर अलर्ट का कंपन Logi Options+ में Haptic feedback के अंदर चुनो।",
+        "mouse_haptics_not_found": "प्लगइन नहीं मिला। Logi Options+ में MX Master 4 → Haptic feedback → Install and uninstall plugins खोलो, फिर वह पेज खुला रहते हुए प्लगइन फ़ाइल खोलो। <guide>प्लगइन कैसे पाएँ</guide>",
+        "mouse_haptics_loopback_only": "यह सिर्फ़ {{productName}} डेस्कटॉप ऐप में काम करता है, या तब जब माउस से जुड़े कंप्यूटर पर ब्राउज़र में डैशबोर्ड localhost पते पर खुला हो।"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",
