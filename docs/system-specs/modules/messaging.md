@@ -555,6 +555,27 @@ everything remaining before the send is synchronous, which makes it the latest p
 a read can speak for. A thread route arrives with its channel already resolved,
 never suspends, and takes no re-read.
 
+**An unpressed wait asks whether a press was still possible.** Both reads above speak
+for the post; the wait after it lasts minutes. `on_interaction` drops every press once
+the peer leaves `allowed_user_ids` or the thread leaves the thread roster, and every
+press but an explicit reject once the channels ceiling closes, so a wait that elapses
+after any of those withdrawals could not have been answered. When the decider's wait
+elapsed (`last_deny_cause` is the timeout cause), the hook therefore re-reads the
+same destination pair that gated the post and falls through on a refusal, then asks
+the seam's `unpressed_wait_answer` for the ceiling — exactly the Telegram hook's
+shape. A press, reject included, is returned verbatim, and an elapsed wait on a
+destination that stayed authorized is still a deny.
+
+For a Discord thread, "authorized destination" is the complete interaction
+precondition rather than thread-roster membership alone: at least one
+`allowed_user_ids` member must remain, the thread must remain allow-listed, and
+`DiscordClient.is_thread_channel` must still confirm its type. The same
+`_interaction_actionable` decision gates real presses and the spawn timeout's
+`_spawn_approval_actionable` check; the latter also re-reads transport egress.
+Thus removing every allowed user, removing the thread, changing its Discord
+channel type, or revoking egress makes an unpressed timeout fall through, while
+an Approve or Reject that landed before withdrawal remains the user's decision.
+
 **A press that lands before its waiter exists is answered, not dropped.** Both Discord
 prompt paths arm the per-prompt nonce when the prompt is BUILT, and the post that
 follows suspends, so a press can land before the caller starts awaiting.
