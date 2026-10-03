@@ -201,6 +201,11 @@ class TestCronAdmissionDeferral:
         # Recovery: the same job fires on the next admitted tick.
         with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
             await svc._on_timer()
+            run_task = svc._claims[job.id].task
+        assert run_task is not None
+        # The callback precedes finalization, and claim release precedes the
+        # result merge. Wait for the whole run before changing its timestamp.
+        await asyncio.wait_for(run_task, timeout=5.0)
         await _wait_for(lambda: "gated" in executed)
 
         # A NEW critical episode logs its own INFO line.

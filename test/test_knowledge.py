@@ -2947,10 +2947,16 @@ class TestPysqlite3Fallback:
         import sqlite3 as stdlib_sqlite3
 
         compat = "kiro_crew._sqlite_compat"
-        saved = sys.modules.pop("pysqlite3", None)
+        missing = object()
+        saved = sys.modules.pop("pysqlite3", missing)
         # Restore the original module objects afterwards: a reloaded module is a
         # different object, and later tests compare driver exception classes.
         reloaded = (compat, module_name)
+        saved_attributes = []
+        for name in reloaded:
+            parent_name, _, child = name.rpartition(".")
+            parent = sys.modules[parent_name]
+            saved_attributes.append((parent, child, vars(parent).get(child, missing)))
         saved_modules = {
             name: mod
             for name, mod in sys.modules.items()
@@ -2965,9 +2971,19 @@ class TestPysqlite3Fallback:
             assert mod.sqlite3 is stdlib_sqlite3
         finally:
             del sys.modules["pysqlite3"]
-            if saved is not None:
+            if saved is not missing:
                 sys.modules["pysqlite3"] = saved
+            for name in tuple(sys.modules):
+                if any(name == target or name.startswith(target + ".") for target in reloaded):
+                    sys.modules.pop(name)
             sys.modules.update(saved_modules)
+            # ``from package import child`` can use the package attribute even
+            # after sys.modules has been restored.
+            for parent, child, value in saved_attributes:
+                if value is missing:
+                    vars(parent).pop(child, None)
+                else:
+                    setattr(parent, child, value)
 
     def test_store_falls_back_to_stdlib_sqlite3(self):
         self._reload_without_pysqlite3("kiro_crew.knowledge.store")

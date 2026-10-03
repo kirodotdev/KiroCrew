@@ -205,9 +205,9 @@ def _stub_path(tmp_path: Path) -> str:
     """PATH for executing a workflow read block with stubbed commands.
 
     ``tmp_path`` comes first so the ``gh``/``sleep`` stubs win. The read
-    blocks pipe through a standalone ``jq``, which on the Windows runners'
-    Git Bash does not live under the Unix defaults -- resolve the host's real
-    ``jq`` and append its directory, skipping when the host has none.
+    blocks pipe through the host's standalone ``jq``, which Git Bash may install
+    outside the Unix defaults. Put its discovered directory before those
+    defaults so an older system copy cannot shadow it; skip where jq is absent.
     """
     jq = shutil.which("jq")
     if jq is None:
@@ -215,10 +215,10 @@ def _stub_path(tmp_path: Path) -> str:
     return os.pathsep.join(
         [
             str(tmp_path),
+            str(Path(jq).parent),
             "/usr/local/bin",
             "/usr/bin",
             "/bin",
-            str(Path(jq).parent),
         ]
     )
 
@@ -2324,7 +2324,7 @@ class TestIntentReadFailureFailsClosed:
             env={
                 # tmp_path first so the `gh` stub wins; starve any real gh of
                 # credentials so a stub-resolution failure can never turn into
-                # a live API call. `_stub_path` appends the host's real `jq`,
+                # a live API call. `_stub_path` includes the host's real `jq`,
                 # which the read block needs to split the title and body out of
                 # one API response and which the Windows runners' Git Bash does
                 # not put under the Unix defaults -- without it the read fails

@@ -205,11 +205,13 @@ class TestRendering:
 
 class TestPySpy:
     def test_argv_raises_when_pyspy_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(perf_sampler, "pyspy_candidates", lambda: ())
         monkeypatch.setattr(perf_sampler.shutil, "which", lambda _n: None)
         with pytest.raises(FileNotFoundError):
             perf_sampler.pyspy_argv(pid=123, seconds=5, output=tmp_path / "o", rate=100)
 
     def test_argv_requests_folded_output(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(perf_sampler, "pyspy_candidates", lambda: ())
         monkeypatch.setattr(perf_sampler.shutil, "which", lambda _n: "/usr/bin/py-spy")
         argv = perf_sampler.pyspy_argv(pid=123, seconds=5, output=tmp_path / "o", rate=100)
         assert argv[:2] == ["/usr/bin/py-spy", "record"]
