@@ -1319,14 +1319,19 @@ The `check_command` runs on every gateway check
 ([when](../../src/kiro_crew/docs/configuration.md#when-the-gateway-checks)) and
 whenever the dashboard asks for one, so it must be side-effect-free, idempotent
 and quick: a check still running after 60 seconds is stopped and counts as
-failed. The keys and the command
-contract are in
+failed. One `apply_command` run may take 600 s (`_APPLY_TIMEOUT_SECS`), its
+exit included; a command still running past that is stopped and the update
+reported failed. The keys and the command contract are in
 [governance.md → Update pins](../system-specs/modules/governance.md#update-pins-updates--policy-only).
 If the `apply_command` installs into a new versioned tree and prunes the old one,
 it deletes the interpreter the running gateway was launched from. The gateway then
 has nothing to re-enter, and it says so rather than trying: the restart is refused
 while every session is still answerable, and on the orchestrator path it is
 deferred. Restore the interpreter and the deferred update finishes on its own.
+When the pruned tree also held the served dashboard bundle, the stale-asset
+watchdog does not wait for that repair: it exits so a supervisor relaunches the
+gateway through its own command
+([slack-gateway](../system-specs/modules/slack-gateway.md)).
 
 What it will not do is drain first and find out afterwards. That was the old
 failure. It saved, fenced, closed every session and only then found the

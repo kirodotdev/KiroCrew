@@ -289,6 +289,9 @@ pins ride in the policy file for it:
   available version on stdout when an update is available, and exits non-zero
   when up to date; exit 0 with empty output is a failed check. `apply_command`
   exits 0 on success; non-zero means the apply failed and the install is intact.
+  One run may take `_APPLY_TIMEOUT_SECS` (600 s), its exit included: a command
+  still running past it, even one that redirects its own output, is stopped and
+  the apply reported failed.
   Applying needs both. They run unsandboxed as the gateway through a trusted
   `sh -c` with a system-only `PATH`, so name binaries absolutely. On Windows they
   never run (`_shell_exec_args` returns `None`), so a Windows host with a

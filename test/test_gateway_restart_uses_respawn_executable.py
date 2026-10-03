@@ -161,7 +161,7 @@ class TestResolverIsLoadedBeforeTheApply:
         [
             ("_check_for_updates_via_provider", {"apply"}),
             ("_auto_apply_update", {"create_subprocess_exec"}),
-            ("_auto_apply_wheel_update", {"create_subprocess_exec"}),
+            ("_auto_apply_wheel_update", {"_run_wheel_installer"}),
         ],
     )
     def test_import_precedes_the_first_apply(self, method, apply_attrs):

@@ -5519,6 +5519,97 @@ class TestAutoApplyUpdateResetPath:
         ds.push_update_progress.assert_any_call("building", "Building frontend…")
         ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
 
+    @staticmethod
+    async def _run_git_apply(orch, *, sync=None, build=None):
+        _fake_exec = _git_exec_fake(status_out=b"")
+        sync = sync or (lambda *a, **k: 0)
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", side_effect=sync):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", build or AsyncMock()
+                    ):
+                        with patch("os.execv"):
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+    @pytest.mark.asyncio
+    async def test_the_rewrite_owns_the_bundle_gap(self):
+        """The build and the reinstall are what the stale-asset watchdog stands down for."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        seen = []
+
+        async def _build(*_a, **_k):
+            seen.append(update_ownership.current_owner())
+
+        def _sync(*_a, **_k):
+            seen.append(update_ownership.current_owner())
+            return 0
+
+        await self._run_git_apply(orch, sync=_sync, build=_build)
+
+        assert seen == ["the git auto-update"] * 2
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_the_rewrite_hands_the_gap_to_the_restart(self):
+        """No update step is still open around the restart, so its own maximum binds."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        open_at_restart = []
+        orch._restart_after_update = AsyncMock(
+            side_effect=lambda _respawn: open_at_restart.append(list(update_ownership._live))
+        )
+
+        await self._run_git_apply(orch)
+
+        assert open_at_restart == [[]]
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_update_never_starts_a_queued_reinstall(self, monkeypatch):
+        """Cancelling the step while pip is still queued must cancel pip too.
+
+        A shutdown cancels the update task; a reinstall that started anyway
+        would rewrite the venv while the gateway exits.
+        """
+        import concurrent.futures
+        import threading
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        pool = concurrent.futures.ThreadPoolExecutor(1)
+        busy = threading.Event()
+        pool.submit(busy.wait, 5)  # the one worker is taken
+        ran = []
+        queued = asyncio.Event()
+
+        async def _build(*_a, **_k):
+            # From here on the reinstall goes to the saturated pool.
+            monkeypatch.setattr(gw, "subprocess_executor", lambda: pool)
+            queued.set()
+
+        task = asyncio.ensure_future(
+            self._run_git_apply(orch, sync=lambda *a, **k: ran.append(1) or 0, build=_build)
+        )
+        try:
+            await asyncio.wait_for(queued.wait(), timeout=5.0)
+            await asyncio.sleep(0)  # let the reinstall be submitted behind the busy worker
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            busy.set()
+            pool.shutdown(wait=True)
+        assert ran == []
+
     @pytest.mark.asyncio
     async def test_uncommitted_tracked_changes_refuse_the_reset(self):
         """An unattended update must not delete a developer's uncommitted work.
@@ -8744,6 +8835,132 @@ class TestCallbackSafeUpdateRestart:
         assert order == ["drain:30.0", "fence", "close", "drain:None", "exec"]
         assert orch._pending_update_respawn is None
 
+    @pytest.mark.asyncio
+    async def test_the_restart_owns_the_bundle_gap_while_it_runs(self, monkeypatch, tmp_path):
+        """Its teardown must not be raced by the stale-asset watchdog."""
+        from kiro_crew import update_ownership
+
+        seen: list[object] = []
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(
+            inbound_callback_count=0,
+            fence_update_restart=MagicMock(return_value=True),
+            close_all=AsyncMock(side_effect=lambda: seen.append(update_ownership.current_owner())),
+        )
+        orch._drain_update_callback_work = AsyncMock(return_value=True)
+        monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
+        monkeypatch.setattr(
+            gw.platform_compat,
+            "reexec_python_module",
+            lambda *_a, **_k: seen.append(update_ownership.current_owner()),
+        )
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+
+        await orch._restart_after_update(lambda: str(interpreter))
+
+        assert seen == ["the restart into an applied update"] * 2
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_restart_keeps_owning_the_gap(self, monkeypatch, tmp_path):
+        """The watchdog must not force the restart the update just put off."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(inbound_callback_count=0)
+        orch._drain_update_callback_work = AsyncMock(return_value=False)
+        monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+
+        await orch._restart_after_update(lambda: str(interpreter))
+
+        assert orch._update_apply_deferred is True
+        assert update_ownership.current_owner() == "a deferred restart into an applied update"
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_defers_again_keeps_the_first_deadline(self, monkeypatch, tmp_path):
+        """The coordinator retries every few minutes; that must not hold the watchdog off for good."""
+        from kiro_crew import update_ownership
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(update_ownership, "_now", lambda: clock["t"])
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(inbound_callback_count=0)
+        orch._drain_update_callback_work = AsyncMock(return_value=False)
+        monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+
+        await orch._restart_after_update(lambda: str(interpreter))
+        clock["t"] += update_ownership.DEFERRED_RESTART_MAX_SECS - 1
+        await orch._restart_after_update(lambda: str(interpreter))
+        assert update_ownership.current_owner() == "a deferred restart into an applied update"
+        clock["t"] += 1
+
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_no_usable_interpreter_leaves_the_gap_to_the_supervisor(self, tmp_path):
+        """The pruned tree took the bundle too; the watchdog's exit is what relaunches."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(inbound_callback_count=0)
+
+        await orch._restart_after_update(lambda: str(tmp_path / "pruned" / "python"))
+
+        assert orch._update_apply_deferred is True
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_a_retry_with_no_usable_interpreter_ends_an_earlier_drain_deferral(
+        self, tmp_path
+    ):
+        """A drain deferral must not keep owning the gap once the interpreter is pruned."""
+        from kiro_crew import update_ownership
+
+        update_ownership.note_restart_deferred()  # the earlier attempt's drain deferral
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(inbound_callback_count=0)
+
+        await orch._restart_after_update(lambda: str(tmp_path / "pruned" / "python"))
+
+        assert orch._update_apply_deferred is True
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_a_committed_restart_ends_the_deferral_it_retried(self, monkeypatch, tmp_path):
+        from kiro_crew import update_ownership
+
+        update_ownership.note_restart_deferred()
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(
+            inbound_callback_count=0,
+            fence_update_restart=MagicMock(return_value=True),
+            close_all=AsyncMock(),
+        )
+        orch._drain_update_callback_work = AsyncMock(return_value=True)
+        monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
+        monkeypatch.setattr(gw.platform_compat, "reexec_python_module", lambda *_a, **_k: None)
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+
+        await orch._restart_after_update(lambda: str(interpreter))
+
+        assert update_ownership.current_owner() is None
+
 
 class TestUnreadyChannelBadge:
     """An ENABLED channel that cannot start owes the operator a reason.
@@ -9168,6 +9385,78 @@ class TestWheelApplyReadsTheCapabilityCommand:
 
         spawn.assert_awaited_once()
         assert "sh -c true" in " ".join(str(a) for a in spawn.await_args.args)
+
+    @pytest.mark.asyncio
+    async def test_the_installer_owns_the_bundle_gap_while_it_runs(self, monkeypatch):
+        import kiro_crew.dashboard.handlers as handlers
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        monkeypatch.setattr(
+            handlers,
+            "_update_info",
+            {"remediation": {"kind": "command", "message": "m", "command": "sh -c true"}},
+        )
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        monkeypatch.setattr("kiro_crew.slack.gateway.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda name: "/bin/sh")
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_provider._trusted_path_env",
+            lambda: {"PATH": "/usr/bin:/bin"},
+        )
+        seen = []
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.stdout = None
+        proc.stderr = None
+        proc.wait = AsyncMock(return_value=1)
+
+        async def _spawn(*_a, **_k):
+            seen.append(update_ownership.current_owner())
+            return proc
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", _spawn)
+
+        await orch._auto_apply_wheel_update()
+
+        assert seen == ["the managed-venv installer"]
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_a_successful_installer_hands_the_gap_to_the_restart(self, monkeypatch):
+        """No installer entry is still open around the restart, so its own maximum binds."""
+        import kiro_crew.dashboard.handlers as handlers
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        monkeypatch.setattr(
+            handlers,
+            "_update_info",
+            {"remediation": {"kind": "command", "message": "m", "command": "sh -c true"}},
+        )
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        monkeypatch.setattr("kiro_crew.slack.gateway.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda name: "/bin/sh")
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_provider._trusted_path_env",
+            lambda: {"PATH": "/usr/bin:/bin"},
+        )
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = None
+        proc.stderr = None
+        proc.wait = AsyncMock(return_value=0)
+        monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
+        open_at_restart = []
+        orch._restart_after_update = AsyncMock(
+            side_effect=lambda _respawn: open_at_restart.append(list(update_ownership._live))
+        )
+
+        await orch._auto_apply_wheel_update()
+
+        assert open_at_restart == [[]]
 
     @pytest.mark.asyncio
     async def test_windows_refuses_before_spawning(self, monkeypatch):
