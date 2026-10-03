@@ -4024,6 +4024,15 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+**A request budget the test spends in real seconds measures the runner.** A 3 s recall
+deadline with a 1 s `time.sleep` "burn" left the judge's wait at the mercy of every
+cold step before it (store, pool, embedding): on loaded Windows runners the remaining
+wait came out negative or the route answered `504 memory_recall_timeout`. Replace the
+module's own `time` name with a frozen clock the test advances, assert the computed
+wait exactly, and give the real deadline a generous backstop
+(`_PointClock` in `test_decisions_memory_recall_reachable.py`). To make a deadline
+pass, move it to the real present rather than sleeping past it.
+
 **`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
 cancelled before its first tool call takes the one-shot auto-continue branch: it returns
 normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`
