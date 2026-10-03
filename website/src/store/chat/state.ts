@@ -379,6 +379,16 @@ export interface ChatState {
    *  turn issues can supersede it and still keep the rows it never fetched.
    *  Absent once superseded, so the upgrade happens at most once per slot. */
   slotPaneBounded: Record<string, number>
+  /** A BACKGROUND pane's own paging cursor: the `next_before` offset that
+   *  addresses the rows just older than `slotMessages[slot][0]`. Present only
+   *  while the pane's marker says more history exists and the writer knew the
+   *  offset; `writeSlotPage` keeps it beside the array it describes. The active
+   *  slot pages with `slotOldestIndex` instead. */
+  slotPaneNextBefore?: Record<string, number>
+  /** A background pane's older-page fetch in flight, and whether its last one
+   *  failed. Per slot, so one pane's walk never blocks or reddens another's. */
+  slotPaneLoadingOlder?: Record<string, boolean>
+  slotPaneOlderError?: Record<string, boolean>
   /** The server's own message count for a slot, as of the last slot-detail fetch.
    *
    *  This exists to tell two indistinguishable populations apart at the warm

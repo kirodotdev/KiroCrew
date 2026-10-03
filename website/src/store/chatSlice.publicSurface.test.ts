@@ -60,6 +60,7 @@ const THUNKS: Record<string, string> = {
   fetchHistory: 'chat/fetchHistory',
   forkSlot: 'chat/forkSlot',
   loadOlderMessages: 'chat/loadOlder',
+  loadOlderSlotMessages: 'chat/loadOlderSlot',
   refreshSlot: 'chat/refreshSlot',
   requestStop: 'chat/requestStop',
   resumeFromHistory: 'chat/resumeFromHistory',

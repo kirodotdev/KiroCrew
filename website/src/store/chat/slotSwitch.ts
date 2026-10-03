@@ -638,7 +638,8 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       if (!sameTranscript(existing, next)) state.messages = next
       // Update cache and clear loading state. This is the active view, so the
       // marker is slotHasMore -- writing the array alone left a stale flag.
-      writeSlotPage(state, key, state.messages, hasMore)
+      writeSlotPage(state, key, state.messages, hasMore, undefined,
+        state.slotCursorKey === key ? state.slotOldestIndex : undefined)
       state.slotLoading = false
       seedContextUsage(state, key, action.payload.context)
     })

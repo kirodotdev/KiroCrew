@@ -361,8 +361,8 @@ export const messageReducers = {
    *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
    *  again, so this cannot loop.
    *  No-op for the active slot (its mirror is already live). */
-  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean }>) {
-    const { slot, messages, hasMore, bounded, total, running } = action.payload
+  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
+    const { slot, messages, hasMore, bounded, total, running, nextBefore } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
     const k = safeKey(slot)
@@ -379,7 +379,7 @@ export const messageReducers = {
       const tail = tailNotInPage(prior.slice(boundedLen), messages)
       // Reasoning is broadcast-only so the wider page never carries it back.
       // Scoped to the REPLACED region: `tail` already keeps the live tail's own.
-      writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore)
+      writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore, undefined, nextBefore)
       retainServerTotal(state, slot, total, running)
       return
     }
@@ -391,7 +391,7 @@ export const messageReducers = {
     if (state.slotPaneHasMore?.[k] !== undefined) return
     // Seeded frames are NEWER rows appended after the page, so the page's
     // has-more still describes what precedes it; dropping it hid the marker.
-    writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined)
+    writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined, nextBefore)
     retainServerTotal(state, slot, total, running)
   },
   sseChatMessageUpdate(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {

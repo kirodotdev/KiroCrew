@@ -30,7 +30,7 @@ import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessa
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
 import { reinsertThinkingOrphans } from './chat/thinking'
 import { bumpRunEpoch, runStateReducers, setRunState, syncOriginRun } from './chat/runState'
-import { setPagingCursor, slotCacheReducers } from './chat/slotCache'
+import { setPagingCursor, slotCacheReducers, writeSlotPage } from './chat/slotCache'
 import { composerCardReducers } from './chat/composerCards'
 import { messageReducers } from './chat/messages'
 import { queueReducers } from './chat/queue'
@@ -717,6 +717,40 @@ export const loadOlderMessages = createAsyncThunk(
   },
 )
 
+/** One older page for a BACKGROUND pane (a crewmate DM, a split pane), paged
+ *  from that pane's own cursor (`slotPaneNextBefore`). `loadOlderMessages` only
+ *  walks the active slot, and the Members page never makes a DM active, so its
+ *  pane had no way back past the page it opened with.
+ *
+ *  Not the full page's walk: no scroll-quiet buffer and no shared abort handle,
+ *  because neither guards anything here -- the pane's bar is a click, and the
+ *  single shared handle belongs to the active slot's walk, which a pane fetch
+ *  must not cancel. The cursor read at dispatch is the page's identity: a write
+ *  that re-described the head while the fetch flew moves it, and the page then
+ *  addresses rows that are no longer the head, so it is dropped. */
+export const loadOlderSlotMessages = createAsyncThunk(
+  'chat/loadOlderSlot',
+  async (slot: string, { getState, rejectWithValue }) => {
+    const state = (getState() as { chat: ChatState }).chat
+    const before = state.slotPaneNextBefore?.[safeKey(slot)] ?? 0
+    try {
+      const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, before)
+      return { slot, before, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false }
+    } catch {
+      return rejectWithValue({ slot })
+    }
+  },
+  {
+    condition: (slot, { getState }) => {
+      const state = (getState() as { chat: ChatState }).chat
+      if (isUnsafeKey(slot) || slot === state.activeSlot) return false
+      const k = safeKey(slot)
+      if (state.slotPaneLoadingOlder?.[k]) return false
+      return state.slotPaneHasMore?.[k] === true && (state.slotPaneNextBefore?.[k] ?? 0) > 0
+    },
+  },
+)
+
 /** Shape of the `/stop` reply this thunk reads. `info` is set only on the
  *  backend's no-op branch (`not running` / `stop already in progress`); a real
  *  stop answers a bare `{ok: true}`. */
@@ -863,6 +897,35 @@ const chatSlice = createSlice({
         state.loadingOlder = false
         const failed = action.payload as { slot?: string } | undefined
         if (failed?.slot === state.activeSlot) state.slotOlderError = true
+      })
+      .addCase(loadOlderSlotMessages.pending, (state, action) => {
+        const k = safeKey(action.meta.arg)
+        ;(state.slotPaneLoadingOlder ??= {})[k] = true
+        delete state.slotPaneOlderError?.[k]
+      })
+      .addCase(loadOlderSlotMessages.fulfilled, (state, action) => {
+        const { slot, before, nextBefore, messages, hasMore } = action.payload
+        const k = safeKey(slot)
+        delete state.slotPaneLoadingOlder?.[k]
+        // Became active mid-fetch: the switch owns the transcript and its cursor.
+        if (slot === state.activeSlot) return
+        if ((state.slotPaneNextBefore?.[k] ?? 0) !== before) return
+        const cur = state.slotMessages[k] ?? []
+        // Identity is meta.mid only, as for the active walk: an overlapping
+        // page must not reach the list as a duplicate row key.
+        const fresh = messages.filter(m => !isRedeliveredMessage(cur, m.meta))
+        // The bounded length indexes this array, so it shifts with the prepend.
+        const boundedLen = state.slotPaneBounded?.[k]
+        writeSlotPage(state, slot, [...fresh, ...cur], hasMore,
+          boundedLen === undefined ? undefined : boundedLen + fresh.length, nextBefore)
+      })
+      .addCase(loadOlderSlotMessages.rejected, (state, action) => {
+        // A refused dispatch never set the flag, and must not clear one a
+        // fetch already in flight owns.
+        if (action.meta.condition) return
+        const k = safeKey(action.meta.arg)
+        delete state.slotPaneLoadingOlder?.[k]
+        if (action.payload) (state.slotPaneOlderError ??= {})[k] = true
       })
   },
 })

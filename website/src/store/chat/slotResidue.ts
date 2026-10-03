@@ -34,6 +34,8 @@ const slotKeyedMaps = (state: ChatState) => [
   // fall against a recreated slot's first fetch and drop a legitimate tail.
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
   state.slotServerTotalSeq,
+  // Optional maps: an absent one holds nothing to evict.
+  state.slotPaneNextBefore ?? {}, state.slotPaneLoadingOlder ?? {}, state.slotPaneOlderError ?? {},
   state.thinkingOrphans,
 ].filter(Boolean)
 

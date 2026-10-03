@@ -59,7 +59,7 @@ import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, loadOlderMessages, loadOlderSlotMessages, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -405,6 +405,31 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
+  // Older history for the ACTIVE slot. That slot reads the store's main list,
+  // which `switchSlot` loads one bounded page of; the full chat page walks the
+  // rest with `loadOlderMessages`, and a pane showing the active slot (the
+  // crewmate DM on the Members page) must offer the same walk or it is stuck
+  // on the newest page -- a patroller's page filters down to a few bubbles.
+  // Gated on the cursor key exactly like the thunk, so a mid-switch cursor
+  // that still describes the previous chat never draws the bar.
+  const pagesActiveSlot = useAppSelector((s) => slotKey === s.chat.activeSlot && s.chat.slotCursorKey === slotKey)
+  const activeHasMore = useAppSelector((s) => s.chat.slotHasMore)
+  const loadingOlder = useAppSelector((s) => s.chat.loadingOlder)
+  const olderFailed = useAppSelector((s) => !!s.chat.slotOlderError)
+  const loadOlder = useCallback(() => {
+    if (store.getState().chat.loadingOlder) return
+    void dispatch(loadOlderMessages())
+  }, [dispatch])
+  // Older history for a BACKGROUND slot, from the pane's own cursor. The
+  // Members page never makes a DM the active slot, so this is the door a warm
+  // DM pane actually has; the active branch above covers the other case.
+  const paneCursor = useAppSelector((s) => s.chat.slotPaneNextBefore?.[slotKey] ?? 0)
+  const paneLoadingOlder = useAppSelector((s) => !!s.chat.slotPaneLoadingOlder?.[slotKey])
+  const paneOlderFailed = useAppSelector((s) => !!s.chat.slotPaneOlderError?.[slotKey])
+  const pagesPane = slotKey !== activeSlot && warmHasMore === true && paneCursor > 0
+  const loadOlderPane = useCallback(() => {
+    void dispatch(loadOlderSlotMessages(slotKey))
+  }, [dispatch, slotKey])
   // The composer is a `Composer` root around the ChatInput preset (chat-core
   // P3-b). Its Voice atom is what gives the pane a microphone: the pane wires no
   // voice props, only the two things the atom cannot know — the endpointer's
@@ -739,7 +764,7 @@ export default function ChatPane({
     staleTime: Infinity,
   })
   useEffect(() => {
-    if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running }))
+    if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
@@ -1647,6 +1672,12 @@ export default function ChatPane({
             onScroll: onScrollPin,
             onAtBottomChange: setIsAtBottom,
             scrollerStyle: { paddingTop: 12, paddingBottom: 12, minHeight: 0 },
+            // handOff off: its navigation would discard this pane's unsaved draft.
+            earlier: pagesActiveSlot
+              ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }
+              : pagesPane
+                ? { hasMore: true, loading: paneLoadingOlder, failed: paneOlderFailed, onLoad: loadOlderPane, handOff: false }
+                : undefined,
             aboveRows: (
               <>
                 {slotDetailFailed && (
@@ -1695,8 +1726,10 @@ export default function ChatPane({
                   </div>
                 )}
                 {/* Suppressed on the active slot: that pane renders the store's full
-                    history, so the bound does not apply and the row would be false. */}
-                {warmHasMore && slotKey !== activeSlot && onOpenFull && (
+                    history, so the bound does not apply and the row would be false.
+                    Also suppressed while the pane can page itself: the bar above
+                    already loads the older rows in place. */}
+                {warmHasMore && slotKey !== activeSlot && !pagesPane && onOpenFull && (
                   <button
                     onClick={() => onOpenFull(slotKey, messages[0]?.ts, messages[0]?.meta?.mid as string | undefined)}
                     className="block w-full text-center text-accent text-[12px] underline py-2 bg-transparent border-none cursor-pointer hover:text-accent-hover transition-colors"

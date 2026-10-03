@@ -649,7 +649,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         === action.payload.cacheAtDispatch
       if (!walkUnanchored || cacheUnchanged) {
         writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
-          warmIsPrefix && hasMore ? boundedLen : undefined)
+          warmIsPrefix && hasMore ? boundedLen : undefined,
+          action.payload.nextBefore)
       }
       retainServerTotal(state, key, total, running, warmSeq, action.payload.boundedRead)
       // The run-state write is ORDERED against the live frame writers by the
