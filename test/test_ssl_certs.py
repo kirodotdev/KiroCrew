@@ -256,7 +256,11 @@ class TestEnsureSslCerts:
         from unittest.mock import patch as _patch
 
         mock_fn = MagicMock()
-        with _patch("kiro_crew._ssl_compat._ensure_ssl_certs", mock_fn):
+        mock_drop = MagicMock()
+        with (
+            _patch("kiro_crew._ssl_compat._ensure_ssl_certs", mock_fn),
+            _patch("kiro_crew._llama_lib_path.drop_inherited_lib_path", mock_drop),
+        ):
             import kiro_crew.cli
 
             importlib.reload(kiro_crew.cli)

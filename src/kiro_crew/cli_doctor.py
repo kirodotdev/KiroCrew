@@ -65,6 +65,9 @@ from kiro_crew import (  # noqa: F401
     user_json,
 )
 from kiro_crew._bootstrap import _source_checkout_root
+from kiro_crew._llama_lib_path import (  # noqa: F401
+    dropped_inherited_lib_path,
+)
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.acp.kas_transport import (
     KAS_RELAY_ENGINE,
@@ -132,6 +135,7 @@ from kiro_crew.embeddings import (  # noqa: F401
     _resolve_model_url,
     default_model_path,
     model_file_present,
+    operator_lib_path_override,
     resolve_custom_model,
     verify_vendored_libs,
 )

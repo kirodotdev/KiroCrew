@@ -59,17 +59,26 @@ def _doctor_vector_memory(issues: list[str]) -> None:
     """Render the ``Vector Memory (in-process embeddings)`` section."""
     print("\nVector Memory (in-process embeddings)")
 
-    # Read BEFORE _load_llama_class(): the loader `setdefault`s this var to its
-    # OWN bundled libs dir, so after the call an unset var is indistinguishable
-    # from an operator override pointing at the bundle.
-    _lib_path_override = os.environ.get(cli_doctor._LIB_PATH_ENV, "")
+    # Through the startup leaf's rule for what counts as an override, so the
+    # report and the loader cannot disagree about which directory the libs came
+    # from: a bundled directory inherited from another Kiro Crew process is not
+    # one. Entry preludes remove that value before doctor runs, so the startup
+    # record preserves the raw value for this diagnostic.
+    _lib_path_raw = os.environ.get(cli_doctor._LIB_PATH_ENV)
+    _lib_path_from_startup_record = False
+    if _lib_path_raw is None:
+        _lib_path_raw = cli_doctor.dropped_inherited_lib_path()
+        _lib_path_from_startup_record = _lib_path_raw is not None
+    _lib_path_override = cli_doctor.operator_lib_path_override() or ""
 
     if cli_doctor._load_llama_class() is not None:
         print("  runtime:     ✅ vendored llama-cpp-python importable")
     elif cli_doctor._platform_libs_dirname() is None:
         # Designed degradation, not a defect: no vendored native libs exist for
-        # this platform (e.g. darwin/x86_64) and embeddings.py documents the
-        # keyword-search fallback. Nothing for the user to fix — don't fail.
+        # this platform (e.g. linux/armv7l or win32/arm64 — Intel Macs are NOT
+        # an example, darwin/x86_64 maps to the shipped macos_x86_64) and
+        # embeddings.py documents the keyword-search fallback. Nothing for the
+        # user to fix — don't fail.
         print(
             "  runtime:     ⏹ unsupported platform "
             f"({sys.platform}/{_plat.machine()}) — memory uses keyword search"
@@ -100,6 +109,25 @@ def _doctor_vector_memory(issues: list[str]) -> None:
             print(f"               {_lib_path_override}, not the bundled tree.")
             print("               Verify that directory holds a complete llama.cpp closure.")
         issues.append("embedding runtime")
+
+    if _lib_path_raw is not None and not _lib_path_override:
+        # Set, yet not an override by the shared rule: a bundled directory of
+        # some Kiro Crew install or an empty value. This remains a note rather
+        # than an issue because this install uses its own bundled tree.
+        shown = _lib_path_raw or "(empty)"
+        print(f"  lib path:    ⏹ {cli_doctor._LIB_PATH_ENV}={shown}")
+        if not _lib_path_raw:
+            # Empty on either path: the record only establishes it was empty and
+            # removed, so neither spelling may claim inheritance.
+            if _lib_path_from_startup_record:
+                print("               was empty and removed at startup; treated as unset.")
+            else:
+                print("               is empty, so it is treated as unset.")
+        elif _lib_path_from_startup_record:
+            print("               inherited from another Kiro Crew process and removed at startup.")
+        else:
+            print("               is ignored; this install uses its own bundled tree.")
+        print("               To override, point it at a directory of your own.")
 
     # FAISS is an optional accelerator — never a dependency, on any platform.
     # Without it, episodic recall uses the stdlib cosine fallback (correct, just
