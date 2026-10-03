@@ -397,6 +397,7 @@ from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INT
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
+from kiro_crew.user_json import strip_utf8_bom
 
 logger = logging.getLogger(__name__)
 
@@ -584,6 +585,21 @@ def config_path() -> Path:
     return config_dir() / "config.json"
 
 
+def read_config_text(path: Path) -> str:
+    """The text of ``config.json`` / ``config.local.json``, without a leading BOM.
+
+    Both files are hand-edited, and an editor that saves "UTF-8 with BOM" puts a
+    U+FEFF in front that ``json.loads`` refuses. The mark is dropped by
+    :func:`kiro_crew.user_json.strip_utf8_bom`, the one place that already does it
+    for the other user-owned JSON files. Writers keep emitting plain UTF-8, so a
+    locked write removes the mark. Every reader in this module comes through here,
+    as do the consumers that must agree with the loader about what the files say:
+    the hot-reload tear probe, doctor's drift and overlay reads, and the
+    app-trust gates. Other readers of these files are not yet converted.
+    """
+    return strip_utf8_bom(path.read_text(encoding="utf-8"))
+
+
 def config_local_path() -> Path:
     """Return path to config.local.json — user overrides that survive upgrades."""
     return config_dir() / "config.local.json"
@@ -637,7 +653,7 @@ def unsandboxed_exec_declared() -> bool:
     """
     for path in (config_path(), config_local_path()):
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc = json.loads(read_config_text(path))
         except (OSError, ValueError):
             continue
         agent = doc.get("agent") if isinstance(doc, dict) else None
@@ -893,7 +909,7 @@ def _overlay_kiro_agent() -> str | None:
         local_path = config_local_path()
         if not local_path.is_file():
             return None
-        raw = json.loads(local_path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(local_path))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
     if not isinstance(raw, dict):
@@ -1359,9 +1375,10 @@ def _raw_config() -> dict:
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(p))
     except (json.JSONDecodeError, OSError):
         return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 class ConfigWriteRefused(ValueError):
@@ -1416,7 +1433,7 @@ def read_config_for_update(path: Path | None = None) -> dict:
     try:
         if not p.exists():
             return {}
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(p))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         # UnicodeDecodeError is a ValueError, NOT an OSError, so it needs naming
         # explicitly: a config containing invalid UTF-8 (a truncated multi-byte
@@ -1489,7 +1506,7 @@ def _deepseek_env_on_disk(path: Path) -> object:
     which the caller treats as "not shown pre-existing".
     """
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(read_config_text(path))
     except (OSError, ValueError):
         return None
     agent = document.get("agent") if isinstance(document, dict) else None
@@ -4498,7 +4515,7 @@ class KiroCrewConfig:
             config_source_unreadable = False
             if path.exists():
                 try:
-                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    raw = json.loads(read_config_text(path))
                     if isinstance(raw, dict):
                         data = raw
                         loaded_base = True
@@ -4546,7 +4563,7 @@ class KiroCrewConfig:
                             st_mode & 0o777,
                             local_path,
                         )
-                    raw_local = json.loads(local_path.read_text(encoding="utf-8"))
+                    raw_local = json.loads(read_config_text(local_path))
                     if isinstance(raw_local, dict):
                         local_data = raw_local
                     else:
@@ -5425,7 +5442,7 @@ class KiroCrewConfig:
         local_path = config_local_path()
         if local_path.is_file():
             try:
-                raw_local = json.loads(local_path.read_text(encoding="utf-8"))
+                raw_local = json.loads(read_config_text(local_path))
                 if isinstance(raw_local, dict):
                     # Compare CANONICAL values for resource_limits.
                     # _subtract_overlay recognises an overlay-owned leaf only when

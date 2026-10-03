@@ -1102,7 +1102,7 @@ def render_doctor_section(issues: list[str]) -> None:
     ``config_path`` is imported lazily because ``config.loader`` imports this
     module for the load-path warning, so a module-level import would be a cycle.
     """
-    from kiro_crew.config.loader import config_path  # circular import
+    from kiro_crew.config.loader import config_path, read_config_text  # circular import
 
     print("\nStored Defaults")
     # The adoption ledger is rendered FIRST, before config.json is even opened: an
@@ -1114,7 +1114,7 @@ def render_doctor_section(issues: list[str]) -> None:
         print(f"  adopted:     ℹ️  {adoption_summary(dotted, removed)}")
     path = config_path()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except FileNotFoundError:
         print("  drift:       ✅ no config file yet (current defaults apply)")
         return
