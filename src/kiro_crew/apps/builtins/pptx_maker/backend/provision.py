@@ -43,6 +43,7 @@ from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, pa
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.env import resolve_uv as _shared_resolve_uv
+from kiro_crew.platform_compat import ensure_owner_rwx_dirs, rmtree_force
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -421,11 +422,16 @@ def _render_agents(install_dir: Path, log: list[str]) -> int:
 
 
 def _copy_tree(source: Path, target: Path) -> None:
-    """Replace *target* with a copy of *source*, following no symlinks."""
+    """Replace the staged copy, repairing modes inherited from packaged sources."""
     if target.exists():
-        shutil.rmtree(target)
+        # POSIX unlink needs writable parent directories; forced removal also
+        # clears the entry read-only attributes Windows checks.
+        ensure_owner_rwx_dirs(target)
+        if not rmtree_force(target):
+            raise OSError(f"could not remove the staged copy at {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, target, symlinks=False)
+    ensure_owner_rwx_dirs(target)
 
 
 def _stage_static(install_dir: Path, log: list[str]) -> None:
