@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 from ._component import ManagerComponent
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from ..subagent import (
         _ON_DONE_TIMEOUT,
         _RECOVERY_SLOT_WAIT_SECS,
@@ -538,6 +540,7 @@ class CancellationCoordinator(ManagerComponent):
         *,
         parent_session_key: str,
         verb: str = "",
+        accepted_before: float | None = None,
     ) -> int:
         """Stop exactly the runs in *agent_ids*, reporting none of them home.
 
@@ -545,6 +548,16 @@ class CancellationCoordinator(ManagerComponent):
         is stopped was decided by :meth:`snapshot_teardown_children_impl` at a
         point where the answer could not be contaminated — a key would be
         re-resolved here, which is the whole defect.
+
+        *accepted_before* is the store-clock instant of that snapshot
+        (:meth:`note_teardown_snapshot`). With it, the rows of this parent the
+        store accepted BEFORE it are stopped too, after the snapshot's own ids:
+        a row held only by the store (a memory-deferred spawn, or one past the
+        window) is in no snapshot, and left alone it stays queued for a
+        conversation that has ended and starts into whatever the key serves
+        next. The accept time is what tells such a row from one a successor
+        under the same key queued meanwhile, so the successor's rows are never
+        swept.
 
         Distinct from :meth:`cancel_for_parent_impl`, which is the user pressing
         Stop all: that verb's terminal report goes back to a parent the user is
@@ -575,8 +588,9 @@ class CancellationCoordinator(ManagerComponent):
         #
         #   * ADMITTED LATE MAY START. A spawn between its row write and its registration
         #     is in neither the queue nor ``_agents``, so no snapshot can name it, and it
-        #     starts into whatever the key serves next. Same for a durable row that has
-        #     spilled out of the in-memory window.
+        #     starts into whatever the key serves next. A durable row the store accepted
+        #     before the snapshot is outside this half: the sweep below stops it by its
+        #     accept time. One whose write lands at or after the snapshot instant is.
         #   * REPORTING LATE MAY DELIVER. A report that has already passed the delivery
         #     gate and is suspended inside ``_on_done`` is not stopped by marking its id
         #     afterwards: the injector resolves the parent through ``get_or_create``,
@@ -587,10 +601,12 @@ class CancellationCoordinator(ManagerComponent):
         # Both are bounded by the run's own timeout. Neither is closed by another recheck:
         # the two halves are the same defect at opposite ends of the same window, and a
         # recheck added at either end leaves the other open. Selecting or re-testing needs
-        # an await, and an await here cannot tell work belonging to the retired
-        # conversation from work a successor under the same key has just started -- which
+        # an await, and after an await, work belonging to the retired conversation looks
+        # like work a successor under the same key has just started -- telling them apart
         # needs a conversation-incarnation counter the session layer does not have.
-        # Tracked as a follow-up.
+        # Tracked as a follow-up. A durable row is the one exception, because it carries
+        # its own accept time: the store sweep below selects after an await, by that
+        # time, and that is all it can select by.
         audit = logger.warning if snapshot_ids else logger.info
         audit(
             "parent-end teardown: verb=%s key=%s snapshot=%d total=%d snapshot_ids=%s",
@@ -608,8 +624,43 @@ class CancellationCoordinator(ManagerComponent):
         # queued ones and any follow-up synthetic alike.
         self._manager._teardown_cancelled_ids.update(agent_ids)
 
+        async def _targets() -> AsyncIterator[str]:
+            for agent_id in agent_ids:
+                yield agent_id
+            if accepted_before is None:
+                return
+            # Then this parent's rows the store accepted before the snapshot and no
+            # snapshot could name (held only by the store, or hydrated into the window
+            # after it). Read only now, once the named runs are stopped, so the sweep
+            # never delays the reap of a live run behind a store read.
+            try:
+                swept = await self._manager._admission.taskq_pending_ids_for_async(
+                    parent_session_key, accepted_before=accepted_before
+                )
+            except Exception:
+                logger.warning(
+                    "Teardown: reading the store rows of %s failed",
+                    parent_session_key,
+                    exc_info=True,
+                )
+                return
+            spilled = sorted(set(swept) - selected)
+            if not spilled:
+                return
+            logger.warning(
+                "parent-end teardown: verb=%s key=%s store_rows=%d store_ids=%s",
+                verb or "unnamed",
+                parent_session_key or "-",
+                len(spilled),
+                _audit_ids(spilled),
+            )
+            # Marked before each is stopped, for the reason the snapshot's ids are.
+            self._manager._teardown_cancelled_ids.update(spilled)
+            for agent_id in spilled:
+                yield agent_id
+
         stopped = 0
-        for agent_id in agent_ids:
+        async for agent_id in _targets():
             if not agent_id:
                 continue
             info = self._manager._agents.get(agent_id)
@@ -775,6 +826,30 @@ class CancellationCoordinator(ManagerComponent):
         )
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
+
+    def note_teardown_snapshot(self, parent_session_key: str) -> None:
+        """Record WHEN a parent-end snapshot of *parent_session_key* was taken,
+        on the task store's clock, for the store sweep of the cancel that follows
+        (``accepted_before`` on :meth:`cancel_for_teardown_impl`).
+
+        Synchronous like the snapshot itself, and taken beside it: every row this
+        parent's store accepted before this instant belongs to a conversation
+        that has ended by now. Keyed by parent and kept at the LATEST snapshot, so
+        two teardowns of one key whose cancels overlap both sweep only rows that
+        were accepted while a conversation that has since ended held the key. No
+        store, nothing to sweep: nothing is recorded.
+        """
+        store = self._manager._admission.taskq_store()
+        if store is None or not parent_session_key:
+            return
+        cutoffs = self._manager._teardown_store_cutoffs
+        cutoffs[parent_session_key] = max(cutoffs.get(parent_session_key, 0.0), store.now())
+
+    def take_teardown_snapshot(self, parent_session_key: str) -> float | None:
+        """The instant :meth:`note_teardown_snapshot` recorded, consumed by the
+        cancel that sweeps for it. ``None`` when no snapshot was recorded (no
+        store, or a cancel no snapshot preceded), and the sweep is skipped."""
+        return self._manager._teardown_store_cutoffs.pop(parent_session_key, None)
 
     def _republish_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
         """Re-publish *parent_session_key*'s queued depth after a stop.

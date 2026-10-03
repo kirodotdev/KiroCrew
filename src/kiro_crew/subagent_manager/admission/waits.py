@@ -397,6 +397,16 @@ class _WaitsMixin(ManagerComponent):
             )
         except RuntimeError:
             pass
+        # A granted resume is a point the parent's wave settles, so it re-publishes
+        # the parent's queued depth like a terminal does. The resume entry itself
+        # was never counted (``entry_is_resident_resume``), but the wait that just
+        # ended -- a dependency, a permission answer, an input -- has no terminal of
+        # its own to answer a card that missed a frame. Guarded: an advisory emit
+        # must never cost the run its slot.
+        try:
+            self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
+        except Exception:
+            _glue_logger.debug("queue-depth re-emit failed after a resume grant", exc_info=True)
         _glue_logger.info("Subagent %s: resumed (slot re-admitted)", info.id)
         return True
 

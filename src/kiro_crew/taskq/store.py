@@ -1884,6 +1884,7 @@ class TaskStore:
         eligible_only: bool = False,
         include_admitted: bool = False,
         exclude_admitted_ids: Sequence[str] = (),
+        include_recovering: bool = True,
     ) -> int:
         """Rows waiting for dispatch (claimable states), optionally per session.
 
@@ -1891,11 +1892,17 @@ class TaskStore:
         deferred row too, because it is still accepted work the parent is owed.
         ``include_admitted`` counts claimed, not started rows as well
         (:data:`_SQL_UNSTARTED`), less the ``admitted`` ones among
-        *exclude_admitted_ids*.
+        *exclude_admitted_ids*. ``include_recovering=False`` drops
+        ``recovering`` rows: claimable, but each one a run that had started and
+        lost its owner (a restart) and is being rebuilt, so a count of spawns
+        waiting for their FIRST start -- the queue-depth chip's -- leaves them
+        out, while every count of work still owed keeps them.
         """
         excl_sql, excl_args = self._exclusion(exclude_ids)
         adm_sql, adm_args = self._admitted_exclusion(exclude_admitted_ids)
         where = [f"state IN {_SQL_UNSTARTED if include_admitted else _SQL_CLAIMABLE}"]
+        if not include_recovering:
+            where.append(f"state <> '{RECOVERING}'")
         args: list[Any] = []
         if kind is not None:
             where.append("kind=?")

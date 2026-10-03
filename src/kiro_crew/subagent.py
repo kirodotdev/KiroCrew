@@ -3502,6 +3502,12 @@ class SubagentManager:
         # runs, queued runs and follow-up synthetics are all covered by the one
         # place the teardown writes.
         self._teardown_cancelled_ids = _AgingIdSet(_TEARDOWN_GATE_TTL_SECS)
+        # Per parent key, the task-store instant of its latest parent-end snapshot
+        # (``CancellationCoordinator.note_teardown_snapshot``), consumed by the
+        # cancel that sweeps the rows accepted before it. One float per key whose
+        # teardown is in flight; a snapshot whose cancel never ran is overwritten
+        # by the next one for that key.
+        self._teardown_store_cutoffs: dict[str, float] = {}
         self._memory_mode_for_session = memory_mode_for_session
         self._stage_boundary_for_scope = stage_boundary_for_scope
         self._ctx_builder = ctx_builder
@@ -5395,6 +5401,7 @@ class SubagentManager:
         _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
+        _recovering_row: bool = False,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -5434,6 +5441,7 @@ class SubagentManager:
             _stage_boundary_owner=_stage_boundary_owner,
             _parent_spawn_policy=_parent_spawn_policy,
             _agent_check=_agent_check,
+            _recovering_row=_recovering_row,
         )
         assert not isinstance(result, PreparedSpawn)
         # Every synchronous gate return (started, queued, or refused) receives
@@ -6596,8 +6604,14 @@ class SubagentManager:
         finish on its own during the provider-teardown awaits that follow — so marking
         later, when the cancel actually runs, is too late for exactly the runs whose
         report is already on its way.
+
+        Also records the snapshot's instant on the task store's clock, so the cancel
+        can stop this parent's rows the store accepted before it -- the rows held
+        only by the store, which no snapshot can name.
         """
-        return self._cancellation.snapshot_teardown_children_impl(parent_session_key)
+        selected = self._cancellation.snapshot_teardown_children_impl(parent_session_key)
+        self._cancellation.note_teardown_snapshot(parent_session_key)
+        return selected
 
     async def cancel_for_teardown(
         self,
@@ -6610,12 +6624,14 @@ class SubagentManager:
 
         ``parent_session_key`` is carried so the teardown's one audit line can name the
         conversation whose runs these were; the ids themselves come from the snapshot,
-        which is the only reading of them that cannot drift.
+        which is the only reading of them that cannot drift. The store rows accepted
+        before that snapshot are stopped after them.
         """
         return await self._cancellation.cancel_for_teardown_impl(
             agent_ids,
             parent_session_key=parent_session_key,
             verb=verb,
+            accepted_before=self._cancellation.take_teardown_snapshot(parent_session_key),
         )
 
     async def cancel_all(self) -> None:

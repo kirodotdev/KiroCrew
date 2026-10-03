@@ -745,8 +745,11 @@ made; no gate reads it back. Two consumers:
   not it changed at every point a wave settles: every terminal report of a
   run that started, every queued-stop report (the record of a waiting row
   stopped before it started, whichever path removed the row — so that
-  terminal adds no request of its own), and every `cancel_for_parent` (Stop
-  all) and `cancel_for_boundary` (the stage's Cancel) that stopped nothing. A
+  terminal adds no request of its own), every granted resume (`_resume_publish`:
+  the resume entry was never counted, but the wait that ended — a dependency, a
+  permission answer, an input — has no terminal of its own), and every
+  `cancel_for_parent` (Stop all) and `cancel_for_boundary` (the stage's Cancel)
+  that stopped nothing. A
   frame the client missed or received out of order therefore cannot leave "N
   waiting to start" on the card once the wave has settled.
   **The emit is coalesced per parent into a burst.** At most one read is in
@@ -780,7 +783,17 @@ made; no gate reads it back. Two consumers:
   until the gate has queued it (`_admitting_waiting`, marked by that call as
   the gate returns the queued record and before it awaits anything): the
   refill must never claim it, but once it is deferred or behind the cap it is
-  waiting, and its own labelled request counts it. The count answers how
+  waiting, and its own labelled request counts it. A `recovering` row is not
+  counted either, on disk (`count_pending(include_recovering=False)`) or
+  hydrated into the window (`WINDOW_ENTRY_RECOVERING`, set from the row's
+  state; it is also `spawn`'s keyword, so a gate that re-queues the drained,
+  still-unclaimed row puts the mark back on the entry it appends, pinned by
+  `test_a_restart_survivor_the_gate_requeues_stays_off_the_card`): it is a
+  run that had started before its owner was lost (a gateway restart) and is
+  being rebuilt, which the queued
+  listing names "waiting to resume", and counting it would put "N waiting to
+  start" on the card after every restart. The pending-work guards keep counting it:
+  it is still work the parent is owed. The count answers how
   many spawns wait to START; the lanes API's census of what each lane holds
   counts a resident run's resume entry as that lane's waiting work, a
   different question. **A store that cannot be read publishes nothing** and
@@ -1090,7 +1103,11 @@ hold as the pop that retires the key. Every await after that point is a window i
 which a cold start can register a SUCCESSOR under the same key, so an answer
 computed later can name the successor's runs. Returns the live and the queued runs
 both — a queued run's stagger timer would otherwise start work for a parent that
-is gone.
+is gone. Beside the selection it records the snapshot's instant on the task store's
+clock (`note_teardown_snapshot`, kept per key at the latest snapshot in
+`_teardown_store_cutoffs`), which the cancel consumes (`take_teardown_snapshot`) to
+sweep the rows no selection can name. A recycle takes no snapshot, so it records
+nothing and its children's rows are left to the resumed conversation.
 
 What it MARKS is wider than what it returns, and the two questions are different:
 the return value is what to cancel, the mark is whose delivery to drop. A run that is
@@ -1147,6 +1164,27 @@ goes through `taskq_cancel_queued_async`, which is `taskq_cancel_queued` handed 
 thread, and the race-safety argument (the state test and the cancel sharing one
 `only_from` under the generation the read returned) is the same code rather than the same
 intent restated.
+
+**After the snapshot's ids, the store rows accepted before the snapshot.** A row held
+only by the store — a memory-deferred spawn, or one waiting past the window — is in
+neither the queue nor `_agents`, so no snapshot names it, and left alone it would stay
+queued for a conversation that has ended: it would count on the card ("1 waiting") under
+a key that has moved on, and start into whatever the key serves next. So the cancel then
+reads this parent's waiting rows through `taskq_pending_ids_for_async(…, accepted_before=)`
+and stops each one through the same per-id path (marked first, `allow_admitted=False`,
+a queued-stop report with no injection). The read is fenced by ACCEPT TIME, strictly
+before the snapshot's instant, and nothing else: a row a successor under the same key
+queued after the snapshot is never swept, and a row the refill hydrated into the window
+after the snapshot is swept like one on disk (the window's own rows are kept in the read,
+since the teardown's `_unqueue` drops a window entry with its row). It runs after the
+named runs are stopped, so it never delays a live reap behind a store read, and it logs
+one `parent-end teardown: … store_rows=… store_ids=…` WARNING when it finds any. A store
+it cannot read sweeps nothing (the snapshot's ids are already stopped). Pinned by
+`test_queue_depth_reconcile.py::test_after_each_exit_the_published_depth_equals_the_store_count`
+(`parent_end`, `session_reset`),
+`test_a_parent_end_stops_its_store_rows_without_reporting_them_home` and, for a row the
+refill windows between the snapshot and the sweep,
+`test_a_parent_end_sweeps_a_row_the_refill_windowed_after_its_snapshot`.
 
 The mark is what separates this from `cancel_for_parent`. A user pressing Stop all
 wants the outcome reported back into a conversation they are still looking at, and
@@ -1210,9 +1248,14 @@ of the same window:
 - **Admitted late may start.** A spawn between its row write and its registration is in
   neither the queue nor `_agents` — `spawn_async` persists the row and then re-enters
   `spawn` to register — so no selection can name it, and it starts into whatever the key
-  serves next. A durable row that has spilled out of the in-memory window is outside the
-  snapshot for the same reason: the store keeps more than the window holds, and a restart
-  repopulates the store without repopulating the window.
+  serves next. A durable row held only by the store is outside this half when the
+  store accepted it before the snapshot: the cancel's accept-time sweep stops it. One
+  whose write lands at or after the snapshot's instant is (a clock that ticks coarsely
+  can stamp a row written just before the snapshot with the snapshot's own reading, and
+  the fence spares it rather than risk a successor's row), as is a row a `spawn_async`
+  caller is still admitting. The fence is the store's wall clock, so the one way it
+  sweeps a successor's row is that clock stepping BACK, between the snapshot and the
+  successor's accept, by more than the time between them.
 - **Reporting late may deliver.** A report that has already passed the delivery gate and
   is suspended inside `_on_done` is not stopped by marking its id afterwards. The injector
   resolves the parent through `get_or_create`, which CREATES a session when none is live,
@@ -1225,9 +1268,11 @@ report already past the gate is not reached by marking it later.
 
 Neither half is closed by another recheck at one end. Selecting more, or re-testing before
 injecting, both need an await, and an await here cannot tell work belonging to the retired
-conversation from work a successor under the same key has just started: a spilled row of
-the conversation that ended looks exactly like one the successor queued, and a report
-resolving its parent looks the same whichever conversation it belongs to. The answer is one
+conversation from work a successor under the same key has just started: a run registered
+after the snapshot looks exactly like one the successor started, and a report resolving
+its parent looks the same whichever conversation it belongs to. A durable row is the one
+exception, because it carries its own accept time and every conversation that held the
+key before the snapshot had ended by it; that is the whole of the store sweep's fence. The answer is one
 identity every path can test, not a recheck per path — a conversation-incarnation counter
 that does not exist today. Tracked in #12069, which carries both halves.
 
@@ -2053,11 +2098,12 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   across the boundary. `queued_count_for` /
   `has_pending_work_for` / `batch_members_pending` / the stuck-wave and
   digest-hold sweeps /
-  `cancel_for_parent` all add the store-only rows (`taskq_overflow`,
-  `taskq_batch_pending`, `taskq_pending_ids_for`). An event-loop caller takes the
+  `cancel_for_parent` / `cancel_for_teardown` all add the store-only rows
+  (`taskq_overflow`, `taskq_batch_pending`, `taskq_pending_ids_for`; the teardown
+  fences its read on the snapshot's instant). An event-loop caller takes the
   `*_async` sibling instead — `queued_count_for_async` /
   `has_pending_work_for_async` over `taskq_overflow_async`,
-  `taskq_pending_ids_for_async` for `cancel_for_parent`, and
+  `taskq_pending_ids_for_async` for `cancel_for_parent` and `cancel_for_teardown`, and
   `batch_members_pending_async` / `_sweep_stuck_waves_async` /
   `_sweep_digest_holds_async` over `taskq_batch_pending_async` (the reaper and
   the gateway's completion consumer are the coroutines that hold them) — each of
