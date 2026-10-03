@@ -614,7 +614,7 @@ names that test; every other report-only row gives its plain reason:
 | `agent.session_control` | false -> true, #8375 | reports | false is the supported global withdrawal of peer-session tools |
 | `skills.lazy_load` | false -> true, #12131 | reports | false is the supported switch to the short skill entry; its `note` reaches the load line too (`meaning_moved`, above) |
 | `agent.subagent_spawn_stagger_secs` | 2.0 -> 0.25, #12203 | reports | the knob to raise when the host or provider is the bottleneck |
-| `session.watchdog_rss_max_mb` | 0 -> 1536, #9626 | reports | 0 is the documented off switch for session recycling |
+| `session.watchdog_rss_max_mb` | 1536 -> 0, #16393 | reports | 1536 is an ordinary deliberate ceiling; holding it only recycles idle sessions, which keep their history |
 | `stt.language_code` | "en-US" -> "auto", #9246 | reports | a locale picked on purpose; adopting changes what the recogniser listens for. Only where the effective provider, overlay included, is local (`applies`): elsewhere "auto" resolves to en-US |
 | `decisions.history_budget_chars` | 0 -> 2000, #12928 | reports | 0 is a supported setting below the consented history ceiling; adopting raises it only up to that ceiling (carries a `note`) |
 | `watchdog.stale_window_secs` | 300.0 -> 600.0, #8949 | reports | a tuning knob; holding it probes a live think sooner, which regenerates it |
@@ -2292,7 +2292,7 @@ class SessionConfig:
     empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").
     autocompact_pct: float = 70.0  # context usage % at which auto-compaction triggers (DEFAULT_AUTOCOMPACT_PCT). Load-time clamped to [5.0, 90.0] (one constant pair shared with the dashboard write gate)
     pool_size: int = 0             # pre-warmed kiro-cli processes kept ready for instant session start; 0 (the default) disables. Single source of truth: DEFAULT_POOL_SIZE, read by both the field default and load()'s file-parse fallback. Load-time clamped to [0, 10]
-    watchdog_rss_max_mb: int = 1536   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 0 disables. Non-zero by default so a runaway session tree is bounded out of the box. Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime.
+    watchdog_rss_max_mb: int = 0   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 0 disables and is the default, because a fixed ceiling cannot tell a leak from a session with many MCP servers; at 0 the internal background runtime still recycles at BACKGROUND_RSS_FALLBACK_MB (1536). Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime.
 
 @dataclass
 class TaskRunnerConfig:

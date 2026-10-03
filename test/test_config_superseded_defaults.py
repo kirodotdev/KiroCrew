@@ -205,7 +205,7 @@ def test_a_row_without_a_note_renders_exactly_as_before():
 # Old values a pre-0.8 install materialized for defaults that moved later, each
 # report-only for the reason its registry row gives.
 _LATER_MOVED = [
-    ("session", "watchdog_rss_max_mb", 0, 1536),
+    ("session", "watchdog_rss_max_mb", 1536, 0),
     ("stt", "language_code", "en-US", "auto"),
     ("decisions", "history_budget_chars", 0, 2000),
     ("watchdog", "stale_window_secs", 300.0, 600.0),
@@ -645,6 +645,18 @@ def test_a_deliberately_chosen_value_is_not_reported():
     """Only the exact superseded default is drift. An operator who picked 85 is
     not holding a stale default and must not be nagged about one."""
     assert superseded_default_drift({"session": {"autocompact_pct": 85.0}}) == []
+
+
+def test_session_recycling_is_off_by_default():
+    """A fresh install never recycles a session for its memory."""
+    assert KiroCrewConfig().session.watchdog_rss_max_mb == 0
+
+
+def test_a_stored_off_switch_or_custom_ceiling_is_not_drift():
+    """0 is the current default and the documented off switch; any other value
+    is an operator's own ceiling. Only the old 1536 is reported (``_LATER_MOVED``)."""
+    assert superseded_default_drift({"session": {"watchdog_rss_max_mb": 0}}) == []
+    assert superseded_default_drift({"session": {"watchdog_rss_max_mb": 4096}}) == []
 
 
 def test_the_autocompact_summary_names_both_values_and_the_release():

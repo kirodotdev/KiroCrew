@@ -346,6 +346,10 @@ if needed — no compaction, since background tasks are stateless:
   `recycle_background()` counts the turn itself (`check_context_usage` is a
   chat-turn hook and never advances `_bg`), and the log names the backstop rather
   than the percentage that did not trigger it.
+- Process-tree RSS at or over `session.watchdog_rss_max_mb` → recycle. When
+  that knob is 0 (its default, which turns the chat-session sweep off) the
+  ceiling is `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB), so this runtime stays
+  bounded either way.
 - Below thresholds → no-op (session stays warm)
 
 Callers: heartbeat callback, taskrunner lesson extraction.
@@ -1295,7 +1299,7 @@ against sweep completeness, and are torn down at `close_all`.
   path — is recorded in
   `../../architecture/design-notes/tool-stall-watchdog-placement.md`.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
-  `session.watchdog_rss_max_mb`, default 1536 MiB via
+  `session.watchdog_rss_max_mb`, default 0 via
   `DEFAULT_WATCHDOG_RSS_MAX_MB`; 0 disables): recycles non-busy
   sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips
   persistent (`_PERSISTENT_KEYS`) and `channel:`-prefixed keys — the same
@@ -1367,7 +1371,7 @@ against sweep completeness, and are torn down at `close_all`.
   that keeps launching work would renew it forever. Inside the hold the RSS
   recycle therefore still proceeds when the tree exceeds
   `rss_max_mb * HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR` (2x — observed
-  real workflow trees ran 2398-2641 MB against the 1536 MB default ceiling, so
+  real workflow trees ran 2398-2641 MB against a 1536 MB ceiling, so
   the hold must survive those while still cutting off a runaway), and the
   notice still names the work. The idle sweep is not memory-driven, so its hold
   has no such ceiling. The probe is not fail-closed: a missing or unreadable

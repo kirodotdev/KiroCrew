@@ -445,19 +445,19 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=0.25,
         changed_in="#12203",
     ),
-    # Session recycling is on by default at 1536 MiB of process-tree RSS. The old
-    # default was 0, which the field documents as "disables", so an install
-    # materialized before the change never recycles a session however large its
-    # tree grows.
+    # Session recycling is off by default. An install materialized while the
+    # default was 1536 MiB of process-tree RSS still recycles any idle session
+    # whose tree passes 1536 MiB, which an agent with several MCP servers reaches
+    # after one heavy turn.
     #
-    # REPORT-ONLY: 0 is the documented off switch, so a deliberate opt-out stores
-    # exactly these bytes, and adopting would start recycling sessions for an
-    # operator who turned that off.
+    # REPORT-ONLY: 1536 is an ordinary deliberate ceiling, and holding it is
+    # survivable -- a recycled session keeps its history and restarts its process
+    # on the next message.
     SupersededDefault(
         dotted_key="session.watchdog_rss_max_mb",
-        old_default=0,
-        new_default=1536,
-        changed_in="#9626",
+        old_default=1536,
+        new_default=0,
+        changed_in="#16393",
     ),
     # The language default is auto-detect. On the local recogniser a stored 'en-US'
     # keeps forcing English, so dictation in any other language is recognised as
