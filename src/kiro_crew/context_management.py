@@ -14,6 +14,7 @@ import shutil
 import time
 from pathlib import Path
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,12 @@ def cap_result_file(path: Path) -> bool:
     tail = content[-tail_budget:]
     marker = f"\n\n[...truncated {size - RESULT_FILE_MAX_BYTES:,} bytes...]\n\n"
 
-    path.write_text(head + marker + tail, encoding="utf-8")
+    # Atomic replace via temp file + rename rather than a bare write_text: the
+    # result file is appended to concurrently by write_result_chunk, and an
+    # in-place overwrite can be observed as a torn file (a reader seeing a prefix
+    # of the new content). The rename publishes the whole truncated file in one
+    # step, so a concurrent reader sees either the pre-cap file or the capped one.
+    atomic_write(path, head + marker + tail)
     logger.info("Truncated %s from %d to %d bytes", path.name, size, RESULT_FILE_MAX_BYTES)
     return True
 

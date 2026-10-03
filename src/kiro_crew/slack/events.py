@@ -51,7 +51,7 @@ from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import FileTooLargeError, safe_read_file
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.commands import note_user_stop
 from kiro_crew.messaging.dispatch import admit_inbound_callback
@@ -648,7 +648,7 @@ def _get_agent_names() -> list[str]:
                     exc_info=True,
                 )
             name = None
-        except (ValueError, OSError):
+        except (ValueError, OSError, FileTooLargeError):
             if is_markdown_spec(f):
                 # A markdown file that does not parse as a spec is not a spec
                 # (a README, notes); only a broken JSON keeps its stem below.

@@ -430,6 +430,123 @@ async def test_successful_completion_drops_the_durable_result_marker(
 
 
 @pytest.mark.asyncio
+async def test_result_cap_runs_off_the_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The result-file truncation is dispatched off-loop, never run inline.
+
+    cap_result_file does a synchronous read + temp-file + rename; on a
+    network-backed data home that is blocking filesystem work that must not run
+    on the gateway's single event loop. Driving the real completion path with a
+    result over the cap must dispatch cap_result_file through asyncio.to_thread,
+    the established off-loop pattern — not call it directly on the loop.
+    """
+    import asyncio as _asyncio
+
+    import kiro_crew.context_management as cm
+    import kiro_crew.subagent_persistence as sp
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    # Lower the cap so a short streamed result triggers truncation.
+    monkeypatch.setattr(cm, "RESULT_FILE_MAX_BYTES", 16)
+
+    dispatched: list[str] = []
+    real_to_thread = _asyncio.to_thread
+
+    async def _spy_to_thread(func, /, *args, **kwargs):
+        dispatched.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(_asyncio, "to_thread", _spy_to_thread)
+
+    stream_factory, _calls = _single_turn(STOP_REASON_END_TURN, "x" * 4096)
+    mgr = _manager(_mock_sessions(stream_factory))
+    info = await _spawn_and_wait(mgr)
+
+    assert info.outcome == "completed"
+    assert "cap_result_file" in dispatched, (
+        "the result-file truncation must be dispatched off-loop via "
+        "asyncio.to_thread, not run inline on the event loop"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_the_cap_still_writes_the_completion_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A cancel during the off-loop cap must not skip the completion marker.
+
+    The cap and the durable completion marker are sealed as one shielded unit:
+    a cancel (user stop, gateway shutdown, run timeout) arriving during the cap
+    filesystem hop must not land BETWEEN the cap and the marker and record a
+    finished answer as cut off mid-turn. Draining only the cap and re-raising
+    before the marker — an earlier incomplete shape — did exactly that. Here the
+    cap blocks until the test cancels the run; the shield must still carry
+    through to the marker write before the cancel propagates, so the finished
+    result is recorded as finished, not cancelled.
+    """
+    import asyncio
+    import threading
+
+    import kiro_crew.subagent as subagent_mod
+    import kiro_crew.subagent_persistence as sp
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+
+    started = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+    real_cap = subagent_mod.cap_result_file
+
+    def _blocking_cap(path):
+        started.set()
+        release.wait(timeout=5)
+        try:
+            return real_cap(path)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(subagent_mod, "cap_result_file", _blocking_cap)
+
+    stream_factory, _calls = _single_turn(STOP_REASON_END_TURN, "result body")
+    mgr = _manager(_mock_sessions(stream_factory))
+
+    try:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            task = mgr._tasks[info.id]
+            # Wait for the cap to be in flight on its worker thread (parked on
+            # `release`), then cancel the run while it sits in the cap await.
+            await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            # With the shield, awaiting the cancelled run must BLOCK here until
+            # the cap is released — the shield holds the cancel until the sealed
+            # cap + marker unit settles. Without it the await returns at once,
+            # abandoning the finalizer mid-flight. The timeout, with the cap
+            # still blocked, discriminates the two.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+            assert not finished.is_set(), "cap finished before it was released"
+            # Release the cap and let the shielded finalizer run through the
+            # marker write, then let the cancel propagate.
+            release.set()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    finally:
+        release.set()
+
+    assert finished.is_set(), "the cap must drain to completion, not abandon mid-rename"
+    # The invariant: a finished result cancelled during the cap hop is still
+    # recorded as finished — the marker survived the cancel because it is inside
+    # the shielded unit, not after the re-raise.
+    assert sp.result_marked_complete(info.id) is True, (
+        "a cancel during the cap await must still write the completion marker, "
+        "so a finished answer is not recorded as cut off mid-turn"
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_unfinished_completion_drops_no_result_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

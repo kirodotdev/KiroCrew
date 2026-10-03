@@ -36,7 +36,7 @@ from kiro_crew.config.superseded_defaults import (
     record_acks,
     superseded_default_drift,
 )
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import FileTooLargeError, safe_read_file
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -166,7 +166,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             except PermissionError as e:
                 print(f"❌ {e}", file=sys.stderr)
                 sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, OSError, FileTooLargeError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(data, dict):

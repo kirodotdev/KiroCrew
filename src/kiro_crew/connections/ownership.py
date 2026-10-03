@@ -210,7 +210,7 @@ def spec_census(
     edition's ``_extra_scope_sources``), so the files scanned cannot drift from
     the ones apply and uninstall manage; only the failure handling differs.
     """
-    from kiro_crew.hooks import safe_read_file
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file
     from kiro_crew.mcp_discovery import SCOPE_KIROCREW, _extra_scope_sources, _mcp_sources
 
     specs: dict[str, dict[str, Any]] = {}
@@ -245,12 +245,14 @@ def spec_census(
                 # included -- is unknown, below.
                 continue
             data = parse_agent_spec_text(text, path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, FileTooLargeError):
             # PermissionError (an OSError) is what safe_read_file raises for a
             # sensitive path or a symlink race; a stalled mount and malformed
             # JSON land here too -- ``json.JSONDecodeError`` IS a ``ValueError``,
-            # so naming it as well would catch nothing extra. Every one of them
-            # means this source's entries are unknown, not absent.
+            # so naming it as well would catch nothing extra. FileTooLargeError
+            # (NOT an OSError) is the oversize-file refusal from the capped
+            # reader. Every one of them means this source's entries are unknown,
+            # not absent.
             unreadable.append(label)
             continue
         if not isinstance(data, dict):

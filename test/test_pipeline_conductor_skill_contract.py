@@ -465,6 +465,20 @@ class TestSpecCheckRefusesAnUndeclaredGate:
         assert self._script().main(["--spec", str(deep)]) == 2
         assert "malformed spec" in capsys.readouterr().err
 
+    def test_an_oversize_spec_refuses_with_the_documented_code(self, tmp_path, capsys, monkeypatch):
+        """A spec over the read cap exits 2, not an unhandled traceback.
+
+        safe_read_file raises FileTooLargeError (NOT an OSError) past the cap. An
+        agent-authored pipeline spec over 50 MB is an ordinary condition, so it
+        must reach the malformed-spec exit 2 like every other unusable spec, not
+        escape as exit 1. The cap is lowered so the test needs no 50 MB fixture.
+        """
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 16)
+        big = tmp_path / "big-spec.json"
+        big.write_text(json.dumps({"verifier": {"repro_gate": "pod_required"}, "x": "y" * 4096}))
+        assert self._script().main(["--spec", str(big)]) == 2
+        assert "malformed spec" in capsys.readouterr().err
+
     def test_the_accepted_set_reads_as_a_sentence_at_any_arity(self):
         """The message is the whole remedy an operator gets, so its rendering is
         part of the contract rather than cosmetic: a bare tuple repr is what sends

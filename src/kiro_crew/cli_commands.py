@@ -112,7 +112,7 @@ from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.history import ConversationLog
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import FileTooLargeError, safe_read_file
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_cron import (
@@ -3885,7 +3885,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 return
             try:
                 loaded = json.loads(safe_read_file(str(path)))
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, FileTooLargeError) as exc:
                 # One line rather than a traceback, matching every other refusal on this
                 # path. Reported BEFORE the destination exists, which is the point: an
                 # unparseable payload must not be the reason a store gets created.

@@ -44,7 +44,7 @@ from kiro_crew.env import (
     spec_path_key,
 )
 from kiro_crew.executors import mcp_probe_executor
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import FileTooLargeError, safe_read_file
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entry_is_muted,
@@ -1085,7 +1085,7 @@ def _mcp_names_from_file(path: Path) -> set[str]:
         return set()
     try:
         data = loads_user_json(safe_read_file(str(path)))
-    except (json.JSONDecodeError, OSError, TypeError):
+    except (json.JSONDecodeError, OSError, TypeError, FileTooLargeError):
         return set()
     servers = data.get("mcpServers") if isinstance(data, dict) else None
     if not isinstance(servers, dict):
@@ -1150,7 +1150,7 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
             continue
         try:
             data = loads_user_json(safe_read_file(str(p)))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, OSError, FileTooLargeError) as exc:
             # PermissionError (subclass of OSError) is raised by
             # safe_read_file when is_sensitive_path() blocks the read.
             logger.warning("Failed to load MCP config from %s: %s", p, exc)

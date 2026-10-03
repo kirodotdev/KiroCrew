@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import cli_help, platform_compat
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import FileTooLargeError, safe_read_file
 from kiro_crew.instances import tunnel_keeper
 from kiro_crew.perf_sampler import gate_refusal_message, profiling_enabled
 
@@ -254,7 +254,7 @@ def _load(path: Path) -> tuple[dict | None, str | None]:
             f"Refusing to read {path}: the path is protected or resolves to a "
             "sensitive location."
         )
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, FileTooLargeError) as exc:
         return None, f"Could not read {path}: {exc}"
     try:
         doc = json.loads(raw)

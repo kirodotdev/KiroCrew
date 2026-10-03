@@ -5563,7 +5563,7 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
     # the edge must resolve lazily. A failure here propagates to
     # refresh_materialized_agents, which logs and leaves the snapshot untouched —
     # fail-closed, rather than falling back to an unguarded read.
-    from kiro_crew.hooks import safe_read_file
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file
 
     _SCAN_STATE.complete = True
     try:
@@ -5580,7 +5580,7 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             # PermissionError for a refused path — an OSError subclass, so a
             # refused entry is skipped by the same handler as an unreadable one.
             data = parse_agent_spec_text(safe_read_file(str(af)), af)
-        except (ValueError, OSError):
+        except (ValueError, OSError, FileTooLargeError):
             # Its agent may be one this scan now leaves out; the scan is partial.
             _SCAN_STATE.complete = False
             continue

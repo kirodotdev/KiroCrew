@@ -341,6 +341,11 @@ def read_installed(slug: str) -> dict[str, Any]:
         raw_meta = safe_read_file(str(pet_json))
     except PermissionError as err:
         raise PetdexError(f"cannot read pet {slug!r}: {err}")
+    except FileTooLargeError:
+        # An installed pet.json over the read cap is an ordinary condition, not a
+        # crash: surface it as a PetdexError so the route answers 400 with text
+        # the UI shows, matching the oversize-spritesheet refusal below.
+        raise PetdexError(f"pet {slug!r} metadata is too large")
     meta = parse_pet_json(raw_meta)
     sheet_path = _find_sheet(pet_dir, meta)
     if sheet_path is None:

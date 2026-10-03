@@ -2943,9 +2943,6 @@ class RunEventCoordinator(ManagerComponent):
             if not info.user_stopped:
                 info.error = self._manager._stop_error_text(info, _stop, _complete_event)
         info.result = cleaned or "_No response._"
-        # Cap disk file and trim memory — gateway decides how much to show based on mode.
-        if info.result_path:
-            cap_result_file(Path(info.result_path))
         # The stream reached a successful EVENT_COMPLETE, so result.txt now holds
         # the whole answer. Nothing else on disk says so: write_result_chunk
         # appends per streamed chunk, so the file is non-empty from the first
@@ -2955,37 +2952,45 @@ class RunEventCoordinator(ManagerComponent):
         # generator can simply stop between chunks when the transport dies, and
         # the absent stop reason alone classifies as a normal end of turn, which
         # would mark the fragment complete. The explicit ``_complete_event``
-        # check is what tells those two apart. Recorded here because this is the
-        # only point that knows. Written after cap_result_file so the flag
-        # describes the file as it will be read.
+        # check is what tells those two apart. Computed BEFORE the cap below so
+        # the cap and the marker that certifies it can be sealed as one unit.
         _result_complete = _complete_event is not None and _stop.is_success
-        # Drop the DURABLE completion marker before the state write below. The
-        # ``result_complete`` flag lives in state.json, written in the separate
-        # step that follows; a restart landing in that gap left a finished
-        # answer on disk with the flag never written, and the orphan reconciler
-        # read the whole answer as a fragment "cut off mid-turn". The marker
-        # lands in the SAME step that finalized result.txt (right after
-        # cap_result_file), so the completeness signal cannot lag the bytes it
-        # describes across a crash. The reconciler treats either signal as proof.
-        # Off the loop like the sibling state write below: a network-backed data
-        # home makes the mkdir + temp-file + rename synchronous filesystem work,
-        # which must not run on the gateway's single event loop. Shielded AND
-        # drained on cancellation for the same reason ``_write_state_off_loop``
-        # is: a cancel arriving during the rename must not return control to a
-        # terminal tombstone arm while the marker is still half-written, or that
-        # arm's ``tombstone_recovery_action`` reads a finished answer as a
-        # fragment. Holding the cancel until the worker settles lands the rename
-        # first, so the marker and the result bytes it certifies agree on disk.
-        if _result_complete:
-            _marker_writer = asyncio.ensure_future(asyncio.to_thread(mark_result_complete, info.id))
+
+        # Cap disk file and finalize the completion marker as ONE shielded unit.
+        #
+        # Both are off-loop synchronous filesystem work (truncating read +
+        # temp-file + rename for the cap; mkdir + temp-file + rename for the
+        # marker) that must not run on the gateway's single event loop, and the
+        # marker's ``result_complete`` flag describes result.txt AS CAPPED, so it
+        # must be written after the cap. The two are driven inside one
+        # ``ensure_future`` task and shielded together: an ordinary cancel (user
+        # stop, gateway shutdown, run timeout) arriving during EITHER filesystem
+        # hop must not land BETWEEN them — draining only the cap, as an earlier
+        # shape did, would re-raise before the marker and record a finished
+        # answer as cut off mid-turn. Shielding the pair holds the cancel until
+        # both the cap and the marker have settled, then re-raises, so a finished
+        # result is never recorded as cancelled by a cancel that hit the cap await.
+        async def _finalize_result_on_disk() -> None:
+            if info.result_path:
+                await asyncio.to_thread(cap_result_file, Path(info.result_path))
+            # The DURABLE completion marker, dropped right after the cap finalized
+            # result.txt. A restart landing between the complete event and the
+            # state write below still finds it, so a finished result stays a whole
+            # result — while a run that never completed writes neither, the safe
+            # direction for a signal whose purpose is not to overstate. The
+            # reconciler treats either this marker or the state flag as proof.
+            if _result_complete:
+                await asyncio.to_thread(mark_result_complete, info.id)
+
+        _finalizer = asyncio.ensure_future(_finalize_result_on_disk())
+        try:
+            await asyncio.shield(_finalizer)
+        except asyncio.CancelledError:
             try:
-                await asyncio.shield(_marker_writer)
-            except asyncio.CancelledError:
-                try:
-                    await _marker_writer
-                except BaseException:
-                    pass
-                raise
+                await _finalizer
+            except BaseException:
+                pass
+            raise
         # A restart landing between the complete event and the state write below
         # still finds the durable marker above, so a finished result stays a
         # whole result — while a run that never completed writes neither, which

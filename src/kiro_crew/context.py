@@ -1378,7 +1378,7 @@ def _read_include_crew_context(agent: str) -> bool:
                 val = data.get("includeCrewContext", True)
                 # Honor only an explicit boolean; anything else defaults to inject.
                 return val if isinstance(val, bool) else True
-        except (OSError, ValueError):
+        except (OSError, ValueError, FileTooLargeError):
             continue
     return True
 
@@ -1642,7 +1642,7 @@ def _read_prompt_file(pp: Path) -> str:
     """
     try:
         return safe_read_file(str(pp))
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, FileTooLargeError) as exc:
         fallback = _shipped_prompt()
         if fallback == pp:
             logger.warning("Shipped prompt %s could not be read (%s); no agent prompt", pp, exc)
@@ -1652,7 +1652,7 @@ def _read_prompt_file(pp: Path) -> str:
         )
         try:
             return safe_read_file(str(fallback))
-        except (OSError, UnicodeDecodeError) as exc2:
+        except (OSError, UnicodeDecodeError, FileTooLargeError) as exc2:
             logger.warning(
                 "Shipped prompt %s could not be read (%s); no agent prompt", fallback, exc2
             )

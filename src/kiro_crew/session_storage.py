@@ -1206,8 +1206,17 @@ def _unit_paths(
             found.append((path, f"{STAGE_CLI_LEAF}/{path.name}"))
     for stem in stems:
         transcript = _crew_sessions_dir() / f"{stem}{_TRANSCRIPT_SUFFIX}"
-        if transcript.is_file():
-            found.append((transcript, f"{STAGE_CREW_LEAF}/{transcript.name}"))
+        # os.lstat + S_ISREG, never Path.is_file(): the latter follows a symlink,
+        # so a link planted at the transcript's name between a scan and the move it
+        # feeds would be owned and the move would relocate the link (or read through
+        # it) instead of the file. This matches the scans and the sidecar handling
+        # below, which answer only to regular files. lstat rather than is_file(
+        # follow_symlinks=False) because that argument only exists on Python 3.13+.
+        try:
+            if stat.S_ISREG(os.lstat(transcript).st_mode):
+                found.append((transcript, f"{STAGE_CREW_LEAF}/{transcript.name}"))
+        except FileNotFoundError:
+            pass
         segments = (
             archives.get(stem, []) if archives is not None else _archive_index().get(stem, [])
         )
@@ -1543,11 +1552,12 @@ def cotenant_sids(*, cached: bool = False) -> tuple[frozenset[str], tuple[tuple[
             raw = hooks.safe_read_file(str(path))
         except FileNotFoundError:
             continue
-        except (PermissionError, OSError, UnicodeDecodeError):
-            # Refused as sensitive, lost a symlink race, genuinely unreadable, or
-            # not valid UTF-8 — ``safe_read_file`` decodes, and
-            # ``UnicodeDecodeError`` is a ``ValueError``, so it would otherwise
-            # escape past the parse guard below and reach the caller. All four
+        except (PermissionError, OSError, UnicodeDecodeError, hooks.FileTooLargeError):
+            # Refused as sensitive, lost a symlink race, genuinely unreadable,
+            # not valid UTF-8, or larger than the read cap — ``safe_read_file``
+            # decodes, so ``UnicodeDecodeError`` (a ``ValueError``) would
+            # otherwise escape the parse guard below, and ``FileTooLargeError``
+            # is not an ``OSError`` so it must be named explicitly. All of them
             # mean the same thing here — which sessions this instance claims
             # cannot be established — so fail closed on it.
             # %r, not %s: the directory name is agent-influenced and passes no

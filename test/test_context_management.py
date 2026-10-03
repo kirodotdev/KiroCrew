@@ -34,6 +34,22 @@ def test_cap_result_file_truncates(tmp_path):
     assert "truncated" in content
 
 
+def test_cap_result_file_replaces_atomically(tmp_path):
+    # The truncating write must publish via a temp-file rename, not an in-place
+    # overwrite: an in-place write_text keeps the same inode and can be observed
+    # torn by a concurrent appender, while a rename swaps a wholly-written file in.
+    # The inode changing across the cap is the observable signature of the rename.
+    from kiro_crew.context_management import RESULT_FILE_MAX_BYTES, cap_result_file
+
+    p = tmp_path / "result.txt"
+    p.write_bytes(b"y" * (RESULT_FILE_MAX_BYTES + 10000))
+    before_ino = p.stat().st_ino
+    assert cap_result_file(p) is True
+    after_ino = p.stat().st_ino
+    assert after_ino != before_ino
+    assert "truncated" in p.read_text()
+
+
 def test_cap_streaming_text_short():
     from kiro_crew.context_management import cap_streaming_text
 

@@ -3133,8 +3133,10 @@ def safe_read_file(path: str) -> str:
     component is not a symlink by construction), so this only closes the race.
 
     Raises ``PermissionError`` if the path is sensitive or a symlink race is
-    detected. Other read errors (missing file, permission denied) propagate
-    unchanged so callers surface accurate messages.
+    detected, and ``FileTooLargeError`` (NOT an ``OSError``, so callers that
+    treat the file as attacker-plantable must catch it explicitly) when the file
+    exceeds ``MAX_FILE_BYTES``. Other read errors (missing file, permission
+    denied) propagate unchanged so callers surface accurate messages.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
     refusal = sensitive_path_refusal(resolved)
@@ -3160,8 +3162,15 @@ def safe_read_file(path: str) -> str:
     try:
         if not _opened_file_matches_validated_path(fd, resolved):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
+        # Bounded like safe_read_file_bytes: an unbounded read would let a file in
+        # a user-writable location (e.g. a pod session_map.json) grow the gateway's
+        # memory without limit. The size is read off the already-open descriptor so
+        # the check cannot straddle a swap, and the read stays in text mode so the
+        # universal-newline translation callers depend on is preserved.
+        if os.fstat(fd).st_size > MAX_FILE_BYTES:
+            raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as fh:
-            return fh.read()
+            return fh.read(MAX_FILE_BYTES + 1)
     finally:
         os.close(fd)
 

@@ -1357,6 +1357,23 @@ class TestSafeReadFile:
         with pytest.raises(FileNotFoundError):
             safe_read_file(str(tmp_path / "does-not-exist.txt"))
 
+    def test_refuses_file_over_size_cap(self, tmp_path, monkeypatch):
+        """A file larger than MAX_FILE_BYTES is refused, matching
+        safe_read_file_bytes — an unbounded read would let a user-writable file
+        grow the gateway's memory without limit. The cap is lowered so the test
+        does not need a 50 MB fixture."""
+        import kiro_crew.hooks as hooks_mod
+        from kiro_crew.hooks import FileTooLargeError, safe_read_file
+
+        monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 64)
+        under = tmp_path / "under.txt"
+        under.write_bytes(b"a" * 64)  # exactly at the cap still reads
+        assert safe_read_file(str(under)) == "a" * 64
+        over = tmp_path / "over.txt"
+        over.write_bytes(b"a" * 65)  # one byte past the cap is refused
+        with pytest.raises(FileTooLargeError):
+            safe_read_file(str(over))
+
 
 class TestShouldAutoApproveSpawn:
     """Test _should_auto_approve_spawn helper from handler.py."""

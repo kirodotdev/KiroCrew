@@ -237,6 +237,41 @@ class TestReadPromptFile:
             assert ctx_mod._read_prompt_file(p) == _shipped_text()
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
+    def test_oversize_override_falls_back_to_shipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # safe_read_file raises FileTooLargeError (NOT an OSError) past the cap.
+        # The default prompt read must degrade to the shipped prompt exactly as
+        # an unreadable override does — never let the exception escape as an
+        # unhandled crash. The cap is set above the shipped prompt's size so the
+        # fallback stays readable and only the oversize override is refused.
+        import kiro_crew.hooks as hooks_mod
+        from kiro_crew.agent import _shipped_prompt
+
+        cap = len(_shipped_prompt().read_bytes()) + 1024
+        monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", cap)
+        p = tmp_path / "prompt.md"
+        p.write_text("x" * (cap + 4096), encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger=ctx_mod.logger.name):
+            assert ctx_mod._read_prompt_file(p) == _shipped_text()
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+    def test_oversize_shipped_prompt_yields_empty_not_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Terminal case: the fallback IS the oversize file. The second read also
+        # raises FileTooLargeError, which must be caught too, so the contract is
+        # the "no prompt" empty string rather than an unhandled exception.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 8)
+        p = tmp_path / "prompt.md"
+        p.write_text("x" * 4096, encoding="utf-8")
+        monkeypatch.setattr(ctx_mod, "_shipped_prompt", lambda: p)
+        with caplog.at_level(logging.WARNING, logger=ctx_mod.logger.name):
+            assert ctx_mod._read_prompt_file(p) == ""
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
     def test_symlink_to_a_sensitive_path_is_refused_and_falls_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:

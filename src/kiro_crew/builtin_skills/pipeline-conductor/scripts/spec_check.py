@@ -74,7 +74,7 @@ try:
     # sandbox leaves readable. ``safe_read_file`` canonicalizes the path,
     # re-checks the RESOLVED target against ``is_sensitive_path``, and opens it
     # ``O_NOFOLLOW``, so the gate holds through a link and through a TOCTOU swap.
-    from kiro_crew.hooks import safe_read_file
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file
 except Exception:  # pragma: no cover - exercised when the package is not importable
     # The normal startup procedure uses Kiro Crew's injected runtime, but the
     # copied skill script can still be run manually under a foreign interpreter,
@@ -85,6 +85,12 @@ except Exception:  # pragma: no cover - exercised when the package is not import
     # ``main`` re-execs under an interpreter that HAS the gate, and refuses only
     # when there is none.
     safe_read_file = None  # type: ignore[assignment]
+
+    class FileTooLargeError(Exception):  # type: ignore[no-redef]
+        """Local stand-in so the except-tuple below is always bound. The read
+        guarded by it never runs on this branch — ``main`` re-execs when
+        ``safe_read_file`` is None — so this type is never actually raised."""
+
 
 #: Set on the child when this script re-execs itself, so an interpreter that
 #: also lacks the gate refuses instead of spawning a third.
@@ -221,13 +227,16 @@ def main(argv: list[str] | None = None) -> int:
         # may be perfectly well-formed and still not be ours to read.
         print(f"refused spec: {exc}", file=sys.stderr)
         return 2
-    except (OSError, ValueError, RecursionError) as exc:
+    except (OSError, ValueError, RecursionError, FileTooLargeError) as exc:
         # ``RecursionError`` is listed because a deeply nested document exhausts
         # the scanner's stack instead of failing to parse, and it subclasses
         # ``RuntimeError`` rather than ``ValueError`` — so without it the one
         # malformed shape that is not a parse error would leave through the
-        # traceback as exit 1. Every unusable spec exits 2, which is the code
-        # documented above and the only one a caller reads as "malformed".
+        # traceback as exit 1. ``FileTooLargeError`` (not an ``OSError``) is the
+        # gate's refusal of a spec over the read cap — an ordinary condition for
+        # an agent-authored file, not a crash. Every unusable spec exits 2, which
+        # is the code documented above and the only one a caller reads as
+        # "malformed".
         print(f"malformed spec: {exc}", file=sys.stderr)
         return 2
     problem = spec_error(spec)

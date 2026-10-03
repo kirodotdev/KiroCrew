@@ -367,3 +367,29 @@ class TestRedirectRefusal:
         assert gets, "expected session.get calls in petdex_import"
         for call in gets:
             assert "allow_redirects=False" in call, f"redirects not disabled in: {call}"
+
+
+class TestReadInstalledTooLarge:
+    def test_an_oversize_pet_json_is_a_petdex_error_not_a_crash(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An installed pet.json over the read cap must surface as PetdexError.
+
+        safe_read_file raises FileTooLargeError (NOT an OSError) past the cap. The
+        route handler catches only PetdexError, so an unguarded FileTooLargeError
+        here would be an unhandled 500 on an ordinary condition. read_installed
+        must turn it into a PetdexError the route answers 400 with. The cap is
+        lowered so the test needs no 50 MB fixture.
+        """
+        import kiro_crew.hooks as hooks_mod
+
+        pets_root = tmp_path / "pets"
+        pet_dir = pets_root / "biggy"
+        pet_dir.mkdir(parents=True)
+        (pet_dir / "pet.json").write_text(
+            json.dumps({"name": "biggy", "pad": "x" * 4096}), encoding="utf-8"
+        )
+        monkeypatch.setattr(pdx, "_pets_root", lambda: pets_root)
+        monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 16)
+        with pytest.raises(pdx.PetdexError, match="too large"):
+            pdx.read_installed("biggy")

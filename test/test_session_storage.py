@@ -25,6 +25,7 @@ from typing import Callable
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import session_storage
 from kiro_crew.config import paths
 from kiro_crew.history import ConversationLog, transcript_stem
@@ -173,6 +174,33 @@ class TestPairing:
 
         assert report.total_sessions == 2
         assert report.reclaimable_sessions == 2
+
+    @requires_symlinks
+    def test_a_transcript_symlink_is_not_owned_by_the_session(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A symlink planted at the transcript's name is not the session's file.
+
+        _unit_paths feeds the move/restore/delete paths, so following a link here
+        would relocate the link (or read through it) instead of the real file. A
+        link at the transcript name is excluded exactly as a regular file is
+        included; the regular transcript below proves the exclusion is the link's
+        doing, not an empty result.
+        """
+        crew_home, _ = stores
+        sessions = crew_home / "sessions"
+        # An ordinary transcript IS owned.
+        _transcript(crew_home, "dashboard_chat-real", size=10, age_days=40)
+        owned = session_storage._unit_paths("", ("dashboard_chat-real",), archives={}, cli_files={})
+        assert any(p.name == "dashboard_chat-real.jsonl" for p, _rel in owned)
+        # A symlink at the transcript name is NOT.
+        outside = crew_home / "outside.jsonl"
+        outside.write_bytes(b"x" * 10)
+        (sessions / "dashboard_chat-link.jsonl").symlink_to(outside)
+        linked = session_storage._unit_paths(
+            "", ("dashboard_chat-link",), archives={}, cli_files={}
+        )
+        assert not any(p.name == "dashboard_chat-link.jsonl" for p, _rel in linked)
 
 
 def _crew_log(unit_id: str, slot: str, *, closed: bool = True) -> int:
@@ -3467,6 +3495,32 @@ class TestCotenantCache:
             frozenset(),
             (),
         ), "an empty pod root must read as empty, not as the first root's pass"
+
+    def test_an_oversize_pod_map_is_a_refusal_not_a_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """safe_read_file raises FileTooLargeError (not an OSError) past the cap.
+
+        The pod root is user-writable, so an oversize session_map.json must fail
+        CLOSED to a refusal here, exactly as an unreadable or sensitive one does —
+        never escape as an exception and crash the ownership scan. The cap is
+        lowered so the test needs no 50 MB fixture.
+        """
+        import kiro_crew.hooks as hooks_mod
+
+        pod_root = tmp_path / "pods"
+        pod = pod_root / "wt-shared"
+        pod.mkdir(parents=True)
+        # A SHARED store (no own kiro/ dir) whose map names a sid, so the map is
+        # actually read rather than skipped.
+        (pod / "session_map.json").write_text(
+            json.dumps({"dashboard:chat-1": {"sid": "podsid01"}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+        monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 8)
+        protected, refusals = session_storage.cotenant_sids()
+        assert protected == frozenset()
+        assert [name for name, _why in refusals] == ["wt-shared"]
 
     def test_a_different_crew_home_is_not_answered_from_an_older_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

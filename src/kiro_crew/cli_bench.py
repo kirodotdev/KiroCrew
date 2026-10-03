@@ -307,7 +307,7 @@ def _load_report(path: str, label: str) -> dict:
     subcommand is a file-read primitive that bypasses the gate every other read
     path in the codebase goes through.
     """
-    from kiro_crew.hooks import safe_read_file
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file
 
     # The messages below name only `label` -- never the caller-supplied path and
     # never the raw exception text. Two reasons, and the second is why it is worth
@@ -337,6 +337,9 @@ def _load_report(path: str, label: str) -> dict:
         raise _BenchError(1) from None
     except OSError:
         print(f"error: cannot read the {label} report.")
+        raise _BenchError(1) from None
+    except FileTooLargeError:
+        print(f"error: the {label} report is too large to read.")
         raise _BenchError(1) from None
 
     try:

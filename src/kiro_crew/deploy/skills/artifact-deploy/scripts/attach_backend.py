@@ -281,14 +281,14 @@ def main():
         # read. Fallback: standalone execution where kiro_crew is not importable
         # uses O_NOFOLLOW open directly (still race-free on the final component).
         try:
-            from kiro_crew.hooks import safe_read_file
+            from kiro_crew.hooks import FileTooLargeError, safe_read_file
 
             try:
                 origin_verify_secret = safe_read_file(str(secret_path)).strip()
             except PermissionError as e:
                 sys.stderr.write(f"error: --origin-verify-secret-file blocked: {e}\n")
                 sys.exit(2)
-            except (OSError, ValueError) as e:
+            except (OSError, ValueError, FileTooLargeError) as e:
                 sys.stderr.write(f"error: cannot read --origin-verify-secret-file: {e}\n")
                 sys.exit(2)
         except ImportError:

@@ -1036,6 +1036,37 @@ def test_crew_context_opt_out_is_read_from_markdown(
     assert context._read_include_crew_context("loud") is True
 
 
+def test_crew_context_tolerates_an_oversize_agent_file(
+    agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An oversize file in the user-writable agents dir must not crash the scan.
+
+    safe_read_file raises FileTooLargeError (NOT an OSError) past the cap. The
+    scan refuses that one file gracefully (skips it) rather than letting the
+    exception escape and break EVERY custom-agent turn. A smaller sibling spec
+    still resolves, proving the scan survives the oversize entry. The cap is set
+    above the valid spec's size so only the planted file is refused.
+    """
+    import kiro_crew.hooks as hooks_mod
+    from kiro_crew import context
+
+    monkeypatch.setattr(context, "kiro_agents_dir", lambda: agents_dir)
+    valid = _md("loud")
+    monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", len(valid.encode("utf-8")) + 256)
+    (agents_dir / "loud.md").write_text(valid, encoding="utf-8")
+    # A huge file that would raise FileTooLargeError when the scan reads it.
+    (agents_dir / "huge.md").write_text(
+        "---\nname: huge\n---\n" + "x" * (len(valid) + 4096), encoding="utf-8"
+    )
+
+    # No unhandled exception; the oversize file is skipped and the valid spec
+    # still resolves (default inject for a spec with no opt-out).
+    assert context._read_include_crew_context("loud") is True
+    # Even asking for the oversize agent by name degrades to the default rather
+    # than crashing.
+    assert context._read_include_crew_context("huge") is True
+
+
 def test_materialized_names_and_model_resolver_read_markdown(agents_dir: Path) -> None:
     from kiro_crew.config import loader
 

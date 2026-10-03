@@ -668,6 +668,25 @@ def test_read_auto_skill_body_still_reads_a_normal_skill(loader):
     assert body is not None and "REAL BODY" in body
 
 
+def test_read_auto_skill_body_tolerates_an_oversize_live_skill(loader, monkeypatch):
+    """A live SKILL.md over the size cap is an ordinary condition (the file sits
+    in a user-writable skills tree). The guarded read raises FileTooLargeError,
+    which read_auto_skill_body must turn into its documented ``None`` rather than
+    letting it escape through preview_pending_update into the dashboard API."""
+    import kiro_crew.hooks as hooks
+
+    _write_live(loader, "big-read", version=1, body="x" * 4096)
+    # Cap below the file's size so the guarded read refuses it.
+    monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 64)
+
+    # Direct read: graceful None, no FileTooLargeError escaping.
+    assert loader.read_auto_skill_body("auto/big-read") is None
+
+    # The preview API path (feeds the dashboard) must also degrade to None.
+    _stage_update(loader, "big-read-update", target="auto/big-read")
+    assert loader.preview_pending_update("big-read-update") is None
+
+
 def test_approve_update_rejects_a_stale_base(loader):
     """Two updates staged at v1; approving the first moves the skill to v2. The
     second was merged from v1 prose, so applying it would replace the changes just

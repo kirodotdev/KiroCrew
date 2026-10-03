@@ -7794,7 +7794,7 @@ def kiro_internal_sandbox_enabled() -> bool:
     # is user-writable, so the read gets is_sensitive_path() on the RESOLVED
     # target (a symlink into ~/.aws etc. is refused through the link) plus
     # O_NOFOLLOW against a TOCTOU swap of the final component.
-    from kiro_crew.hooks import safe_read_file
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file
 
     try:
         data = json.loads(safe_read_file(_KIRO_INTERNAL_SETTINGS_PATH))
@@ -7803,11 +7803,13 @@ def kiro_internal_sandbox_enabled() -> bool:
             # resolve toward KiroCrew's own sandbox, not raise.
             return False
         return bool(data.get(_KIRO_INTERNAL_SANDBOX_KEY, False))
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, FileTooLargeError):
         # OSError covers missing file / EACCES / PermissionError (sensitive
         # or symlinked target refused by hooks); ValueError covers JSON
         # decode; RuntimeError covers home-directory resolution failure.
-        # Every failure resolves toward KiroCrew's own sandbox.
+        # FileTooLargeError covers an oversize user-writable file (it is not
+        # an OSError, so it is named). Every failure keeps the internal
+        # sandbox engaged rather than raising.
         return False
 
 

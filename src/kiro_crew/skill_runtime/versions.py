@@ -102,7 +102,7 @@ def read_auto_skill_body(loader: SkillsLoader, name: str) -> str | None:
         # safe_read_file re-checks is_sensitive_path and opens with
         # O_NOFOLLOW, closing a swap of the final component after our check.
         return sk.safe_read_file(real)
-    except (OSError, PermissionError):
+    except (OSError, PermissionError, sk.FileTooLargeError):
         return None
 
 
