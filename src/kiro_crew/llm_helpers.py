@@ -253,6 +253,22 @@ def acp_error_is_transient(exc: BaseException) -> bool:
     return is_transient_backend_error(str(exc))
 
 
+def acp_error_is_session_not_found(exc: BaseException) -> bool:
+    """True when a live backend says it holds no session under the id it was sent.
+
+    The process answered, so nothing marks it dead and the dead-provider
+    eviction never fires; the binding keeps naming a session the backend has
+    dropped, and every later prompt draws the same answer. The backend
+    session's transcript is usually intact, so the remedy is a fresh process
+    that re-loads the SAME id -- not a retry on this one.
+
+    Scoped to ``AcpError``: the phrase is the adapter's own answer to a prompt,
+    and an unrelated exception that mentions a missing session elsewhere (an
+    HTTP 404 body, a dashboard lookup) must never reset a chat.
+    """
+    return isinstance(exc, AcpError) and "session not found" in str(exc).lower()
+
+
 def transient_retry_delay(attempt: int) -> float:
     """Backoff delay (seconds) for the *attempt*-th (1-based) transient retry.
 
