@@ -211,7 +211,14 @@ class TestAgentRegistration:
         assert "@ghost/summon" in warning
         assert "my-agent" in warning
 
-    @pytest.mark.parametrize("managed_ref", ["@kirocrew-core", "@kirocrew-core/memory_recall"])
+    @pytest.mark.parametrize(
+        "managed_ref",
+        [
+            "@kirocrew-core",
+            "@kirocrew-core/memory_recall",
+            "@kirocrew-core/ask_question",
+        ],
+    )
     def test_resolvable_at_grants_log_no_dangling_warning(
         self, tmp_path, app_env, monkeypatch, caplog, managed_ref
     ):
@@ -4409,23 +4416,49 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
     side at all: the bytes come from the immutable package, the values from here.
     """
 
-    def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env):
+    def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env, monkeypatch):
         from kiro_crew.apps.bridges import _placeholder_values
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
 
+        monkeypatch.setattr(pptx_engine, "engine_status", lambda: {"ready": True})
         values = _placeholder_values("pptx-maker")
         assert set(values) == {
             "{UV_BIN}",
-            "{ENGINE_ROOT}",
             "{ENGINE_MCP_DIR}",
-            "{APP_PROMPTS}",
+            "{DECK_ROOT}",
             "{TOOLS_PATH}",
         }
         # Under the data home this fixture set, i.e. derived here rather than read.
-        assert str(app_env["home"]) in values["{ENGINE_ROOT}"]
+        assert str(app_env["home"]) in values["{ENGINE_MCP_DIR}"]
         # `{TOOLS_PATH}` becomes the MCP server's PATH, and an empty element there
         # means the CWD on POSIX — tool resolution would depend on where kiro-cli
         # happened to start the server.
         assert "" not in values["{TOOLS_PATH}"].split(os.pathsep)
+
+    def test_an_outdated_engine_resolves_no_agent_placeholders(self, app_env, monkeypatch):
+        from kiro_crew.apps.bridges import _placeholder_values
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        monkeypatch.setattr(
+            pptx_engine,
+            "engine_status",
+            lambda: {"ready": False, "installedTag": "v0.3.8", "updateRequired": True},
+        )
+        assert _placeholder_values("pptx-maker") == {}
+
+    def test_an_outdated_engine_registers_no_pptx_agent(self, app_env, monkeypatch):
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        app_root = _REPO_ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "pptx_maker"
+        manifest = AppManifest.from_json_file(app_root / "app.json")
+        monkeypatch.setattr(
+            pptx_engine,
+            "engine_status",
+            lambda: {"ready": False, "installedTag": "v0.3.8", "updateRequired": True},
+        )
+        assert bridges._register_agents("pptx-maker", manifest, app_root) == []
+        assert not any(app_env["kiro_agents"].iterdir())
 
     def test_an_unknown_app_resolves_nothing(self, tmp_path, app_env):
         """Fail-closed: adding a placeholder to a new app's config is inert until its
@@ -4434,8 +4467,11 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
 
         assert _placeholder_values("some-other-app") == {}
 
-    def test_a_template_is_rendered_into_the_data_home(self, tmp_path, app_env):
+    def test_a_template_is_rendered_into_the_data_home(self, tmp_path, app_env, monkeypatch):
         from kiro_crew.apps.bridges import _render_shipped_agent
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        monkeypatch.setattr(pptx_engine, "engine_status", lambda: {"ready": True})
 
         shipped = tmp_path / "package" / "pptx-maker" / "agents"
         shipped.mkdir(parents=True)
@@ -4455,10 +4491,13 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         # failing everywhere.
         assert Path(rendered["command"]).stem == "uv"
 
-    def test_the_install_dir_copy_is_never_read(self, tmp_path, app_env):
+    def test_the_install_dir_copy_is_never_read(self, tmp_path, app_env, monkeypatch):
         """The whole point of the redesign: an attacker-written copy in the install dir
         has no influence, because it is not consulted."""
         from kiro_crew.apps.bridges import _render_shipped_agent
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        monkeypatch.setattr(pptx_engine, "engine_status", lambda: {"ready": True})
 
         shipped = tmp_path / "package" / "pptx-maker" / "agents"
         shipped.mkdir(parents=True)
@@ -4604,12 +4643,14 @@ class TestRefreshAppAgentsReportsIoFailures:
 
     def test_an_io_failure_is_collected(self, monkeypatch, tmp_path):
         import kiro_crew.apps.bridges as brmod
+
         self._wire(monkeypatch, brmod, tmp_path)
 
         def _fake(app_name, manifest, app_root, io_failures=None):
             if io_failures is not None:
                 io_failures.append("app--agent.json")
             return []
+
         monkeypatch.setattr(brmod, "_register_agents", _fake)
 
         collected: list[str] = []
@@ -4619,6 +4660,7 @@ class TestRefreshAppAgentsReportsIoFailures:
     def test_a_permanent_skip_collects_nothing(self, monkeypatch, tmp_path):
         # An unsafe agent name or malformed spec registers nothing and never will.
         import kiro_crew.apps.bridges as brmod
+
         self._wire(monkeypatch, brmod, tmp_path)
         monkeypatch.setattr(
             brmod, "_register_agents",
@@ -4633,6 +4675,7 @@ class TestRefreshAppAgentsReportsIoFailures:
         # `resources="app"` means the app registers its own agents; the gateway
         # publishing them too is duplicate dispatchable configuration.
         import kiro_crew.apps.bridges as brmod
+
         self._wire(monkeypatch, brmod, tmp_path)
         monkeypatch.setattr(brmod, "get_app", lambda name: {"resources": "app"})
         monkeypatch.setattr(
@@ -4647,6 +4690,7 @@ class TestRefreshAppAgentsReportsIoFailures:
     def test_a_denied_app_has_its_agents_scrubbed_not_rewritten(self, monkeypatch, tmp_path):
         # Rewriting a revoked app's agents would make them dispatchable again.
         import kiro_crew.apps.bridges as brmod
+
         self._wire(monkeypatch, brmod, tmp_path)
         monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: "revoked")
         scrubbed: list[str] = []
@@ -4684,11 +4728,13 @@ class TestDemotionKeepsBackendIndependentServers:
         def _scrub(app_name, unreconciled=None):
             calls["app"] = app_name
             return ["app:stdio-tool"]  # the stdio entry survives
+
         monkeypatch.setattr(brmod, "scrub_backend_mcp_url", _scrub)
         monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
 
         def _blanket(name):
             raise AssertionError("must not blanket-deregister on a health demotion")
+
         monkeypatch.setattr(brmod, "_deregister_mcp_servers", _blanket)
 
         assert bmod._gate_mcp_registration("app", 9280, healthy=False) is True
@@ -4703,6 +4749,7 @@ class TestDemotionKeepsBackendIndependentServers:
         import inspect
 
         import kiro_crew.apps.bridges as brmod
+
         src = inspect.getsource(brmod._register_mcp_servers)
         assert "servers.pop(namespaced, None)" in src
         assert "if is_http and not resolved_port and manifest.backend.entryPoint:" in src
@@ -4761,6 +4808,7 @@ class TestLifecycleWritersShareTheHealthSerialization:
         import threading
 
         import kiro_crew.apps.backend as bmod
+
         result: list[bool] = []
 
         def _probe():
@@ -4768,6 +4816,7 @@ class TestLifecycleWritersShareTheHealthSerialization:
             result.append(not got)
             if got:
                 bmod._health_reconcile_lock.release()
+
         t = threading.Thread(target=_probe)
         t.start()
         t.join()
@@ -4775,6 +4824,7 @@ class TestLifecycleWritersShareTheHealthSerialization:
 
     def test_mcp_registration_runs_under_the_guard(self, monkeypatch):
         import kiro_crew.apps.bridges as brmod
+
         held: list[bool] = []
         monkeypatch.setattr(
             brmod,
@@ -4797,6 +4847,7 @@ class TestLifecycleWritersShareTheHealthSerialization:
 
     def test_mcp_deregistration_runs_under_the_guard(self, monkeypatch):
         import kiro_crew.apps.bridges as brmod
+
         held: list[bool] = []
         monkeypatch.setattr(
             brmod,
@@ -4812,6 +4863,7 @@ class TestLifecycleWritersShareTheHealthSerialization:
         # The READ is inside too, not just the write: an agent copies the ambient spec,
         # so a read before a scrub and a write after it is the interleave that matters.
         import kiro_crew.apps.bridges as brmod
+
         held: list[bool] = []
         monkeypatch.setattr(brmod, "_kiro_agents_dir", lambda: tmp_path)
         monkeypatch.setattr(
@@ -4848,12 +4900,14 @@ class TestRenderFailureIsClassifiedByCause:
 
     def test_a_write_failure_is_collected(self, monkeypatch, tmp_path):
         import kiro_crew.apps.bridges as brmod
+
         src = self._template(tmp_path, '{"name": "a", "root": "{ENGINE_ROOT}"}')
         monkeypatch.setattr(brmod, "_placeholder_values", lambda n: {"{ENGINE_ROOT}": "/x"})
         monkeypatch.setattr(brmod, "_kiro_agents_dir", lambda: tmp_path / "agents")
 
         def _boom(target, data):
             raise OSError("ENOSPC")
+
         monkeypatch.setattr(brmod, "atomic_write", _boom)
 
         collected: list[str] = []
@@ -4862,6 +4916,7 @@ class TestRenderFailureIsClassifiedByCause:
 
     def test_an_unresolved_placeholder_is_not_collected(self, monkeypatch, tmp_path):
         import kiro_crew.apps.bridges as brmod
+
         src = self._template(tmp_path, '{"name": "a", "root": "{ENGINE_ROOT}"}')
         monkeypatch.setattr(brmod, "_placeholder_values", lambda n: {})  # nothing resolves
 

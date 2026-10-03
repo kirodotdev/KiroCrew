@@ -75,11 +75,12 @@ from kiro_crew.apps.builtins.pptx_maker.backend import (
     preview_tools,
     provision,
 )
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.security import (
     REDACTED_CREDENTIAL_TAG,
@@ -394,6 +395,9 @@ _assets_lock = threading.Lock()
 _engine_state = engine.ProvisionState()
 _engine_lock = threading.Lock()
 
+# Serializes PUT /config: see ``_put_deck_root``.
+_config_lock = LoopBoundLock()
+
 
 async def off_loop(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     """Run a blocking callable on the subprocess pool.
@@ -599,10 +603,24 @@ async def _handle_engine(request: web.Request) -> web.Response:
             "elapsed": _engine_state.elapsed(),
         }
     status["pinnedTag"] = provision.ENGINE_TAG
+    # A ready engine is not yet a usable app: the agent is registered after the
+    # build, on the event loop. The page gates "start a deck" on both, because a
+    # chat bound to an unregistered agent fails on its first turn.
+    status["agentReady"] = await off_loop(_agent_registered)
     return web.json_response(status)
 
 
-def _run_provision() -> None:
+#: The app's single agent, by its declared (dispatchable) name.
+AGENT_NAME = "pptx-maker"
+
+
+def _agent_registered() -> bool:
+    from kiro_crew.apps.bridges import app_agent_config_path
+
+    return app_agent_config_path(APP_NAME, AGENT_NAME).is_file()
+
+
+def _run_provision() -> bool:
     """Provision the engine on a worker thread and record the outcome."""
     try:
         outcome = provision.provision()
@@ -612,15 +630,77 @@ def _run_provision() -> None:
             _engine_state.state = "error"
             _engine_state.log = f"provisioning failed: {exc}"
         _audit("engine_provision", provision.ENGINE_TAG, "failed", error=str(exc))
-        return
+        return False
     with _engine_lock:
-        _engine_state.state = "done" if outcome.ok else "error"
+        # A successful build stays "running": the job is done only once the agent
+        # is registered (see `_provision_job`), so the page never sees a ready
+        # engine with no agent behind it.
+        _engine_state.state = "running" if outcome.ok else "error"
         _engine_state.log = outcome.log
     _audit(
         "engine_provision",
         outcome.engine_tag or provision.ENGINE_TAG,
         "ok" if outcome.ok else "failed",
     )
+    return outcome.ok
+
+
+async def _register_current_engine_if_enabled() -> bool | None:
+    """Refresh the agent under the same lock as enable/disable lifecycle writes.
+
+    Returns True when the agent was registered, False when registration failed,
+    and None when it was skipped because the engine is not ready or the app is
+    disabled (a disable that won the lock is not a failure).
+    """
+    async with app_lifecycle_lock(APP_NAME):
+        return await _register_current_engine_locked()
+
+
+async def _register_current_engine_locked() -> bool | None:
+    """The body of :func:`_register_current_engine_if_enabled`.
+
+    Call only while holding ``app_lifecycle_lock(APP_NAME)`` (the lock is not
+    reentrant), so a caller can keep registration and its own follow-up — the
+    deck-root rollback — inside one critical section.
+    """
+    status = await off_loop(engine.engine_status)
+    if not status.get("ready") or not await off_loop(is_app_enabled, APP_NAME):
+        return None
+    from kiro_crew.apps.bridges import register_app
+
+    loop = asyncio.get_running_loop()
+    registration = loop.run_in_executor(subprocess_executor(), register_app, APP_NAME)
+    try:
+        result = await asyncio.shield(registration)
+    except asyncio.CancelledError:
+        await registration
+        raise
+    except Exception as exc:  # noqa: BLE001 - refresh failure is retryable on next use
+        logger.warning("pptx-maker: resource registration failed (%s)", type(exc).__name__)
+        return False
+    for error in result.errors:
+        logger.warning("pptx-maker: resource registration issue: %s", error)
+    return f"{APP_NAME}/{AGENT_NAME}" in result.agents
+
+
+async def _provision_job() -> None:
+    """Run provisioning off-loop, then register the agent on the event loop.
+
+    The job reports "done" only after registration, and "error" when the build
+    succeeded but the agent could not be registered, so the banner offers a retry
+    (provisioning is idempotent: a current engine is not re-fetched).
+    """
+    if not await off_loop(_run_provision):
+        return
+    registered = await _register_current_engine_if_enabled()
+    with _engine_lock:
+        if registered is False:
+            _engine_state.state = "error"
+            _engine_state.log = (
+                _engine_state.log + "\nthe app agent could not be registered"
+            ).lstrip()
+        else:
+            _engine_state.state = "done"
 
 
 async def _handle_engine_provision(request: web.Request) -> web.Response:
@@ -638,7 +718,7 @@ async def _handle_engine_provision(request: web.Request) -> web.Response:
         _engine_state.log = ""
         _engine_state.started = time.time()
     _audit("engine_provision", provision.ENGINE_TAG, "started")
-    asyncio.ensure_future(off_loop(_run_provision))
+    asyncio.create_task(_provision_job())
     return web.json_response({"state": "running"}, status=202)
 
 
@@ -694,31 +774,35 @@ async def _handle_deps(request: web.Request) -> web.Response:
     return web.json_response(await off_loop(_deps_status))
 
 
-def _icon_marker_path(target: Path) -> Path:
-    return target / engine.ICON_MARKER_FILENAME
-
-
-def _icon_provisioned(target: Path, tag: str) -> dict[str, bool]:
-    """Which icon packs are already provisioned for engine version *tag*.
-
-    Keyed on the engine tag so an engine upgrade re-provisions (icon sets ship
-    with the engine version), and gated on the pack's manifest actually existing
-    so a marker left behind by an interrupted download does not read as done.
-    """
-    try:
-        marker = json.loads(_icon_marker_path(target).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(marker, dict) or marker.get("tag") != tag:
-        return {}
-    sources = marker.get("sources")
-    if not isinstance(sources, dict):
-        return {}
+def _icon_provisioned(target: Path) -> dict[str, bool]:
+    """Which SDPM icon packs have committed per-source manifests."""
     return {
         source: True
-        for source, _script in engine.ICON_SOURCES
-        if sources.get(source) and (target / source / "manifest.json").is_file()
+        for source in engine.ICON_SOURCES
+        if (target / source / "manifest.json").is_file()
     }
+
+
+def _swap_pack(staged: Path, pack: Path) -> None:
+    """Replace ``pack`` with the fully downloaded ``staged`` pack.
+
+    The previous pack is renamed aside first and restored if the final rename
+    fails, so at every point either the old or the new pack is in place.
+    """
+    old = pack.with_name(pack.name + ".old")
+    if old.exists():
+        shutil.rmtree(old)
+    had_old = pack.exists()
+    if had_old:
+        pack.rename(old)
+    try:
+        staged.rename(pack)
+    except OSError:
+        if had_old:
+            old.rename(pack)
+        raise
+    if had_old:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def _assets_status() -> dict:
@@ -729,13 +813,13 @@ def _assets_status() -> dict:
     base = engine.user_config_dir()
     target = (base / "assets") if base is not None else None
     tag = engine.engine_tag()
-    done = _icon_provisioned(target, tag) if target is not None else {}
+    done = _icon_provisioned(target) if target is not None else {}
     with _assets_lock:
         state = _assets_state.state
         log = _assets_state.log[-engine.LOG_TAIL_CHARS :]
         elapsed = _assets_state.elapsed()
         per_source = dict(_assets_state.per_source)
-    sources = [source for source, _ in engine.ICON_SOURCES]
+    sources = list(engine.ICON_SOURCES)
     return {
         "sources": sources,
         "provisioned": {source: bool(done.get(source)) for source in sources},
@@ -757,22 +841,6 @@ def _record_assets_log(lines: list[str], line: str) -> None:
         _assets_state.log = "\n".join(lines)
 
 
-def _relocate_pack(generated: Path, destination: Path) -> None:
-    """Move a downloaded pack into the user config dir, replacing any previous one.
-
-    The packs are relocated out of the engine checkout because that checkout is
-    replaced on every app update; the user config dir survives, so a pack is
-    downloaded once per engine version rather than once per update.
-    """
-    staging = destination.with_name(destination.name + ".new")
-    if staging.exists():
-        shutil.rmtree(staging)
-    shutil.move(str(generated), str(staging))
-    if destination.exists():
-        shutil.rmtree(destination)
-    staging.rename(destination)
-
-
 def _provision_assets(force: bool) -> None:
     """Download the icon packs. Runs on a worker thread; never on the loop."""
     base = engine.user_config_dir()
@@ -782,7 +850,6 @@ def _provision_assets(force: bool) -> None:
             _assets_state.log = "engine not ready"
         return
     target = base / "assets"
-    tag = engine.engine_tag()
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -791,11 +858,11 @@ def _provision_assets(force: bool) -> None:
             _assets_state.log = f"cannot create the assets directory: {exc}"
         return
 
-    already = {} if force else _icon_provisioned(target, tag)
+    already = {} if force else _icon_provisioned(target)
     lines: list[str] = []
     succeeded = dict(already)
 
-    for source, script in engine.ICON_SOURCES:
+    for source in engine.ICON_SOURCES:
         if already.get(source):
             with _assets_lock:
                 _assets_state.per_source[source] = "done"
@@ -803,43 +870,43 @@ def _provision_assets(force: bool) -> None:
         with _assets_lock:
             _assets_state.per_source[source] = "running"
         _record_assets_log(lines, f"[{source}] downloading…")
-        result = engine.run_icon_script(source, script)
-        generated = engine.icon_vendor_output(source)
-        if result.returncode == 0 and (generated / "manifest.json").is_file():
+        pack = target / source
+        # Download into a sibling staging root and swap only once the new pack
+        # has its manifest: a failed (forced) refresh must leave the last-good
+        # pack in place instead of deleting it first.
+        staging_root = target.with_name(target.name + ".staging")
+        try:
+            if staging_root.exists():
+                shutil.rmtree(staging_root)
+            staging_root.mkdir(parents=True)
+        except OSError as exc:
+            with _assets_lock:
+                _assets_state.per_source[source] = "error"
+            _record_assets_log(lines, f"[{source}] could not prepare staging: {exc}")
+            continue
+        result = engine.install_asset_source(source, staging_root)
+        staged = staging_root / source
+        if result.returncode == 0 and (staged / "manifest.json").is_file():
             try:
-                _relocate_pack(generated, target / source)
+                _swap_pack(staged, pack)
             except OSError as exc:
                 with _assets_lock:
                     _assets_state.per_source[source] = "error"
                 _record_assets_log(lines, f"[{source}] could not be installed: {exc}")
                 continue
+            finally:
+                shutil.rmtree(staging_root, ignore_errors=True)
             succeeded[source] = True
             with _assets_lock:
                 _assets_state.per_source[source] = "done"
             _record_assets_log(lines, f"[{source}] ready")
         else:
+            shutil.rmtree(staging_root, ignore_errors=True)
             with _assets_lock:
                 _assets_state.per_source[source] = "error"
             _record_assets_log(lines, f"[{source}] download failed (exit {result.returncode})")
 
-    try:
-        atomic_write(
-            _icon_marker_path(target),
-            json.dumps(
-                {
-                    "tag": tag,
-                    "sources": {
-                        source: bool(succeeded.get(source)) for source, _ in engine.ICON_SOURCES
-                    },
-                },
-                indent=2,
-            )
-            + "\n",
-        )
-    except OSError as exc:
-        logger.debug("pptx-maker: icon marker write failed: %s", exc)
-
-    complete = all(succeeded.get(source) for source, _ in engine.ICON_SOURCES)
+    complete = all(succeeded.get(source) for source in engine.ICON_SOURCES)
     with _assets_lock:
         _assets_state.state = "done" if complete else "error"
         _assets_state.log = "\n".join(lines)
@@ -971,6 +1038,91 @@ def _write_deck_root(deck_root: str) -> tuple[int, dict]:
     return 200, {"saved": True, "deckRoot": str(Path(deck_root).expanduser())}
 
 
+def _snapshot_engine_config() -> bytes | None:
+    """The engine config's current bytes, or None when it does not exist yet.
+
+    Any other read failure propagates: rolling back to a guessed state could
+    delete a config that was merely unreadable for a moment.
+
+    BLOCKING — call through ``off_loop``.
+    """
+    try:
+        return paths.engine_config_path().read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _restore_engine_config(snapshot: bytes | None) -> bool:
+    """Put the engine config back to ``snapshot`` (removing it if it was absent).
+
+    Returns False when the rollback itself failed, so the caller can report that
+    the saved deck folder may now disagree with the agent's.
+
+    BLOCKING — call through ``off_loop``.
+    """
+    config_path = paths.engine_config_path()
+    try:
+        if snapshot is None:
+            config_path.unlink(missing_ok=True)
+        else:
+            atomic_write(config_path, snapshot)
+    except OSError as exc:
+        logger.warning("pptx-maker: could not roll back the engine config: %s", exc)
+        return False
+    return True
+
+
+async def _put_deck_root(deck_root: str) -> web.Response:
+    """Save ``deck_root`` and re-register the agent, rolling back on failure.
+
+    Call only under ``_config_lock``. The whole snapshot → write → register →
+    rollback runs inside ``app_lifecycle_lock`` too: otherwise a provisioning
+    job could register the agent with the NEW root between this PUT's failed
+    registration and its rollback, leaving the agent on a folder the config no
+    longer names.
+    """
+    async with app_lifecycle_lock(APP_NAME):
+        return await _put_deck_root_locked(deck_root)
+
+
+async def _put_deck_root_locked(deck_root: str) -> web.Response:
+    """The body of :func:`_put_deck_root`; call only under both locks."""
+    try:
+        snapshot = await off_loop(_snapshot_engine_config)
+    except OSError as exc:
+        logger.warning("pptx-maker: could not read the engine config: %s", exc)
+        return _worker_response(
+            500, {"error": "could not read the engine config", "code": "engine_config_unreadable"}
+        )
+    status, payload = await off_loop(_write_deck_root, deck_root)
+    _audit("set_deck_root", deck_root, "ok" if status == 200 else "failed")
+    if status == 200 and await _register_current_engine_locked() is False:
+        # The agent bakes the deck root into its MCP env at registration, so a
+        # saved config the agent did not pick up would leave new chats writing
+        # decks to the old folder while this page lists the new one. Undo the
+        # write so the two halves keep agreeing, and say so.
+        if not await off_loop(_restore_engine_config, snapshot):
+            _audit("set_deck_root", deck_root, "rollback_failed")
+            # Saved here, not picked up by the agent, and not undone: say the two
+            # may now disagree instead of claiming nothing changed. A gateway
+            # restart re-registers the agent from the saved config.
+            return _worker_response(
+                500,
+                {
+                    "error": "the deck folder was saved but the presentation agent could not "
+                    "be updated, and the previous folder could not be restored; restart "
+                    "Kiro Crew so new chats use the saved folder",
+                    "code": "agent_refresh_rollback_failed",
+                },
+            )
+        _audit("set_deck_root", deck_root, "rolled_back")
+        status, payload = 503, {
+            "error": "the presentation agent could not be updated, so the deck folder was not changed",
+            "code": "agent_refresh_failed",
+        }
+    return _worker_response(status, payload)
+
+
 async def _handle_put_config(request: web.Request) -> web.Response:
     """PUT /config {"deckRoot": "<path>"} — set the deck output directory.
 
@@ -992,9 +1144,10 @@ async def _handle_put_config(request: web.Request) -> web.Response:
             {"error": "'deckRoot' must be a non-empty string", "code": "invalid_deck_root"},
             status=400,
         )
-    status, payload = await off_loop(_write_deck_root, deck_root.strip())
-    _audit("set_deck_root", deck_root.strip(), "ok" if status == 200 else "failed")
-    return _worker_response(status, payload)
+    # One PUT at a time: the snapshot, write, registration and rollback are one
+    # transaction, so an overlapping save cannot be undone by another's rollback.
+    async with _config_lock:
+        return await _put_deck_root(deck_root.strip())
 
 
 # ── decks ───────────────────────────────────────────────────────────────────
@@ -1276,7 +1429,7 @@ async def _handle_style(request: web.Request) -> web.Response:
             {"error": "style not found", "code": "style_not_found"}, status=404
         )
     # Redacted for the same reason a textual deck artifact is: a style is an HTML
-    # document AUTHORED BY AN AGENT — `pptx-maker-style`'s entire job is to write one,
+    # document AUTHORED BY AN AGENT — the agent's style mode exists to write one,
     # and it holds `web_fetch`/`web_search` — so it is model output on its way to
     # the dashboard, not inert user upload. (A user CAN import a style by hand via
     # `POST /styles/import`, which is what makes this easy to misfile; the agent

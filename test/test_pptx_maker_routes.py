@@ -503,20 +503,17 @@ class TestPreviewRedaction(_RoutesFixture):
         """
         # 8-byte PNG magic + 1 filler = 9 bytes, so the next 3 bytes start a base64
         # group and encode to exactly "xoxb".
-        body = (
-            b"\x89PNG\r\n\x1a\n"
-            + bytes([0x42])
-            + base64.b64decode("xoxb")
-            + _raster_body(3000)
-        )
+        body = b"\x89PNG\r\n\x1a\n" + bytes([0x42]) + base64.b64decode("xoxb") + _raster_body(3000)
         blob = base64.b64encode(body).decode()
         self.assertIn("xoxb", blob, "fixture must actually embed the prefix")
 
         (self.deck / "compose" / "intro_1.json").write_text(
-            json.dumps({
-                "bgSvg": f'<image href="data:image/png;base64,{blob}"/>',
-                "notes": f"key {_FAKE_AKIA}",
-            }),
+            json.dumps(
+                {
+                    "bgSvg": f'<image href="data:image/png;base64,{blob}"/>',
+                    "notes": f"key {_FAKE_AKIA}",
+                }
+            ),
             encoding="utf-8",
         )
         resp = await self._preview("compose/intro_1.json")
@@ -564,11 +561,11 @@ class TestPreviewRedaction(_RoutesFixture):
             for name, token in tokens.items():
                 with self.subTest(token=name, filler=filler):
                     (self.deck / "compose" / "intro_1.json").write_text(
-                        json.dumps({
-                            "bgSvg": (
-                                f'<image href="data:image/png;base64,{blob}{token}"/>'
-                            ),
-                        }),
+                        json.dumps(
+                            {
+                                "bgSvg": (f'<image href="data:image/png;base64,{blob}{token}"/>'),
+                            }
+                        ),
                         encoding="utf-8",
                     )
                     resp = await self._preview("compose/intro_1.json")
@@ -609,7 +606,7 @@ class TestPreviewRedaction(_RoutesFixture):
                 # text — the full-token assertion passed while secret material shipped.
                 for size in (8,):
                     for i in range(len(glued) - size + 1):
-                        self.assertNotIn(glued[i:i + size], out, f"{label} @{i}")
+                        self.assertNotIn(glued[i : i + size], out, f"{label} @{i}")
                 # The blob is not exempted either, so no half can be reassembled.
                 self.assertNotIn(raster, out, label)
                 # The terminator is not part of the match, so the document keeps it.
@@ -626,9 +623,7 @@ class TestPreviewRedaction(_RoutesFixture):
         blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(3000)).decode()
         contexts = {
             "json_quote": '{"img": "data:image/png;base64,' + blob + '"}',
-            "escaped_quote": json.dumps(
-                {"bgSvg": f'<image href="data:image/png;base64,{blob}"/>'}
-            ),
+            "escaped_quote": json.dumps({"bgSvg": f'<image href="data:image/png;base64,{blob}"/>'}),
             "css_paren": ".x{background:url(data:image/png;base64," + blob + ");}",
             "markdown_paren": "![alt](data:image/png;base64," + blob + ")",
             "end_of_text": "data:image/png;base64," + blob,
@@ -814,9 +809,7 @@ class TestConfigRoutes(_RoutesFixture):
         # later read), and validating a differently-derived path than the one
         # `deck_root()` resolves would leave that gap open — so the resolved path is
         # what gets written. `~` still works; it is expanded rather than refused.
-        self.assertEqual(
-            saved["output_dir"], str(Path("~/decks-elsewhere").expanduser().resolve())
-        )
+        self.assertEqual(saved["output_dir"], str(Path("~/decks-elsewhere").expanduser().resolve()))
 
     async def test_put_refuses_a_path_that_cannot_be_resolved(self) -> None:
         """An unresolvable deck root must be REFUSED, not stored.
@@ -857,8 +850,9 @@ class TestConfigRoutes(_RoutesFixture):
         # `path_contains_sensitive` half of the check refuses it — a root that would
         # make every deck a sibling of `.ssh` / `.aws`.
         for value in ("~/.ssh", "~/.aws", "~/.ssh/decks", "~"):
-            with _enabled(True), mock.patch.object(
-                paths, "engine_config_path", return_value=target
+            with (
+                _enabled(True),
+                mock.patch.object(paths, "engine_config_path", return_value=target),
             ):
                 resp = await self.client.put(self.url("/config"), json={"deckRoot": value})
             self.assertEqual(resp.status, 400, value)
@@ -900,6 +894,176 @@ class TestConfigRoutes(_RoutesFixture):
         # shard, which is a worse outcome than either.
         self.assertEqual(saved["output_dir"], str(Path("/new").expanduser().resolve()))
 
+    async def test_put_refreshes_agent_registration_after_a_successful_write(self) -> None:
+        target = self.tmp / "cfg-refresh" / "config.json"
+        refresh = mock.AsyncMock()
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(routes, "_register_current_engine_locked", refresh),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 200)
+        refresh.assert_awaited_once_with()
+
+    async def test_put_rolls_back_when_the_agent_cannot_pick_up_the_new_root(self) -> None:
+        """The agent bakes the deck root into its env, so a save it did not pick
+        up would split where chats write decks from where this page reads them."""
+        target = self.tmp / "cfg-rollback" / "config.json"
+        target.parent.mkdir(parents=True)
+        original = json.dumps({"theme": "dark", "output_dir": "/old"}) + "\n"
+        target.write_text(original, encoding="utf-8")
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=False),
+            ),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 503)
+        self.assertEqual((await resp.json())["code"], "agent_refresh_failed")
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    async def test_put_reports_a_failed_rollback_instead_of_claiming_no_change(self) -> None:
+        target = self.tmp / "cfg-rollback-fail" / "config.json"
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=False),
+            ),
+            mock.patch.object(routes, "_restore_engine_config", return_value=False),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 500)
+        self.assertEqual((await resp.json())["code"], "agent_refresh_rollback_failed")
+
+    async def test_an_overlapping_rollback_cannot_undo_another_save(self) -> None:
+        """Without serialization the first PUT's rollback restores its stale
+        snapshot after the second PUT has already saved and registered."""
+        target = self.tmp / "cfg-overlap" / "config.json"
+        first_root = str(self.tmp / "first")
+        second_root = str(self.tmp / "second")
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        calls = 0
+
+        async def _register() -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_entered.set()
+                await release_first.wait()
+                return False
+            return True
+
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(routes, "_register_current_engine_locked", _register),
+        ):
+            first = asyncio.ensure_future(
+                self.client.put(self.url("/config"), json={"deckRoot": first_root})
+            )
+            await first_entered.wait()
+            second = asyncio.ensure_future(
+                self.client.put(self.url("/config"), json={"deckRoot": second_root})
+            )
+            await asyncio.sleep(0.05)
+            release_first.set()
+            first_resp, second_resp = await asyncio.gather(first, second)
+        self.assertEqual(first_resp.status, 503)
+        self.assertEqual(second_resp.status, 200)
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(saved["output_dir"], str(Path(second_root).resolve()))
+
+    async def test_provisioning_registration_waits_for_a_put_rollback(self) -> None:
+        """A provisioning job's registration must not land between a PUT's failed
+        registration and its rollback (it would register the root being undone)."""
+        target = self.tmp / "cfg-provision" / "config.json"
+        put_registering = asyncio.Event()
+        release_put = asyncio.Event()
+        order: list[str] = []
+
+        async def _register() -> bool:
+            if not put_registering.is_set():
+                put_registering.set()
+                await release_put.wait()
+                order.append("put-register")
+                return False
+            order.append("provision-register")
+            return True
+
+        real_restore = routes._restore_engine_config
+
+        def _restore(snapshot: bytes | None) -> bool:
+            order.append("put-rollback")
+            return real_restore(snapshot)
+
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(routes, "_register_current_engine_locked", _register),
+            mock.patch.object(routes, "_restore_engine_config", _restore),
+        ):
+            put = asyncio.ensure_future(
+                self.client.put(self.url("/config"), json={"deckRoot": str(self.tmp / "new")})
+            )
+            await put_registering.wait()
+            provision = asyncio.ensure_future(routes._register_current_engine_if_enabled())
+            await asyncio.sleep(0.05)
+            release_put.set()
+            put_resp = await put
+            await provision
+        self.assertEqual(put_resp.status, 503)
+        self.assertEqual(order, ["put-register", "put-rollback", "provision-register"])
+
+    async def test_put_rollback_removes_a_config_it_created(self) -> None:
+        target = self.tmp / "cfg-rollback-new" / "config.json"
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=False),
+            ),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 503)
+        self.assertFalse(target.exists())
+
+    async def test_put_keeps_the_save_when_registration_is_skipped(self) -> None:
+        """None means disabled or engine not ready: nothing to keep in sync yet."""
+        target = self.tmp / "cfg-skip" / "config.json"
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=None),
+            ),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(target.is_file())
+
     async def test_put_refuses_a_corrupt_engine_config(self) -> None:
         target = self.tmp / "cfg3" / "config.json"
         target.parent.mkdir(parents=True)
@@ -918,8 +1082,24 @@ class TestEngineRoutes(_RoutesFixture):
         self.assertEqual(resp.status, 200)
         body = await resp.json()
         self.assertFalse(body["ready"])
+        self.assertIsNone(body["installedTag"])
+        self.assertFalse(body["updateRequired"])
         self.assertEqual(body["pinnedTag"], provision.ENGINE_TAG)
         self.assertIn("provision", body)
+        self.assertIn("agentReady", body)
+
+    async def test_engine_status_reports_whether_the_agent_is_registered(self) -> None:
+        agent_file = self.tmp / "agents" / "pptx-maker--pptx-maker.json"
+        with (
+            _enabled(True),
+            mock.patch("kiro_crew.apps.bridges.app_agent_config_path", return_value=agent_file),
+        ):
+            before = await (await self.client.get(self.url("/engine"))).json()
+            agent_file.parent.mkdir(parents=True)
+            agent_file.write_text("{}", encoding="utf-8")
+            after = await (await self.client.get(self.url("/engine"))).json()
+        self.assertFalse(before["agentReady"])
+        self.assertTrue(after["agentReady"])
 
     async def test_provision_is_accepted_and_runs_off_the_loop(self) -> None:
         outcome = provision.ProvisionOutcome(ok=True, log="done", engine_tag="v0.0.0")
@@ -939,6 +1119,137 @@ class TestEngineRoutes(_RoutesFixture):
                 self.assertEqual((await resp.json())["state"], "running")
             finally:
                 routes._engine_state.state = "idle"
+
+    async def test_successful_provision_refreshes_registration(self) -> None:
+        refresh = mock.AsyncMock(return_value=True)
+        routes._engine_state.state = "running"
+        try:
+            with (
+                mock.patch.object(routes, "_run_provision", return_value=True),
+                mock.patch.object(routes, "_register_current_engine_if_enabled", refresh),
+            ):
+                await routes._provision_job()
+            refresh.assert_awaited_once_with()
+            self.assertEqual(routes._engine_state.state, "done")
+        finally:
+            routes._engine_state.state = "idle"
+
+    async def test_a_build_whose_agent_cannot_be_registered_ends_in_error(self) -> None:
+        # Otherwise the page would read a ready engine and start a chat on an
+        # agent that does not exist.
+        routes._engine_state.state = "running"
+        routes._engine_state.log = "engine ready at v0.10.1"
+        try:
+            with (
+                mock.patch.object(routes, "_run_provision", return_value=True),
+                mock.patch.object(
+                    routes,
+                    "_register_current_engine_if_enabled",
+                    mock.AsyncMock(return_value=False),
+                ),
+            ):
+                await routes._provision_job()
+            self.assertEqual(routes._engine_state.state, "error")
+            self.assertIn("could not be registered", routes._engine_state.log)
+        finally:
+            routes._engine_state.state = "idle"
+            routes._engine_state.log = ""
+
+    async def test_a_build_while_disabled_is_done_without_registering(self) -> None:
+        routes._engine_state.state = "running"
+        try:
+            with (
+                mock.patch.object(routes, "_run_provision", return_value=True),
+                mock.patch.object(
+                    routes, "_register_current_engine_if_enabled", mock.AsyncMock(return_value=None)
+                ),
+            ):
+                await routes._provision_job()
+            self.assertEqual(routes._engine_state.state, "done")
+        finally:
+            routes._engine_state.state = "idle"
+
+    def test_a_successful_build_is_not_reported_done_before_registration(self) -> None:
+        outcome = provision.ProvisionOutcome(ok=True, log="built", engine_tag="v0.10.1")
+        try:
+            with mock.patch.object(provision, "provision", return_value=outcome):
+                self.assertTrue(routes._run_provision())
+            self.assertEqual(routes._engine_state.state, "running")
+        finally:
+            routes._engine_state.state = "idle"
+            routes._engine_state.log = ""
+
+    async def test_failed_provision_does_not_refresh_registration(self) -> None:
+        refresh = mock.AsyncMock()
+        with (
+            mock.patch.object(routes, "_run_provision", return_value=False),
+            mock.patch.object(routes, "_register_current_engine_if_enabled", refresh),
+        ):
+            await routes._provision_job()
+        refresh.assert_not_awaited()
+
+    async def test_registration_rechecks_enabled_state_inside_the_lifecycle_lock(self) -> None:
+        inside = False
+        registered: list[str] = []
+
+        class _Lock:
+            async def __aenter__(self):
+                nonlocal inside
+                inside = True
+
+            async def __aexit__(self, *exc):
+                nonlocal inside
+                inside = False
+
+        def _enabled_inside(_name: str) -> bool:
+            self.assertTrue(inside)
+            return True
+
+        def _register(name: str):
+            self.assertTrue(inside)
+            registered.append(name)
+            return mock.Mock(errors=[], agents=[f"{routes.APP_NAME}/{routes.AGENT_NAME}"])
+
+        with (
+            mock.patch.object(routes, "app_lifecycle_lock", return_value=_Lock()),
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", side_effect=_enabled_inside),
+            mock.patch("kiro_crew.apps.bridges.register_app", side_effect=_register),
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        self.assertEqual(registered, [routes.APP_NAME])
+        self.assertIs(outcome, True)
+
+    async def test_disable_winning_the_lock_prevents_registration(self) -> None:
+        with (
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", return_value=False),
+            mock.patch("kiro_crew.apps.bridges.register_app") as register,
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        register.assert_not_called()
+        self.assertIsNone(outcome)
+
+    async def test_registration_failure_is_reported_without_escaping(self) -> None:
+        with (
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", return_value=True),
+            mock.patch("kiro_crew.apps.bridges.register_app", side_effect=OSError("read-only")),
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        self.assertIs(outcome, False)
+
+    async def test_a_registration_without_the_agent_is_a_failure(self) -> None:
+        with (
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", return_value=True),
+            mock.patch(
+                "kiro_crew.apps.bridges.register_app",
+                return_value=mock.Mock(errors=["render failed"], agents=[]),
+            ),
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        self.assertIs(outcome, False)
 
     async def test_deps_reports_optional_binaries(self) -> None:
         with _enabled(True):
@@ -1057,10 +1368,14 @@ class TestLibraryRoutes(_RoutesFixture):
         """`coverHtml` is a SLICE of the same agent-authored file `/style` serves
         whole, and the Library tab loads it on every visit — so redacting only the
         full document left the identical bytes reachable by the commoner route."""
-        cover = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
-        with _enabled(True), mock.patch.object(
-            routes.library, "list_styles",
-            return_value=[{"name": "brand", "coverHtml": cover}],
+        cover = "<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>"
+        with (
+            _enabled(True),
+            mock.patch.object(
+                routes.library,
+                "list_styles",
+                return_value=[{"name": "brand", "coverHtml": cover}],
+            ),
         ):
             resp = await self.client.get(self.url("/styles"))
         self.assertEqual(resp.status, 200)
@@ -1076,9 +1391,13 @@ class TestLibraryRoutes(_RoutesFixture):
         HTML left a credential in a name reaching the Library tab unscanned — the
         same one-field-missed shape as the thumbnail hole above.
         """
-        with _enabled(True), mock.patch.object(
-            routes.library, "list_styles",
-            return_value=[{"name": f"brand {_FAKE_AKIA}", "coverHtml": "<p>ok</p>"}],
+        with (
+            _enabled(True),
+            mock.patch.object(
+                routes.library,
+                "list_styles",
+                return_value=[{"name": f"brand {_FAKE_AKIA}", "coverHtml": "<p>ok</p>"}],
+            ),
         ):
             resp = await self.client.get(self.url("/styles"))
         body = await resp.text()
@@ -1091,13 +1410,19 @@ class TestLibraryRoutes(_RoutesFixture):
         agent-reachable. Nested values are covered too, because the analyzed theme
         metadata is a tree.
         """
-        with _enabled(True), mock.patch.object(
-            routes.library, "list_templates",
-            return_value=[{
-                "name": f"deck {_FAKE_AKIA}",
-                "description": f"use {_FAKE_AKIA}",
-                "theme": {"fonts": [f"Font {_FAKE_AKIA}"]},
-            }],
+        with (
+            _enabled(True),
+            mock.patch.object(
+                routes.library,
+                "list_templates",
+                return_value=[
+                    {
+                        "name": f"deck {_FAKE_AKIA}",
+                        "description": f"use {_FAKE_AKIA}",
+                        "theme": {"fonts": [f"Font {_FAKE_AKIA}"]},
+                    }
+                ],
+            ),
         ):
             resp = await self.client.get(self.url("/templates"))
         self.assertEqual(resp.status, 200)
@@ -1108,8 +1433,13 @@ class TestLibraryRoutes(_RoutesFixture):
 
     async def test_style_list_tolerates_a_missing_cover(self) -> None:
         """A style whose file could not be read carries an empty cover."""
-        with _enabled(True), mock.patch.object(
-            routes.library, "list_styles", return_value=[{"name": "brand", "coverHtml": ""}],
+        with (
+            _enabled(True),
+            mock.patch.object(
+                routes.library,
+                "list_styles",
+                return_value=[{"name": "brand", "coverHtml": ""}],
+            ),
         ):
             resp = await self.client.get(self.url("/styles"))
         self.assertEqual(resp.status, 200)
@@ -1119,10 +1449,8 @@ class TestLibraryRoutes(_RoutesFixture):
         """A style is an HTML document written by the `pptx-maker-style` AGENT, so it is
         model output on its way to the dashboard and gets the same pass a textual
         deck artifact does."""
-        styled = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
-        with _enabled(True), mock.patch.object(
-            routes.library, "style_html", return_value=styled
-        ):
+        styled = "<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>"
+        with _enabled(True), mock.patch.object(routes.library, "style_html", return_value=styled):
             resp = await self.client.get(self.url("/style?name=brand"))
         self.assertEqual(resp.status, 200)
         body = await resp.json()
@@ -1135,9 +1463,7 @@ class TestLibraryRoutes(_RoutesFixture):
         silently blank the style preview."""
         raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(4096)).decode()
         styled = f'<html><body><img src="data:image/png;base64,{raster}"></body></html>'
-        with _enabled(True), mock.patch.object(
-            routes.library, "style_html", return_value=styled
-        ):
+        with _enabled(True), mock.patch.object(routes.library, "style_html", return_value=styled):
             resp = await self.client.get(self.url("/style?name=brand"))
         self.assertEqual((await resp.json())["fullHtml"], styled)
 
@@ -1383,112 +1709,29 @@ class TestJsonBodyCatchWidth(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err.status, 400)
 
 
-class TestIconProvisionedMarker(unittest.TestCase):
-    """Icon packs are keyed on the engine tag and gated on the pack's manifest
-    actually existing, so an interrupted download cannot read as 'done'."""
-
+class TestIconProvisionedManifest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def _marker(self, data: object) -> None:
-        (self.tmp / engine.ICON_MARKER_FILENAME).write_text(
-            json.dumps(data), encoding="utf-8"
-        )
 
     def _pack(self, source: str) -> None:
         (self.tmp / source).mkdir(parents=True, exist_ok=True)
         (self.tmp / source / "manifest.json").write_text("{}", encoding="utf-8")
 
-    def test_no_marker_means_nothing_is_provisioned(self) -> None:
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
+    def test_no_manifests_means_nothing_is_provisioned(self) -> None:
+        self.assertEqual(routes._icon_provisioned(self.tmp), {})
 
-    def test_a_corrupt_marker_means_nothing_is_provisioned(self) -> None:
-        (self.tmp / engine.ICON_MARKER_FILENAME).write_text("{not json", encoding="utf-8")
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
+    def test_only_sources_with_committed_manifests_are_ready(self) -> None:
+        self._pack("aws")
+        self.assertEqual(routes._icon_provisioned(self.tmp), {"aws": True})
 
-    def test_a_marker_from_another_engine_version_is_ignored(self) -> None:
-        """Icon sets ship WITH the engine version, so an upgrade must
-        re-provision rather than trust the old pack."""
-        for source, _ in engine.ICON_SOURCES:
+    def test_all_engine_sources_are_detected(self) -> None:
+        for source in engine.ICON_SOURCES:
             self._pack(source)
-        self._marker({"tag": "v0.0.1", "sources": {s: True for s, _ in engine.ICON_SOURCES}})
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v0.3.8"), {})
-
-    def test_a_marker_without_the_pack_on_disk_is_not_done(self) -> None:
-        """The exact interrupted-download case: the marker claims success but the
-        manifest never landed, so the pack must be re-downloaded."""
-        self._marker({"tag": "v1", "sources": {s: True for s, _ in engine.ICON_SOURCES}})
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-    def test_a_matching_marker_with_the_pack_present_is_done(self) -> None:
-        for source, _ in engine.ICON_SOURCES:
-            self._pack(source)
-        self._marker({"tag": "v1", "sources": {s: True for s, _ in engine.ICON_SOURCES}})
-        done = routes._icon_provisioned(self.tmp, "v1")
-        self.assertEqual(set(done), {s for s, _ in engine.ICON_SOURCES})
-
-    def test_a_non_object_marker_is_ignored(self) -> None:
-        self._marker([1, 2])
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-    def test_a_marker_whose_sources_are_not_an_object_is_ignored(self) -> None:
-        self._marker({"tag": "v1", "sources": "all"})
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-
-class TestRelocatePack(unittest.TestCase):
-    """Packs are moved OUT of the engine checkout because that checkout is
-    replaced on every app update; the user config dir survives."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def test_moves_the_generated_pack_into_place(self) -> None:
-        generated = self.tmp / "generated"
-        generated.mkdir()
-        (generated / "manifest.json").write_text("{}", encoding="utf-8")
-        destination = self.tmp / "assets" / "aws"
-        destination.parent.mkdir(parents=True)
-        routes._relocate_pack(generated, destination)
-        self.assertTrue((destination / "manifest.json").is_file())
-        self.assertFalse(generated.exists())
-
-    def test_replaces_a_previous_pack(self) -> None:
-        """A re-download must not merge into the old pack — a renamed icon would
-        otherwise linger forever."""
-        destination = self.tmp / "aws"
-        destination.mkdir()
-        (destination / "stale-icon.svg").write_text("old", encoding="utf-8")
-        generated = self.tmp / "generated"
-        generated.mkdir()
-        (generated / "manifest.json").write_text("{}", encoding="utf-8")
-        routes._relocate_pack(generated, destination)
-        self.assertFalse((destination / "stale-icon.svg").exists())
-        self.assertTrue((destination / "manifest.json").is_file())
-
-    def test_a_leftover_staging_dir_is_cleared_first(self) -> None:
-        """An interrupted previous relocate leaves `<name>.new` behind; without
-        clearing it the move would nest inside it."""
-        destination = self.tmp / "aws"
-        staging = self.tmp / "aws.new"
-        staging.mkdir()
-        (staging / "junk").write_text("x", encoding="utf-8")
-        generated = self.tmp / "generated"
-        generated.mkdir()
-        (generated / "manifest.json").write_text("{}", encoding="utf-8")
-        routes._relocate_pack(generated, destination)
-        self.assertFalse(staging.exists())
-        self.assertTrue((destination / "manifest.json").is_file())
-        self.assertFalse((destination / "junk").exists())
+        self.assertEqual(set(routes._icon_provisioned(self.tmp)), set(engine.ICON_SOURCES))
 
 
 class TestProvisionAssetsWorker(unittest.TestCase):
-    """The icon-pack download worker. Runs on a worker thread, so its only
-    channel to the user is the provisioning state — it must never raise, and it
-    must not report success for a pack that did not land."""
-
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -1497,33 +1740,30 @@ class TestProvisionAssetsWorker(unittest.TestCase):
         routes._assets_state = engine.ProvisionState()
         self.addCleanup(setattr, routes, "_assets_state", engine.ProvisionState())
 
-    def _run(self, *, force: bool = False, script_result=None, generate_manifest: bool = True):
-        """Drive the worker with the engine's script runner faked out."""
-        result = script_result or engine.EngineResult(returncode=0)
+    def _run(
+        self,
+        *,
+        force: bool = False,
+        result: engine.EngineResult | None = None,
+        create_manifest: bool = True,
+    ) -> list[str]:
+        calls: list[str] = []
+        outcome = result or engine.EngineResult(returncode=0, stdout="{}")
 
-        def _fake_script(source: str, script: str):
-            if result.returncode == 0:
-                # Always produce the output DIRECTORY so a relocate would
-                # succeed; only the manifest distinguishes a real download from
-                # a script that exited 0 having written nothing.
-                vendor = self.tmp / "vendor" / source
-                vendor.mkdir(parents=True, exist_ok=True)
-                if generate_manifest:
-                    (vendor / "manifest.json").write_text("{}", encoding="utf-8")
-            return result
+        def _install(source: str, target: Path) -> engine.EngineResult:
+            calls.append(source)
+            if outcome.returncode == 0 and create_manifest:
+                pack = target / source
+                pack.mkdir(parents=True, exist_ok=True)
+                (pack / "manifest.json").write_text("{}", encoding="utf-8")
+            return outcome
 
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            routes.engine, "run_icon_script", side_effect=_fake_script
-        ), mock.patch.object(
-            routes.engine,
-            "icon_vendor_output",
-            side_effect=lambda source: self.tmp / "vendor" / source,
+        with (
+            mock.patch.object(routes.engine, "user_config_dir", return_value=self.config_dir),
+            mock.patch.object(routes.engine, "install_asset_source", side_effect=_install),
         ):
             routes._provision_assets(force)
+        return calls
 
     def test_a_not_ready_engine_is_an_error_state_not_a_crash(self) -> None:
         with mock.patch.object(routes.engine, "user_config_dir", return_value=None):
@@ -1531,93 +1771,56 @@ class TestProvisionAssetsWorker(unittest.TestCase):
         self.assertEqual(routes._assets_state.state, "error")
         self.assertIn("not ready", routes._assets_state.log)
 
-    def test_a_successful_run_installs_every_pack_and_writes_the_marker(self) -> None:
-        self._run()
+    def test_a_successful_run_installs_every_manifest(self) -> None:
+        self.assertEqual(self._run(), list(engine.ICON_SOURCES))
         self.assertEqual(routes._assets_state.state, "done")
-        target = self.config_dir / "assets"
-        for source, _ in engine.ICON_SOURCES:
-            self.assertTrue((target / source / "manifest.json").is_file(), source)
-        marker = json.loads(
-            (target / engine.ICON_MARKER_FILENAME).read_text(encoding="utf-8")
-        )
-        self.assertEqual(marker["tag"], "v0.3.8")
-        self.assertTrue(all(marker["sources"].values()))
+        for source in engine.ICON_SOURCES:
+            self.assertTrue((self.config_dir / "assets" / source / "manifest.json").is_file())
 
-    def test_a_failed_download_is_recorded_per_source_and_not_marked_done(self) -> None:
-        """Presentations work without icon packs, so a failure is reported rather
-        than fatal — but it must never be recorded as provisioned."""
-        self._run(script_result=engine.EngineResult(returncode=1, stderr="404"))
+    def test_a_failed_download_is_recorded_per_source(self) -> None:
+        self._run(result=engine.EngineResult(returncode=1, stderr="404"))
         self.assertEqual(routes._assets_state.state, "error")
-        for source, _ in engine.ICON_SOURCES:
+        for source in engine.ICON_SOURCES:
             self.assertEqual(routes._assets_state.per_source[source], "error")
-        marker = json.loads(
-            (self.config_dir / "assets" / engine.ICON_MARKER_FILENAME).read_text(encoding="utf-8")
-        )
-        self.assertFalse(any(marker["sources"].values()))
 
     def test_a_zero_exit_without_a_manifest_is_still_a_failure(self) -> None:
-        """The script can exit 0 having written an output dir but no manifest;
-        only the manifest proves the pack actually landed, so the run must NOT be
-        recorded as provisioned (otherwise it never self-heals on a retry)."""
-        self._run(generate_manifest=False)
+        self._run(create_manifest=False)
         self.assertEqual(routes._assets_state.state, "error")
-        for source, _ in engine.ICON_SOURCES:
-            self.assertEqual(routes._assets_state.per_source[source], "error")
-        marker = json.loads(
-            (self.config_dir / "assets" / engine.ICON_MARKER_FILENAME).read_text(encoding="utf-8")
+        self.assertTrue(
+            all(routes._assets_state.per_source[s] == "error" for s in engine.ICON_SOURCES)
         )
-        self.assertFalse(any(marker["sources"].values()))
 
     def test_an_already_provisioned_pack_is_skipped(self) -> None:
-        """Idempotence: the packs are large, so a re-run at the same engine tag
-        must not re-download them."""
         self._run()
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            routes.engine, "run_icon_script"
-        ) as script:
-            routes._provision_assets(False)
-        script.assert_not_called()
+        self.assertEqual(self._run(), [])
         self.assertEqual(routes._assets_state.state, "done")
 
-    def test_force_re_downloads_an_already_provisioned_pack(self) -> None:
+    def test_force_reinstalls_every_pack(self) -> None:
         self._run()
-        calls: list[str] = []
+        self.assertEqual(self._run(force=True), list(engine.ICON_SOURCES))
 
-        def _record(source: str, script: str):
-            calls.append(source)
-            vendor = self.tmp / "vendor" / source
-            vendor.mkdir(parents=True, exist_ok=True)
-            (vendor / "manifest.json").write_text("{}", encoding="utf-8")
-            return engine.EngineResult(returncode=0)
-
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            routes.engine, "run_icon_script", side_effect=_record
-        ), mock.patch.object(
-            routes.engine,
-            "icon_vendor_output",
-            side_effect=lambda source: self.tmp / "vendor" / source,
-        ):
-            routes._provision_assets(True)
-        self.assertEqual(calls, [s for s, _ in engine.ICON_SOURCES])
-
-    def test_an_install_failure_is_reported_and_does_not_abort_the_run(self) -> None:
-        """One pack failing to move must not prevent the other from installing."""
-        with mock.patch.object(routes, "_relocate_pack", side_effect=OSError("cross-device")):
-            self._run()
+    def test_a_failed_forced_refresh_keeps_the_last_good_pack(self) -> None:
+        """The refresh downloads into staging, so a failure must not have
+        deleted the pack the user already had."""
+        self._run()
+        self._run(force=True, result=engine.EngineResult(returncode=1, stderr="offline"))
         self.assertEqual(routes._assets_state.state, "error")
-        self.assertIn("could not be installed", routes._assets_state.log)
+        for source in engine.ICON_SOURCES:
+            self.assertTrue((self.config_dir / "assets" / source / "manifest.json").is_file())
+        self.assertFalse((self.config_dir / "assets.staging").exists())
+
+    def test_a_successful_forced_refresh_replaces_the_pack(self) -> None:
+        self._run()
+        stale = self.config_dir / "assets" / engine.ICON_SOURCES[0] / "stale.txt"
+        stale.write_text("old", encoding="utf-8")
+        self._run(force=True)
+        self.assertEqual(routes._assets_state.state, "done")
+        self.assertFalse(stale.exists())
+        self.assertFalse((self.config_dir / "assets.staging").exists())
+        for source in engine.ICON_SOURCES:
+            self.assertFalse((self.config_dir / "assets" / f"{source}.old").exists())
 
     def test_an_uncreatable_assets_dir_is_an_error_state(self) -> None:
-        """A read-only config dir must become a reported error, not an unhandled
-        exception on the worker thread."""
         real_mkdir = Path.mkdir
         target = self.config_dir / "assets"
 
@@ -1626,12 +1829,9 @@ class TestProvisionAssetsWorker(unittest.TestCase):
                 raise OSError("read-only")
             return real_mkdir(self_path, *args, **kwargs)
 
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            Path, "mkdir", _deny
+        with (
+            mock.patch.object(routes.engine, "user_config_dir", return_value=self.config_dir),
+            mock.patch.object(Path, "mkdir", _deny),
         ):
             routes._provision_assets(False)
         self.assertEqual(routes._assets_state.state, "error")
@@ -1659,7 +1859,7 @@ class TestAssetsStatusRoute(_RoutesFixture):
             resp = await self.client.get(self.url("/assets"))
         self.assertEqual(resp.status, 200)
         body = await resp.json()
-        self.assertEqual(body["sources"], [s for s, _ in engine.ICON_SOURCES])
+        self.assertEqual(body["sources"], list(engine.ICON_SOURCES))
         self.assertEqual(body["tag"], "v0.3.8")
         # A not-ready engine must report every pack as unprovisioned, not ready.
         self.assertFalse(body["ready"])
@@ -1683,8 +1883,9 @@ class TestAssetsStatusRoute(_RoutesFixture):
         """``?force=true`` is what re-downloads an already-provisioned pack; if it
         were dropped the endpoint would silently no-op for those users."""
         seen: list[bool] = []
-        with _enabled(True), mock.patch.object(
-            routes, "_provision_assets", side_effect=seen.append
+        with (
+            _enabled(True),
+            mock.patch.object(routes, "_provision_assets", side_effect=seen.append),
         ):
             resp = await self.client.post(self.url("/assets/provision?force=true"))
             self.assertEqual(resp.status, 202)
@@ -1694,8 +1895,9 @@ class TestAssetsStatusRoute(_RoutesFixture):
 
     async def test_provision_defaults_to_not_forcing(self) -> None:
         seen: list[bool] = []
-        with _enabled(True), mock.patch.object(
-            routes, "_provision_assets", side_effect=seen.append
+        with (
+            _enabled(True),
+            mock.patch.object(routes, "_provision_assets", side_effect=seen.append),
         ):
             resp = await self.client.post(self.url("/assets/provision"))
             self.assertEqual(resp.status, 202)
@@ -1759,9 +1961,7 @@ class TestAuditRedaction(unittest.TestCase):
         self.assertLessEqual(len(seen["error"]), 200)
 
     def test_ordinary_values_pass_through_unchanged(self) -> None:
-        seen = self._capture(
-            operation="style_rename", resources="brand->brand-v2", outcome="ok"
-        )
+        seen = self._capture(operation="style_rename", resources="brand->brand-v2", outcome="ok")
         self.assertEqual(seen["resources"], "brand->brand-v2")
         self.assertEqual(seen["error"], "")
 

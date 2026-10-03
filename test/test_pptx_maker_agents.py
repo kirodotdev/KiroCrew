@@ -1,114 +1,96 @@
-"""The chat-mode agent names the frontend sends must be DECLARED agent names.
-
-Lives in the repo-level ``test/`` tree (not the app's in-package ``tests/``)
-because ``setup.cfg`` sets ``testpaths = test transfer``.
-
-This guards a failure that is invisible at runtime: the value the page hands to
-``createChatSlot`` is stored on the slot verbatim, and dispatch resolves it via
-``config.loader.resolve_agent_bindings`` -> ``_materialized_kiro_agent``, whose
-snapshot is keyed on each registered config's ``name`` field
-(``_scan_materialized_agents``). An unknown value matches nothing there and
-resolution FALLS BACK to the default agent instead of erroring — so a wrong
-string opens a plain chat with none of this app's MCP tools or prompt, while
-looking like it worked. The ``{app}--{agent}`` stem the registrar writes is only
-the on-disk FILENAME, never a dispatchable identifier, and the slash form is a
-display namespace; both are pinned rejected below because each has shipped as
-this exact silent bug once already.
-"""
+"""Contracts for the server-driven SDPM v0.10 PPTX agent."""
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
-import pytest
+_APP_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "src"
+    / "kiro_crew"
+    / "apps"
+    / "builtins"
+    / "pptx_maker"
+)
 
-# Anchored on the REPO ROOT, derived from this file, never on the CWD. A
-# CWD-relative path resolves differently under `pytest -n auto` (each xdist worker
-# can start elsewhere), which made these pass locally and fail with
-# `FileNotFoundError` in the sharded run.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_APP_DIR = _REPO_ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "pptx_maker"
-_PAGE = _REPO_ROOT / "website" / "src" / "apps" / "pptx-maker" / "PptxMakerPage.tsx"
-
-
-def _declared_agent_names() -> list[str]:
-    """The ``name`` of every agent the manifest declares, in manifest order.
-
-    Every shipped config must declare a ``name``: it is framework-owned
-    (``bridges._FRAMEWORK_OWNED_AGENT_KEYS``) and refreshed from the template on
-    every registration. Asserted here rather than subscripted so a nameless
-    config fails with the reason — for such a config the registered filename
-    STEM becomes the dispatchable identifier (``_scan_materialized_agents``'s
-    fallback), and the negative guards below would need re-gating.
-    """
-    manifest = json.loads((_APP_DIR / "app.json").read_text(encoding="utf-8"))
-    names = []
-    for rel in manifest.get("agents") or []:
-        data = json.loads((_APP_DIR / rel).read_text(encoding="utf-8"))
-        name = data.get("name")
-        assert isinstance(name, str) and name, (
-            f"{rel} declares no `name`; its registered filename stem would be the "
-            "dispatchable identifier — update this test's guards before shipping that"
-        )
-        names.append(name)
-    return names
-
-
-def _page_chat_agents() -> list[str]:
-    """The `CHAT_AGENTS` tuple as the page actually spells it."""
-    if not _PAGE.is_file():
-        # A python-only checkout (sdist, or a backend-only CI job) has no `website/`.
-        # Skip rather than fail: the guard is about frontend/backend agreement and
-        # there is no frontend to disagree with. Same posture as the e2e gate.
-        pytest.skip("no website/ checkout — nothing to compare against")
-    source = _PAGE.read_text(encoding="utf-8")
-    block = re.search(r"const CHAT_AGENTS = \[(.*?)\] as const", source, re.S)
-    assert block, "CHAT_AGENTS is no longer a literal tuple — update this test"
-    return re.findall(r"'([^']+)'", block.group(1))
+_EXPECTED_SDPM_TOOLS = {
+    "@sdpm/start_presentation",
+    "@sdpm/start_composing",
+    "@sdpm/start_style",
+    "@sdpm/start_translation",
+    "@sdpm/init_deck_workspace",
+    "@sdpm/check_specs",
+    "@sdpm/analyze_template",
+    "@sdpm/apply_style",
+    "@sdpm/generate_pptx",
+    "@sdpm/search_assets",
+    "@sdpm/list_styles",
+    "@sdpm/list_templates",
+    "@sdpm/read_guides",
+    "@sdpm/code_to_slide",
+    "@sdpm/grid",
+    "@sdpm/arch_diagram",
+    "@sdpm/read_attachment",
+    "@sdpm/import_attachment",
+    "@sdpm/run_python",
+    "@sdpm/run_style_python",
+}
 
 
-class TestChatAgentNamesResolve:
-    def test_every_chat_agent_is_a_declared_name(self) -> None:
-        """The `name` field is what `_scan_materialized_agents` makes dispatchable."""
-        declared = set(_declared_agent_names())
-        assert declared, "the manifest declares no agents — this guard is vacuous"
-        for agent in _page_chat_agents():
-            assert agent in declared, (
-                f"{agent!r} is not the declared `name` of any shipped agent; dispatch "
-                f"would fall back to the default agent silently. Declared: "
-                f"{sorted(declared)}"
-            )
+def _manifest() -> dict:
+    return json.loads((_APP_DIR / "app.json").read_text(encoding="utf-8"))
 
-    def test_the_page_does_not_use_the_slash_namespace(self) -> None:
-        """The slash form is a display namespace, not a dispatchable name.
 
-        Pinned separately because it fails soundlessly: a `pptx-maker/...` value
-        opens a working chat with the wrong agent.
-        """
-        for agent in _page_chat_agents():
-            assert "/" not in agent, f"{agent!r} uses the namespace form, not the declared name"
+def _agent() -> dict:
+    return json.loads((_APP_DIR / "agents" / "pptx-maker.json").read_text(encoding="utf-8"))
 
-    def test_the_page_does_not_use_the_filename_stem(self) -> None:
-        """The `{app}--{agent}` stem is the registered FILENAME, not a name.
 
-        `_scan_materialized_agents` trusts each config's declared `name` and uses
-        the stem only when a config declares none — a state `_declared_agent_names`
-        asserts against for this app — so the double-hyphen spelling matches
-        nothing and dispatch falls back to the default agent silently. Pinned
-        separately so a reintroduction fails with the reason, not just "not found
-        in the set".
-        """
-        for agent in _page_chat_agents():
-            assert "--" not in agent, (
-                f"{agent!r} is the on-disk filename stem, which dispatch cannot "
-                "resolve — use the agent's declared `name`"
-            )
+class TestSingleServerDrivenAgent:
+    def test_manifest_declares_exactly_the_single_agent(self) -> None:
+        assert _manifest()["agents"] == ["agents/pptx-maker.json"]
+        assert _manifest()["version"] == "0.4.0"
 
-    def test_all_three_chat_modes_are_present(self) -> None:
-        """Spec, vibe and style are the three the UI offers; a dropped one would leave
-        a mode button pointing at nothing."""
-        agents = _page_chat_agents()
-        assert len(agents) == 3, agents
-        assert {a.rsplit("-", 1)[-1] for a in agents} == {"spec", "vibe", "style"}
+    def test_role_text_is_not_embedded_or_loaded_from_files(self) -> None:
+        agent = _agent()
+        assert agent["name"] == "pptx-maker"
+        assert "prompt" not in agent
+        assert "resources" not in agent
+        assert not (_APP_DIR / "prompts").exists()
+
+    def test_agent_mounts_the_exact_v010_tool_contract(self) -> None:
+        agent = _agent()
+        mounted = {tool for tool in agent["tools"] if tool.startswith("@sdpm/")}
+        assert mounted == _EXPECTED_SDPM_TOOLS
+        assert set(_manifest()["permissions"]["mcpTools"]) == _EXPECTED_SDPM_TOOLS
+        assert "@sdpm/hearing" not in agent["tools"]
+        assert "@kirocrew-core/ask_question" in agent["tools"]
+
+    def test_composition_delegates_to_copies_of_the_same_agent(self) -> None:
+        subagent = _agent()["toolsSettings"]["subagent"]
+        assert subagent == {
+            "availableAgents": ["pptx-maker"],
+            "trustedAgents": ["pptx-maker"],
+        }
+        assert "use_subagent" in _agent()["tools"]
+
+    def test_composition_cannot_fall_back_to_crew_managed_spawns(self) -> None:
+        """kirocrew-core is mounted whole, so without an exclusion the model may
+        pick spawn_run over the harness's own use_subagent for composers."""
+        excluded = set(_agent()["managedToolPolicy"]["exclude"])
+        assert {"spawn_run", "spawn_sub_agents", "spawn_continue", "task_run"} <= excluded
+
+    def test_mcp_environment_carries_the_deck_root_without_preapproval(self) -> None:
+        agent = _agent()
+        sdpm = agent["mcpServers"]["sdpm"]
+        assert sdpm["args"] == [
+            "run",
+            "--no-sync",
+            "--directory",
+            "{ENGINE_MCP_DIR}",
+            "python",
+            "server_acp.py",
+        ]
+        assert sdpm["env"]["SDPM_DECK_ROOT"] == "{DECK_ROOT}"
+        assert "autoApprove" not in sdpm
+        assert "allowedTools" not in agent

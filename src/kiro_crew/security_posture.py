@@ -2338,6 +2338,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # or the drift guard cannot notice a change that starts returning `{exc}`.
         "apps/builtins/papyrus/backend/tectonic.py",
         "apps/builtins/pptx_maker/backend/decks.py",
+        # `engine_status` reports the source marker's `tag` as `installedTag` on
+        # `GET /engine`, rendered in the update banner; the marker sits in a tree
+        # the agent can write, so the tag is redacted and bounded on the way out.
+        "apps/builtins/pptx_maker/backend/engine.py",
         "apps/builtins/pptx_maker/backend/routes.py",
         # A behavior-preserving decomposition of the Spec Builder app backend.
         # These modules still feed the same app-owned HTTP/dashboard surface; the

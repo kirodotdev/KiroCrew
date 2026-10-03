@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -197,6 +198,38 @@ class TestListDecks(_DeckTree):
         self._write(deck / "deck.json", json.dumps({"name": "Quarterly Review"}))
         self.assertEqual(decks.list_decks()[0]["name"], "Quarterly Review")
 
+    def test_name_comes_from_the_outline_title_when_deck_json_has_none(self) -> None:
+        # The engine's v0.9+ deck.json carries no name; the outline's `# Title` is it.
+        deck = self._deck("20260103-titled")
+        self._write(deck / "deck.json", json.dumps({"template": "blank-dark"}))
+        self._write(deck / "specs" / "outline.md", "\n# Coffee brewing basics\n\n## Methods\n")
+        self.assertEqual(decks.list_decks()[0]["name"], "Coffee brewing basics")
+
+    def test_a_credential_across_the_title_bound_is_redacted_not_split(self) -> None:
+        deck = self._deck("20260103-leaky")
+        self._write(deck / "deck.json", "{}")
+        title = "A" * 190 + "AKIA" + "1" * 16
+        self._write(deck / "specs" / "outline.md", f"# {title}\n")
+        name = decks.list_decks()[0]["name"]
+        self.assertNotIn("AKIA", name)
+        self.assertNotIn("1" * 6, name)
+
+    def test_a_pathological_title_line_is_read_in_linear_time(self) -> None:
+        # `# a` + spaces + `x`: the old lazy-group-then-`\s*$` pattern was quadratic.
+        deck = self._deck("20260103-slow")
+        self._write(deck / "deck.json", "{}")
+        self._write(deck / "specs" / "outline.md", "# a" + " " * 200_000 + "x  \n")
+        started = time.monotonic()
+        name = decks.list_decks()[0]["name"]
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertTrue(name.startswith("a"))
+
+    def test_an_outline_without_a_leading_title_does_not_name_the_deck(self) -> None:
+        deck = self._deck("20260103-untitled")
+        self._write(deck / "deck.json", "{}")
+        self._write(deck / "specs" / "outline.md", "## Methods\n\n# Not the first line\n")
+        self.assertEqual(decks.list_decks()[0]["name"], "20260103-untitled")
+
     def test_malformed_deck_json_falls_back_to_directory_name(self) -> None:
         deck = self._deck("20260104-broken")
         self._write(deck / "deck.json", "{not json")
@@ -245,6 +278,17 @@ class TestListDecks(_DeckTree):
         self.assertEqual(
             decks.list_decks()[0]["thumbnailUrl"],
             "preview/20260101-thumb/preview/page1-intro.png",
+        )
+
+    def test_v010_first_slug_thumbnail_wins_over_legacy_page(self) -> None:
+        deck = self._deck("20260101-current-thumb")
+        self._write(deck / "specs" / "outline.md", "- [intro]\n- [close]\n")
+        self._write(deck / "slides" / "intro.json", "{}")
+        self._write(deck / "preview" / "intro.png", "current")
+        self._write(deck / "preview" / "page1-intro.png", "legacy")
+        self.assertEqual(
+            decks.list_decks()[0]["thumbnailUrl"],
+            "preview/20260101-current-thumb/preview/intro.png",
         )
 
     def test_listing_is_capped(self) -> None:
@@ -330,6 +374,18 @@ class TestDeckDetail(_DeckTree):
         self.assertIsNone(detail["slides"][0]["previewUrl"])
         self.assertEqual(
             detail["slides"][1]["previewUrl"], "preview/20260101-png/preview/page2-two.png"
+        )
+
+    def test_slug_preview_wins_over_page_fallback(self) -> None:
+        deck = self._deck("20260101-v010-png")
+        self._write(deck / "slides" / "intro.json", "{}")
+        self._write(deck / "preview" / "intro.png", "current")
+        self._write(deck / "preview" / "page1-intro.png", "legacy")
+        detail = decks.deck_detail("20260101-v010-png")
+        assert detail is not None
+        self.assertEqual(
+            detail["slides"][0]["previewUrl"],
+            "preview/20260101-v010-png/preview/intro.png",
         )
 
     def test_spec_tabs_and_updated_timestamps(self) -> None:
