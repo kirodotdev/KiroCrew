@@ -303,6 +303,22 @@ class TerminalCoordinator(ManagerComponent):
                 "partial": info.partial,
             },
         )
+        # A terminal is where the user watches the wave settle, so it
+        # re-publishes the parent's authoritative queued depth. The pushed
+        # count is advisory and otherwise only reset on a reconnect's snapshot;
+        # without this, a missed or superseded frame leaves "N waiting to
+        # start" and its wait reason on the card after every run has finished.
+        # A queued-stop terminal is the exception: it is the synthetic record
+        # of a row stopped before it started, and the stop that removed the row
+        # has already asked for the depth (and a read that fails is retried),
+        # so another request would only discard that stop's read and queue a
+        # fresh one behind the stop's settle writes. Guarded: an advisory emit
+        # must never cost the parent its completion.
+        if info.parent_session_key and not info.queued:
+            try:
+                self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
+            except Exception:
+                logger.debug("queue-depth re-emit failed after terminal", exc_info=True)
         if not self._manager._on_done:
             return True
         if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):

@@ -2759,6 +2759,29 @@ class TestStartNextQueuedTurn:
         assert slot2._deferred_notes == [], "control: the note should flush off-plan"
 
 
+def _no_children() -> MagicMock:
+    """A registry with no child attached: none running and none queued.
+
+    The synthesis checks ask the teardown guards' predicate, which also counts
+    children the spawn gate still holds; a bare MagicMock would answer that
+    count with a truthy mock and read as a queued child.
+    """
+    return _children()
+
+
+def _children(*, running=(), queued: int | None = 0, in_memory: bool = False) -> MagicMock:
+    """A registry double for the synthesis fire gate with every probe set
+    explicitly: a bare MagicMock answers an unset probe with a truthy mock
+    (``int(MagicMock()) == 1``), which reads as a queued child. *queued*
+    ``None`` is a store nobody could read."""
+    return MagicMock(
+        running_agents_for=MagicMock(return_value=list(running)),
+        queued_count_for_async=AsyncMock(return_value=queued or 0),
+        queued_count_or_none_async=AsyncMock(return_value=queued),
+        has_in_memory_pending_work_for=MagicMock(return_value=in_memory),
+    )
+
+
 class TestRunPendingSynthesis:
     @pytest.mark.asyncio
     async def test_unarmed_synthesis_just_finishes_the_cycle(self, tmp_path):
@@ -2787,23 +2810,36 @@ class TestRunPendingSynthesis:
         assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
-    async def test_running_agents_defer_synthesis(self, tmp_path):
+    async def test_the_dispatch_does_not_read_the_store_again(self, tmp_path):
+        """The fire gate's verdict is taken once, by the caller: the synthesis
+        dispatch itself asks no registry probe."""
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["a"]))
+        state.subagents = _children()
 
-        with patch.object(chat_runner, "_finish_queue_cycle") as finish:
+        async def _ok():
+            return None
+
+        def _capture(_state, _slot, coro, *a, **kw):
+            coro.close()
+            return asyncio.ensure_future(_ok())
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", side_effect=_capture),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
             await chat_runner._run_pending_synthesis(state, slot)
 
-        finish.assert_called_once()
-        assert slot._pending_synthesis is True
+        state.subagents.queued_count_or_none_async.assert_not_awaited()
+        state.subagents.running_agents_for.assert_not_called()
+        assert slot._pending_synthesis is False
 
     @pytest.mark.asyncio
     async def test_synthesis_timeout_is_swallowed(self, tmp_path):
         """The ceiling already rendered a card; re-raising would go unretrieved."""
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         async def _boom():
             raise asyncio.TimeoutError
@@ -2831,7 +2867,7 @@ class TestRunPendingSynthesis:
         """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         async def _ok():
             return None
@@ -2911,7 +2947,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot  # a live slot is registered
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
             await chat_runner._finish_queue_cycle(state, slot)
@@ -2921,6 +2957,164 @@ class TestFinishQueueCycle:
         assert not any(m.get("role") == "done" for m in slot.messages)
         if slot.task is not None:
             slot.task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "children",
+        [
+            # The running half is what is pinned: the queued probe answers 0.
+            {"running": ["a"], "queued": 0},
+            # A child only the store holds (gate-deferred, or claimed and not
+            # registered).
+            {"queued": 1},
+            # A sibling whose report still waits on its teardown, a window
+            # entry, a live follow-up watcher.
+            {"in_memory": True},
+        ],
+        ids=["running", "queued-in-store", "pending-in-memory"],
+    )
+    async def test_an_attached_child_keeps_the_cycle_idle(self, tmp_path, children):
+        """The fire gate holds for any of its four terms: the cycle goes idle
+        with the arm kept, and no synthesis task starts."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot  # a live slot is registered
+        slot._pending_synthesis = True
+        state.subagents = _children(**children)
+
+        with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth:
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+
+        synth.assert_not_called()
+        assert slot._synthesis_inflight is False
+        assert slot._pending_synthesis is True
+        assert slot._synthesis_recheck is None, "a real answer arms no re-check"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("slot_key", ["slack_1712.000100", "cron-nightly"])
+    async def test_a_linked_tab_is_checked_on_its_own_session_key(self, tmp_path, slot_key):
+        """A channel- or cron-born tab's children register under its real
+        session, not ``dashboard:<slot>``: a gate-deferred child there keeps the
+        synthesis from firing."""
+        state, slot = _state(tmp_path), _slot(slot_key)
+        linked = "slack:1712.000100" if slot_key.startswith("slack_") else "cron:nightly"
+        slot.linked_session_key = linked
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        subs = _children()
+        subs.queued_count_or_none_async = AsyncMock(
+            side_effect=lambda key: 1 if key == linked else 0
+        )
+        state.subagents = subs
+
+        with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth:
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+
+        synth.assert_not_called()
+        subs.running_agents_for.assert_called_once_with(linked)
+        subs.queued_count_or_none_async.assert_awaited_once_with(linked)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("close_subagent_managers")
+    async def test_a_slow_teardown_sibling_holds_the_fire_gate(self, tmp_path):
+        """A: done and reported. B: done, its report still waiting on a teardown
+        longer than the reset timeout. Nothing is running or queued, but B's
+        result has not landed: the real manager's in-memory term holds the
+        fire gate until B's task ends."""
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        parent = f"dashboard:{slot.key}"
+        b = SubagentInfo(id="b1", task="b", parent_session_key=parent)
+        b.done = True
+        mgr._agents[b.id] = b
+        teardown = asyncio.get_running_loop().create_future()  # never resolves here
+        mgr._tasks[b.id] = teardown
+        mgr.queued_count_or_none_async = AsyncMock(return_value=0)
+        state.subagents = mgr
+        try:
+            with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth:
+                await chat_runner._finish_queue_cycle(state, slot)
+                await asyncio.sleep(0)
+            synth.assert_not_called()
+            assert slot._pending_synthesis is True
+        finally:
+            teardown.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_message_sent_during_the_fire_check_runs_next(self, tmp_path):
+        """The user sends while the fire gate reads the store: the turn still
+        looks busy, so the message queues behind it. With a child still queued
+        the synthesis does not fire, and the cycle drains that message the way a
+        normal turn end does instead of leaving it waiting for another turn."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        subs = _children()
+
+        async def _queued_during_probe(_key):
+            await asyncio.sleep(0)
+            slot.queue_append("user msg sent during the probe")
+            return 1  # one gate-held child: attached
+
+        subs.queued_count_or_none_async = AsyncMock(side_effect=_queued_during_probe)
+        state.subagents = subs
+
+        with patch.object(
+            chat_runner, "_start_next_queued_turn", new=AsyncMock(return_value=True)
+        ) as start:
+            await chat_runner._finish_queue_cycle(state, slot)
+
+        start.assert_awaited_once()
+        assert not any(m.get("role") == "done" for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_store_re_checks_and_fires_on_its_own(self, tmp_path):
+        """No completion is left to re-trigger the check after a store outage at
+        the last turn end, so the idle slot re-asks on a timer and fires once
+        the store answers -- without waiting for a user turn."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        subs = _children()
+        answers = iter([None, 0])
+        subs.queued_count_or_none_async = AsyncMock(side_effect=lambda _k: next(answers))
+        state.subagents = subs
+
+        with (
+            patch.object(chat_runner, "_SYNTHESIS_RECHECK_SECS", 0.01),
+            patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth,
+        ):
+            await chat_runner._finish_queue_cycle(state, slot)
+            assert slot._synthesis_recheck is not None, "an outage arms the re-check"
+            synth.assert_not_called()
+            for _ in range(100):
+                if synth.await_count:
+                    break
+                await asyncio.sleep(0.01)
+
+        synth.assert_awaited_once()
+        assert slot._synthesis_inflight is True
+        if slot.task is not None:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_closing_the_slot_cancels_a_pending_re_check(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        state.subagents = _children(queued=None)
+
+        with patch.object(chat_runner, "_SYNTHESIS_RECHECK_SECS", 60.0):
+            await chat_runner._finish_queue_cycle(state, slot)
+        handle = slot._synthesis_recheck
+        assert handle is not None
+        slot.begin_close()
+        assert handle.cancelled() and slot._synthesis_recheck is None
 
     @pytest.mark.asyncio
     async def test_a_held_note_is_withheld_from_an_automatic_synthesis_turn(self, tmp_path):
@@ -2933,7 +3127,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot  # a live slot is registered
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         with (
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
@@ -2960,7 +3154,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot
         slot._in_stage_execution = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
             await chat_runner._finish_queue_cycle(state, slot)
@@ -2973,7 +3167,7 @@ class TestFinishQueueCycle:
         # assertion above cannot pass for some reason unrelated to the stage.
         state2, slot2 = _state(tmp_path), _slot()
         state2._slots[slot2.key] = slot2
-        state2.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state2.subagents = _no_children()
 
         with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
             await chat_runner._finish_queue_cycle(state2, slot2)
@@ -2991,7 +3185,7 @@ class TestFinishQueueCycle:
         torn down, so withholding there discards the note the POST acknowledged.
         """
         state, slot = _state(tmp_path), _slot()
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
         slot._pending_synthesis = True
         slot._deferred_notes.append({"content": "held across the close", "cls": "reconcile-note"})
         # The teardown already dropped it from the registry.

@@ -122,6 +122,7 @@ from kiro_crew.dashboard.chat_runner import (
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
+    _queued_depth_off_loop,
     dashboard_slot_key,
     mint_options_token,
     remember_slack_options,
@@ -504,12 +505,7 @@ async def _subagent_work_pending(manager: Any, parent_session_key: str) -> bool:
 async def _subagent_queued_count(manager: Any, parent_session_key: str) -> int:
     """This parent's QUEUED spawn count, read off-loop like
     :func:`_subagent_work_pending` (which also counts the running ones)."""
-    import inspect
-
-    entry = getattr(manager, "queued_count_for_async", None)
-    if inspect.iscoroutinefunction(entry):
-        return int(await entry(parent_session_key))
-    return int(manager.queued_count_for(parent_session_key))
+    return await _queued_depth_off_loop(manager, parent_session_key)
 
 
 async def _subagent_batch_pending(manager: Any, batch_id: str) -> bool:
@@ -9852,22 +9848,37 @@ class GatewayOrchestrator:
                 if _injection_slot:
 
                     # ── Fix 2 (B1): arm a one-shot post-fan-out synthesis turn ──
-                    # When this is the LAST outstanding sub-agent for the parent
-                    # (chat mode only), flag the slot so that once every completion
-                    # has been processed and the queue drains, _run_chat fires ONE
+                    # When this is the LAST outstanding sub-agent for the parent,
+                    # flag the slot so that once every completion has been
+                    # processed and the queue drains, _run_chat fires ONE
                     # dedicated synthesis turn (see chat_runner drain/idle branch).
                     # Ordering guarantees running_agents_for == [] here on the last
                     # agent (info.done set + _running_count decremented first).
+                    # IN MEMORY ONLY, cheapest first, and with no await: the arm
+                    # sits on the delivery path, so a store read here would queue
+                    # every completion behind the writer, and an await would let
+                    # the tab close or a sibling register under it. The store
+                    # half (a sibling the gate still holds) is the fire gate's
+                    # (chat_utils.synthesis_fire_verdict), which refuses while
+                    # anything is queued; the other completions re-arm.
+                    # Orchestrator mode runs its own stage synthesis, so the
+                    # arm is chat-mode only.
                     if not _is_orchestrator:
                         try:
-                            _still_running = (
-                                self.subagent_mgr.running_agents_for(parent_key)
-                                if self.subagent_mgr
-                                else None
+                            _mgr = self.subagent_mgr
+                            _arm_synthesis = (
+                                _mgr is not None
+                                and not _injection_slot._pending_synthesis
+                                and not _flush_only
+                                and info.id not in _injection_slot._subagents_inline_collected
+                                and _mgr.running_agents_for(parent_key) == []
+                                and not _mgr.has_in_memory_pending_work_for(
+                                    parent_key, exclude_id=info.id
+                                )
                             )
                         except Exception:
-                            _still_running = None  # error → don't arm (fail safe)
-                        if _still_running == []:
+                            _arm_synthesis = False  # error → don't arm (fail safe)
+                        if _arm_synthesis:
                             _injection_slot._pending_synthesis = True
 
                     # ── Skip injection for blocking-tool-collected results ──

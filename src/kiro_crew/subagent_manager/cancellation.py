@@ -247,10 +247,11 @@ class CancellationCoordinator(ManagerComponent):
         # name is visible to both.
         if not store_cancelled:
             stored = admission.taskq_cancel_queued(agent_id)
+        row = stored
         for index, params in enumerate(self._manager._queue):
             if params.get("_resume_id") or str(params.get("_preassigned_id") or "") != agent_id:
                 continue
-            dropped = self._manager._queue.pop(index)
+            row = self._manager._queue.pop(index)
             store = admission.taskq_store()
             if stored is None and store is not None:
                 # A window entry always HAS a row while a store is attached -- a
@@ -275,18 +276,20 @@ class CancellationCoordinator(ManagerComponent):
                     admission.taskq_cancel_queued,
                     agent_id,
                 )
-            try:
-                self._manager._emit_queue_depth(
-                    str(dropped.get("parent_session_key", "")),
-                    str(dropped.get("batch_id", "")),
-                )
-            except Exception:
-                logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
-            return dropped
-        return stored
+            break
+        return row
 
     def _report_queued_stop_impl(self, params: dict) -> None:
-        """Publish a neutral terminal record for work stopped before startup."""
+        """Publish a neutral terminal record for work stopped before startup.
+
+        Every stop of a waiting row ends here, whichever path removed it, so
+        this is where the parent's queued depth is asked for -- once per row,
+        each under its own wave; a bulk stop's requests share one read -- and
+        the terminal record itself asks for nothing (``queued=True``).
+        """
+        self._republish_queue_depth(
+            str(params.get("parent_session_key") or ""), str(params.get("batch_id") or "")
+        )
         info = SubagentInfo(
             id=str(params.get("_preassigned_id") or ""),
             task=str(params.get("task") or "(stopped before start)"),
@@ -560,7 +563,8 @@ class CancellationCoordinator(ManagerComponent):
             # for as long as the task store is contended. The store phase is awaited
             # through the writer thread and the result handed to ``_unqueue``, which
             # then skips its own call and keeps the rest of its behaviour — the
-            # cancel-did-not-land retry and the queue-depth re-emit.
+            # cancel-did-not-land retry. The depth request rides on the
+            # ``_report_queued_stop`` below, as it does for every stopped row.
             try:
                 params = await self._manager._admission.taskq_cancel_queued_async(
                     # A teardown may not cancel a CLAIMED-but-unstarted row. Its claimer
@@ -651,22 +655,34 @@ class CancellationCoordinator(ManagerComponent):
         # resident), so a pump pass during the store read below can only hand a
         # slot back to a coroutine the running sweep then reaps, and a pass after
         # the sweep meets a ``user_stopped`` run that ``resume_reserve`` refuses.
-        queued_stopped = self._stop_queued(
-            [
-                str(params.get("_preassigned_id") or "")
-                for params in self._manager._queue
-                if params.get("parent_session_key", "") == parent_session_key
-                and not params.get("_resume_id")
-            ]
-        )
-        # This parent's rows waiting outside the in-memory window. The read is
-        # a store read, so it comes AFTER the in-memory queue is drained: its
-        # await is the first suspension point this method has, and one taken
-        # before the drain would let a stagger timer start a queued agent. A row
-        # started from disk during it is caught by the running sweep below.
-        queued_stopped += self._stop_queued(
-            await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
-        )
+        queued_stopped = 0
+        try:
+            queued_stopped = self._stop_queued(
+                [
+                    str(params.get("_preassigned_id") or "")
+                    for params in self._manager._queue
+                    if params.get("parent_session_key", "") == parent_session_key
+                    and not params.get("_resume_id")
+                ]
+            )
+            # This parent's rows waiting outside the in-memory window. The read is
+            # a store read, so it comes AFTER the in-memory queue is drained: its
+            # await is the first suspension point this method has, and one taken
+            # before the drain would let a stagger timer start a queued agent. A
+            # row started from disk during it is caught by the running sweep below.
+            queued_stopped += self._stop_queued(
+                await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
+            )
+        finally:
+            # Each row the pass stopped asked for the depth in its queued-stop
+            # report. A pass that stopped none -- nothing was left, or it failed
+            # or was cancelled first -- asks here, so a card whose count went
+            # stale is repaired even then. A pass that raises ends the call
+            # here too, before the running sweep: reaping would free slots the
+            # pump fills at once with the very rows the failed pass did not
+            # reach, and the request reports the failure.
+            if not queued_stopped:
+                self._republish_queue_depth(parent_session_key)
 
         running_ids = [
             info.id
@@ -682,6 +698,25 @@ class CancellationCoordinator(ManagerComponent):
         )
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
+
+    def _republish_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
+        """Re-publish *parent_session_key*'s queued depth after a stop.
+
+        A dashboard still showing a count from a frame it never saw superseded
+        gets its answer here even from a stop that found nothing: Stop all and
+        the stage's Cancel are the controls a user reaches for exactly then,
+        and this is the authoritative count that repairs the card (and, at
+        depth 0, forgets the remembered wait label). Guarded: an advisory event
+        must never turn a stop into a failed request.
+        """
+        # Imported here: this helper is not an ``_impl`` and so keeps this
+        # module's namespace, where the facade's ``logger`` is only a type hint.
+        from ..subagent import logger
+
+        try:
+            self._manager._emit_queue_depth(parent_session_key, batch_id)
+        except Exception:
+            logger.debug("queue-depth re-emit failed after stop", exc_info=True)
 
     def _boundary_scope_matches_impl(
         self,
@@ -738,7 +773,9 @@ class CancellationCoordinator(ManagerComponent):
             self._manager._boundary_cancel_retry_handle = None
             self._manager._drain_queue()
 
-        delay = max(0.05, self._manager._admission.taskq_admit_wait_secs())
+        from kiro_crew.subagent_manager.admission.types import MIN_RECHECK_DELAY_SECS
+
+        delay = max(MIN_RECHECK_DELAY_SECS, self._manager._admission.taskq_admit_wait_secs())
         self._manager._boundary_cancel_retry_handle = loop.call_later(delay, _retry)
 
     def _apply_boundary_cancelled_rows_impl(
@@ -755,7 +792,6 @@ class CancellationCoordinator(ManagerComponent):
             for params in cancelled
             if params.get("_preassigned_id")
         }
-        stopped = 0
         dropped_rows: list[dict] = []
         for index in range(len(self._manager._queue) - 1, -1, -1):
             params = self._manager._queue[index]
@@ -770,28 +806,22 @@ class CancellationCoordinator(ManagerComponent):
                 continue
             dropped_rows.append(self._manager._queue.pop(index))
             by_id.pop(agent_id, None)
-        for dropped in reversed(dropped_rows):
-            self._manager._report_queued_stop(dropped)
-            self._manager._emit_queue_depth(
-                str(dropped.get("parent_session_key") or ""),
-                str(dropped.get("batch_id") or ""),
-            )
-            stopped += 1
-        for agent_id, params in by_id.items():
-            if agent_id in self._manager._agents:
-                continue
+        stopped_rows = [
+            *reversed(dropped_rows),
+            *(
+                params
+                for agent_id, params in by_id.items()
+                if agent_id not in self._manager._agents
+            ),
+        ]
+        for params in stopped_rows:
             self._manager._report_queued_stop(params)
-            self._manager._emit_queue_depth(
-                str(params.get("parent_session_key") or ""),
-                str(params.get("batch_id") or ""),
-            )
-            stopped += 1
         if settled:
             self._manager._pending_boundary_cancellations.pop(
                 (parent_session_key, boundary_owner),
                 None,
             )
-        return stopped
+        return len(stopped_rows)
 
     async def _settle_boundary_queue_impl(
         self,
@@ -928,16 +958,19 @@ class CancellationCoordinator(ManagerComponent):
             parent_session_key,
             boundary_owner,
         )
-        if refusal:
-            results = await asyncio.gather(
-                *(self._manager.cancel(info.id) for info in live_infos),
-                return_exceptions=True,
+        # A refused scope stops its live owners but touches no durable row:
+        # the store pass is what the refusal withheld. Both arms re-publish the
+        # depth before the reaps, so a Cancel that found nothing to stop still
+        # answers the card.
+        queued_stopped = (
+            0
+            if refusal
+            else await self._manager._settle_boundary_queue(
+                parent_session_key,
+                boundary_owner,
             )
-            return (sum(result is True for result in results), 0)
-        queued_stopped = await self._manager._settle_boundary_queue(
-            parent_session_key,
-            boundary_owner,
         )
+        self._republish_queue_depth(parent_session_key)
         results = await asyncio.gather(
             *(self._manager.cancel(info.id) for info in live_infos),
             return_exceptions=True,
@@ -950,15 +983,38 @@ class CancellationCoordinator(ManagerComponent):
         A SEQUENCE, not an iterable: ``_unqueue`` mutates ``_queue``, so a lazy
         generator over it would stop short of the ids it was asked to remove.
         """
+        # Imported here: this helper is not an ``_impl`` and so keeps this
+        # module's namespace, where the facade's ``logger`` is only a type hint.
+        from ..subagent import logger
+
+        # Each row is unqueued and reported before the next is touched. A row
+        # whose unqueue raised was NOT removed: it still waits, so the rest of
+        # the stop goes on and the first such failure is raised once it has --
+        # the caller must not go on as if the pass had stopped everything. A
+        # row whose report raised WAS removed: it counts, and the report
+        # failure is logged.
         stopped = 0
+        failure: Exception | None = None
         for agent_id in agent_ids:
             if not agent_id:
                 continue
-            queued = self._manager._unqueue(agent_id)
+            try:
+                queued = self._manager._unqueue(agent_id)
+            except Exception as exc:
+                logger.warning("Stopping queued subagent %s failed", agent_id, exc_info=True)
+                failure = failure or exc
+                continue
             if queued is None:
                 continue
-            self._manager._report_queued_stop(queued)
             stopped += 1
+            try:
+                self._manager._report_queued_stop(queued)
+            except Exception:
+                logger.warning(
+                    "Reporting queued subagent %s stopped failed", agent_id, exc_info=True
+                )
+        if failure is not None:
+            raise failure
         return stopped
 
     async def cancel_impl(self, agent_id: str) -> bool:
@@ -1061,6 +1117,12 @@ class CancellationCoordinator(ManagerComponent):
                 reason="shutdown retained claim retry",
             )
         self._manager._retained_claim_retry_handle = None
+        for depth_retry in self._manager._queue_depth_retries.values():
+            self._manager._cancel_task_intentionally(
+                depth_retry.handle,
+                reason="shutdown queue depth retry",
+            )
+        self._manager._queue_depth_retries.clear()
         # Do not clear or release retained claims here. Their durable rows are
         # still ADMITTED, so process teardown ends the in-memory reservation and
         # the next boot reconciles them to QUEUED as one atomic ownership change.

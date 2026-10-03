@@ -5692,6 +5692,9 @@ class AcpSessionHandle:
                     dispatch_parked_secs=self._parked_total,
                     is_shell=ev.is_shell,
                     tool_name=ev.tool_name,
+                    # Only a provenance-verified identity names the server, so
+                    # an unverified frame cannot select the wait contract.
+                    mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
                     interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
                 )
                 self._active_tool_calls[self._inflight_tool_call_id] = (

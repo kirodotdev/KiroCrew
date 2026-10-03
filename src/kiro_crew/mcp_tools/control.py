@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from kiro_crew import autonudge, mcp_core, platform_compat, session_directive
 from kiro_crew.autonudge_judge import ending_phrase, screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.mcp_tools._limits import (
     _MONITOR_DEFAULT_MAX_CYCLES,
@@ -1065,7 +1066,7 @@ def task_run(name: str, args: dict[str, Any]) -> str:
 def wait(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, WAIT_SCHEMA)
 
-    seconds = max(60, min(1800, int(args.get("seconds", 300))))
+    seconds = max(60, min(WAIT_TOOL_MAX_SECS, int(args.get("seconds", 300))))
     reason = str(args.get("reason", ""))
     reason_safe, _ = redact_exfiltration_urls(reason)
     reason_safe, _ = redact_credentials(reason_safe)

@@ -6,7 +6,7 @@ import logging as _logging
 from typing import TYPE_CHECKING, Any
 
 from .._component import ManagerComponent
-from .types import ClaimPoint
+from .types import MIN_RECHECK_DELAY_SECS, ClaimPoint
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
@@ -43,6 +43,9 @@ class _PumpMixin(ManagerComponent):
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
 
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
+
+        @staticmethod
+        def entry_is_resident_resume(params: "Mapping[str, Any]") -> bool: ...
 
     def _should_stagger_queue_impl(self, now: float) -> tuple[bool, bool]:
         """Decide whether a spawn arriving at *now* must be queued.
@@ -169,7 +172,7 @@ class _PumpMixin(ManagerComponent):
             self._manager._retained_claim_retry_handle = None
             self._manager._drain_queue()
 
-        delay = max(0.05, self.taskq_admit_wait_secs())
+        delay = max(MIN_RECHECK_DELAY_SECS, self.taskq_admit_wait_secs())
         self._manager._retained_claim_retry_handle = loop.call_later(delay, _retry)
 
     def _retain_claim(
@@ -220,6 +223,11 @@ class _PumpMixin(ManagerComponent):
     async def _drain_queue_pass_impl(self) -> None:
         admission = self._manager._admission
         retain_error_detail = True
+        # Bound before the ``try``: the ``finally`` below walks ``picked``, and a
+        # store error raised by the awaits ahead of the pick must reach the
+        # handler as itself, not as an UnboundLocalError over an empty pick.
+        picked: list[dict[str, Any]] = []
+        granting: list[dict[str, Any]] = []
         try:
             await self._manager.retry_pending_boundary_cancellations()
             await admission.retry_retained_claims()
@@ -240,8 +248,6 @@ class _PumpMixin(ManagerComponent):
                 if admission.capacity_view().any_slot:
                     await admission.taskq_refill_window_async()
                     await admission.taskq_refill_window_async(children_only=True)
-            picked: list[dict[str, Any]] = []
-            granting: list[dict[str, Any]] = []
             # The pick's own store read: an entry that does not name its lane
             # resolves its parent chain through ``store.get``. Resolved here, on
             # the writer thread, and nothing awaits between this and the pick
@@ -260,10 +266,30 @@ class _PumpMixin(ManagerComponent):
                     self._manager._drain_queue()
             for params in picked:
                 retain_error_detail = params.get("_memory_mode", "persistent") == "persistent"
-                drained = await self._dispatch_async_impl(params)
+                try:
+                    drained = await self._dispatch_async_impl(params)
+                finally:
+                    # The dispatching mark lives for ONE attempt. Whatever
+                    # ``spawn`` answered -- started, re-queued, parked, refused,
+                    # or raised -- the row is either registered (live-excluded)
+                    # or back in the store as waiting, and either way the
+                    # count and the refill must see it as the store does.
+                    self._unmark_dispatching(params)
                 self._after_dispatch_impl(params, drained, refill=lambda **_kw: 0)
         except Exception:
             logger.error("drain pump failed", exc_info=retain_error_detail)
+        finally:
+            # A row the pick marked but the loop never reached (a raise in the
+            # granting loop, or a cancelled pass) would otherwise keep its mark
+            # for the process lifetime and be skipped by every refill: the
+            # durable row would never run again. The store is the truth for
+            # every row this pass did not dispatch.
+            for params in picked:
+                self._unmark_dispatching(params)
+
+    def _unmark_dispatching(self, params: "Mapping[str, Any]") -> None:
+        """Drop the popped row's dispatching mark, if it carries an id."""
+        self._manager._dispatching_ids.discard(str(params.get("_preassigned_id") or ""))
 
     async def _dispatch_async_impl(self, params: dict[str, Any]) -> "SubagentInfo | None":
         """Start a picked window row with its claim (``store.claim``) on the
@@ -294,6 +320,11 @@ class _PumpMixin(ManagerComponent):
             _child_registration=store is None,
         )
         if not isinstance(first, ClaimPoint):
+            # Not claimed: the gate re-queued, parked or refused the row, so
+            # it is waiting (or gone) again and the depth must count it as the
+            # store sees it. Cleared BEFORE the parked defer publishes its
+            # depth, or that emit would read the row as still dispatching.
+            self._unmark_dispatching(params)
             if first is not None:
                 # Ahead of the registration below, never after it: the row is
                 # durably parked -- or refused for want of a row -- before any
@@ -407,6 +438,14 @@ class _PumpMixin(ManagerComponent):
             # revalidation a registered start relies on. A refused claim may
             # await its terminal store write because it never registers.
             claim_will_register = bool(claimed[1])
+            if not claim_will_register:
+                # The claim did not take the row (store unavailable, refused,
+                # superseded): it is still QUEUED and the re-entry's own depth
+                # request must count it. A read takes the exclusion set when it
+                # starts, after the request (a burst's first read runs in its
+                # own task; one in flight reads again), so dropping the mark
+                # here, before re-entry asks, is always seen by that read.
+                self._manager._dispatching_ids.discard(point.agent_id)
             result = reenter(claimed)
         finally:
             # Queued-stop reporting temporarily installs a synthetic terminal
@@ -417,20 +456,17 @@ class _PumpMixin(ManagerComponent):
             if not registered and not claim_retained:
                 self.release_reservation(point.agent_id)
             if registered:
-                # Every registered start re-publishes the parent's queued
-                # depth. A direct spawn owes nothing to the count, so its emit
-                # reports the depth as it stands; a row the drain popped was
-                # counted as waiting until this claim moved it out of the
-                # claimable states, and this emit is what removes it. Without
-                # it the chip keeps "1 waiting" and the old wait reason forever.
+                # Every registered start re-publishes the parent's queued depth.
+                # A direct spawn owes nothing to the count, so its emit reports
+                # the depth as it stands. A row the drain popped was asked for
+                # at the pop, but that read may have failed (nothing published,
+                # a retry armed), and this request is the one that follows the
+                # row out of the claimable states; asked twice, the burst
+                # coalesces it into at most one more read.
                 started = self._manager._agents[point.agent_id]
                 self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
             if report_params is not None:
                 self._manager._report_queued_stop(report_params)
-                self._manager._emit_queue_depth(
-                    point.parent_session_key,
-                    str(report_params.get("batch_id") or ""),
-                )
         assert not isinstance(result, ClaimPoint)
         return result
 
@@ -499,8 +535,7 @@ class _PumpMixin(ManagerComponent):
                 (
                     i
                     for i, p in enumerate(self._manager._queue)
-                    if p.get("_resume_id")
-                    and not p.get("_startup_release")
+                    if self.entry_is_resident_resume(p)
                     and not (
                         callable(boundary_cancellation_pending) and boundary_cancellation_pending(p)
                     )
@@ -580,10 +615,26 @@ class _PumpMixin(ManagerComponent):
             ),
             len(self._manager._queue),
         )
-        # The popped item's parent just lost one waiting agent — re-emit its
+        # The popped row is in flight between the window and its claim: it is
+        # in none of the exclusion sets the store count reads (not windowed,
+        # not registered, not admitting) while its durable state is still
+        # QUEUED, so every depth read until the claim lands counts it as
+        # waiting. Mark it dispatching so the depth request below and any
+        # refill in the meantime leave it out (the pending-work guards still
+        # count it: it is accepted work until the claim lands). The mark lives
+        # for one attempt and is released where the attempt ends: the ``finally``
+        # around each ``spawn`` call (inline pump below, coroutine pump in
+        # ``_drain_queue_pass_impl``), the not-a-claim branch of
+        # ``_dispatch_async_impl``, the non-proceeding claim in
+        # ``claim_and_start``, and the gate's failed-claim emit.
+        if queued_id:
+            self._manager._dispatching_ids.add(queued_id)
+        # The popped item's parent just lost one waiting agent — ask for its
         # queued depth (0 when this was its last) so the chip's "waiting" count
-        # tracks the drain. Done before spawn() so an immediate re-queue there
-        # (still too soon since last start) re-bumps it correctly afterwards.
+        # tracks the drain. The read runs later, as its own task, and the mark
+        # above already leaves the row out; a re-queue in spawn() (still too
+        # soon since last start) asks again, and the coalesced emit reads after
+        # both.
         self._manager._emit_queue_depth(
             str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
         )
@@ -594,7 +645,12 @@ class _PumpMixin(ManagerComponent):
         # start under the id its caller was already told (and, if the gate re-queues
         # it, keeps that id across the second round-trip too).
         if dispatch is None:
-            drained = self._manager.spawn(**params, _from_queue=True)
+            try:
+                drained = self._manager.spawn(**params, _from_queue=True)
+            finally:
+                # Same one-attempt lifetime as the coroutine pump: a ``spawn``
+                # that raises must not leave the row excluded from refill.
+                self._unmark_dispatching(params)
         else:
             # Event-loop pump: the dispatcher hands the picked row back and
             # takes the claim on the writer thread (see ``_dispatch_async_impl``).

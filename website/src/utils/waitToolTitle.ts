@@ -22,13 +22,13 @@
  * latch cannot save this case: only one wait_id ever pings, so there is no
  * collision to detect.
  *
- * Deliberately STRICTER than its backend counterpart
- * `acp/liveness.py::is_wait_tool`, which is a token-membership test. That
- * asymmetry is correct rather than drift: the backend only asks "is this session
- * legitimately blocked in a long tool", where over-matching is harmless — it
- * merely declines to reap something. Here a false positive misattributes a live
- * deadline and arms a button against the wrong sleep, so the same looseness
- * buys a real defect.
+ * The backend liveness contract does not read the title at all: it selects the
+ * wait by the provenance-verified adapter identity
+ * (`acp/liveness.py::ToolCallState.is_trusted_wait`), because a title-selected
+ * wait would let any tool that describes itself as waiting defer its own stall
+ * recovery. This side has only the title, so the allowlist stays strict: a false
+ * positive misattributes a live deadline and arms a button against the wrong
+ * sleep.
  */
 const WAIT_TITLE_RE = /^(?:[a-z0-9][a-z0-9._-]*___)?wait(?:\s*\([a-z0-9 ._-]+\))?$/
 

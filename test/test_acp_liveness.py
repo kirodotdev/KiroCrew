@@ -502,6 +502,32 @@ def test_every_production_dispatch_answers_both_attribution_fields():
     assert not missing, f"dispatch sites not answering an attribution field: {missing}"
 
 
+def test_every_production_dispatch_wires_the_trusted_wait_identity():
+    """The wait contract is selected by ``mcp_server_name`` + ``tool_name``, which
+    default to empty (fail-closed). A dispatch site that forgets to pass them
+    silently loses the contract and badges a healthy wait, so every production
+    ``ToolCallState`` construction must answer both."""
+    import ast
+
+    import kiro_crew.acp.liveness as liveness_mod
+
+    required = {"mcp_server_name", "tool_name"}
+    package_root = Path(liveness_mod.__file__).resolve().parents[1]
+    sites: list[tuple[str, int, set[str]]] = []
+    for path in package_root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "ToolCallState(" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "ToolCallState":
+                passed = {kw.arg for kw in node.keywords if kw.arg}
+                sites.append((path.name, node.lineno, required - passed))
+
+    assert len(sites) >= 2, "expected the main-agent and sub-agent dispatch sites"
+    missing = [(name, line, sorted(gap)) for name, line, gap in sites if gap]
+    assert not missing, f"dispatch sites not wiring the wait identity: {missing}"
+
+
 def test_missing_boot_stamp_keeps_the_full_window(tmp_path):
     """No boot-clock stamp, no absence claim.
 
@@ -725,12 +751,70 @@ def test_wait_tool_working_until_declared_duration(tmp_path):
     tool = ToolCallState(
         title="wait", command='{"seconds": 300, "reason": "poll"}',
         dispatch_ts=clock.t, is_shell=False,
+        tool_name="wait", mcp_server_name="kirocrew-core",
     )
 
     clock.advance(299.0)
     assert oracle.check_tool(100, tool)[0] == VERDICT_WORKING
     clock.advance(300.0)  # past 300 + 120 slack
     assert oracle.check_tool(100, tool)[0] == VERDICT_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["wait", "kirocrew-core___wait", "mcp__kirocrew-core__wait"],
+)
+def test_a_server_qualified_wait_name_selects_the_contract(tmp_path, tool_name):
+    """kiro-cli may server-qualify the trusted tool name, so every qualified
+    spelling of the core ``wait`` must still select the contract."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100)
+    oracle = _oracle(fake, clock)
+    tool = ToolCallState(
+        title="Waiting for CI",
+        command='{"seconds": 300}',
+        dispatch_ts=clock.t,
+        is_shell=False,
+        tool_name=tool_name,
+        mcp_server_name="kirocrew-core",
+    )
+    clock.advance(60.0)
+    assert oracle.check_tool(100, tool)[0] == VERDICT_WORKING
+
+
+@pytest.mark.parametrize(
+    ("title", "tool_name", "server"),
+    [
+        pytest.param("wait_for_ci", "wait_for_ci", "third-party", id="other-tool-wait-title"),
+        pytest.param("wait", "wait_for_ci", "third-party", id="other-tool-exact-wait-title"),
+        pytest.param("wait", "wait", "third-party", id="wait-on-another-server"),
+        pytest.param("wait", "wait", "", id="unverified-identity"),
+        pytest.param("wait", "monitor_start", "kirocrew-core", id="other-core-tool"),
+        pytest.param("wait", "do_wait", "kirocrew-core", id="single-underscore-suffix"),
+    ],
+)
+def test_the_oracle_wait_contract_is_selected_by_identity_not_title(
+    tmp_path, title, tool_name, server
+):
+    """The title is model-authored prose, so a call that is not the trusted
+    kirocrew-core ``wait`` must not read WORKING from a wait-shaped title and a
+    ``seconds`` argument."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100)
+    oracle = _oracle(fake, clock)
+    tool = ToolCallState(
+        title=title,
+        command='{"seconds": 1800}',
+        dispatch_ts=clock.t,
+        is_shell=False,
+        tool_name=tool_name,
+        mcp_server_name=server,
+    )
+    clock.advance(60.0)
+    _verdict, evidence = oracle.check_tool(100, tool)
+    assert "wait tool declared" not in evidence
 
 
 # ── MCP tool + model-wait movement sampling ──────────────────────────────────
@@ -1283,6 +1367,8 @@ def test_wait_tool_contract_holds_without_a_tree_backend(tmp_path, monkeypatch):
         command='{"seconds": 300}',
         dispatch_ts=clock.t,
         is_shell=False,
+        tool_name="wait",
+        mcp_server_name="kirocrew-core",
     )
     assert oracle.check_tool(4242, tool)[0] == VERDICT_WORKING
 

@@ -11,6 +11,8 @@ A plain module, imported explicitly (``from overload_fakes import Clock``) like
 * :func:`open_task_store` -- the store a fixture yields, closed on teardown.
 * :func:`settle_store_writes` / :func:`settle_dependency_park` -- the two
   barriers: the store's writer thread, and a step reaching its dependency wait.
+* :func:`settle_depth_emits` -- wait out every in-flight queued-depth emit.
+* :func:`memory_critical` -- the posture gate's low-memory verdict, for deferring a spawn.
 * :class:`ManagerHarness` -- a real ``SubagentManager`` whose runs finish when
   the test says so, with the mocks it needs (:func:`mock_sessions`, :func:`mock_ctx`).
 """
@@ -26,6 +28,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from kiro_crew.recovery.policy import LayerPolicy, RecoveryPolicy
+from kiro_crew.resource_status import POSTURE_CRITICAL, AdmissionDecision
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager.admission import FairnessSettings
 from kiro_crew.taskq import model
@@ -93,7 +96,7 @@ def _noop() -> None:
     return None
 
 
-async def settle_store_writes(store: TaskStore) -> None:
+async def settle_store_writes(store: TaskStore, rounds: int = 1) -> None:
     """Barrier for the store's off-loop writes -- a SIGNAL, never a sleep.
 
     ``TaskStore.run`` submits to an executor with exactly ONE worker, so a job
@@ -101,9 +104,31 @@ async def settle_store_writes(store: TaskStore) -> None:
     loop then resumes the waiters in the order their futures completed. One
     ``sleep(0)`` first, so a task that was only just created reaches its own
     submission before this one is queued behind it.
+
+    *rounds* repeats the barrier for a chain of hops: work a waiter queues only
+    after its own write returned (a report task's settle after its terminal, a
+    depth emit's re-read) needs one barrier per hop.
     """
-    await asyncio.sleep(0)
-    await store.run(_noop)
+    for _ in range(rounds):
+        await asyncio.sleep(0)
+        await asyncio.wait_for(store.run(_noop), 10)
+
+
+async def settle_depth_emits(mgr: SubagentManager, timeout: float = 5.0) -> None:
+    """Wait until no ``subagent_queued`` emit is in flight -- a signal, never a sleep.
+
+    An emit reads when its own task runs and may hand off to a fresh read
+    task, so this waits on the tasks themselves until the per-parent table is
+    empty, and fails by name rather than hanging when one never finishes.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while mgr._queue_depth_emits:
+        left = deadline - loop.time()
+        if left <= 0:
+            raise AssertionError(f"depth emits never finished: {sorted(mgr._queue_depth_emits)}")
+        await asyncio.wait([e.task for e in mgr._queue_depth_emits.values()], timeout=left)
+        await asyncio.sleep(0)  # the tasks' done-callbacks drop their entries
 
 
 async def settle_dependency_park(
@@ -156,6 +181,23 @@ def mock_ctx() -> MagicMock:
     ctx = MagicMock()
     ctx.hooks.auto_approve_subagent_spawn = True
     return ctx
+
+
+def memory_critical() -> AdmissionDecision:
+    """The posture gate's verdict on a host critically short of memory.
+
+    Patch ``kiro_crew.subagent.cached_admission_check`` with it inside
+    ``monkeypatch.context()`` (or ``patch.object``), never with a bare
+    ``monkeypatch.setattr`` followed by ``monkeypatch.undo()``: the test and
+    ``healthy_host_memory`` share ONE ``monkeypatch``, so a blanket undo also
+    reverts the fixture's pins and later spawns read the runner's real memory.
+    """
+    return AdmissionDecision(
+        admitted=False,
+        posture=POSTURE_CRITICAL,
+        available_gb=0.5,
+        reason="host memory critically low",
+    )
 
 
 class ManagerHarness:

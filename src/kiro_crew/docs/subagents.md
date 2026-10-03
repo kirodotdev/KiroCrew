@@ -66,11 +66,11 @@ before retrying. Parallel writers need separate ownership; a worktree does not
 isolate shared databases, ports or external services.
 
 The other spawn tools:
-- `spawn_sub_agents` — same fan-out as `spawn_run`, but BLOCKS and returns the collected results; takes `agents` (array of `{agent_or_mode, prompt}`), `cwd`, and the same `include_*` switches
+- `spawn_sub_agents` — same fan-out as `spawn_run`, but BLOCKS and returns the collected results (a member the spawn gate deferred is reported with why it waits, and its result arrives later as a completion event); takes `agents` (array of `{agent_or_mode, prompt}`), `cwd`, and the same `include_*` switches
 - `spawn_continue` — dispatch a follow-up turn into a completed run's conversation (`conversation`, `task`, optional `agent` / `max_turns` / `model`); context scope is inherited, so the `include_*` flags are not accepted
 - `spawn_steer` — inject a message into a RUNNING subagent's in-flight turn (`agent_id`, `message`, `mode`: `interrupt` default or `follow_up`)
 - `spawn_release` — end a continuable conversation (`conversation`) so it can no longer be continued
-- `spawn_list` — list running and completed subagents
+- `spawn_list` — list running, queued (accepted, not yet started) and completed subagents
 - `spawn_status` — read a run's transcript: the live partial view while it runs, the retained full transcript once complete (see below)
 - `resource_status` — advisory host headroom (available memory, CPU load, posture, and the current concurrent sub-agent cap)
 

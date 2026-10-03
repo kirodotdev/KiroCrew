@@ -1207,6 +1207,40 @@ def close_skills_loaders(monkeypatch):
             loader.close()
 
 
+@pytest.fixture
+def close_subagent_managers(monkeypatch):
+    """Close every ``SubagentManager`` built while the test runs.
+
+    Construction opens the durable task queue (``tasks.db`` + ``-wal`` + ``-shm``,
+    inline under the ``open_store_off_loop=False`` floor above) and ``cancel_all``
+    never releases it, so a manager a test merely drops keeps three descriptors
+    until the cyclic collector runs -- a macOS sweep measured +3..+9
+    per test, GC-timed, across four files that build managers inline. Tracks every
+    instance through ``SubagentManager.__init__`` and calls ``close()`` at
+    teardown. Opt-in like ``close_skills_loaders`` and for the same reason; a
+    module that builds managers inline requests it from a one-line module-level
+    autouse fixture instead of carrying its own copy of this body.
+    """
+    import kiro_crew.subagent as _subagent_mod
+
+    created: list = []
+    orig_init = _subagent_mod.SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_subagent_mod.SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            try:
+                mgr.close()
+            except Exception:  # pragma: no cover - a half-built manager
+                pass
+
+
 @pytest.fixture(autouse=True)
 def _no_boot_sandbox_sweep(monkeypatch):
     """A real ``SessionManager`` must not sweep the host's sandbox profiles from a test.

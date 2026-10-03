@@ -2625,9 +2625,19 @@ class TestSubagentFinalSummaryDirective:
                 orch._init_subagents()
                 return mock_sm.call_args.kwargs["on_done"]
 
-    async def _done_slot(self, running_agents_for_return):
-        """Fire the on_done callback through a chat-mode dashboard slot and return
-        the slot so the caller can inspect _pending_synthesis."""
+    async def _done_slot(
+        self,
+        running_agents_for_return,
+        queued: int = 0,
+        in_memory: bool = False,
+        probe_error: bool = False,
+    ):
+        """Fire the on_done callback through a dashboard slot and return the slot
+        so the caller can inspect _pending_synthesis.
+
+        *queued* is the parent's store count of children the spawn gate still
+        holds; the arm must never read it (the fire gate does). *in_memory* is
+        the manager's in-memory pending work for the parent."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -2638,14 +2648,21 @@ class TestSubagentFinalSummaryDirective:
         slot = MagicMock()
         slot.running = False
         slot.key = "s1"
-        slot.mode = "chat"  # non-orchestrator → _is_orchestrator is False
         slot.task = None
         slot._pending_synthesis = False  # explicit start (not a MagicMock auto-attr)
         slot._subagent_deliveries_inflight = 0  # real int so the gateway counter works
+        slot._subagents_inline_collected = set()
         ds.get_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         on_done = self._capture_on_done(orch)
         orch.subagent_mgr.running_agents_for = MagicMock(return_value=running_agents_for_return)
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=queued)
+        orch.subagent_mgr.has_in_memory_pending_work_for = (
+            MagicMock(side_effect=RuntimeError("probe gone"))
+            if probe_error
+            else MagicMock(return_value=in_memory)
+        )
+        self.mgr = orch.subagent_mgr
 
         info = SubagentInfo(id="a1", task="do X", parent_session_key="dashboard:s1")
         with patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()):
@@ -2666,6 +2683,36 @@ class TestSubagentFinalSummaryDirective:
         """Another sub-agent still running → synthesis is not armed yet."""
         slot = await self._done_slot([{"id": "a2"}])
         assert slot._pending_synthesis is False
+
+    @pytest.mark.asyncio
+    async def test_the_arm_never_reads_the_task_store(self):
+        """A sibling only the store holds is the FIRE gate's to see: the arm sits
+        on the delivery path and stays in memory, so it does not wait on the
+        store's writer (and cannot be overtaken mid-await by a closed tab or a
+        sibling registering)."""
+        slot = await self._done_slot([], queued=1)
+        assert slot._pending_synthesis is True
+        self.mgr.queued_count_for_async.assert_not_awaited()
+        assert slot._subagent_deliveries_inflight == 0
+
+    @pytest.mark.asyncio
+    async def test_in_memory_pending_work_keeps_synthesis_disarmed(self):
+        """A sibling in the dispatch window, one whose report still waits on its
+        teardown, or a live follow-up watcher: not armed. The finishing child's
+        own live task is excluded, or it would always block itself."""
+        slot = await self._done_slot([], in_memory=True)
+        assert slot._pending_synthesis is False
+        self.mgr.has_in_memory_pending_work_for.assert_called_once_with(
+            "dashboard:s1", exclude_id="a1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failing_in_memory_probe_keeps_synthesis_disarmed(self):
+        """A probe that raises is unknown pending work, not none."""
+        assert (await self._done_slot([]))._pending_synthesis is True  # control
+        slot = await self._done_slot([], probe_error=True)
+        assert slot._pending_synthesis is False
+        assert slot._subagent_deliveries_inflight == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

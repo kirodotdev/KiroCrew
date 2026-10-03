@@ -573,10 +573,60 @@ made; no gate reads it back. Two consumers:
 - The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
   `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
   `queued`. The label is remembered per parent (`_queue_wait`) so the drain's,
-  the claim path's (once a claimed row registers, so a started row leaves the
-  count) and the cancel path's re-emits — which carry no verdict of their own —
-  keep it, and
-  forgotten at depth 0, where the event is once again the bare `{"queued": 0}`.
+  the claim path's, the cancel paths' and the terminal reports' requests —
+  which carry no verdict of their own — keep it. A frame at depth 0 is the
+  bare `{"queued": 0}`, and a 0 read no request overlapped forgets the label.
+  A 0 read that a request overlapped (published once the withhold cap passes)
+  keeps it: that request may be the verdict which wrote the label, for a row
+  the read predates, and the burst's next read answers it.
+  The count is pushed, not polled, and the client otherwise resets it only from
+  a reconnect's snapshot, so the authoritative depth is re-published whether or
+  not it changed at every point a wave settles: every terminal report of a
+  run that started, every queued-stop report (the record of a waiting row
+  stopped before it started, whichever path removed the row — so that
+  terminal adds no request of its own), and every `cancel_for_parent` (Stop
+  all) and `cancel_for_boundary` (the stage's Cancel) that stopped nothing. A
+  frame the client missed or received out of order therefore cannot leave "N
+  waiting to start" on the card once the wave has settled.
+  **The emit is coalesced per parent into a burst.** At most one read is in
+  flight for a parent; a request while one is marks the burst to read again
+  instead of reading itself. A read answers every request made before it
+  started: it is queued on the store's writer thread behind every write those
+  requests followed (a posted write is queued by the call that posts it,
+  `_post_store_write` → `TaskStore.post`, not by a task that runs later), and
+  it takes the window and the exclusion set as they stand then. A read a
+  request overlapped is therefore not published, and the burst reads again —
+  unless it has withheld frames for `_QUEUE_DEPTH_MAX_WITHHOLD_SECS`, when it
+  publishes the read and then reads again. A request while a frame is being
+  sent is answered the same way. The last frame of a burst is always read after
+  its last request; intermediate frames are withheld by design. Stop all and a
+  stage Cancel therefore cost about one frame however many rows they stop; a
+  teardown and the pump ask one row at a time and can cost a frame per row. A
+  start the drain popped asks when it is popped and marked dispatching (which
+  already leaves it out) and again at its registration, so a pop read the store
+  could not answer is corrected by the start itself, not by the delayed
+  re-read. A frame's `batch_id` is the wave's when every request it answers named
+  the same one, and empty when they named several; its count is parent-wide
+  either way.
+  **The count is unstarted spawns only:** window entries that are not a
+  resident run's resume entry (`entry_is_resident_resume`; an
+  approval-released `_startup_release` start still counts) plus the store's
+  waiting rows outside the window (claimable rows and `admitted` ones no run is
+  registered for, such as a claim retained across an outage: the same
+  "accepted, no run yet" definition as `taskq_overflow`), less a row the pump
+  has popped and not yet claimed (`taskq_chip_excluded_ids`, the refill's never-claim set with one
+  part narrowed). A row a `spawn_async` caller is still admitting is left out
+  until the gate has queued it (`_admitting_waiting`, marked by that call as
+  the gate returns the queued record and before it awaits anything): the
+  refill must never claim it, but once it is deferred or behind the cap it is
+  waiting, and its own labelled request counts it. The count answers how
+  many spawns wait to START; the lanes API's census of what each lane holds
+  counts a resident run's resume entry as that lane's waiting work, a
+  different question. **A store that cannot be read publishes nothing** and
+  keeps the label (a false 0 would clear a card whose rows still wait), and
+  arms the parent's one delayed re-read, `_QUEUE_DEPTH_RETRY_SECS` later, up
+  to `_QUEUE_DEPTH_RETRIES` in a row; a frame published first disarms it, and
+  a fresh request restores the budget.
   One label per parent, last writer wins: it is the verdict on the most recent
   row the gate judged for that parent, not a per-row ledger. A parent holding a
   memory-deferred row and then a capacity-queued one shows `concurrency_limit`
@@ -599,8 +649,8 @@ made; no gate reads it back. Two consumers:
   `Spawned` group (same `N subagent(s).` marker and `  <id> (<agent>): <task>`
   lines, which is what the dashboard's inline run card parses — a queued-only
   wave still gets its card), `spawn_sub_agents` appends a
-  `{"status": "queued", ...}` record for a deferred member that never settled
-  within its wait, `kirocrew spawn run` prints `Queued subagent <id> …`, and the
+  `{"status": "queued", ...}` record for a member that had not started when its
+  wait ended (and reports it only there, never also as an error), `kirocrew spawn run` prints `Queued subagent <id> …`, and the
   channel `spawn <task>` keyword (`messaging/commands.py`) replies
   `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`. A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
@@ -1030,8 +1080,8 @@ queue entry owned by one parent session. A `_resume_id` entry is NOT one of
 those: it is a RESIDENT run asking for the lane slot it yielded back, filed
 under that run's own `_preassigned_id` and its parent key, so it matches both
 terms of the queued scan and is skipped there — exactly as the pump's grant
-loop, the refill's lane census, the eviction, the child reserve and
-`_conversation_busy` all separate it out. The running sweep stops such a run instead, where its intact `_agents`
+loop, the refill's lane census, the eviction, the child reserve,
+`_conversation_busy` and the queue depth (`_window_depth`) all separate it out. The running sweep stops such a run instead, where its intact `_agents`
 record still is: routing it through the queued-stop path publishes a synthetic
 `queued=True` "never started" terminal OVER that record, so the coroutine keeps
 executing, the parent is told the work never began, and `resume_grant` can never
@@ -1053,12 +1103,24 @@ authentication middleware's app claim is denied on the same fail-closed path.
 This bulk control remains a dashboard-only capability. The server resolves that
 slot's effective session key, including channel-linked chats, rather than
 accepting a client-supplied parent key. The in-chat Stop all control uses this
-endpoint and remains available for queued-only waves.
+endpoint and remains available for queued-only waves. Each row it stops asks
+for the depth in its queued-stop report; a queued pass that stopped none —
+nothing was left, or it failed or was cancelled first — asks itself, before
+any reap, so pressing it on a card whose count has gone stale repairs the card
+even when there was nothing left to stop. A queued pass that raises ends the
+call before the running sweep, and the request reports the failure: reaping
+first would free slots the pump fills at once with the very rows the failed
+pass did not reach. One row that fails does not stop the pass: a row whose
+unqueue raised is still waiting, so the pass goes on and then raises that
+failure; a row whose report raised was removed and counts as stopped.
 
 ### `cancel_for_boundary(parent_session_key, boundary_owner) -> (running, queued)`
 The dashboard captures and reserves the stage's full parent set before stopping
 its controller. If that reservation is refused, the controller's release seam
-keeps the marked boundary armed while live owners are stopped.
+keeps the marked boundary armed while live owners are stopped. Whether the scope
+was refused or settled, the call re-publishes the parent's queued depth before
+it reaps the live owners, as Stop all does, so a Cancel that found nothing to
+stop still repairs a stale "N waiting to start" count.
 
 Stops only work whose captured pair matches exactly: durable queued rows, live
 children, completed-but-unrouted reports, and watcher-held follow-ups. Unlike
@@ -1110,7 +1172,9 @@ same predicate (`_run_belongs_to_caller`): the caller must be the run's
 `parent_session_key`, or the run itself. This holds whatever memory store the
 caller resolved to, and a caller with no `X-Session-Key` reaches only a run no
 session started (a CLI run, whose record carries an empty parent). A run with no
-managed state and no persisted record is owned by nobody and refused; a
+managed state and no persisted record is owned by nobody and refused; an accepted
+spawn that has not started yet (`queued_run_async`) is owned by its row's session
+key; a
 harness-native child (`native:*`) is owned by the dashboard slot tracking its card. KNOWN CONSEQUENCE in the pooled multiplexing shape
 without caller injection: a kiro-cli process that multiplexes sessions
 (`acp/runtime.py`) is session-unbound, and `mcp_core._post` sends no
@@ -1253,7 +1317,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
   3. **`_release_slot(info)` — SLOT accounting.** A one-shot token per `SubagentInfo`; the winner decrements `_running_count` once and drains the queue. Deliberately independent of both flags above: inferring slot ownership from `done` or `reaped` produced a double decrement in one interleaving and none at all in another. A leaked slot permanently starves the spawn queue, which matters far more at the 60-100 concurrent agents the scale work targets. The cancel-recovery respawn **re-arms** this token when it re-admits a slot (`_running_count += 1`), because the respawned run occupies a fresh slot and needs its own release.
   4. **`_claim_finalize(info)` — REPORT ownership** (`subagent_done` + the `_on_done` injection, plus wave-digest settling and the result.txt TTL bookkeeping). Granted to exactly one caller; contains no `await` so the check-and-set is atomic on the loop. It does **not** consult `info.done` — that was the last defect. It returns False while `_recovering` *without consuming itself*, so a pending respawn is not reported done and its respawned run can claim later.
 - **A claimed report is atomic, not merely exclusive.** The claim alone still lost outcomes when the claimer was cancelled mid-report. `_report_terminal` therefore runs on a strongly-referenced task under `asyncio.shield`, spawned by `_run` **before** its teardown awaits so the task is already live wherever a cancellation lands; the caller still receives `CancelledError` while the report completes. `cancel_all()` drains outstanding reports with a bounded timeout and then **cancels and gathers** any straggler, so none is left invoking `_on_done` against tearing-down state or killed by a closing loop. Because the awaiter is shielded, shutdown is bounded by that drain rather than the `_ON_DONE_TIMEOUT` injection cap. Enforced by `test_subagent_reap_race.py`.
-- **Failed report settlement is boundary-owned and bounded per scope.** Only a report with a non-empty `_stage_boundary_owner` enters the failure latch. Each `(parent_session_key, boundary_owner)` bucket retains at most 64 frozen compact `_ReportFailureSnapshot` rows—never live `SubagentInfo` records—and all rows share one 64 MiB `_REPORT_FAILURE_BYTE_BUDGET`; variable delivery text is capped at 64 KiB. `_ReportFailureSnapshot` captures exactly the fields read by `_report_terminal_impl`, the gateway `_subagent_done`, and their report helpers. `test_report_failure_snapshot_fields_match_terminal_consumers` derives that set from source and compares it to the dataclass, so a new consumer field cannot bypass redelivery. If the per-boundary row cap or process budget refuses a snapshot, the gateway-wired exact-scope resolver sets `StageBoundary.report_retention_refused` to `row_cap` or `byte_budget`. No manager-owned refusal sentinel, count, scope map, or collapsed record exists. Only that boundary fails closed; its exact discard clears the flag, while an unrelated discard changes nothing. Slot teardown captures only exact parent/owner pairs from the closing boundary generation, so sibling aliases keep their scopes. A snapshot carries exact run/parent/owner-generation identity, timing, terminal outcome, result location, wave state, delivery state, model provenance, stop classification, and every other source-enumerated terminal consumer field; variable delivery text is independently capped at 64 KiB. Redelivery reconstructs a temporary record. Retained rows can redeliver, while a refusal flag remains until exact boundary discard. Only that boundary stays failed closed; other boundaries remain independent. Explicit finished-run deletion first waits for any active terminal-report task, then redelivers debt for the matching live boundary or discards only that exact inactive boundary before record removal. A hard stop discards the owning stage boundary, while an ordinary non-Autopilot report is unowned, so neither can halt or advance a later stage.
+- **Failed report settlement is boundary-owned and bounded per scope.** Only a report with a non-empty `_stage_boundary_owner` enters the failure latch. Each `(parent_session_key, boundary_owner)` bucket retains at most 64 frozen compact `_ReportFailureSnapshot` rows—never live `SubagentInfo` records—and all rows share one 64 MiB `_REPORT_FAILURE_BYTE_BUDGET`; variable delivery text is capped at 64 KiB. `_ReportFailureSnapshot` captures exactly the fields read by `_report_terminal_impl`, the gateway `_subagent_done`, and their report helpers. `test_report_failure_snapshot_fields_match_terminal_consumers` derives that set from source and compares it to the dataclass, so a new consumer field cannot bypass redelivery. If the per-boundary row cap or process budget refuses a snapshot, the gateway-wired exact-scope resolver sets `StageBoundary.report_retention_refused` to `row_cap` or `byte_budget`. No manager-owned refusal sentinel, count, scope map, or collapsed record exists. Only that boundary fails closed; its exact discard clears the flag, while an unrelated discard changes nothing. Slot teardown captures only exact parent/owner pairs from the closing boundary generation, so sibling aliases keep their scopes. A snapshot carries exact run/parent/owner-generation identity, timing, terminal outcome, result location, wave state, delivery state, model provenance, stop classification, whether the run was stopped while still queued (`queued`, so a retried queued-stop report adds no depth frame of its own), and every other source-enumerated terminal consumer field; variable delivery text is independently capped at 64 KiB. Redelivery reconstructs a temporary record. Retained rows can redeliver, while a refusal flag remains until exact boundary discard. Only that boundary stays failed closed; other boundaries remain independent. Explicit finished-run deletion first waits for any active terminal-report task, then redelivers debt for the matching live boundary or discards only that exact inactive boundary before record removal. A hard stop discards the owning stage boundary, while an ordinary non-Autopilot report is unowned, so neither can halt or advance a later stage.
 - **An undelivered report abandoned at shutdown is made RECOVERABLE, not silently dropped.** The terminal record — including the tombstone — is written before delivery is attempted, and a tombstone is exactly what `list_orphans()` uses to EXCLUDE a folder from the next start's reconciliation. So cancelling a still-pending report at the drain deadline would leave an outcome that was never injected *and* invisible to the only path that could still inject it. `cancel_all()` therefore calls `clear_tombstone(id)` for each report it cancels, re-admitting that agent to the next start's orphan reconciliation (which finds `result.txt` and re-delivers). Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected: it would hold gateway shutdown for up to 20 minutes on one wedged injection, which is the exact failure the bounded drain exists to prevent. Only reports cancelled **before** `_on_done` returned are re-admitted — `info._reported_to_parent` is set the moment the injection returns, so a cancellation in the later teardown/tombstone waits cannot cause a duplicate delivery on restart.
 - **Every reporter goes through the claim — including cancel-recovery failure.** There are more terminal paths than the two obvious ones: when a cancel-recovery respawn cannot happen, its `except` arm also finalizes the agent. That site previously fired `subagent_done` and `_on_done` directly, gated only on `done`/`reaped`, so a reaper racing a failed respawn delivered the outcome twice. It now takes `_claim_finalize` like every other reporter and reports through the shielded helper (which matters because `_force_reap` cancels that very task). `_resume_guarded`'s CancelledError arm writes only the RECORD and deliberately never reports — during shutdown the drain owns delivery.
 - **The reaped marker and the recovery cancel precede every `await` in `_force_reap`.** Both used to sit after the session teardown, which yields for up to `_RESET_TIMEOUT` (longer on the SIGKILL path). A recovery task whose bounded handshake expired inside that window observed `reaped == False` and respawned the run being killed — tools executing after a user Stop, strictly worse than a duplicate report.
@@ -1287,9 +1351,11 @@ Verdict → action:
 - `DEAD` / `STUCK_INPUT` — positive evidence of a wedge, so it flags **immediately**, skipping the two-sweep confirmation that exists to dampen guesses. That skip is **withdrawn whenever the runtime is session-shared** (see the third bound below), because the trust it assumes is exactly what a shared runtime removes — the parent session is always a co-tenant of that process, so a lone subagent is no safer than one with siblings.
 - `UNKNOWN` — no attributable evidence (no tool in flight, a non-shell tool with no child to match, unreadable `/proc`, or a refused executor): falls back to idle-time-only with two-sweep confirmation.
 
+The one non-shell tool that is attributable is the kirocrew-core `wait`. Its declared-duration contract (`ToolCallState.declared_wait_verdict`, shared with the main-agent oracle) reads only the call's own `seconds` and dispatch instant, so `_stall_verdict` answers it directly, with no `/proc` walk: `WORKING` until `min(seconds, WAIT_TOOL_MAX_SECS) + WAIT_TOOL_SLACK_SECS` has elapsed, then `UNKNOWN`. The reaper selects it by the adapter-authored identity (`ToolCallState.is_trusted_wait`: `mcp_server_name` is `kirocrew-core` from a provenance-verified frame and `tool_name` is `wait`, bare or server-qualified such as `kirocrew-core___wait`), never by the model-authored title, because this verdict is exempt from the ceiling below.
+
 Four bounds keep this honest, and each exists for a failure that was observed rather than imagined:
 
-- **`_SUPPRESS_CEILING`** — a `WORKING` verdict only suppresses while `idle < _stall_idle_secs * _SUPPRESS_CEILING`. Attribution is not infallible: two siblings running *similar* commands under `session_sharing` can cmdline-match the same child, so a wedged agent could read `WORKING` for as long as its sibling's child lives. Unbounded that would convert a case the idle-time-only path DID badge into a permanent false negative — worse than a spurious badge, since the badge is self-clearing and a missing one is not. Past the ceiling the badge wins, so misattribution costs latency, not the signal.
+- **`_SUPPRESS_CEILING`** — a `WORKING` verdict only suppresses while `idle < _stall_idle_secs * _SUPPRESS_CEILING`. Attribution is not infallible: two siblings running *similar* commands under `session_sharing` can cmdline-match the same child, so a wedged agent could read `WORKING` for as long as its sibling's child lives. Unbounded that would convert a case the idle-time-only path DID badge into a permanent false negative — worse than a spurious badge, since the badge is self-clearing and a missing one is not. Past the ceiling the badge wins, so misattribution costs latency, not the signal. The trusted `wait` contract is the one exception: it cannot land on another session's process and it ends by itself at its declared duration plus slack, so its `WORKING` suppresses past the ceiling.
 - **The wedged skip is withdrawn under a shared runtime.** The same fallible match runs in the other direction: a `DEAD` reading can describe *another session's* child that exited, and because `DEAD`/`STUCK_INPUT` normally bypass the two-sweep confirmation, that would raise an immediate badge on a healthy agent — defeating the dampening that keeps the badge trustworthy at 60-100 agents. Granting one path immediate trust in a signal the ceiling exists because it is unreliable is incoherent, so when `info._session_sharing` is set the wedged verdict earns its badge the same way a guess does: by holding across two sweeps (~60s). **The gate keys on the flag, not on a sibling count.** `_create_shared_session` puts the subagent on the **parent's** AcpRuntime — one process hosts everything — so `info._pid` is the parent's process and the parent's own tool children are descendants of it too. `_live_shared_count` iterates the subagent registry and therefore cannot see the parent, so an earlier `_live_shared_count(pid) > 1` form left a *lone* session-shared subagent on the fast path while it could still cmdline-match the parent's child and flag the instant that child exited. Since a shared runtime always contains the parent, "could this match belong to someone else?" holds for every session-sharing agent; only a dedicated-process subagent (`session_sharing` false, or a per-spawn model/effort override that forces its own process) keeps the immediate flag.
 - **The walk is offloaded, never inline.** `check_tool` is a synchronous `/proc` walk (`iter_descendants`, plus `os.readlink` on `/proc/<pid>/fd/*`, which can block on the very wedged fd being investigated) and the reaper runs on the same event loop that serves every chat turn. It is submitted through **`consult_offloaded` (`acp/liveness.py`) — the one shared guard, not a local mirror of it**: the same helper the main-agent watchdog reaches via `AcpSessionHandle._consult_oracle_offloaded`, so `SubagentInfo` supplies the `_consult_future` its `ConsultFutureHolder` protocol requires and a fix to the guard lands on every caller at once. The guard owns submission-inside-the-guard, exception retrieval attached at submission, the bound (`OFFLOADED_CONSULT_TIMEOUT_SECS`, 10s) via `wait_for(shield(...))`, at most **one outstanding walk per holder** so a permanently wedged read cannot leave a new blocked worker behind on every sweep, and degrade-to-`UNKNOWN` on any failure. Failure mode to be aware of: consults are awaited serially within a sweep, so if many agents cross the idle threshold while their `/proc` reads wedge, a single sweep can stretch toward N×10s and delay the wall-clock reap for the other agents in it. Bounded and unlikely (one walk per agent, later sweeps short-circuit on the in-flight guard), but it is the cost of doing this in the sweep rather than out of band.
 - **Generation counter.** The awaited verdict is discarded (`superseded mid-consult`) when `info._stall_gen` moved during the walk — i.e. activity, a final tool result, or the next dispatch retired the snapshot it was submitted for. Without this the walk's own latency is enough to flag an agent that has resumed working, and `DEAD`/`STUCK_INPUT` skip two-sweep dampening, so a stale one would flag instantly.
@@ -1397,13 +1463,32 @@ recommend next actions), instead of leaving the last visible message as a
 per-sub-agent completion note. Dashboard chat only (orchestrator mode has its
 own stage synthesis).
 
-- **Arm** — in `_subagent_done` (chat mode, `not _is_orchestrator`), when the
-  last outstanding sub-agent for the parent completes
-  (`running_agents_for(parent_key) == []`), set `slot._pending_synthesis = True`.
-- **Fire** — in `chat_runner._run_chat`'s drain/idle branch, once the queue is
-  empty, no agents are running, `_pending_synthesis` is set, **and**
-  `slot._subagent_deliveries_inflight == 0`, launch exactly one tracked synthesis
-  task. `_synthesis_inflight` prevents duplicates. There is **no readiness wait**:
+- **Arm** — in `_subagent_done` (chat mode, `not _is_orchestrator`), IN MEMORY
+  ONLY and with no await, cheapest check first: not already armed, not a flush-only record, not an id the
+  blocking tool collected inline, `running_agents_for(parent_key) == []`, and no
+  `has_in_memory_pending_work_for(parent_key, exclude_id=info.id)` (a spawn in
+  the dispatch window, another child whose report still waits on its teardown,
+  a live follow-up watcher) — then set `slot._pending_synthesis = True`. The arm
+  sits on the delivery path, so it never waits on the task store's writer, and
+  with no await the tab cannot close nor a sibling register under it. A child
+  only the store holds is the fire gate's to see. A probe that raises leaves
+  the synthesis disarmed.
+- **Fire** — `chat_runner._finish_queue_cycle` asks the ONE store-reading
+  check, `chat_utils.synthesis_fire_verdict`, on the slot's real session key
+  (`effective_session_key`, which a channel- or cron-born tab does not spell
+  `dashboard:<slot>`). It holds for a running child or an in-flight delivery,
+  for the same in-memory terms, and for a child only the store holds
+  (gate-deferred, waiting for a slot, or claimed and not registered), and
+  answers `unknown` for a store nobody could read. Only `clear` launches the one
+  tracked synthesis task; `_run_pending_synthesis` reuses that verdict and reads
+  no probe of its own. On `unknown` the idle slot re-checks on a timer
+  (`_SYNTHESIS_RECHECK_SECS`, at most `_SYNTHESIS_RECHECK_MAX` times, one timer
+  per slot, cancelled by `begin_close`), because no completion is left to
+  re-trigger it; a real "attached" answer waits for that child's completion.
+  When synthesis does not fire, a user message queued while the gate read the
+  store is drained as at a normal turn end (`_start_next_queued_turn`, which
+  keeps its own `hold_users` rule). `_synthesis_inflight` prevents duplicates.
+  There is **no readiness wait**:
   readiness is latched at gateway boot and refreshed only on explicit user action,
   so parking the arm on it would strand the synthesis indefinitely. The task
   clears the arm once the delivery guards pass, immediately before starting one
@@ -1652,6 +1737,9 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   which snapshots the
   in-memory exclusion set on the loop and runs only the `count_pending` /
   `list_pending` / `fetch_pending_by_batch` half on the store's writer thread.
+  `queued_run_async` / `queued_runs_async`, which the spawn status and list
+  routes read, take the same split, and the queued count counts `admitted`
+  rows no run is registered for (`count_pending(include_admitted=True)`).
   Each wave helper's own split is the same: the candidates come from manager
   state on the loop (`_batch_pending_in_memory`, `_stuck_wave_candidates`,
   `_expired_digest_holds`) and only the per-wave store read is offloaded. The
@@ -1673,9 +1761,9 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   wave), and `_sweep_digest_holds` — reached only for a hold already past
   `DIGEST_HOLD_SECS` — forces the partial digest out, so the price is a chunk that
   may race the wave-close flush rather than every finished sibling's result staying
-  undelivered for the length of the outage. The queue-depth chip is the only reader
-  for which the value is a number, and one advisory unit during an outage the log
-  already names is the price. `taskq_pending_ids_for` is the
+  undelivered for the length of the outage. The queue-depth chip does not take this
+  answer: its reader (`taskq_chip_overflow_async`) answers `None` and the chip
+  publishes nothing until a retry reads the store. `taskq_pending_ids_for` is the
   exception and stays `[]`: it enumerates ids to cancel, and inventing one would
   cancel a row nobody read. Pinned by
   `test_taskq_admission_integration.py::test_an_unreadable_overflow_keeps_the_attached_children_guard_closed`
@@ -2033,7 +2121,7 @@ changes submission, allocation, governance, or the captured memory binding.
 Response semantics:
 - An ID means the submission was accepted. Running and queued work return the same stable agent ID; capacity or stagger queueing preserves that ID when the row drains. Treat it as an identifier, not a result path.
 - An explicit HTTP error response means the submission was rejected and is reported as `failed to start`; rejected work is never described as queued.
-- A transport failure has unknown acceptance status because the gateway may have accepted the work before the response failed. The response warns against automatic retries and directs callers to wait and recheck `spawn_list` or completion events first. An empty immediate `spawn_list` result is inconclusive because the stagger queue is not listed. If the request was truly lost, accepted siblings may remain held until the `_WAVE_STUCK_SECS` backstop (1800s / 30 minutes) reconciles the wave.
+- A transport failure has unknown acceptance status because the gateway may have accepted the work before the response failed. The response warns against automatic retries and directs callers to wait and recheck `spawn_list` or completion events first. An empty immediate `spawn_list` result is inconclusive: accepted spawns that have not started are listed as `[queued]`, but a submission still in flight is not listed yet. If the request was truly lost, accepted siblings may remain held until the `_WAVE_STUCK_SECS` backstop (1800s / 30 minutes) reconciles the wave.
 - If every submission is explicitly rejected (with no transport uncertainty), the response states that none of the requested subagents were started and does not promise completion events or suggest polling.
 - For a partial batch, accepted IDs remain paired with their tasks, rejected tasks appear in a separate failure section, and completion guidance applies only to accepted submissions.
 
@@ -2070,6 +2158,7 @@ Parameters:
 Blocking poll semantics:
 - Each sub-agent is spawned via `POST /api/spawn` (with `parent_session`), then the handler polls `GET /api/spawn/{id}` every 2s until every sub-agent reports `done` (or `error`).
 - An errored/crashed sub-agent is treated as settled so one bad agent cannot keep the loop spinning until the deadline.
+- A member that is accepted but not started answers `queued: true` with `done: false`, and when the gate DEFERRED it (its own `reason_detail` sentence, sent only while the deferral is in force; the parent-wide `reason` label is last-writer-wins and not trusted for this) it SETTLES the wait: the call returns once every member is done, errored or deferral-held, so one gate-deferred member does not hold a dashboard parent's turn inside the tool for up to `max_wait`. A member queued only behind the concurrency cap (`concurrency_limit`) or waiting to resume is NOT settled: it drains with the wave, and the tool returns its result (a sub-agent parent still waits for its own slot grant afterwards, `_hold_for_parent_resume`, which follows its children). Done and queued members are not polled again; an error settles only the pass it was seen in, since it can be one failed poll of a running member. A queued member is reported ONCE, in the `{"status": "queued", "agents": {id: reason}}` record (the reason is its current wait, `queued_wait_text`), never as an `error` member too: a caller shown an error for accepted work dispatches it again. Its result arrives later as a completion event, and it is never marked collected. A queued member that already ran and waits to resume (`resuming: true`) is reported under `still_running` as `waiting_to_resume`, never as not started. "Held" is read off `queued: true` only, never off a 404's prose; a member the accept answer marked deferred whose final poll failed in transport keeps its error entry plus the hint "accepted at spawn time; its state couldn't be read now; check spawn_status before re-spawning".
 - The loop pings `POST /api/session-keepalive` every 60s so the gateway's `is_responsive()` does not flag the (legitimately long-blocked) session as stale and SIGTERM the ACP subprocess mid-poll. The `wait` tool pings the same endpoint for the same reason but on a **5s** interval and with a body, because there the reply doubles as an early-end control channel (see `modules/learn-cron-dashboard.md` § Wait countdown and early end); this loop sends `{}` and ignores the reply, so 60s is sufficient.
 - `max_wait` defaults to 7200s (2 hours), clamped to `[60, 7200]`, and is configurable via the `KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT` environment variable. The deadline uses `time.monotonic()`.
 - Returns a newline-separated list of per-agent JSON results (`status`: `completed` / `error`), all redacted for credentials and exfiltration URLs.
@@ -2316,6 +2405,71 @@ run"; when no text chunk has arrived, it says that explicitly instead of
 rendering the completed-empty sentinel `_No result._`, and for the
 awaiting-approval case it says to approve the run in the dashboard (Approvals) to
 start it rather than promising a transcript with the completion event.
+
+**An accepted spawn that has not started is `queued`, not "not found".** The gate
+may defer a spawn (memory floor, critical posture, adaptive cap at 0) or queue it
+for a slot, and until the pump claims and registers it, its only record is a
+window entry or a task-store row. It has no `SubagentInfo` and no run folder.
+"Accepted, no run yet" has ONE definition, shared by the by-id read, the listing
+and the queued count (`taskq_overflow`, which every pending-work guard, the fire
+gate and the depth chip read): a claimable row, or an `admitted` one (a claim in
+flight, or one retained across a store outage), that no live run in this process
+is registered for (`_live_run_ids`). `SubagentManager.queued_run_async(id)` /
+`queued_runs_async(parent, app=)` read the store and the window, and:
+
+- `GET /api/spawn/{id}` answers such an id, before its persistence fallback, with
+  `{"id", "task", "done": false, "status": "queued", "queued": true, "agent",
+  "started", "elapsed", "reason"?, "reason_detail"?, "resuming"?,
+  "resuming_reason"?}` (`status` matches the accept answer, `queued` is what the
+  poll loops read). When the task store cannot be read and the window has no
+  entry for the id, "not queued" is unknowable, so the status, steer and retry
+  routes and the ownership check answer `503 taskq_unavailable` (retryable),
+  never a definitive 404. A row this build cannot model (an unknown state, kind
+  or side-effect class) reads as that same outage, with a WARNING naming it. `started` is the
+  row's accept time. `reason` is the parent's current wait kind (per parent, last
+  writer wins, as on `subagent_queued`), and `reason_detail` is the gate's
+  sentence from the row's latest `deferred` event while that deferral is in force
+  AND newer than the row's last claim or transition (one batched event read per
+  page). A row with no such sentence while the effective cap is 0 answers
+  `reason: "adaptive_cap_zero"` and the pause sentence
+  (`subagent_wait_reasons.adaptive_pause_text`, the accept answer's wording), read
+  live from the manager: a paused cap holds every unstarted row and records no
+  event, so without it `spawn_sub_agents` would wait on a member the accept answer
+  called deferred. A row that already ran — `recovering` after a restart, or `retry_wait`
+  with attempts — reports `resuming: true` with `resuming_reason`
+  (`gateway_restart` / `retry`) instead, and no tool calls it "not started". The
+  ownership check (`_spawn_scope_refusal`) takes the row's session key as the
+  parent and keeps its lookup on the request for the handler. A run the pump
+  registers while that lookup awaits is answered from the registry; the
+  persistence fallback after it answers a run folder as `done: true`. `POST .../steer` and
+  `POST .../retry` on a queued id answer `409 queued_not_started`. A row the
+  pump refuses at drain time (its re-check of memory mode, execution, cwd or
+  governance) is failed in the store and registered as a terminal record with
+  the refusal as its error, so the next poll reads the failure, not a 404.
+- `GET /api/spawn?queued=1` lists them under their own `queued` key, present
+  only when non-empty. They are bounded by the same caller scope as the live
+  rows, and also by the caller's app claim, which the live rows do not apply (the
+  app filter runs inside the store read, before its cap). Without the flag the
+  route does not touch the task store: only the spawn tools read the half, not
+  the dashboard's pollers. The queued half is read BEFORE the live registry, so a
+  run that registers between the two is listed live rather than in neither;
+  each id is listed once, live over queued. It
+  is a page of the oldest `QUEUED_LISTING_CAP` store rows, and a cut-off page or
+  an unreadable store carries `queued_truncated: true` (the bridge logs the
+  transition once), because a tail read as complete says accepted spawns were
+  never accepted. They are kept out of `agents` because every reader of that
+  list takes a not-done entry for a run in progress.
+- The `spawn_status` tool prints `[QUEUED · <elapsed>]` with the reason and a
+  note not to spawn the run again; `spawn_list` (and `kirocrew spawn list`)
+  prints each with why it waits, says when the list is partial, and says
+  `No subagents running.` only when nothing runs AND nothing is queued.
+- A blocking `spawn_sub_agents` that collects a member inline whose announce had
+  already queued on the slot (its delivery timed out waiting on the tool's turn)
+  has that queued announce removed and its delivery marks settled at
+  `mark-collected`, and keeps its id out of `_subagents_inline_collected`. That
+  set takes only ids the gateway knows, each at most `_COLLECTED_ID_MAX_LEN`
+  long, and at most `_COLLECTED_IDS_CAP` in total, since only a matching
+  completion evicts one.
 
 The full transcript stays in `~/.kiro/crew/subagents/<id>/result.txt` for a
 **retention grace window** after delivery — on success the folder is *not*

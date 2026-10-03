@@ -364,6 +364,32 @@ def test_locked_database_is_reported_not_hung(tmp_path: Path) -> None:
 # ── defer / reads / window helpers ────────────────────────────────────────────
 
 
+def test_next_eligible_at_is_a_wake_only_for_rows_time_holds(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The wake is when a row the dispatch reads may claim, and could not,
+    becomes claimable. A row with no deferral and no lease is no wake: read as
+    "due at 0" it re-armed an empty pump pass on every loop turn."""
+    store.accept([_rec("fresh")])
+    assert store.next_eligible_at(model.KIND_SUBAGENT) is None
+
+    store.accept([_rec("root"), _rec("child", parent_id="root")])
+    store.defer("root", clock.t + 10, reason="low memory")
+    store.defer("child", clock.t + 20, reason="low memory")
+    assert store.next_eligible_at(model.KIND_SUBAGENT) == clock.t + 10
+    assert store.next_eligible_at(model.KIND_SUBAGENT, exclude_ids=["root"]) == clock.t + 20
+    assert store.next_eligible_at(model.KIND_SUBAGENT, children_only=True) == clock.t + 20
+    assert store.next_eligible_at(model.KIND_SUBAGENT, exclude_ids=["root", "child"]) is None
+
+    # A leased row is claimable once both its deferral and its lease are past.
+    store.insert_if_absent(
+        _rec(
+            "leased", state=model.RECOVERING, next_run_at=clock.t + 1, lease_expires_at=clock.t + 5
+        )
+    )
+    assert store.next_eligible_at(model.KIND_SUBAGENT) == clock.t + 5
+
+
 def test_defer_keeps_row_queued_but_ineligible_until_clock_passes(
     store: TaskStore, clock: Clock
 ) -> None:

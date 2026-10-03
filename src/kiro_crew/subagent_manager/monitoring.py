@@ -1067,8 +1067,16 @@ class OrphanStallMonitor(ManagerComponent):
             # attributable on a shared runtime — so decline rather than guess.
             return VERDICT_UNKNOWN, "no tool in flight"
         if not tool.is_shell:
-            # A non-shell MCP tool has no child process to match, so the oracle
-            # can only offer the same unattributable subtree aggregate. Decline.
+            # The kirocrew-core wait tool's declared-duration contract reads only
+            # this agent's own tool input and dispatch instant, so it is as
+            # attributable as the shell-child match and needs no /proc walk. It is
+            # selected by the adapter-authored identity, never the model-authored
+            # title, because it lifts the suppression ceiling below.
+            if tool.is_trusted_wait():
+                return tool.declared_wait_verdict(time.monotonic())
+            # Any other non-shell MCP tool has no child process to match, so the
+            # oracle can only offer the same unattributable subtree aggregate.
+            # Decline.
             return VERDICT_UNKNOWN, "non-shell tool — not attributable"
         if info._stall_oracle is None:
             info._stall_oracle = LivenessOracle()
@@ -1145,9 +1153,13 @@ class OrphanStallMonitor(ManagerComponent):
         idle = now - info.last_activity
         if not info.stalled and idle > self._manager._stall_idle_secs:
             verdict, evidence = await self._manager._stall_verdict(info)
-            if (
-                verdict == VERDICT_WORKING
-                and idle < self._manager._stall_idle_secs * _SUPPRESS_CEILING
+            # The wait contract bounds itself at seconds + slack and cannot land
+            # on another session's process, so the ceiling below (which exists
+            # for a fallible cmdline match) does not apply to its WORKING.
+            tool = info._inflight_tool
+            self_bounded = tool is not None and tool.is_trusted_wait()
+            if verdict == VERDICT_WORKING and (
+                self_bounded or idle < self._manager._stall_idle_secs * _SUPPRESS_CEILING
             ):
                 # Attributable progress in this subagent's own child: silent, not
                 # stalled. Leave the suspicion open (do not reset

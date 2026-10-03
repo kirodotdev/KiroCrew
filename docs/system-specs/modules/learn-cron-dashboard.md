@@ -1579,11 +1579,12 @@ delete here once it lands.
 
 Frontend joins the countdown to a pill by tool *title*, via `isWaitToolTitle()`,
 an **allowlist** of the shapes the transport produces: `wait`, `<server>___wait`,
-`wait (mcp)`, and the two decorations combined. Deliberately stricter than its
-backend counterpart `acp/liveness.py::is_wait_tool`, and the asymmetry is
-intentional rather than drift. The backend's looser rule only answers "is this
-session legitimately blocked in a long tool", where over-matching merely declines
-to reap something; here a false positive misattributes a live deadline. Concretely,
+`wait (mcp)`, and the two decorations combined. The backend liveness contract
+does not read the title at all: it selects the wait by the provenance-verified
+adapter identity (`acp/liveness.py::ToolCallState.is_trusted_wait`), because a
+title-selected wait would let any tool that describes itself as waiting defer its
+own stall recovery. The frontend has only the title, so its allowlist is kept
+strict: a false positive misattributes a live deadline. Concretely,
 a per-token rule accepts an unrelated `wait_for_ci` from another server, so a
 subagent's `wait` could publish its deadline onto the parent's `wait_for_ci` pill
 and arm the button against the wrong sleep — and the contested latch cannot cover
