@@ -5,7 +5,7 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -17,7 +17,8 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
-  `chat_session_pin`. These organize what the person sees in the sidebar.
+  `chat_session_pin`, `session_move_to_column`. These organize what the
+  person sees in the sidebar.
 
 Everything a created session does is visible: it appears in the user's sidebar
 like any other tab, they can read it, take it over, and close it. This is how
@@ -577,11 +578,32 @@ column list is part of the person's own layout, shared by every session.
 | `chat_tag_column_list` | none | Every column in board order: id, name, what it filters on. Read-only |
 | `chat_tag_column_create` | `name` (required), `tag` (required) | Append a column showing sessions that carry `tag`. A column with the same name and tag is returned instead of duplicated |
 | `chat_tag_column_move` | `column` (required), exactly one of `before` / `after` | Move one column next to another. The others keep their order |
+| `session_move_to_column` | `target` (required), `column` (required) | Move a live session's card into a board column, like dragging it there |
 
 `tag`, `column`, `before` and `after` take an id or an exact name. There is
 no delete or retag verb: removing a column or changing its filter removes a view
 the person built. An app agent and a crew member can list columns but not
-write them; the `/api/chat/tag-columns` write endpoints refuse both.
+create or reorder them; the `/api/chat/tag-columns` write endpoints refuse both.
+
+`target` takes the same slot key, `dashboard:<slot>` key or unique exact title
+as `chat_tag_assign`'s `session`. `column` is resolved the way
+`chat_tag_column_move` resolves one. The call goes through
+`POST /api/chat/slots/<slot>/drop`, the route the
+board's drag and drop uses: the session's workflow-state tag is replaced by the
+one status tag the column filters on, and its other tags are kept. Every other
+live tab open on the same conversation gets the new tags too, so it cannot save
+the old ones back.
+
+Two kinds of column cannot receive a card. A column that does not filter on
+exactly one status tag has no state to assign, and a live-state lane (needs
+approval, waiting, working, idle) follows the session's runtime state. Both
+answer with a plain result naming the reason and write nothing; retrying will
+not change it. The tag agent policy applies as it does for `chat_tag`
+`set_state`: the column's status tag and every status tag the move would strip
+must be `add-remove` for agents, or the call is refused `tag_policy_denied`. An
+app agent moves only its own sessions and a crew member only a session it owns
+or created; the route enforces both. Moving a card writes only the session's
+tags, never the column list.
 
 ## Pins
 

@@ -191,6 +191,10 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # ``chat_tag_column_list`` stays available: the layout names no session.
     "chat_tag_column_create",
     "chat_tag_column_move",
+    # Moving a card between board columns retags another session and moves it
+    # on the person's board, the same containment reason as pinning. The
+    # session_move_to_column handler refuses a ``channel:`` caller at dispatch.
+    "session_move_to_column",
     "session_revive",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is

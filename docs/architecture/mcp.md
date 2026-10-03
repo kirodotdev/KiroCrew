@@ -1375,7 +1375,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `chat_session_pin`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `chat_session_pin`, `session_move_to_column`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -1931,6 +1931,24 @@ create endpoint draws on its own `TAG_COLUMN_CREATE` budget, and the member
 chat-route gate admits only `GET` on the list. There is no delete or retag tool:
 either would remove a view the person built. The two writes are blocked for
 channel agents, at the permission prompt and again at dispatch.
+
+**Board moves follow the tag shape.** `session_move_to_column` moves one live
+session's card into a board column (`POST /api/chat/slots/<slot>/drop`, the
+route the board's drag and drop calls). It resolves the session through the
+same scoped `_visible_chat_slots`, verifies the caller strictly, and resolves
+`column` with the `chat_tag_column_move` resolver before posting its id. The
+route applies the
+unattributable-caller refusal, the crew-member `member_owns_slot` fence and the
+App Kit slot and transcript ownership checks `PUT /tags` applies, and holds an
+internal caller to the `chat_tag` `set_state` policy through the same
+`agent_set_state_*` helpers that verb uses. After the pinned save it mirrors
+the tags onto every live alias of the transcript with
+`mirror_tags_to_live_aliases`, which `PUT /tags` and the `chat_tag` applier
+also call. When it mirrored onto an alias, the drop and `PUT /tags` then save
+once more (`confirm_tags_on_aliases`), so an alias flush already queued
+before the mirror cannot leave the old tags on disk; if that save refuses or
+fails, both roll back and report the write as rejected. The member chat-route
+gate admits `POST` on that path.
 
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the

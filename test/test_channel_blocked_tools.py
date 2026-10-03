@@ -292,3 +292,11 @@ def test_session_pin_is_contained():
 
     assert "chat_session_pin" in CHANNEL_AGENT_BLOCKED_TOOLS
     assert _blocked_tool_named("kirocrew-dashboard___chat_session_pin") is True
+
+
+def test_session_move_to_column_is_contained():
+    """Moving a card retags another session on the person's board, like pinning."""
+    from kiro_crew.channel import _blocked_tool_named
+
+    assert "session_move_to_column" in CHANNEL_AGENT_BLOCKED_TOOLS
+    assert _blocked_tool_named("kirocrew-dashboard___session_move_to_column") is True

@@ -4151,6 +4151,10 @@ handle immediately.
 #: * ``chat_tag_column_move`` — WITHHELD, on the invariant: it MUTATES the order
 #:   of columns the person arranged, which is existing state that is not the
 #:   caller's own, and no conductor step needs it.
+#: * ``session_move_to_column`` — WITHHELD. Writes another session's ``tags``
+#:   through ``/api/chat/slots/<target>/drop``, where the target is the session
+#:   named in the ARGUMENTS: the same write ``chat_tag_assign`` makes, reached
+#:   through a board column.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.

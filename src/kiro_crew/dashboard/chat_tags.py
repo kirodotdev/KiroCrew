@@ -18,6 +18,7 @@ import math
 import re
 import uuid
 import weakref
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -31,6 +32,7 @@ from kiro_crew.dashboard.chat_tag_grants import (
     resolve_grant,
     resolve_grant_record,
     revoke_grant,
+    store_degraded,
     store_write_blocked,
 )
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -87,6 +89,135 @@ def agent_tag_grant(tag: dict[str, Any]) -> tuple[str, bool]:
     raw_id = tag.get("id")
     tag_id = raw_id if isinstance(raw_id, str) else ""
     return resolve_grant(tag_id)
+
+
+def agent_set_state_target_refusal(state_tag: dict[str, Any]) -> str | None:
+    """The refusal code for an agent ``set_state`` onto ``state_tag``, else ``None``.
+
+    The target must be a workflow state in the protected store
+    (``not_a_status_tag``) with an ``add-remove`` grant (``tag_policy_denied``).
+    Shared by the ``chat_tag`` applier and the agent board drop, so the two
+    verbs that move a session between workflow states apply one rule.
+    """
+    policy, is_status = agent_tag_grant(state_tag)
+    if not is_status:
+        return "not_a_status_tag"
+    if policy != "add-remove":
+        return "tag_policy_denied"
+    return None
+
+
+def agent_set_state_strip(
+    current: list[str],
+    state_id: str,
+    resolve: Callable[[str], dict[str, Any] | None],
+) -> tuple[list[str], tuple[str, str] | None]:
+    """Apply an agent ``set_state`` peer-strip to ``current``.
+
+    Returns ``(new_tags, None)``, or ``([], (code, tag_id))`` when a tag on the
+    session blocks the move. Every OTHER workflow state is stripped and
+    ``state_id`` added; statusness is the protected store's bit, never the
+    agent-writable ``status`` field. A stripped state needs ``add-remove``
+    (``tag_policy_denied``). A tag the vocabulary calls a state but the store
+    has no row for is ``status_identity_unprotected``: kept it could leave two
+    states, stripped it could be a label. Ids ``resolve`` does not know are
+    kept. Shared by the ``chat_tag`` applier and the agent board drop.
+    Caller refreshed the grants cache.
+    """
+    new_tags = list(current)
+    for existing in list(new_tags):
+        tag = resolve(existing)
+        if tag is None:
+            continue
+        tag_id = str(tag["id"])
+        policy, is_status = agent_tag_grant(tag)
+        if not is_status and tag.get("status") is True and not has_grant_row(tag_id):
+            return [], ("status_identity_unprotected", tag_id)
+        if is_status and tag_id != state_id:
+            if policy != "add-remove":
+                return [], ("tag_policy_denied", tag_id)
+            if tag_id in new_tags:
+                new_tags.remove(tag_id)
+    if state_id not in new_tags:
+        new_tags.append(state_id)
+    return new_tags, None
+
+
+def mirror_tags_to_live_aliases(
+    state: Any, slot: Any, history_key: str
+) -> list[tuple[Any, list[str], Any]]:
+    """Copy ``slot``'s committed tags onto every other live slot of its transcript.
+
+    A second live slot bound to the same transcript still holds the old tags in
+    memory, and its next dirty flush would persist them over the commit. Each
+    alias gets the tags and ``tags_revision`` and is marked dirty, so a later
+    flush writes the current state. Call after a successful pinned save, under
+    the tags write lock. Used by every tags writer: ``PUT /tags``, the board
+    drop and the ``chat_tag`` applier.
+
+    Returns ``(alias, prior_tags, prior_tags_revision)`` for each alias it
+    changed, so :func:`confirm_tags_on_aliases` can undo the mirror.
+    """
+    mirrored: list[tuple[Any, list[str], Any]] = []
+    # Snapshot values(): the event loop may change the dict between iterations.
+    for other in list(state._slots.values()):
+        if other is slot:
+            continue
+        try:
+            if slot_history_key(other) == history_key:
+                mirrored.append((other, other.tags, other.tags_revision))
+                other.tags = list(slot.tags)
+                other.tags_revision = slot.tags_revision
+                other._dirty = True
+        except Exception:
+            logger.warning("alias tag mirror failed", exc_info=True)
+    return mirrored
+
+
+async def confirm_tags_on_aliases(state: Any, slot: Any, history_key: str) -> str:
+    """Mirror ``slot``'s committed tags to its live aliases, then save again.
+
+    The mirror runs on the event loop after the pinned save returned, but an
+    alias's flush that was already queued can take the transcript's file lock
+    in the executor first and write its old tags over the commit. A crash
+    before the next periodic flush would then leave the old tags on disk. A
+    second pinned, confirmed save after the mirror puts the committed tags
+    back on disk behind any such write, the way ``autocompact_pct`` does.
+
+    With no live alias there is no such flush to race, so no second save.
+    Returns ``""`` on success, otherwise ``"session_gone"`` (the save refused:
+    deleted or rebound) or ``"persist_failed"``. On failure the mirror is
+    undone on each alias still bound to ``history_key`` and still holding the
+    mirrored value, and marked dirty; the caller rolls back ``slot`` itself.
+    Call under the tags write lock.
+    """
+    mirrored = mirror_tags_to_live_aliases(state, slot, history_key)
+    if not mirrored:
+        return ""
+    committed_tags = list(slot.tags)
+    committed_revision = slot.tags_revision
+    try:
+        confirmed = await save_slot_off_loop(
+            state, slot, force=True, best_effort=False, expected_history_key=history_key
+        )
+        failure = "" if confirmed else "session_gone"
+    except Exception:
+        logger.exception("Slot tags confirm-persist failed")
+        failure = "persist_failed"
+    if failure:
+        for other, prior_tags, prior_revision in mirrored:
+            try:
+                if (
+                    slot_history_key(other) == history_key
+                    and other.tags == committed_tags
+                    and other.tags_revision == committed_revision
+                ):
+                    other.tags = prior_tags
+                    other.tags_revision = prior_revision
+                    other._dirty = True
+            except Exception:
+                logger.warning("alias tag mirror rollback failed", exc_info=True)
+    return failure
 
 
 def agent_tag_policy(tag: dict[str, Any]) -> str:
@@ -1322,11 +1453,20 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         prior_tags_revision = slot.tags_revision
         slot.tags = new_tags
         written_tags_revision = _bump_slot_tags_revision(slot)
-        if not await save_slot_off_loop(
+        saved = await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key
-        ):
+        )
+        # After a commit, mirror to live aliases and save again so an alias's
+        # queued flush cannot leave the old tags on disk.
+        failure = (
+            await confirm_tags_on_aliases(state, slot, authorized_history_key)
+            if saved
+            else "session_gone"
+        )
+        if failure:
             # Refused without writing: the session was permanently deleted or
-            # rebound mid-persist. Roll back the live field — but only while
+            # rebound mid-persist (or the confirm save after the alias mirror
+            # refused or failed). Roll back the live field — but only while
             # it still holds THIS request's value: the write span awaits, so
             # a concurrent writer may have committed a newer value that an
             # unconditional restore would erase (the same guard
@@ -1346,13 +1486,18 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             # durable record to the rolled-back live state.
             slot._dirty = True
             state.push_slots_update()
+            reason = (
+                "could not persist tags"
+                if failure == "persist_failed"
+                else "session was deleted or rebound"
+            )
             sel().log_api_access(
                 caller="dashboard",
                 operation="chat.slot_tags",
                 outcome="denied",
                 source="dashboard",
                 resources=name,
-                error="session was deleted or rebound",
+                error=reason,
             )
             # The provisional revision sat on the live slot while the save
             # awaited, so a concurrent slots broadcast may already have shown
@@ -1361,8 +1506,8 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             # (and so not reapply the rejected tags on its next toggle).
             return web.json_response(
                 {
-                    "error": "session was deleted or rebound",
-                    "code": "session_gone",
+                    "error": reason,
+                    "code": failure,
                     "rejected_tags_revision": written_tags_revision,
                     "tags_revision": slot.tags_revision,
                     # The list the slot actually holds after rollback (a
@@ -1372,7 +1517,7 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
                     # pre-write baseline it captured before that writer landed.
                     "tags": slot.tags,
                 },
-                status=409,
+                status=500 if failure == "persist_failed" else 409,
             )
 
     state.push_slots_update()
@@ -1799,33 +1944,96 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     can have filter-only columns without accidental data loss. A derived state
     lane is refused outright — its membership follows the session's runtime
     state and no tag write can place a card there.
+
+    The board and the ``session_move_to_column`` MCP tool both send
+    ``column_id``; the tool resolves a name with the same resolver as
+    ``chat_tag_column_move`` before posting. A successful drop mirrors the new
+    tags onto every live alias of the transcript and saves again
+    (``confirm_tags_on_aliases``), so a sibling tab's flush cannot persist the
+    old ones back, in memory or on disk.
+
+    An internal (MCP) caller is an agent, and a drop is a workflow-state change,
+    so it is held to the ``chat_tag`` ``set_state`` policy read from the
+    protected grants store: the column's tag must be an ``add-remove`` workflow
+    state and every tag the drop strips must be ``add-remove``. The browser is
+    the person and keeps the drop as it was.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    # The ownership fences PUT /tags applies, in the same order and with the
+    # same indistinguishable 404: a drop rewrites the session's tags exactly
+    # as that route does, and the ``session_move_to_column`` MCP tool reaches
+    # it on behalf of app agents and crew members, not only the person.
+    refused = refuse_unattributable_caller(state, request, "chat.slot_drop")
+    if refused is not None:
+        return refused
+    # circular import: chat_folders imports this module at load, so this is
+    # the same lazy import PUT /tags uses.
+    from kiro_crew.dashboard.chat_folders import member_slot_write_refused
+
+    refused = member_slot_write_refused(state, request, slot, "chat.slot_drop")
+    if refused is not None:
+        return refused
+    request_app = effective_request_app(state, request)
+    if request_app and getattr(slot, "_app", "") != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.slot_drop",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error=(
+                "app cannot access unscoped slots"
+                if not getattr(slot, "_app", "")
+                else "app does not own this slot"
+            ),
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse await — the same rebind window PUT /tags documents. The
     # re-check below and the save's expected_history_key pin together keep
     # this request's write on the transcript it was authorized against.
     authorized_history_key = slot_history_key(slot)
+    if not app_owns_transcript(state._slots, request_app, authorized_history_key):
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.slot_drop",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error="app does not own this slot's transcript",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     column_id = str(body.get("column_id") or "")
+    # Optional generation token, as PATCH /pin reads it: the MCP tool resolves
+    # the slot from an earlier ``/api/chat/slots`` read, and the key can be
+    # recreated for a different conversation before this POST arrives.
+    expected_created = str(body.get("expected_created") or "")
+    audit_source, audit_caller = request_origin(request, what="slot drop", log=logger)
+    agent_caller = audit_source != "dashboard"
+    if agent_caller:
+        # Read the grants store off the loop once; the policy checks under the
+        # lock then resolve from the installed snapshot, as the chat_tag
+        # applier does.
+        await asyncio.to_thread(refresh_cache)
 
-    def _rejected(reason: str) -> web.Response:
+    def _rejected(reason: str, code: str) -> web.Response:
         sel().log_api_access(
-            caller="dashboard",
+            caller=audit_caller,
             operation="chat.slot_drop",
             outcome="rejected",
-            source="dashboard",
+            source=audit_source,
             resources=f"{name}->{column_id}",
             error=reason,
         )
-        return web.json_response({"ok": False, "reason": reason, "tags": slot.tags})
+        return web.json_response({"ok": False, "reason": reason, "code": code, "tags": slot.tags})
 
     # Serialize the whole resolve/re-check/mutate/persist/rollback span under
     # the same lock every other tags writer holds (PUT /tags, the tag-delete
@@ -1844,13 +2052,14 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "column not found", "code": "column_not_found"}, status=404
             )
+        column_id = str(column.get("id") or "")
         tag_index = {t["id"]: t for t in state._tags}
         if column.get("source") == "state":
             # A state lane's membership is derived from the session's own
             # runtime state, so there is nothing to write that would move the
             # card there — only the agent reaching that state moves it. Refuse
             # rather than silently reassigning tags the lane does not filter by.
-            return _rejected("column is a derived state lane")
+            return _rejected("column is a derived state lane", "state_lane")
         col_tags = [tag_index[t] for t in column.get("tag_ids") or [] if t in tag_index]
         status_tags = [t for t in col_tags if t.get("status")]
         if len(status_tags) != 1:
@@ -1859,25 +2068,77 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # (covers the unfiltered, multi-status, and target-tag-deleted
             # cases alike; tag_index was built under the lock, so a tag
             # deleted while this request waited is already absent here).
-            return _rejected("column is not a status lane")
+            return _rejected("column is not a status lane", "not_status_lane")
         target_id = status_tags[0]["id"]
-        # Re-authorize after the awaits above (body parse, lock acquisition):
-        # same slot OBJECT still registered under the name, routing still on
-        # the transcript captured before the first await. No await between
-        # this check and the save dispatch; the persist window itself is
-        # covered by the save's pin.
-        if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
-            return _rejected("session was deleted or rebound")
-        kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]
+        # Re-authorize after the awaits above (body parse, grant refresh, lock
+        # acquisition): same slot OBJECT still registered under the name,
+        # routing still on the transcript captured before the first await, and
+        # that transcript still the caller's app's. No await between this check
+        # and the save dispatch; the persist window itself is covered by the
+        # save's pin.
+        if (
+            state._slots.get(name) is not slot
+            or slot_history_key(slot) != authorized_history_key
+            or (expected_created and slot.created_at != expected_created)
+            or not app_owns_transcript(state._slots, request_app, authorized_history_key)
+        ):
+            return _rejected("session was deleted or rebound", "session_gone")
+        # Workflow states are mutually exclusive, so the drop strips every
+        # other one. The browser reads statusness from the vocabulary. An agent
+        # gets the ``chat_tag set_state`` rules through the same helpers that
+        # applier uses, decided on the protected store: the agent-writable
+        # ``status`` field must neither keep a protected state nor strip a
+        # protected plain label. Dangling ids are dropped on both paths.
         prior_tags = slot.tags
-        written_tags = kept + [target_id]
+        live_tags = [t for t in prior_tags if t in tag_index]
+        written_tags: list[str] = []
+        if agent_caller:
+            denial: tuple[str, str] | None = None
+            target_refusal = agent_set_state_target_refusal(tag_index[target_id])
+            if target_refusal is not None:
+                denial = (target_refusal, target_id)
+            else:
+                written_tags, denial = agent_set_state_strip(live_tags, target_id, tag_index.get)
+            if denial is not None:
+                code, tag_id = denial
+                if store_degraded() and not has_grant_row(tag_id):
+                    # Not a human reservation: the store cannot say.
+                    code = "tag_grants_unavailable"
+                sel().log_api_access(
+                    caller=audit_caller,
+                    operation="chat.slot_drop",
+                    outcome="denied",
+                    source=audit_source,
+                    resources=f"{name}->{column_id}",
+                    error=f"{code}:{tag_id}",
+                )
+                return web.json_response(
+                    {
+                        # ``error`` carries ``code:tag`` because the MCP
+                        # transport keeps only ``error`` and ``code`` of a
+                        # non-2xx body.
+                        "error": f"{code}:{tag_id}",
+                        "code": code,
+                    },
+                    status=403,
+                )
+        else:
+            written_tags = [t for t in live_tags if not tag_index[t].get("status")] + [target_id]
         slot.tags = written_tags
         written_tags_revision = _bump_slot_tags_revision(slot)
-        if not await save_slot_off_loop(
+        saved = await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key
-        ):
+        )
+        # Mirror to live aliases and save again, as PUT /tags does.
+        failure = (
+            await confirm_tags_on_aliases(state, slot, authorized_history_key)
+            if saved
+            else "session_gone"
+        )
+        if failure:
             # Refused without writing: the session was permanently deleted or
-            # rebound mid-persist. Roll back the live field — but only while
+            # rebound mid-persist (or the confirm save after the alias mirror
+            # refused or failed). Roll back the live field — but only while
             # it still holds THIS request's value, so a non-endpoint writer's
             # newer commit is not erased — and report the drop as rejected,
             # matching this endpoint's rejection shape (the card stays where
@@ -1894,13 +2155,15 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # next flush reconverges the durable record to the live state.
             slot._dirty = True
             state.push_slots_update()
-            return _rejected("session was deleted or rebound")
+            if failure == "persist_failed":
+                return _rejected("could not persist tags", failure)
+            return _rejected("session was deleted or rebound", "session_gone")
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard",
+        caller=audit_caller,
         operation="chat.slot_drop",
         outcome="allowed",
-        source="dashboard",
+        source=audit_source,
         resources=f"{name}->{column_id}",
     )
     return web.json_response({"ok": True, "tags": slot.tags})

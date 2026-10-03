@@ -58,6 +58,7 @@ class TestAdmittedChatRouteMethods:
             ("/api/chat/slots/chat-1-2/folder", "PATCH"),
             ("/api/chat/slots/chat-1-2/tags", "PUT"),
             ("/api/chat/slots/chat-1-2/pin", "PATCH"),  # pin own or created session
+            ("/api/chat/slots/chat-1-2/drop", "POST"),  # move own or created card
             ("/api/chat/slots", "GET"),  # read-only session list for folder tools
         ],
     )

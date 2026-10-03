@@ -356,6 +356,10 @@ class TestWhatThisSetGrants:
     #: Board columns. Same posture as the tag tools: read, append and reorder;
     #: no delete and no retag, so nothing the person put on the board is lost.
     COLUMN_TOOLS = {"chat_tag_column_list", "chat_tag_column_create", "chat_tag_column_move"}
+    #: Board columns. Same posture as tag assignment: the move is the status-tag
+    #: swap the board's drag and drop makes, on a session the caller may already
+    #: tag; no column is created, deleted or reordered.
+    BOARD_TOOLS = {"session_move_to_column"}
     #: The session-control half. Granted by the SAME assignment as the folder
     #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for
     #: why the two classes ride together rather than in two servers.
@@ -385,7 +389,9 @@ class TestWhatThisSetGrants:
         "session_read_message",
         "session_summary",
     }
-    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | PIN_TOOLS | SESSION_TOOLS
+    GRANTED_TOOLS = (
+        FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | PIN_TOOLS | BOARD_TOOLS | SESSION_TOOLS
+    )
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard

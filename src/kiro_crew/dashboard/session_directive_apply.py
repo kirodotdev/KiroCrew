@@ -1522,8 +1522,11 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
     from kiro_crew.dashboard.chat_tag_grants import has_grant_row, refresh_cache, store_degraded
     from kiro_crew.dashboard.chat_tags import (
         _bump_slot_tags_revision,
+        agent_set_state_strip,
+        agent_set_state_target_refusal,
         agent_tag_grant,
         agent_tag_policy,
+        mirror_tags_to_live_aliases,
         tags_write_lock,
         validate_folder_tag_ids,
     )
@@ -1663,13 +1666,10 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
             # in exchange for a plain label. One store read answers both the
             # status question and the policy question so the two cannot be
             # satisfied by different sources.
-            state_policy, state_is_status = agent_tag_grant(state_tag)
-            if not state_is_status:
+            target_refusal = agent_set_state_target_refusal(state_tag)
+            if target_refusal is not None:
                 _sel_self_tag("denied", set_state)
-                return _store_refusal("not_a_status_tag", str(set_state))
-            if state_policy != "add-remove":
-                _sel_self_tag("denied", set_state)
-                return _policy_refusal(str(set_state))
+                return _store_refusal(target_refusal, str(set_state))
             state_canonical_id = str(state_tag["id"])
             # `set_state=X, remove=[X]` in one call would add X then remove it,
             # leaving the session with NO workflow state — the exact outcome
@@ -1693,38 +1693,16 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
 
         if set_state:
             state_id = _resolve(set_state)["id"]  # type: ignore[index]
-            # Mutual exclusivity: strip every OTHER workflow-state tag (any tag
-            # carrying status: True), keyed on the LIVE vocabulary rather than a
-            # hardcoded id list, then add the requested one. A removed peer that
-            # is human-only must NOT be silently stripped — refuse instead.
-            for existing in list(new_tags):
-                et = _resolve(existing)
-                if et is None:
-                    continue
-                et_policy, et_is_status = agent_tag_grant(et)
-                if (
-                    not et_is_status
-                    and et.get("status") is True
-                    and not has_grant_row(str(et["id"]))
-                ):
-                    # The vocabulary calls this tag a workflow state but the
-                    # protected store holds NO row for it (an upgraded install's
-                    # custom status tag, or a tag caught between a revoke and
-                    # its re-mint). Its identity is UNKNOWN, not "non-status":
-                    # treating it as a plain label would leave two exclusive
-                    # states on the session. The vocabulary bit is agent-writable
-                    # and grants nothing here — it is only ever a reason to
-                    # REFUSE. Recovery is owner adoption
-                    # (``POST /api/chat/tags/{id}/adopt``); a status PATCH on a
-                    # rowless tag answers ``tag_id_not_grantable``.
-                    _sel_self_tag("denied", et["id"])
-                    return _store_refusal("status_identity_unprotected", str(et["id"]))
-                if et_is_status and et["id"] != state_id:
-                    if et_policy != "add-remove":
-                        _sel_self_tag("denied", et["id"])
-                        return _policy_refusal(str(et["id"]))
-                    _remove(et["id"])
-            _add(state_id)
+            # Mutual exclusivity: strip every OTHER workflow-state tag, keyed on
+            # the protected store's status bit rather than a hardcoded id list,
+            # then add the requested one. A peer that is human-only, or whose
+            # identity the store cannot vouch for, is refused rather than
+            # silently stripped or kept (see ``agent_set_state_strip``).
+            new_tags, strip_refusal = agent_set_state_strip(new_tags, state_id, _resolve)
+            if strip_refusal is not None:
+                code, refused_id = strip_refusal
+                _sel_self_tag("denied", refused_id)
+                return _store_refusal(code, refused_id)
 
         for requested in add_ids:
             _add(_resolve(requested)["id"])  # type: ignore[index]
@@ -1804,19 +1782,7 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
         # lands after the pinned commit leaves the DISK stale until the next
         # periodic flush — bounded, self-healing, and the committed state was
         # already durably written once by the pin-save above.
-        for other in state._slots.values():
-            if other is slot:
-                continue
-            try:
-                if slot_history_key(other) == authorized_history_key:
-                    other.tags = list(slot.tags)
-                    # The revision travels with the tags: a board edit on the
-                    # alias compares against the same base the requester now
-                    # carries, and a later alias flush persists a matching pair.
-                    other.tags_revision = slot.tags_revision
-                    other._dirty = True
-            except Exception:
-                logger.warning("chat_tag alias tag mirror failed", exc_info=True)
+        mirror_tags_to_live_aliases(state, slot, authorized_history_key)
         try:
             slot._dirty = True
         except Exception:

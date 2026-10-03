@@ -122,6 +122,7 @@ from kiro_crew.validation import (
     SESSION_CREATE_SCHEMA,
     SESSION_END_WAIT_SCHEMA,
     SESSION_FORK_SCHEMA,
+    SESSION_MOVE_TO_COLUMN_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
@@ -539,6 +540,38 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["column"],
+            },
+        },
+        {
+            "name": "session_move_to_column",
+            "description": (
+                "Move a LIVE chat session's card into a sidebar board column, the same "
+                "as dragging it there. ``target`` is a slot key or 'dashboard:<slot>' "
+                "session key from chat_folder_tree, or a session's exact title when "
+                "that title is unique. ``column`` is a column id or its exact name. "
+                "The move swaps the session's workflow-state tag for the one status "
+                "tag the column filters on and keeps every other tag. A column that "
+                "does not filter on exactly one status tag, and a live-state lane "
+                "(needs approval / waiting / working / idle), cannot receive a card: "
+                "the call writes nothing and says why, so do not retry it. The tag "
+                "agent policy applies as it does for chat_tag set_state: a state the "
+                "person reserved for themselves is refused (tag_policy_denied). An app "
+                "agent may move only its own sessions; a crew member only a session "
+                "it owns or created. Columns are not created or reordered here."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Slot key, 'dashboard:<slot>' session key, or exact unique session title.",
+                    },
+                    "column": {
+                        "type": "string",
+                        "description": "Board column id, or the column's exact name.",
+                    },
+                },
+                "required": ["target", "column"],
             },
         },
         {
@@ -3790,7 +3823,112 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 )
             return redact(f"Error: {d['error']}")
         return redact(f"Moved column `{names[move_id]}` {side} `{names[anchor_id]}`.")
+    if name == "session_move_to_column":
+        args = validate_tool_args(args, SESSION_MOVE_TO_COLUMN_SCHEMA)
+        # The schema refuses a blank ``column``.
+        column_ref = str(args["column"]).strip()
+        # Like chat_tag_assign, this writes another session's tags, so identity
+        # is resolved STRICTLY and the verified key rides on the write unchanged.
+        caller_key, strict_err = require_strict_session_key(
+            "Error: cannot verify which session is calling, so this move is refused "
+            "— moving another session's card requires a caller identity the "
+            "gateway can vouch for.",
+            server=SERVER_NAME,
+        )
+        if not caller_key:
+            return strict_err
+        channel_err = _refuse_channel_board_write(name, caller_key)
+        if channel_err:
+            return channel_err
+        chat_slots, slots_err = _visible_chat_slots()
+        if slots_err:
+            return f"Error: {slots_err}"
+        slot_key, slot_err = _resolve_chat_slot_key(args["target"], chat_slots)
+        if slot_err:
+            return redact(f"Error: {slot_err}")
+        # Same column resolver as chat_tag_column_move. The id is stable, so a
+        # rename between this read and the drop still lands in the column the
+        # agent named; a column deleted in between is a 404 from the route.
+        columns, cols_err = _get_rows("/api/chat/tag-columns")
+        if cols_err:
+            return f"Error: {cols_err}"
+        column_id, col_err = _resolve_chat_tag_column(column_ref, columns)
+        if col_err:
+            return f"Error: {col_err}. Nothing was written."
+        # ``expected_created`` pins the write to the slot generation resolved
+        # above, as chat_session_pin does.
+        drop_body: dict[str, Any] = {"column_id": column_id}
+        slot_row = next((s for s in chat_slots if str(s.get("key") or "") == slot_key), {})
+        slot_created = str(slot_row.get("created") or "")
+        if slot_created:
+            drop_body["expected_created"] = slot_created
+        d = _post(
+            f"/api/chat/slots/{quote(slot_key, safe='')}/drop",
+            drop_body,
+            session_key=caller_key,
+        )
+        return redact(_render_column_move(slot_key, column_ref, d))
     return f"Error: unknown tool '{name}'"
+
+
+def _render_column_move(slot_key: str, column_ref: str, d: dict) -> str:
+    """The tool result for one ``/drop`` answer.
+
+    The two refusals the board itself makes (a column that is not a status lane,
+    a live-state lane) are results, not errors: the column cannot receive a card
+    and a retry cannot change that, so the text says so plainly.
+    """
+    code = str(d.get("code") or "")
+    if d.get("ok") is True:
+        shown = _tag_names(d.get("tags"))
+        return f"Moved session `{slot_key}` into column `{column_ref}`. Tags now: {shown}."
+    if d.get("ok") is False:
+        if code == "not_status_lane":
+            return (
+                f"Not moved: column `{column_ref}` does not filter on exactly one status "
+                "tag, so dropping a card there assigns nothing. Nothing was written; "
+                "retrying will not change it."
+            )
+        if code == "state_lane":
+            return (
+                f"Not moved: column `{column_ref}` is a live-state lane. A session "
+                "enters it by what it is doing (needs approval, waiting, working, "
+                "idle), not by a tag. Nothing was written; retrying will not change it."
+            )
+        if code == "session_gone":
+            return (
+                f"Error: session `{slot_key}` closed or was replaced after it was "
+                "resolved. Nothing was written — call chat_folder_tree to see the "
+                "current sessions."
+            )
+        return f"Not moved: {d.get('reason') or 'the board refused the move'}."
+    if code == "column_not_found":
+        return (
+            f"Error: column `{column_ref}` was deleted before the move. Nothing was "
+            "written — call chat_tag_column_list for the current columns."
+        )
+    if code in (
+        "tag_policy_denied",
+        "tag_grants_unavailable",
+        "not_a_status_tag",
+        "status_identity_unprotected",
+    ):
+        # ``error`` is ``<code>:<tag id>``.
+        return (
+            f"Error: {d.get('error') or code}. The move would set or strip a tag "
+            "agents may not change this way. Nothing was written."
+        )
+    return f"Error: {d.get('error') or 'the move failed'}"
+
+
+def _tag_names(raw: Any) -> str:
+    """Render a tag-id list by name for a tool result, best effort."""
+    ids = [str(t) for t in (raw or []) if isinstance(t, str)]
+    if not ids:
+        return "none"
+    tags, err = _get_rows("/api/chat/tags")
+    names = {} if err else {str(t.get("id") or ""): str(t.get("name") or "?") for t in tags}
+    return ", ".join(f"`{names.get(t, t)}`" for t in ids)
 
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
