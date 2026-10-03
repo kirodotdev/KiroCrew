@@ -137,6 +137,7 @@ class PolicyAuthority:
         *,
         extra_patterns: "list[str] | None" = None,
         reason_notes: "dict[str, str] | None" = None,
+        segments: bool = False,
     ) -> "str | None":
         """Evaluate a SYNTHESIZED target (see ``security``); overlay stays ADD-only.
 
@@ -169,6 +170,7 @@ class PolicyAuthority:
             patterns,
             extra_patterns=extra_patterns,
             reason_notes=reason_notes,
+            segments=segments,
         )
 
 

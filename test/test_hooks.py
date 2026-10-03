@@ -21,8 +21,10 @@ from kiro_crew.hooks import (
     HookManager,
     HooksConfig,
     TransformHook,
+    UserDeniedPattern,
     _tool_matches,
     safe_read_file,
+    untruncated_shell_title,
 )
 
 
@@ -917,6 +919,293 @@ class TestToolCallEvaluatesRawCommand:
         case — they must still be gated by title, not blanket-denied."""
         mgr = HookManager()
         assert mgr.on_tool_call("TaskeiGetTask", is_shell=False).action == TOOL_ALLOW
+
+
+# A long feature-branch push in the shape the pipeline workers send: the git
+# options and the lease value push the refspec past character 197, which is
+# where kiro-cli cuts a shell call's ``Running: <command>`` title.
+_LEASE_SHA = "0123456789abcdef0123456789abcdef01234567"
+_PUSHED_SHA = "89abcdef0123456789abcdef0123456789abcdef"
+_FEATURE_BRANCH = "fix/long-feature-branch-name-12345"
+_PUSH_OPTIONS = (
+    "git -C /workspace/checkouts/project-worktree -c credential.helper= "
+    "-c credential.helper=/workspace/checkouts/credential-helper.sh push"
+)
+_LONG_FEATURE_PUSH = (
+    f"{_PUSH_OPTIONS} --force-with-lease=refs/heads/{_FEATURE_BRANCH}:{_LEASE_SHA} "
+    f"origin {_PUSHED_SHA}:refs/heads/{_FEATURE_BRANCH}"
+)
+_LONG_BARE_PUSH = f"{_PUSH_OPTIONS} --force-with-lease=refs/heads/{_FEATURE_BRANCH}:{_LEASE_SHA}"
+_LONG_MAIN_PUSH = f"{_PUSH_OPTIONS} --force-with-lease=main:{_LEASE_SHA} origin {_PUSHED_SHA}:main"
+
+
+def _kiro_cli_shell_title(command: str) -> str:
+    """The title kiro-cli sends for a shell call: the command cut to 197 + ``...``."""
+    shown = command if len(command) <= 200 else command[:197] + "..."
+    return f"Running: {shown}"
+
+
+def _refusal_rule(reason: str) -> str:
+    """The rule id a structural refusal names on its diagnostic line."""
+    for token in reason.split():
+        if token.startswith("rule="):
+            return token[len("rule=") :]
+    return ""
+
+
+class TestTruncatedShellTitleIsJudgedUncut:
+    """A shell title kiro-cli cut short is judged as the command it shows a slice of.
+
+    The deny tiers judge the display title as well as the recovered command. A cut
+    title ends wherever character 197 falls, and the git-publish floor read that
+    end as the end of the push: a push naming its remote and branch past the cut
+    was refused as naming no branch. A title in kiro-cli's cut shape (a leading
+    slice of the command plus ``...``, at any length) is judged uncut, and the
+    operator's own rules judge it as sent as well; any other title keeps its own
+    verdict.
+    """
+
+    def test_the_fixtures_put_the_refspec_past_the_cut(self):
+        for command in (_LONG_FEATURE_PUSH, _LONG_MAIN_PUSH):
+            assert len(command) > 200
+            assert command.index(" origin ") >= 197
+        assert len(_LONG_BARE_PUSH) > 200
+
+    def test_the_cut_title_alone_is_what_the_floor_refused(self):
+        # The defect's evidence: judged on its own, the cut title of a valid push
+        # reads as a push that names no branch.
+        result = HookManager().on_tool_call(_kiro_cli_shell_title(_LONG_FEATURE_PUSH))
+        assert result.action == TOOL_DENY
+        assert _refusal_rule(result.reason) == "git-publish-push-bare"
+
+    def test_a_long_feature_branch_push_is_allowed(self):
+        result = HookManager().on_tool_call(
+            _kiro_cli_shell_title(_LONG_FEATURE_PUSH),
+            command=_LONG_FEATURE_PUSH,
+            is_shell=True,
+        )
+        assert result.action != TOOL_DENY, result.reason
+
+    def test_a_long_bare_push_is_still_refused_by_its_command(self):
+        mgr = HookManager()
+        for title in (_kiro_cli_shell_title(_LONG_BARE_PUSH), "publish the branch"):
+            result = mgr.on_tool_call(title, command=_LONG_BARE_PUSH, is_shell=True)
+            assert result.action == TOOL_DENY
+            assert _refusal_rule(result.reason) == "git-publish-push-bare"
+
+    def test_a_title_that_is_not_a_slice_of_the_command_is_still_judged(self):
+        # A dangerous title behind a benign command keeps its own verdict.
+        result = HookManager().on_tool_call(
+            _kiro_cli_shell_title(_LONG_BARE_PUSH), command="git status", is_shell=True
+        )
+        assert result.action == TOOL_DENY
+        assert _refusal_rule(result.reason) == "git-publish-push-bare"
+
+    def test_a_long_push_to_main_is_refused_as_a_protected_branch(self):
+        result = HookManager().on_tool_call(
+            _kiro_cli_shell_title(_LONG_MAIN_PUSH), command=_LONG_MAIN_PUSH, is_shell=True
+        )
+        assert result.action == TOOL_DENY
+        assert _refusal_rule(result.reason) == "git-publish-push-protected-branch-name"
+
+    def test_a_prefixed_deny_glob_still_meets_the_whole_command(self):
+        # Judged UNCUT, not dropped: a glob written against the prefixed title sees
+        # text that only the part past the cut carries.
+        cfg = HooksConfig(auto_deny_tools=[f"Running: *origin *:refs/heads/{_FEATURE_BRANCH}"])
+        result = HookManager(cfg).on_tool_call(
+            _kiro_cli_shell_title(_LONG_FEATURE_PUSH),
+            command=_LONG_FEATURE_PUSH,
+            is_shell=True,
+        )
+        assert result.action == TOOL_DENY
+
+    def test_an_exact_title_deny_on_an_uncut_slice_still_fires(self):
+        # A title that merely begins the command was not cut by the backend, so a
+        # rule that matches only the title keeps denying the call.
+        cfg = HooksConfig(auto_deny_tools=["Running: terraform apply"])
+        result = HookManager(cfg).on_tool_call(
+            "Running: terraform apply", command="terraform apply -auto-approve", is_shell=True
+        )
+        assert result.action == TOOL_DENY
+
+    def test_a_deny_glob_on_the_title_kiro_cli_showed_still_fires(self):
+        # An operator who copies the title kiro-cli displayed, ``...`` and all,
+        # into a deny glob keeps that rule: the sent title is judged by the
+        # operator's own rules even though the shipped rules see it rebuilt.
+        shown = _kiro_cli_shell_title(_LONG_FEATURE_PUSH)
+        for glob in (shown, shown[len("Running: ") :], "Running: *..."):
+            result = HookManager(HooksConfig(auto_deny_tools=[glob])).on_tool_call(
+                shown, command=_LONG_FEATURE_PUSH, is_shell=True
+            )
+            assert result.action == TOOL_DENY, glob
+
+    def test_an_operator_regex_on_the_cut_title_still_fires(self):
+        cfg = HooksConfig(
+            denied_commands_user_added=[UserDeniedPattern(id="u1", pattern=r"\.\.\.$")]
+        )
+        result = HookManager(cfg).on_tool_call(
+            _kiro_cli_shell_title(_LONG_FEATURE_PUSH), command=_LONG_FEATURE_PUSH, is_shell=True
+        )
+        assert result.action == TOOL_DENY
+        assert r"\.\.\.$" in result.reason
+
+    def test_an_operator_regex_on_one_chained_command_of_the_cut_title_still_fires(self):
+        # The sent title is judged per segment too, as is_denied judged it before
+        # the rebuild: a rule anchored to the chained command the cut ends inside
+        # still meets that command.
+        command = "git status && echo blocked " + "x" * 220
+        cfg = HooksConfig(
+            denied_commands_user_added=[
+                UserDeniedPattern(id="u1", pattern=r"^echo blocked .*\.\.\.$")
+            ]
+        )
+        result = HookManager(cfg).on_tool_call(
+            _kiro_cli_shell_title(command), command=command, is_shell=True
+        )
+        assert result.action == TOOL_DENY
+        assert "echo blocked" in result.reason
+
+    def test_the_sent_title_meets_operator_rules_only(self):
+        # With operator rules configured that do not match, the shipped floor that
+        # misread the cut still never sees the sent title.
+        cfg = HooksConfig(
+            auto_deny_tools=["Running: terraform destroy*"],
+            denied_commands_user_added=[UserDeniedPattern(id="u1", pattern=r"\bshred\b")],
+        )
+        result = HookManager(cfg).on_tool_call(
+            _kiro_cli_shell_title(_LONG_FEATURE_PUSH), command=_LONG_FEATURE_PUSH, is_shell=True
+        )
+        assert result.action != TOOL_DENY, result.reason
+
+    def test_operator_denied_regexes_are_the_operators_enabled_rules_only(self):
+        cfg = HooksConfig(
+            denied_commands_user_added=[
+                UserDeniedPattern(id="a", pattern="alpha"),
+                UserDeniedPattern(id="b", pattern="beta", enabled=False),
+            ]
+        )
+        assert HookManager(cfg).operator_denied_regexes() == ["alpha"]
+        # A list even when empty: ``None`` would mean every built-in to is_denied.
+        assert HookManager().operator_denied_regexes() == []
+
+
+class TestSentTitleSegmentPass:
+    """``is_denied_synthesized_target(..., segments=True)``, the sent-title tier.
+
+    It runs ``is_denied``'s two pattern passes over the caller's patterns and
+    nothing else: no shipped rule, no shell-syntax floor.
+    """
+
+    CHAINED = "git status && echo blocked " + "x" * 50 + "..."
+    ANCHORED = r"^echo blocked .*\.\.\.$"
+
+    def test_a_pattern_anchored_to_one_segment_matches_it(self):
+        from kiro_crew.security import is_denied_synthesized_target
+
+        assert is_denied_synthesized_target(self.CHAINED, [self.ANCHORED], segments=True)
+        # The synthesized-target default stays whole-string only.
+        assert is_denied_synthesized_target(self.CHAINED, [self.ANCHORED]) is None
+
+    def test_no_floor_runs(self):
+        from kiro_crew.security import is_denied_synthesized_target
+
+        cut = _LONG_FEATURE_PUSH[:197] + "..."
+        assert is_denied_synthesized_target(cut, [], segments=True) is None
+        assert is_denied_synthesized_target(cut, [r"\bshred\b"], segments=True) is None
+
+    def test_it_decides_as_is_denied_does_on_the_same_patterns(self):
+        from kiro_crew.security import is_denied, is_denied_synthesized_target
+
+        cases = [
+            (self.CHAINED, [self.ANCHORED]),
+            (self.CHAINED, [r"^git status$"]),
+            ("ls; rm -rf ./build", [r"^rm -rf"]),
+            ('echo "a" | "rm" -rf "./x"', [r"^rm -rf \./x$"]),
+            ("ls -la && cat notes.txt", [r"^shred"]),
+        ]
+        for text, patterns in cases:
+            expected = is_denied(text, None, denied_regexes=patterns) is not None
+            got = is_denied_synthesized_target(text, patterns, segments=True) is not None
+            assert got == expected, (text, patterns)
+
+
+class TestUntruncatedShellTitle:
+    """``untruncated_shell_title`` rebuilds only a title in kiro-cli's exact cut shape."""
+
+    def test_a_cut_title_is_rebuilt_around_the_whole_command(self):
+        title = _kiro_cli_shell_title(_LONG_FEATURE_PUSH)
+        assert (
+            untruncated_shell_title(title, _LONG_FEATURE_PUSH) == f"Running: {_LONG_FEATURE_PUSH}"
+        )
+
+    def test_a_cut_title_without_a_display_prefix_is_rebuilt(self):
+        cut = _LONG_FEATURE_PUSH[:197] + "..."
+        assert untruncated_shell_title(cut, _LONG_FEATURE_PUSH) == _LONG_FEATURE_PUSH
+
+    def test_a_leading_slice_without_the_marker_is_unchanged(self):
+        # A title the backend did not cut is the agent's text, even when it begins
+        # the command: an exact-title deny on it must survive.
+        assert untruncated_shell_title("Running: git push or", "git push origin x") == (
+            "Running: git push or"
+        )
+        title = "Running: " + _LONG_FEATURE_PUSH[:197]
+        assert untruncated_shell_title(title, _LONG_FEATURE_PUSH) == title
+
+    def test_a_marked_leading_slice_of_any_length_is_rebuilt(self):
+        # The slice length is not pinned to kiro-cli's 197: a release that moves
+        # the cut must not bring the over-block back.
+        for length in (1, 150, 196, 198, len(_LONG_FEATURE_PUSH) - 1):
+            title = "Running: " + _LONG_FEATURE_PUSH[:length] + "..."
+            assert untruncated_shell_title(title, _LONG_FEATURE_PUSH) == (
+                f"Running: {_LONG_FEATURE_PUSH}"
+            )
+        assert untruncated_shell_title("Running: git push...", "git push origin x") == (
+            "Running: git push origin x"
+        )
+
+    def test_a_marked_title_that_is_not_shorter_than_the_command_is_unchanged(self):
+        # Nothing was cut: an empty slice, or the whole command (or more) with the
+        # marker after it, keeps its own verdict.
+        for title in (
+            "Running: ...",
+            "Running: git push origin x...",
+            "Running: git push origin x and more...",
+        ):
+            assert untruncated_shell_title(title, "git push origin x") == title
+
+    def test_a_long_push_cut_at_another_length_is_allowed(self):
+        mgr = HookManager()
+        for length in (120, 180, 220):
+            title = "Running: " + _LONG_FEATURE_PUSH[:length] + "..."
+            result = mgr.on_tool_call(title, command=_LONG_FEATURE_PUSH, is_shell=True)
+            assert result.action != TOOL_DENY, (length, result.reason)
+
+    def test_a_slice_from_the_middle_of_the_command_is_unchanged(self):
+        command = "echo " + "x" * 200 + ' "rm -rf /" > note'
+        title = "Running: " + command[5:202] + "..."
+        assert untruncated_shell_title(title, command) == title
+
+    def test_a_short_command_title_is_unchanged(self):
+        # The claude-agent-acp adapter titles a Bash call with the bare command.
+        assert untruncated_shell_title("git push origin x", "git push origin x") == (
+            "git push origin x"
+        )
+        title = "Running: git push origin x"
+        assert untruncated_shell_title(title, "git push origin x") == title
+
+    def test_a_title_that_is_not_a_slice_is_unchanged(self):
+        assert untruncated_shell_title("Running: git push", "echo hi") == "Running: git push"
+        assert untruncated_shell_title("clean up workspace", "rm -rf build") == (
+            "clean up workspace"
+        )
+        other = "rm -rf / " + "x" * 200
+        title = "Running: " + other[:197] + "..."
+        assert untruncated_shell_title(title, _LONG_FEATURE_PUSH) == title
+
+    def test_without_a_command_the_title_is_unchanged(self):
+        title = _kiro_cli_shell_title(_LONG_FEATURE_PUSH)
+        assert untruncated_shell_title(title, None) == title
+        assert untruncated_shell_title(title, "") == title
 
 
 class TestShellCommandProperty:
