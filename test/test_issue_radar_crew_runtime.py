@@ -384,9 +384,22 @@ class TestSeedingSurvivesABriefLogLock:
         assert probes and probes[0], f"the read-back never met the held lock: {probes}"
 
     def test_the_held_lock_is_real_contention(self, tmp_path, monkeypatch):
-        """Negative control: the same write made ON the loop is refused."""
+        """Negative control: the same write made ON the loop is refused.
+
+        The setup write leaves the crew log's own background holders behind it --
+        the writer thread landing the entry and the eager folder reading the unit
+        right after -- and an on-loop acquire makes one attempt, so meeting either
+        of them raises a bare ``OSError`` from the write's preparing fold before
+        the read-back this control is about is ever reached. Both are settled
+        first, so the only holder the on-loop write can meet is the planted one.
+        """
+        from kiro_crew.crew_log import eager as crew_log_eager
+        from kiro_crew.crew_log import emit as crew_log_emit
+
         crew = _crew(tmp_path, unattended=True)
         _item(tmp_path, crew["id"], 2201, phase="awaiting-ci")
+        assert crew_log_emit.flush(timeout=30), "the setup write never landed"
+        assert crew_log_eager.drain(timeout=30), "the setup write's fold never settled"
         probes = self._hold_the_log_lock_during_read_back(monkeypatch)
 
         async def on_the_loop() -> None:
