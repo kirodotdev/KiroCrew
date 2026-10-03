@@ -195,8 +195,11 @@ def test_the_owners_log_under_the_compatibility_layer_s_name() -> None:
 #: Names a test patches through ``kiro_crew.platform_compat`` that the facade AND an owner
 #: both bind, each importing its own, so the patch reaches only the facade's code. ``Path``
 #: is rebound for the process-identity and trusted-binary helpers, which stay here; no test
-#: fakes it for a lock or an owner-only helper. A new entry is a decision that the patch
-#: needs no forwarding.
+#: fakes it for a lock or an owner-only helper. No test fakes ``os`` on the facade any more:
+#: the fd-based reparse-tag read that drove the Windows ``st_file_attributes`` branch from a
+#: POSIX host was removed in favour of the existing ``win_fd_is_link``, and the no-follow
+#: entry helper's own ``os`` use is exercised through its real POSIX branch rather than a
+#: faked ``os``. A new entry is a decision that the patch needs no forwarding.
 _PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path"})
 
 

@@ -7135,7 +7135,46 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
 _WIN_GENERIC_WRITE = 0x40000000
+#: Desired access for a walk that CLASSIFIES a component and holds it still.
+#:
+#: The share mode alone does not pin anything. Windows arbitrates sharing only when the
+#: request asks for one of ``FILE_READ_DATA``, ``FILE_EXECUTE``, ``FILE_WRITE_DATA``,
+#: ``FILE_APPEND_DATA`` or ``DELETE``; a request naming none of them is granted without
+#: consulting the object's share state and without contributing to it, so omitting
+#: ``FILE_SHARE_DELETE`` next to such a mask restricts nobody and the handle holds the
+#: name against nothing.
+#:
+#: ``0x0020`` is what makes the omission bite. On a DIRECTORY it is ``FILE_TRAVERSE``,
+#: which is the access a resolution of a path through that directory needs anyway, so
+#: requiring it refuses no component that could have been walked -- unlike
+#: ``GENERIC_READ``, which additionally demands ``FILE_LIST_DIRECTORY`` and so refuses a
+#: directory whose ACL grants traverse but not list. On a FILE the same bit is
+#: ``FILE_EXECUTE``; a leaf that denies it, or that another process holds with a
+#: deny-read share mode, cannot be held -- and the walk reports a shorter boundary
+#: rather than failing, because a component it could not hold is one it must not let a
+#: resolution cross.
+#:
+#: ``0x0080`` is ``FILE_READ_ATTRIBUTES``, which is what the classification itself
+#: reads off the handle.
+_WIN_FILE_TRAVERSE_READ_ATTRIBUTES = 0x0020 | 0x0080
+
+#: Attribute-only desired access, for a component that must be CLASSIFIED but not
+#: pinned. It names no data, execute or delete right, so by the rule above Windows
+#: grants it without consulting the object's share state -- which cuts both ways and is
+#: why it has exactly one caller: the handle pins nothing, and equally nothing another
+#: process holds can refuse it. A leaf held exclusively by another process opens for
+#: this and not for the mask above.
+_WIN_FILE_READ_ATTRIBUTES = 0x0080
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
+#: ``FILE_SHARE_READ`` alone. Used by :func:`win_open_no_reparse` on its directory
+#: open, where read-only sharing is self-contained and has no ambient concurrent
+#: writer to refuse. The path-walk pin (:func:`open_entry_no_follow`) deliberately
+#: does NOT use this: a validator pins ancestors other processes write beneath, so it
+#: keeps ``FILE_SHARE_READ_WRITE`` and leaves an in-place reparse conversion as an
+#: acknowledged open residual (see the sharing rule under :func:`open_entry_no_follow`)
+#: rather than denying every concurrent writer to police a race only the resolution
+#: can observe.
+_WIN_FILE_SHARE_READ = 0x00000001
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
@@ -7502,13 +7541,39 @@ def pinned_directory(path: str | os.PathLike) -> PinnedDirectory:
     return PinnedDirectory(pin_directory(target), target)
 
 
-def _win_open_without_following(path: str | os.PathLike) -> int:
-    """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
+def _win_open_without_following(
+    path: str | os.PathLike,
+    *,
+    desired_access: int = _WIN_GENERIC_READ,
+) -> int:
+    """``CreateFileW`` *path*, opening a reparse point INSTEAD of following it.
 
-    Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
-    not carry separate copies of the same security-critical flags. What each of
-    them then asserts about the descriptor differs; how the object is reached must
-    not.
+    Shared by :func:`pin_directory`, :func:`open_file_no_reparse` and
+    :func:`open_entry_no_follow` so they do not carry separate copies of the same
+    security-critical flags. What each of them then asserts about the descriptor
+    differs; how the object is reached must not.
+
+    *desired_access* is a parameter because callers need different access, not because
+    it is inert. A caller that reads BYTES needs ``GENERIC_READ``, the default; a caller
+    that walks a path asks for :data:`_WIN_FILE_TRAVERSE_READ_ATTRIBUTES` and reaches a
+    directory granting traverse but not list, which ``GENERIC_READ`` cannot open at all.
+    It also decides whether the share mode below means anything: Windows arbitrates
+    sharing only for a request naming one of ``FILE_READ_DATA``, ``FILE_EXECUTE``,
+    ``FILE_WRITE_DATA``, ``FILE_APPEND_DATA`` or ``DELETE``, so a mask naming none of
+    them yields a handle that neither conflicts with another opener's share mode nor
+    imposes its own. Both masks used here name one, and a caller adding a third that
+    does not gets an unpinned handle from the same call.
+
+    The share mode is fixed at read+write sharing (:data:`_WIN_FILE_SHARE_READ_WRITE`)
+    for every caller: a validator pins ancestors every other process writes beneath, so
+    a handle denying ``FILE_SHARE_WRITE`` would fail those processes' ``os.replace`` into
+    a held directory with a sharing violation for as long as the pin lived. The pin's
+    guarantee against a swap comes from the data right it asks for making the omitted
+    ``FILE_SHARE_DELETE`` bite (no rename, no delete of the held object), not from
+    denying writers. One swap that omission does not cover -- an in-place
+    ``FSCTL_SET_REPARSE_POINT`` converting a held, writable, empty directory into a UNC
+    reparse point under the pin -- stays an acknowledged open residual rather than being
+    policed here (see :func:`kiro_crew.hooks._canonicalize_within_hold`).
 
     ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
     opened AS ITSELF, so the caller sees what is really there and the target is
@@ -7544,7 +7609,7 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     kernel32.CreateFileW.restype = wintypes.HANDLE
     handle = kernel32.CreateFileW(
         os.fspath(path),
-        _WIN_GENERIC_READ,
+        desired_access,
         _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING,
@@ -7610,14 +7675,15 @@ def open_file_no_reparse(
     return fd
 
 
+#: ``FileAttributeTagInfo`` in ``FILE_INFO_BY_HANDLE_CLASS``.
+_WIN_FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+
+
 #: ``CreateFileW`` arguments only :func:`win_open_no_reparse` uses. A directory is
 #: opened for ``LIST_DIRECTORY`` (data access, so it takes part in sharing) with
 #: read-only sharing; a file read-write, open-or-create, sharing read and write.
 _WIN_FILE_LIST_DIRECTORY = 0x00000001
-_WIN_FILE_SHARE_READ = 0x00000001
 _WIN_OPEN_ALWAYS = 4
-#: ``FILE_INFO_BY_HANDLE_CLASS.FileAttributeTagInfo``.
-_WIN_FILE_ATTRIBUTE_TAG_INFO = 9
 
 
 def win_fd_is_link(fd: int) -> bool:  # pragma: no cover - Windows
@@ -7649,7 +7715,7 @@ def win_fd_is_link(fd: int) -> bool:  # pragma: no cover - Windows
     except OSError:
         return True
     if not kernel.GetFileInformationByHandleEx(
-        handle, _WIN_FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info), ctypes.sizeof(info)
+        handle, _WIN_FILE_ATTRIBUTE_TAG_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)
     ):
         return True
     return bool(info.ReparseTag & _IO_REPARSE_TAG_NAME_SURROGATE)
@@ -7740,6 +7806,87 @@ def open_create_no_reparse(path: str | os.PathLike, mode: int = 0o600) -> int:
             path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), mode
         )
     return win_open_no_reparse(path, directory=False, links_only=True)
+
+
+def open_entry_no_follow(path: str | os.PathLike, *, hold: bool = True) -> int:
+    """Open whatever sits at *path* -- file, directory, or a reparse point itself.
+
+    The untyped sibling of :func:`pin_directory` and :func:`open_file_no_reparse`.
+    Those two assert what they opened and refuse anything else, which is right for a
+    caller that knows; a caller walking a path one component at a time does not yet
+    know, and needs the three answers kept apart. ``NotADirectoryError`` for a
+    reparse point and for a plain file are the same exception from
+    :func:`pin_directory`, so a walk built on it cannot tell "a link is sitting
+    here, read its target" from "this component is an ordinary file, the path ends".
+
+    The descriptor is the answer: read ``st_file_attributes`` off ``os.fstat`` on
+    Windows, or ``os.fstat`` alone on POSIX, and the caller learns what is there
+    from the object it is already holding rather than from a second look by name.
+
+    Never follows. On Windows that is ``OPEN_REPARSE_POINT``, so a junction aimed at
+    a share is opened as the junction and the share is not contacted; on POSIX it is
+    ``O_NOFOLLOW``, which refuses a symlink at the name with ``ELOOP`` instead --
+    the two platforms report a link differently and a caller has to handle both.
+
+    ``O_NONBLOCK`` on POSIX so a FIFO at the name cannot make the open wait for a
+    writer. Release the descriptor with ``os.close``.
+
+    On Windows the access mask follows *hold*, because holding and classifying need
+    different rights and only one of them can always be had.
+
+    ``hold=True`` (the default) asks for TRAVERSE plus attribute access
+    (:data:`_WIN_FILE_TRAVERSE_READ_ATTRIBUTES`), which is both the least a walk needs
+    and the least that still pins. ``GENERIC_READ`` would refuse a directory whose ACL
+    grants traverse but not list -- perfectly ordinary, and validating before this --
+    turning a fail-closed guard into a fault on normal paths. Attribute access ALONE
+    would open everything and hold nothing, because a request naming no data, execute or
+    delete right is granted without Windows consulting the object's share state, so the
+    omitted ``FILE_SHARE_DELETE`` would restrict nobody. So ``hold=True`` asks for
+    TRAVERSE, a data right, which makes Windows consult the share state and lets the
+    omitted ``FILE_SHARE_DELETE`` bite: while the pin lives the held object cannot be
+    renamed or deleted, so a proven component cannot be swapped for a junction by the
+    rename/delete route.
+
+    The share mode is :data:`_WIN_FILE_SHARE_READ_WRITE` -- write sharing stays OPEN.
+    A directory handle that denied ``FILE_SHARE_WRITE`` would, for as long as the pin
+    lived, refuse every other process's ``os.replace`` into that directory (a rename
+    opens the destination's parent for ``FILE_ADD_SUBDIRECTORY``, which a no-write-share
+    handle fails with a sharing violation). The validator has 60+ consumers and pins
+    ancestors like the workspace and ``~/.kiro/crew``, so denying write sharing would
+    make ordinary atomic writes anywhere beneath a validated path fail at random while a
+    validation ran. The one hazard that denial closed -- an in-place
+    ``FSCTL_SET_REPARSE_POINT`` converting a held, writable, empty directory into a UNC
+    reparse point under the pin, which ``FILE_SHARE_DELETE``'s omission does not exclude
+    -- stays an acknowledged OPEN residual rather than being policed: detecting it after
+    the fact buys nothing, because a resolved junction's outbound SMB handshake has
+    already fired by the time any post-resolve re-check could run, and denying write
+    sharing to close it up front charges every concurrent writer on the machine for a
+    race only the resolution can observe. Closing it for real needs the canonical path
+    derived from the held descriptor rather than re-traversing names, a separate change
+    (see :func:`kiro_crew.hooks._canonicalize_within_hold`).
+
+    ``hold=False`` asks for :data:`_WIN_FILE_READ_ATTRIBUTES` and gets exactly that
+    property on purpose: taking no part in sharing, it cannot be refused by another
+    process holding the object exclusively, and it keeps the default read+write share
+    because it pins nothing, so narrowing the share would only refuse an ordinary
+    concurrent writer for no gain. It is for the one component a walk does not
+    need to pin -- the LAST one, which a resolution ends at rather than passes through.
+    Classifying it is still necessary, because its name is handed back to a caller that
+    will open it; pinning it is not.
+    """
+    if IS_POSIX:
+        return os.open(
+            os.fspath(path),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+    # pragma: no cover below -- the ctypes route is Windows-only and the Windows CI
+    # shards run with --no-cov, so the statement is unmeasurable anywhere rather than
+    # merely untested. What it returns IS measured: the walk that consumes it is
+    # exercised on POSIX through this function's own POSIX branch.
+    return _win_open_without_following(  # pragma: no cover
+        path,
+        desired_access=(_WIN_FILE_TRAVERSE_READ_ATTRIBUTES if hold else _WIN_FILE_READ_ATTRIBUTES),
+    )
 
 
 _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004

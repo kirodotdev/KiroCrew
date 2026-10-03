@@ -1878,7 +1878,10 @@ def _cap_redacted(text: str, limit: int, marker: str) -> tuple[str, bool]:
 
 
 def _flush_file_changes(
-    slot: "_ChatSlot", turn_boundary: int = 0, turn_start_mid: str | None = None
+    slot: "_ChatSlot",
+    turn_boundary: int = 0,
+    turn_start_mid: str | None = None,
+    snapshots: "dict[str, _Snapshot | None] | None" = None,
 ) -> None:
     """Attach accumulated file changes to this turn's last assistant message.
 
@@ -1927,8 +1930,23 @@ def _flush_file_changes(
     # Read after-content once per path. Uses _safe_read_snapshot so sensitive
     # paths and unreadable files yield empty after rather than crashing or
     # leaking credentials.
+    #
+    # ``_safe_read_snapshot`` validates and reads each path, and the Windows
+    # held-chain validator it reaches resolves credential-home anchors inline
+    # (``is_sensitive_resolved_path`` -> ``_home_dir_targets(inline=True)``),
+    # which is an UNBOUNDED filesystem call -- a redirected Windows home on an
+    # unreachable share would stall it. That must never run on the event loop,
+    # so the async caller (:func:`_flush_file_changes_off_loop`) reads every
+    # snapshot on a worker thread and hands them in via ``snapshots``; this
+    # synchronous body then only assembles metadata. ``snapshots`` is keyed by
+    # the pre-dedup path (``entry["path"]`` before redaction). A caller that
+    # does not pre-read (the sync test doubles) leaves it ``None`` and the read
+    # falls back inline.
     for entry in deduped.values():
-        after = _safe_read_snapshot(entry["path"])
+        if snapshots is not None:
+            after = snapshots.get(entry["path"])
+        else:
+            after = _safe_read_snapshot(entry["path"])
         if after is None:
             entry["after"] = ""
             after = _Snapshot("", False)
@@ -2044,6 +2062,68 @@ def _flush_file_changes(
     slot._file_changes = []
     if isinstance(reply_mids, list):
         reply_mids.clear()
+
+
+def _read_file_change_snapshots(paths: list[str]) -> "dict[str, _Snapshot | None]":
+    """Read each path's after-snapshot, blocking, for a worker thread.
+
+    The one blocking unit ``_flush_file_changes`` performs: ``_safe_read_snapshot``
+    per path, which validates and reads it. On Windows the validator resolves
+    credential-home anchors inline and unbounded, so this must run OFF the event
+    loop. Keyed by the raw (pre-dedup, pre-redaction) path.
+    """
+    return {path: _safe_read_snapshot(path) for path in paths}
+
+
+async def _flush_file_changes_off_loop(
+    slot: "_ChatSlot", turn_boundary: int = 0, turn_start_mid: str | None = None
+) -> None:
+    """Read the turn's file-change snapshots on a worker, then flush on the loop.
+
+    ``_flush_file_changes`` assembles turn metadata on the event loop, but its
+    per-path ``_safe_read_snapshot`` reads a file and resolves credential-home
+    anchors inline -- an unbounded filesystem call that a redirected Windows home
+    on an unreachable share would stall, freezing chat and the heartbeat. The
+    reads are offloaded here (one worker hop over the whole deduped path set) and
+    handed back in so the on-loop body only does the lexical dedup/scrub/attach.
+    The lexical missing-tail fence is unchanged: it still never re-resolves the
+    unheld tail, on any thread.
+
+    Cancellation-safe: this runs on every turn-exit path, including the turn's
+    ``finally``. ``drained_to_thread`` already runs its worker to COMPLETION
+    before propagating a cancellation (so the snapshots are read either way), but
+    a cancel landing at the ``await`` would otherwise skip the on-loop attach and
+    drop the metadata. So a ``CancelledError`` from the read is caught, the attach
+    is performed with whatever was read, and the cancellation is re-raised
+    afterwards -- the chips always land, and the turn still cancels.
+    """
+    fc_changes = getattr(slot, "_file_changes", None)
+    snapshots: "dict[str, _Snapshot | None] | None" = None
+    cancelled: BaseException | None = None
+    if isinstance(fc_changes, list) and fc_changes:
+        paths = list(dict.fromkeys(fc["path"] for fc in fc_changes))
+        try:
+            snapshots = await drained_to_thread(_read_file_change_snapshots, paths)
+        except asyncio.CancelledError as exc:
+            # The worker read already ran to completion inside drained_to_thread;
+            # the snapshots are lost only because the cancel landed at the await.
+            # Re-read them inline (the cache the first read warmed makes the
+            # anchor resolution cheap) so the attach below is not skipped, then
+            # re-raise so the turn still cancels.
+            cancelled = exc
+            snapshots = _read_file_change_snapshots(paths)
+    # Always delegate, even with nothing to flush: _flush_file_changes owns the
+    # per-turn no-op decision (and the dirty-marker bookkeeping on that path),
+    # so this wrapper must not short-circuit it. The worker hop above is taken
+    # ONLY when there are snapshots to read -- an empty turn pays no thread hop.
+    _flush_file_changes(
+        slot,
+        turn_boundary=turn_boundary,
+        turn_start_mid=turn_start_mid,
+        snapshots=snapshots,
+    )
+    if cancelled is not None:
+        raise cancelled
 
 
 def turn_stats_meta(
@@ -15693,7 +15773,7 @@ async def _run_chat(
             if _prompt_depth == 0 and _stats_attached:
                 slot._carried_ttft_clock = None
             # Attach accumulated file changes to this turn's assistant row before persist
-            _flush_file_changes(
+            await _flush_file_changes_off_loop(
                 slot, turn_boundary=_turn_msg_boundary, turn_start_mid=_turn_start_mid
             )
             # The reply is in the window, so this save is the durable clear of
@@ -17631,12 +17711,21 @@ async def _run_chat(
             pass
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
-        # bug this fix prevents.
+        # bug this fix prevents. The guard is BaseException, not Exception,
+        # because ``_flush_file_changes_off_loop`` awaits a worker hop: a user
+        # Stop or the turn deadline firing during that hop raises
+        # ``CancelledError`` (a BaseException), which an ``except Exception``
+        # would let past -- skipping the replay settlement, the re-injection
+        # re-arm and the AutoNudge re-arm below. The wrapper has already
+        # completed the snapshot attach before any such cancel propagates, and
+        # this is the turn's own exit ``finally`` (the cancellation outcome is
+        # already recorded in ``_stop_reason`` and settled by the done-callback),
+        # so absorbing it here only lets the remaining exit cleanup finish.
         try:
-            _flush_file_changes(
+            await _flush_file_changes_off_loop(
                 slot, turn_boundary=_turn_msg_boundary, turn_start_mid=_turn_start_mid
             )
-        except Exception:
+        except BaseException:
             logger.debug("_flush_file_changes failed", exc_info=True)
         # Replay settlement belongs on the one path every turn exit crosses.
         # A clean, non-synthetic landed end_turn is the only ordinary terminal

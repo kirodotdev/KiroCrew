@@ -16,6 +16,7 @@ touching the live ACP runtime — every test stays in pure-Python land.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import os
 import shutil
@@ -1733,9 +1734,10 @@ def snapshot_turn():
             node
             for node in ast.walk(runner)
             if isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "_flush_file_changes"
+            and isinstance(node.value, ast.Await)
+            and isinstance(node.value.value, ast.Call)
+            and isinstance(node.value.value.func, ast.Name)
+            and node.value.value.func.id == "_flush_file_changes_off_loop"
         ),
         key=lambda node: node.lineno,
     )
@@ -1743,6 +1745,34 @@ def snapshot_turn():
 
     def run(nodes, env):
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "<snapshot-turn>", "exec"), env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION admission statements lifted out of this repo's own source by AST, never external input; a hand-copied duplicate of them is exactly what this test exists to rule out  # noqa: E501  # fmt: skip
+
+    def run_async(nodes, env):
+        # The flush sites are ``await _flush_file_changes_off_loop(...)``; an
+        # ``await`` cannot run under a plain ``exec``, so the lifted statements
+        # are wrapped in a coroutine and driven by ``asyncio.run``. This still
+        # executes the PRODUCTION statements verbatim (same no-duplication
+        # contract as ``run``), including the worker-thread snapshot read.
+        wrapper = ast.AsyncFunctionDef(
+            name="_snapshot_turn_flush",
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[],
+            ),
+            body=list(nodes),
+            decorator_list=[],
+            returns=None,
+            type_comment=None,
+            type_params=[],
+        )
+        module = ast.Module(body=[wrapper], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, "<snapshot-turn>", "exec"), env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION flush statement lifted out of this repo's own source by AST, never external input  # noqa: E501  # fmt: skip
+        asyncio.run(env["_snapshot_turn_flush"]())
 
     def start(slot):
         # The flush sites read the runner's turn boundary; the harness has no
@@ -1765,7 +1795,7 @@ def snapshot_turn():
             run([admissions[site]], env)
 
         return SimpleNamespace(
-            record=record, flush=lambda site=0: run([flushes[site]], env), env=env
+            record=record, flush=lambda site=0: run_async([flushes[site]], env), env=env
         )
 
     return start
