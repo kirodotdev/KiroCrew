@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import pytest
 
 from kiro_crew.dashboard import chat_folder_suggest as fs
 from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER
 
 # ── _parse_choice ───────────────────────────────────────────────────────────
 
@@ -441,6 +443,25 @@ def test_model_failure_is_silent_and_not_retried() -> None:
         asyncio.run(fs.maybe_suggest_folder(state, slot))
     assert rec.sent == []
     assert slot._folder_suggested is True
+
+
+def test_prompt_carries_no_channel_attachment_path() -> None:
+    # A channel appends its image path on its own line, and the prompt flattens
+    # the message onto one: the scrub has to run first, while that line exists.
+    # Spelled for the running host: the scrubber's grammar is platform-gated.
+    temp = (
+        "C:\\Users\\John Smith\\AppData\\Local\\Temp\\tmpab12cd_4.png"
+        if os.name == "nt"
+        else "/Users/John Smith/tmp/tmpab12cd_4.png"
+    )
+    slot = _Slot(messages=[{"role": "user", "content": f"look at this\n{temp}"}])
+    state, _rec = _suggest_state(_FOLDERS, slot)
+
+    calls = _run(state, slot)
+
+    assert len(calls) == 1
+    assert temp not in calls[0]
+    assert STRIPPED_IMAGE_MARKER in calls[0]
 
 
 def test_model_call_names_the_slot_in_the_usage_row() -> None:

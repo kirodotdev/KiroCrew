@@ -15,6 +15,7 @@ doesn't need to branch on every method call.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -572,7 +573,7 @@ class AcpSessionProvider(LLMProvider):
 
         return self.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
+    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
         # Re-establish this session's gateway claim before the turn can call a
         # tool. The shared identity publisher does the same at every surface that
@@ -594,11 +595,12 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
         claim = self._claim_shared_turn()
+        send = self._handle.prompt
+        if not allow_image:
+            send = functools.partial(send, allow_image=False)
         try:
             async with aclosing(
-                self.essential_delivery.stream(
-                    message, self._handle.prompt, lambda: self.context_incarnation
-                )
+                self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
             ) as events:
                 async for event in events:
                     yield event
@@ -1329,7 +1331,7 @@ class AcpSessionProvider(LLMProvider):
 
     # ── Streaming (AcpClient-compatible method name) ──
 
-    def stream_events(self, message: str) -> AsyncIterator[LLMEvent]:
+    def stream_events(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield events. AcpClient-compatible name for stream().
 
         Delegates to stream() (NOT self._handle.prompt() directly) so it
@@ -1338,7 +1340,7 @@ class AcpSessionProvider(LLMProvider):
         AcpRuntimeError, not an AcpError) escape chat_runner's handlers on a
         runtime death at prompt start -> unhandled crash instead of retry/login.
         """
-        return self.stream(message)
+        return self.stream(message, allow_image=allow_image)
 
     @property
     def resumed(self) -> bool:

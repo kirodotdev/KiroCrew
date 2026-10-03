@@ -2341,7 +2341,49 @@ through the attachment store's own `iter_local_refs`; bare paths go through the
 inliner's own `_PATH_RE`, narrowed to paths outside code spans that stand alone
 rather than sit inside a URL query, because the inliner rewrites text only after
 reading a file and an unconditional substitution would corrupt a URL or a code
-snippet instead of scrubbing it. A row's picture belonged
+snippet instead of scrubbing it. The grammar also admits a space or tab, since
+an attachment name can carry one, and that is the shape the text cannot settle:
+such a span has that token replaced when its last token is a path on its own,
+and is replaced whole only when it is a channel's own attachment line — alone on
+its line (list and quote markers allowed) AND ending in the `mkstemp` file name
+every channel's shared ingest writer mints, which is what vouches for the space
+before it (a temp directory under a profile like `John Smith`) — or a markdown
+link's angle-form destination, which can hold nothing but a path. Being alone
+on a line is not enough: `/var/log/app has the broken logo.png.` is a whole line
+a person types. No delimiter pair vouches for one either, quotes included.
+Otherwise the span keeps its text, so prose such as
+`check /var/log/app and tell me why logo.png is broken` survives intact. Every
+rule is lexical: the scrubber makes no filesystem call, because it runs inline
+on the event loop while the inliner's own probes are offloaded through
+`asyncio.to_thread`, and resolving a data home to settle a span would put a
+network stat in front of every history row. The residue is every other spaced
+path, a `Screen Shot 2024.png` a person typed alone on its line included: it
+stays as text, which the inliner can still pick up on a replayed turn while the
+file is there — the deliberate cost of not deleting the sentence around it.
+
+A background one-liner (`llm_helpers.run_bg_oneliner`: titles, summaries,
+suggestions, status cards, folder picks) never inlines at all. Its prompt is
+text ABOUT a session, so a path in it is quoted history, and the turn goes out
+with `allow_image=False` on whichever handle `get_bg_session()` returned; every
+layer down to `build_prompt_blocks` forwards it (see
+[acp-client](acp-client.md#image-support)). So no shape a caller composes (a
+flattened row, a `  - User: ` prefix, a JSON string) can become an image block
+for a text-only background model. The scrub it also runs, off the event loop,
+only tidies the text. The history consolidator's turns (the consolidation
+itself, the skill dedupe judge and the skill merge) quote transcript rows the
+same way and go out the same way, through `stream_and_collect(...,
+allow_image=False)`. Two one-line-prompt builders (`sessions._build_summary_prompt`,
+`chat_folder_suggest._pick_via_llm`) go through `strip_image_refs_flat`, which
+squeezes each whitespace run of a row to one space or one line break, scrubs a
+bounded prefix of the result (four times what the prompt keeps, since the scrub
+runs on the event loop and a row can be megabytes long, and measured after the
+squeeze so no run of blanks can spend it) and only then flattens it, because the flatten destroys the line structure the rule above
+reads, so the model reads the marker instead of the path.
+`chat_title._title_text` does not call the scrubber at all: it strips markdown
+images and attachment markers its own way and keeps an escaped or code-quoted
+`![x](…)` readable, while the scrubber's bare-path pass replaces the
+destination inside an escaped one (a code-quoted one survives both passes). A
+channel's bare path is neither, so it stays in the title prompt as text. A row's picture belonged
 to an earlier turn and a text vehicle cannot carry bytes, so the reference is
 the only thing that would arrive, and both readings of it are wrong: while the
 file is still readable `build_prompt_blocks` re-inlines it (a picture an earlier

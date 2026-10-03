@@ -32,6 +32,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import is_incognito_transcript
+from kiro_crew.image_refs import strip_image_refs_flat
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -294,7 +295,7 @@ async def _pick_via_llm(
     ]
     first_message = next(
         (
-            " ".join(str(m.get("content") or "").split())[:_MAX_MESSAGE_CHARS]
+            strip_image_refs_flat(str(m.get("content") or ""), _MAX_MESSAGE_CHARS)
             for m in slot.messages
             if m.get("role") == "user" and str(m.get("content") or "").strip()
         ),

@@ -2822,7 +2822,10 @@ class HistoryConsolidator:
                 self._sessions, task="skill_dedupe", agent="kirocrew-lite"
             ) as client:
                 text = await _facade_stream_and_collect(
-                    client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+                    client,
+                    prompt,
+                    approval_policy=ToolApprovalPolicy.REJECT_ALL,
+                    allow_image=False,
                 )
             return text or ""
         except Exception:
@@ -2856,7 +2859,10 @@ class HistoryConsolidator:
                 self._sessions, task="skill_merge", agent="kirocrew-lite"
             ) as client:
                 text = await _facade_stream_and_collect(
-                    client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+                    client,
+                    prompt,
+                    approval_policy=ToolApprovalPolicy.REJECT_ALL,
+                    allow_image=False,
                 )
             return text or None
         except Exception:
@@ -3513,6 +3519,9 @@ class HistoryConsolidator:
                     prompt,
                     approval_policy=ToolApprovalPolicy.REJECT_ALL,
                     model_fallback=True,
+                    # History ABOUT a session: a path in it is quoted, never an
+                    # attachment, so no readable file may become an image block.
+                    allow_image=False,
                 )
             except Exception:
                 self._logger.warning(
