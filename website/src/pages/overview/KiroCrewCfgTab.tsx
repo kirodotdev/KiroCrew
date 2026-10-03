@@ -46,7 +46,7 @@ interface KiroCrewCfg {
   memory_stores: Record<string, MemoryStoreCfg>
   default_memory_store: string
   agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; tool_search?: boolean; max_channels: number; max_channel_agents: number }
-  session: { timeout_secs: number; pool_size: number; pool_agent: string; pool_ttl_secs: number }
+  session: { timeout_secs: number; pool_size: number; pool_agent: string; pool_ttl_secs: number; watchdog_rss_max_mb?: number }
   memory: { embedding_provider: string }
   auto_update: boolean
 }
@@ -157,10 +157,16 @@ function useDirtyTrack<T>(value: T) {
   return { ok, markDirty }
 }
 
-function CfgRow({ label, hint, ok, children }: { label: string; hint?: string; ok: boolean; children: React.ReactNode }) {
+function CfgRow({ label, hint, note, ok, children }: { label: string; hint?: string; note?: string; ok: boolean; children: React.ReactNode }) {
+  const labelEl = <span className="text-muted inline-flex items-center gap-1">{label} {hint && <InfoTip text={hint} />}</span>
   return (
     <div className={rowCls}>
-      <span className="text-muted inline-flex items-center gap-1">{label} {hint && <InfoTip text={hint} />}</span>
+      {/* `note` is the part of the hint a user must see without opening the
+          InfoTip (the default and what 0 means), so it sits under the label.
+          Rows without one keep the label as the row's direct child. */}
+      {note
+        ? <div className="flex flex-col">{labelEl}<div className="text-muted text-[11px]">{note}</div></div>
+        : labelEl}
       <div className="flex items-center gap-1.5">
         {children}
         {ok && <span className="text-ok text-[11px]"><Check className="lucide-inline" /></span>}
@@ -193,21 +199,24 @@ function CfgSelect({ label, path, value, options, hint, labels, onSave }: { labe
   )
 }
 
-function CfgNumber({ label, path, value, suffix, min, max, hint, onSave }: { label: string; path: string; value: number; suffix?: string; min?: number; max?: number; hint?: string; onSave: (p: string, v: number) => void }) {
+function CfgNumber({ label, path, value, suffix, min, max, hint, note, onSave }: { label: string; path: string; value: number; suffix?: string; min?: number; max?: number; hint?: string; note?: string; onSave: (p: string, v: number) => void }) {
   const ime = useImeGuard()
   const [local, setLocal] = useState(String(value))
   const { ok, markDirty } = useDirtyTrack(value)
   const [err, setErr] = useState('')
   useEffect(() => { setLocal(String(value)); setErr('') }, [value])
   const commit = () => {
-    const n = parseInt(local)
-    if (isNaN(n)) { setErr('invalid'); return }
+    // Only a plain non-negative integer counts: parseInt would read `1e3` as 1
+    // and `1.5` as 1, silently saving a value the user never typed.
+    const raw = local.trim()
+    if (!/^\d+$/.test(raw)) { setErr('invalid'); return }
+    const n = Number(raw)
     if (min !== undefined && n < min) { setErr(`min ${min}`); return }
     if (max !== undefined && n > max) { setErr(`max ${max}`); return }
     if (n !== value) { markDirty(); setErr(''); onSave(path, n) }
   }
   return (
-    <CfgRow label={label} hint={hint} ok={ok && !err}>
+    <CfgRow label={label} hint={hint} note={note} ok={ok && !err}>
       <input type="number" aria-label={label} min={min} max={max} placeholder={min !== undefined && max !== undefined ? `${min}–${max}` : undefined}
         className={`${inputCls} text-right ${err ? 'border-danger' : ''}`}
         value={local}
@@ -506,6 +515,7 @@ export default function KiroCrewCfgTab() {
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
           <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
           <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
+          <CfgNumber key={`rssmax-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_memory_limit')} path="session.watchdog_rss_max_mb" value={cfg.session.watchdog_rss_max_mb ?? 1536} suffix={i18nT('pages.overview.kiroCrewCfgTab.unit_mb')} min={0} max={262144} hint={i18nT('pages.overview.kiroCrewCfgTab.session_memory_limit_hint')} note={i18nT('pages.overview.kiroCrewCfgTab.session_memory_limit_note')} onSave={save} />
           <CfgSelect key={`sandbox-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'strict', 'off']} hint={i18nT('pages.overview.kiroCrewCfgTab.applies_to_sessions_started_after_the_change')} onSave={save} />
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.embedding_provider')}</span><span className="text-text font-mono text-[13px]">{cfg.memory.embedding_provider}</span></div>
           <CfgToggle key={`autoupdate-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.auto_update')} path="auto_update" value={cfg.auto_update} hint={i18nT('pages.overview.kiroCrewCfgTab.next_update_check_cycle')} onSave={save} />

@@ -65,6 +65,8 @@ from kiro_crew.config.sections import (
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     STT_LANGUAGE_AUTO,
+    WATCHDOG_RSS_MAX_MB_MAX,
+    WATCHDOG_RSS_MAX_MB_MIN,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread
@@ -2643,6 +2645,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": POOL_TTL_SECS_MIN, "max": POOL_TTL_SECS_MAX},
+    # The idle-session memory ceiling. 0 switches the watchdog off. It grants no
+    # capability: it only bounds when Crew recycles an idle session's process.
+    "session.watchdog_rss_max_mb": {
+        "type": "int",
+        "min": WATCHDOG_RSS_MAX_MB_MIN,
+        "max": WATCHDOG_RSS_MAX_MB_MAX,
+    },
     # Intent-level session summaries in the chat right panel. Only the boolean
     # enable is editable here: it spends tokens on turns the user did not ask to
     # pay for, so it is off by default and the Settings toggle is the single
@@ -3011,6 +3020,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if value not in allowed:
             return _deny(f"invalid value, must be one of {allowed}", f"{path_key}={value}")
     elif spec["type"] == "int":
+        # ``bool`` subclasses ``int``, so ``int(True)`` is 1: a JSON ``true`` sent
+        # to ``session.watchdog_rss_max_mb`` would store a 1 MB ceiling and
+        # recycle every session. Refuse it before the coercion.
+        if isinstance(value, bool):
+            return _deny("must be an integer", f"{path_key}={value}")
+        # ``int(1.5)`` is 1: a JSON ``1.5`` sent to the same field would store a
+        # 1 MB ceiling just as silently. A float is accepted only when it is a
+        # whole number (``2048.0``); a fractional one is refused.
+        if isinstance(value, float) and not value.is_integer():
+            return _deny("must be an integer", f"{path_key}={value}")
         try:
             value = int(value)
         except (TypeError, ValueError):
@@ -3022,6 +3041,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if not isinstance(value, bool):
             return _deny("must be a boolean", f"{path_key}={value}")
     elif spec["type"] == "float":
+        # ``bool`` subclasses ``int``, so ``float(True)`` is 1.0: a JSON ``true``
+        # would store a number the sender never typed. Refuse it before the
+        # coercion, as the int branch does.
+        if isinstance(value, bool):
+            return _deny("must be a number", f"{path_key}={value}")
         try:
             value = float(value)
         except (TypeError, ValueError):

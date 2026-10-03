@@ -3072,6 +3072,8 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         watchdog_rss_max_mb=_safe_int(
             session_data.get("watchdog_rss_max_mb", _sections.DEFAULT_WATCHDOG_RSS_MAX_MB),
             _sections.DEFAULT_WATCHDOG_RSS_MAX_MB,
+            _sections.WATCHDOG_RSS_MAX_MB_MIN,
+            _sections.WATCHDOG_RSS_MAX_MB_MAX,
         ),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips
