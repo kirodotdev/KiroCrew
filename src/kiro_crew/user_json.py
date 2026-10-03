@@ -1,12 +1,15 @@
 """Parse JSON from a config file a person may have saved by hand.
 
 MCP configs (``~/.kiro/settings/mcp.json``, Kiro Crew's own ``mcp.json``, a
-project's ``.kiro/settings/mcp.json``, ``~/.mcp.json``) and the agent specs that
-carry ``mcpServers`` are edited by people, and Windows editors save UTF-8 "with
-BOM" by default. That file is valid UTF-8 whose first character is U+FEFF, which
-is not content, and ``json.loads`` refuses it ("Unexpected UTF-8 BOM"). Every
-reader of such a file parses through :func:`loads_user_json` so one leading mark
-is dropped the same way everywhere.
+project's ``.kiro/settings/mcp.json``, ``~/.mcp.json``), the agent specs that
+carry ``mcpServers``, Kiro Crew's ``agent.json`` overrides, ``~/.claude.json``
+and a project's Claude settings are edited by people, and Windows editors save
+UTF-8 "with BOM" by default. That file is valid UTF-8 whose first character is
+U+FEFF, which is not content, and ``json.loads`` refuses it ("Unexpected UTF-8
+BOM"). Every reader of such a file parses through :func:`loads_user_json` so one
+leading mark is dropped the same way everywhere. A reader that hands
+``json.loads`` the undecoded bytes needs nothing: its encoding detection already
+drops the mark.
 
 Only reading changes. Writers keep emitting ``json.dumps`` text, so a file read
 here and written back comes out as plain BOM-free UTF-8.
