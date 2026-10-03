@@ -1595,7 +1595,12 @@ class TestEnsureInstanceBoundary:
         monkeypatch.setattr(aws, "run_aws", fake_run)
         assert source.ensure_instance_boundary("dev", "us-east-1") == iam.boundary_arn(_ACCT12)
 
-    def test_create_denied_surfaces_missing_action(self, monkeypatch):
+    def test_missing_boundary_create_denied_names_the_admin_step(self, monkeypatch):
+        # The printed launcher policy has no iam:CreatePolicy, so a least-privilege
+        # launch on an account with no boundary is DENIED the create. The error
+        # must name the admin step, and must carry no missing_action: the launch
+        # UI turns one into "Grant iam:CreatePolicy (see iam-policy)", which
+        # would send the user to re-add the removed self-create grant.
         monkeypatch.setattr(source, "_account_id", lambda *a: "123456789012")
 
         def fake_run(args, *a, **k):
@@ -1608,7 +1613,74 @@ class TestEnsureInstanceBoundary:
             )
 
         monkeypatch.setattr(aws, "run_aws", fake_run)
-        with pytest.raises(aws.AWSError, match="iam:CreatePolicy"):
+        with pytest.raises(aws.BoundaryCreateDenied) as excinfo:
+            source.ensure_instance_boundary("dev", "us-east-1")
+        assert "`kirocrew cloud iam-boundary`" in str(excinfo.value)
+        assert "does not exist in this account yet" in str(excinfo.value)
+        assert excinfo.value.missing_action is None
+
+    def test_denied_read_does_not_claim_the_boundary_is_missing(self, monkeypatch):
+        # A denied get-policy says nothing about whether the boundary exists, so
+        # the "does not exist yet" admin-step message must not be shown for it.
+        monkeypatch.setattr(source, "_account_id", lambda *a: "123456789012")
+        denied = "User is not authorized to perform: iam:{} on resource ..."
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", denied.format("GetPolicy"))
+            return (255, "", denied.format("CreatePolicy"))
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.BoundaryCreateDenied) as e:
+            source.ensure_instance_boundary("dev", "us-east-1")
+        assert "does not exist in this account yet" not in str(e.value)
+        assert "could not create the permissions boundary" in str(e.value)
+        # Still the admin step, never "grant iam:CreatePolicy" to the launcher.
+        assert "`kirocrew cloud iam-boundary`" in str(e.value)
+        assert e.value.missing_action is None
+
+    def test_admin_step_survives_the_dashboard_400_char_cut(self, monkeypatch):
+        # The dashboard launch job records str(exc)[:400]; a long AWS error must
+        # not push the admin step past that cut.
+        monkeypatch.setattr(source, "_account_id", lambda *a: "123456789012")
+        long_denial = "User is not authorized to perform: iam:CreatePolicy " + "x" * 400
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "Throttling: Rate exceeded")
+            return (255, "", long_denial)
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.BoundaryCreateDenied) as e:
+            source.ensure_instance_boundary("dev", "us-east-1")
+        assert "`kirocrew cloud iam-boundary`" in str(e.value)[:400]
+
+    def test_throttled_read_does_not_claim_the_boundary_is_missing(self, monkeypatch):
+        # Only NoSuchEntity proves absence; a throttled read must not be read as it.
+        monkeypatch.setattr(source, "_account_id", lambda *a: "123456789012")
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "Throttling: Rate exceeded")
+            return (255, "", "User is not authorized to perform: iam:CreatePolicy on ...")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.BoundaryCreateDenied) as e:
+            source.ensure_instance_boundary("dev", "us-east-1")
+        assert "does not exist in this account yet" not in str(e.value)
+
+    def test_create_failure_that_is_not_a_denial_keeps_the_raw_error(self, monkeypatch):
+        # Throttling is not "the boundary is missing": it must not be dressed up
+        # as the admin-step message.
+        monkeypatch.setattr(source, "_account_id", lambda *a: "123456789012")
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "NoSuchEntity")
+            return (255, "", "Throttling: Rate exceeded")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.AWSError, match="could not create the permissions boundary"):
             source.ensure_instance_boundary("dev", "us-east-1")
 
     def test_raises_without_account_id(self, monkeypatch):

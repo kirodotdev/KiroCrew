@@ -263,6 +263,23 @@ class TestRunLaunch:
         assert ("teardown", out.tag) in eng.calls
         assert "was removed" in out.error
 
+    def test_denied_boundary_create_shows_the_admin_step_on_the_job(self, tmp_path):
+        # Settings > Remote Crew launches through this job; a missing boundary must
+        # reach the user as the admin step, not as a grant to add.
+        from kiro_crew.cloud.aws import BoundaryCreateDenied
+
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        denied = BoundaryCreateDenied(
+            "the permissions boundary 'kirocrew-ec2-boundary' does not exist in this "
+            "account yet, and these credentials may not create it. Ask an AWS admin to "
+            "run `kirocrew cloud iam-boundary` once for this account, then retry."
+        )
+        out = lj.run_launch(job, s, FakeEngine(provision_exc=denied))
+        assert out.status == lj.FAILED
+        assert "`kirocrew cloud iam-boundary`" in out.error
+        assert "`kirocrew cloud iam-boundary`" in out.step(lj.STEP_PROVISION).detail
+
     def test_a_failure_after_provisioning_does_not_tear_down_the_crew(self, tmp_path):
         # Once provisioning succeeded the crew exists; a later-step failure (register)
         # must NOT delete it — register even names it so the user can recover it. Only

@@ -679,6 +679,31 @@ class TestLaunchResume:
         # NOTHING persisted on failure — the broken tag never reaches cloud.json.
         assert save_calls == []
 
+    def test_denied_boundary_create_skips_the_stack_advice(self, monkeypatch):
+        # The boundary is ensured before any stack exists, so a denied create must
+        # not send the user to CloudFormation events or --keep-on-failure, and must
+        # not say "Grant iam:CreatePolicy".
+        cfg = LaunchState(profile="dev", region="us-west-2", last_tag="")
+        _patch_post_launch(monkeypatch)
+        details: list[str] = []
+        monkeypatch.setattr(wizard.LaunchState, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
+        monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
+        monkeypatch.setattr(
+            ec2,
+            "get_stack_failures",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no stack to read")),
+        )
+        monkeypatch.setattr(wizard.ui, "detail", lambda msg, *a, **k: details.append(str(msg)))
+        denied = aws.BoundaryCreateDenied("run `kirocrew cloud iam-boundary`")
+        monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(denied))
+
+        assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 1
+        joined = " ".join(details)
+        assert "describe-stack-events" not in joined
+        assert "--keep-on-failure" not in joined
+        assert "iam:CreatePolicy" not in joined
+
     def test_a_record_that_cannot_be_written_does_not_abort_the_launch(self, monkeypatch):
         """The deploy is BILLED by the time the record is written, so the write cannot fail
         the command.

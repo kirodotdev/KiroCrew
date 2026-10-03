@@ -13,8 +13,9 @@ over SSM, and opens the dashboard through an SSM port-forward. Command surface
 launch | list | status | connect | tunnel | login | logout | stop | start | destroy | iam-policy | iam-boundary | doctor
 ```
 
-(`iam-boundary` is the one-time admin step that pre-creates the immutable
-instance permissions boundary — see the security model below.)
+(`iam-boundary` is the one-time admin step that creates the immutable
+instance permissions boundary. The printed launcher policy can read it but not
+create it — see the security model below.)
 
 `cloud` verbs are **human/installer actions, never LLM/MCP tools**, guarded in
 layers. Be precise about what each layer actually buys, because there is **no
@@ -73,7 +74,7 @@ claim that a hostile in-process agent is fully contained.
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `open_port_forward()` directly spawns the streaming `aws ssm start-session` child because `run_aws` captures output, and calls `aws.assert_human_action()` before doing so; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM, plus `cancel_device_login` — which stops a login this crew started and removes the files holding its code, WITHOUT dropping the box's session, because a cancelled attempt must not sign the crew in later and must not take an older valid session with it — and `logout` — the account switch. `login` short-circuits on an existing session, so `logout` is what makes a different Kiro account reachable without a hand-run SSM command. It kills any still-polling background `kiro-cli login` **and** any live `kiro-cli acp` runtime **before** signing out (otherwise the login re-authenticates the old account, and an ACP runtime keeps serving the old account's in-memory credential until its next 401), removes the login log/PID/FIFO (they hold the previous device-code URL + code, which must never be re-shown as a fresh prompt), and confirms the result with `is_logged_in` rather than the exit code — `kiro-cli logout` exits non-zero when there was no session to drop, which is still the requested state. That confirmation fails CLOSED: it requires a positive signed-out sentinel (`__NOAUTH__`), so an SSM timeout or transport error — where the session may still be active — reports failure rather than a false "signed out". The same fail-closed applies to the cleanup command itself: if that SSM invocation doesn't return `Success`, the kills it was meant to do can't be trusted and logout reports failure without probing. The CLI warns the operator that in-flight chats/cron sessions are stopped (their runtimes are killed). |
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. **The Fargate lane has no connect verb here.** A Fargate crew is reached by the instances layer's `fargate` connection method, surfaced as **Settings > Remote Crew**, whose card opens the forward and shows the task's turn API URL. What this module contributes to that lane is `FARGATE_TURN_PATH`, the path that forward dials, spelled here rather than imported from an image's source; `FARGATE_HEALTH_PATH` beside it is dialled from nowhere in the gateway and exists so the container-contract test can assert the pair. Nothing mints for a Fargate task: it runs the crew container, whose only listener is a front proxy serving a JSON turn API with the backend loopback-only and every control path authorisation-gated and then 404, so there is no mint route to call and no browser to open. There is no CLI counterpart either, and the asymmetry is the reason -- `cloud connect` addresses a crew by EC2 tag, and `cloud launch` cannot create a Fargate crew at all, because that engine is reachable only through the dashboard's provisioner API -- so `cloud connect`'s no-instance failure names Settings > Remote Crew rather than a verb that would dial a crew the CLI cannot make. `is_launched_instance()` prevents the generic instance PATCH endpoint from rewriting a correlated launch’s connection method, SSM target, AWS profile, or region, so Stop/Start/Delete retain the stack address and a running billable instance is not stranded. |
-| `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. **`ensure_crew_boundary`** and **`ensure_crew_exec_boundary`** do the same for the two Fargate ceilings (`kirocrew-crew-boundary`, `kirocrew-crew-exec-boundary`), and all three route through one `_ensure_boundary` sequence whose ORDER is the security property: an existing policy is verified against the expected content-fixed document BEFORE it is reused, and a lost create race is verified on the way back, so a permissive policy seeded at either name is refused rather than trusted to cap nothing. |
+| `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — verifies the shared, immutable `kirocrew-ec2-boundary` managed policy, creating it once when the caller may (an admin via `kirocrew cloud iam-boundary`; the printed launcher policy may not, and a denied create names that command), never re-versioned, and returns its ARN; `delete_instance_boundary` for admin cleanup. **`ensure_crew_boundary`** and **`ensure_crew_exec_boundary`** do the same for the two Fargate ceilings (`kirocrew-crew-boundary`, `kirocrew-crew-exec-boundary`), and all three route through one `_ensure_boundary` sequence whose ORDER is the security property: an existing policy is verified against the expected content-fixed document BEFORE it is reused, and a lost create race is verified on the way back, so a permissive policy seeded at either name is refused rather than trusted to cap nothing. |
 | `config.py` | Persisted profile / region / tag **plus the optional `fargate` block** (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` -- bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. The `fargate` field holds the block **exactly as read**, and `fargate_config()` is what judges it. **This module has no writer:** no `save()`, no `apply_update()`, no lock. `profile` / `region` / `last_tag` are still READ here so an install whose pointer predates `launch_state.py` keeps resuming, and `launch_state.py` is where those three are written now. See "The Fargate lane's configuration home" and "Where launch state lives" below. |
 | `launch_state.py` | The product-owned launch record (`cloud_launch_state.json`): the profile, region and tag a LAUNCH decided. One writer, three fields, frozen dataclass, whole-record `atomic_write`. `load()` falls back to the legacy fields in `cloud.json` when the record holds none, read-only, so `cloud resume` works on an install that predates it. `clear_tag(expect)` clears only while the pointer still names the stack `destroy` deleted. See "Where launch state lives" below. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
@@ -514,9 +515,12 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   is now **shared, content-fixed, and immutable** — closing the earlier
   self-authorship gap:
   - The boundary is a **single** managed policy named `kirocrew-ec2-boundary`
-    (NO per-`StackTag` suffix), created **once** by launcher CODE
-    (`source.ensure_instance_boundary`, via the `aws.run_aws` chokepoint) —
-    **not** per-launch CloudFormation. It is create-if-not-exists (tolerates
+    (NO per-`StackTag` suffix), created **once** by an admin running
+    `kirocrew cloud iam-boundary` (`source.ensure_instance_boundary`, via the
+    `aws.run_aws` chokepoint) — **not** per-launch CloudFormation. A launch runs
+    the same function: a broader principal creates the boundary on the way, and a
+    principal holding only the printed policy gets `AccessDenied` and a message
+    naming `kirocrew cloud iam-boundary`. It is create-if-not-exists (tolerates
     `EntityAlreadyExists`) and NEVER re-versioned. Its content = the exact
     `AmazonSSMManagedInstanceCore` action set + `s3:GetObject` on
     `kirocrew-src-<account>-*/*` (region-agnostic — IAM is global; the
@@ -527,27 +531,27 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
     by a FIXED ARN via a new `PermissionsBoundaryArn` parameter (AllowedPattern
     `^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-boundary$`), which the launcher
     fills with `arn:aws:iam::<account>:policy/kirocrew-ec2-boundary`.
-  - The launcher policy grants only `iam:CreatePolicy` + `iam:GetPolicy` on that
-    **exact** ARN (`IamInstanceBoundaryCreateOnce`) — and NO
-    `CreatePolicyVersion`/`DeletePolicyVersion`/`DeletePolicy`. This is the crux:
-    `CreatePolicy` on a fixed name fails `EntityAlreadyExists` once the boundary
-    exists, and with no version/delete verb a **leaked launcher credential cannot
-    make an existing boundary permissive**. So the ceiling holds not just against
-    the prompt-injectable on-box agent but against a leaked *launcher* credential.
+  - The launcher policy grants only `iam:GetPolicy` + `iam:GetPolicyVersion` on
+    that **exact** ARN (`IamInstanceBoundaryRead`) — NO `CreatePolicy`, and NO
+    `CreatePolicyVersion`/`DeletePolicyVersion`/`DeletePolicy`. The two reads let
+    the launcher verify an existing boundary against the content-fixed document
+    before reuse. With no create, version or delete verb, a **leaked launcher
+    credential can neither mint the boundary nor make an existing one
+    permissive**. So the ceiling holds not just against the prompt-injectable
+    on-box agent but against a leaked *launcher* credential.
   - `iam:CreateRole` remains gated on `ArnLike iam:PermissionsBoundary ==
     arn:…:policy/kirocrew-ec2-boundary` (`ArnLike`, NOT `StringEquals` — the
     latter would deny CreateRole under the generated policy; verified with the
     IAM policy simulator). `PutRolePolicy` is a separate role-ARN-scoped statement
     — a boundary set at CreateRole can't be removed by it.
-  - **Residual (first-write race), tracked in as-built:** the very first
-    `CreatePolicy` could be run by an attacker holding the launcher policy BEFORE
-    the legitimate first launch, seeding a permissive boundary at that name. That
-    is materially smaller than the old "author an arbitrary boundary at any time"
-    hole. Operators who want it gone entirely run `kirocrew cloud iam-boundary`
-    once as an admin, then drop the `IamInstanceBoundaryCreateOnce` statement from
-    the applied launcher policy (the launcher then only *references* the ARN, with
-    no `CreatePolicy` grant). The agent-shell deny-list also blocks
-    `aws iam create-policy`/`create-policy-version`.
+  - **No self-create path.** An earlier launcher policy also granted
+    `iam:CreatePolicy` on the boundary names, so a holder of that policy could
+    mint the very ceiling its roles are capped by (a first-write race against the
+    legitimate first launch). That grant is gone: the boundary is created only by
+    a principal with broader IAM rights. Accounts that applied the older policy
+    should have an admin run `kirocrew cloud iam-boundary` once, then re-apply
+    the current `kirocrew cloud iam-policy` output. The agent-shell deny-list also
+    blocks `aws iam create-policy`/`create-policy-version`.
   The instance role's inline `s3:GetObject` is still pinned to the **derived**
   launcher path (`kirocrew-src-${AccountId}-${Region}/${StackTag}/…`), not the
   `SourceBucket`/`SourceKey` deploy params — so a caller can't grant the box read

@@ -928,11 +928,13 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     * it is created ONCE and reused by every launch (idempotent — an existing
       one is left untouched, never re-versioned: that immutability is the whole
       point);
-    * the generated launcher policy grants only ``iam:CreatePolicy`` +
-      ``iam:GetPolicy`` + ``iam:GetPolicyVersion`` on this exact name (no
-      ``CreatePolicyVersion`` / ``Delete*``), so a leaked launcher credential
-      can't replace an existing boundary's content — ``CreatePolicy`` on the fixed
-      name fails ``EntityAlreadyExists``.
+    * the generated launcher policy grants only ``iam:GetPolicy`` +
+      ``iam:GetPolicyVersion`` on this exact name (no ``CreatePolicy``, no
+      ``CreatePolicyVersion`` / ``Delete*``), so a leaked launcher credential can
+      neither mint the boundary nor replace an existing one's content. The
+      create below therefore succeeds only for a broader principal (an admin,
+      or ``kirocrew cloud iam-boundary`` run as one); a least-privilege launch
+      on an account with no boundary fails with a message naming that command.
 
     Idempotency + content verification: we ``get-policy`` first; if present we
     **fetch its default version and compare it to the expected content-fixed
@@ -945,13 +947,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     ``EntityAlreadyExists`` race is re-verified the same way. All calls go through
     the :func:`aws.run_aws` chokepoint.
 
-    Residual (see security model in ``docs/system-specs/modules/cloud.md``):
-    the first ``create-policy``
-    is still a first-write race for *availability* — an attacker could seed a
-    boundary that then fails our content check, blocking launches (a DoS, not an
-    escalation: a mismatched boundary is refused, and can never under-cap a role).
-    Operators who want to eliminate even that pre-create the boundary as an admin
-    (``kirocrew cloud iam-boundary``) and drop the ``iam:CreatePolicy`` grant.
+    See the security model in ``docs/system-specs/modules/cloud.md``.
     """
     from kiro_crew.cloud import iam
 
@@ -1062,7 +1058,7 @@ def _ensure_boundary(
     # Already present? VERIFY its content matches our fixed document before reusing
     # it (a permissive boundary seeded at this name must NOT be trusted to cap
     # anything).
-    rc, _out, _err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
+    rc, _out, read_err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
     if rc == 0:
         _verify_boundary_content(arn, name, expected, profile, region)
         return arn
@@ -1090,11 +1086,30 @@ def _ensure_boundary(
     if "EntityAlreadyExists" in (err or ""):
         _verify_boundary_content(arn, name, expected, profile, region)
         return arn
-    # Any other failure (AccessDenied, throttling) is real — surface it with the
-    # precise missing action so the user knows what to grant.
+    # Any other failure (AccessDenied, throttling) is real. The printed launcher
+    # policy deliberately has no iam:CreatePolicy, so a denied create is the
+    # EXPECTED outcome for a least-privilege launch: say what to run, never "grant
+    # iam:CreatePolicy" -- that grant is the self-create path that was removed.
     missing = aws.map_missing_action(err)
-    hint = f" — grant `{missing}` and retry" if missing else ""
     _audit_iam_policy_change("iam.create-policy", arn, "denied", error=(err or "").strip()[:300])
+    if aws.is_access_denied(err or ""):
+        # Only a read that answered NoSuchEntity proves the boundary is absent. A
+        # denied, throttled or timed-out read says nothing either way, so the raw
+        # error is kept for the operator to read. The admin step comes BEFORE the
+        # raw error: the dashboard launch job keeps only the first 400 characters.
+        if "NoSuchEntity" in (read_err or ""):
+            cause = f"the permissions boundary '{name}' does not exist in this account yet"
+        else:
+            cause = f"could not create the permissions boundary '{name}'"
+        raise aws.BoundaryCreateDenied(
+            f"{cause}, and these credentials may not create it. Ask an AWS admin to run "
+            "`kirocrew cloud iam-boundary` once for this account, then retry. "
+            f"AWS said: {(err or '').strip()[:300]}",
+            action="iam:CreatePolicy",
+            returncode=rc,
+            stderr=err or "",
+        )
+    hint = f" — grant `{missing}` and retry" if missing else ""
     raise aws.AWSError(
         f"could not create the permissions boundary '{name}': "
         f"{(err or '').strip()[:300]}{hint}",

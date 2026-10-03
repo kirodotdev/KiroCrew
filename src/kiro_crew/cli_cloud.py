@@ -467,12 +467,12 @@ def _cloud_iam_policy(_args: argparse.Namespace) -> int:
 def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     """Pre-create the shared, immutable instance permissions boundary (admin step).
 
-    Normally the first ``launch`` auto-creates this (the launcher policy grants
-    only ``iam:CreatePolicy`` on the fixed boundary name). Operators who want to
-    eliminate the first-write race entirely run this ONCE as an admin, then drop
-    the ``IamInstanceBoundaryCreateOnce`` statement from the applied launcher
-    policy — the launcher then only *references* the boundary ARN, never creates
-    it. Idempotent: an existing boundary is left untouched (immutability).
+    Run this ONCE per account with admin credentials before the first launch by
+    a least-privilege principal. The printed launcher policy can read the
+    boundary but not create it (no ``iam:CreatePolicy``), so the launcher only
+    *verifies and references* the boundary ARN. A launch by a broader principal
+    creates it on the way, through the same code. Idempotent: an existing
+    boundary is verified and left untouched (immutability).
     """
     from kiro_crew.cloud import source as source_mod
 
@@ -485,11 +485,7 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
             ui.detail(f"Grant `{exc.missing_action}` and retry.")
         return 1
     ui.ok(f"Instance permissions boundary ready: {arn}")
-    ui.detail(
-        "It is immutable and shared by every launch. To fully close the "
-        "first-write race, remove the IamInstanceBoundaryCreateOnce statement "
-        "from the applied launcher policy now that the boundary exists."
-    )
+    ui.detail("It is immutable and shared by every launch in this account.")
     return 0
 
 
