@@ -26,7 +26,7 @@ Files:
 | Module | Owns |
 |---|---|
 | `model.py` | `TaskRecord`, the state vocabulary (`STATES`), the one validated `TRANSITIONS` table, `check_transition`, side-effect classes, lease/backoff constants. |
-| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
+| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, the owed-report reads (`finish(report_owed=)`, `mark_reported`, `owed_reports`), `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
 | `migrate.py` | Schema versioning (`SCHEMA_VERSION`, `apply_schema`) and the idempotent legacy import. |
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
@@ -908,6 +908,18 @@ about how long the row has waited. The subagent adapter fails each row it return
 `agent.subagent_queue_max_wait_secs` with a generation-fenced `finish` and
 reports `never started: waiting for memory`
 ([subagent.md](subagent.md) § Durable task queue).
+
+That `finish` passes `report_owed=True`: the terminal `transition` event then
+carries `report_owed_by` (the writing incarnation) in the same transaction, so
+the report the commit still owes is durable. `mark_reported(task_id)` appends the
+`reported` event that clears it, and `owed_reports(kind, *, limit, after)` names
+the terminal rows whose owing incarnation is NOT this one and that have no
+`reported` event after that transition, oldest terminal first (`updated_at`,
+then `id`): what a later start has to report. `after` is the `(updated_at, id)`
+of the previous page's last row, so a reader pages through every owed row
+without re-reading one whose clear has not landed yet. `oldest_unstarted_by_session(kind, session_keys)` is the
+`created_at` of each key's oldest unstarted row, which the adapter uses to keep
+a retired parent's stamp exactly as long as a row it gates still waits.
 
 ## Journal mode and network filesystems
 

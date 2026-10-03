@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,10 +32,11 @@ import kiro_crew.subagent as subagent_mod
 from kiro_crew import taskq
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.paths import data_home
 from kiro_crew.config.schema import requires_restart
 from kiro_crew.resource_status import POSTURE_AMPLE, POSTURE_CRITICAL, AdmissionDecision
 from kiro_crew.subagent import SubagentManager
-from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator, taskq_bridge
 from kiro_crew.subagent_wait_reasons import QUEUED_WAIT_EXPIRED_TEXT
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
@@ -112,8 +114,8 @@ class _Harness:
         return info
 
 
-@contextlib.asynccontextmanager
-async def _harness(monkeypatch) -> AsyncIterator[_Harness]:
+def _patch_host(monkeypatch) -> tuple[dict[str, KiroCrewConfig], dict[str, float]]:
+    """The config, the short host and the off-loop store a test manager is built on."""
     cfgs = {"cfg": _cfg(1800)}
     monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfgs["cfg"])
     monkeypatch.setattr(subagent_mod, "Stats", MagicMock())
@@ -131,6 +133,12 @@ async def _harness(monkeypatch) -> AsyncIterator[_Harness]:
         "cached_admission_check",
         lambda: AdmissionDecision(admitted=True, posture=POSTURE_AMPLE, available_gb=32.0),
     )
+    return cfgs, free
+
+
+@contextlib.asynccontextmanager
+async def _harness(monkeypatch) -> AsyncIterator[_Harness]:
+    cfgs, free = _patch_host(monkeypatch)
     mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), max_concurrent=3)
     await asyncio.wait_for(mgr.wait_taskq_ready(), 5)
     clock = Clock(1000.0)
@@ -411,3 +419,313 @@ class TestAnEndedParent:
             await h.pump()
             assert [d.id for d in h.delivered] == [successor.id]
             assert len(_expired_reports(h, info.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_the_stamp_is_kept_for_as_long_as_its_rows_wait(self, monkeypatch) -> None:
+        """No age limit: a retired parent's row that waits longer than a day, with
+        other teardowns in between, still finds the stamp when it ends."""
+        async with _harness(monkeypatch) as h:
+            await _reload_bound(h, 0)
+            info = await h.spawn()
+            h.mgr.snapshot_teardown_children(_PARENT)
+            h.clock.advance(2 * 86400)
+            h.mgr.snapshot_teardown_children("dash:another")
+            await h.pump()
+            successor = await h.spawn("successor work")
+            await _reload_bound(h, 60)
+            await _recheck(h, 2)
+            assert h.state(info.id) == taskq.FAILED
+            assert h.state(successor.id) == taskq.FAILED
+            assert [d.id for d in h.delivered] == [successor.id]
+            assert len(_expired_reports(h, info.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_a_stamp_that_gates_nothing_is_dropped(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            await _reload_bound(h, 0)
+            info = await h.spawn()
+            h.mgr.snapshot_teardown_children(_PARENT)
+            h.mgr.snapshot_teardown_children("dash:no-rows")
+            await h.mgr._admission.taskq_expire_memory_waits_async()
+            # The parent with no unstarted row is forgotten; the one whose row
+            # still waits is kept, until that row is gone too.
+            assert set(h.mgr._retired_parents) == {_PARENT}
+            await h.mgr._taskq.run(h.mgr._taskq.cancel, info.id)
+            await h.mgr._admission.taskq_expire_memory_waits_async()
+            assert h.mgr._retired_parents == {}
+
+
+class TestARefusedWriteKeepsWhatLanded:
+    """Each expiry commits on its own, so a store refusal later in the same sweep
+    must not discard the reports the rows that already landed are owed."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_a_refused_finish_still_reports_the_rows_that_landed(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            await _reload_bound(h, 0)
+            first = await h.spawn("first")
+            second = await h.spawn("second")
+            await _recheck(h, 2)
+            await _reload_bound(h, 60)
+            store = h.mgr._taskq
+            real = store.finish
+            landed: list[str] = []
+            refused: list[str] = []
+            busy = {"on": True}
+
+            def busy_after_the_first(task_id: str, *args: Any, **kwargs: Any) -> bool:
+                # Only the sweep's own write (the report's settle finishes the row
+                # too): the first lands, every later one is refused while busy.
+                if kwargs.get("report_owed") and busy["on"]:
+                    if landed and task_id not in landed:
+                        refused.append(task_id)
+                        raise taskq.TaskStoreUnavailable("database is locked")
+                    landed.append(task_id)
+                return real(task_id, *args, **kwargs)
+
+            monkeypatch.setattr(store, "finish", busy_after_the_first)
+            await h.mgr._admission.taskq_expire_memory_waits_async()
+            await _until_delivered(h, 1)
+            assert landed and refused, (landed, refused)
+            assert {landed[0], refused[0]} == {first.id, second.id}
+            assert h.state(landed[0]) == taskq.FAILED
+            assert [d.id for d in h.delivered] == [landed[0]]
+            # The refused row is still only queued: the next sweep ends it.
+            assert h.state(refused[0]) == taskq.QUEUED
+            busy["on"] = False
+            await h.mgr._admission.taskq_expire_memory_waits_async()
+            await _until_delivered(h, 2)
+            assert h.state(refused[0]) == taskq.FAILED
+            assert sorted(d.id for d in h.delivered) == sorted([first.id, second.id])
+            assert len(_expired_reports(h, landed[0])) == 1
+            assert len(_expired_reports(h, refused[0])) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_a_refused_stamp_read_still_reports_and_keeps_the_stamps(
+        self, monkeypatch
+    ) -> None:
+        async with _harness(monkeypatch) as h:
+            await _reload_bound(h, 0)
+            info = await h.spawn()
+            await _recheck(h, 2)
+            h.mgr.snapshot_teardown_children("dash:no-rows")
+            await _reload_bound(h, 60)
+            store = h.mgr._taskq
+            real = store.oldest_unstarted_by_session
+
+            def busy(*args: Any, **kwargs: Any) -> dict[str, float]:
+                raise taskq.TaskStoreUnavailable("database is locked")
+
+            monkeypatch.setattr(store, "oldest_unstarted_by_session", busy)
+            assert await h.mgr._admission.taskq_expire_memory_waits_async() == 1
+            await _until_delivered(h, 1)
+            assert h.state(info.id) == taskq.FAILED
+            assert [d.id for d in h.delivered] == [info.id]
+            # Nothing was read, so nothing is dropped; the next sweep drops it.
+            assert "dash:no-rows" in h.mgr._retired_parents
+            monkeypatch.setattr(store, "oldest_unstarted_by_session", real)
+            await h.mgr._admission.taskq_expire_memory_waits_async()
+            assert "dash:no-rows" not in h.mgr._retired_parents
+            assert len(h.delivered) == 1
+
+
+def _later_store(h: _Harness) -> taskq.TaskStore:
+    """The same ``tasks.db`` as a LATER process opens it: another incarnation."""
+    return taskq.TaskStore(h.mgr._taskq.path, clock=h.clock, network_fs=False).open()
+
+
+def _write_lost_expiries(path: Path, agent_ids: list[str]) -> None:
+    """An earlier process ended each wait and was lost before reporting it."""
+    earlier = taskq.TaskStore(path, network_fs=False).open()
+    try:
+        for agent_id in agent_ids:
+            earlier.accept_one(
+                taskq.TaskRecord(
+                    id=agent_id,
+                    kind=taskq.KIND_SUBAGENT,
+                    session_key=_PARENT,
+                    params={"task": "lost report", "parent_session_key": _PARENT},
+                )
+            )
+            assert earlier.finish(
+                agent_id, taskq.FAILED, error=QUEUED_WAIT_EXPIRED_TEXT, report_owed=True
+            )
+    finally:
+        earlier.close()
+
+
+async def _until_delivered(h: _Harness, count: int) -> None:
+    for _ in range(200):
+        if len(h.delivered) >= count:
+            break
+        await h.settle()
+    await h.settle()
+
+
+class TestAnExpiryOutlivesItsProcess:
+    """The expiry's terminal commits before its report runs, so the store says the
+    report is owed until it has run; a process lost in between leaves it to the next."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_a_reported_expiry_owes_nothing(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            await _reload_bound(h, 60)
+            info = await h.spawn()
+            await _recheck(h, 2)
+            assert [d.id for d in h.delivered] == [info.id]
+            later = _later_store(h)
+            try:
+                assert later.owed_reports(taskq.KIND_SUBAGENT) == []
+            finally:
+                later.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_the_next_start_reports_an_expiry_its_writer_did_not(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            _write_lost_expiries(h.mgr._taskq.path, ["deadbeefdeadbeef"])
+            h.mgr._admission.taskq_boot_dispatch()
+            await h.settle()
+            assert [d.id for d in h.delivered] == ["deadbeefdeadbeef"]
+            assert h.delivered[0].error == QUEUED_WAIT_EXPIRED_TEXT
+            assert len(_expired_reports(h, "deadbeefdeadbeef")) == 1
+            # Reported once: neither this process nor a later one makes it again.
+            h.mgr._admission.taskq_boot_dispatch()
+            await h.settle()
+            later = _later_store(h)
+            try:
+                assert later.owed_reports(taskq.KIND_SUBAGENT) == []
+            finally:
+                later.close()
+            assert len(h.delivered) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_a_report_cancelled_with_its_process_stays_owed(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            await _reload_bound(h, 60)
+            info = await h.spawn()
+            hang = asyncio.Event()
+
+            async def wedged(_info: Any) -> None:
+                await hang.wait()
+
+            h.mgr._on_done = wedged
+            await _recheck(h, 2)
+            assert h.state(info.id) == taskq.FAILED
+            # The shutdown drain cancels a report that did not finish in time.
+            reports = [t for t in h.mgr._report_tasks if not t.done()]
+            assert reports
+            for task in reports:
+                task.cancel()
+            await asyncio.gather(*reports, return_exceptions=True)
+            await h.settle()
+            later = _later_store(h)
+            try:
+                assert [r.id for r in later.owed_reports(taskq.KIND_SUBAGENT)] == [info.id]
+            finally:
+                later.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_the_gateway_boot_order_replays_when_the_store_attaches(
+        self, monkeypatch
+    ) -> None:
+        # The gateway builds the manager on the loop and starts the reaper before
+        # the off-loop open finishes, so the boot dispatch finds no store and the
+        # attach in ``_initialize_taskq`` is the one place the replay is reached.
+        _patch_host(monkeypatch)
+        path = taskq.TaskStore.default_path(data_home())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_lost_expiries(path, ["deadbeefdeadbeef"])
+        delivered: list[Any] = []
+
+        async def on_done(info: Any) -> None:
+            delivered.append(info)
+
+        mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), max_concurrent=3)
+        mgr._on_done = on_done
+        try:
+            assert mgr._taskq is None, "the open must still be in flight"
+            mgr.start_reaper()
+            await asyncio.wait_for(mgr.wait_taskq_ready(), 5)
+            assert mgr._taskq is not None
+            for _ in range(200):
+                if delivered:
+                    break
+                await asyncio.sleep(0.02)
+            assert [d.id for d in delivered] == ["deadbeefdeadbeef"]
+            assert delivered[0].error == QUEUED_WAIT_EXPIRED_TEXT
+        finally:
+            await mgr.cancel_all()
+            if mgr._taskq is not None:
+                await asyncio.to_thread(mgr._taskq.close)
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
+    async def test_a_refused_read_leaves_the_replay_to_the_next_sweep(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            _write_lost_expiries(h.mgr._taskq.path, ["deadbeefdeadbeef"])
+            store = h.mgr._taskq
+            real = store.owed_reports
+            reads: list[int] = []
+
+            def busy_once(*args: Any, **kwargs: Any) -> list[taskq.TaskRecord]:
+                reads.append(1)
+                if len(reads) == 1:
+                    raise taskq.TaskStoreUnavailable("database is locked")
+                return real(*args, **kwargs)
+
+            monkeypatch.setattr(store, "owed_reports", busy_once)
+            h.mgr._admission.taskq_boot_dispatch()
+            await h.settle()
+            assert reads == [1] and h.delivered == []
+            # The real reaper loop, back to back, with every other sweep step
+            # stubbed: only its own replay hook can retry the refused read.
+            sweeps: list[int] = []
+            mgr = h.mgr
+            monkeypatch.setattr(subagent_mod, "_REAPER_INTERVAL", 0)
+            monkeypatch.setattr(subagent_mod, "compact_cost_log", lambda: sweeps.append(1))
+            monkeypatch.setattr(mgr, "_rebuild_conversation_registry", AsyncMock())
+            monkeypatch.setattr(mgr, "_sample_live_costs", MagicMock())
+            monkeypatch.setattr(mgr, "_refresh_learned_settled", MagicMock())
+            monkeypatch.setattr(mgr, "_sweep_stuck_waves_async", AsyncMock())
+            monkeypatch.setattr(mgr, "_sweep_digest_holds_async", AsyncMock())
+            monkeypatch.setattr(mgr, "_sweep_conversations", MagicMock())
+            monkeypatch.setattr(mgr, "_taskq_pump", MagicMock())
+            reaper = asyncio.ensure_future(mgr._reaper_loop())
+            try:
+                await _until_delivered(h, 1)
+                assert [d.id for d in h.delivered] == ["deadbeefdeadbeef"]
+                # Later sweeps: the replay is done, so no further read.
+                seen = len(sweeps)
+                for _ in range(200):
+                    if len(sweeps) >= seen + 3:
+                        break
+                    await asyncio.sleep(0.01)
+                await h.settle()
+            finally:
+                reaper.cancel()
+                await asyncio.gather(reaper, return_exceptions=True)
+            assert len(sweeps) >= seen + 3, "the reaper stopped sweeping"
+            assert len(reads) == 2 and len(h.delivered) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)
+    async def test_every_owed_report_is_replayed_past_one_page(self, monkeypatch) -> None:
+        async with _harness(monkeypatch) as h:
+            ids = [f"{i:016x}" for i in range(taskq_bridge._OWED_REPLAY_PAGE + 1)]
+            _write_lost_expiries(h.mgr._taskq.path, ids)
+            h.mgr._admission.taskq_boot_dispatch()
+            await _until_delivered(h, len(ids))
+            assert sorted(d.id for d in h.delivered) == ids
+            later = _later_store(h)
+            try:
+                assert later.owed_reports(taskq.KIND_SUBAGENT) == []
+            finally:
+                later.close()

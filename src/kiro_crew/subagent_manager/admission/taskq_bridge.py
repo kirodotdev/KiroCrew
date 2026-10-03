@@ -59,11 +59,9 @@ _OVERDUE_WAKE_WARN_EVERY_SECS = 60.0
 #: cut-off tail otherwise reads as spawns that were never accepted.
 QUEUED_LISTING_CAP = 100
 
-#: How long a parent's retirement stamp (``taskq_mark_parent_retired``) is kept:
-#: the ceiling of ``agent.subagent_queue_max_wait_secs`` (the loader clamps it to
-#: 0..86400), so a row of a retired parent that waits out the longest bound still
-#: finds the stamp when it ends.
-_RETIRED_PARENT_TTL_SECS = 86400.0
+#: Owed expiry reports one replay read returns. The replay pages until a read
+#: comes back short, so this bounds one writer-thread call, not the replay.
+_OWED_REPLAY_PAGE = 256
 
 #: The events that close a deferral: a claim or a state change after the
 #: ``deferred`` event means the sentence does not describe the row's current wait.
@@ -395,6 +393,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         store = self.taskq_store()
         if store is None:
             return
+        # An expiry an earlier process wrote and never reported (the store
+        # attached before the reaper started; ``_initialize_taskq`` covers the
+        # other order).
+        self.taskq_schedule_owed_replay()
         try:
             pending = store.count_pending(_taskq.KIND_SUBAGENT)
         except _taskq.TaskStoreUnavailable:
@@ -742,24 +744,69 @@ class _TaskqBridgeMixin(ManagerComponent):
 
     @staticmethod
     def _expire_memory_waits_db(
-        store: "_taskq.TaskStore", bound: float, exclude_ids: list[str]
-    ) -> "list[_taskq.TaskRecord]":
+        store: "_taskq.TaskStore",
+        bound: float,
+        exclude_ids: list[str],
+        stamps: dict[str, float],
+    ) -> "tuple[list[_taskq.TaskRecord], list[str]]":
         """Store half of the sweep (writer thread): fail each row past the bound.
 
         The read and every write share this one writer-thread call, and each
         write is fenced by the generation the read returned, so a row a claim
-        took in between is refused rather than failed under its new owner.
-        Returns the rows whose failure landed.
+        took in between is refused rather than failed under its new owner. Each
+        failure is written as owing its report (``report_owed``), cleared once
+        the report has run, so a process lost in between leaves the next one to
+        make it (:meth:`taskq_replay_owed_expiries_async`). Returns the rows
+        whose failure landed, and the retirement *stamps* that gate nothing: their
+        parent has no unstarted row accepted at or before them.
+
+        Each ``finish`` commits on its own, so a refusal after the first one
+        never discards what already landed: this process owes those rows their
+        report, and no later read names them (the sweep's read wants a queued
+        row, the replay another incarnation's). A refused ``finish`` ends the
+        loop and leaves that row and the rest queued for the next sweep; a
+        refused stamp read drops no stamp, which only keeps a stamp longer.
+        Only the first read may raise, before anything is written.
         """
         from kiro_crew import taskq as _taskq
 
         ended: list[_taskq.TaskRecord] = []
-        for rec in store.deferred_longer_than(_taskq.KIND_SUBAGENT, bound, exclude_ids=exclude_ids):
-            if store.finish(
-                rec.id, _taskq.FAILED, generation=rec.generation, error=QUEUED_WAIT_EXPIRED_TEXT
+        if bound > 0:
+            for rec in store.deferred_longer_than(
+                _taskq.KIND_SUBAGENT, bound, exclude_ids=exclude_ids
             ):
-                ended.append(rec)
-        return ended
+                try:
+                    landed = store.finish(
+                        rec.id,
+                        _taskq.FAILED,
+                        generation=rec.generation,
+                        error=QUEUED_WAIT_EXPIRED_TEXT,
+                        report_owed=True,
+                    )
+                except _taskq.TaskStoreUnavailable:
+                    _glue_logger.debug(
+                        "taskq: memory-wait expiry of %s refused; left to the next sweep",
+                        rec.id,
+                        exc_info=True,
+                    )
+                    break
+                if landed:
+                    ended.append(rec)
+        try:
+            oldest = store.oldest_unstarted_by_session(_taskq.KIND_SUBAGENT, list(stamps))
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug("taskq: retirement-stamp read refused", exc_info=True)
+            return ended, []
+        spent = [key for key, at in stamps.items() if key not in oldest or oldest[key] > at]
+        return ended, spent
+
+    def _sweep_inputs(self) -> "tuple[float, list[str], dict[str, float]] | None":
+        """The bound, the exclusions and the retirement stamps; None for no sweep."""
+        bound = self.taskq_memory_wait_bound_secs()
+        stamps = dict(getattr(self._manager, "_retired_parents", None) or {})
+        if bound <= 0 and not stamps:
+            return None
+        return bound, self._memory_wait_exclusions(), stamps
 
     def taskq_expire_memory_waits(self) -> int:
         """End every memory-deferred row past the bound; how many ended (inline twin).
@@ -770,19 +817,22 @@ class _TaskqBridgeMixin(ManagerComponent):
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
-        bound = self.taskq_memory_wait_bound_secs()
-        if store is None or bound <= 0:
+        inputs = self._sweep_inputs()
+        if store is None or inputs is None:
             return 0
         try:
             _asyncio.get_running_loop()
         except RuntimeError:
             return 0
         try:
-            ended = self._expire_memory_waits_db(store, bound, self._memory_wait_exclusions())
+            ended, spent = self._expire_memory_waits_db(store, *inputs)
         except _taskq.TaskStoreUnavailable:
             _glue_logger.debug("taskq: memory-wait expiry failed", exc_info=True)
             return 0
-        self._report_memory_waits_expired(ended, bound)
+        # Reported first: a stamp is spent once its last row ended, which may be
+        # one of the rows ended here, and the report still needs the stamp.
+        self._report_memory_waits_expired(ended, inputs[0])
+        self._drop_spent_stamps(inputs[2], spent)
         return len(ended)
 
     async def taskq_expire_memory_waits_async(self) -> int:
@@ -790,68 +840,194 @@ class _TaskqBridgeMixin(ManagerComponent):
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
-        bound = self.taskq_memory_wait_bound_secs()
-        if store is None or bound <= 0:
+        inputs = self._sweep_inputs()
+        if store is None or inputs is None:
             return 0
         try:
-            ended = await store.run(
-                self._expire_memory_waits_db, store, bound, self._memory_wait_exclusions()
-            )
+            ended, spent = await store.run(self._expire_memory_waits_db, store, *inputs)
         except _taskq.TaskStoreUnavailable:
             _glue_logger.debug("taskq: memory-wait expiry failed", exc_info=True)
             return 0
-        self._report_memory_waits_expired(ended, bound)
+        # Reported first: a stamp is spent once its last row ended, which may be
+        # one of the rows ended here, and the report still needs the stamp.
+        self._report_memory_waits_expired(ended, inputs[0])
+        self._drop_spent_stamps(inputs[2], spent)
         return len(ended)
 
-    def _report_memory_waits_expired(self, ended: "list[_taskq.TaskRecord]", bound: float) -> None:
+    def _drop_spent_stamps(self, read: dict[str, float], spent: list[str]) -> None:
+        """Forget the stamps the store said gate nothing, unless re-stamped since."""
+        retired = getattr(self._manager, "_retired_parents", None)
+        if not retired:
+            return
+        for key in spent:
+            if key in retired and retired[key] == read.get(key):
+                del retired[key]
+
+    def _report_memory_waits_expired(
+        self, ended: "list[_taskq.TaskRecord]", bound: float, *, replay: bool = False
+    ) -> None:
         """Loop half: drop each ended row's window entry and report it.
 
         The report is the queued-stop report with the expiry as its ``error``, so
         batch accounting, the digest, a waiting parent's wake and the re-published
-        queued depth take the path a stopped queued row already takes. A row its parent's conversation
-        accepted BEFORE that conversation ended (:meth:`taskq_mark_parent_retired`)
-        is reported to the dashboard but never injected: the injector creates a
-        session when none is live, which would rebuild the conversation that
-        ended. A successor's own rows under the same key are reported as usual.
+        queued depth take the path a stopped queued row already takes. A row its
+        parent's conversation accepted BEFORE that conversation ended
+        (:meth:`taskq_mark_parent_retired`) is reported to the dashboard but never
+        injected: the injector creates a session when none is live, which would
+        rebuild the conversation that ended. A successor's own rows under the same
+        key are reported as usual.
+
+        Once a report has run (not cancelled), the row's owed report is cleared
+        in the store; a report cancelled with its process (the shutdown drain's
+        stragglers) stays owed, for the next start. *replay* is that start.
         """
         manager = self._manager
         retired = getattr(manager, "_retired_parents", None) or {}
+        store = self.taskq_store()
         for rec in ended:
             params = dict(rec.params)
             parent = rec.session_key or str(params.get("parent_session_key") or "")
             params["_preassigned_id"] = rec.id
             params["parent_session_key"] = parent
-            _glue_logger.warning(
-                "taskq: subagent %s waited for memory longer than %.0fs; ending it (%s)",
-                rec.id,
-                bound,
-                QUEUED_WAIT_EXPIRED_TEXT,
-            )
+            if replay:
+                _glue_logger.warning(
+                    "taskq: reporting subagent %s's memory-wait expiry, which an earlier "
+                    "process wrote and did not report (%s)",
+                    rec.id,
+                    QUEUED_WAIT_EXPIRED_TEXT,
+                )
+            else:
+                _glue_logger.warning(
+                    "taskq: subagent %s waited for memory longer than %.0fs; ending it (%s)",
+                    rec.id,
+                    bound,
+                    QUEUED_WAIT_EXPIRED_TEXT,
+                )
             retired_at = retired.get(parent)
             if retired_at is not None and rec.created_at <= retired_at:
                 manager._teardown_cancelled_ids.add(rec.id)
             entry = manager._unqueue(rec.id, stored=params, store_cancelled=True)
-            manager._report_queued_stop(entry or params, error=QUEUED_WAIT_EXPIRED_TEXT)
+            report = manager._report_queued_stop(entry or params, error=QUEUED_WAIT_EXPIRED_TEXT)
+            if store is not None:
+                self._clear_owed_report_after(store, rec.id, report)
+
+    def _clear_owed_report_after(
+        self, store: "_taskq.TaskStore", agent_id: str, report: "_asyncio.Task[Any] | None"
+    ) -> None:
+        """Clear *agent_id*'s owed report once *report* has run; at once with no report.
+
+        No task means no report will run here (an empty id, or a finalize claim
+        another path already holds), so nothing is left for this process to owe.
+        """
+
+        def _clear(task: "_asyncio.Task[Any] | None" = None) -> None:
+            if task is not None and task.cancelled():
+                return
+            self._post_store_write(
+                store, f"report cleared {agent_id}", store.mark_reported, agent_id
+            )
+
+        if report is None:
+            _clear()
+        else:
+            report.add_done_callback(_clear)
+
+    async def taskq_replay_owed_expiries_async(self) -> int:
+        """Report the memory-wait expiries an earlier process wrote and never reported.
+
+        After the store is attached, until one replay has read every owed row:
+        the rows ``TaskStore.owed_reports`` names (another incarnation's, so none
+        of this process's in-flight reports), a page at a time. Each is reported
+        exactly as a live expiry is, and cleared once its report has run. The
+        replay is marked done only once a page comes back short; a read the
+        store refuses leaves it to the next call (the reaper sweep), which
+        resumes after the last page reported, so no row is reported twice by
+        this process. The retirement stamps were this process's alone, so a
+        replayed row of a parent that ended before the restart is reported to
+        that key like any restored row. Returns the rows reported by this call.
+        """
+        from kiro_crew import taskq as _taskq
+
+        manager = self._manager
+        store = self.taskq_store()
+        if (
+            store is None
+            or getattr(manager, "_taskq_owed_replayed", False)
+            or getattr(manager, "_taskq_owed_replaying", False)
+        ):
+            return 0
+        setattr(manager, "_taskq_owed_replaying", True)
+        reported = 0
+        try:
+            while True:
+                after = getattr(manager, "_taskq_owed_replay_after", None)
+                try:
+                    page = await store.run(
+                        store.owed_reports,
+                        _taskq.KIND_SUBAGENT,
+                        limit=_OWED_REPLAY_PAGE,
+                        after=after,
+                    )
+                except _taskq.TaskStoreUnavailable:
+                    failures = int(getattr(manager, "_taskq_owed_replay_failures", 0)) + 1
+                    setattr(manager, "_taskq_owed_replay_failures", failures)
+                    # One line per outage at warning; the sweep's retries at debug.
+                    _glue_logger.log(
+                        _logging.WARNING if failures <= 1 else _logging.DEBUG,
+                        "taskq: owed expiry reports could not be read; retrying next sweep",
+                        exc_info=True,
+                    )
+                    return reported
+                expired = [rec for rec in page if rec.state == _taskq.FAILED]
+                self._report_memory_waits_expired(
+                    expired, self.taskq_memory_wait_bound_secs(), replay=True
+                )
+                reported += len(expired)
+                if len(page) < _OWED_REPLAY_PAGE:
+                    setattr(manager, "_taskq_owed_replayed", True)
+                    return reported
+                setattr(manager, "_taskq_owed_replay_after", (page[-1].updated_at, page[-1].id))
+        finally:
+            setattr(manager, "_taskq_owed_replaying", False)
+
+    def taskq_schedule_owed_replay(self) -> None:
+        """Post :meth:`taskq_replay_owed_expiries_async` on the running loop, if any.
+
+        Called at every store attach (``taskq_boot_dispatch``, ``_initialize_taskq``)
+        and from each reaper sweep, which retries a replay the store refused.
+        """
+        manager = self._manager
+        if (
+            self.taskq_store() is None
+            or getattr(manager, "_taskq_owed_replayed", False)
+            or getattr(manager, "_taskq_owed_replaying", False)
+        ):
+            return
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self.track_store_task(loop.create_task(self.taskq_replay_owed_expiries_async()))
 
     def taskq_mark_parent_retired(self, parent_session_key: str) -> None:
         """Record that *parent_session_key*'s conversation ended, on the store clock.
 
         Its rows still in the store are named by no teardown snapshot (they have
         no in-memory entry), so this stamp is what keeps a later end of one of
-        them from injecting into the retired conversation. Entries older than
-        :data:`_RETIRED_PARENT_TTL_SECS` are dropped on each mark.
+        them from injecting into the retired conversation. A stamp is kept for as
+        long as the store holds an unstarted row of that parent accepted at or
+        before it, however long that is: each sweep drops the ones that gate
+        nothing (``_expire_memory_waits_db``). Without a store there is no such
+        row, so nothing is stamped.
         """
-        if not parent_session_key:
-            return
         store = self.taskq_store()
-        now = store.now() if store is not None else _time.time()
+        if not parent_session_key or store is None:
+            return
         retired = getattr(self._manager, "_retired_parents", None)
         if retired is None:
             retired = {}
             setattr(self._manager, "_retired_parents", retired)
-        for key in [k for k, at in retired.items() if at < now - _RETIRED_PARENT_TTL_SECS]:
-            del retired[key]
-        retired[parent_session_key] = now
+        retired[parent_session_key] = store.now()
 
     async def taskq_should_window_async(self, agent_id: str) -> bool:
         """:meth:`taskq_should_window` with its store count on the writer thread."""

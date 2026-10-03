@@ -2189,6 +2189,11 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   the bound PARKED in their current wait (the `deferred` events after the row's
   last `claimed`/`transition`, each counted from its `ts` to its `until`) -- and
   fails each one in the same writer-thread call, fenced by the generation it read.
+  Each `finish` commits on its own, so a store refusal partway through never
+  discards the rows already failed: their reports are still made (no later read
+  names them -- the sweep reads queued rows, the replay another incarnation's).
+  A refused `finish` ends that sweep and leaves the row and the rest queued for
+  the next one; a refused retirement-stamp read drops no stamp.
   A re-check does not restart the clock; a claim does. What is measured is parked
   time, not time since the first deferral: a row whose deferral merely LAPSED is
   eligible again and waits for a slot, so it is not ended, and the time it spends
@@ -2209,16 +2214,39 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   lost write -- only for a record that never held a claim (`never_claimed`); a
   claimed run finding its own state already written is still a warning, since
   that is a newer owner having settled the same row. Rows are bounded alike whether they were accepted by this process
-  or restored from `tasks.db` (the clock is the store's event time). **A parent
-  that ended is not rebuilt:** `snapshot_teardown_children` stamps the parent key
-  (`taskq_mark_parent_retired`, store clock, kept `_RETIRED_PARENT_TTL_SECS`),
-  because a row waiting in the store alone is in no teardown snapshot; an expired
-  row accepted at or before that stamp is added to `_teardown_cancelled_ids`, so
-  its card ends but nothing injects into the retired conversation, while a
-  successor's own rows under the same key report as usual. The stamp is in this
+  or restored from `tasks.db` (the clock is the store's event time). **The
+  report survives the process that owes it:** the failure commits before its
+  report runs, so it is written with `finish(..., report_owed=True)`, which puts
+  the owing incarnation on the terminal `transition` event in the same
+  transaction; once the report task has run (not cancelled) its done-callback
+  posts `TaskStore.mark_reported`. A process lost in between, or a report the
+  shutdown drain cancelled, leaves the row owed, and the next start reports it:
+  `taskq_schedule_owed_replay` (from `taskq_boot_dispatch`, from
+  `_initialize_taskq` when the store attaches after the reaper started, which is
+  the gateway's boot order and every re-open, and from each reaper sweep) runs
+  `taskq_replay_owed_expiries_async`, which reports every `failed` row
+  `TaskStore.owed_reports` names exactly as a live expiry is. It reads a page
+  at a time, resuming after the last row it reported, and is marked done only
+  once a page comes back short; a read the store refuses leaves the replay
+  unfinished for the next sweep, and one in flight is never started twice. Rows
+  this incarnation owes are never named, since their reports are in flight
+  here. The guarantee is at least once: a clear that is itself lost (the store
+  unreachable, or the process ending between the report and the write) makes
+  the next start report the expiry again, never not at all. **A parent that ended is not rebuilt:** `snapshot_teardown_children`
+  stamps the parent key (`taskq_mark_parent_retired`, store clock; nothing is
+  stamped without a store), because a row waiting in the store alone is in no
+  teardown snapshot; an expired row accepted at or before that stamp is added to
+  `_teardown_cancelled_ids`, so its card ends but nothing injects into the
+  retired conversation, while a successor's own rows under the same key report as
+  usual. A stamp has no age limit: it is kept while the store holds an unstarted
+  row of that parent accepted at or before it, and each sweep (after its
+  reports) drops the stamps that gate nothing
+  (`TaskStore.oldest_unstarted_by_session`), so a row that waits longer than any
+  fixed span still finds its stamp. The stamp is in this
   process only: after a gateway restart, a store row of a parent torn down
   before it is reported like any other (the same reach a restored row of a
-  retired parent already has when it starts and completes). Cancelling a retired
+  retired parent already has when it starts and completes, and that a replayed
+  owed report has). Cancelling a retired
   parent's store rows at teardown is what closes that, and is not done here.
   The stamp is taken after the teardown's own gates, and only when the manager
   has an admission coordinator. A spawn with no durable row is refused at the

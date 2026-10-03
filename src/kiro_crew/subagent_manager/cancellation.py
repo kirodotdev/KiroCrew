@@ -363,7 +363,9 @@ class CancellationCoordinator(ManagerComponent):
             break
         return row
 
-    def _report_queued_stop_impl(self, params: dict, *, error: str = "") -> None:
+    def _report_queued_stop_impl(
+        self, params: dict, *, error: str = ""
+    ) -> "asyncio.Task[bool] | None":
         """Publish the terminal record of work that ended before startup.
 
         A neutral stop by default. With *error* it is the failure that ended the
@@ -375,6 +377,9 @@ class CancellationCoordinator(ManagerComponent):
         this is where the parent's queued depth is asked for -- once per row,
         each under its own wave; a bulk stop's requests share one read -- and
         the terminal record itself asks for nothing (``queued=True``).
+
+        Returns the report task, or None when no report runs here (no id, or
+        the finalize claim is already another path's).
         """
         self._republish_queue_depth(
             str(params.get("parent_session_key") or ""), str(params.get("batch_id") or "")
@@ -392,7 +397,7 @@ class CancellationCoordinator(ManagerComponent):
             batch_total=max(0, int(params.get("batch_total") or 0)),
         )
         if not info.id:
-            return
+            return None
         # The row will never start: drop what this process kept for its start.
         self._manager._forget_pending_start(info.id)
         # Queued runs have no `_agents` record yet. Register every synthetic
@@ -403,8 +408,8 @@ class CancellationCoordinator(ManagerComponent):
         self._manager._agents[info.id] = info
         if not self._manager._claim_finalize(info):
             self._manager._agents.pop(info.id, None)
-            return
-        self._manager._spawn_terminal_report(
+            return None
+        return self._manager._spawn_terminal_report(
             info,
             source="Queued expiry" if error else "Queued stop",
             injection_timeout_reason=(

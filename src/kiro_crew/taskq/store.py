@@ -172,6 +172,10 @@ _SQL_CHILD_ONLY = " AND parent_id IS NOT NULL AND parent_id <> ''"
 #: Ids per ``IN (...)`` list in a multi-row event read: under the 999
 #: host-parameter ceiling of an older SQLite build.
 _EVENT_ID_CHUNK = 500
+#: The key a terminal ``transition`` event carries when its writer still owes
+#: the row a report (``finish(report_owed=True)``), and the event that clears it.
+_REPORT_OWED_BY = "report_owed_by"
+_EVENT_REPORTED = "reported"
 
 
 class _CorruptStore(Exception):
@@ -1321,14 +1325,89 @@ class TaskStore:
         generation: int | None = None,
         result_ref: str | None = None,
         error: str | None = None,
+        report_owed: bool = False,
     ) -> bool:
-        """Write a terminal state; a stale generation or an already-terminal row is a no-op."""
+        """Write a terminal state; a stale generation or an already-terminal row is a no-op.
+
+        *report_owed* records, in the same transaction, that the writer still
+        owes this terminal a report it has not made yet: the row is named by
+        :meth:`owed_reports` until :meth:`mark_reported` clears it, so a process
+        lost between this commit and the report leaves the next one the work.
+        """
         if not is_terminal(state):
             raise InvalidTransition("?", state)
-        detail = {"error": error[:500]} if error else None
+        detail: dict[str, Any] = {"error": error[:500]} if error else {}
+        if report_owed:
+            detail[_REPORT_OWED_BY] = self.incarnation
         return self.transition(
-            task_id, state, generation=generation, result_ref=result_ref, detail=detail
+            task_id, state, generation=generation, result_ref=result_ref, detail=detail or None
         )
+
+    def mark_reported(self, task_id: str) -> None:
+        """Clear the report a :meth:`finish` with ``report_owed`` left owing."""
+        self.append_event(task_id, _EVENT_REPORTED)
+
+    @_typed_read
+    def owed_reports(
+        self, kind: str, *, limit: int = 256, after: tuple[float, str] | None = None
+    ) -> list[TaskRecord]:
+        """Terminal rows of *kind* an EARLIER incarnation owed a report it never made.
+
+        A row whose terminal ``transition`` carries the owing incarnation, with no
+        ``reported`` event after it, oldest terminal first (``updated_at``, then
+        ``id``). This incarnation's own rows are left out: their reports are in
+        flight in this process. *after* is the ``(updated_at, id)`` of the last
+        row of the previous page; only rows ordered after it are named, so a
+        caller pages through every owed row without re-reading one whose clear
+        has not landed yet.
+        """
+        cursor_sql = ""
+        args: list[Any] = [self.incarnation, kind, _EVENT_REPORTED]
+        if after is not None:
+            cursor_sql = "AND (t.updated_at>? OR (t.updated_at=? AND t.id>?)) "
+            args += [float(after[0]), float(after[0]), str(after[1])]
+        with self._lock:
+            rows = (
+                self._c()
+                .execute(
+                    "SELECT t.* FROM tasks t JOIN task_events e ON e.task_id=t.id "
+                    "AND e.kind='transition' "
+                    f"AND json_extract(e.data_json, '$.{_REPORT_OWED_BY}') IS NOT NULL "
+                    f"AND json_extract(e.data_json, '$.{_REPORT_OWED_BY}')<>? "
+                    f"WHERE t.kind=? AND t.state IN {_SQL_TERMINAL} AND NOT EXISTS ("
+                    "SELECT 1 FROM task_events r WHERE r.task_id=t.id AND r.kind=? "
+                    f"AND r.seq>e.seq) {cursor_sql}ORDER BY t.updated_at, t.id LIMIT ?",
+                    [*args, int(limit)],
+                )
+                .fetchall()
+            )
+        return [TaskRecord.from_row(r) for r in rows]
+
+    @_typed_read
+    def oldest_unstarted_by_session(
+        self, kind: str, session_keys: Sequence[str]
+    ) -> dict[str, float]:
+        """``created_at`` of the oldest unstarted row of *kind* per session key.
+
+        A key with no unstarted row is absent. Unstarted is :data:`_SQL_UNSTARTED`.
+        """
+        keys = [str(k) for k in session_keys if k]
+        out: dict[str, float] = {}
+        if not keys:
+            return out
+        with self._lock:
+            conn = self._c()
+            for i in range(0, len(keys), _EVENT_ID_CHUNK):
+                chunk = keys[i : i + _EVENT_ID_CHUNK]
+                marks = ", ".join("?" for _ in chunk)
+                for r in conn.execute(
+                    "SELECT session_key, MIN(created_at) FROM tasks WHERE kind=? "
+                    f"AND state IN {_SQL_UNSTARTED} AND session_key IN ({marks}) "
+                    "GROUP BY session_key",
+                    [kind, *chunk],
+                ).fetchall():
+                    out[str(r[0])] = float(r[1])
+        return out
 
     def cancel(
         self,
