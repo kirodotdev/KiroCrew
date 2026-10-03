@@ -467,7 +467,20 @@ _STREAM_DISCARD_RUN_RES = {
     # here, so this is a one-shot build input rather than a stored re-export. The
     # resolver below is not available yet -- it is defined with the rest of the
     # facade machinery, after this module has finished binding its own names.
-    "token-param": re.compile(rf"{redaction._TOKEN_PARAM_VALUE_CLASS}*"),
+    #
+    # The token-parameter continuation is the batch grammar's value shape, as
+    # `_TOKEN_PARAM_PARTIAL_RE` holds it: value-class bytes AND whole registered
+    # tags. A tag's interior space is not a terminator of the value it stands in:
+    # with the plain class alone, a continuation that reached the arming cap
+    # inside a run of tags ended the discard at that space, and the bytes glued
+    # to the tag's `]` arrived anchor-less, where nothing redacts them. A STRICT
+    # tag prefix at the buffer tail is handled by `feed`, which keeps it buffered
+    # until the next chunk completes or breaks it (see `_trailing_tag_prefix`).
+    "token-param": re.compile(
+        "(?:"
+        + "|".join(re.escape(tag) for tag in redaction.CREDENTIAL_REDACTION_TAGS)
+        + rf"|{redaction._TOKEN_PARAM_VALUE_CLASS})*"
+    ),
     "jwt": re.compile(rf"(?:{_JWT_SEGMENT_VALUE_CLASS}|\.)*"),
     "bearer": re.compile(rf"{_BEARER_VALUE_CLASS}*"),
 }
@@ -476,6 +489,32 @@ _STREAM_DISCARD_RUN_RES = {
 # keeps dropping, so the counter stays O(1) and a credential's continuation never
 # resumes raw. Only a byte outside the arming anchor's value class ends the discard.
 _STREAM_DISCARD_MAX = 1 << 20
+
+
+def _trailing_tag_prefix(buf: str, floor: int, tags: tuple[str, ...]) -> str:
+    """The longest STRICT prefix of a registered tag that ends *buf* and begins
+    at or before *floor*; ``""`` when there is none.
+
+    A token-parameter discard reads a tag as value material only when the
+    literal is whole (``_STREAM_DISCARD_RUN_RES``). A chunk boundary can fall
+    anywhere inside a tag, and past its interior space the tail is neither a
+    tag nor a class run, so the prefix is kept BUFFERED instead of dropped or
+    released: the next chunk either completes the tag, which the grammar then
+    consumes with whatever is glued to its ``]``, or breaks it, after which its
+    bytes are ordinary value bytes and the space that follows them a terminator.
+    *floor* is where the consumed value run ended -- a prefix must begin there
+    or earlier to be the tail of that value rather than of the text behind the
+    terminator that ended it. A strict prefix is at most one byte short of the
+    longest registered tag, so what is kept is bounded by the registry.
+    """
+    best = ""
+    for tag in tags:
+        for k in range(min(len(buf), len(tag) - 1), len(best), -1):
+            if len(buf) - k <= floor and buf.endswith(tag[:k]):
+                best = tag[:k]
+                break
+    return best
+
 
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
 # header prefix optionally followed by up to FOUR `.`-separated base64url segments
@@ -526,7 +565,16 @@ def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
 # so without this anchor a >512-char opaque bearer tail would stay on the 512 floor
 # and stream its raw tail.
 _BEARER_ANCHOR_PARTIAL_RE = re.compile(
-    r"""Authorization["']?\s*[:=]\s*["']?"""
+    # The label quotes are the batch branch's `_LABEL_QUOTE` -- bare or escaped,
+    # the header inside a JSON string reading `\"Authorization\": \"Bearer` --
+    # and the opening quote's slot also takes the lone backslash of an escaped
+    # quote still to come, so the anchor stays a superset of the branch it holds
+    # for. The separator stays REQUIRED here: this anchor is STRONG (it can arm
+    # the fail-closed drop), and `Authorization` as a bare word at a chunk's end
+    # is prose until a separator says otherwise -- that tail, and the one cut
+    # before the separator, are the WEAK key-anchored hold's
+    # (`redaction._key_anchored_hold_start`).
+    r"""Authorization(?:\\?["'])?\s*[:=]\s*(?:\\?["']|\\)?"""
     rf"(?:Bearer(?:\s+{_BEARER_VALUE_CLASS}*)?|Beare|Bear|Bea|Be|B)?\Z",
     re.IGNORECASE,
 )
@@ -576,7 +624,8 @@ class StreamRedactor:
             return ""
         self._buf += chunk
 
-        # Invariant: `_buf` is always "" on entry when `_discarding` is true;
+        # Invariant: on entry when `_discarding` is true, `_buf` holds at most a
+        # STRICT prefix of a registered tag (token-param kind only; "" otherwise):
         # this chunk is solely the continuation of the already-tagged drop.
         # Only a terminator byte exits the discard. Reaching the bound with no
         # terminator re-emits the tag and resets the counter but stays armed:
@@ -587,13 +636,21 @@ class StreamRedactor:
             run_match = _STREAM_DISCARD_RUN_RES[self._discard_kind].match(self._buf)
             assert run_match is not None
             run = run_match.end()
-            self._discarded += run
-            if run == len(self._buf):
-                self._buf = ""
+            # A token-parameter value may end this chunk INSIDE a tag. The run
+            # above reads a tag only whole, so the strict prefix at the tail is
+            # kept buffered rather than counted as terminated at its interior
+            # space -- the shape that let a glued secret arrive anchor-less.
+            kept = ""
+            if self._discard_kind == "token-param":
+                kept = _trailing_tag_prefix(self._buf, run, _redaction.CREDENTIAL_REDACTION_TAGS)
+            if kept or run == len(self._buf):
+                self._discarded += len(self._buf) - len(kept)
+                self._buf = kept
                 if self._discarded < _STREAM_DISCARD_MAX:
                     return ""
                 self._discarded = 0
                 return _redaction._REDACTED_CREDENTIAL_TAG
+            self._discarded += run
             self._discarding = False
             self._discard_kind = None
             self._buf = self._buf[run:]
@@ -640,6 +697,28 @@ class StreamRedactor:
         if bearer_anchor is not None:
             safety_cuts.append(bearer_anchor.start())
 
+        # Key-anchored pairs are WEAK holds: the natural cut lands inside a pair
+        # at the whitespace after its separator (`"aws_secret_access_key": ` --
+        # the label committed and the value arrived anchor-less in the next
+        # window and streamed raw) or at a space or backslash inside a quoted
+        # value (the batch pass over the committed head wrote the close
+        # mid-value). Such a cut is pulled back to the pair's start
+        # (`_key_anchored_hold_start`); never raises the cap, never authorizes a
+        # drop -- the batch pass sees the pair whole once a terminator follows
+        # its closing quote, a line break arrives, or the stream ends. A hold
+        # whose extent would exceed the cap is DROPPED, not floored: Phase B's
+        # floor cuts at `len - cap` wherever that lands, inside the label or the
+        # token's run included, and a token bisected there streams anchor-less.
+        # The natural cut never bisects a credential-class run, so a quoted
+        # value that runs past the cap commits its label and token whole and
+        # only its prose tail takes the close the batch pass writes at the cut.
+        key_anchored_hold = _redaction._key_anchored_hold_start(self._buf, natural_cut)
+        if (
+            key_anchored_hold is not None
+            and len(self._buf) - key_anchored_hold <= _STREAM_HOLDBACK_MAX
+        ):
+            safety_cuts.append(key_anchored_hold)
+
         # A token-name prefix without '=' is WEAK. It still needs a short
         # holdback so a chunk boundary cannot split the name, but it is not yet a
         # credential and must never escalate the cap or authorize data loss.
@@ -671,6 +750,15 @@ class StreamRedactor:
         # A partial canonical tag is already-redacted material. It lowers only
         # the safety cut and is deliberately applied AFTER STRONG classification,
         # so the tag prefix itself can neither raise a cap nor authorize a drop.
+        # A tag standing as a token-parameter value at the tail -- complete,
+        # bare or with `!` or a secret's first bytes glued to its `]`, or a
+        # STRICT PREFIX cut anywhere inside it -- is not this hold's case:
+        # `_TOKEN_PARAM_PARTIAL_RE` carries the batch grammar's tag atom and the
+        # registry's strict-prefix atom, so that tail is a STRONG in-progress
+        # anchor above, held from `token=` until a terminator, and the batch
+        # pass then sees the joined value whole. Without the prefix atom a
+        # boundary past the tag's interior space left only this hold, which
+        # pulled the cut back to the `[` and committed `token=` ahead of it.
         if partial_tag_start is not None:
             i = min(i, partial_tag_start)
 
@@ -729,7 +817,17 @@ class StreamRedactor:
                 drop_end = len(self._buf)
                 if complete_token_crossing is not None and not credential_reaches_end:
                     drop_end = complete_token_crossing.end(1)
-                commit, self._buf = self._buf[:i], self._buf[drop_end:]
+                # A token-parameter tail dropped INSIDE a tag (the strict-prefix
+                # alternative of `_TOKEN_PARAM_PARTIAL_RE` is what armed it) keeps
+                # that prefix buffered: the discard reads a tag only whole, so a
+                # dropped head would leave the next chunk's `credential]<secret>`
+                # to end the discard at the interior space and stream raw.
+                kept = ""
+                if self._discard_kind == "token-param":
+                    kept = _trailing_tag_prefix(
+                        self._buf, len(self._buf), _redaction.CREDENTIAL_REDACTION_TAGS
+                    )
+                commit, self._buf = self._buf[:i], (kept or self._buf[drop_end:])
                 out = self._redact(commit) if commit else ""
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
 
@@ -2927,6 +3025,8 @@ _EXPORTS: dict[str, str] = {
     "_shannon_entropy": "redaction",
     "_text_contains_bare_secret": "redaction",
     "_vowel_ratio": "redaction",
+    "contains_credential": "redaction",
+    "credential_matches": "redaction",
     "get_credential_patterns": "redaction",
     "redact_credentials": "redaction",
     "redact_local_paths": "redaction",
@@ -3519,6 +3619,8 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _shannon_entropy,
         _text_contains_bare_secret,
         _vowel_ratio,
+        contains_credential,
+        credential_matches,
         get_credential_patterns,
         redact_credentials,
         redact_local_paths,

@@ -74,15 +74,17 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
             "Redacted credential pattern (26 chars)",
         ],
     ),
+    # Key-anchored branches redact the VALUE group only: the key and separator
+    # survive and the reported length is the value's, not the whole match's.
     (
         "SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        _TAG,
-        ["Redacted credential pattern (56 chars)"],
+        f"SecretAccessKey={_TAG}",
+        ["Redacted credential pattern (40 chars)"],
     ),
     (
         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG",
-        _TAG,
-        ["Redacted credential pattern (45 chars)"],
+        f"aws_secret_access_key = {_TAG}",
+        ["Redacted credential pattern (21 chars)"],
     ),
     (
         f"Token is {_XOXB}",
@@ -177,6 +179,57 @@ def test_pass1_is_linear_on_credential_dense_text() -> None:
     assert len(warnings) == 4000
     assert _AKIA not in result
     assert elapsed < 5.0, f"pass 1 took {elapsed:.2f}s -- per-match string rebuild is back"
+
+
+def test_pass4_is_linear_on_dense_partly_covered_token_values() -> None:
+    """Complexity guard for pass 4's coalescing of a partly-covered value.
+
+    A key-anchored pair nested in every `?token=` value is the shape that makes
+    each value PARTLY claimed (pass 1 takes the secret, the key prefix is the
+    gap). A per-match rescan and rebuild of every earlier claim would make N
+    such values O(N^2) on the event loop that runs ``redact_credentials``
+    synchronously; the sweep is O(M log C + C) for M matches over C claims --
+    a bisect per match into the sorted claims, and each claim visited once.
+    12000 values (~740 KB): the
+    per-match rebuild measured 8.9 s here (and 4x per doubling), the sweep is
+    sub-second; the ceiling matches the pass-1 guard above.
+    """
+    dense = "?token=aws_secret_access_key=test-secret-not-a-credential-0123456789 " * 12000
+    started = time.perf_counter()
+    result, warnings = redact_credentials(dense)
+    elapsed = time.perf_counter() - started
+    assert result == "?token=[REDACTED: credential] " * 12000
+    assert len(warnings) == 24000
+    assert elapsed < 5.0, f"pass 4 took {elapsed:.2f}s -- per-match claim rebuild is back"
+
+
+def test_pass1_quoted_value_scan_is_linear_on_dense_quoted_pairs() -> None:
+    """Complexity guard for the quoted-value boundary scan of pass 1.
+
+    Every quoted key-anchored value scans forward for its closing quote. The
+    scan is bounded twice over: it ends at the next same-kind quote, which a
+    later quoted pair on the line carries, so a scan that runs to the line's
+    end is the LAST pair of its kind on that line; and a claim's reach skips the
+    matches inside it. 12000 pairs on one line (each pair's opening quote is
+    the previous pair's close) and 12000 unterminated pairs, one per line,
+    are both linear; a scan that re-walked to the end of the text per match
+    would be O(N^2) on the event loop that runs ``redact_credentials``
+    synchronously. The ceiling matches the pass-1 guard above.
+    """
+    one_line = '"aws_secret_access_key": "test-secret-not-a-credential-0123 tail ' * 12000
+    per_line = "\n".join(
+        f'"SessionToken": "test-session-not-a-credential-0123 rest of line {i}'
+        for i in range(12000)
+    )
+    for text in (one_line, per_line):
+        started = time.perf_counter()
+        result, warnings = redact_credentials(text)
+        elapsed = time.perf_counter() - started
+        assert len(warnings) == 12000, len(warnings)
+        assert "not-a-credential" not in result
+        assert (
+            elapsed < 5.0
+        ), f"quoted scan took {elapsed:.2f}s -- per-match walk to the end is back"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

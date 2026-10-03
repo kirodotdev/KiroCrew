@@ -4457,7 +4457,15 @@ reading joins the key, and the heading seam above is visible only in the reading
 piece the cut opens. The candidates run least destructive first: the key-hiding span closed
 up and redacted, then the canonical redacted collapse fixed point, then a last resort
 (`_flattened_for_any_cut`) that collapses links to labels, strips every markup character
-outside a redaction tag, removes every whitespace run and redacts, so every reading is the
+outside a redaction tag, removes every whitespace run, redacts, and drops the `:`/`=` the
+redactor leaves between a key it keeps and the tag it wrote for the key's value
+(`SecretAccessKey:[REDACTED: credential]`, `token=[REDACTED: credential]`, and the quoted
+`"SecretAccessKey":"[REDACTED: credential]"`, where the opening quote stands between the
+separator and the tag and is kept -- a quote anchors no key): a cut inside
+that tag would leave the key, its separator and a fragment the redactor reads as a short
+value, and a cut at the tag's one space a join the screen renders as a tag lookalike --
+neither holds key material, and without the separator no key-anchored branch matches any
+piece -- so every reading is the
 identity on every substring and no cut of it can render a key. A character class or a fixed search window cannot be closed here -- the next
 character the set does not know about is one more place a split can hide, and the check
 then runs on a span the credential was never inside and passes vacuously.

@@ -695,7 +695,8 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     That match lives in the literal bytes alone: Slack's reading of the redacted
     block scans clean, so the block has nothing to settle and must be posted with
     its native links and emphasis intact. Only a key the Slack reading joins costs
-    the block its markup.
+    the block its markup. The redactor keeps the header name that anchored the
+    match and replaces the value alone, so the header survives in the posted block.
     """
 
     _SECRET_VALUE = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -712,10 +713,10 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     def _credential_redactor(text: str) -> str:
         return redact_credentials(text)[0]
 
-    def _assert_key_gone_and_markup_kept(self, text: str) -> None:
+    def _assert_value_gone_and_markup_kept(self, text: str) -> None:
         assert self._SECRET_VALUE not in text
         assert self._SECRET_VALUE not in slack_mrkdwn_reading(text)
-        assert "SecretAccessKey" not in text
+        assert "*SecretAccessKey:" in text
         assert f"<{self._URL}|the wiki>" in text
         assert "*so far*" in text
         assert "*runbook*" in text
@@ -725,12 +726,12 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
         expected = self._credential_redactor(slack_format.to_slack_mrkdwn(self._PAYLOAD))
         parts = render_for_slack(self._PAYLOAD, redactor=self._credential_redactor)
         assert parts == [expected]
-        self._assert_key_gone_and_markup_kept(parts[0])
+        self._assert_value_gone_and_markup_kept(parts[0])
 
     def test_the_rejoined_single_message_keeps_its_markup(self) -> None:
         rendered = render_one_for_slack(self._PAYLOAD, redactor=self._credential_redactor)
         assert rendered.redacted is True
-        self._assert_key_gone_and_markup_kept(rendered.text)
+        self._assert_value_gone_and_markup_kept(rendered.text)
 
     def test_a_key_the_slack_reading_joins_still_costs_the_markup(self) -> None:
         payload = f"AKIA**{_SECRET[4:]}* and [the wiki]({self._URL})"
