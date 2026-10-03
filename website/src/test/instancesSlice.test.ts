@@ -96,6 +96,36 @@ describe('instancesSlice', () => {
     expect(s.ready.a).toBe(true)
   })
 
+  it('keepTokenIfPortUnchanged keeps the mounted token on an unchanged port, so no reload', () => {
+    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    s = reducer(s, setPaneReady('a'))
+    // Second warm path on load re-mints a different token for the same port.
+    s = reducer(s, setWarm({ id: 'a', conn: { port: 7778, token: 't2' }, keepTokenIfPortUnchanged: true }))
+    expect(s.warm.a).toEqual({ port: 7778, token: 't1' })
+    expect(s.ready.a).toBe(true)
+  })
+
+  it('keepTokenIfPortUnchanged still swaps the token when the port changes (tunnel rebuild)', () => {
+    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    s = reducer(s, setPaneReady('a'))
+    s = reducer(s, setWarm({ id: 'a', conn: { port: 7779, token: 't2' }, keepTokenIfPortUnchanged: true }))
+    expect(s.warm.a).toEqual({ port: 7779, token: 't2' })
+    expect(s.ready.a).toBeUndefined()
+  })
+
+  it('keepTokenIfPortUnchanged writes a fresh entry when none is mounted', () => {
+    const s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' }, keepTokenIfPortUnchanged: true }))
+    expect(s.warm.a).toEqual({ port: 7778, token: 't1' })
+  })
+
+  it('setWarm WITHOUT the flag still swaps the token on an unchanged port (explicit remint)', () => {
+    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    s = reducer(s, setPaneReady('a'))
+    s = reducer(s, setWarm({ id: 'a', conn: { port: 7778, token: 't2' } }))
+    expect(s.warm.a).toEqual({ port: 7778, token: 't2' })
+    expect(s.ready.a).toBeUndefined()
+  })
+
   it('removeWarm clears readiness alongside warm/unread', () => {
     let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
     s = reducer(s, setPaneReady('a'))

@@ -82,7 +82,22 @@ export async function connectInstanceInto(
   }
   if (st.state === 'connected' && st.local_port && st.token) {
     const conn: WarmConn = { port: st.local_port, token: st.token }
-    dispatch(setWarm({ id, conn }))
+    // A connect re-mints a token every time, but the mint does not revoke its
+    // predecessor, so a token minted seconds ago for this same port is still
+    // valid. Keeping the mounted token on an unchanged port is only safe when
+    // this write lands against a tunnel that was ALREADY live — that is exactly
+    // the `onlyIfConnected` (auto-warm) path, which the gateway answers only for
+    // an up tunnel. There the pane is already loading on a working credential,
+    // so the redundant re-mint must not churn the iframe src and reload it.
+    // Every other path can be bringing a tunnel back UP: `auto-connect` fires on
+    // focus/visibility to revive a dropped forwarder (warm-but-not-connected is
+    // its target) and the gateway re-prefers the same local port, so the mounted
+    // token is the dead one and the fresh mint is the live credential — keeping
+    // it would leave the failed pane unreloaded until Retry. `select`/`retry`
+    // reconnect the same way, and a rebuild answers on a new port. All of those
+    // leave the flag off and take the fresh token.
+    const keepTokenIfPortUnchanged = onlyIfConnected
+    dispatch(setWarm({ id, conn, keepTokenIfPortUnchanged }))
     paneLog('warm', { id, port: st.local_port, via, rebuild: rebuild || undefined })
   } else {
     // Same shape as the viewport's own `warm-declined`: the response says

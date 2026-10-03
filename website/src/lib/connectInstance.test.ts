@@ -21,9 +21,38 @@ describe('connectInstanceInto pane journal', () => {
     const dispatch = vi.fn()
     connectInstance.mockResolvedValue({ state: 'connected', local_port: 7781, token: 'supersecret' })
     await connectInstanceInto(dispatch as never, 'shizuka', 'auto-connect')
-    expect(dispatch).toHaveBeenCalledWith(setWarm({ id: 'shizuka', conn: { port: 7781, token: 'supersecret' } }))
+    expect(dispatch).toHaveBeenCalledWith(
+      setWarm({ id: 'shizuka', conn: { port: 7781, token: 'supersecret' }, keepTokenIfPortUnchanged: false }),
+    )
     expect(lines).toEqual(['[pane] warm id=shizuka port=7781 via=auto-connect'])
     expect(lines.join('\n')).not.toContain('supersecret')
+  })
+
+  it('keeps the mounted token across a redundant re-mint on an unchanged port (the reload fix)', async () => {
+    // The reload fix: auto-warm (`onlyIfConnected`) is answered only for an
+    // already-up tunnel, so the pane is loading on a working credential and the
+    // redundant re-mint must not churn the iframe src. It dispatches with
+    // keepTokenIfPortUnchanged so the reducer keeps whatever token is on screen
+    // when the port has not moved, so the second write does not reload the pane.
+    const dispatch = vi.fn()
+    connectInstance.mockResolvedValue({ state: 'connected', local_port: 7781, token: 'token-B' })
+    await connectInstanceInto(dispatch as never, 'shizuka', 'auto-warm', { onlyIfConnected: true })
+    const action = dispatch.mock.calls[0][0]
+    expect(action.payload.keepTokenIfPortUnchanged).toBe(true)
+  })
+
+  it('every bring-a-tunnel-UP path takes the fresh token (reviving a dropped tunnel needs the live credential)', async () => {
+    // `select`/`retry` and `auto-connect` (which fires on focus/visibility to
+    // revive a dropped forwarder on the same local port) can all be bringing a
+    // tunnel back up, so the lingering token may be stale. They must NOT keep
+    // it: the reducer swaps to the fresh one even on an unchanged port. Only
+    // auto-warm's `onlyIfConnected` write is against an already-live tunnel.
+    for (const via of ['select', 'retry', 'auto-connect'] as const) {
+      const dispatch = vi.fn()
+      connectInstance.mockResolvedValue({ state: 'connected', local_port: 7781, token: 'fresh' })
+      await connectInstanceInto(dispatch as never, 'shizuka', via)
+      expect(dispatch.mock.calls[0][0].payload.keepTokenIfPortUnchanged).toBe(false)
+    }
   })
 
   it('journals a connected-but-unusable response as `warm-declined` and leaves warm untouched', async () => {

@@ -1018,6 +1018,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     autoWarmTimersRef.current = candidates.map((inst, i) =>
       window.setTimeout(() => {
         if (warmRef.current[inst.id]) {
+          // This point-in-time guard catches a pane already warmed by the time
+          // the timer fires; it cannot catch an auto-warm racing a still-settling
+          // auto-connect on the same load. That residual race is handled at the
+          // reducer: `connectInstanceInto` writes the warm entry with
+          // `keepTokenIfPortUnchanged`, so a second warm path on an unchanged
+          // port keeps the mounted token rather than reloading the pane. Keep the
+          // fix there, not here.
           paneLog('auto-warm-skipped', { id: inst.id, index: i, alreadyWarm: true })
           return
         }

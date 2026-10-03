@@ -170,9 +170,23 @@ const instancesSlice = createSlice({
   name: 'instances',
   initialState,
   reducers: {
-    setWarm(state, action: PayloadAction<{ id: string; conn: WarmConn }>) {
-      const { id, conn } = action.payload
+    setWarm(
+      state,
+      action: PayloadAction<{ id: string; conn: WarmConn; keepTokenIfPortUnchanged?: boolean }>,
+    ) {
+      const { id, keepTokenIfPortUnchanged } = action.payload
       const prev = state.warm[id]
+      // A connect warm-writer (`connectInstanceInto`) re-mints a token on every
+      // call, so two warm paths firing on load — auto-connect and auto-warm —
+      // each hand back a different token for the SAME already-up port. The token
+      // is part of the iframe src, so writing the second one reloads a pane that
+      // is still loading. The predecessor token is not revoked by a later mint,
+      // so the one already on screen stays valid: when the port is unchanged and
+      // a token is mounted, keep it. The explicit remint path (`refreshToken`)
+      // and a port change (tunnel rebuild) both leave this flag off and swap the
+      // token as before.
+      const keepToken = !!keepTokenIfPortUnchanged && !!prev && prev.port === action.payload.conn.port && !!prev.token
+      const conn: WarmConn = keepToken ? { ...action.payload.conn, token: prev.token } : action.payload.conn
       // A new port/token changes the iframe src (srcFor), which reloads the
       // pane — its previous readiness no longer describes what's on screen.
       // Tests preload partial slices, so tolerate a missing `ready` map.
