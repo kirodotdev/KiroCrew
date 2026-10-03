@@ -332,6 +332,18 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
                 "lesson you want to save — it will not carry over "
                 "from this session automatically."
             )
+        # ``transport_error`` marks a failure after the request may have reached the
+        # gateway, most often this client's read timeout while the route is still
+        # writing. The lesson can land after this call returns, so a bare error reads
+        # as a failed save: the model retries a write that is already in flight and
+        # tells the user the lesson was lost. A refused connection never sets the
+        # flag, because nothing was sent.
+        if d.get("transport_error"):
+            return (
+                f"Error: {err_val}. The outcome is unknown: the gateway may still "
+                "finish saving this lesson after this call stopped waiting. Check "
+                "learn_list for it before retrying, and do not report it as unsaved."
+            )
         # ``err_val`` is already redacted at the trust boundary by
         # ``_http_error_body`` (HTTP bodies are untrusted external content), and
         # an internal-auth mismatch has already been rewritten there into a

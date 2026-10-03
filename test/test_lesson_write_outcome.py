@@ -1195,6 +1195,56 @@ class TestLessonsRouteReportsTheOutcome:
         finally:
             store.close()
 
+    async def test_the_save_leaves_unembedded_lessons_to_the_repair_sweep(self, tmp_path) -> None:
+        """One save must not run bulk inference on the request path.
+
+        Embedding a stored lesson that still lacks a vector is PRIORITY_BULK work
+        with no deadline, queued behind every other bulk job, so doing it inside
+        the request holds it past the MCP client's read timeout while the write
+        still lands later. The row must stay NULL for the repair sweep instead.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.embeddings import PRIORITY_BULK
+
+        legacy_rule = "prefer tabs over spaces in makefiles"
+        store = _store(tmp_path)
+        try:
+            # Written with no embedder bound, so the row has no vector: the state a
+            # consolidation pass leaves when it defers embedding to the sweep.
+            store.write_lesson(legacy_rule)
+            assert [row["embedding"] for row in store.get_lessons()] == [None]
+
+            priorities: list[int] = []
+
+            def embed(text: str, priority: int = -1) -> list[float]:
+                priorities.append(priority)
+                # Orthogonal vectors, so no semantic match can retire the legacy row.
+                return [1.0, 0.0, 0.0, 0.0] if text.startswith("pin") else [0.0, 1.0, 0.0, 0.0]
+
+            embed.accepts_priority = True  # type: ignore[attr-defined]
+            store.embed_fn = embed
+
+            request, state = self._request("pin every dependency to an exact version")
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+                patch.object(cron, "_resolve_and_supersede", new=AsyncMock()),
+            ):
+                resp = await cron.api_lessons_create(request)
+            for task in list(state._background_tasks):
+                await task
+
+            assert _json.loads(resp.text)["outcome"] == "inserted"
+            assert PRIORITY_BULK not in priorities, f"bulk embed on the request path: {priorities}"
+            legacy = [row for row in store.get_lessons() if _rule_of(row) == legacy_rule]
+            assert len(legacy) == 1
+            assert legacy[0]["embedding"] is None, "the sweep owns this row's vector"
+        finally:
+            store.close()
+
     async def test_jsonl_fallback_refuses_volatile_negative_clause(self, tmp_path) -> None:
         import json as _json
 
@@ -1711,6 +1761,25 @@ class TestLearnAddToolReportsTheOutcome:
         """Version skew during an update must not turn a real save into a scare."""
         text = self._call({"ok": True})
         assert text == "Saved lesson: a rule"
+
+    def test_a_read_timeout_reports_an_unknown_outcome_not_a_failure(self):
+        """The client stops waiting at its read timeout; the route can still finish the save.
+
+        A bare ``Error: timed out`` reads as a failed save, so the model retries a
+        write already in flight and tells the user the lesson was lost. The payload
+        is what ``mcp_core._post`` returns for a socket read timeout
+        (``test_mcp_core_coverage.py`` pins that classification).
+        """
+        text = self._call({"error": "timed out", "transport_error": True})
+        assert text.startswith("Error: timed out.")
+        assert "outcome is unknown" in text
+        assert "learn_list" in text
+        assert "NOT saved" not in text
+
+    def test_a_refused_connection_stays_a_plain_error(self):
+        """Nothing reached the gateway, so nothing can still be saving."""
+        text = self._call({"error": "gateway not reachable", "refused": True})
+        assert text == "Error: gateway not reachable"
 
 
 class TestASupersedingWriteNamesWhatItRemoved:

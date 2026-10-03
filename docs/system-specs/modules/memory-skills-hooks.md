@@ -3090,6 +3090,18 @@ reworded instead of presenting a rejected write as success.
 3. **Consolidation** (background): extracts corrections not already saved via `learn_add`. V1 and V2 call `write_lesson(source="consolidation")` at confidence 0.9.
 4. **Dashboard/CLI** (manual): `POST /api/lessons` → `write_lesson()`
 
+**The lesson-create request spends no bulk inference.** `POST /api/lessons` embeds the
+submitted rule once and calls `write_lesson(..., defer_backfills=True)`, so a stored
+lesson that still lacks a vector is left to the standing repair sweep
+(`backfill_missing_embeddings`) instead of being embedded inside the request. That embed
+is `PRIORITY_BULK` work with no deadline, queued behind every other bulk job, so it could
+hold the request past the `learn_add` client's read timeout (the `mcp_core._post`
+default) while the write still landed. Until the sweep fills such a row, semantic dedup
+and the contradiction scan pass it over; the exact-rule, substring and keyword-overlap
+rules still apply. When the `learn_add` POST fails after the request may have reached
+the gateway (`transport_error`, typically a read timeout), the tool reports the outcome
+as unknown and points the caller at `learn_list` before a retry, never at a refusal.
+
 **Durable lesson volatile-fact boundary.** The primary `write_lesson()` writer and the
 JSONL `LessonStore` fallback call one shared predicate before persistence. It refuses
 exactly two classes in either the `rule` or `negative` field, in every category:
