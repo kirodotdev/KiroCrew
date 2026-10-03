@@ -16899,6 +16899,8 @@
       "profile_goals_tab": "目标",
       "profile_goals_soon": "目标功能即将推出：在这里设定 {{name}} 要达成的目标，并跟进进度。",
       "dashboard_empty": "{{name}} 还没有发布仪表板。在这个对话里请它发布，发布的内容会显示在这里。",
+      "dashboard_kept_last_good": "此仪表板的较新版本未能加载，因此显示的是上一个成功加载的版本。",
+      "dashboard_unavailable": "无法加载此仪表板。请重试或重新加载页面。",
       "profile_permissions": "权限",
       "profile_permissions_sub": "它能做什么 · 在编辑器中设置",
       "schedule_up_next": "下一次",

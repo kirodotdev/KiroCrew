@@ -4247,9 +4247,38 @@ PANEL_PUBLISH_SCHEMA = ToolSchema(
 # would pass it through unvalidated.
 PANEL_TEMPLATES_SCHEMA = ToolSchema(tool_name="panel_templates")
 
+#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason: the tool takes no
+#: arguments, and an empty registered schema REJECTS an unexpected one where no
+#: schema at all would pass it through unvalidated.
+DASHBOARD_FIELDS_SCHEMA = ToolSchema(tool_name="dashboard_fields")
+
+DASHBOARD_WRITE_SCHEMA = ToolSchema(
+    tool_name="dashboard_write",
+    fields=[
+        FieldSpec("field", str, required=True, max_len=64),
+        # EVERY JSON SCALAR AND CONTAINER, spelled out, because the field's type is
+        # the MANIFEST's to declare and not this schema's. A schema that pinned one
+        # type would either contradict the manifest or restate it, and a value may
+        # be a number, a phrase, a boolean, a list or an object depending on which
+        # field it is.
+        #
+        # ``bool`` is listed FIRST and separately from the rest for a reason that
+        # bit once already: a bare ``object`` here rejects ``True``, so a crewmate
+        # writing into a ``boolean`` field was refused by the schema -- with a
+        # message about an expected object, which is neither the real problem nor
+        # something the agent could act on. ``dashboard_agentic.check_write`` is
+        # the one place that knows what each field wants, and it refuses with a
+        # code the mistake book can group and teach; this schema's only job is to
+        # reject an unexpected ARGUMENT.
+        FieldSpec("value", (bool, int, float, str, list, dict), required=True),
+    ],
+)
+
 MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_publish": PANEL_PUBLISH_SCHEMA,
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
+    "dashboard_fields": DASHBOARD_FIELDS_SCHEMA,
+    "dashboard_write": DASHBOARD_WRITE_SCHEMA,
 }
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {

@@ -17399,6 +17399,8 @@
       "profile_goals_tab": "Metas",
       "profile_goals_soon": "Metas chegam em breve: defina aqui para onde {{name}} está trabalhando e acompanhe o progresso.",
       "dashboard_empty": "{{name}} ainda não publicou um painel. Peça neste chat, e o que for publicado aparece aqui.",
+      "dashboard_kept_last_good": "Uma versão mais recente deste painel não carregou, portanto esta é a última que carregou.",
+      "dashboard_unavailable": "Não foi possível carregar este painel. Tente novamente ou recarregue a página.",
       "profile_permissions": "Permissões",
       "profile_permissions_sub": "O que pode fazer · definido no editor",
       "schedule_up_next": "A seguir",

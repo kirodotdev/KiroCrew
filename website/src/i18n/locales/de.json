@@ -17149,6 +17149,8 @@
       "profile_goals_tab": "Ziele",
       "profile_goals_soon": "Ziele kommen bald: Lege hier fest, woran {{name}} arbeitet, und verfolge den Fortschritt.",
       "dashboard_empty": "{{name}} hat noch kein Dashboard veröffentlicht. Bitte in diesem Chat darum, dann erscheint es hier.",
+      "dashboard_kept_last_good": "Eine neuere Version dieses Dashboards wurde nicht geladen; dies ist die letzte, die geladen wurde.",
+      "dashboard_unavailable": "Dieses Dashboard konnte nicht geladen werden. Versuchen Sie es erneut oder laden Sie die Seite neu.",
       "profile_permissions": "Berechtigungen",
       "profile_permissions_sub": "Was es darf · im Editor festgelegt",
       "schedule_up_next": "Als Nächstes",

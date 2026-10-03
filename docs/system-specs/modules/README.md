@@ -101,6 +101,7 @@ agent loads only the one it needs.
 | [app-notifications.md](app-notifications.md) | How an app publishes a notification to the local bus, and the two shipped producers. |
 | [artifacts.md](artifacts.md) | Artifact identity, versioning, and the companion chat panel. |
 | [dashboard-templates.md](dashboard-templates.md) | A dashboard page shipped with its own typed contract, provider and parity gate: the three invariants, the fold menu the numbers come from, and why a publisher writes sentences and never numbers. |
+| [dashboard-instances.md](dashboard-instances.md) | One crewmate's own copy of a template: the registry it adopts from, why a rollback moves the version forward, the four states and why two of them are not one, and the history that is a crew-log fold. |
 | [prompt-optimizer.md](prompt-optimizer.md) | Rewriting a draft prompt on demand, and the paste-forwarding surface. |
 | [steering-viewer.md](steering-viewer.md) | Reading, creating, editing and deleting the steering files a session loads, and the declared-`inclusion` reporting. |
 | [turn-stats-footer.md](turn-stats-footer.md) | The per-turn token and timing footer: capture, persistence, and the frontend render gates. |

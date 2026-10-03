@@ -4288,9 +4288,18 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 #: with nobody at the keyboard, so an approval prompt on the write verb stalls
 #: exactly the unattended loop the drawer is watched during, and the operator's
 #: real switch for that is ``agent.crew_panel``.
+#:
+#: The dynamic dashboard's two verbs join on the same invariant. ``dashboard_fields``
+#: is a read of the crewmate's own fields and mistake book. ``dashboard_write``
+#: writes an agentic value into the calling crewmate's OWN dashboard, resolved from
+#: the calling session exactly as ``panel_publish`` is, and every write is
+#: type-checked against that crewmate's manifest before it lands. A prompt on
+#: either would stall the unattended cycle the dashboard is refreshed from.
 _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/panel_templates",
     "@kirocrew-panel/panel_publish",
+    "@kirocrew-panel/dashboard_fields",
+    "@kirocrew-panel/dashboard_write",
 )
 
 

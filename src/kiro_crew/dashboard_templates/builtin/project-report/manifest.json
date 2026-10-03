@@ -1,0 +1,13 @@
+{
+  "id": "project-report",
+  "version": 1,
+  "title": "Project report",
+  "description": "One page for the question a person actually opens a dashboard with: what did this crewmate do, what did each thing cost, what came of it, and what still needs me. The work is drawn as the tree it really is -- a board's goal is an EPIC, a round of it a STORY, a work item a TASK, and an item on a board that task's own worker runs a SUBTASK -- with done/total, a progress bar and credits on every row, rolled up from the leaves. A pill row switches between every workstream at once and one workstream on its own; both views are the same tree at their own scale, and the two-ring sunburst beside it is always a share of the root and a share of that share, so nothing is a drill-down into a different vocabulary. Read from the slot's workstreams fold, which groups the work entries by board, links a nested board to the task whose bind created it, and joins each task to the spend of the worker session bound to it -- the cost half has no other home, because a work entry never carries it, and the session key is how a roll-up bills one worker once however many tasks it served. The lead's own for_you lines are the one agentic field: no fold records what a crewmate wants its reader to look at next.",
+  "source": "builtin",
+  "fields": {
+    "items": { "type": "array", "source": { "fold": "workstreams", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "workstreams", "path": "omitted" } },
+    "series": { "type": "array", "source": { "fold": "workstreams", "path": "series" } },
+    "for_you": { "type": "array", "source": { "agentic": true } }
+  }
+}

@@ -16899,6 +16899,8 @@
       "profile_goals_tab": "目標",
       "profile_goals_soon": "目標は近日公開予定です。{{name}} が目指すことをここで設定し、進捗を追えるようになります。",
       "dashboard_empty": "{{name}} はまだダッシュボードを公開していません。このチャットで頼むと、公開した内容がここに表示されます。",
+      "dashboard_kept_last_good": "このダッシュボードの新しいバージョンは読み込めなかったため、最後に読み込めたものを表示しています。",
+      "dashboard_unavailable": "このダッシュボードを読み込めませんでした。もう一度試すか、ページを再読み込みしてください。",
       "profile_permissions": "権限",
       "profile_permissions_sub": "できること · エディターで設定",
       "schedule_up_next": "次回",
