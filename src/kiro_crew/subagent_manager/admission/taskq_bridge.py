@@ -6,7 +6,7 @@ import asyncio as _asyncio
 import functools as _functools
 import logging as _logging
 import time as _time
-from typing import TYPE_CHECKING, Any, Collection, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from kiro_crew.subagent_wait_reasons import (
     QUEUED_REASON_ADAPTIVE_CAP_ZERO,
@@ -867,12 +867,18 @@ class _TaskqBridgeMixin(ManagerComponent):
             store, f"fail {agent_id}", store.finish, agent_id, _taskq.FAILED, error=reason
         )
 
-    def taskq_settle(self, info: SubagentInfo) -> None:
+    def taskq_settle(self, info: SubagentInfo, *, row_settled: bool = False) -> None:
         """Write the run's terminal state from its record; fenced by generation.
 
         Called from ``_claim_finalize``, the one-shot report token, so exactly
         the reporter of the outcome writes it. ``user_stopped`` is a neutral
         cancel, an ``error`` is a failure, anything else is done.
+
+        *row_settled* says the reporter's own store call already wrote that
+        state -- a queued stop whose own cancel of the waiting row landed --
+        so the ``finish`` is skipped: it could only be refused, and it would cost a
+        writer job per row. The propagation still runs, because the cancel
+        does not propagate and the reporter owes it either way.
         """
         from kiro_crew import taskq as _taskq
 
@@ -918,6 +924,12 @@ class _TaskqBridgeMixin(ManagerComponent):
             loop = _asyncio.get_running_loop()
         except RuntimeError:
             loop = None
+        if row_settled:
+            if loop is None or not type(self).pump_off_loop:
+                _propagate()
+            else:
+                self.track_store_task(loop.create_task(_propagate_async()))
+            return
         if loop is None or not type(self).pump_off_loop:
             try:
                 ok = bool(store.finish(info.id, state, **finish_kw))
@@ -1068,7 +1080,14 @@ class _TaskqBridgeMixin(ManagerComponent):
             current = store.state_of(agent_id)
         except _taskq.TaskStoreUnavailable:
             current = None
-        _glue_logger.warning(
+        # A row that already holds the state this write asked for lost nothing:
+        # another write settled it the same way first. A queued stop whose own
+        # cancel did not land re-posts that cancel ahead of its settle, so when
+        # the store answers again the re-posted cancel writes ``cancelled`` and
+        # this ``finish`` is refused over the very state it asked for
+        # (``_repost_unlanded_cancel`` has already warned). Not a warning.
+        log = _glue_logger.debug if current == state else _glue_logger.warning
+        log(
             "taskq: terminal write %s -> %s did not commit; the row is %s",
             agent_id,
             state,
@@ -1819,6 +1838,12 @@ class _TaskqBridgeMixin(ManagerComponent):
         present = {p.get("_preassigned_id") for p in self._manager._queue}
         held_modes = getattr(self._manager, "_held_approval_modes", {})
         floor_deferred = getattr(self._manager, "_floor_deferred_ids", ())
+        # A parent with a Stop all in flight gets nothing back in the window.
+        # This fetch may have run on the writer thread before the stop's
+        # cancels did, so its rows can be ones the stop just cancelled, or this
+        # parent's store-only rows, which the stop's pending read leaves out
+        # once they are windowed. Left on disk, they are the stop's to cancel.
+        stopping = getattr(self._manager, "_stopping_parents", None) or {}
         for rec in rows:
             entry = self._window_entry(rec)
             if rec.id in held_modes:
@@ -1834,6 +1859,8 @@ class _TaskqBridgeMixin(ManagerComponent):
                 # pressure hold, and no pressure clock starts below the floor.
                 entry[MEMORY_WAIT_UNTIL_KEY] = 0.0
             if self._manager._boundary_cancellation_pending(entry):
+                continue
+            if str(entry.get("parent_session_key") or "") in stopping:
                 continue
             if rec.id not in present:
                 self._manager._queue.append(entry)
@@ -2102,3 +2129,46 @@ class _TaskqBridgeMixin(ManagerComponent):
         params = dict(rec.params)
         params["_preassigned_id"] = agent_id
         return params
+
+    def taskq_cancel_queued_each(
+        self, agent_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any] | None | Exception]:
+        """:meth:`taskq_cancel_queued` for every id, as ONE call: a bulk stop's store phase.
+
+        Each id keeps its own answer: the params of a row that was cancelled,
+        None for one that was not, or the exception its cancel raised. Caught per
+        id, so one row's error neither cancels nor skips the rest -- the caller
+        reports the rows that were cancelled and then raises the error.
+        """
+        outcomes: dict[str, dict[str, Any] | None | Exception] = {}
+        for agent_id in agent_ids:
+            try:
+                outcomes[agent_id] = self.taskq_cancel_queued(agent_id)
+            except Exception as exc:  # noqa: BLE001 - handed back per row, raised by the caller
+                outcomes[agent_id] = exc
+        return outcomes
+
+    def taskq_post_cancel_queued(
+        self, agent_ids: Sequence[str]
+    ) -> "dict[str, dict[str, Any] | None | Exception] | _asyncio.Future[Any]":
+        """Queue :meth:`taskq_cancel_queued_each` on the writer thread NOW.
+
+        Returns the future of that one job, or the answers themselves when the
+        store is called inline -- no running loop, or the pump on the loop --
+        which is :meth:`_post_store_write`'s rule, and for its reason: queued
+        here, the cancels land before any refill read or claim queued after this
+        call returns, so the caller may drop the rows' window entries before it
+        awaits the answer. Inline, the pump's own store calls are inline too and
+        are not ordered behind a writer-thread job, so the cancels have to have
+        landed before this returns.
+        """
+        store = self.taskq_store()
+        if store is None or not agent_ids:
+            return {}
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            return self.taskq_cancel_queued_each(agent_ids)
+        if not type(self).pump_off_loop:
+            return self.taskq_cancel_queued_each(agent_ids)
+        return store.post(self.taskq_cancel_queued_each, list(agent_ids))

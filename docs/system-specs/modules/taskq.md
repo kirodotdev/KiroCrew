@@ -388,12 +388,20 @@ the guard's raise.
   `adapters.runner`) stays SYNCHRONOUS, because an
   `await` there can be interrupted before the write is submitted and a dropped
   terminal write leaves the row active for the next boot's reconciler;
-- `admission.taskq_cancel_queued`, reached from `_unqueue` on the Stop-all path,
-  has to cancel the row before a drain can claim it AND drop it from the window
-  before a stagger timer can start it — an await between those two is a race in
-  either order, so closing it is a restructure, not an offload. (Its OWN
-  read-then-cancel window is closed inside the store instead: § A cancel whose
-  PRECONDITION came from an earlier read.)
+- `admission.taskq_cancel_queued`, reached from a single `cancel`
+  (`cancel_impl`), has to cancel the row before a drain can claim it AND drop it from
+  the window before a stagger timer can start it — an await between those two is
+  a race in either order, so closing it is a restructure, not an offload. (Its
+  OWN read-then-cancel window is closed inside the store instead: § A cancel
+  whose PRECONDITION came from an earlier read.) Stop all is that restructure,
+  and no longer in this class: `taskq_post_cancel_queued` QUEUES one
+  writer-thread job for every row (`taskq_cancel_queued_each`) and only then
+  are the window entries dropped, both before the first await, so a refill or
+  a claim queued afterwards lands behind the cancels; a refill fetch queued
+  before it is fenced by the parent's `_stopping_parents` mark, which keeps
+  `_refill_apply` from windowing that parent's rows. An inline pump is not
+  ordered behind that thread, so there the job runs inline, as
+  `_post_store_write` does.
 
 **The DRAINED spawn's defer is offloaded, boolean and all.** Its write is on the
 pressure path, so a locked database once held chat and the heartbeat for the
@@ -556,7 +564,14 @@ loop-apply phase rather than dropping a whole coordinator into a thread:
   claimable. That refusal is deliberate, so it has to be AUDIBLE: `taskq_settle`
   reads `finish`'s boolean and, on a `False`, logs the row's actual state
   (`taskq_report_refused_settle`). Discarded, the closed edge became the quietest
-  possible outcome instead of the loud one it was closed to produce. Pinned
+  possible outcome instead of the loud one it was closed to produce. A refusal
+  whose row already holds the state the write asked for lost nothing (another
+  write settled it the same way first: a queued stop whose cancel did not land
+  re-posts it ahead of its settle, and the re-posted cancel wins), so that one
+  is logged at DEBUG. A
+  queued stop whose own cancel landed (Stop all, the stage Cancel, a parent-end
+  teardown, a single `cancel`) skips the write altogether
+  (`taskq_settle(row_settled=True)`) and keeps only the propagation. Pinned
   through `taskq_settle` itself and not only through that helper
   (`test_subagent_dependency_mark.py`): a pin on the helper alone is satisfied by a
   settle that never calls it.
@@ -728,7 +743,7 @@ Callers:
 | Caller | `only_from` | Refusal means |
 |---|---|---|
 | `RunnerAdmission.cancel_wait` (operator, `/api/tasks/{id}`) | `PARKED` | the row went live or moved on: 409, and the live lever is `/cancel` |
-| `admission.taskq_cancel_queued` (Stop-all `_unqueue`) | `CLAIMABLE + admitted` | the drain started it: the caller falls through to the live reap |
+| `admission.taskq_cancel_queued` (a single `cancel`, `_unqueue`, and Stop all's `taskq_cancel_queued_each`) | `CLAIMABLE + admitted` | the drain started it: the caller falls through to the live reap |
 | `RunnerAdmission._end_row_on_cancel` (unwinding `admit`) | `queued` | another admission owns the row; its own path settles it |
 | `adopt_orphaned_rows`' never-started sweep | `queued` | an `accept`/`admit` re-attached it while the sweep ran |
 

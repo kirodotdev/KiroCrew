@@ -333,49 +333,71 @@ class CancellationCoordinator(ManagerComponent):
         # name is visible to both.
         if not store_cancelled:
             stored = admission.taskq_cancel_queued(agent_id)
-        row = stored
-        for index, params in enumerate(self._manager._queue):
+        entry = self._take_window_entry(agent_id)
+        if entry is None:
+            # A non-durable row the coroutine pump has popped and is still
+            # dispatching: taking it here is what makes the pump drop it. It has
+            # no store row, so there is no cancel to re-post for it.
+            undurable = self._manager._undurable_in_dispatch.pop(agent_id, None)
+            return stored if undurable is None else undurable
+        if stored is None:
+            self._repost_unlanded_cancel(agent_id)
+        return entry
+
+    def _take_window_entry(self, agent_id: str) -> dict | None:
+        """Pop *agent_id*'s UNSTARTED window entry, never a ``_resume_id`` one."""
+        queue = self._manager._queue
+        for index, params in enumerate(queue):
             if params.get("_resume_id") or str(params.get("_preassigned_id") or "") != agent_id:
                 continue
-            row = self._manager._queue.pop(index)
-            store = admission.taskq_store()
-            if stored is None and store is not None:
-                # A window entry always HAS a row while a store is attached -- a
-                # spawn whose accept the store refused is never queued -- so
-                # nothing cancelled here means the cancel did not LAND: the store
-                # was unreachable, or the row left the unstarted states between
-                # the read and the write. The caller publishes a stop either way,
-                # and a row left `queued` is dispatchable by the next
-                # incarnation, which would run work the user was told had
-                # stopped. So the refusal is audible (the shape `taskq_settle`
-                # uses for a refused `finish`) and re-posted to the writer
-                # thread, where a store that answers again cancels the row;
-                # `taskq_cancel_queued` re-reads the state under its own
-                # transaction, so a row that legitimately started is left alone.
-                logger.warning(
-                    "Queued stop for %s: no store row was cancelled — re-posting the cancel",
-                    agent_id,
-                )
-                admission._post_store_write(
-                    store,
-                    f"queued cancel retry {agent_id}",
-                    admission.taskq_cancel_queued,
-                    agent_id,
-                )
-            break
-        if row is None:
-            # A non-durable row the coroutine pump has popped and is still
-            # dispatching: taking it here is what makes the pump drop it.
-            row = self._manager._undurable_in_dispatch.pop(agent_id, None)
-        return row
+            return queue.pop(index)
+        return None
 
-    def _report_queued_stop_impl(self, params: dict) -> None:
+    def _repost_unlanded_cancel(self, agent_id: str) -> None:
+        """Say that a stopped window entry's store cancel did not land, and retry it.
+
+        A window entry always HAS a row while a store is attached -- a spawn
+        whose accept the store refused is never queued -- so nothing cancelled
+        for one means the cancel did not LAND: the store was unreachable, or the
+        row left the unstarted states between the read and the write. The caller
+        publishes a stop either way, and a row left `queued` is dispatchable by
+        the next incarnation, which would run work the user was told had
+        stopped. So the refusal is audible (the shape `taskq_settle` uses for a
+        refused `finish`) and re-posted to the writer thread, where a store that
+        answers again cancels the row; `taskq_cancel_queued` re-reads the state
+        under its own transaction, so a row that legitimately started is left
+        alone.
+        """
+        # Imported here: this helper is not an ``_impl`` and so keeps this
+        # module's namespace, where the facade's ``logger`` is only a type hint.
+        from ..subagent import logger
+
+        admission = self._manager._admission
+        store = admission.taskq_store()
+        if store is None:
+            return
+        logger.warning(
+            "Queued stop for %s: no store row was cancelled — re-posting the cancel",
+            agent_id,
+        )
+        admission._post_store_write(
+            store,
+            f"queued cancel retry {agent_id}",
+            admission.taskq_cancel_queued,
+            agent_id,
+        )
+
+    def _report_queued_stop_impl(self, params: dict, *, row_settled: bool = False) -> None:
         """Publish a neutral terminal record for work stopped before startup.
 
         Every stop of a waiting row ends here, whichever path removed it, so
         this is where the parent's queued depth is asked for -- once per row,
         each under its own wave; a bulk stop's requests share one read -- and
         the terminal record itself asks for nothing (``queued=True``).
+
+        *row_settled* says the caller's own cancel of the store row landed, so
+        that cancel is the row's terminal write and the report's settle writes
+        no second one (see ``taskq_settle``).
         """
         self._republish_queue_depth(
             str(params.get("parent_session_key") or ""), str(params.get("batch_id") or "")
@@ -399,8 +421,7 @@ class CancellationCoordinator(ManagerComponent):
         # executing behind a "stopped before start" card, and every running
         # sweep skips a queued record, so nothing would ever stop it. The
         # record stays; the live path (the running sweep, ``cancel``) owns it.
-        registered = self._manager._agents.get(info.id)
-        if registered is not None and not registered.queued:
+        if self._registered_run(info.id):
             logger.info(
                 "Queued stop for %s skipped: the run is registered; the live stop owns it",
                 info.id,
@@ -415,7 +436,7 @@ class CancellationCoordinator(ManagerComponent):
         # the final batch member and flushing a partial digest while sibling
         # queued-stop reports are still pending.
         self._manager._agents[info.id] = info
-        if not self._manager._claim_finalize(info):
+        if not self._manager._claim_finalize(info, row_settled=row_settled):
             self._manager._agents.pop(info.id, None)
             return
         self._manager._spawn_terminal_report(
@@ -425,6 +446,13 @@ class CancellationCoordinator(ManagerComponent):
             mark_delivered_on_success=False,
             settle_digest=True,
         )
+
+    def _registered_run(self, agent_id: str) -> bool:
+        """Whether *agent_id* is a registered run: an ``_agents`` record that is
+        not a queued-stop one. Its row belongs to the live path (the running
+        sweep, ``cancel``), never to a queued stop."""
+        record = self._manager._agents.get(agent_id)
+        return record is not None and not record.queued
 
     def snapshot_teardown_children_impl(self, parent_session_key: str) -> tuple[str, ...]:
         """The run ids belonging to *parent_session_key*, read with no await.
@@ -735,7 +763,7 @@ class CancellationCoordinator(ManagerComponent):
                 )
                 entry = self._manager._unqueue(agent_id, stored=params, store_cancelled=True)
                 if entry is not None:
-                    self._manager._report_queued_stop(entry)
+                    self._manager._report_queued_stop(entry, row_settled=params is not None)
                     stopped += 1
                     continue
                 # Nothing was unqueued, and a refusal is not a commit -- but WHY the store
@@ -810,8 +838,16 @@ class CancellationCoordinator(ManagerComponent):
         # slot back to a coroutine the running sweep then reaps, and a pass after
         # the sweep meets a ``user_stopped`` run that ``resume_reserve`` refuses.
         queued_stopped = 0
+        # Held across both passes: the refill windows none of this parent's
+        # rows meanwhile (``_refill_apply``), so a fetch queued on the writer
+        # thread before this stop can neither put back a row it is cancelling
+        # nor window a store-only row the pending read below would then skip.
+        stopping: dict[str, int] = self._manager.__dict__.setdefault("_stopping_parents", {})
+        stopping[parent_session_key] = stopping.get(parent_session_key, 0) + 1
         try:
-            queued_stopped = self._stop_queued(
+            # ``_stop_queued`` drops these window entries before its first await,
+            # so a stagger timer cannot start a queued agent once the stop began.
+            queued_stopped = await self._stop_queued(
                 [
                     str(params.get("_preassigned_id") or "")
                     for params in [
@@ -822,15 +858,25 @@ class CancellationCoordinator(ManagerComponent):
                     and not params.get("_resume_id")
                 ]
             )
-            # This parent's rows waiting outside the in-memory window. The read is
-            # a store read, so it comes AFTER the in-memory queue is drained: its
-            # await is the first suspension point this method has, and one taken
-            # before the drain would let a stagger timer start a queued agent. A
-            # row started from disk during it is caught by the running sweep below.
-            queued_stopped += self._stop_queued(
+            # This parent's rows waiting outside the in-memory window, read after
+            # the window pass. A row started from disk meanwhile is caught by the
+            # running sweep below.
+            queued_stopped += await self._stop_queued(
                 await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
             )
         finally:
+            if stopping.get(parent_session_key, 0) > 1:
+                stopping[parent_session_key] -= 1
+            else:
+                stopping.pop(parent_session_key, None)
+                # A pump pass that ran meanwhile windowed none of this parent's
+                # rows, so a row spawned after the passes read their ids could
+                # wait on disk beside a free slot with no pass due to bring it
+                # in. One more pass, on the next loop turn: after the running
+                # sweep below has taken its ids, so a row it starts is not
+                # reaped with them.
+                if not self._manager._shutting_down:
+                    asyncio.get_running_loop().call_soon(self._manager._drain_queue)
             # Each row the pass stopped asked for the depth in its queued-stop
             # report. A pass that stopped none -- nothing was left, or it failed
             # or was cancelled first -- asks here, so a card whose count went
@@ -1002,6 +1048,9 @@ class CancellationCoordinator(ManagerComponent):
             for params in cancelled
             if params.get("_preassigned_id")
         }
+        # The rows whose store cancel landed: that cancel is their terminal
+        # write, so their reports write no second one (``taskq_settle``).
+        landed = set(by_id)
         dropped_rows: list[dict] = []
         for index in range(len(self._manager._queue) - 1, -1, -1):
             params = self._manager._queue[index]
@@ -1034,7 +1083,9 @@ class CancellationCoordinator(ManagerComponent):
             ),
         ]
         for params in stopped_rows:
-            self._manager._report_queued_stop(params)
+            self._manager._report_queued_stop(
+                params, row_settled=str(params.get("_preassigned_id") or "") in landed
+            )
         if settled:
             self._manager._pending_boundary_cancellations.pop(
                 (parent_session_key, boundary_owner),
@@ -1196,45 +1247,113 @@ class CancellationCoordinator(ManagerComponent):
         )
         return (sum(result is True for result in results), queued_stopped)
 
-    def _stop_queued(self, agent_ids: Sequence[str]) -> int:
+    async def _stop_queued(self, agent_ids: Sequence[str]) -> int:
         """Unqueue each id that is still waiting and report it stopped; count them.
 
-        A SEQUENCE, not an iterable: ``_unqueue`` mutates ``_queue``, so a lazy
-        generator over it would stop short of the ids it was asked to remove.
+        Every row's store cancel runs in ONE job on the store's writer thread
+        (``taskq_post_cancel_queued``), never on the loop: a cancel on the loop
+        holds it for the store's busy timeout, once per row, whenever the store
+        is contended.
+
+        An id registered as a run after the ids were read (the store read is an
+        await) is left out of the job: it is a live run, which the running sweep
+        after this pass reaps, and cancelling its row would end it under the run
+        and fence out the run's own settlement.
+
+        The job is queued and the window entries are dropped before this method
+        first suspends, so a stagger timer finds no entry to start, and a refill
+        or a claim queued after the job lands behind the cancels and finds the
+        rows cancelled. A refill fetch queued BEFORE the job is the caller's to
+        fence (``cancel_for_parent`` holds the parent in ``_stopping_parents``).
+        The job is queued first so that a post that raises leaves every entry in
+        the window: nothing was cancelled, and nothing is reported stopped.
+
+        The answers are applied by a tracked task that the caller awaits through
+        a shield. Once the job is queued its cancels land whether or not the
+        caller is still waiting, and a row cancelled in the store without a
+        queued-stop report would leave its wave waiting for a completion that
+        never comes.
+        """
+        import asyncio
+
+        ids = [
+            agent_id
+            for agent_id in dict.fromkeys(agent_ids)
+            if agent_id and not self._registered_run(agent_id)
+        ]
+        if not ids:
+            return 0
+        admission = self._manager._admission
+        outcomes = admission.taskq_post_cancel_queued(ids)
+        entries = {agent_id: self._take_window_entry(agent_id) for agent_id in ids}
+        # A non-durable row the coroutine pump is dispatching has no store row:
+        # taking it here, before the first await, keeps the pump from starting it.
+        in_dispatch = self._manager._undurable_in_dispatch
+        undurable = {
+            agent_id: in_dispatch.pop(agent_id)
+            for agent_id in ids
+            if entries[agent_id] is None and agent_id in in_dispatch
+        }
+        if isinstance(outcomes, dict):
+            return self._report_stopped_rows(ids, entries, outcomes, undurable)
+        posted = outcomes
+
+        async def _apply() -> int:
+            return self._report_stopped_rows(ids, entries, await posted, undurable)
+
+        applying = admission.track_store_task(asyncio.ensure_future(_apply()))
+        return await asyncio.shield(applying)
+
+    def _report_stopped_rows(
+        self,
+        ids: Sequence[str],
+        entries: Mapping[str, dict | None],
+        outcomes: Mapping[str, object],
+        undurable: Mapping[str, dict] | None = None,
+    ) -> int:
+        """Report each row the store phase stopped, count them, then raise any row error.
+
+        Each row is reported before the next is touched. A row whose cancel
+        raised was NOT stopped: the store still holds it waiting (the next
+        refill puts it back in the window), so the rest of the stop goes on and
+        the first such failure is raised once it has -- the caller must not go
+        on as if the pass had stopped everything. A row whose report raised WAS
+        stopped: it counts, and the report failure is logged.
         """
         # Imported here: this helper is not an ``_impl`` and so keeps this
         # module's namespace, where the facade's ``logger`` is only a type hint.
         from ..subagent import logger
 
-        # Each row is unqueued and reported before the next is touched. A row
-        # whose unqueue raised was NOT removed: it still waits, so the rest of
-        # the stop goes on and the first such failure is raised once it has --
-        # the caller must not go on as if the pass had stopped everything. A
-        # row whose report raised WAS removed: it counts, and the report
-        # failure is logged.
         stopped = 0
         failure: Exception | None = None
-        for agent_id in agent_ids:
-            if not agent_id:
+        for agent_id in ids:
+            outcome = outcomes.get(agent_id)
+            taken = (undurable or {}).get(agent_id)
+            if taken is not None:
+                # Already out of the pump's hands and with no store row, so
+                # whatever the store answered, it is stopped and gets its report.
+                stopped += 1
+                try:
+                    self._manager._report_queued_stop(taken)
+                except Exception:
+                    logger.warning(
+                        "Reporting queued subagent %s stopped failed", agent_id, exc_info=True
+                    )
                 continue
-            registered = self._manager._agents.get(agent_id)
-            if registered is not None and not registered.queued:
-                # Registered after the ids were read (the store read is an
-                # await): a live run, which the running sweep after this pass
-                # reaps. Cancelling its row here would end it under the run
-                # and fence out the run's own settlement.
+            if isinstance(outcome, Exception):
+                logger.warning("Stopping queued subagent %s failed", agent_id, exc_info=outcome)
+                failure = failure or outcome
                 continue
-            try:
-                queued = self._manager._unqueue(agent_id)
-            except Exception as exc:
-                logger.warning("Stopping queued subagent %s failed", agent_id, exc_info=True)
-                failure = failure or exc
-                continue
-            if queued is None:
+            stored = outcome if isinstance(outcome, dict) else None
+            entry = entries.get(agent_id)
+            if entry is not None and stored is None:
+                self._repost_unlanded_cancel(agent_id)
+            row = entry if entry is not None else stored
+            if row is None:
                 continue
             stopped += 1
             try:
-                self._manager._report_queued_stop(queued)
+                self._manager._report_queued_stop(row, row_settled=stored is not None)
             except Exception:
                 logger.warning(
                     "Reporting queued subagent %s stopped failed", agent_id, exc_info=True
@@ -1273,10 +1392,13 @@ class CancellationCoordinator(ManagerComponent):
             # all: `spawn` builds its queued SubagentInfo and returns it without
             # registering. Unqueueing prevents startup; the synthetic terminal
             # report keeps its parent and batch accounting from waiting forever.
-            queued = self._manager._unqueue(agent_id)
+            # The store phase is taken here rather than inside ``_unqueue`` so
+            # the report knows whether this cancel landed (``row_settled``).
+            stored = self._manager._admission.taskq_cancel_queued(agent_id)
+            queued = self._manager._unqueue(agent_id, stored=stored, store_cancelled=True)
             if queued is not None:
                 logger.info("Cancelled queued subagent %s before it started", agent_id)
-                self._manager._report_queued_stop(queued)
+                self._manager._report_queued_stop(queued, row_settled=stored is not None)
                 return True
             return False
         if not info._reap_started:
@@ -1441,12 +1563,32 @@ class CancellationCoordinator(ManagerComponent):
         # cancelled (that is the point). Drain them with a BOUNDED wait so a
         # report is not orphaned by a closing event loop, without letting a
         # wedged injection block shutdown indefinitely.
+        #
+        # A drained task can start another one: a Stop all's tracked applier
+        # spawns each row's queued-stop report once the writer-thread job
+        # answers, which is after the first snapshot here. So the drain
+        # re-reads ``_report_tasks`` and waits for what joined it, all inside
+        # the one budget, and whatever joined it is a straggler like the rest.
         pending_reports = [t for t in self._manager._report_tasks if not t.done()]
         if pending_reports:
-            try:
-                await asyncio.wait(pending_reports, timeout=_REPORT_DRAIN_TIMEOUT)
-            except Exception:
-                logger.debug("cancel_all: report drain wait failed", exc_info=True)
+            drain_deadline = asyncio.get_running_loop().time() + _REPORT_DRAIN_TIMEOUT
+            waiting = list(pending_reports)
+            while True:
+                remaining = drain_deadline - asyncio.get_running_loop().time()
+                try:
+                    await asyncio.wait(waiting, timeout=max(0.0, remaining))
+                except Exception:
+                    logger.debug("cancel_all: report drain wait failed", exc_info=True)
+                    break
+                joined = [
+                    t
+                    for t in self._manager._report_tasks
+                    if not t.done() and t not in pending_reports
+                ]
+                pending_reports.extend(joined)
+                if not joined or asyncio.get_running_loop().time() >= drain_deadline:
+                    break
+                waiting = [t for t in pending_reports if not t.done()]
             # `asyncio.wait` RETURNS on timeout without touching the stragglers.
             # Leaving them pending is worse than not shielding at all: shutdown
             # would proceed while they keep invoking `_on_done` against

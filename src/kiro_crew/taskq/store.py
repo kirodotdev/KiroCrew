@@ -105,16 +105,19 @@ STRICT_ON_LOOP_ENV = "KIROCREW_STRICT_ON_LOOP_TASK_STORE"
 #    and a dropped terminal write leaves the row active for the next boot's
 #    reconciler (see ``Admitted.settle_async``).
 # 2. ``subagent_manager.admission.taskq_cancel_queued``, reached from
-#    ``_unqueue`` on the Stop-all path: the row has to be cancelled before a
+#    a single ``cancel`` (``cancel_impl``): the row has to be cancelled before a
 #    drain can claim it AND out of the in-memory window before a stagger timer
 #    can start it, and an await between those two is a race in either order.
+#    Stop all is restructured out of this class: it queues one writer-thread job
+#    for every row's cancel and only then drops the window entries, both before
+#    its first await (``taskq_post_cancel_queued``).
 #
 # Those takes are on-loop and cannot simply be offloaded, so arming this from
-# ``KIROCREW_DEV_MODE`` would raise on a cancel or a Stop-all -- a Stop all whose
-# unqueue raises leaves that row waiting and fails the request before it reaps
-# anything -- and the developer's rational response, unsetting that variable,
-# silences every OTHER surface's guard too. Flip it back to True once both
-# classes are either restructured or inside a vetted ``allow_on_loop()`` block.
+# ``KIROCREW_DEV_MODE`` would raise on a cancel -- an unqueue that raises leaves
+# that row waiting and fails the request -- and the developer's rational
+# response, unsetting that variable, silences every OTHER surface's guard too.
+# Flip it back to True once both classes are either restructured or inside a
+# vetted ``allow_on_loop()`` block.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="task store",
     remedy=(

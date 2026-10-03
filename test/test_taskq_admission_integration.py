@@ -654,7 +654,9 @@ async def test_cancel_store_only_queued_row_never_starts(quiet) -> None:
     assert [p["_preassigned_id"] for p in mgr._queue] == [in_window.id]
     assert mgr._taskq.state_of(outside.id) == model.QUEUED
     reported: list[SubagentInfo] = []
-    mgr._report_queued_stop = lambda params: reported.append(params)  # type: ignore[method-assign]
+    mgr._report_queued_stop = lambda params, **_kw: reported.append(  # type: ignore[method-assign]
+        params
+    )
     assert await mgr.cancel(outside.id) is True
     assert mgr._taskq.state_of(outside.id) == model.CANCELLED
     assert reported and reported[0]["_preassigned_id"] == outside.id
@@ -1041,7 +1043,7 @@ async def test_boundary_cancel_marker_after_claim_releases_and_stops_row(
     params = mgr._queue.pop(0)
     mgr._running_count = 0
 
-    def _record_terminal(_params: dict) -> None:
+    def _record_terminal(_params: dict, **_kw: object) -> None:
         mgr._agents[waiting.id] = SubagentInfo(
             id=waiting.id,
             task=waiting.task,
@@ -1260,7 +1262,9 @@ async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
     all reaps it as one: its ``_agents`` record is the run's own, never a
     queued-stop record laid over it, and its store row is not cancelled out
     from under the run. The run's ``admitted -> starting`` mark is held, which
-    is the moment a registered run's row is still ``admitted``.
+    is the moment a registered run's row is still ``admitted``. The pass's
+    writer-thread cancel job never names the run's row: the running sweep's
+    reap is its only stop.
     """
     mgr, params = await _popped_row(monkeypatch)
     store: TaskStore = mgr._taskq
@@ -1268,6 +1272,14 @@ async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
     real_run = store.run
     real_post = store.post
     listed, release_stop = asyncio.Event(), asyncio.Event()
+    batched: list[str] = []
+    real_batch = SpawnAdmissionCoordinator.taskq_post_cancel_queued
+
+    def _record_batch(self: Any, ids: Any) -> Any:
+        batched.extend(ids)
+        return real_batch(self, ids)
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", _record_batch)
     held_marks: list[tuple[Any, tuple, dict, asyncio.Future]] = []
 
     async def _gated(fn, /, *args, **kwargs):
@@ -1308,6 +1320,7 @@ async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
         await settle_store_writes(store, rounds=4)
 
         assert stopped == (1, 0), "a registered run is stopped as the running run it is"
+        assert agent_id not in batched, "the queued pass's cancel job left the run's row out"
         assert mgr._agents[agent_id] is started
         assert started.reaped and started.user_stopped and not started.queued
         assert agent_id not in mgr._tasks
