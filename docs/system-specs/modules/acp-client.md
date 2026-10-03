@@ -2254,6 +2254,40 @@ The `audit_source` constructor param of `AcpClient` (default `None`) tags a clie
 7. Replaces the path in the text with `[image: filename.png]`
 8. Sends both text and image blocks in the `prompt` array
 
+**One prompt's own rules** (`build_prompt_blocks`). The marker lands only where the path grammar matched: a URL's own path or a longer path that merely contains the same characters is left alone (one pass over the grammar's match spans, never a whole-text replace), while a local path quoted as a URL query value (`?src=/tmp/a.png`) is a path to the grammar and is rewritten like any other; and the shared path grammar refuses a name that merely begins with a picture's path (`/var/a.png.backup`, `/var/a.png~`, `/var/a.png/other`), so neither this builder nor the replay scrubber treats it as a picture -- nothing is read, rewritten or scrubbed for it; a period followed by a capital letter is sentence punctuation (`/var/a.png.Then`), so the path ends there and the picture is attached. A second distinct file with the same basename in one message gets `[image: filename.png (2)]`, and so on, so every block's marker is unique within the prompt. The same bytes under two names are one block, marked at both places with the first name: the digest of the file's bytes is compared before any cap is consulted, so a duplicate of an attached picture past the cap maps to that picture's block instead of being dropped. A `[image: ...]` or `[image not attached: ...]` token the user typed, in any case, is escaped with a backslash, so only a marker this builder wrote reads as an attachment; the replay scrubber's own `[image not carried into this context]` is left as it is. A kept-out picture written as a markdown image (`![alt](path)`, `![alt](<path>)` or `![alt](path "title")`) gets its note after the closing parenthesis, so the link stays intact. A typed marker is escaped even when the agent takes no images, since the text still reaches the model. One prompt inlines at most `MAX_PROMPT_IMAGE_BLOCKS` (20) images and `MAX_PROMPT_IMAGE_B64_BYTES` (12 MiB) of base64; a picture past either cap stays a path in the text, followed by `[image not attached: prompt image limit]`, exactly as one over the per-image cap (or one that cannot be rendered within the size caps) is followed by `[image not attached: image size limit]`, so neither the user nor the model takes a dropped picture as seen (the notes speak about images, so only bytes that sniff as a raster earn one -- a text file named like a picture stays plain text, and so does an oversize picture reached through a hardlink, which the bounded sniff refuses to read); each is logged, the pictures past the block cap tallied into one line, and a picture past the block cap is read only to tell a duplicate from a new one, never decoded. The byte cap is half of the images' share (three quarters) of the smallest backend request-body ceiling measured so far -- 32 MiB, bracketed by a replayed request of 30.4 MB of base64 that was accepted and one of 33.8 MB that was refused as improperly formed; the count is where the backend's many-image dimension rule begins, and each replayed image costs about 1,600 tokens on every later turn. Both caps bound one prompt alone; what the conversation's replayed history carries in total is not measured here. Nothing here remembers earlier prompts: what a conversation's replayed history may carry in total is the backend's contract, not this builder's.
+
+Within a path run delimited by whitespace or punctuation -- ASCII punctuation
+outside a path, Unicode punctuation such as a dash or a bullet, the arrow blocks,
+and CJK/fullwidth punctuation -- the shared grammar takes the
+last supported image suffix: `/var/a.png版本/final.jpg` and `/var/a.png.jpg` each
+name one picture. Whitespace, commas, parentheses and the other delimiters stop that
+lookahead, so pictures separated by any of them remain separate
+(`/tmp/a.png—/tmp/b.png` inlines two pictures, as a comma between them would), and
+CJK prose without a later suffix can still follow a path. A path begins only at
+the start of the text or after a delimiter, except a colon, which reads as a URL
+scheme's (`/a.png:/b.png` names the first picture only). Two paths glued by letters
+with nothing between them (`/tmp/a.png和/tmp/b.png`, and on Windows
+`C:/x/a.png和C:/y/b.png` -- the second path's drive colon does not split the token,
+though only a drive letter glued to the token continues it: after whitespace a
+drive begins its own path, and a URL scheme's colon ends the token, so
+`C:\me\report.md and https://example.com/logo.png` names no picture, the URL
+stays as written, and `C:\docs\readme.txt and D:\tmp\shot.png` names exactly
+the picture)
+read as one token, so the
+builder inlines nothing for them and the replay scrubber replaces them with one
+marker; two paths glued by a symbol (an emoji, or on POSIX a backslash, which is
+not a path character there) start no path at all, so the builder inlines nothing
+and the replay scrubber leaves the text as written -- never the second picture
+alone with the first dropped silently. On Windows a backslash is a path
+character, so a backslash-glued pair is one path like the letter-glued one. A later
+separator in that run makes the earlier suffix a directory
+component, so non-image descendants stay text; without a later separator or image
+suffix, non-ASCII text glued to the suffix is read as prose even if it could be a
+directory name mentioned alone. The path body and every guard scan inspect at
+most 512 characters (a UNC share's host segment too), so a path longer than that
+stays text: space is legal inside a path, so an unbounded body would re-walk a
+message of spaced fragments from every start before the tail guard refused it.
+
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
 
 The suffix selects only which paths are candidates. `messaging.raster.sniff_raster_mime` derives the wire media type from the file content, and Pillow verifies the complete container when available. A real image with a misleading name is still inlined with truthful metadata; non-raster, unsupported, or truncated content fails closed and remains a path that a tool-capable agent can inspect.
