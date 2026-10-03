@@ -26,14 +26,17 @@ that ``inject_activity: false`` still embeds nothing.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import vector_memory
+from kiro_crew import memory_schema, vector_memory
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.config import loader as loader_mod
+from kiro_crew.config.loader import config_dir
 from kiro_crew.context import (
     CONTEXT_GROUP_MEMORY,
     SWITCHABLE_CONTEXT_GROUPS,
@@ -42,6 +45,7 @@ from kiro_crew.context import (
 from kiro_crew.context_assembly import budget as context_budget
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, resolve_store_path
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.vector_memory import VectorMemoryStore
 from kiro_crew.vector_memory_runtime.embedding import _RecallSpaceChanged
@@ -58,22 +62,69 @@ def _close_skills_loaders(close_skills_loaders):
     """``build_first_turn`` builds a ``ContextBuilder``: close its ``SkillsLoader`` (``test/conftest.py``)."""
 
 
+def _stamp_lessons(memory: VectorMemoryStore, stamps: dict[str, str]) -> None:
+    """Set the ``updated_at`` of the lesson whose rule is exactly each text in *stamps*.
+
+    The row is found by its exact rule and written by its exact ``key``, so a
+    fixture text that is a substring of another lesson stamps only its own row.
+    The write goes to the lineage's writable relation: on a crew store
+    ``semantic_memory`` is a read-only view over ``memory_items``.
+    """
+    with memory._db_lock, memory.db:
+        rows = memory.db.execute(
+            "SELECT key, value_json FROM semantic_memory "
+            "WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
+        ).fetchall()
+        for text, stamp in stamps.items():
+            keys = [row["key"] for row in rows if json.loads(row["value_json"])["rule"] == text]
+            assert len(keys) == 1, f"fixture text matched {len(keys)} lessons: {text!r}"
+            changed = memory.db.execute(
+                f"UPDATE {memory._sem_rel} SET updated_at = ? WHERE key = ?",
+                (stamp, keys[0]),
+            ).rowcount
+            assert changed == 1, f"stamp wrote {changed} rows for {text!r}"
+
+
 def _pin_write_order(memory: VectorMemoryStore, texts) -> None:
     """Stamp the lessons holding *texts* one second apart, oldest first.
 
     The startup order is newest-first by ``updated_at``. Two writes inside one
     clock tick (routine on Windows) share a stamp, and the tie then falls to
-    SQLite's row order, so a test that relies on which row is newer pins that
-    order here instead of on the clock.
+    ``key``, which says nothing about which row is newer, so a test that relies
+    on recency pins that order here instead of on the clock.
     """
-    with memory._db_lock, memory.db:
-        for index, text in enumerate(texts):
-            changed = memory.db.execute(
-                "UPDATE semantic_memory SET updated_at = ? "
-                "WHERE key LIKE 'lesson.%' AND value_json LIKE ?",
-                (f"2026-01-01T00:00:{index:02d}+00:00", f"%{text}%"),
-            ).rowcount
-            assert changed == 1, f"fixture text matched {changed} lessons: {text!r}"
+    _stamp_lessons(
+        memory, {text: f"2026-01-01T00:00:{index:02d}+00:00" for index, text in enumerate(texts)}
+    )
+
+
+def _stamp_one_tick(memory: VectorMemoryStore, texts) -> None:
+    """Give every lesson holding *texts* one shared ``updated_at``, as one clock tick would."""
+    _stamp_lessons(memory, dict.fromkeys(texts, "2026-01-01T00:00:00+00:00"))
+
+
+def _open_lineage_store(tmp_path: Path, lineage: str) -> VectorMemoryStore:
+    """Open an initialized store of *lineage* (``v1`` file or a declared crew silo).
+
+    A crew silo is the file a declared named store resolves to, which is what
+    makes ``init`` build the ``memory_items`` table with ``semantic_memory`` as
+    a read-only view over it.
+    """
+    if lineage == memory_schema.LINEAGE_V1:
+        db_path = tmp_path / "one-tick.db"
+    else:
+        payload = {
+            "memory_stores": {DEFAULT_MEMORY_STORE: {}, "ledger": {}},
+            "default_memory_store": DEFAULT_MEMORY_STORE,
+        }
+        (config_dir() / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+        loader_mod._invalidate_config_cache()
+        db_path = resolve_store_path("ledger")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    memory = VectorMemoryStore(db_path=db_path)
+    memory.init()
+    assert memory._lineage == lineage
+    return memory
 
 
 class Embedder:
@@ -110,9 +161,9 @@ def distinct_write_instants(monkeypatch: pytest.MonkeyPatch) -> None:
 
     ``updated_at`` comes from ``vector_memory._now_iso``, which reads the wall
     clock, and that ticks about every 15.6 ms on Windows under Python 3.12, so two
-    rows written back to back can carry one stamp. ``get_lessons`` orders on the
-    stamp alone, so such a pair comes back in an order no stamp decides. A case
-    whose assertion rests on recency takes its stamps from here.
+    rows written back to back can carry one stamp. ``get_lessons`` orders such a
+    pair by ``key``, which is stable but says nothing about which row is newer.
+    A case whose assertion rests on recency takes its stamps from here.
     """
     ticks = iter(f"2026-01-01T00:00:00.{tick:06d}+00:00" for tick in range(1, 1000))
     monkeypatch.setattr(vector_memory, "_now_iso", lambda: next(ticks))
@@ -747,6 +798,57 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
         finally:
             memory.close()
 
+    def test_rows_written_inside_one_clock_tick_keep_one_order_across_the_boundary(
+        self, tmp_path
+    ) -> None:
+        """Every lesson shares one ``updated_at``: the common pair still has one order.
+
+        ``COMMON_A`` and ``COMMON_B`` tie on the hybrid score and on the
+        lexical score, so ``rank_lessons`` keeps the order ``get_lessons``
+        hands it. With every row on one stamp, as two writes inside one tick
+        of a coarse clock leave them, that order is ``key`` order, so the pair
+        renders in key order behind the rare row, with and without a query
+        vector.
+
+        Fails if the ``key`` tie-break is dropped from ``get_lessons``: SQLite
+        then returns the tied rows in insertion order, ``COMMON_A`` before
+        ``COMMON_B``, which is the reverse of their key order here.
+        """
+        memory = VectorMemoryStore(db_path=tmp_path / "boundary-one-tick.db")
+        memory.init()
+        try:
+            memory.embed_fn = lambda text: [0.4, 0.0, (1 - 0.4**2) ** 0.5]
+            assert memory.write_lesson(self.FILLERS[0])
+            memory.embed_fn = None
+            written = (self.RARE, self.COMMON_A, self.COMMON_B, *self.FILLERS[1:])
+            for text in written:
+                assert memory.write_lesson(text)
+            _stamp_one_tick(memory, (self.FILLERS[0], *written))
+            rows = memory.get_lessons()
+            assert len(rows) == 11, "dedup merged fixture rows"
+            assert sum(row["embedding"] is not None for row in rows) == 1
+
+            def key_of(text: str) -> str:
+                return next(row["key"] for row in rows if text in row["value_json"])
+
+            by_key = sorted((self.COMMON_A, self.COMMON_B), key=key_of)
+            # Written A then B: the scan order cannot satisfy key order by accident.
+            assert by_key == [self.COMMON_B, self.COMMON_A]
+
+            lexical_block = self.render(memory)
+            memory.embed_fn = lambda text: [1.0, 0.0, 0.0]
+            recall_query = memory.startup_lesson_query(self.QUERY)
+            assert recall_query.vector is not None
+            hybrid_block = self.render(memory, recall_query)
+
+            def order(block: str) -> list[str]:
+                return sorted((self.RARE, self.COMMON_A, self.COMMON_B), key=block.index)
+
+            assert order(lexical_block) == [self.RARE, *by_key]
+            assert order(hybrid_block) == order(lexical_block)
+        finally:
+            memory.close()
+
     def test_explicit_recall_separates_rows_the_count_ties(self, tmp_path) -> None:
         """On a fully embedded store at one cosine, the rarer shared word decides.
 
@@ -905,6 +1007,64 @@ class TestTheKeywordHalfStaysBounded:
             assert next(index for index, body in enumerate(unembedded) if shorter in body) < next(
                 index for index, body in enumerate(unembedded) if richer in body
             ), "fixture assumes shorter is the newer of the tied pair"
+
+            memory.embed_fn = lambda text: [1.0, 0.0, 0.0]
+            recall_query = memory.startup_lesson_query(query)
+            assert recall_query.vector is not None
+
+            block = self.render(memory, query, recall_query)
+
+            assert block.index(richer) < block.index(shorter)
+        finally:
+            memory.close()
+
+    @pytest.mark.parametrize("lineage", [memory_schema.LINEAGE_V1, memory_schema.LINEAGE_CREW])
+    def test_rows_written_inside_one_clock_tick_have_a_defined_order(
+        self, tmp_path, lineage: str
+    ) -> None:
+        """Every lesson shares one ``updated_at``: the read order is still total.
+
+        Two writes inside one tick of a coarse clock store the same stamp, which
+        is routine on a Windows runner. ``get_lessons`` then orders
+        the tie by ``key``, so the newest-first input ``rank_lessons`` keeps for
+        its last ties, and every ``LIMIT/OFFSET`` page, rests on a defined
+        order rather than on the query plan. The pair tied on the cap is still
+        ordered by rarity, because the ``-lexical`` tie-break does not read
+        recency at all. Runs on both lineages: the crew store reads lessons
+        through the ``semantic_memory`` view, where ``rowid`` is not readable,
+        which is why the tie-break is ``key``.
+
+        Fails if the ``key`` tie-break is dropped from ``get_lessons``: SQLite
+        then returns the tied rows in scan (insertion) order, which is not key
+        order for this fixture.
+        """
+        richer = "quartz bearings calibrate depot"
+        shorter = "harbour ferry manifest"
+        embedded = "Stack cobalt nickel pewter bowls"
+        query = "quartz bearings calibrate depot harbour ferry manifest"
+
+        memory = _open_lineage_store(tmp_path, lineage)
+        try:
+            memory.embed_fn = lambda text: [0.5, 0.0, (1 - 0.5**2) ** 0.5]
+            assert memory.write_lesson(embedded)
+            memory.embed_fn = None
+            written = (embedded, richer, shorter, *self.FILLERS)
+            for text in written[1:]:
+                assert memory.write_lesson(text)
+            _stamp_one_tick(memory, written)
+
+            rows = memory.get_lessons()
+            assert len(rows) == 9, "dedup merged fixture rows"
+            keys = [row["key"] for row in rows]
+            assert keys == sorted(keys)
+            # Insertion order differs from key order here, so the assertion
+            # above is not satisfied by the scan order by accident.
+            inserted = [
+                next(row["key"] for row in rows if text in row["value_json"]) for text in written
+            ]
+            assert inserted != sorted(inserted)
+            paged = [row["key"] for offset in range(9) for row in memory.get_lessons(1, offset)]
+            assert paged == keys
 
             memory.embed_fn = lambda text: [1.0, 0.0, 0.0]
             recall_query = memory.startup_lesson_query(query)

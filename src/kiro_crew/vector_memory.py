@@ -3502,10 +3502,11 @@ class VectorMemoryStore:
         #
         # Pass 1 resolves THIS lesson. Pass 2 runs the generic dedup rules, and those
         # can claim the write on an UNRELATED row -- a superset whose text contains our
-        # rule. get_lessons() orders by md5 key, so whether such a row is scanned
-        # before ours is effectively random, and doing both in one loop made the
-        # outcome depend on that order: an unrelated superset seen first discarded an
-        # enrichment we had already selected, and the clause was dropped on HTTP 200.
+        # rule. get_lessons() orders by updated_at DESC, then by md5 key within one
+        # stamp, so whether such a row is scanned before ours is effectively random,
+        # and doing both in one loop made the outcome depend on that order: an
+        # unrelated superset seen first discarded an enrichment we had already
+        # selected, and the clause was dropped on HTTP 200.
         # Resolving the exact match first makes the result order-independent, and
         # pass 2 is skipped entirely once pass 1 claims the write.
         # Deduplication is SCOPE-LOCAL, and both passes below share this list.

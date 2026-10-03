@@ -2984,9 +2984,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # outcome can still have mutated the store. ``write_lesson``'s second pass
     # DELETES a row it supersedes and keeps scanning, so with a containment chain
     # (A inside R inside B) whose rows are visited A-first -- and the scan order is
-    # effectively random, since get_lessons orders by md5 key -- A is removed and the
-    # call then returns ``deduped`` for B. The store changed while ``wrote`` is False,
-    # so gating on it left connected dashboards showing a lesson that is gone.
+    # effectively random, since get_lessons orders by updated_at DESC, then by md5
+    # key within one stamp -- A is removed and the call then returns ``deduped`` for
+    # B. The store changed while ``wrote`` is False, so gating on it left connected dashboards showing a lesson that is gone.
     # Reporting mutation separately would buy nothing over refreshing always: an extra
     # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
     # deleted data.

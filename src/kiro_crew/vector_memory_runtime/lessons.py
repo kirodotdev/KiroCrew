@@ -749,11 +749,21 @@ def get_lessons(store: VectorMemoryStore, limit: int | None = None, offset: int 
     can walk back through the population one bounded window at a time
     without materializing the rows it skips. The unbounded read has nothing
     to page and ignores it.
+
+    Rows sharing one ``updated_at`` -- two writes inside one clock tick, which
+    a coarse Windows clock makes routine -- are ordered by ``key``. Without it
+    their order is whatever the query plan scans, so the newest-first input
+    :func:`rank_lessons` keeps for its final ties is not defined, and a paged
+    ``LIMIT/OFFSET`` walk is not over a total order and can skip or repeat a
+    row at a page boundary. ``key`` is unique and present in both lineages
+    (``rowid`` is not readable through the crew ``semantic_memory`` view). Key
+    order is an md5 digest order and carries no recency: within one stamp,
+    "newest first" is not defined, only "the same order on every read".
     """
     sql = (
         "SELECT * FROM semantic_memory "
         "WHERE is_deleted = 0 AND key LIKE 'lesson.%' "
-        "ORDER BY updated_at DESC"
+        "ORDER BY updated_at DESC, key"
     )
     # On the same concurrent context-injection path as get_semantic_context
     # (get_lessons_context runs on executor threads while lesson writes are
