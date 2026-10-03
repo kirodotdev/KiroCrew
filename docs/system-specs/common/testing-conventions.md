@@ -4009,6 +4009,16 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+Where a test wants a timeout to expire at a particular AWAIT -- the cancellation must
+land inside the steer RPC, after authorization, not in the gate work in front of it --
+neither `0` nor a small value is correct: both let real work ahead of the hang consume
+the bound, and on a loaded Windows runner a 0.05 s allowance was spent before the hang
+was reached, so the case read the pre-hand-over arm (`assert 0 == 1` on the missing
+audit row). Make the allowance a large backstop and fire the bound's own
+`asyncio.Timeout` from the hang as it parks, so the product's real `wait_for` path
+runs and only its moment is chosen. `_bound_expires_at_the_hang` in
+`test/test_session_broadcast.py` is the helper.
+
 **`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
 cancelled before its first tool call takes the one-shot auto-continue branch: it returns
 normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`
