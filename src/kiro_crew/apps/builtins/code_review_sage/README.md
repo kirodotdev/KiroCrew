@@ -42,6 +42,21 @@ the platform's own user-controlled session cleanup.
 
 ## Architecture (V1)
 
+Automatic runs build reports, archived HTML, and posting payloads from the
+driver's accepted response snapshots, never by re-reading worker-writable result
+files. Standalone report generation and manual posting retries still use stored
+records; this response handoff does not authenticate those durable inputs or
+prevent a poster with file tools from changing its own staging file. The automatic
+posting path restores the accepted findings to the durable record before checking
+delivery, so a failed confirmation cannot leave substituted findings for a manual
+retry.
+
+Responses may include Markdown fences and narration. The decoder examines at
+most 64 JSON candidates, each bounded to one million characters before parsing
+and one million UTF-8 bytes after extraction. Schema, capability, and change
+identity select the envelope. A rejected coverage follow-up retains the first
+pass and exposes a redacted reason in progress and the per-change run result.
+
 - **Deterministic shell** (`sage_lib/`): data store + self-heal layout, GitHub
   source adapter, blast-radius signals, result records, scorer/export.
   Token-free, unit-tested.

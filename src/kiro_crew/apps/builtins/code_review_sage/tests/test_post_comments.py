@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -50,6 +52,14 @@ def _record(cid: str = "CR-1", red: int = 1, yellow: int = 2) -> dict:
         "deep_reviewed": True, "title": cid, "ship_summary": "looks fine",
         "files_covered": ["f.py"], "coverage_complete": True,
     }
+
+
+def _response(task: str, record: dict) -> str:
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    return json.dumps({"schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+                       "capability": capability.group(1), "change_id": record["change_id"],
+                       "record": record})
 
 
 def await_sync(fn, *a, **kw):
@@ -91,6 +101,41 @@ class _Base(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPostRecorded(_Base):
+    async def test_failed_confirmation_restores_accepted_record_before_retry(self):
+        accepted = _record()
+        results.write_result(accepted, self.root, "run-a")
+
+        def plant(task, timeout=0):
+            forged = results.read_result("CR-1", self.root, None)
+            forged["findings"][0]["observation"] = "forged finding"
+            forged["posted_comments"] = 1
+            results.write_result(forged, self.root, None)
+            return {"ok": True, "error": ""}
+
+        def reject(link, payload):
+            durable = results.read_result("CR-1", self.root, "run-a")
+            self.assertEqual(durable["findings"], accepted["findings"])
+            return False
+
+        out = await_sync(
+            D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
+            dispatch=plant, confirm=reject, root=self.root, run_id="run-a",
+            accepted_record=accepted)
+        self.assertFalse(out["post_ok"])
+        durable = results.read_result("CR-1", self.root, "run-a")
+        self.assertEqual(durable["findings"], accepted["findings"])
+        self.assertFalse(durable.get("posted_keys"))
+        retried = []
+
+        def retry(task, timeout=0):
+            retried.append(results.read_result("CR-1", self.root, None))
+            return {"ok": True, "error": ""}
+
+        await_sync(
+            D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
+            dispatch=retry, confirm=_unconfirmed, root=self.root, run_id="run-a")
+        self.assertEqual(retried[0]["findings"], accepted["findings"])
+
     async def test_publishes_the_redacted_envelope_not_model_text(self):
         results.write_result(_record(), self.root, "run-a")
         seen: list = []
@@ -342,8 +387,7 @@ class TestSelectivePosting(_Base):
 class TestRecordsSurviveForPosting(_Base):
     def _dispatch(self):
         def dispatch(task, timeout=0):
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": _response(task, _record()), "error": ""}
         return dispatch
 
     async def test_records_are_kept_when_the_review_was_not_posted(self):
@@ -365,7 +409,7 @@ class TestRecordsSurviveForPosting(_Base):
 
         def dispatch(task, timeout=0):
             if "SINGLE thorough pass" in task:
-                results.write_result(_record(), self.root)
+                return {"ok": True, "output": _response(task, _record()), "error": ""}
             else:
                 rec = results.read_result("CR-1", self.root, None)
                 if rec:

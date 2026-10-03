@@ -487,11 +487,17 @@ candidate is pure staging until consolidated.
 
 ---
 
-## Result record (write one per change)
+## Result response (one per change)
 
-Write `data/results/<change-id>.json`. This is
-the durable source of truth the Focus Report reads. **Findings JSON contract**
-(kept stable so the deterministic scorer is decoupled from prompt wording):
+The driver owns durable persistence. Do not write a result file. Return exactly
+one driver-requested JSON envelope as the final response, with no Markdown fence
+or prose. Echo its exact `capability` and `change_id`; put the result record in
+`record`. A coverage follow-up also echoes the supplied `base_digest`, preserves
+all first-pass metadata, and appends findings without changing existing ones.
+The driver accepts only those appended findings plus refreshed coverage and summary fields,
+then recomputes counts before atomically persisting the result. **Findings JSON
+contract** (kept stable so the deterministic scorer is
+decoupled from prompt wording):
 
 ```json
 {
@@ -542,9 +548,9 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
 }
 ```
 
-> Use the `change_id` emitted by `<python> sage_lib/pipeline.py prepare` **verbatim** — do NOT invent or reformat it (it must match the driver's `_cid`, or the record write and read hit different files).
+> Use the driver-issued `change_id` **verbatim** — do NOT invent or reformat it.
 
-**One record, written in one pass.** Every review writes exactly ONE record with
+**One record, returned in one pass.** Every review returns exactly ONE record with
 `deep_reviewed: true` and a fully populated `phase1` block (design dimension) —
 there is no "gate-only" record and no design-vs-code split. Two coverage fields
 make first-pass completeness machine-checkable:
@@ -578,5 +584,5 @@ orchestration.
 - [ ] Self-critique (Filter / De-dup against green gates / Merge / Sharpen / Stabilize)
 - [ ] Post surviving findings as DRAFT comments (publish=false), each quoting the snippet
 - [ ] If the change is a fix, run INLINE miss-analysis (learn-from-sage) → STAGE the learning into the candidate file
-- [ ] Write the result record JSON
+- [ ] Return the driver-bound result response JSON
 ```
