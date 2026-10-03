@@ -162,6 +162,8 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/SearchResultsList', () => ({ default: () => null }))
 interface SidebarProps {
   onDropSessionRef?: (ref: { key: string; title: string }) => void
+  paintWidth?: number
+  onBoardActiveChange?: (active: boolean) => void
 }
 let sidebarProps: SidebarProps | null = null
 vi.mock('../pages/ChatSidebar', () => ({ default: (props: SidebarProps) => { sidebarProps = props; return null }, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
@@ -255,6 +257,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { renderUserContent, virtualKeyFor, messageRowKey } from '../pages/chat/ChatPageMessageContent'
+import { CHAT_PANE_MIN_W } from '../pages/chat/SidePanel'
 
 // --- Fixtures ---------------------------------------------------------------
 
@@ -1051,5 +1054,39 @@ describe('ChatPage — composer screenshot', () => {
     await act(async () => { inputProps!.onScreenshot!() })
     await waitFor(() => expect(inputProps!.uploading).toBe(false))
     expect(inputProps!.pendingFiles).toEqual([])
+  })
+})
+
+// #16094: ChatSidebar lifts boardLaneActive up via onBoardActiveChange, and
+// ChatPage feeds it into the viewport clamp's reserve -- board 0, list
+// CHAT_PANE_MIN_W. With a stored width wider than the window can seat, the clamp
+// bites in BOTH views, so board paints exactly CHAT_PANE_MIN_W wider than list
+// (the reserve the list view holds back for the chat pane). CHAT_PANE_MIN_W is
+// read from the SidePanel mock so the assertion follows the harness's value.
+describe('ChatPage — lifted boardLaneActive drives the sidebar clamp reserve', () => {
+  it('reserves the chat pane in list view and releases it in board view', async () => {
+    // Wider than winW - rail, so the clamp bites in both views and the only
+    // difference between them is the reserve.
+    localStorage.setItem('mc-sidebar-width', '1000')
+    renderChatPage([msg('user', 'hi', { ts: '2026-08-12T07:00:00Z' })])
+    await waitFor(() => expect(sidebarProps).not.toBeNull())
+
+    // Default (no board signal yet) = list: CHAT_PANE_MIN_W reserved.
+    const listWidth = sidebarProps!.paintWidth!
+    // Board lane active -> reserve 0 -> the wide stored width survives further.
+    act(() => sidebarProps!.onBoardActiveChange!(true))
+    const boardWidth = sidebarProps!.paintWidth!
+    // Feature on but ZERO columns reports false (list lane): reserve returns, so
+    // a hand-dragged wide width is clamped again -- the case tagColumnsEnabled
+    // alone got wrong.
+    act(() => sidebarProps!.onBoardActiveChange!(false))
+    const listAgain = sidebarProps!.paintWidth!
+
+    expect(boardWidth).toBeLessThan(1000)       // clamp bit in board view too
+    expect(listWidth).toBeLessThan(boardWidth)  // list reserves, board does not
+    expect(boardWidth - listWidth).toBe(CHAT_PANE_MIN_W)
+    expect(listAgain).toBe(listWidth)           // enabled+zero-columns == list
+
+    localStorage.removeItem('mc-sidebar-width')
   })
 })

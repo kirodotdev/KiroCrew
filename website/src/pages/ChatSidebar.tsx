@@ -2280,6 +2280,21 @@ interface ChatSidebarProps {
   mode?: string
   onWidthChange?: (w: number) => void
   onDragChange?: (dragging: boolean) => void
+  /** Lifts the sidebar's authoritative board-lane state (`boardLaneActive` =
+   *  `orderedColumns.length > 0`, the client flag AND the server column list) up
+   *  to the host, which uses it to decide the viewport clamp's chat reserve
+   *  (board 0 / list CHAT_PANE_MIN_W). Fired on mount and whenever it flips, so
+   *  the host and the rendered lane never disagree. Optional: standalone/embed
+   *  callers that don't clamp simply omit it (#16094). */
+  onBoardActiveChange?: (active: boolean) => void
+  /** The width (px) the host has sized the sidebar's container to -- the
+   *  viewport-clamped `effectiveSidebarWidth` ChatPage also gives the
+   *  OverlayDrawer. The painted root uses THIS so the inner edge lands exactly
+   *  where the drawer's does; without it the root painted the raw stored width
+   *  and overflowed a clamped drawer, stranding the resize handle past the
+   *  window edge (#16094). Omitted (standalone/embed/mobile) -> paint the raw
+   *  stored `sidebarWidth`, the prior behavior. */
+  paintWidth?: number
   /** Optional callback fired when the user explicitly clicks a slot.
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
@@ -2432,7 +2447,7 @@ function ChatSidebar({
   // to say which collection it means.
   slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
-  chatDropTarget, onDropSessionRef, staticRows,
+  chatDropTarget, onDropSessionRef, staticRows, paintWidth, onBoardActiveChange,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
@@ -3152,6 +3167,10 @@ function ChatSidebar({
   // there are folders to flatten, otherwise the folder tree. The folder
   // filter applies to the flat lane and the tree, NOT to the board.
   const boardLaneActive = orderedColumns.length > 0
+  // Lift the authoritative board-lane state to the host (clamp reserve). Fires
+  // on mount and on every flip; `onBoardActiveChange` is a stable setter so this
+  // settles immediately. No-ops for standalone/embed callers that omit it.
+  useEffect(() => { onBoardActiveChange?.(boardLaneActive) }, [boardLaneActive, onBoardActiveChange])
   // Counted off `filteredSlots`, the same list the board filters, so the notice
   // reports what the CURRENT filters would have shown — not every peer row that
   // exists. Peer OWNERSHIP only: a local slot that merely EXECUTES on a peer is
@@ -4430,7 +4449,7 @@ function ChatSidebar({
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: sidebarWidth }}>
+    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: paintWidth ?? sidebarWidth }}>
       {/* Drag handle — the shared column grip (components/ResizeHandle), so
           this edge looks and behaves exactly like the Crew Members roster's and
           the app workspaces'. Positioned absolutely on the card's right border
