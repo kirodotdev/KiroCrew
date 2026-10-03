@@ -1855,7 +1855,14 @@ already queued sends no frame, because what a reader sees has not changed. The
 evidence window is the newest 32 user/assistant/error/tool-result/inject rows,
 filtered before the slice so tool rows cannot crowd them out; an injected automation
 envelope, and an `inject` breadcrumb (a cron result, a `/note`), reach the model as
-role `automation`, never as the user. Building the
+role `automation`, never as the user. Those rows carry no tool calls, so the
+model also gets `tools_called`: the tool names the session's `tools` fold recorded
+a call to, newest first and capped at a quarter of the evidence budget, with
+`tools_omitted` counting every name left out (`tools_called` is `null` when the
+fold cannot be read). The prompt forbids saying a tool was or was not called
+unless that list says so, and forbids any "never called" claim from a partial
+list, because a note once said no stop call was made while the log held one.
+Building the
 evidence and checking the returned card run in a worker thread, not on the
 gateway loop. The projection that scan reads ends a comment with the browser's
 endings (`<!-->`, `<!--->`, the first `-->` or `--!>`, else the end), matched inside
