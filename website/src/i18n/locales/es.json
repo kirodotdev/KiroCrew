@@ -16918,6 +16918,12 @@
       "gauges_latest": "última muestra",
       "credits_by_origin": "Créditos por origen",
       "credits_by_model": "Créditos por modelo",
+      "credits_by_folder": "Créditos por carpeta",
+      "folder_col": "Carpeta",
+      "folder_unfiled": "Sin clasificar",
+      "folder_col_tip": "Gasto según la carpeta de la barra lateral en la que está cada sesión ahora. Una sesión sin carpeta, o cuya carpeta no se puede leer (como una pestaña de revisión de tarea cerrada), cuenta como sin clasificar. Cada fila cuenta las sesiones guardadas directamente en esa carpeta, no en sus subcarpetas.",
+      "folder_direct_only": "Cada fila cuenta las sesiones guardadas directamente en esa carpeta, no en sus subcarpetas.",
+      "folder_capped_credits": "«Sin clasificar» incluye {{credits}} créditos de sesiones más allá de las {{limit}} que esta vista puede ordenar en carpetas.",
       "top_sessions": "Sesiones principales",
       "other_group": "Otros ({{n}})",
       "full_table": "Tabla completa"

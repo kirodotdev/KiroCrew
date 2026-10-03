@@ -16918,6 +16918,12 @@
       "gauges_latest": "última amostra",
       "credits_by_origin": "Créditos por origem",
       "credits_by_model": "Créditos por modelo",
+      "credits_by_folder": "Créditos por pasta",
+      "folder_col": "Pasta",
+      "folder_unfiled": "Sem pasta",
+      "folder_col_tip": "Gasto pela pasta da barra lateral em que cada sessão está agora. Uma sessão sem pasta, ou cuja pasta não pode ser lida (como uma aba de revisão de tarefa fechada), conta como sem pasta. Cada linha conta as sessões guardadas diretamente nessa pasta, não em suas subpastas.",
+      "folder_direct_only": "Cada linha conta as sessões guardadas diretamente nessa pasta, não em suas subpastas.",
+      "folder_capped_credits": "“Sem pasta” inclui {{credits}} créditos de sessões além das {{limit}} que esta visualização consegue organizar em pastas.",
       "top_sessions": "Principais sessões",
       "other_group": "Outros ({{n}})",
       "full_table": "Tabela completa"

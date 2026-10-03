@@ -9630,6 +9630,12 @@
       "gauges_latest": "latest sample",
       "credits_by_origin": "Credits by origin",
       "credits_by_model": "Credits by model",
+      "credits_by_folder": "Credits by folder",
+      "folder_col": "Folder",
+      "folder_unfiled": "Unfiled",
+      "folder_col_tip": "Spend by the sidebar folder each session is in now. A session in no folder, or whose folder can't be read (such as a closed task-review tab), counts as Unfiled. Each row counts sessions filed directly in that folder, not in its subfolders.",
+      "folder_direct_only": "Each row counts sessions filed directly in that folder, not in its subfolders.",
+      "folder_capped_credits": "Unfiled includes {{credits}} credits from sessions beyond the {{limit}} this view can sort into folders.",
       "top_sessions": "Top sessions",
       "other_group": "Other ({{n}})",
       "full_table": "Full table"

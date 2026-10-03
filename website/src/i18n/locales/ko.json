@@ -16450,6 +16450,12 @@
       "gauges_latest": "최신 샘플",
       "credits_by_origin": "출처별 크레딧",
       "credits_by_model": "모델별 크레딧",
+      "credits_by_folder": "폴더별 크레딧",
+      "folder_col": "폴더",
+      "folder_unfiled": "미분류",
+      "folder_col_tip": "각 세션이 현재 들어 있는 사이드바 폴더별 사용량입니다. 폴더가 없거나 폴더를 읽을 수 없는 세션(예: 닫힌 작업 검토 탭)은 미분류로 집계됩니다. 각 행은 해당 폴더에 직접 들어 있는 세션만 집계하며 하위 폴더는 포함하지 않습니다.",
+      "folder_direct_only": "각 행은 해당 폴더에 직접 들어 있는 세션만 집계하며 하위 폴더는 포함하지 않습니다.",
+      "folder_capped_credits": "미분류에는 이 보기에서 폴더로 분류할 수 있는 {{limit}}개를 넘는 세션의 크레딧({{credits}})이 포함됩니다.",
       "top_sessions": "상위 세션",
       "other_group": "기타 ({{n}})",
       "full_table": "전체 표"
