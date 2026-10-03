@@ -2562,6 +2562,24 @@ class TestTheDismissalCheckRetainsNothing:
         assert subagent_persistence.panel_dismissal_recorded("one") is False
 
 
+def _messaging_handler_files(root: pathlib.Path, *holders: str) -> list[pathlib.Path]:
+    """``handlers/messaging.py`` and the ``messaging_api`` owners it composes routes from.
+
+    The facade's routes run from those owners, so a source ratchet on the facade
+    reads them all; each name in *holders* must live in one of the returned files.
+    """
+    import inspect
+
+    dashboard = root / "src/kiro_crew/dashboard"
+    owners = sorted((dashboard / "messaging_api").glob("[!_]*.py"))
+    assert owners, "the messaging_api owners were not found"
+    files = [dashboard / "handlers" / "messaging.py", *owners]
+    for name in holders:
+        held = pathlib.Path(inspect.unwrap(getattr(messaging, name)).__code__.co_filename)
+        assert held.parts[-2:] in {path.parts[-2:] for path in files}, (name, held)
+    return files
+
+
 class TestADismissalHoldsOnBothReaders:
     """A dismissal has to hold on every durable reader, not just one.
 
@@ -2728,6 +2746,13 @@ class TestADismissalHoldsOnBothReaders:
             "src/kiro_crew/dashboard/ws.py",
         ):
             source = (root / relative).read_text(encoding="utf-8")
+            if relative.endswith("handlers/messaging.py"):
+                # The listing reader runs from a messaging_api owner, so this reader
+                # is the facade and every owner it composes, read together.
+                source = "\n".join(
+                    path.read_text(encoding="utf-8")
+                    for path in _messaging_handler_files(root, "api_spawn_list")
+                )
             # Control: this reader really is one, so the assertion below cannot pass
             # by matching a file that stopped reading records altogether.
             assert "read_panel_records" in source, f"{relative} no longer reads persisted records"
@@ -3068,8 +3093,9 @@ class TestThePersistedGrantIsRecordedNotJustTheRefusals:
 
     def test_the_rest_listing_records_the_same_grant(self):
         """One ownership decision, so the trail cannot depend on which reader asked."""
-        source = (self.ROOT / "src/kiro_crew/dashboard/handlers/messaging.py").read_text(
-            encoding="utf-8"
+        source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in _messaging_handler_files(self.ROOT, "api_spawn_list")
         )
         assert '_audit_allow(auditee, "api_spawn_list")' in source
 

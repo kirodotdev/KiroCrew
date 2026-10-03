@@ -2208,8 +2208,8 @@ happens to notice — which is the bug class this closes.
 A handler that must answer only after the new value is in force calls
 `ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which
 forces one cycle and is a no-op before the watcher is started. The config PUT
-and every per-channel saver (`handlers/messaging.py`, the WhatsApp saver in
-`handlers/whatsapp_setup.py`) do, because their writes carry authorization: a
+and every per-channel saver (the `*_settings.py` owners in `dashboard/messaging_api/`,
+the WhatsApp saver in `handlers/whatsapp_setup.py`) do, because their writes carry authorization: a
 narrowed allow-list is applied to the running transport before the caller sees
 "saved", never one poll interval after it. For a connection field the same
 dispatch also drops the old client's mirror registration synchronously and
@@ -2218,16 +2218,16 @@ start, a mirror send) is never handed the client about to be closed.
 
 **A two-file save runs under `live.hold()`.** A saver that writes `config.json`
 and then `.env`, and rolls the config back when the credential write fails
-(Teams, Webex, WeCom, Feishu), wraps the whole transaction — snapshot through
+(Slack, Teams, Webex, WeCom, Feishu), wraps the whole transaction — snapshot through
 rollback and the `os.environ` sync — in `with live.hold():`. Without it the
 config write's own kick (`_atomic_json_write` → `notify_config_written`) wakes
 the watcher while the handler is still awaiting the `.env` write, and a widened
 allow-list the committed state never granted is applied to the running transport
 for the length of the failing write. Under a hold the cycle records that a
 reload is owed and returns without loading; the release wakes it on the
-committed (or restored) file. Savers that write `.env` first and `config.json`
-second (Slack, Discord, Telegram) have no rollback window and need no hold.
-Pinned per channel by the `*_config_handlers` tests
+committed (or restored) file. The Discord and Telegram savers commit `config.json`
+and then `.env` with no rollback, so they have no rollback window and need no hold.
+Pinned for WeCom by `test_wecom_config_handlers.py`
 (`test_the_config_and_env_writes_run_under_the_live_config_hold`) and for the
 watcher itself by `test_config_live.py`.
 

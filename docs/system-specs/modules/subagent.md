@@ -2491,7 +2491,7 @@ immediate-yield guidance. Do not duplicate delegated work or poll to stay busy.
 
 | Owner | Enforced behavior and evidence |
 |---|---|
-| `dashboard/handlers/messaging.py::parent_work_supported`, `::api_spawn` | Resolves the actual parent slot and reports delivery capability in the receipt. |
+| `dashboard/handlers/messaging.py::parent_work_supported`, `dashboard/messaging_api/spawn.py::api_spawn` | Resolves the actual parent slot and reports delivery capability in the receipt. |
 | `subagent_manager/admission`, `subagent_persistence.py` | Existing capacity/queue/depth/cleanup rules remain authoritative; delegation metadata follows the run. |
 | `slack/gateway.py::_subagent_done` | Busy dashboard turns are awaited through `asyncio.shield`, then completion is injected or queued; the parent edit is not interrupted. Delivery retention starts on consumption. |
 
@@ -2955,6 +2955,11 @@ adopted live by `reconfigure` through `update_completion_keep`. User-facing docs
 [`src/kiro_crew/docs/troubleshooting.md`](../../../src/kiro_crew/docs/troubleshooting.md).
 
 ### Dashboard API: `POST /api/spawn`
+
+The spawn routes are composed into `dashboard/handlers/messaging.py`, which stays
+their import path. Admission and continue live in `dashboard/messaging_api/spawn.py`,
+the run controls and their session fence (`_spawn_scope_refusal`) in
+`run_control.py`, and the status and list views in `run_views.py`, beside it.
 
 The view-only Agent Worlds hook polls the global `GET /api/spawn` list and reads
 its `{"agents": [...]}` envelope; it does not call the parent-scoped

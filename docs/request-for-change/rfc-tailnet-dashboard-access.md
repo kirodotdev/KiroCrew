@@ -90,7 +90,7 @@ The last row works well and is not changed by this RFC.
 `is_direct_local_request()` requires a loopback peer **and** the absence of every
 header in `_PROXY_FORWARD_HEADERS` (`origin.py:77`), so a proxied request is
 correctly treated as remote and the config-write surfaces return `read_only`
-(`handlers/messaging.py:2355`, `:2633`, `:2894`).
+(`api_slack_config_get`, `api_discord_config_get`, `api_telegram_config_get`).
 
 ### Problem 1 — the IP pin is inert behind every recommended tunnel
 

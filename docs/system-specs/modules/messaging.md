@@ -158,17 +158,17 @@ Declares what a channel can do. Defaults are deliberately conservative (the What
 **A proactive send is CHUNKED against the transport's own cap, then confirmed part
 by part.** A transport caps by SLICING (Telegram's `_cap_text` at 4096) and still
 answers with a message id, so handing it a longer message loses the tail and reports
-success — which the caller then audits as a completed delivery. Both legs in
-`dashboard/handlers/messaging.py` split first and stop on the first unconfirmed part,
+success — which the caller then audits as a completed delivery. The legs in
+`dashboard/messaging_api/channel_delivery.py` split first and stop on the first unconfirmed part,
 since the remaining chunks of a message whose head never landed would arrive as an
-orphaned fragment. The two legs keep separate loops deliberately: one splits plain
-text and the gateway's splits markdown with fence sealing, so collapsing them would
-silently retune one of the two.
+orphaned fragment. Those legs and the gateway's keep separate loops deliberately: they
+split plain text and the gateway's splits markdown with fence sealing, so collapsing
+them would silently retune one of the two.
 
 **A send that did not raise is not automatically a delivery.** `delivery_confirmed`
-(`messaging/transport.py`) is the one predicate the three proactive-send call sites
-ask — `slack/gateway.py`'s channel reply leg and both legs in
-`dashboard/handlers/messaging.py`. Most transports report a refused or exhausted
+(`messaging/transport.py`) is the one predicate the proactive-send call sites
+ask — `slack/gateway.py`'s channel reply leg and the three legs in
+`dashboard/messaging_api/channel_delivery.py`. Most transports report a refused or exhausted
 send by returning an empty id rather than raising, and that return value is
 load-bearing: cron stands its Slack fallback down and advances its dedup hash on a
 confirmed delivery, so one false success loses the result on every surface at once.
@@ -1150,9 +1150,10 @@ way; the channel-`session` leg was not migrated with it.
 `state.channel_transports` on purpose, so the shared ladder skips it and accepting
 the value would fail every such send closed with no useful reason.
 
-**The delivery ladder**, in `dashboard/handlers/messaging.py::api_send_message`:
-origin session injection (`session="origin"`, unchanged) → `_deliver_to_channel`
-→ Slack. `_deliver_to_channel` rides
+**The delivery ladder**, which `dashboard/handlers/messaging.py::api_send_message`
+drives: origin session injection (`session="origin"`, unchanged, in the route) →
+`_deliver_to_channel` → Slack (both in
+`messaging_api/proactive_send.py::_deliver_send_message_fallback`). `_deliver_to_channel` rides
 `chat_runner._resolve_channel_target`, the same governed cross-surface seam as the
 outbound mirror, the auto-compact notice and the inbound-unbind notice, so a
 proactive send is capability-checked, `channels`-vetted (fail-closed) and
@@ -1447,7 +1448,7 @@ still push arbitrary text into Slack by editing a message it posted while the
 capability was on. Every return path lands on the SEL trail.
 
 The route is `POST /api/update-message`
-(`dashboard/handlers/messaging.py::api_update_message`, registered in
+(`dashboard/messaging_api/proactive_send.py::api_update_message`, registered in
 `dashboard/server.py::_register_mcp_routes` and listed in
 `_STRICT_INTERNAL_API_PATHS` — loopback plus `X-Internal-Secret`, no cookie
 fall-through, exactly like `/api/send-message` and `/api/delete-message`). It
@@ -1461,6 +1462,30 @@ operator's revocation lever, not only a first-contact check — without this run
 message the bot authored while the channel was tracked would remain a writable
 slot in it after the operator revoked egress. Same shape as the `file_send` Slack
 leg (`dashboard/upload_destination.py::resolve_slack`).
+
+### Where the dashboard messaging handlers live
+
+`dashboard/handlers/messaging.py` is the import path and the patch surface of every
+route it serves. The owners it composes live in `dashboard/messaging_api/`,
+and `messaging_api.compose` runs their functions on the facade's globals, so a patch of
+the facade reaches moved code. New work goes to the owner of its responsibility:
+
+| Owner (`dashboard/messaging_api/`) | Holds |
+|---|---|
+| `proactive_send.py` | what `POST /api/send-message` reads and refuses (`_read_send_message`, which also delivers a configured `channel_type` + `target_id`), its fallback legs, audit row and answer; `update_message` and `delete_message` |
+| `channel_delivery.py` | the channel legs: a channel owner's DM (`_deliver_channel_dm`), a configured target (`_send_to_channel_target`), the session's conversation (`_deliver_to_channel`) |
+| `spawn.py`, `run_control.py`, `run_views.py` | spawn admission and continue; the run controls and their session fence; the status and list views |
+| `notifications.py` | the notification feed and the per-channel notification settings |
+| `*_settings.py`, one per channel | that channel's settings API |
+
+The facade keeps the code repository guards read there by path, and the shared
+pieces. That is `api_send_message` itself, which redacts and authorizes the Slack
+target and injects into an origin session between the read and the delivery. It
+also keeps the Slack pin, reaction, profile and manifest routes,
+`api_notification_agent_push`, `api_teams_activity`, the iMessage save entry, the
+channel-folder backfill, the browser routes, `_run_belongs_to_caller`,
+`parent_work_supported` and the shared channel-config transaction
+(`_LockedSectionWrite`, `_write_env_off_loop`).
 
 ## Telegram dashboard-session resume
 

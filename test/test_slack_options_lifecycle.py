@@ -2120,10 +2120,20 @@ class TestControlPostedAfterTheWindowIsSpent:
         immediately above, so on the control it was pure duplication.
         """
         import inspect
+        from pathlib import Path
 
         from kiro_crew.dashboard.handlers import messaging
 
-        src = inspect.getsource(messaging)
+        # The send route's Slack leg runs from a messaging_api owner the facade
+        # composes, so the scan reads the facade and every owner, and fails if the
+        # leg lives in a file it does not read.
+        owners = sorted((Path(messaging.__file__).parents[1] / "messaging_api").glob("[!_]*.py"))
+        assert owners, "the messaging_api owners were not found"
+        held = Path(inspect.getsourcefile(messaging._post_send_message_to_slack) or "")
+        assert held.parts[-2:] in {path.parts[-2:] for path in owners}, held
+        src = "\n".join(
+            [inspect.getsource(messaging)] + [path.read_text(encoding="utf-8") for path in owners]
+        )
         at = src.find("option_blocks = build_options_blocks(")
         assert at != -1, "the send_message OPTIONS post should be findable"
         # Radius, not a behaviour bound: it only has to reach past the comment

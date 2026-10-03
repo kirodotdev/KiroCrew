@@ -123,8 +123,7 @@
       "missing_code": 19
     },
     "dashboard/handlers/messaging.py": {
-      "dynamic_status": 6,
-      "missing_code": 86
+      "missing_code": 39
     },
     "dashboard/handlers/optimizer.py": {
       "missing_code": 1
@@ -184,6 +183,39 @@
     },
     "dashboard/kiro_readiness.py": {
       "opaque_body": 1
+    },
+    "dashboard/messaging_api/discord_settings.py": {
+      "dynamic_status": 1
+    },
+    "dashboard/messaging_api/notifications.py": {
+      "missing_code": 13
+    },
+    "dashboard/messaging_api/proactive_send.py": {
+      "missing_code": 13
+    },
+    "dashboard/messaging_api/run_control.py": {
+      "missing_code": 12
+    },
+    "dashboard/messaging_api/run_views.py": {
+      "missing_code": 2
+    },
+    "dashboard/messaging_api/slack_settings.py": {
+      "dynamic_status": 1
+    },
+    "dashboard/messaging_api/spawn.py": {
+      "missing_code": 7
+    },
+    "dashboard/messaging_api/teams_settings.py": {
+      "dynamic_status": 1
+    },
+    "dashboard/messaging_api/telegram_settings.py": {
+      "dynamic_status": 1
+    },
+    "dashboard/messaging_api/webex_settings.py": {
+      "dynamic_status": 1
+    },
+    "dashboard/messaging_api/wecom_settings.py": {
+      "dynamic_status": 1
     },
     "dashboard/openai_compat.py": {
       "missing_code": 18

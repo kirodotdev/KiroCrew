@@ -1046,6 +1046,12 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Recursively redacts outbound message payloads before they leave the gateway.",
     ),
     (
+        "Outbound channel messages — send_message post leg",
+        "dashboard/messaging_api/proactive_send.py",
+        "The Slack post of a proactive send and the in-place edit: the text and Block Kit "
+        "blocks are display-redacted before they are posted to Slack.",
+    ),
+    (
         "Streaming speech-to-text",
         "dashboard/stt_stream.py",
         "Transcription partials and finals are redacted before they leave the process.",
@@ -2070,6 +2076,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/updates.py",
         "dashboard/handlers/webapp_preview.py",
         "dashboard/handlers_project.py",
+        # The spawn owners composed into ``dashboard/handlers/messaging.py``: they
+        # redact run text the facade's routes answer with, and that facade stays the
+        # registered sink for those REST responses, so they are not egress paths of
+        # their own. (The send owner posts to Slack and is a registered sink above.)
+        "dashboard/messaging_api/run_control.py",
+        "dashboard/messaging_api/run_views.py",
+        "dashboard/messaging_api/spawn.py",
         "knowledge/agent_fetch.py",
         "knowledge/agent_source.py",
         "knowledge/artifact_ingest.py",

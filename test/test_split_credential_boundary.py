@@ -991,8 +991,22 @@ class TestTheDashboardHandlerLegsOffloadTheSplitter:
         Offloaded = it is the first argument to ``asyncio.to_thread`` rather than a
         direct call.
         """
-        tree = ast.parse(
-            (SRC / "dashboard" / "handlers" / "messaging.py").read_text(encoding="utf-8")
+        from kiro_crew.dashboard.handlers import messaging
+
+        # The legs run from a messaging_api owner the facade composes, so the scan
+        # parses the facade and every owner, and fails if a leg lives in a file it
+        # does not parse.
+        owners = sorted((SRC / "dashboard" / "messaging_api").glob("[!_]*.py"))
+        assert owners, "the messaging_api owners were not found"
+        files = [SRC / "dashboard" / "handlers" / "messaging.py", *owners]
+        for leg in ("_deliver_channel_dm", "_send_to_channel_target"):
+            held = Path(getattr(messaging, leg).__code__.co_filename)
+            assert held.parts[-2:] in {path.parts[-2:] for path in files}, (leg, held)
+        tree = ast.Module(
+            body=[
+                stmt for path in files for stmt in ast.parse(path.read_text(encoding="utf-8")).body
+            ],
+            type_ignores=[],
         )
         found: dict[str, list[tuple[str, bool]]] = {}
         for node in ast.walk(tree):

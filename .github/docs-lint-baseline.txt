@@ -521,7 +521,6 @@ line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/v
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	validation.py:92-94
 line-ref	docs/request-for-change/rfc-tailnet-dashboard-access.md	dashboard/token_auth.py:1506
 line-ref	docs/request-for-change/rfc-tailnet-dashboard-access.md	dashboard/urls.py:166
-line-ref	docs/request-for-change/rfc-tailnet-dashboard-access.md	handlers/messaging.py:2355
 line-ref	docs/request-for-change/rfc-tailnet-dashboard-access.md	link_unfurl.py:193
 line-ref	docs/request-for-change/rfc-tailnet-dashboard-access.md	origin.py:114
 line-ref	docs/request-for-change/rfc-tailnet-dashboard-access.md	origin.py:198
