@@ -58,6 +58,12 @@ def _mock_sel():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_trusted_bot_turn_ledger(monkeypatch):
+    """Give every test a fresh ledger and restore the process global afterward."""
+    monkeypatch.setattr(ev, "_trusted_bot_turns", ev.TrustedBotTurnLedger())
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     """Point every home-derived path at ``tmp_path`` so nothing touches real HOME."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".kiro" / "crew"))
@@ -1450,6 +1456,132 @@ class TestExtractBlocksText:
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": long_text}}]
         assert len(ev._extract_blocks_text(blocks)) == ev._MAX_RECOVERED_TEXT_CHARS
 
+    def test_explicit_limit_cannot_bypass_the_global_cap(self):
+        class _ExplodingBlock(dict):
+            def get(self, key, default=None):
+                raise AssertionError("block inspected after the global cap")
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "x" * (ev._MAX_RECOVERED_TEXT_CHARS + 4000),
+                },
+            },
+            _ExplodingBlock(),
+        ]
+        recovered = ev._extract_blocks_text(blocks, ev._MAX_RECOVERED_TEXT_CHARS + 4000)
+        assert recovered == "x" * ev._MAX_RECOVERED_TEXT_CHARS
+
+    def test_limit_stops_the_traversal_before_a_later_block(self):
+        class _ExplodingBlock(dict):
+            def get(self, key, default=None):
+                raise AssertionError("block inspected after the budget was spent")
+
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "x" * 10}},
+            _ExplodingBlock(),
+        ]
+        assert ev._extract_blocks_text(blocks, 10) == "x" * 10
+        assert ev._extract_blocks_text(blocks, 4) == "xxxx"
+
+    def test_limit_stops_inline_rendering_before_a_later_element(self):
+        class _ExplodingElement(dict):
+            def get(self, key, default=None):
+                raise AssertionError("inline element rendered after the budget was spent")
+
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "ab" + "x" * 100},
+                            _ExplodingElement(),
+                        ],
+                    }
+                ],
+            }
+        ]
+        assert ev._extract_blocks_text(blocks, 2) == "ab"
+
+    def test_zero_limit_reads_nothing(self):
+        class _ExplodingBlocks(list):
+            def __iter__(self):
+                raise AssertionError("blocks traversed with no budget")
+
+        assert ev._extract_blocks_text(_ExplodingBlocks([{"type": "divider"}]), 0) == ""
+        assert ev._extract_blocks_text(_ExplodingBlocks([{"type": "divider"}]), -1) == ""
+
+    def test_limit_keeps_the_joined_line_shape(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "abc"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "def"}},
+        ]
+        assert ev._extract_blocks_text(blocks) == "abc\ndef"
+        assert ev._extract_blocks_text(blocks, 5) == "abc\nd"
+        # A budget that ends on the separator leaves no dangling newline.
+        assert ev._extract_blocks_text(blocks, 4) == "abc"
+
+    def test_leading_whitespace_does_not_spend_the_budget(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "   "}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "  " + "x" * 20}},
+        ]
+        assert ev._extract_blocks_text(blocks, 3) == "xxx"
+
+    def test_trusted_section_fields_follow_section_text(self):
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "summary"},
+                "fields": [
+                    {"type": "mrkdwn", "text": "first"},
+                    {"type": "mrkdwn", "text": "second"},
+                ],
+            }
+        ]
+        assert ev._extract_blocks_text(blocks) == "summary"
+        assert (
+            ev._extract_blocks_text(blocks, include_section_fields=True) == "summary\nfirst\nsecond"
+        )
+
+    # A string is iterable, so it survives a dropped ``isinstance(fields, list)``
+    # guard (its characters are skipped as non-dicts); only a non-iterable scalar
+    # makes that mutant raise, so both shapes are pinned.
+    @pytest.mark.parametrize(
+        "fields",
+        [pytest.param("not-a-list", id="iterable-string"), pytest.param(42, id="scalar")],
+    )
+    def test_trusted_section_fields_ignore_non_list_value(self, fields):
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "summary"},
+                "fields": fields,
+            }
+        ]
+        assert ev._extract_blocks_text(blocks, include_section_fields=True) == "summary"
+
+    def test_list_prefix_counts_toward_the_budget(self):
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_list",
+                        "elements": [
+                            {"elements": [{"type": "text", "text": "one"}]},
+                            {"elements": [{"type": "text", "text": "two"}]},
+                        ],
+                    }
+                ],
+            }
+        ]
+        assert ev._extract_blocks_text(blocks, 9) == "- one\n- t"
+
 
 class TestNormalizeMessageBlocks:
     def test_flattens_wrapper(self):
@@ -1922,6 +2054,134 @@ def _event(**over: object) -> dict:
     return base
 
 
+def _rich_text_scalar_block(element: dict) -> dict:
+    return {
+        "type": "rich_text",
+        "elements": [{"type": "rich_text_section", "elements": [element]}],
+    }
+
+
+_MALFORMED_SHARED_BLOCKS = [
+    ("rich-text-text", _rich_text_scalar_block({"type": "text", "text": ["bad"]})),
+    (
+        "rich-text-link",
+        _rich_text_scalar_block({"type": "link", "text": ["bad"], "url": {"bad": "value"}}),
+    ),
+    (
+        "rich-text-emoji",
+        _rich_text_scalar_block({"type": "emoji", "name": {"bad": "value"}, "unicode": ["bad"]}),
+    ),
+    ("rich-text-user", _rich_text_scalar_block({"type": "user", "user_id": ["bad"]})),
+    (
+        "rich-text-usergroup",
+        _rich_text_scalar_block({"type": "usergroup", "usergroup_id": {"bad": "value"}}),
+    ),
+    (
+        "rich-text-channel",
+        _rich_text_scalar_block({"type": "channel", "channel_id": ["bad"]}),
+    ),
+    (
+        "rich-text-broadcast",
+        _rich_text_scalar_block({"type": "broadcast", "range": {"bad": "value"}}),
+    ),
+    (
+        "rich-text-date",
+        _rich_text_scalar_block({"type": "date", "fallback": ["bad"]}),
+    ),
+    (
+        "rich-text-unknown",
+        _rich_text_scalar_block({"type": ["attacker-controlled"], "text": {"bad": "value"}}),
+    ),
+    ("section-text", {"type": "section", "text": {"text": ["bad"]}}),
+    ("context-text", {"type": "context", "elements": [{"text": {"bad": "value"}}]}),
+]
+
+_MALFORMED_SHARED_ROUTE_CASES = [
+    ("top-text-list", {"text": ["bad"]}),
+    ("top-text-dict", {"text": {"bad": "value"}}),
+    ("event-blocks-non-list", {"blocks": 42}),
+    (
+        "shared-text-non-string",
+        {
+            "attachments": [
+                {"is_share": True, "text": ["bad"]},
+                {"fallback": "plain fallback"},
+            ]
+        },
+    ),
+    (
+        "shared-fallback-list",
+        {
+            "attachments": [
+                {"is_share": True, "fallback": ["bad"]},
+                {"fallback": "plain fallback"},
+            ]
+        },
+    ),
+    (
+        "shared-fallback-dict",
+        {
+            "attachments": [
+                {"is_share": True, "fallback": {"bad": "value"}},
+                {"fallback": "plain fallback"},
+            ]
+        },
+    ),
+] + [
+    (
+        case_name,
+        {
+            "attachments": [
+                {"is_share": True, "blocks": [block]},
+                {"fallback": "plain fallback"},
+            ]
+        },
+    )
+    for case_name, block in _MALFORMED_SHARED_BLOCKS
+]
+
+
+class TestMalformedSharedMessageScalars:
+    def test_extract_blocks_ignores_malformed_scalar_values(self):
+        assert (
+            ev._extract_blocks_text([block for _case_name, block in _MALFORMED_SHARED_BLOCKS]) == ""
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "event_fields",
+        [
+            pytest.param(event_fields, id=case_name)
+            for case_name, event_fields in _MALFORMED_SHARED_ROUTE_CASES
+        ],
+    )
+    async def test_route_ignores_malformed_sibling_and_dispatches_plain_fallback(
+        self, event_fields, monkeypatch
+    ):
+        orch = _make_orch()
+        monkeypatch.setattr(ev, "_trusted_bot_turns", ev.TrustedBotTurnLedger())
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[{"fallback": "plain fallback"}],
+        )
+        event.update(event_fields)
+
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+
+        hm.assert_awaited_once()
+        assert hm.await_args.args[3] == "plain fallback"
+
+
 class TestRouteMessageGuards:
     @pytest.mark.asyncio
     async def test_activation_off_drops_plain_message(self, _mock_sel):
@@ -2138,11 +2398,508 @@ class TestRouteMessageGuards:
         assert allowed[0]["resources"] == "trusted_bot"
 
     @pytest.mark.asyncio
+    async def test_trusted_bot_attachment_fallback_is_recovered(self):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[{"fallback": "🚨 CloudWatch Alarm | myapi-5xx-alarm"}],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        assert hm.await_args is not None, "trusted-bot attachment text was dropped"
+        assert hm.await_args[0][3] == "🚨 CloudWatch Alarm | myapi-5xx-alarm"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "attachments",
+        [
+            pytest.param("bad", id="non-list"),
+            pytest.param([None], id="non-dict-member"),
+        ],
+    )
+    async def test_trusted_bot_malformed_attachments_do_not_dispatch(self, attachments: object):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=attachments,
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        hm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_trusted_bot_malformed_attachment_member_is_skipped(self):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            ts="101.0",
+            attachments=[None, {"fallback": "plain fallback"}],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        hm.assert_awaited_once()
+        assert hm.await_args is not None
+        assert hm.await_args.args[3] == "plain fallback"
+
+    @pytest.mark.asyncio
+    async def test_trusted_bot_attachment_blocks_are_recovered(self):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[
+                {
+                    "fallback": "This message contains interactive elements.",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Alarm is *firing*"},
+                        }
+                    ],
+                }
+            ],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        assert hm.await_args is not None, "trusted-bot attachment blocks were dropped"
+        assert hm.await_args[0][3] == "Alarm is *firing*"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("marker", ["is_share", "is_msg_unfurl"])
+    async def test_trusted_bot_field_only_shared_attachment_is_not_reclassified(self, marker):
+        orch = _make_orch()
+        attachment = {
+            marker: True,
+            "fallback": "This message contains interactive elements.",
+            "blocks": [
+                {
+                    "type": "section",
+                    "fields": [{"type": "mrkdwn", "text": "shared field"}],
+                }
+            ],
+        }
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[attachment],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        hm.assert_not_awaited()
+
+    @pytest.mark.parametrize("marker", ["is_share", "is_msg_unfurl"])
+    def test_trusted_bot_shared_attachment_is_skipped_before_content(self, marker):
+        class _UnreadContentAttachment(dict):
+            def get(self, key, default=None):
+                if key in {"fallback", "blocks"}:
+                    raise AssertionError(f"{key} read after shared classification")
+                return super().get(key, default)
+
+        attachment = _UnreadContentAttachment(
+            {
+                marker: True,
+                "fallback": "preview fallback",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "fields": [{"type": "mrkdwn", "text": "preview field"}],
+                    }
+                ],
+            }
+        )
+        assert ev._extract_trusted_bot_attachment_text({"attachments": [attachment]}) == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fallback", ["", "This message contains interactive elements."])
+    async def test_trusted_bot_section_fields_are_recovered(self, fallback):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[
+                {
+                    "fallback": fallback,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "fields": [
+                                {"type": "mrkdwn", "text": "Alarm: *firing*"},
+                                {"type": "mrkdwn", "text": "Region: `us-west-2`"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        hm.assert_awaited_once()
+        assert hm.await_args.args[3] == "Alarm: *firing*\nRegion: `us-west-2`"
+
+    def test_trusted_bot_section_fields_skip_malformed_and_stop_at_budget(self):
+        class _ExplodingField(dict):
+            def get(self, key, default=None):
+                raise AssertionError("field inspected after the renderer budget was spent")
+
+        prefix = "x" * (ev._MAX_RECOVERED_TEXT_CHARS - 5)
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {"fallback": prefix},
+                    {
+                        "fallback": "This message contains interactive elements.",
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "fields": [
+                                    None,
+                                    {"type": "mrkdwn", "text": 42},
+                                    {
+                                        "type": "mrkdwn",
+                                        "text": "abc" + "z" * ev._MAX_RECOVERED_TEXT_CHARS,
+                                    },
+                                    _ExplodingField(),
+                                ],
+                            }
+                        ],
+                    },
+                ]
+            }
+        )
+        assert recovered == prefix + "\n\nabc"
+        assert len(recovered) == ev._MAX_RECOVERED_TEXT_CHARS
+
+    def test_trusted_bot_padded_generic_fallback_uses_blocks(self):
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {
+                        "fallback": "  This message contains interactive elements.  ",
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": "real"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        assert recovered == "real"
+
+    def test_trusted_bot_attachment_real_fallback_precedes_blocks(self):
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {
+                        "fallback": "plain fallback",
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": "block text"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        assert recovered == "plain fallback"
+
+    @pytest.mark.asyncio
+    async def test_human_attachment_fallback_stays_excluded(self):
+        orch = _make_orch()
+        event = _event(text="", attachments=[{"fallback": "link preview"}])
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(orch, event, ev.SeenCache())
+        hm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_trusted_bot_attachment_blocks_dispatch_the_shared_rendering(self):
+        """Attachment Block Kit is rendered by the one renderer the shared path uses."""
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_list",
+                        "elements": [
+                            {
+                                "elements": [
+                                    {"type": "text", "text": "one"},
+                                    {"type": "emoji", "name": "tada"},
+                                ]
+                            }
+                        ],
+                    },
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [{"type": "link", "text": "site", "url": "https://a.invalid"}],
+                    },
+                ],
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": "section"}},
+            {"type": "context", "elements": [{"text": "context"}]},
+        ]
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[
+                {"fallback": "This message contains interactive elements.", "blocks": blocks}
+            ],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        hm.assert_awaited_once()
+        assert hm.await_args[0][3] == "- one:tada:\n> site (https://a.invalid)\nsection\ncontext"
+        assert hm.await_args[0][3] == ev._extract_blocks_text(blocks)
+
+    def test_trusted_bot_attachment_recovery_validates_and_caps_input(self):
+        assert ev._extract_trusted_bot_attachment_text({"attachments": "bad"}) == ""
+        assert (
+            ev._extract_trusted_bot_attachment_text(
+                {"attachments": [None, {"fallback": 42, "blocks": "bad"}]}
+            )
+            == ""
+        )
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {"attachments": [{"fallback": "x" * (ev._MAX_RECOVERED_TEXT_CHARS + 1)}]}
+        )
+        assert len(recovered) == ev._MAX_RECOVERED_TEXT_CHARS
+
+    def test_trusted_bot_whitespace_only_fallback_is_skipped(self):
+        assert (
+            ev._extract_trusted_bot_attachment_text({"attachments": [{"fallback": " \n "}]}) == ""
+        )
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {"attachments": [{"fallback": "a"}, {"fallback": "  "}, {"fallback": " b "}]}
+        )
+        assert recovered == "a\n\nb"
+
+    def test_trusted_bot_attachment_cap_stops_before_later_attachment(self):
+        class _ExplodingAttachment(dict):
+            def get(self, key, default=None):
+                raise AssertionError("attachment inspected after recovery cap")
+
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {"fallback": "x" * ev._MAX_RECOVERED_TEXT_CHARS},
+                    _ExplodingAttachment(),
+                ]
+            }
+        )
+        assert recovered == "x" * ev._MAX_RECOVERED_TEXT_CHARS
+
+    def test_trusted_bot_attachment_fallback_gets_only_the_remaining_budget(self):
+        prefix = "a" * (ev._MAX_RECOVERED_TEXT_CHARS - 3)
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {"fallback": prefix},
+                    {"fallback": "bc" + "x" * ev._MAX_RECOVERED_TEXT_CHARS},
+                ]
+            }
+        )
+        assert recovered == prefix + "\n\nb"
+        assert len(recovered) == ev._MAX_RECOVERED_TEXT_CHARS
+
+    def test_trusted_bot_attachment_blocks_get_only_the_remaining_budget(self):
+        class _ExplodingElement(dict):
+            def get(self, key, default=None):
+                raise AssertionError("inline element inspected after recovery cap")
+
+        prefix = "a" * (ev._MAX_RECOVERED_TEXT_CHARS - 3)
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {"fallback": prefix},
+                    {
+                        "fallback": "This message contains interactive elements.",
+                        "blocks": [
+                            {
+                                "type": "rich_text",
+                                "elements": [
+                                    {
+                                        "type": "rich_text_section",
+                                        "elements": [
+                                            {
+                                                "type": "text",
+                                                "text": "bc" + "x" * ev._MAX_RECOVERED_TEXT_CHARS,
+                                            },
+                                            _ExplodingElement(),
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ]
+            }
+        )
+        assert recovered == prefix + "\n\nb"
+        assert len(recovered) == ev._MAX_RECOVERED_TEXT_CHARS
+
+    def test_trusted_bot_renderer_exhaustion_does_not_admit_later_attachment(self):
+        prefix = "x" * (ev._MAX_RECOVERED_TEXT_CHARS - 10)
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "A"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "      "}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "B"}},
+        ]
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {"fallback": prefix},
+                    {
+                        "fallback": "This message contains interactive elements.",
+                        "blocks": blocks,
+                    },
+                    {"fallback": "C"},
+                ]
+            }
+        )
+        assert recovered == prefix + "\n\nA"
+
+    def test_trusted_bot_renderer_consumption_includes_stripped_whitespace(self):
+        prefix = "x" * (ev._MAX_RECOVERED_TEXT_CHARS - 12)
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "A"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "      "}},
+        ]
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {"fallback": prefix},
+                    {
+                        "fallback": "This message contains interactive elements.",
+                        "blocks": blocks,
+                    },
+                    {"fallback": "C"},
+                ]
+            }
+        )
+        assert recovered == prefix + "\n\nA"
+
+    @pytest.mark.parametrize(
+        "prefix_size", [ev._MAX_RECOVERED_TEXT_CHARS - 2, ev._MAX_RECOVERED_TEXT_CHARS - 1]
+    )
+    def test_trusted_bot_attachment_without_room_for_a_separator_is_skipped(self, prefix_size):
+        class _ExplodingAttachment(dict):
+            def get(self, key, default=None):
+                raise AssertionError("attachment inspected with no room left for it")
+
+        prefix = "a" * prefix_size
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {"attachments": [{"fallback": prefix}, _ExplodingAttachment()]}
+        )
+        assert recovered == prefix
+
+    def test_trusted_bot_blocks_ignore_non_string_nested_scalars(self):
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {
+                "attachments": [
+                    {
+                        "fallback": "This message contains interactive elements.",
+                        "blocks": [
+                            {
+                                "type": "rich_text",
+                                "elements": [
+                                    {
+                                        "type": "rich_text_section",
+                                        "elements": [
+                                            {"type": "text", "text": {"bad": "value"}},
+                                            {"type": "link", "text": ["bad"], "url": 17},
+                                            {
+                                                "type": "emoji",
+                                                "name": {"bad": "value"},
+                                                "unicode": 9,
+                                            },
+                                            {"type": "date", "fallback": ["bad"]},
+                                            {"type": "mystery", "text": None},
+                                            {"type": ["unhashable"], "text": "unknown "},
+                                            {"type": "text", "text": "safe"},
+                                        ],
+                                    }
+                                ],
+                            },
+                            {"type": "section", "text": {"text": 42}},
+                            {
+                                "type": "context",
+                                "elements": [{"text": ["bad"]}, {"text": "context"}],
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+        assert recovered == "unknown safe\ncontext"
+
+    @pytest.mark.asyncio
     async def test_trusted_bot_turn_limit_caps_the_thread(self, _mock_sel):
         """The (limit+1)-th consecutive trusted-bot turn in one thread is denied."""
         orch = _make_orch()
         orch._cfg.slack.trusted_bot_turn_limit = 2
-        ev._trusted_bot_turns = ev.TrustedBotTurnLedger()  # isolate module-global state
         seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
@@ -2173,7 +2930,6 @@ class TestRouteMessageGuards:
         """An allowed human's message re-opens a capped thread."""
         orch = _make_orch()
         orch._cfg.slack.trusted_bot_turn_limit = 1
-        ev._trusted_bot_turns = ev.TrustedBotTurnLedger()  # isolate module-global state
         seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
             with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
@@ -2223,7 +2979,6 @@ class TestRouteMessageGuards:
         """A capped thread does not cap a different thread."""
         orch = _make_orch()
         orch._cfg.slack.trusted_bot_turn_limit = 1
-        ev._trusted_bot_turns = ev.TrustedBotTurnLedger()  # isolate module-global state
         seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
@@ -2263,7 +3018,6 @@ class TestRouteMessageGuards:
         """An empty-after-strip mention does not move the turn count (round-5 pin)."""
         orch = _make_orch()
         orch._cfg.slack.trusted_bot_turn_limit = 1
-        ev._trusted_bot_turns = ev.TrustedBotTurnLedger()  # isolate module-global state
         seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
