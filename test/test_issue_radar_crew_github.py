@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
+from kiro_crew.apps.builtins.issue_radar.backend.github_normalization import parse_crew_marker
 
 MARKER = (
     "<!-- kirocrew-crew id=c_7f3a phase=implementing pr=2271 "
@@ -92,6 +93,98 @@ class UpdateIssueCommentTest(unittest.TestCase):
         with mock.patch.object(gh, "_gh_run", return_value=_proc("")):
             out = gh.update_issue_comment("o", "r", 9001, "body")
         self.assertEqual(out, {"id": 9001, "url": None, "updated_at": None})
+
+
+OWNER, NAME = "kirodotdev", "KiroCrew"  # brand-ok: the repository name
+
+#: A claim comment written the way the brief tells a crew to write it:
+#: references as `#N`, a commit as a short sha, a path without its `src/` prefix.
+SAFE_CLAIM = (
+    "👻 **Andromeda** is on this · Kiro Crew Issue Radar\n"
+    "implementing · #2271 · updated 20:44 UTC\n"
+    "\n<details><summary>progress</summary>\n\n"
+    "- `18:02` claimed — read `kiro_crew/cron/runner.py` and kiro_crew/x.py\n"
+    "- `18:14` not a duplicate — #2240 is a different code path\n"
+    "- `19:58` opened PR #2271 at 641d6dd\n"
+    "\n</details>\n\n" + MARKER.replace("kirocrew-crew ", "kirocrew-crew v=1 ")
+)
+
+
+class CommentBodyIsRedactedNotRewrittenTest(unittest.TestCase):
+    """Every comment write sends the REDACTED body byte-for-byte.
+
+    The client redacts and sends; it does not check the body for the Kiro Agent
+    GitHub app trigger, because nothing shipped posts an issue comment through it —
+    ``POST /issue/comment`` is not in ``_AGENT_REACHABLE`` and no other non-test
+    caller exists. The guarded path a crew actually uses is ``kirocrew gh-comment``
+    (see ``test_cli_gh_comment``), which refuses with exit 3 and sends nothing.
+    """
+
+    def _sent(self, run) -> str:
+        return json.loads(run.call_args.kwargs["input_text"])["body"]
+
+    def test_a_new_issue_comment_is_sent_byte_for_byte(self):
+        with mock.patch.object(gh, "_gh_run", return_value=_proc('{"id": 1}')) as run:
+            gh.add_issue_comment(OWNER, NAME, 7, SAFE_CLAIM)
+        self.assertEqual(self._sent(run), SAFE_CLAIM)
+
+    def test_an_edit_is_sent_byte_for_byte(self):
+        with mock.patch.object(gh, "_gh_run", return_value=_proc('{"id": 9001}')) as run:
+            gh.update_issue_comment(OWNER, NAME, 9001, SAFE_CLAIM)
+        self.assertEqual(self._sent(run), SAFE_CLAIM)
+        self.assertIn("repos/kirodotdev/KiroCrew/issues/comments/9001", run.call_args[0][0])
+
+    def test_a_pull_request_comment_posts_through_the_issue_comment_endpoint(self):
+        # On GitHub a PR's conversation comments ARE issue comments, so this is an
+        # alias; it exists under its own name because GitLab numbers the two
+        # collections independently.
+        with mock.patch.object(gh, "_gh_run", return_value=_proc('{"id": 2}')) as run:
+            gh.add_pr_comment(OWNER, NAME, 2271, SAFE_CLAIM)
+        self.assertEqual(self._sent(run), SAFE_CLAIM)
+        self.assertIn("repos/kirodotdev/KiroCrew/issues/2271/comments", run.call_args[0][0])
+
+    def test_every_comment_write_redacts_credentials_and_exfiltration_urls(self):
+        token = "ghp_" + "A" * 36
+        url = "https://example.com/data?x=" + "%41" * 24
+        marker = MARKER.replace("kirocrew-crew ", "kirocrew-crew v=1 ")
+        body = f"{token}\n{url}\n\n{marker}"
+        for write in (gh.add_issue_comment, gh.update_issue_comment, gh.add_pr_comment):
+            with self.subTest(write=write.__name__), mock.patch.object(
+                gh, "_gh_run", return_value=_proc('{"id": 1}')
+            ) as run:
+                write(OWNER, NAME, 7, body)
+                sent = self._sent(run)
+                self.assertNotIn(token, sent)
+                self.assertNotIn(url, sent)
+                self.assertIn("[REDACTED: credential]", sent)
+                self.assertIn("[REDACTED: suspicious URL to example.com]", sent)
+                self.assertIn(marker, sent)
+                self.assertEqual(parse_crew_marker(sent), parse_crew_marker(body))
+
+
+class ClaimMarkerRoundTripTest(unittest.TestCase):
+    """The claim a crew posts is the claim another crew reads back."""
+
+    def test_the_marker_bytes_and_the_parsed_claim_survive_the_write(self):
+        marker = MARKER.replace("kirocrew-crew ", "kirocrew-crew v=1 ")
+        with mock.patch.object(gh, "_gh_run", return_value=_proc('{"id": 9001}')) as run:
+            gh.add_issue_comment(OWNER, NAME, 7, SAFE_CLAIM)
+        sent = json.loads(run.call_args.kwargs["input_text"])["body"]
+        self.assertEqual(sent, SAFE_CLAIM)
+        self.assertEqual(sent.count(marker), 1)
+        self.assertEqual(
+            parse_crew_marker(sent),
+            {
+                "crew_id": "c_7f3a",
+                "phase": "implementing",
+                "pr": 2271,
+                "updated": "2026-08-08T20:44:12Z",
+            },
+        )
+        self.assertEqual(
+            gh.find_crew_claim([_comment_row(9001, sent)]),
+            gh.find_crew_claim([_comment_row(9001, SAFE_CLAIM)]),
+        )
 
 
 class CreatePullRequestTest(unittest.TestCase):

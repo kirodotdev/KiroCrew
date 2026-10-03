@@ -26,6 +26,7 @@ from typing import Any
 from urllib.parse import quote
 
 from kiro_crew import github_runner
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from . import github_normalization, github_queries, github_transport
 from .errors import (
@@ -2096,6 +2097,19 @@ def submit_pr_review(
     return {"id": None, "state": verb, "submitted_at": None}
 
 
+def _safe_comment_body(text: str) -> str:
+    """*text* with exfiltration URLs and then credentials redacted.
+
+    Every comment this client writes passes through here before ``gh`` runs, so the
+    redaction holds for the crew claim route, the PR Comment action and any later
+    caller without each one having to remember it. The REDACTED text is what goes
+    out, byte-for-byte -- nothing rewrites a word of the author's markdown.
+    """
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text
+
+
 def add_issue_comment(
     owner: str, repo: str, number: int, body: str, *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict:
@@ -2105,11 +2119,14 @@ def add_issue_comment(
     issue comments on GitHub (only inline review comments live elsewhere), which
     is the same reason the timeline reader uses ``issues/{n}/timeline``.
 
+    The body is sent as :func:`_safe_comment_body` redacted it, byte-for-byte.
+
     Returns ``{id, url, created_at}``.
     """
     text = (body or "").strip()
     if not text:
         raise GhCliError("a comment needs a body")
+    text = _safe_comment_body(text)
     data = _run_gh_write(
         "POST",
         f"repos/{owner}/{repo}/issues/{int(number)}/comments",
@@ -2157,7 +2174,8 @@ def update_issue_comment(
 
     ``body`` is model-authored prose, so it rides through :func:`_run_gh_write` as
     JSON on stdin and never touches argv; ``comment_id`` is ``int()``-coerced
-    before it reaches the path, so it cannot inject path segments.
+    before it reaches the path, so it cannot inject path segments. It is sent as
+    :func:`_safe_comment_body` redacted it, byte-for-byte.
 
     Returns ``{id, url, updated_at}``. ``updated_at`` rather than ``created_at``
     deliberately: on an edited comment ``created_at`` still reports the ORIGINAL
@@ -2170,6 +2188,7 @@ def update_issue_comment(
         # the comment in place with nothing in it for either a human or the next
         # crew to read.
         raise GhCliError("a comment edit needs a body")
+    text = _safe_comment_body(text)
     data = _run_gh_write(
         "PATCH",
         f"repos/{owner}/{repo}/issues/comments/{int(comment_id)}",

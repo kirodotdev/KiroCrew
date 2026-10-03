@@ -1456,6 +1456,16 @@ must not be one an agent should be granted SEPARATELY, which would make it a
 `kirocrew-dashboard`-shaped opt-in server instead. It is not: anyone who may list
 sources already reads this data from that store, so the counts add no reach.
 
+`kirocrew gh-comment` is the one LLM-facing command with NO twin, and that is a
+placement decision too. It is a safer spelling of a call the agent already makes in
+its own shell: it refuses a GitHub issue comment whose raw markdown would start the
+Kiro Agent app — core never rewrites the body — and otherwise sends it with the
+agent's own `gh`. A tool would have to make that write from the gateway, with the
+gateway's credential, which is a new forge-write reach for every agent that mounts
+it — the reach Issue Radar's `_AGENT_REACHABLE` exists to withhold. The command adds
+none, and `test/test_cli_gh_comment.py` holds that the default shell gate admits
+every form the crew brief and the pipeline conductor skill show.
+
 `kirocrew-core` tools with no CLI twin, grouped by concern (authoritative list:
 `kiro_crew.mcp_tools.build_tool_list()`, which is what `mcp_core._list_tools`
 answers `tools/list` from):

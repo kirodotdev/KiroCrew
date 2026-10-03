@@ -50,11 +50,12 @@ from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
 from off_loop_helpers import off_loop
 
-from kiro_crew import mcp_core
+from kiro_crew import github_comment_safety, mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import (
     crew_routes,
     crew_runtime,
     crew_store,
+    github_client,
     provider,
     routes,
     store,
@@ -2021,6 +2022,53 @@ class TestIssueComment(_CrewRouteCase):
         self.assertTrue(path.is_file())
         await self._comment()
         self.assertFalse(path.is_file())
+
+
+class TestIssueCommentBodyIsRedacted(_CrewRouteCase):
+    """Through the REAL GitHub client: the body reaches gh as redaction left it.
+
+    The route does not check the body for the Kiro Agent GitHub app trigger. It is
+    not agent-reachable (``_AGENT_REACHABLE`` holds only ``GET /crew`` and
+    ``PUT /crew/work``) and no frontend calls it, so nothing shipped posts an issue
+    comment here; a crew comments with ``kirocrew gh-comment``, which refuses.
+    """
+
+    SAFE = "Root cause in `kiro_crew/x.py line 10`, fixed by #9 at 641d6dd."
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.gh_run = mock.Mock(
+            return_value=mock.Mock(returncode=0, stdout='{"id": 77, "html_url": "u"}', stderr="")
+        )
+        for patcher in (
+            mock.patch.object(routes, "_repo_can_write", return_value=True),
+            mock.patch.object(provider, "client_for", return_value=github_client),
+            mock.patch.object(github_client, "_gh_run", self.gh_run),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def _comment(self, text: str):
+        body = {"owner": OWNER, "repo": REPO, "number": 7, "body": text}
+        return await self.call("POST", "/issue/comment", body=body)
+
+    async def test_a_clean_body_reaches_gh_byte_for_byte(self):
+        res = await self._comment(self.SAFE)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(_payload(res)["comment_id"], 77)
+        sent = json.loads(self.gh_run.call_args.kwargs["input_text"])["body"]
+        self.assertEqual(sent, self.SAFE)
+
+    async def test_a_credential_in_the_body_is_redacted_before_it_is_sent(self):
+        token = "ghp_" + "A" * 36
+        res = await self._comment(f"the token is {token}")
+        self.assertEqual(res.status, 200)
+        sent = json.loads(self.gh_run.call_args.kwargs["input_text"])["body"]
+        self.assertNotIn(token, sent)
+        self.assertIn("[REDACTED: credential]", sent)
+
+    async def test_nothing_in_the_route_rewrites_the_body(self):
+        self.assertFalse(hasattr(github_comment_safety, "neutralize"))
 
 
 # ── non-finite numbers in a request body ────────────────────────────────────

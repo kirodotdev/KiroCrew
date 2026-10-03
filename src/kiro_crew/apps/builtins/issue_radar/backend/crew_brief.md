@@ -247,12 +247,48 @@ differently, apply the needs-human label, and go on to the next issue without
 waiting to hear back. That costs one comment. A fleet allowed to overturn its own
 passes costs an unbounded number of investigations.
 
+## Writing a comment on a GitHub issue
+
+On GitHub, every comment you write on an issue — the claim, each edit of it, the
+three comments in "Say what you found", a takeover note, the release — goes
+through one command. Write the body to a file first, then:
+
+```
+kirocrew gh-comment post --repo <owner>/<repo> --number <n> --body-file <file>
+kirocrew gh-comment edit --repo <owner>/<repo> --comment-id <id> --body-file <file>
+```
+
+`post` prints the new comment's `id` and `url`; that `id` is the
+`claim_comment_id` you record and later pass to `edit`. Never write an issue
+comment with `gh issue comment`, `gh issue close --comment`, or a `gh api` call
+that POSTs or PATCHes `.../comments`.
+
+The reason is a GitHub app, Kiro Agent: on an issue comment whose raw text
+contains `/kiro` anywhere, in any case, it starts a session of its own and often
+opens a competing pull request — and a pasted `github.com/kirodotdev/...` link or
+`src/kiro_crew/...` path holds that substring. **The command never rewrites your
+body.** If the raw text holds it, the command exits 3, sends nothing, and lists
+every place with the replacement to write there; rewrite the body yourself and run
+the command again. Never send it another way.
+
+So write a comment this way from the start:
+
+- an issue or pull request as `#N`, never as a pasted link;
+- a commit as its short sha, never as a commit link;
+- a path without the `src/` prefix — `kiro_crew/cron/runner.py`, and
+  `kiro_crew/x.py line 10` where you mean a line; when dropping `src/` leaves a
+  further slash before `kiro`, write that path without the slash before `kiro`
+  too.
+
+On GitLab and Azure DevOps, comment the way you otherwise would.
+
 ## Claiming
 
 Claim when you have **decided to do the work** — never when you start looking.
 Investigation is free and leaves no trace; a claim is a public comment.
 
-1. Post the claim comment (format below).
+1. Post the claim comment (format below) with `kirocrew gh-comment post`, and
+   record the `id` it prints as `claim_comment_id`.
 2. **Immediately re-read the comments.** If another crew's marker is present with
    a lower comment id **and a phase that is not terminal**, you lost the race: edit
    your own comment to say you have yielded, leave it there (the yield is useful
@@ -261,9 +297,9 @@ Investigation is free and leaves no trace; a claim is a public comment.
    claim — and it will usually be *older* than the live claim, so treating it as
    one loses every time rather than occasionally.
 3. Add `crew: in progress`.
-4. From then on, **edit that same comment** — never post a second one. Edit it
-   only when something real happened. Editing does not notify subscribers, so
-   progress edits are quiet; a new comment is not.
+4. From then on, **edit that same comment** with `kirocrew gh-comment edit` — never
+   post a second one. Edit it only when something real happened. Editing does not
+   notify subscribers, so progress edits are quiet; a new comment is not.
 
 ### Claim comment format
 
@@ -291,7 +327,7 @@ else parses. `v=1` is the version of the marker format and is not optional: crew
 belonging to other people parse this comment, they run builds nobody here
 controls, and the version is the only thing that will let the format change later
 without breaking them. Write it exactly as shown, in that order, and do not invent
-fields.
+fields. Write the PR link as `#<n>`, which GitHub renders as the link.
 
 ### Taking over a dead claim
 
@@ -341,9 +377,19 @@ When all of it holds, do exactly this and nothing more:
 
    ```
    Claim taken over by 👻 **<Your Name>** · Kiro Crew Issue Radar
-   Last updated <that timestamp>, no activity on the issue since — past this
-   installation's claim TTL.
+   The claim above was last updated <that timestamp>, with no activity on the
+   issue since — past this installation's claim TTL.
    ```
+
+   Make the edit with `kirocrew gh-comment edit`, referring to the claim above
+   rather than copying a word of it — anything that has to carry forward you write
+   fresh, and it is checked like any other comment. If the edit is refused because
+   the dead crew's own existing text holds the trigger, leave that comment untouched
+   and post no second claim — a second live marker breaks the tie-break this protocol
+   rests on. Put the `crew:` label back as you found it, apply the needs-human label
+   named in the nudge, record the issue as a skip with that reason, and pick another
+   one: only a person can clear a claim whose own text cannot be sent, and that label
+   is what puts the issue in front of one.
 4. **Then claim normally**: your own comment, your own marker, the usual re-read
    tie-break, and `crew: in progress` back on under your name. The takeover clears a
    stale claim; it does not hand you one.
@@ -364,8 +410,8 @@ evidence for it — even when the conclusion is that you will not work the issue
 The reader must be able to check your reasoning without repeating your work, so
 name the specific files, functions and line numbers you read, the reproduction
 you ran and what it printed, and the version or commit where the behaviour
-changed. If it is a duplicate, link the issue or PR that already covers it and
-say what makes them the same code path. If it cannot be reproduced, say exactly
+changed. If it is a duplicate, name the issue or PR that already covers it as `#N`
+and say what makes them the same code path. If it cannot be reproduced, say exactly
 what you tried, so the requester can correct the one detail you got wrong instead
 of re-litigating the whole report.
 
@@ -589,9 +635,10 @@ it, do all five of these and then take the next issue:
    what it was called somewhere else.
 3. **Record the pass** with `phase: skipped` and a scope of `needs-decision` or
    `needs-investigation`, whichever the issue actually needs.
-4. **Release your claim**: take the claim label off and edit your claim comment to
-   say you published the question and moved on. Both, together — a claim label with
-   no live crew behind it makes every other crew skip that issue forever.
+4. **Release your claim**: take the claim label off and edit your claim comment
+   (`kirocrew gh-comment edit`) to say you published the question and moved on.
+   Both, together — a claim label with no live crew behind it makes every other
+   crew skip that issue forever.
 5. **Do not wait, and do not come back to poll for a reply.** Nothing will wake you
    for one, and nothing should.
 
@@ -642,6 +689,9 @@ your session for two hours and then be denied.
 - Never edit another crew's claim comment, except the one takeover write on a claim
   you have proved dead — and even then, append only: never rewrite or delete
   anything already in it.
+- Never post or edit a comment on a GitHub issue except with `kirocrew gh-comment`,
+  and never with `gh issue comment`, `gh issue close --comment`, or a `gh api` call
+  that POSTs or PATCHes `.../comments`.
 - Never hold uncommitted changes in two worktrees.
 - Never end a turn without writing the ledger.
 - Never put an absolute path, a host name, or anything else about this machine

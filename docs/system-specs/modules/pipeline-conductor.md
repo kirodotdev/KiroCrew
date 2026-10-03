@@ -317,6 +317,18 @@ invisible unless it keeps its own list.
   a distinct verdict.
 - **Forge labels and assignees are the cross-operator lock.** The ledger is a
   cache and never the authority on anything another operator can also touch.
+- **An issue comment can start another GitHub app.** The Kiro Agent app starts a
+  session, and often a competing pull request, on an issue comment whose raw
+  markdown holds `/kiro` in any case, and every link or source path into this
+  project does. So the skill has the stand-down evidence comment, and any other
+  issue comment, posted with `kirocrew gh-comment`, which runs
+  `kiro_crew.github_comment_safety.assert_safe` — **core never rewrites the body**:
+  a trigger is exit 3 with nothing sent, listing each place with the replacement to
+  write there — and it forbids `gh issue comment`, `gh issue close --comment` and
+  raw `gh api` writes on `.../comments`. Exit 3 is fixed by rewriting the body:
+  issues and pull requests as `#N`, commits as short shas, and paths without the
+  `src/` prefix. This is the conductor's CLI posting contract, not a guard on
+  unrelated GitHub writers.
 - **An agent without a dedicated write tool still needs a read boundary.** The
   approval-gated shell can maintain conductor state, so every probe path is derived
   rather than configurable precisely because the config is agent-authored.
@@ -364,6 +376,7 @@ derive `permissions` from the filtered list; only the conductor mounts
 |---|---|
 | `test/test_pipeline_conductor_agent.py` | Identity and charter, the owned filename, that the retired verbosity token is absent, patrol via `monitor_start` rather than `wait`, that the prompt names the tools and scripts it runs on, that no dedicated file-writing tool is mounted, that dashboard grants are create-and-read only, that core grants are named verbs rather than a whole server, that `mcpServers` is narrowed, and that a governed host withholds and audits |
 | `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
+| `test/test_cli_gh_comment.py` | That the skill names `kirocrew gh-comment` for issue comments, shows no raw issue-comment form except to forbid it, states that the command rewrites nothing, and that the command it shows runs against a fake `gh` and passes the default shell gate |
 | `test/test_pipeline_conductor_probe_roundtrip.py` | That the probe classifies what the conversation log actually wrote, that the watchdog patterns match the constants the gateway emits, that the index needle matches the real writer, that a raw slot key finds the transcript the dashboard writes, and that `credit_spend.py` sums what the recorder wrote |
 | `test/test_pipeline_conductor_probe_banned_age.py` | That every banned-process line carries a process age or explicit unknown, and PID recycling cannot splice a new process onto stale ownership/age evidence |
 | `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, closure requests outranking claims, and absent-symbol risk handling |

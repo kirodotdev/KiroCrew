@@ -527,6 +527,24 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # (safe-key base + gh's own auth/network/TLS vars — no AWS/Slack/SSH
         # secrets), and emits an SEL audit event on success/failure/timeout.
         "github_runner.py::run_gh",
+        # `kirocrew gh-comment post|edit`: the ONE gh spawn of a CLI command an agent
+        # runs in its OWN shell, so the child holds exactly the caller's privileges
+        # -- the caller could run `gh` itself, and the command exists only so the
+        # body is redacted and checked first (a triggered issue comment is refused,
+        # never rewritten). A fixed `gh api <path> --method <POST|PATCH>
+        # --input -` list argv (never shell=True): the path is built from an
+        # owner/repo pair validated against GITHUB_OWNER_SEGMENT_RE /
+        # GITHUB_REPO_SEGMENT_RE and int()-coerced positive numbers, and the body
+        # travels as JSON on stdin, never argv; 60 s timeout. NOT sandbox-routed
+        # because it already runs inside the caller's sandbox: `main()` drops the
+        # in-sandbox marker, so a wrap here attempts the nested sandbox the
+        # launcher's seccomp filter denies (unshare EPERM), which refuses the spawn
+        # or, where isolation is opted out, runs it under a false "no backend"
+        # warning; strict mode would also hide ~/.config/gh and break the caller's
+        # own gh auth. `gh` comes from the caller's PATH for the same reason:
+        # resolve_gh's ownership walk cannot pass inside the caller's user
+        # namespace. Reached from no gateway path.
+        "cli_gh_comment.py::_send",
         # TEST-ONLY: spawns `sys.executable -c <literal>` to prove the candidate
         # read-modify-write lock holds across PROCESSES, which is what review
         # workers actually are. A single-process test cannot observe the loss it

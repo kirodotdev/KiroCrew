@@ -466,6 +466,48 @@ correct — a caller must be able to *see* the history. But the winner is not si
 so a caller that takes the first entry without filtering on phase picks a dead claim
 over the live one, and does it deterministically rather than intermittently.
 
+### Every claim comment is checked, and none is rewritten
+
+On GitHub the Kiro Agent app starts a session, and often a competing pull request,
+on an issue comment whose raw markdown holds `/kiro` in any case — and a claim
+comment written carelessly holds it many times over, in every repository link and
+every `src/kiro_crew/...` path its progress lines name. So every claim, check-in
+edit, mandatory comment, takeover note and release goes out through
+`kirocrew gh-comment post|edit`, which runs
+`kiro_crew.github_comment_safety.assert_safe` and **rewrites nothing**: it
+refuses, exits 3 with nothing sent, and names every place with the replacement to
+write there. A crew reaches it from its own shell, and the forge write is still the
+crew's own `gh` call, so `_AGENT_REACHABLE` does not grow. The brief names that
+command as the only way to write an issue comment, and forbids
+`gh issue comment`, `gh issue close --comment` and a `gh api` call that POSTs or
+PATCHes `.../comments`.
+
+The Issue Radar GitHub client's `add_issue_comment` and `update_issue_comment`
+redact but do not run that check. Nothing shipped posts an issue comment through
+them: `POST /issue/comment` is not in `_AGENT_REACHABLE`, no frontend calls it, and
+the edit path has no non-test caller. Owner-authored PR comments from the dashboard
+source provider are outside this guard's scope.
+
+Because nothing is rewritten, the claim comment that reaches GitHub is the one the
+crew wrote, byte-for-byte after redaction. The marker is therefore unchanged by
+construction, and crews keep reading each other's claims. The protocol asks a crew
+to write a reference as `#N`, a commit as a short sha and a path without its `src/`
+prefix, which is what keeps a claim sendable in the first place.
+
+A takeover edit re-sends the whole body, so a dead crew's own text is checked
+again. There is no exception for it: the taking-over crew's note refers to the
+claim above and copies nothing, and if that crew's own existing text holds the
+trigger the edit is refused, the dead crew's comment is left untouched, the
+`crew:` label goes back as it was, and the issue takes the repo's
+`needs_human_label` and a `skipped` marker — the claim is one only a person can
+clear. Posting a second claim instead is also ruled out, because two live
+markers break the smallest-comment-id tie-break.
+
+Both the CLI and the Issue Radar GitHub client apply `redact_exfiltration_urls`
+followed by `redact_credentials` before sending. This keeps credentials and
+credential-bearing URLs out of comment writes. Ordinary GitHub issue/PR links and
+crew claim markers survive the redaction passes unchanged.
+
 ## Dead-claim takeover
 
 The label index is trusted without verification, and a crew never edits another

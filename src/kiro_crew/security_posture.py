@@ -373,6 +373,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "would have matched.",
     ),
     (
+        "GitHub Issue Radar comment bodies",
+        "apps/builtins/issue_radar/backend/github_client.py",
+        "Issue and pull-request conversation comments published on GitHub by Issue "
+        "Radar, including claim edits. `_safe_comment_body` runs the two-pass "
+        "exfiltration-URL then credential chain, and the redacted body is what is "
+        "sent through the gateway's gh; core never rewrites comment markdown.",
+    ),
+    (
+        "GitHub CLI comment bodies",
+        "cli_gh_comment.py",
+        "Issue and pull-request conversation comments published on GitHub by "
+        "kirocrew gh-comment post or edit. `gh_comment_cmd` runs the two-pass "
+        "exfiltration-URL then credential chain, then sends the redacted body "
+        "byte-for-byte; a body that would start the Kiro Agent app exits 3 with "
+        "nothing sent.",
+    ),
+    (
         "Azure DevOps comment bodies",
         "apps/builtins/issue_radar/backend/azure_client.py",
         "The text Issue Radar posts as a work-item or pull-request comment on Azure "

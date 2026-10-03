@@ -240,9 +240,19 @@ def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = No
     The merge verb takes the provider's own noun (``PR`` / ``MR``), because this is
     the prohibition a crew is most likely to reason around, and one phrased in a
     vocabulary its forge does not use reads as being about something else.
+
+    The comment clause is GitHub's alone, keyed on the provider's own CLI: the Kiro
+    Agent app it guards against is a GitHub app, and ``kirocrew gh-comment`` writes
+    only to GitHub, so naming it to a crew on another forge would point it at a
+    command that cannot reach its issues.
     """
     allowed = ", ".join(f"`{lab}`" for lab in (labels or writable_labels()))
     vocab = terms or vocabulary()
+    comments = (
+        f"Never write {vocab['tracked_item']} comments without `kirocrew gh-comment`. "
+        if vocab.get("cli") == "gh"
+        else ""
+    )
     return (
         "Never: modify CI or gate configuration — the workflow or pipeline "
         "definitions this repo's gates run from, wherever they live, plus any rule "
@@ -250,10 +260,11 @@ def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = No
         f"Never write any label other than {allowed}. "
         "Never push to main or whichever branch this repo defaults to, and never "
         f"merge a {vocab['change_request_short']} yourself. Never edit another crew's "
-        "claim comment. Never hold uncommitted changes in two worktrees. Never end a "
-        "turn without writing the ledger. Never put an absolute path, a host name or "
-        "anything else about this machine into a progress line — progress lines go "
-        "public. Never report a gate as passing when you have not seen its exit code."
+        f"claim comment. {comments}Never hold uncommitted changes in two worktrees. "
+        "Never end a turn without writing the ledger. Never put an absolute path, a "
+        "host name or anything else about this machine into a progress line — "
+        "progress lines go public. Never report a gate as passing when you have not "
+        "seen its exit code."
     )
 
 

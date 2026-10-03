@@ -936,6 +936,31 @@ allocated by different services entirely, so a single shared entry point would b
 silent way to comment on an unrelated item. The `ProviderClient` protocol and the
 `TestClientParity` surface list both.
 
+In the Issue Radar GitHub client, every comment write goes through
+`_safe_comment_body`, which redacts exfiltration URLs then credentials and sends the
+REDACTED body byte-for-byte. **Core never rewrites comment markdown.**
+
+The Kiro Agent GitHub app starts a session, and often a competing pull request, on an
+ISSUE comment whose raw markdown holds `/kiro` in any case. The guarded path against
+that is `kirocrew gh-comment` (`cli_gh_comment.py`), which runs
+`kiro_crew.github_comment_safety.assert_safe`, exits 3 with nothing sent, and names
+every place with the replacement to write there (`#N` for an issue or pull request, a
+short sha for a commit, a repository path without the `src/` prefix) so the author
+rewrites the body and retries. The crew brief and the conductor skill tell crews and
+the conductor to use it for every issue comment, and name it as the only way.
+
+This client redacts but does not run that check, because nothing shipped posts an
+issue comment through it: `POST /issue/comment` is not in `_AGENT_REACHABLE`, no
+frontend calls it, and `update_issue_comment` has no non-test caller. A check here
+would guard a path no caller reaches while the paths crews use would still depend on
+the CLI.
+
+A rewrite is refused as a design, not merely unimplemented: the app matches raw text,
+so any rewrite would have to keep GitHub's rendering identical across every markdown
+container while changing those bytes, and a wrong rewrite silently edits what a crew
+said in public. Owner-authored PR comments in the dashboard source provider are
+outside the guard's scope, and the GitLab and Azure DevOps clients are unchanged.
+
 The UI reads the PR detail's `auto_merge` field to decide whether it offers "enable"
 or "cancel", which is why `PR_DETAIL_CACHE_SCHEMA` is at **v5** — a v4 entry has no
 such key, and defaulting it to absent would show "enable" on an already-armed PR.

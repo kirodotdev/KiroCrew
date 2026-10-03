@@ -602,6 +602,19 @@ class TestNudge(unittest.TestCase):
         # a few of these words belong to whatever this repository called them.
         self.assertLess(len(cr.never_block().split()), 125)
 
+    def test_never_block_names_the_safe_comment_command_on_github_only(self):
+        # The Kiro Agent app is a GitHub app and the command writes only to GitHub;
+        # naming it to a crew on another forge points it at a command that cannot
+        # reach its issues.
+        clause = "Never write issue comments without `kirocrew gh-comment`."
+        github = provider.RepoKey(provider="github")
+        self.assertIn(clause, cr.never_block(terms=cr.vocabulary(github)))
+        self.assertIn(clause, cr.never_block())
+        for other in ("gitlab", "azure"):
+            text = cr.never_block(terms=cr.vocabulary(provider.RepoKey(provider=other)))
+            self.assertNotIn("gh-comment", text)
+            self.assertIn("Never edit another crew's claim comment.", text)
+
     def test_writable_labels_falls_back_rather_than_naming_an_empty_label(self):
         """A blank or missing setting must not render as an empty backtick pair.
 

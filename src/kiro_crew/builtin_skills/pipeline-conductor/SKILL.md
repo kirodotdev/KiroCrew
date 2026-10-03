@@ -506,6 +506,20 @@ evidence comment on the item. An item released silently reads as still-yours to
 the next operator, and an item disposed of with no evidence reads as abandoned
 rather than as decided.
 
+Write that comment, and any other comment you leave on an issue, to a file and post
+it with `kirocrew gh-comment post --repo <owner/repo> --number <n> --body-file <file>`
+(`edit --comment-id <id>` in place of `--number` changes one you posted). Never
+post it with `gh issue comment`, `gh issue close --comment`, or a `gh api` call that
+POSTs or PATCHes `.../comments`. The Kiro Agent GitHub app starts a session, and
+often a competing pull request, on an issue comment whose raw text holds `/kiro` in
+any case — a link to any repository whose owner or name starts with `kiro` does,
+and so does any path with a segment that starts with `kiro`. **The command never
+rewrites your body**: it exits 3 and sends nothing when the raw text holds that
+substring, listing every place with the replacement to write there. So write the
+comment that way from the start — issues and pull requests as `#N` rather than
+links, commits as short shas, and paths without the `src/` prefix — and on exit 3
+apply the listed replacements and post again.
+
 ### Queue build exclusion: `coverage_filter.py`
 
 The work source selects by label and excludes by label, and a contributor who
@@ -1103,7 +1117,7 @@ digest keying, not a defect, and it does not recur.
 | `PR` | Record PR number + head in the ledger. |
 | `GREEN` | Verify independently (below). Pass → digest + mark item `green_verified`, backfill a queued item. Fail → send the worker the delta. |
 | `BLOCKED` | Adjudicate (below). Record it in `open_rulings` and clear that entry only once the ruling is delivered via `session_send`. |
-| `STANDDOWN` / `PROPOSAL` | Verify the evidence is stated; record the disposition; unclaim with an evidence comment; close or re-queue; backfill. |
+| `STANDDOWN` / `PROPOSAL` | Verify the evidence is stated; record the disposition; unclaim with an evidence comment posted by `kirocrew gh-comment post` (never `gh issue comment`, `gh issue close --comment` or a `gh api` POST/PATCH on `.../comments`); close or re-queue; backfill. |
 | `TERMINAL` | The last dispositioned protocol report was terminal and the session has gone quiet since. **Close it out** — confirm the disposition landed, release the claim, `session_close`. Do NOT nudge: a finished worker has nothing to re-arm, and a monitor loop is only correct while something EXTERNAL can still change. |
 | `IDLE` | Intervention ladder (below). |
 | `NOPROGRESS` | The session has produced nothing — no message, no tool row — since you last acted on it, and that mark is at least one `idle_alert_secs` old. Check the **EFFECT, never liveness**: did the artifact appear, did the remote head move, is there a new commit. Effect present → healthy-slow; extend and name the expected completion signal. Effect absent → **route on the line's own age**, because two paths reach this tag and they do not mean the same thing. Within `idle_alert_secs` the transcript is WARM — held alive by inbound traffic the session never answers — and the first move is **not a nudge**, since a nudge is more of the input that produced the reading: enter the intervention ladder at its **Inspect** step. Past `idle_alert_secs` the session is cold as well as unproductive, so `IDLE`'s ladder applies from the top: the classifier ranks this tag below the clock, but the suppression fallback substitutes it for an already-dispositioned report with no age test, so a cold line can carry it. |

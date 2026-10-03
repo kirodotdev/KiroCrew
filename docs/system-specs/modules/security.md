@@ -3006,6 +3006,14 @@ an unsafe object is rejected, not structurally rewritten. Rejected content retai
 the valid last-good card. The read-only owner GET does not
 start generation; this boundary is not a non-egress allowlist exception.
 
+GitHub comment writes register both `apps/builtins/issue_radar/backend/github_client.py`
+and `cli_gh_comment.py` as egress sinks. Both run exfiltration-URL redaction followed
+by credential redaction, and the redacted body is what is sent — core never rewrites
+comment markdown. `cli_gh_comment.py` additionally refuses an issue comment whose raw
+text would start the Kiro Agent app, exiting 3 with nothing sent; that CLI is the path
+crews are told to comment through, and the Issue Radar client has no shipped
+issue-comment caller to guard.
+
 **Honest per-sink coverage.** Most redaction sinks run both scanners; a few run
 only one (`task_reporter.py` is exfil-URL-only; `sel.py`'s on-disk writer signs
 bytes as-written, so its callers redact before `log`). Those rows say so in their
