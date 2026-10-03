@@ -83,7 +83,7 @@ class _SpecReadRefused(OSError):
     """The pinned open refused the spec's inode (link, hardlink, non-regular, fence)."""
 
 
-def _read_spec_bytes(real: Path) -> bytes:
+def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None) -> bytes:
     """Read a resolved, fence-judged spec path pinned to the descriptor it opens.
 
     :func:`pinned_fs.open_fenced_for_read` refuses a link at the final
@@ -95,12 +95,19 @@ def _read_spec_bytes(real: Path) -> bytes:
     past it, so a multi-gigabyte "agent config" is still refused at the cap
     instead of being slurped into memory. Nothing here submits to the resolver
     pool off the event loop.
+
+    A consumer *fence* judges the resolved target before the open and, with the
+    sensitive-path fence, the opened inode's kernel path whenever it differs
+    from that target; either refusal raises :class:`_SpecReadRefused`.
     """
-    fd = open_fenced_for_read(
-        real,
-        fence=lambda fd_real: _fence_refuses(Path(fd_real)),
-        refusal=_SpecReadRefused,
-    )
+    if fence is not None and fence(real):
+        raise _SpecReadRefused(f"refusing to read fenced path: {real}")
+
+    def refused(fd_real: str) -> bool:
+        opened = Path(fd_real)
+        return _fence_refuses(opened) or (fence is not None and fence(opened))
+
+    fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
     cap = hooks.MAX_FILE_BYTES
     with os.fdopen(fd, "rb") as fh:
         data = fh.read(cap + 1)
@@ -346,6 +353,7 @@ def _read_agent_spec(
     *,
     operation: str = "list_agents",
     source: str = "list_agents",
+    fence: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Parse an agent config file, or ``None`` when it is not usable.
 
@@ -364,6 +372,10 @@ def _read_agent_spec(
     The agents directories are user-writable and shared with other tools, so
     none of
     these are hypothetical.
+
+    *fence*, when supplied, is an additional consumer policy evaluated on the
+    resolved target and on a differing kernel path of the opened inode. A true
+    result refuses the spec through the same unusable-file contract.
 
     *operation*/*source* label the SEL denial event emitted on a sensitive
     resolved target. Precisely BECAUSE this is the one reader for every surface,
@@ -420,7 +432,7 @@ def _read_agent_spec(
         )
         return None
     try:
-        raw = _read_spec_bytes(real)
+        raw = _read_spec_bytes(real) if fence is None else _read_spec_bytes(real, fence=fence)
     except FileTooLargeError:
         logger.debug("Skipping oversized agent config: %r", path)
         return None

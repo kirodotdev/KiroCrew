@@ -7756,6 +7756,206 @@ class TestSpecPathRefusesSymlinks:
         assert agent_mod.agent_spec_path("kirocrew") == agents / "kirocrew.json"
 
 
+def _read_mode_spec_path(name: str) -> Path | None:
+    import kiro_crew.agent as agent_mod
+
+    return agent_mod.agent_spec_path(name) or agent_mod._linked_agent_spec_path(name)
+
+
+class TestSpecPathReadModeFollowsALink:
+    """A reader that finds no regular claimant may resolve a symlinked spec.
+
+    The spec is parsed in place and never written back, so nothing is copied
+    into the agents directory. ``agent_spec_path`` keeps refusing the same link.
+    """
+
+    @staticmethod
+    def _agents(tmp_path: Path, monkeypatch) -> Path:
+        import kiro_crew.agent as agent_mod
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
+        return agents
+
+    @requires_symlinks
+    def test_a_link_to_a_regular_file_elsewhere_is_resolved(self, tmp_path: Path, monkeypatch):
+        import kiro_crew.agent as agent_mod
+
+        agents = self._agents(tmp_path, monkeypatch)
+        dotfiles = tmp_path / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "linked-agent.json"
+        target.write_text(json.dumps({"name": "linked-agent", "prompt": "p"}), encoding="utf-8")
+        link = agents / "linked-agent.json"
+        link.symlink_to(target)
+
+        assert _read_mode_spec_path("linked-agent") == link
+        assert agent_mod.agent_spec_path("linked-agent") is None
+        with pytest.raises(FileNotFoundError):
+            agent_mod.reset_agent_model("linked-agent")
+        assert link.is_symlink()
+        assert sorted(p.name for p in agents.iterdir()) == ["linked-agent.json"]
+
+    @requires_symlinks
+    def test_the_name_scan_resolves_a_link(self, tmp_path: Path, monkeypatch):
+        agents = self._agents(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.json"
+        outside.write_text(json.dumps({"name": "wanted"}), encoding="utf-8")
+        link = agents / "some-file.json"
+        link.symlink_to(outside)
+
+        assert _read_mode_spec_path("wanted") == link
+
+    @requires_symlinks
+    def test_a_link_to_a_sensitive_target_is_refused_and_audited(self, tmp_path: Path, monkeypatch):
+        import kiro_crew.agent as agent_mod
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        agents = tmp_path / ".kiro" / "agents"
+        agents.mkdir(parents=True)
+        creds = tmp_path / ".aws" / "credentials"
+        creds.parent.mkdir()
+        creds.write_text(json.dumps({"name": "evil"}), encoding="utf-8")
+        (agents / "evil.json").symlink_to(creds)
+        monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
+        audited: list[dict] = []
+        monkeypatch.setattr(discovery_mod, "_audit_denied", lambda **kw: audited.append(kw))
+
+        assert _read_mode_spec_path("evil") is None
+        assert [(row["operation"], row["error"]) for row in audited] == [
+            ("agent_spec_lookup", "sensitive path rejected")
+        ]
+
+    @requires_symlinks
+    @pytest.mark.parametrize("shape", ["dangling", "directory", "loop", "self-loop", "hardlinked"])
+    def test_a_link_to_an_unreadable_target_yields_no_spec(
+        self, tmp_path: Path, monkeypatch, shape
+    ):
+        agents = self._agents(tmp_path, monkeypatch)
+        (tmp_path / "a-directory").mkdir()
+        hardlinked = tmp_path / "hardlinked.json"
+        hardlinked.write_text(json.dumps({"name": "gone"}), encoding="utf-8")
+        os.link(hardlinked, tmp_path / "second-name.json")
+        link = agents / "gone.json"
+        target = {
+            "dangling": tmp_path / "missing.json",
+            "directory": tmp_path / "a-directory",
+            "loop": agents / "other.json",
+            "self-loop": link,
+            "hardlinked": hardlinked,
+        }[shape]
+        link.symlink_to(target)
+        if shape == "loop":
+            (agents / "other.json").symlink_to(link)
+
+        assert _read_mode_spec_path("gone") is None
+
+    @requires_symlinks
+    def test_a_dangling_link_beside_a_spec_does_not_hide_it(self, tmp_path: Path, monkeypatch):
+        agents = self._agents(tmp_path, monkeypatch)
+        target = tmp_path / "dotfiles.json"
+        target.write_text(json.dumps({"name": "writer"}), encoding="utf-8")
+        (agents / "writer.json").symlink_to(tmp_path / "missing.json")
+        (agents / "writer-dotfiles.json").symlink_to(target)
+
+        assert _read_mode_spec_path("writer") == agents / "writer-dotfiles.json"
+
+    @requires_symlinks
+    def test_a_link_to_a_spec_in_the_same_directory_is_not_a_second_claimant(
+        self, tmp_path: Path, monkeypatch
+    ):
+        agents = self._agents(tmp_path, monkeypatch)
+        real = agents / "real.json"
+        real.write_text(json.dumps({"name": "shared"}), encoding="utf-8")
+        (agents / "alias.json").symlink_to(real)
+
+        assert _read_mode_spec_path("shared") == real
+
+    @requires_symlinks
+    def test_two_links_to_one_file_are_one_spec(self, tmp_path: Path, monkeypatch):
+        agents = self._agents(tmp_path, monkeypatch)
+        target = tmp_path / "dotfiles.json"
+        target.write_text(json.dumps({"name": "writer"}), encoding="utf-8")
+        (agents / "writer-old.json").symlink_to(target)
+        (agents / "writer.json").symlink_to(target)
+
+        assert _read_mode_spec_path("writer") == agents / "writer.json"
+
+    @requires_symlinks
+    def test_a_chain_through_the_agents_directory_is_one_spec(self, tmp_path: Path, monkeypatch):
+        agents = self._agents(tmp_path, monkeypatch)
+        target = tmp_path / "dotfiles.json"
+        target.write_text(json.dumps({"name": "writer"}), encoding="utf-8")
+        (agents / "mid.json").symlink_to(target)
+        (agents / "writer.json").symlink_to(agents / "mid.json")
+
+        assert _read_mode_spec_path("writer") == agents / "writer.json"
+
+    @requires_symlinks
+    def test_a_markdown_and_a_json_link_to_one_file_are_parsed_separately(
+        self, tmp_path: Path, monkeypatch
+    ):
+        agents = self._agents(tmp_path, monkeypatch)
+        target = tmp_path / "dotfiles" / "source"
+        target.parent.mkdir()
+        target.write_text(json.dumps({"name": "writer"}), encoding="utf-8")
+        (agents / "a.md").symlink_to(target)
+        (agents / "z.json").symlink_to(target)
+
+        assert _read_mode_spec_path("writer") == agents / "z.json"
+
+    @requires_symlinks
+    def test_a_regular_claimant_keeps_the_main_result(self, tmp_path: Path, monkeypatch):
+        import kiro_crew.agent as agent_mod
+
+        agents = self._agents(tmp_path, monkeypatch)
+        regular = agents / "writer.json"
+        regular.write_text(json.dumps({"name": "writer"}), encoding="utf-8")
+        other = tmp_path / "other.json"
+        other.write_text(json.dumps({"name": "writer", "prompt": "p"}), encoding="utf-8")
+        (agents / "writer-linked.json").symlink_to(other)
+
+        assert agent_mod.agent_spec_path("writer") == regular
+        assert _read_mode_spec_path("writer") == regular
+
+    @requires_symlinks
+    def test_distinct_link_targets_declaring_one_name_are_ambiguous(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from kiro_crew.agent_discovery import AmbiguousAgentSpecError
+
+        agents = self._agents(tmp_path, monkeypatch)
+        for stem in ("first", "second"):
+            target = tmp_path / f"{stem}.json"
+            target.write_text(json.dumps({"name": "writer", "prompt": stem}), encoding="utf-8")
+            (agents / f"{stem}.json").symlink_to(target)
+
+        with pytest.raises(AmbiguousAgentSpecError):
+            _read_mode_spec_path("writer")
+
+    @requires_symlinks
+    def test_regular_ambiguity_keeps_the_main_exception(self, tmp_path: Path, monkeypatch):
+        import kiro_crew.agent as agent_mod
+
+        agents = self._agents(tmp_path, monkeypatch)
+        for stem in ("first", "second"):
+            (agents / f"{stem}.json").write_text(
+                json.dumps({"name": "writer", "prompt": stem}), encoding="utf-8"
+            )
+        linked = tmp_path / "linked.json"
+        linked.write_text(json.dumps({"name": "writer"}), encoding="utf-8")
+        (agents / "linked.json").symlink_to(linked)
+
+        with pytest.raises(ValueError) as main_error:
+            agent_mod.agent_spec_path("writer")
+        with pytest.raises(type(main_error.value)) as linked_error:
+            _read_mode_spec_path("writer")
+        assert str(linked_error.value) == str(main_error.value)
+
+
 class TestSpecPathPrefersTheDeclaredName:
     """A declared ``name`` wins over a matching filename.
 

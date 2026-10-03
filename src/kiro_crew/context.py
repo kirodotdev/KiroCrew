@@ -2054,17 +2054,18 @@ class ContextBuilder:
         agent: str, project: str | None = None, *, owner_template: str = ""
     ) -> str:
         """Read the resolved execution prompt, excluding an owner source in essentials."""
-        from kiro_crew.agent_discovery import _read_agent_spec
         from kiro_crew.member_essential_context import (
+            read_template_spec,
             resolve_relative_prompt_path,
-            resolve_template_path,
         )
 
         try:
-            path = resolve_template_path(agent, project)
-            if path is None:
+            resolved = read_template_spec(
+                agent, project, operation="agent_prompt", source="context"
+            )
+            if resolved is None:
                 return ""
-            data = _read_agent_spec(path, operation="agent_prompt", source="context")
+            path, data = resolved
             if data is None:
                 return ""
             prompt = data.get("prompt") or ""

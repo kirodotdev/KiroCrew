@@ -1430,9 +1430,23 @@ Auto relevance and file paths first discovered through tools remain agent-driven
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
 A project override of a template takes precedence over its global copy. A
-relative `file://` prompt uses the project root when its template comes from the
-project's agents directory, and the user home when it comes from the global
-agents directory, even with a project bound. Both readers share the same path
+regular global claimant keeps the existing `agent_spec_path` resolution and
+ambiguity behavior. When no regular claimant resolves, member template reads may
+follow links in the global agents directory. Same-suffix links to one resolved
+file count as one claimant; links to distinct files declaring the same name are
+ambiguous. Both member-context readers resolve and parse a template through
+`member_essential_context.read_template_spec`, which hands
+`agent_discovery._read_agent_spec` a fence chosen by how the template was
+resolved, so the reader keeps its size, sensitive-path, non-regular, hardlink
+and descriptor-pinned read guards. A template resolved as a global link is
+refused when its target, or a differing opened inode, lies inside managed memory
+or member private state, or when a managed-state root cannot be resolved. A
+template resolved as a regular global file is read as before unless the read
+lands outside that file, which is then held to the same managed-state fence.
+Project templates retain their existing read behavior. Spec writers continue to
+refuse links. A relative `file://` prompt uses the project root when its template
+comes from the project's agents directory, and the user home when it comes from
+the global agents directory, even with a project bound. Both readers share the same path
 validator: resolve symlinks and require the result to remain inside that resolved
 root. Relative execution prompts retain that root through the no-follow byte
 reader, which checks the opened descriptor's path against it. An ancestor swap

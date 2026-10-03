@@ -70,6 +70,7 @@ from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     is_markdown_spec,
     iter_agent_spec_files,
+    spec_suffix,
 )
 from kiro_crew.atomic_write import read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
@@ -2475,6 +2476,24 @@ def _spec_path_is_safe(path: Path, agents_dir: Path) -> bool:
     return True
 
 
+def _one_path_per_target(paths: list[Path], direct: set[Path]) -> list[Path]:
+    """Collapse same-suffix link aliases of one resolved file to one claimant.
+
+    The suffix stays in the key because it selects the parser. A direct filename
+    wins over another link spelling, followed by scan order.
+    """
+    kept: dict[tuple[Path, str | None], Path] = {}
+    for path in paths:
+        try:
+            key = (path.resolve(strict=True), spec_suffix(path))
+        except (OSError, RuntimeError):
+            continue
+        current = kept.get(key)
+        if current is None or (path in direct and current not in direct):
+            kept[key] = path
+    return list(kept.values())
+
+
 def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None:
     """Return the kiro spec file for *name*, or ``None`` if absent.
 
@@ -2514,11 +2533,37 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
         return None
 
     direct = set(agent_spec_candidates(agents_dir, name))
+    specs = [
+        path for path in iter_agent_spec_files(agents_dir) if _spec_path_is_safe(path, agents_dir)
+    ]
+    return _spec_claimant(name, specs, direct)
+
+
+def _linked_agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None:
+    """Return the link in the agents directory that claims *name*, or ``None``.
+
+    Only for read-only callers that have found no regular claimant through
+    :func:`agent_spec_path` and that fence the link target themselves; spec
+    writers never resolve through it. Same-suffix links resolving to one file
+    count as one claimant; links to distinct files declaring the name raise
+    :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError`.
+    """
+    if not is_registered_agent_name(name):
+        return None
+    agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
+    if not agents_dir.is_dir():
+        return None
+    direct = set(agent_spec_candidates(agents_dir, name))
+    specs = _one_path_per_target(
+        [path for path in iter_agent_spec_files(agents_dir) if path.is_symlink()], direct
+    )
+    return _spec_claimant(name, specs, direct)
+
+
+def _spec_claimant(name: str, specs: list[Path], direct: set[Path]) -> Path | None:
     declared_matches: list[Path] = []
     fallbacks: list[Path] = []
-    for spec_path in iter_agent_spec_files(agents_dir):
-        if not _spec_path_is_safe(spec_path, agents_dir):
-            continue
+    for spec_path in specs:
         try:
             data = _read_spec_capped(spec_path)
         except (OSError, ValueError):
