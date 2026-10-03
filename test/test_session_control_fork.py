@@ -803,3 +803,71 @@ class TestTheSchema:
         for field in ("agent", "model", "mode", "direction"):
             with pytest.raises(ValidationError):
                 validate_tool_args({field: "x"}, SESSION_FORK_SCHEMA)
+
+
+# ── a member captain forks only what it created ─────────────────────────────
+
+
+def _member_captain(monkeypatch, caller):
+    monkeypatch.setattr(sc, "captain_caller", lambda _s, key: key == caller.key)
+    monkeypatch.setattr(sc, "_member_caller", lambda _s, key: key == caller.key)
+
+
+def test_a_member_captain_cannot_fork_a_session_it_did_not_create(tmp_path, monkeypatch):
+    """A fork hands the caller a child bound to the source's memory, so a member
+    captain's steering reach must not become a way to take over a session that
+    belongs to another member."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    foreign = _seed(state, "chat-2")
+    foreign._created_by = "chat-9-other-lead"
+    _member_captain(monkeypatch, caller)
+
+    with pytest.raises(sc.SessionControlError) as error:
+        _fork(state, caller, source=foreign.key)
+    assert error.value.code == "not_creator"
+
+
+def test_a_carried_captain_verdict_stays_refused_when_the_captain_reread_flips(
+    tmp_path, monkeypatch
+):
+    """The gate carried False (a member captain); the switch then turns off, so
+    `captain_caller` answers False. That must not reopen the fork."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    foreign = _seed(state, "chat-2")
+    foreign._created_by = "chat-9-other-lead"
+    monkeypatch.setattr(sc, "captain_caller", lambda _s, _k: False)
+
+    with pytest.raises(sc.SessionControlError) as error:
+        asyncio.run(
+            sc.fork_session(
+                state,
+                caller_session_key=_key(caller),
+                source=foreign.key,
+                caller_fenced=False,
+            )
+        )
+    assert error.value.code == "not_creator"
+
+
+def test_a_member_captain_still_forks_its_own_child(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    own = _seed(state, "chat-2")
+    own._created_by = caller.key
+    _member_captain(monkeypatch, caller)
+
+    result = _fork(state, caller, source=own.key)
+    assert state.get_slot(result["target"]) is not None
+
+
+def test_a_non_member_captain_forks_like_any_person_opened_tab(tmp_path, monkeypatch):
+    """On a tab that is not a crew member the captain changes nothing."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    persons_tab = _seed(state, "chat-2")
+    monkeypatch.setattr(sc, "captain_caller", lambda _s, key: key == caller.key)
+
+    result = _fork(state, caller, source=persons_tab.key)
+    assert state.get_slot(result["target"]) is not None

@@ -32,19 +32,26 @@ logger = logging.getLogger(__name__)
 # AS A CREW MEMBER (either spelling). Read back by :func:`_carried_fence` on every
 # route, never by anything outside this module.
 _MEMBER_ADMITTED = "session_control_member_admitted"
+# Set beside ``_MEMBER_ADMITTED`` when that admitted member is ALSO a crew captain
+# (``sc.captain_caller``), read at the same gate on the same verified scope.
+_CAPTAIN_ADMITTED = "session_control_captain_admitted"
 
 
 def _carried_fence(request: web.Request) -> bool | None:
     """The ownership-fence verdict this request's admission already settled.
 
     ``True`` when the gate admitted the caller as a crew member — a member is
-    ALWAYS creator-fenced, and that decision was made on the caller's verified
+    creator-fenced, and that decision was made on the caller's verified
     scope, so the route hands it to ``session_control.py`` as
     ``precomputed_ownership_fenced`` rather than letting the fence re-derive it
-    from the config record after the body read has suspended. ``None`` for every
-    other caller (owner / Global-V1), whose fence is evaluated inline as before.
+    from the config record after the body read has suspended. ``False`` when that
+    member is also a crew captain, the one member the fence does not bind, decided
+    at the same gate. ``None`` for every other caller (owner / Global-V1), whose
+    fence is evaluated inline as before.
     """
-    return True if request.get(_MEMBER_ADMITTED) is True else None
+    if request.get(_MEMBER_ADMITTED) is not True:
+        return None
+    return request.get(_CAPTAIN_ADMITTED) is not True
 
 
 async def _private_caller_refusal(request: web.Request) -> web.Response | None:
@@ -130,6 +137,17 @@ async def _private_caller_refusal(request: web.Request) -> web.Response | None:
         # caller reaching a foreign same-workspace session. The admission was made
         # on the VERIFIED scope; it is the decision to keep.
         request[_MEMBER_ADMITTED] = True
+        state = request.app.get("state")
+
+        def _admitted_member_is_captain() -> bool:
+            # Fail closed: any lookup error leaves the member fenced.
+            try:
+                return sc.captain_caller(state, sc.caller_slot_key(state, session_key))
+            except Exception:
+                return False
+
+        if state is not None and await asyncio.to_thread(_admitted_member_is_captain):
+            request[_CAPTAIN_ADMITTED] = True
         return None
     return await member_scope_denied_refusal("session_control")
 

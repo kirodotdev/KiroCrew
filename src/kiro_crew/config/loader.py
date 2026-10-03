@@ -2881,6 +2881,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
         member_dispatch=_safe_bool(agent_data.get("member_dispatch", True), True),
+        # Same guard as the two switches above: a present-but-malformed value
+        # was coerced to False upstream, so only a missing key takes the default.
+        crew_captain=_safe_bool(agent_data.get("crew_captain", True), True),
         # Default true is the zero-configuration panel grant, and the guard is the
         # one above: a present-but-malformed value was already coerced to False
         # upstream, BEFORE schema validation, so it cannot ride the missing-field
@@ -3932,14 +3935,15 @@ class KiroCrewConfig:
                 data["resource_limits"] = asdict(
                     ResourceLimitsConfig.from_raw(data["resource_limits"])
                 )
-            # Same fail-closed-before-validation reason for the three agent
+            # Same fail-closed-before-validation reason for the four agent
             # switches whose safe direction is FALSE.
             # `agent.session_control` is the operator's single withdrawal of
             # cross-session control, `agent.member_dispatch` gates whether
-            # a crew member bypasses that withdrawal, and `agent.crew_panel`
-            # gates the member's own webview. Schema validation pops a
-            # present-but-malformed value and the missing-field default is TRUE
-            # for all three, so a quoted `"false"` -- a routine operator quoting
+            # a crew member bypasses that withdrawal, `agent.crew_captain`
+            # gates whether a captain escapes the creator fence, and
+            # `agent.crew_panel` gates the member's own webview. Schema
+            # validation pops a present-but-malformed value and the
+            # missing-field default is TRUE for all four, so a quoted `"false"` -- a routine operator quoting
             # mistake -- would silently ride that default back to the
             # capability staying enabled. Coerce a present non-bool to False
             # HERE, so validation sees a valid bool and keeps it; a genuinely
@@ -3955,7 +3959,12 @@ class KiroCrewConfig:
             # find missing later.
             _agent_section = data.get("agent")
             if isinstance(_agent_section, dict):
-                for _fail_closed_key in ("session_control", "member_dispatch", "crew_panel"):
+                for _fail_closed_key in (
+                    "session_control",
+                    "member_dispatch",
+                    "crew_captain",
+                    "crew_panel",
+                ):
                     if _fail_closed_key in _agent_section and not isinstance(
                         _agent_section[_fail_closed_key], bool
                     ):

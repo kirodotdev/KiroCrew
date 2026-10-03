@@ -35,6 +35,11 @@ PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 # ``kirocrew-work`` mount and the prompt that drives it.
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
+# The one conductor whose session may reach sessions it did not create. The NAME
+# is the authorization input ``dashboard/session_control.py`` reads off the caller
+# slot, so it lives beside the filename rather than as a second literal there.
+CAPTAIN_AGENT_NAME = "kirocrew-captain"
+CAPTAIN_AGENT_FILENAME = f"{CAPTAIN_AGENT_NAME}.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
@@ -52,6 +57,7 @@ OWNED_KIRO_AGENT_FILES = (
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
+    CAPTAIN_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,

@@ -637,7 +637,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `target_already_live` | session_revive only: the session is open already. The message carries its live key — address it directly |
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
 | `self_target` | A session cannot control itself |
-| `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, and anything either of them created) |
+| `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, a channel session, and any session an agent created). A crew captain you opened yourself is the one exception; see below |
 | `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary |
 | `ephemeral_target` | Incognito and temporary sessions are not addressable |
 | `app_scoped_target` | App-scoped sessions are not addressable, in either direction |
@@ -681,12 +681,40 @@ dispatch in the same way, because they rearrange the person's board.
 `session_status` because its rows carry other sessions' titles — the names of the
 user's private work, in front of whoever is in the thread.
 
+### The crew captain
+
+A tab you open yourself already reaches every session in its workspace. A tab
+bound to a crew member's memory does not: it is fenced to the sessions it
+created, so it cannot steer a conductor that another session opened. The
+`kirocrew-captain` template is the one exception. A crew member whose template
+is `kirocrew-captain` reaches every session in its workspace, including
+conductors it did not create. On a tab that is not a crew member the captain
+changes nothing.
+
+A session is a captain only when all of these hold:
+
+- it runs the `kirocrew-captain` template (directly, or as a crew member
+  whose template it is);
+- you opened its tab yourself (a captain that an agent created with
+  `session_create` or `session_fork` is fenced like any other);
+- it is not a scheduled run, not channel-linked or channel-mirrored, not
+  app-scoped and not incognito or temporary;
+- `agent.crew_captain` and `agent.session_control` are both on.
+
+A captain can read and message sessions bound to another member's memory, including that member's own thread. It cannot create or fork a session that takes another member's memory as its own.
+
+The reach is not inherited: sessions a captain creates are fenced as usual.
+Every other gate (workspace, incognito and app targets, channel targets) still
+applies. A captain bound to a crew member's memory keeps that store; only the
+creator fence lifts.
+
 ### Switches and ceilings
 
 | Knob | Default | Effect |
 |---|---|---|
 | `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec |
 | `agent.member_dispatch` | `true` | A crew member's DM session drives workers it created even when session control is off. Turn it off to put member callers back under the switch |
+| `agent.crew_captain` | `true` | A `kirocrew-captain` session you opened yourself may control any session in its workspace. Turn it off to fence captains like every other agent caller |
 | `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session

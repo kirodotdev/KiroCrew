@@ -81,6 +81,7 @@
         "tool_approval_timeout_secs": 600,
         "session_control": true,
         "member_dispatch": true,
+        "crew_captain": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
@@ -1179,6 +1180,20 @@
       "tags": [],
       "label": "Member Dispatch",
       "help": "Let a crew member's DM session open and drive worker sessions it creates, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers back under the Session Control switch, so an operator who withdrew session control keeps member DM threads chat-only without disabling the member. When on, a member's reach is still bounded to sessions it created itself (creator ownership), the same fence that binds it when Session Control is on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.crew_captain",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crew Captain",
+      "help": "Let a session running the kirocrew-captain agent control any session in its workspace, including conductors that other sessions created. Every other agent-driven caller (a crew member, a conductor or worker another session opened, a scheduled run, a channel session) still reaches only the sessions it created itself. A captain counts only when you opened its tab yourself: a captain that an agent created, or one linked or mirrored to a channel, is fenced like any other agent session. Needs Session Control on as well. Turn this off to put captains back under the creator fence.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

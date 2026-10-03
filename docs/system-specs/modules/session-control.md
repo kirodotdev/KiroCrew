@@ -631,6 +631,8 @@ Two rules give a member caller its shape:
   **even when the global switch is enabled**, so a member never widens to the
   ordinary caller's reach. It binds identically for case (b): the chat-slot
   member is fenced to the workers it created, never the user's own sessions.
+  The one exception is a crew captain (see "Crew captain: the one lifted target
+  fence" below).
   Every other refusal in the table above still applies to member callers
   unchanged.
 
@@ -796,10 +798,12 @@ the member, so it cannot confirm a guessed agent name.
 
 The verdict is the one the HTTP gate settled on the caller's verified scope,
 carried in as `caller_fenced` exactly as the other routes carry
-`precomputed_ownership_fenced`; absent, it is evaluated inline. It is only ever
-read as a REFUSAL, so a config record that stops saying "member" between admission
-and this check can turn a refusal into an admission the owner already holds, never
-the reverse.
+`precomputed_ownership_fenced`; absent, it is evaluated inline. Here ANY carried
+verdict means fenced: the gate carries one only for a member, and a member
+captain's carried `False` lifts the target fence, not this one. Absent, the inline
+predicate is `_creator_fenced_ignoring_captain`, which fails closed the same way.
+So a config record that stops saying "member" between admission and this check can
+turn a refusal into an admission the owner already holds, never the reverse.
 
 A session with native provider context cannot change members in place. An unused
 chat may select a member only with selection revision checks covering prewarming,
@@ -959,6 +963,49 @@ that cannot establish the asking posture is refused there too, and
 accepted-and-ignored for exactly that reason.
 
 Which code appends the entry depends on who composes the array.
+
+### Crew captain: the one lifted target fence
+
+A tab the person opened that is NOT member-bound already reaches every
+same-workspace session. A member-bound tab does not, and that is the gap: a person
+who runs their lead as a crew member (to keep its private memory) cannot steer a
+conductor another session opened. `captain_caller()` names the one slot the target
+fence does not bind:
+
+- it runs the `kirocrew-captain` template (the slot's agent, or for a member slot,
+  which stores the member's NAME, that member's `kiro_agent`);
+- `_created_by` is empty, so no agent made it (otherwise any fenced worker could
+  mint an unfenced deputy by naming the captain in `session_create`);
+- it is not a cron slot, not channel-linked or mirrored, not app-scoped, and its
+  memory mode is persistent;
+- `agent.crew_captain` and `agent.session_control` are both on.
+
+`_caller_is_ownership_fenced` returns False for such a slot before any other test,
+and the HTTP gate carries `False` for a member captain (`_CAPTAIN_ADMITTED`). This
+is the one place a carried verdict ADMITS: in `authorize_target` it lets a member
+captain reach a target it did not create. Every target-side gate (workspace,
+ephemeral, app, channel targets) still applies, and the exemption is not inherited:
+a captain's children carry `_created_by` and are fenced.
+
+The lift is for the TARGET fence only. Two fences keep binding a member captain:
+
+- **Delegation.** `create_session` treats any carried verdict as fenced and
+  otherwise reads `_creator_fenced_ignoring_captain`, so a captain cannot bind a
+  child to a peer member's private store.
+- **Fork.** `fork_session` refuses a member caller forking a session it did not
+  create, on the same fail-closed predicate, because a fork copies the source's
+  memory binding into a child the caller owns. A non-member captain forks like any
+  person-opened tab.
+
+Neither path re-reads `captain_caller`: a re-read that answers False on a config
+flip or a failed read would turn those refusals into admissions.
+
+Reading is intended. A captain may `session_read_message` a session bound to a
+peer member's store, including that member's DM thread, and what it reads lands in
+the captain's own transcript and memory. That is the capability: a coordinator
+that cannot read its conductors cannot coordinate them. What a captain cannot do is
+take a peer member's memory binding for a session it owns. `agent.crew_captain:
+false` withdraws the whole exemption.
 
 ### The crew panel rides the same vehicle
 
@@ -1604,6 +1651,11 @@ caller's model of the sidebar is stale. Member DM threads
 through the roster route that re-checks the member binding.
 
 ## Configuration
+
+`agent.crew_captain` (bool, default **true**) withdraws the crew captain's
+exemption (above) on its own, with the same fail-closed coercion as
+`agent.member_dispatch`: a present non-bool loads as `false`, and an unreadable or
+degraded `agent` section reads as off.
 
 `agent.session_control` (bool, default **true**). The grant that decides who may
 reach a peer session is the **agent config**, not this switch: the five tools come

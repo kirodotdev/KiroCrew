@@ -1565,6 +1565,21 @@ class AgentConfig:
             "same fence that binds it when Session Control is on.",
         ),
     )
+    crew_captain: bool = field(
+        default=True,
+        metadata=_meta(
+            "Crew Captain",
+            "Let a session running the kirocrew-captain agent control any session "
+            "in its workspace, including conductors that other sessions created. "
+            "Every other agent-driven caller (a crew member, a conductor or worker "
+            "another session opened, a scheduled run, a channel session) still "
+            "reaches only the sessions it created itself. A captain counts only "
+            "when you opened its tab yourself: a captain that an agent created, or "
+            "one linked or mirrored to a channel, is fenced like any other agent "
+            "session. Needs Session Control on as well. Turn this off to put "
+            "captains back under the creator fence.",
+        ),
+    )
     crew_panel: bool = field(
         default=True,
         metadata=_meta(

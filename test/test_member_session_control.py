@@ -1131,6 +1131,37 @@ class TestPrivateStoreCallerIsolation:
         assert error.value.code == "memory_delegation_denied"
         assert state.creator_slot_count(caller.key) == 0
 
+    def test_a_member_captain_cannot_select_a_peers_agent(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The captain exemption lifts which TARGETS a member reaches, never the
+        # delegation fence: a captain is not the owner's own session, so it may
+        # not bind a child to a peer member's private store. Both the inline
+        # verdict and the HTTP gate's carried False (a captain) must refuse.
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, _execution = self._member_caller(state, cfg)
+        monkeypatch.setattr(sc, "captain_caller", lambda _s, key: key == caller.key)
+        assert sc._caller_is_ownership_fenced(state, caller.key) is False
+
+        # The last pass flips the captain re-read to False, as an operator
+        # turning the switch off mid-request would; a carried False must
+        # still refuse.
+        for carried in (None, False, "flip"):
+            if carried == "flip":
+                monkeypatch.setattr(sc, "captain_caller", lambda _s, _k: False)
+                carried = False
+            with pytest.raises(sc.SessionControlError) as error:
+                asyncio.run(
+                    sc.create_session(
+                        state,
+                        caller_session_key=slot_history_key(caller),
+                        agent="peer",
+                        caller_fenced=carried,
+                    )
+                )
+            assert error.value.code == "memory_delegation_denied", carried
+        assert state.creator_slot_count(caller.key) == 0
+
     def test_a_carried_fence_verdict_refuses_on_its_own(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):

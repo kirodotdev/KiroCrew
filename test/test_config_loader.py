@@ -640,6 +640,22 @@ class TestMemberDispatchLoad:
         assert [m for m in logs if "agent.member_dispatch" in m and "not a boolean" in m], logs
 
 
+class TestCrewCaptainLoad:
+    """agent.crew_captain: same fail-closed coercion as agent.member_dispatch."""
+
+    def test_missing_key_defaults_true(self) -> None:
+        assert _load_from_dict({}).agent.crew_captain is True
+
+    def test_explicit_false(self) -> None:
+        assert _load_from_dict({"agent": {"crew_captain": False}}).agent.crew_captain is False
+
+    def test_present_non_bool_coerces_to_false(self) -> None:
+        for bad in ("false", "true", 1, None):
+            assert (
+                _load_from_dict({"agent": {"crew_captain": bad}}).agent.crew_captain is False
+            ), bad
+
+
 class TestCrewPanelLoad:
     """agent.crew_panel load-time coercion.
 

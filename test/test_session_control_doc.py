@@ -263,7 +263,7 @@ def test_the_documented_switch_defaults_match_config(doc_text: str) -> None:
     from kiro_crew.config.sections import AgentConfig
 
     agent_cfg = AgentConfig()
-    switches = ("session_control", "member_dispatch", "crew_panel")
+    switches = ("session_control", "member_dispatch", "crew_captain", "crew_panel")
     for name in switches:
         assert getattr(agent_cfg, name) is True, name
         assert f"`agent.{name}`" in doc_text, name

@@ -3440,6 +3440,15 @@ def rebuild_agent_config(
     except Exception:
         logger.debug("kirocrew-ledger-conductor alias install failed", exc_info=True)
 
+    # Install kirocrew-captain agent (a goal conductor the creator fence does not
+    # bind when the person opened it). EAGER for the same reason as the alias
+    # above: ``session_create`` and the agent picker resolve agents from the
+    # boot-time snapshot, so a lazily-written spec would be invisible there.
+    try:
+        conductor_agents._install_captain_agent()
+    except Exception:
+        logger.debug("kirocrew-captain agent install failed", exc_info=True)
+
     # Install kirocrew-security-conductor agent (one security audit's worker fleet)
     try:
         conductor_agents._install_security_conductor_agent()
@@ -3448,7 +3457,7 @@ def rebuild_agent_config(
 
     # Install kirocrew-worker agent (the default toolset plus the work-ledger set).
     #
-    # EAGER, like its six siblings above, and that placement is forced rather than
+    # EAGER, like its seven siblings above, and that placement is forced rather than
     # chosen. ``session_create`` refuses an agent it cannot resolve
     # (``agent_unresolved``), resolution runs through
     # ``config.loader._materialized_kiro_agent``, and that is a pure IN-MEMORY
@@ -3459,7 +3468,7 @@ def rebuild_agent_config(
     # snapshot, and still False after a lazy write until a refresh nothing triggers.
     #
     # Being here also means every boot re-filters this spec's grants through the
-    # governance ceiling, exactly as it does for the six siblings, so the spec
+    # governance ceiling, exactly as it does for the seven siblings, so the spec
     # cannot outlive a tightened ceiling.
     try:
         worker_agent._install_worker_agent()

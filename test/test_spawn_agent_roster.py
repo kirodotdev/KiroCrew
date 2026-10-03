@@ -257,6 +257,7 @@ class TestSpawnListUsesTheSameFilter:
                 "kirocrew-conductor",
                 "kirocrew-pipeline-conductor",
                 "kirocrew-security-conductor",
+                "kirocrew-captain",
             }
         )
         default = inspect.signature(sa.visible_agent_names).parameters["exclude"].default
@@ -268,6 +269,7 @@ class TestSpawnListUsesTheSameFilter:
                 "kirocrew-conductor",
                 "kirocrew-pipeline-conductor",
                 "kirocrew-security-conductor",
+                "kirocrew-captain",
             ):
                 assert src.count(reserved) == expected, (
                     f"{module.__name__} respells the reserved set; call "
