@@ -644,7 +644,9 @@ async def test_cancel_store_only_queued_row_never_starts(quiet) -> None:
     assert [p["_preassigned_id"] for p in mgr._queue] == [in_window.id]
     assert mgr._taskq.state_of(outside.id) == model.QUEUED
     reported: list[SubagentInfo] = []
-    mgr._report_queued_stop = lambda params: reported.append(params)  # type: ignore[method-assign]
+    mgr._report_queued_stop = lambda params, **_kw: reported.append(  # type: ignore[method-assign]
+        params
+    )
     assert await mgr.cancel(outside.id) is True
     assert mgr._taskq.state_of(outside.id) == model.CANCELLED
     assert reported and reported[0]["_preassigned_id"] == outside.id
@@ -1043,7 +1045,7 @@ async def test_boundary_cancel_marker_after_claim_releases_and_stops_row(
     params = mgr._queue.pop(0)
     mgr._running_count = 0
 
-    def _record_terminal(_params: dict) -> None:
+    def _record_terminal(_params: dict, **_kw: object) -> None:
         mgr._agents[waiting.id] = SubagentInfo(
             id=waiting.id,
             task=waiting.task,

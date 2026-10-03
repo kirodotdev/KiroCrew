@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,6 +34,7 @@ from overload_fakes import (
 import kiro_crew.subagent as subagent_mod
 import kiro_crew.subagent_manager.admission.taskq_bridge as taskq_bridge_mod
 import kiro_crew.subagent_manager.run as run_mod
+import kiro_crew.taskq.store as store_mod
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 from kiro_crew.subagent_manager.admission.types import MIN_RECHECK_DELAY_SECS
@@ -178,11 +180,16 @@ def _store_waiting(mgr: SubagentManager, parent: str = _PARENT) -> int:
     return mgr._taskq.count_pending(KIND_SUBAGENT, session_key=parent, exclude_ids=live)
 
 
-def _defer(mgr: SubagentManager, count: int, parent: str = _PARENT) -> list[SubagentInfo]:
+def _defer(
+    mgr: SubagentManager, count: int, parent: str = _PARENT, **spawn_kw: Any
+) -> list[SubagentInfo]:
     """*count* spawns the memory gate defers: rows held by the store alone."""
     with patch.object(subagent_mod, "cached_admission_check", memory_critical):
         with patch.object(SubagentManager, "_run", new=AsyncMock()):
-            infos = [mgr.spawn(f"deferred-{i}", parent_session_key=parent) for i in range(count)]
+            infos = [
+                mgr.spawn(f"deferred-{i}", parent_session_key=parent, **spawn_kw)
+                for i in range(count)
+            ]
     assert all(info.queued and not info.done for info in infos)
     windowed = {q.get("_preassigned_id") for q in mgr._queue}
     assert not windowed & {info.id for info in infos}
@@ -508,6 +515,438 @@ async def test_a_row_the_pump_starts_costs_at_most_two_exact_frames(
                 assert _card(events) == waiting == _store_waiting(mgr)
     finally:
         await mgr.cancel_all()
+        _close(mgr)
+
+
+# ── a bulk stop cancels its rows on the writer thread ────────────────────────
+
+
+def _contend_row_cancels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[threading.Event, threading.Event, list[bool]]:
+    """Each row's store cancel taken OFF the loop waits for the loop to release
+    it, the way a contended SQLite lock holds a writer.
+
+    Returns ``(entered, release, on_loop)``. A cancel taken ON the loop could
+    never be released -- the loop is the thing waiting -- so it does not wait:
+    it is recorded in *on_loop*, which records where every cancel ran, and goes
+    straight on. The off-loop wait has a deadline only as a backstop well inside
+    the tests' ``timeout(30)``; nothing is decided by it.
+    """
+    entered, release = threading.Event(), threading.Event()
+    on_loop: list[bool] = []
+    real = SpawnAdmissionCoordinator.taskq_cancel_queued
+
+    def contended(self: Any, agent_id: str, **kw: Any) -> Any:
+        here = TaskStore._on_running_loop_thread()
+        on_loop.append(here)
+        if not here:
+            entered.set()
+            assert release.wait(timeout=10), "the loop never released a contended cancel"
+        return real(self, agent_id, **kw)
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_cancel_queued", contended)
+    return entered, release, on_loop
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_stop_all_over_store_only_rows_never_blocks_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stop all over rows held only by the store: the loop keeps running while
+    their cancels wait on the database, and the card still ends at 0.
+
+    A store cancel on the loop holds it for the busy timeout, once per row,
+    whenever the store is contended (a measured 10 s for one bulk stop). The
+    probe makes every off-loop cancel wait until the LOOP releases it, so the
+    stop can only finish if the loop kept turning; the strict guard and
+    ``loop_thread_calls`` catch any store call that ran on the loop.
+    """
+    rows = 6
+    mgr = await _manager(monkeypatch, pump_off_loop=True)
+    try:
+        _defer(mgr, rows)
+        await _settle(mgr)
+        events = _record(mgr)
+        entered, release, on_loop = _contend_row_cancels(monkeypatch)
+        monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+        before = mgr._taskq.loop_thread_calls
+
+        stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+        await _until(entered.is_set, "a row's store cancel started")
+        release.set()
+        assert await asyncio.wait_for(stop, 10) == (0, rows)
+        await _settle(mgr)
+        # The checks below read the store on the loop themselves.
+        monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+
+        assert on_loop and not any(on_loop), "a row's store cancel ran on the event loop"
+        assert mgr._taskq.loop_thread_calls == before, "the stop called the store on the loop"
+        assert _kinds(events).count("subagent_done") == rows
+        assert _depths(events)[-1] == {"queued": 0}
+        assert _store_waiting(mgr) == 0
+    finally:
+        _close(mgr)
+
+
+def _parent_window(mgr: SubagentManager, parent: str = _PARENT) -> list[str]:
+    """The unstarted window entries *parent* has."""
+    return [
+        str(p.get("_preassigned_id") or "")
+        for p in mgr._queue
+        if p.get("parent_session_key") == parent and not p.get("_resume_id")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_stop_all_queues_its_cancels_and_drops_its_entries_before_it_suspends(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """By the time Stop all first yields, its cancel job is queued and the
+    window holds none of the parent's rows: a stagger timer or a pump pass that
+    runs in that yield finds nothing of this parent's to start."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
+    try:
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(3)]
+            await _settle(mgr)
+        assert sorted(_parent_window(mgr)) == sorted(r.id for r in rows)
+        posted: list[list[str]] = []
+        real = SpawnAdmissionCoordinator.taskq_post_cancel_queued
+
+        def post(self: Any, agent_ids: Any) -> Any:
+            posted.append(list(agent_ids))
+            return real(self, agent_ids)
+
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", post)
+
+        stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+        await asyncio.sleep(0)
+
+        assert posted and sorted(posted[0]) == sorted(r.id for r in rows)
+        assert _parent_window(mgr) == []
+        assert await asyncio.wait_for(stop, 10) == (0, 3)
+        await _settle(mgr)
+        assert _store_waiting(mgr) == 0
+        await mgr.cancel_all()
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_refill_queued_before_stop_all_windows_none_of_the_parents_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refill fetch that is already on the writer thread when Stop all is
+    clicked runs BEFORE the stop's cancels, so it reads every one of the
+    parent's rows as waiting. Windowed, the rows the stop is cancelling would
+    come back as entries for cancelled rows, and the store-only ones would be
+    left out of the stop's pending read (it skips windowed rows) and stay
+    waiting after the stop reported done."""
+    mgr = await _manager(monkeypatch, pump_off_loop=True, max_concurrent=1)
+    try:
+        mgr._taskq._window = 2
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(4)]
+            await _settle(mgr)
+        windowed = _parent_window(mgr)
+        assert len(windowed) == 2 and _store_waiting(mgr) == 4
+        events = _record(mgr)
+        mgr._taskq._window = 10
+        entered, go = threading.Event(), threading.Event()
+        real = SpawnAdmissionCoordinator._refill_fetch
+
+        def held(self: Any, *a: Any, **kw: Any) -> Any:
+            entered.set()
+            assert go.wait(timeout=10), "the test never released the refill fetch"
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "_refill_fetch", held)
+        refill = asyncio.ensure_future(mgr._admission.taskq_refill_window_async())
+        await _until(entered.is_set, "the refill fetch started on the writer thread")
+
+        stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        go.set()
+        assert await asyncio.wait_for(stop, 10) == (0, 4)
+        await asyncio.wait_for(refill, 10)
+        await _settle(mgr)
+
+        assert all(mgr._taskq.state_of(r.id) == model.CANCELLED for r in rows)
+        assert _parent_window(mgr) == []
+        assert _store_waiting(mgr) == 0
+        assert _kinds(events).count("subagent_done") == 4
+        assert _depths(events)[-1] == {"queued": 0}
+        assert mgr._stopping_parents == {}
+        await mgr.cancel_all()
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_stop_all_whose_post_raises_leaves_the_window_whole(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """The cancel job is queued BEFORE the entries are dropped: a post that
+    raises cancelled nothing, so every row stays in the window, waiting, and
+    the stop reports the failure instead of rows it never stopped."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
+    try:
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(2)]
+            await _settle(mgr)
+        events = _record(mgr)
+
+        def refused(self: Any, agent_ids: Any) -> Any:
+            raise RuntimeError("the writer is gone")
+
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", refused)
+        with pytest.raises(RuntimeError, match="the writer is gone"):
+            await mgr.cancel_for_parent(_PARENT)
+        await _settle(mgr)
+
+        assert sorted(_parent_window(mgr)) == sorted(r.id for r in rows)
+        assert all(mgr._taskq.state_of(r.id) == model.QUEUED for r in rows)
+        assert "subagent_done" not in _kinds(events)
+        assert mgr._stopping_parents == {}
+        await mgr.cancel_all()
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_stop_all_reposts_a_row_cancel_that_did_not_land(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A store outage during Stop all: the window entry is dropped and the stop
+    is published, so the cancel that did NOT land is re-posted rather than
+    assumed (a row left ``queued`` is dispatchable by the next incarnation),
+    and its report keeps the settle, because nothing wrote the row's state."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
+    try:
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            row = mgr.spawn("work the user then stops", parent_session_key=_PARENT)
+            await _settle(mgr)
+        assert _parent_window(mgr) == [row.id]
+        store = mgr._taskq
+        attempts: list[str] = []
+        real_cancel = store.cancel
+
+        def cancel(task_id: str, **kw: Any) -> Any:
+            if task_id == row.id:
+                attempts.append(task_id)
+                if len(attempts) == 1:
+                    raise TaskStoreUnavailable("the store could not be reached")
+            return real_cancel(task_id, **kw)
+
+        finished: list[str] = []
+        real_finish = store.finish
+
+        def finish(task_id: str, *a: Any, **kw: Any) -> Any:
+            finished.append(task_id)
+            return real_finish(task_id, *a, **kw)
+
+        monkeypatch.setattr(store, "cancel", cancel)
+        monkeypatch.setattr(store, "finish", finish)
+
+        with caplog.at_level(logging.DEBUG, logger=_ADMISSION_LOGGER):
+            assert await mgr.cancel_for_parent(_PARENT) == (0, 1)
+            await _settle(mgr)
+
+        assert _parent_window(mgr) == []
+        assert store.state_of(row.id) == model.CANCELLED
+        assert attempts == [row.id, row.id], "the cancel that did not land was not re-posted"
+        assert row.id in finished, "the report skipped the settle for a cancel that did not land"
+        # The re-posted cancel landed first, so that settle's refusal lost
+        # nothing; the re-post has already warned once.
+        assert _warned(caplog, _ADMISSION_LOGGER, "did not commit") == 0
+        await mgr.cancel_all()
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_stop_all_cancelled_mid_batch_still_reports_every_row_it_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batch cancel is already queued on the writer thread when the request
+    is cancelled, so its rows end cancelled either way, and each one's stop is
+    still reported: a row cancelled in the store with no terminal report would
+    leave its wave waiting for a completion that never comes."""
+    rows = 3
+    mgr = await _manager(monkeypatch, pump_off_loop=True)
+    try:
+        _defer(mgr, rows)
+        await _settle(mgr)
+        events = _record(mgr)
+        entered, release, _on_loop = _contend_row_cancels(monkeypatch)
+
+        stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+        await _until(entered.is_set, "a row's store cancel started")
+        stop.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stop
+        await _settle(mgr)
+
+        assert _kinds(events).count("subagent_done") == rows
+        assert _depths(events)[-1] == {"queued": 0}
+        assert _store_waiting(mgr) == 0
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_shutdown_during_stop_all_drains_the_reports_its_applier_spawns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shutdown that starts while Stop all's cancel job is still on the writer
+    thread drains the queued-stop reports the job's applier spawns once it
+    answers. Its first snapshot of the reports holds only the applier, so a
+    drain that never re-read them returned as soon as the applier did, with
+    every row cancelled in the store and its report still pending as the loop
+    closed."""
+    rows = 3
+    mgr = await _manager(monkeypatch, pump_off_loop=True)
+    try:
+        infos = _defer(mgr, rows)
+        await _settle(mgr)
+        events = _record(mgr)
+        entered, release, _on_loop = _contend_row_cancels(monkeypatch)
+
+        stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+        await _until(entered.is_set, "a row's store cancel started")
+        drained = asyncio.Event()
+        real_wait = asyncio.wait
+
+        async def wait(tasks: Any, **kw: Any) -> Any:
+            # The job is released only once the report drain is waiting on
+            # it, so the drain's first snapshot is the applier alone.
+            if tasks and all(t in mgr._report_tasks for t in tasks):
+                drained.set()
+            return await real_wait(tasks, **kw)
+
+        shutdown = asyncio.ensure_future(mgr.cancel_all())
+        with patch.object(asyncio, "wait", new=wait):
+            await asyncio.wait_for(drained.wait(), 10)
+            release.set()
+            await asyncio.wait_for(shutdown, 20)
+
+        assert [t for t in mgr._report_tasks if not t.done()] == []
+        assert _kinds(events).count("subagent_done") == rows
+        assert all(mgr._taskq.state_of(info.id) == model.CANCELLED for info in infos)
+        await asyncio.wait_for(stop, 10)
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+@pytest.mark.parametrize("path", ["stop_all", "stage_cancel", "parent_end", "cancel"])
+async def test_a_queued_stop_skips_the_settle_its_landed_cancel_already_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+    pump_off_loop: bool,
+    path: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A landed cancel IS the row's terminal write, so the queued-stop report
+    writes no second one, whichever path stopped the row. That second
+    ``finish`` could only be refused (the row is already ``cancelled``) and
+    cost a writer job per row; the propagation to a waiting parent is still
+    owed."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    try:
+        infos = _defer(mgr, 3, _stage_boundary_owner="stage-1")
+        ids = {info.id for info in infos}
+        await _settle(mgr)
+        finished: list[str] = []
+        real_finish = mgr._taskq.finish
+
+        def finish(task_id: str, *a: Any, **kw: Any) -> Any:
+            finished.append(task_id)
+            return real_finish(task_id, *a, **kw)
+
+        monkeypatch.setattr(mgr._taskq, "finish", finish)
+        propagated: list[str] = []
+        real_sync = SpawnAdmissionCoordinator.taskq_child_terminal
+        real_async = SpawnAdmissionCoordinator.taskq_child_terminal_async
+
+        def child_terminal(self: Any, child: SubagentInfo, state: str) -> None:
+            propagated.append(child.id)
+            real_sync(self, child, state)
+
+        async def child_terminal_async(self: Any, child: SubagentInfo, state: str) -> None:
+            propagated.append(child.id)
+            await real_async(self, child, state)
+
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_child_terminal", child_terminal)
+        monkeypatch.setattr(
+            SpawnAdmissionCoordinator, "taskq_child_terminal_async", child_terminal_async
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_ADMISSION_LOGGER):
+            if path == "stop_all":
+                assert await mgr.cancel_for_parent(_PARENT) == (0, 3)
+            elif path == "stage_cancel":
+                assert await mgr.cancel_for_boundary(_PARENT, "stage-1") == (0, 3)
+            elif path == "parent_end":
+                stopped = await mgr.cancel_for_teardown(
+                    sorted(ids), parent_session_key=_PARENT, verb="test"
+                )
+                assert stopped == 3
+            else:
+                for agent_id in sorted(ids):
+                    assert await mgr.cancel(agent_id) is True
+            await _settle(mgr)
+
+        assert [i for i in finished if i in ids] == []
+        assert _warned(caplog, _ADMISSION_LOGGER, "did not commit") == 0
+        assert sorted(propagated) == sorted(ids)
+        assert all(mgr._taskq.state_of(i) == model.CANCELLED for i in ids)
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_refused_settle_is_a_warning_only_when_the_row_holds_another_state(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A refused terminal write whose row already holds the state it asked for
+    lost nothing -- a queued stop whose re-posted cancel wrote ``cancelled``
+    before its settle's ``finish`` -- so it is DEBUG. Any other refusal is a
+    run whose outcome the row does not carry, and stays a WARNING."""
+    mgr = await _manager(monkeypatch, pump_off_loop=False)
+    try:
+        (row,) = _defer(mgr, 1)
+        await _settle(mgr)
+        assert mgr._taskq.cancel(row.id) is not None
+        report = SpawnAdmissionCoordinator.taskq_report_refused_settle
+
+        with caplog.at_level(logging.DEBUG, logger=_ADMISSION_LOGGER):
+            report(mgr._taskq, row.id, model.CANCELLED, False)
+            assert _warned(caplog, _ADMISSION_LOGGER, "did not commit") == 0
+            assert any("did not commit" in r.getMessage() for r in caplog.records)
+
+            report(mgr._taskq, row.id, model.DONE, False)
+            assert _warned(caplog, _ADMISSION_LOGGER, "did not commit") == 1
+    finally:
         _close(mgr)
 
 
@@ -1007,7 +1446,11 @@ async def test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
 ) -> None:
     """That row is still waiting: the rest are stopped, but the call raises
-    before the running sweep, so no slot is freed for the pump to start it."""
+    before the running sweep, so no slot is freed for the pump to start it.
+
+    The failure is injected at the row's store cancel, which is the part of
+    an unqueue that can raise: the batch runs each row's cancel on its own, so
+    one row's error neither stops the others nor reports that row stopped."""
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
     try:
         with patch.object(SubagentManager, "_run", new=_park):
@@ -1015,14 +1458,14 @@ async def test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing
             rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(2)]
             await _settle(mgr)
             events = _record(mgr)
-            real = mgr._unqueue
+            real = SpawnAdmissionCoordinator.taskq_cancel_queued
 
-            def flaky(agent_id: str, *a: Any, **kw: Any) -> Any:
+            def flaky(self: Any, agent_id: str, *a: Any, **kw: Any) -> Any:
                 if agent_id == rows[0].id:
                     raise RuntimeError("unqueue failed")
-                return real(agent_id, *a, **kw)
+                return real(self, agent_id, *a, **kw)
 
-            monkeypatch.setattr(mgr, "_unqueue", flaky)
+            monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_cancel_queued", flaky)
             with pytest.raises(RuntimeError, match="unqueue failed"):
                 await mgr.cancel_for_parent(_PARENT)
             await _settle(mgr)
