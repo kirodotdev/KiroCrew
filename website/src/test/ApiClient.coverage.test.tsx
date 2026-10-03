@@ -2025,6 +2025,7 @@ describe('every api method issues one well-formed /api request', () => {
     'browseDirs',
     'browseDrives',
     'recentProjects',
+    'favoriteProjects',
     'projectTree',
   ])
   const CALLER_SIGNAL = new AbortController().signal
@@ -2069,6 +2070,7 @@ describe('every api method issues one well-formed /api request', () => {
       'browseFiles',
       'browseDirs',
       'recentProjects',
+      'favoriteProjects',
     ]))
   })
 

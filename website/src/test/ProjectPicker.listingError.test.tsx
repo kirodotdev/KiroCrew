@@ -42,6 +42,7 @@ beforeEach(() => {
   installSoftNavigate(() => {})
   // No recent projects -> the picker opens straight on the Browse tab.
   vi.spyOn(api, 'recentProjects').mockResolvedValue({ dirs: [] })
+  vi.spyOn(api, 'favoriteProjects').mockResolvedValue({ dirs: [] })
 })
 
 afterEach(() => {

@@ -8,6 +8,7 @@ vi.mock('../api/client', () => ({
   api: {
     // ProjectPicker fetches these on open; the modal itself never calls them.
     recentProjects: vi.fn().mockResolvedValue({ dirs: [] }),
+    favoriteProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/', parent: '', dirs: [] }),
   },
 }))

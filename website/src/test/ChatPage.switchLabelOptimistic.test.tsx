@@ -53,6 +53,7 @@ vi.mock('../api/client', () => ({
     // The agent switch also names the re-resolved workspace binding.
     chatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'researcher', workspace: 'research-ws' }),
     recentProjects: vi.fn().mockResolvedValue({ dirs: ['/home/user/proj-x'] }),
+    favoriteProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/home/user', parent: '/home', dirs: [] }),
     projectGit: vi.fn().mockRejectedValue(new Error('not a repo')),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),

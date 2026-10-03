@@ -45,6 +45,7 @@
     "verify:decision-strip": "node scripts/capture-decision-strip.mjs",
     "verify:nav-badge-chord": "node scripts/capture-nav-badge-chord.mjs",
     "verify:feature-video-cache-row": "node scripts/capture-feature-video-cache-row.mjs",
+    "verify:favorites-picker": "node scripts/capture-favorites-picker.mjs",
     "verify:usage-refresh": "node scripts/capture-usage-refresh.mjs",
     "verify:trackpad-zoom": "node scripts/capture-trackpad-zoom.mjs",
     "verify:hold-to-talk": "node scripts/capture-hold-to-talk.mjs",

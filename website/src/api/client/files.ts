@@ -81,6 +81,18 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
         error?: string
       }>,
     recentProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/recent-projects', s => fetch('/api/recent-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+    /** The favourited project directories, in the order the user built. Bounded like the
+     *  recents read beside it: same wedged-gateway failure, same notice path. */
+    favoriteProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/favorite-projects', s => fetch('/api/favorite-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+    /** Favourite one directory. Resolves with the WHOLE list as the server now holds it, so a
+     *  caller renders the server's answer rather than a locally-guessed one; rejects with the
+     *  journaled `ApiError` when the path is refused or the list is full (`favorites_full`).
+     *  Unbounded, like every other `post` here: a write is not a read the user is waiting on a
+     *  listing for, and re-sending it is not idempotent in the way re-asking a listing is. */
+    addFavoriteProject: (path: string) => post('/api/favorite-projects', { path }).then(j) as Promise<{ dirs: string[] }>,
+    /** Un-favourite one directory. The path rides the QUERY STRING, not a body: a DELETE body is
+     *  not carried reliably by every client, which is why the endpoint reads it from the query. */
+    removeFavoriteProject: (path: string) => del('/api/favorite-projects?path=' + encodeURIComponent(path)).then(j) as Promise<{ dirs: string[] }>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the weakest
     // initiator would decide the bound.
     browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
