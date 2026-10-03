@@ -172,7 +172,13 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
 
     - **Automatic** browse/refresh clones (manifest + blob proxy) — always
       credential-free / anonymous (this function), because no per-repo owner
-      action gates them.
+      action gates them. The one browse-time clone that carries credentials is
+      not one of these: ``store_art._prewarm_owner_tier_store_assets`` runs on
+      the rows a FRESH fetch of a build-pinned ``owner``-tier index just
+      returned, in the same call, which is the authority the install path
+      re-fetches that index to obtain. It fills the manifest and blob caches
+      these two automatic paths then read; on a miss they still clone
+      anonymously.
     - **Index-originated installs** — an app whose registry entry came from an
       owner-configured *external* index (carries ``_registry``): the ``repo``
       URL is index-controlled, so the install clone is ALSO credential-free

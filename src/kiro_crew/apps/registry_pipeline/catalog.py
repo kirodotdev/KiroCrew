@@ -45,6 +45,7 @@ from kiro_crew.apps.registry_pipeline.indexes import (
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
 from kiro_crew.apps.registry_pipeline.sources import _effective_registries, _load_registry_file
+from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
 from kiro_crew.sandbox import (
     create_subprocess_limited,
@@ -478,6 +479,12 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
                 expire_paths.add(_manifest_cache_path(e))
         for cache_path in expire_paths:
             await asyncio.to_thread(_expire_cache_file, cache_path)
+        # AFTER the expiry, so an owner-tier registry's rows come back warm from
+        # this refresh instead of bare: the expiry above would otherwise discard
+        # the manifests the prewarm just wrote. ``entries`` is the fresh index
+        # ``_fetch_and_cache_external_registry`` returned, the only input the
+        # prewarm accepts (see ``store_art``).
+        await _prewarm_owner_tier_store_assets(reg, entries)
         refreshed.append(display_name)
         results.append({"name": display_name, "ok": True})
 

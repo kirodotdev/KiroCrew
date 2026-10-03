@@ -2382,6 +2382,20 @@ def _real_argv(captured_argv):
     return argv
 
 
+def _git_subcommand_index(argv: list[str]) -> int:
+    """Index of the git subcommand token: skip ``git`` and every leading ``-c KEY`` pair.
+
+    The hooks/fsmonitor neutralizer splices a variable number of ``-c KEY=VALUE`` pairs
+    in after ``git``, so the subcommand sits at a variable position. Matching
+    ``clone``/``pull`` as a bare substring of the argv would also accept the token in an
+    option value or a URL, so the asserts read the subcommand slot instead.
+    """
+    i = 1
+    while i < len(argv) and argv[i] == "-c":
+        i += 2
+    return i
+
+
 class TestStaleCloneOriginVerification:
     """A persisted clone's origin must be verified before any pull.
 
@@ -2444,8 +2458,17 @@ class TestStaleCloneOriginVerification:
         # Stale clone was removed (rmtree) and a FRESH clone from the vetted
         # URL ran — never a pull against the mismatched origin.
         assert not dest.exists()
-        assert any(a[:2] == ["git", "clone"] and vetted_url in a for a in argvs)
-        assert not any(a[:2] == ["git", "pull"] for a in argvs), argvs
+        # The hooks/fsmonitor neutralizer is spliced in after ``git``, so the
+        # subcommand sits past a variable number of ``-c`` pairs — read the
+        # subcommand slot rather than matching ``clone`` as a bare substring, and
+        # keep the pin on argv[0] == "git".
+        assert any(
+            a[0] == "git" and a[_git_subcommand_index(a)] == "clone" and vetted_url in a
+            for a in argvs
+        )
+        assert not any(
+            a[0] == "git" and a[_git_subcommand_index(a)] == "pull" for a in argvs
+        ), argvs
 
     @pytest.mark.asyncio
     async def test_matching_origin_pulls_in_place(self, tmp_path):
@@ -2478,8 +2501,25 @@ class TestStaleCloneOriginVerification:
         assert err is None
         assert dest.exists()
         argvs = [_real_argv(c) for c in captured["calls"]]
-        assert any(a[:2] == ["git", "pull"] for a in argvs), argvs
-        assert not any(a[:2] == ["git", "clone"] for a in argvs)
+        # The in-place update is now a network ``git fetch`` followed by a LOCAL
+        # ``git reset --hard FETCH_HEAD``, not a single ``git pull``: ``git pull``
+        # runs the merge and checkout in one process with the operator's global git
+        # config live, so a repository-selected filter driver could run at checkout.
+        # The split runs only the fetch on the network and lands the same worktree
+        # with the local step under masked config. Read the subcommand slot past the
+        # variable ``-c`` neutralizer pairs.
+        subcommands = [a[_git_subcommand_index(a)] for a in argvs if a and a[0] == "git"]
+        assert "fetch" in subcommands, argvs
+        assert "reset" in subcommands, argvs
+        assert "pull" not in subcommands, argvs
+        assert not any(a[0] == "git" and a[_git_subcommand_index(a)] == "clone" for a in argvs)
+        # The local update lands FETCH_HEAD.
+        assert any(
+            a[0] == "git"
+            and a[_git_subcommand_index(a)] == "reset"
+            and "FETCH_HEAD" in a
+            for a in argvs
+        ), argvs
 
 
 class TestManifestOriginGate:

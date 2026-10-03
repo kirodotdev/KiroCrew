@@ -968,9 +968,13 @@ async def test_cloned_manifest_admission_is_revalidated_before_build(monkeypatch
 async def test_reused_checkout_pull_never_repoints_origin(monkeypatch, tmp_path):
     """The reuse path only runs after the origin-mismatch gate has verified the
     checkout's origin is byte-identical to the catalog URL (a mismatch is moved
-    aside and re-cloned). It must therefore pull directly — never rewrite the
-    origin remote — so the fetched code and the persisted provenance URL name
-    the same repository by construction, not by mutation."""
+    aside and re-cloned). It must therefore update in place from that URL — never
+    rewrite the origin remote — so the fetched code and the persisted provenance URL
+    name the same repository by construction, not by mutation. The update is a
+    network ``git fetch`` of the branch followed by a LOCAL ``git reset --hard
+    FETCH_HEAD``, not a single ``git pull``: ``git pull`` runs the checkout with the
+    operator's global git config live, so a repository-selected filter driver could
+    run at checkout, whereas the local reset step runs with that config masked."""
     dest = tmp_path / "demoapp"
     (dest / ".git").mkdir(parents=True)
     monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
@@ -1002,7 +1006,25 @@ async def test_reused_checkout_pull_never_repoints_origin(monkeypatch, tmp_path)
     err = await registry._git_clone_or_pull("https://example.com/new-home.git", "main", dest, [])
 
     assert err is None
-    assert spawned[0][:2] == ["git", "pull"]
+
+    def _subcommand(argv):
+        # Skip ``git`` and every leading ``-c KEY=VALUE`` pair the hooks/fsmonitor
+        # neutralizer splices in, then read the subcommand slot.
+        i = 1
+        while i < len(argv) and argv[i] == "-c":
+            i += 2
+        return argv[i] if i < len(argv) else ""
+
+    # ``git`` is argv[0]; the hooks/fsmonitor neutralizer ``-c`` pairs follow it on
+    # every step. The update is a network ``fetch`` then a local ``reset``.
+    git_subs = [_subcommand(cmd) for cmd in spawned if cmd and cmd[0] == "git"]
+    assert "fetch" in git_subs, spawned
+    assert "reset" in git_subs, spawned
+    assert "pull" not in git_subs, spawned
+    for cmd in spawned:
+        if cmd and cmd[0] == "git":
+            assert f"core.hooksPath={os.devnull}" in cmd, cmd
+    # Never repoints the origin remote.
     assert not any(cmd[:3] == ["git", "remote", "set-url"] for cmd in spawned)
 
 
@@ -1171,8 +1193,13 @@ async def test_credentialed_pull_appends_exec_neutralizers_after_inherited_confi
     _assert_credential_transport_hardening(transport_env, raw_url, public_url)
     for argv, kwargs in spawned:
         if "fetch" not in argv:
+            # The local steps carry the inherited command config untouched, plus the
+            # pair that takes system/global git config out of scope (so no
+            # repository-selected filter driver resolves at checkout).
             assert kwargs["env"] == {
                 "BASE": "1",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_CONFIG_COUNT": "4",
                 "GIT_CONFIG_KEY_0": "core.hooksPath",
                 "GIT_CONFIG_VALUE_0": "/tmp/repository-controlled-hooks",
@@ -1587,7 +1614,16 @@ async def test_pinned_fetch_isolates_credentials_to_network_transport(monkeypatc
     assert len(wrapped) == len(spawned) == 4
     assert all(secret not in "\n".join(argv) for argv in wrapped)
     assert all(secret not in "\n".join(argv) for argv, _ in spawned)
-    assert any(argv[:4] == ["git", "remote", "add", "origin"] for argv in wrapped)
+    # Every spawn carries the ``-c`` hooks/fsmonitor neutralizer right after ``git``;
+    # the subcommand is what follows those pairs.
+
+    def _subcommand(argv: list[str]) -> list[str]:
+        rest = argv[1:]
+        while rest[:1] == ["-c"]:
+            rest = rest[2:]
+        return rest
+
+    assert any(_subcommand(argv)[:3] == ["remote", "add", "origin"] for argv in wrapped)
     assert public_url in "\n".join(part for argv in wrapped for part in argv)
 
     for argv, kwargs in spawned:

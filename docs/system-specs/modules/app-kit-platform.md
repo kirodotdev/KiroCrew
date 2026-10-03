@@ -1747,18 +1747,197 @@ By the time a credential decision is made, the row was read from
 there would relocate the confused-deputy read from the index to its cache:
 anything able to write `_registry_<name>.json` could name a private repo on the
 operator's own forge and have it cloned with the gateway's identity. So the
-escalation is split across two predicates with different reach:
+escalation is split across three predicates with different reach, and none of
+them reads the tier off a cached row:
 
-- `_is_owner_designated_repo` — the pre-existing byte-identical same-repo
-  ground, and the ONLY escalation the **automatic** browse/refresh paths get. It
-  compares against a URL the operator typed, so a poisoned cache row cannot
-  widen it. `anonymous_git_env`'s contract — automatic clones stay
-  credential-free because no per-repo owner action gates them — therefore still
-  holds unchanged.
+- `_is_owner_designated_repo` — the byte-identical same-repo ground, and the
+  only escalation a **cache-miss** browse or refresh clone gets. It compares
+  against a URL the operator typed, so a poisoned cache row cannot widen it.
+  `anonymous_git_env`'s contract — a clone driven by a cached row stays
+  credential-free because no owner action gates it — holds for those clones.
 - `_owner_tier_confirmed` — **install only**, and honours the tier only after a
   FRESH fetch of that registry's index confirms an entry whose clone URL is
   byte-identical to the row's. Same rule as the official catalog, whose install
   coordinates likewise never come from a cache.
+- `_prewarm_owner_tier_store_assets` (`registry_pipeline/store_art.py`) — the
+  one **browse-time** use of the tier, and it needs no re-fetch because it runs
+  on the fresh index itself. Both callers (`_load_external_registries` on a
+  cache miss, `refresh_registries` after its manifest-cache expiry) hand it the
+  row list `_fetch_and_cache_external_registry` just returned, in the same call,
+  before anything reads the cache back. `_load_external_registries` fetches its
+  registries concurrently and runs the prewarms **after that gather settles**,
+  one bounded batch per fresh registry run together: the provenance gate below
+  reads every sibling's cache, and a prewarm run inside the per-registry load
+  would find the siblings' caches still unwritten on a first load and skip every
+  row as ambiguous. The rows handed over are still the fresh in-memory lists.
+  For each row it does one
+  owner-credentialed shallow clone (`minimal_env` + context sandbox mode,
+  `is_clone_host_trusted` still gating the host, a
+  `prewarm_store_art_owner_tier` SEL grant per clone) — but only after the row's
+  clone URL passes `_is_supported_registry_transport`, the same https/ssh
+  allowlist the index fetch applies: a plaintext `http://` or `git://` row is
+  refused **before** any credential is offered, so owner credentials are never
+  handed to an unauthenticated transport, and the row stays cold. It reads the
+  row's `app.json` through the SAME pinned no-follow descriptor walk the art files
+  use (`_open_pinned_asset` with `max_bytes=_MANIFEST_MAX_BYTES`) — not by path: a
+  hostile clone can make `app.json` a symlink to any readable JSON on the host and
+  whatever the read returns lands in the agent-readable manifest cache, so a
+  by-path `resolve`/`stat`/`read_text` was a TOCTOU a same-uid swap could win. The
+  pinned read refuses a link at any component, a non-regular or hard-linked file,
+  and one over `_MANIFEST_MAX_BYTES` (the ceiling now validated on the opened
+  descriptor, folding in the old separate `os.stat` pre-check), and a non-UTF-8
+  body is refused like malformed JSON. It then writes
+  that `app.json` to the manifest cache and copies the image files that
+  manifest declares into the blob cache at exactly the path `handle_blob_proxy`
+  computes for the URL `_merge_manifest` emits. That copy PUBLISHES through a
+  pinned destination-parent descriptor (`_publish_pinned_asset`): the blob cache
+  root is opened once, each intermediate directory is created/opened with `dir_fd`
+  refusing a link, and the leaf is written with `atomic_write`'s `parent_dir_fd`
+  (its temp create and rename both `dir_fd`-relative) — so a same-uid process that
+  swaps an intermediate parent for a symlink cannot make the copy land bytes
+  outside the cache; the blob cache holds no secret, so no owner restriction is
+  applied. Browsing then hits both caches; a
+  miss still clones anonymously, so the cache-driven paths keep their contract.
+  A row whose `repo` key's provenance is not unambiguously this one registry's is
+  skipped: a sibling source that DECLARES the key makes it ambiguous, and so does
+  a sibling whose cache is **absent or unreadable** — an unfetched or GC'd sibling
+  could publish the same key, so the row is warmed only when every other source
+  has a readable cache that does not declare it. This is the SAME source-counting
+  core the blob proxy's single-owner credential rule reads (`sources._repo_key_claims`,
+  which both `_repo_key_owner_count` and the prewarm's `_prewarm_foreign_claims`
+  wrap): the two gates differ only in a `strict` flag — the prewarm reads an
+  absent sibling cache as a possible claimant (fail closed) where the proxy
+  simply does not count it — and in excluding the registry being attributed to,
+  so the one credential rule cannot drift into two. The prewarm therefore cannot
+  cache bytes a request reaching the same key through a different source would
+  then be served.
+  The batch is bounded by `_PREWARM_BATCH_BUDGET` (20 s), which is the clone
+  **cancellation deadline**, not a ceiling on the wait: the batch runs as one
+  gather task waited on by `asyncio.wait({batch}, timeout=…)`, and at the deadline
+  the in-flight clones are cancelled and their cleanup — the process-group kill and
+  scratch-checkout removal — is settled in a SEPARATE bounded phase capped at
+  `_PREWARM_CLEANUP_BUDGET` (twice the process-kill grace), waited on with
+  `asyncio.wait({batch}, timeout=…)` rather than `asyncio.wait_for(asyncio.shield(batch), …)`
+  so the settling batch's own re-raised `CancelledError` is reported by its absence
+  from `done` while a cancellation delivered to the prewarm from OUTSIDE still
+  propagates instead of being swallowed; a cleanup still running
+  at that second deadline is DETACHED to finish in the background so the request
+  returns, so a listing can take up to the two budgets but no longer. Splitting the
+  two budgets is deliberate — a single `asyncio.wait_for` over the gather would
+  cancel the workers and then await their unbounded cleanup inside that same call,
+  so a hanging forge on a slow filesystem would stall the listing with no bound. It
+  also caps how many rows one batch
+  CONSIDERS at `_PREWARM_MAX_ROWS` (200), checked at the TOP of the per-row loop
+  BEFORE any per-row I/O (the provenance/manifest-cache/backoff reads), so an
+  oversized index bounds not just task creation but preprocessing: once the batch
+  holds the cap's worth of candidates every remaining row is counted as overflow
+  and skipped without a read. It drives the candidates through a FIXED pool of
+  `_PREWARM_CONCURRENCY` workers pulling from a queue — never a task per row — so
+  an owner-tier index with thousands of rows cannot exhaust memory by retaining a
+  row and a coroutine for each; the cap sits at or above what the budget can
+  finish anyway, rows past it stay cold for the next fresh fetch, and the overflow
+  is logged once. Each retained candidate is slimmed to the fields a fetch and its
+  caches read (`name`/`gitUrl`/`repo`/`branch`/`subdirectory`/`commit`/`_registry`),
+  so a row's large `description` is not held for the batch's life; a retained field
+  that is non-string or longer than `_PREWARM_FIELD_MAX_LEN` (2048) rejects the row
+  before it reaches the batch, so an index cannot pad a coordinate to sit in memory
+  or feed a cache key. A cancellation
+  is cooperative for the copy
+  step: the copy worker checks a cancel flag before each asset and, when
+  cancelled, returns without recording anything, and the caller awaits that
+  return before removing the checkout, so a cancelled row leaves neither a
+  partial `.unobtainable` record nor a not-yet-copied path recorded against its
+  manifest cache. Rows still cold when the budget runs out stay cold until the
+  next fresh fetch. It runs nothing from the clone, and each declared path passes
+  the proxy's own grammar, traversal, hidden-segment and image-extension gates,
+  then is read through `_open_pinned_asset`: a no-follow descriptor walk from the
+  clone directory that refuses a symlink at any path component and validates the
+  same opened inode it reads from (regular file, single hard link, within the size
+  cap). A hostile `app.json` therefore cannot name a file outside its clone, and a
+  same-uid process cannot swap a path component in the agent-writable clone tempdir
+  for a symlink to a secret between a check and the read — any link, or a hard
+  link, is a source refusal. A declared image the
+  clone genuinely cannot supply (absent, non-regular, hard-linked, oversize, a
+  link at any component, or a Git LFS POINTER checked out in the image's place —
+  a plain clone has no `git lfs`, so publishing the pointer text would serve ASCII
+  as an `<img>`) is recorded as unobtainable so the row is
+  not re-cloned
+  for it every fresh fetch; a path the proxy's own gates reject (a non-image, or
+  one outside its grammar) is SKIPPED without being recorded — the proxy would
+  refuse a request for it whatever the clone held, so it never makes the row cold —
+  and a mere failure to WRITE the blob cache is not such a
+  refusal and leaves the asset cold to be retried, never recorded. A CLONE-LEVEL
+  failure (deleted repo, revoked credential, a forge that hangs to the budget)
+  writes no manifest, so the unobtainable record cannot cover it; instead
+  `_fetch_owner_tier_store_assets` writes a short-TTL `.clone-failed.json` record
+  (`{"at", "reason"}`, the reason a credential-free class label from
+  `_redacted_git_failure_class`, never raw git output) beside the row's manifest
+  cache, and the prewarm's pre-filter skips a row whose record is younger than
+  `_CLONE_FAILURE_BACKOFF` (6 h — several index TTLs of quiet, far below the
+  day-scale `_REWARM_AGE`), so a dead row stops stalling the hourly listing fetch
+  instead of paying the full clone attempt every index interval. The
+  budget-cancellation path writes no record (a cancelled row is not a dead row),
+  a later reaching clone removes the record, and an older or malformed record
+  reads as absent so the row is retried once the window lapses. Both sidecar
+  records (`.unobtainable.json` and `.clone-failed.json`) are read ONCE through a
+  no-follow descriptor (`_read_pinned_sidecar`) whose opened inode is validated
+  and whose bytes are bounded by `_MANIFEST_MAX_BYTES`, so a size-check-then-read
+  race cannot let a swapped-in oversize or symlinked record be followed or read
+  past the ceiling. Without the
+  prewarm an `owner`-tier catalog on a credential-only forge installs fine but
+  renders every not-yet-installed app as a generic tile with no screenshots — a
+  gap in what the operator can see, not in what they trust.
+
+Each list art field a manifest declares (`screenshots`/`screenshotsDark`)
+contributes at most `_MAX_LIST_ART_PATHS_PER_FIELD` (12) paths, in declared
+order: an owner-tier index is external and can list an unbounded number of
+screenshots, and every accepted path is a clone read plus a blob-cache file up
+to `_ART_MAX_BYTES`, so one row could otherwise fill the cache. The cap lives in
+`_declared_store_art`, which both the copy and the warm check call, so the same
+paths are dropped from each — a dropped path can never keep the row cold.
+
+**The blob cache is swept on the manifest-GC schedule.** The prewarm fills
+`cache/blobs/<repo_key>/<branch>/<path>` for every declared asset of every
+owner-tier row on each fresh fetch, and an index-driven `branch`/`gitUrl` change
+or a delisted row writes the asset under a NEW `<repo_key>/<branch>` while no
+reader ever derives the old path again — so without a sweep the old bytes live
+forever. `_gc_blob_cache_dir` (in `caches.py`, called from `_write_manifest_cache`
+alongside `_gc_manifest_cache_dir`) reclaims them age-based: the prewarm
+re-publishes a live row's assets on every fresh index fetch and the blob proxy
+refreshes a served file's mtime on every cache hit (off the event loop), so a file
+stays young by being served OR rewritten and only an orphan ages out. Only
+regular files older than every TTL plus `_BLOB_CACHE_GC_GRACE` (wider than the
+rewrite interval, so a warm row's bytes are never reclaimed) are removed, then
+empty directories are pruned bottom-up. The root chain is opened through
+`open_pinned_descendant_dir(config_dir(), ("cache", "blobs"))`, which refuses a
+link at `config_dir`, `cache` or `blobs` (a swapped `cache/blobs` is never
+entered and nothing in its link target is touched) and then hands the sweep the
+pinned `blobs` descriptor — so the walk never follows a symlink, and every
+subdirectory below is opened `O_NOFOLLOW` relative to its parent fd (a symlinked
+directory is neither descended nor removed) with every removal `dir_fd`-relative;
+the by-name fallback `lstat`-refuses a link at each component. The sweep never
+acts outside the pinned root, tolerates per-entry `OSError`, examines at most
+`_BLOB_CACHE_GC_MAX_ENTRIES` entries per call — debited BEFORE each entry is
+dispatched on type, so one oversized directory is never fully listed — and
+descends at most `_BLOB_CACHE_GC_MAX_DEPTH` (16) directories deep, leaving a
+deeper chain for a later sweep (logged once) so an agent-writable tree cannot
+drive it into unbounded recursion. The remainder drains on the next
+manifest-cache write, the only way the tree grows.
+
+**The post-budget cleanup is bounded, and an over-budget cleanup is detached.**
+`_PREWARM_BATCH_BUDGET` (20 s) is the clone-cancellation deadline, not a ceiling
+on the wait: after it fires the in-flight clones are cancelled and each
+`_fetch_owner_tier_store_assets` runs its `finally` → `_rmtree_force_settled` (a
+process-group kill plus a scratch `rmtree`), which is otherwise unbounded, so a
+hanging forge on a slow filesystem stalls a cold App Store load for tens of
+seconds. The batch's cancellation/cleanup phase is wrapped in its own
+`_PREWARM_CLEANUP_BUDGET` (twice `checkout._KILL_GRACE_PERIOD`, whose single kill
+grace is the floor — a value below it would abandon cleanups about to finish),
+and a cleanup still running at that deadline is DETACHED into a background task
+(retained in `_PENDING_PREWARM_CLEANUPS` so the loop does not GC it, self-removing
+on completion) so the listing request returns. The detached `rmtree` is
+idempotent over its system-tempdir scratch dir, so finishing later is safe. A
+cleanup that settles within the budget is not detached.
 
 Four properties keep the tier from becoming a hole, and none is optional:
 

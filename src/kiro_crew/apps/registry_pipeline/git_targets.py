@@ -382,6 +382,21 @@ def _loggable_git_transport_output(text: str, *, credentialed: bool) -> str:
     return "git transport output redacted (credentialed remote)"
 
 
+#: The two config pairs that stop a repository from choosing a program git runs:
+#: ``core.hooksPath`` points at ``os.devnull`` (a non-directory device under which
+#: git finds no hook and into which no directory can be created) and
+#: ``core.fsmonitor=false`` refuses a repo-named filesystem-monitor command. ONE
+#: spelling, consumed two ways: :func:`_git_transport_env` appends the pairs to the
+#: network step's command-scope config, and ``checkout._HOOKS_NEUTRALIZER_ARGV``
+#: derives the ``-c`` argv form spliced after ``git`` on every local spawn.
+_GIT_NO_HOOKS_PAIR: tuple[str, str] = ("core.hooksPath", os.devnull)
+_GIT_NO_FSMONITOR_PAIR: tuple[str, str] = ("core.fsmonitor", "false")
+_GIT_EXEC_NEUTRALIZER_PAIRS: tuple[tuple[str, str], ...] = (
+    _GIT_NO_HOOKS_PAIR,
+    _GIT_NO_FSMONITOR_PAIR,
+)
+
+
 def _git_transport_env(
     credential_target: str, safe_target: str, env: dict[str, str]
 ) -> dict[str, str]:
@@ -436,12 +451,12 @@ def _git_transport_env(
         config_count = 0
     command_config = (
         (f"url.{credential_target}.insteadOf", safe_target),
-        ("core.fsmonitor", "false"),
+        _GIT_NO_FSMONITOR_PAIR,
         ("credential.helper", ""),
         ("core.askPass", ""),
         # Keep hooksPath last: within the command-scope config it must win over
         # a duplicate inherited entry as well as repository/global config.
-        ("core.hooksPath", os.devnull),
+        _GIT_NO_HOOKS_PAIR,
     )
     for key, value in command_config:
         transport_env[f"GIT_CONFIG_KEY_{config_count}"] = key

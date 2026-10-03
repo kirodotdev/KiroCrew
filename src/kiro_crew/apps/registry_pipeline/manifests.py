@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import posixpath
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import _read_manifest_cache, _write_manifest_cache
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
+    _HOOKS_NEUTRALIZER_ARGV,
     _clone_branch_matches,
     _clone_origin_matches,
     _communicate_with_timeout,
@@ -43,6 +43,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _sel_credential_grant,
     is_clone_host_trusted,
 )
+from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
 from kiro_crew.apps.registry_pipeline.subprocess_env import anonymous_git_env, minimal_env
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -52,82 +53,6 @@ from kiro_crew.sandbox import (
 )
 
 logger = logging.getLogger(_FACADE)
-
-
-def _is_safe_registry_subdir(subdir: Any) -> bool:
-    """True if *subdir* is a safe, contained relative path for a registry entry.
-
-    An external registry index is untrusted and controls the entire entry,
-    including ``subdirectory`` — which is later joined to the throwaway clone
-    dir, the persistent app-source dir, and the manifest read path. An absolute
-    or ``..`` value would escape those roots and let an attacker-selected
-    ``app.json`` (→ ``setup.onInstall``) be read/executed. Empty/missing means
-    the repo root (safe). Rejects non-strings, NUL, backslashes (Windows/UNC
-    separators), absolute paths (POSIX ``/…`` or drive-letter ``C:…``), and any
-    ``.``/``..`` path segment. Purely lexical; the use-site
-    :func:`_contained_join` adds a symlink-resolving containment check as
-    defense-in-depth.
-    """
-    if subdir in (None, ""):
-        return True
-    if not isinstance(subdir, str):
-        return False
-    if "\x00" in subdir or "\\" in subdir:
-        return False
-    if subdir.startswith("/") or (len(subdir) >= 2 and subdir[1] == ":"):
-        return False
-    return not any(seg in ("..", ".") for seg in subdir.split("/"))
-
-
-def _contained_join(root: Path, subdir: str) -> Path | None:
-    """Join *subdir* under *root*, returning the symlink-resolved result only if
-    it stays within *root*; ``None`` on any escape.
-
-    Defense-in-depth companion to :func:`_is_safe_registry_subdir`: the lexical
-    gate rejects ``..``/absolute values before an entry is cached/listed, and
-    this resolves symlinks so a hostile clone containing e.g. ``sub -> /etc``
-    cannot smuggle a read outside the clone root at use time. Returns *root*
-    unchanged for an empty *subdir*.
-    """
-    if not subdir:
-        return root
-    try:
-        base = root.resolve()
-        target = (root / subdir).resolve()
-    except (OSError, RuntimeError):
-        # What non-strict ``Path.resolve`` raises: ``OSError`` for a path it
-        # cannot walk, ``RuntimeError`` for a symlink loop (POSIX re-raises ELOOP
-        # as one). A loop is an escape that resolves nowhere, so it fails closed
-        # like every other escape -- the callers that re-check containment after
-        # a third-party script wrote to the checkout depend on this returning
-        # rather than raising.
-        return None
-    if target.is_relative_to(base):
-        # ``target`` is textually contained, but on Windows a self-pointing
-        # reparse point (``pkg -> pkg``) is collapsed LEXICALLY by non-strict
-        # ``resolve`` -- it never walks the link, so a loop slips through here as
-        # a contained-looking path that a caller would then read/write THROUGH.
-        # POSIX already raised above; Windows does not, so re-resolve strictly to
-        # force the OS to walk the target. The distinction that matters:
-        #   - ``FileNotFoundError`` -- the path simply does not exist. That is a
-        #     legitimate state some callers rely on (the rollback path re-checks
-        #     containment of ``app.json`` after it has been removed, and needs a
-        #     contained path back so the restore proceeds), so preserve the
-        #     pre-existing contract of returning the contained path; every caller
-        #     does its own existence check downstream.
-        #   - any OTHER resolution error -- a loop, a component that is not a
-        #     directory, a permission wall -- is a path that does not truly
-        #     resolve, so fail closed. A self-pointing loop is exactly this case:
-        #     the link exists, so it is not FileNotFoundError, and walking it
-        #     raises on both platforms.
-        try:
-            target.resolve(strict=True)
-        except FileNotFoundError:
-            return target
-        except (OSError, RuntimeError):
-            return None
-        return target
-    return None
 
 
 async def _fetch_app_manifest(
@@ -304,6 +229,7 @@ async def _fetch_app_manifest(
         else:
             clone_cmd = [
                 "git",
+                *_HOOKS_NEUTRALIZER_ARGV,
                 "clone",
                 "--depth",
                 "1",
@@ -463,38 +389,6 @@ _REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
         "_index_author",
     }
 )
-
-
-def _store_asset_path(subdirectory: Any, asset_path: Any) -> Any:
-    """Repo-root-relative path of a store-card asset declared in ``app.json``.
-
-    The manifest is read from ``_contained_join(clone_dir, subdirectory)``, so
-    every art path it declares (``iconPath``, ``heroImage*``, ``screenshots*``)
-    is relative to that directory -- while ``/api/apps/blob`` resolves ``path``
-    against the repo root. This is the store-card reader's join; the field
-    itself keeps its meaning, because the installed-app reader
-    (``handle_app_art_file``) resolves the same value against the install
-    directory, where the subdirectory has already been stripped by the install.
-
-    Containment is preserved rather than re-derived: a ``subdirectory`` the
-    lexical gate :func:`_is_safe_registry_subdir` rejects (absolute, ``..``,
-    backslash) is NOT joined, so the join never manufactures a traversing path
-    -- such entries are dropped before listing anyway, and the bare path here
-    is exactly what the store built before. Empty or ``.`` means the repo root
-    (unchanged), an absolute path or URL is left untouched, and the join is a
-    plain posix join with no normalisation, so a ``..`` inside the asset path
-    still reaches the blob route's own rejection unchanged.
-    """
-    if not asset_path or not isinstance(asset_path, str) or not isinstance(subdirectory, str):
-        return asset_path
-    subdir = subdirectory.rstrip("/")
-    if subdir in ("", "."):
-        return asset_path
-    if not _is_safe_registry_subdir(subdir):
-        return asset_path
-    if asset_path.startswith("/") or "://" in asset_path:
-        return asset_path
-    return posixpath.join(subdir, asset_path)
 
 
 def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:

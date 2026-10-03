@@ -12,11 +12,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.registry_pipeline import _FACADE
-from kiro_crew.apps.registry_pipeline.caches import _external_registry_cache_path
+from kiro_crew.apps.registry_pipeline.caches import (
+    _external_registry_cache_identity,
+    _external_registry_cache_path,
+    _read_external_registry_cache,
+)
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _PUBLIC_GIT_HOSTS,
     _clone_sandbox_mode,
@@ -26,6 +31,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _is_ssh_git_url,
     _public_registry_name,
     _redact_url_userinfo,
+    _same_git_target,
     _strip_git_target_userinfo,
 )
 from kiro_crew.platform import PlatformCompositionError, current_context
@@ -642,3 +648,214 @@ def _load_registry_file() -> list[dict[str, Any]]:
         rows.append(row)
         seen.add(row.get("name"))
     return rows
+
+
+#: Ceiling on how many ``repo``-key claims :func:`_repo_key_claims` will retain across
+#: all consulted sources in one call. Each configured external registry's cache is
+#: untrusted content and can list an unbounded number of entries; without a ceiling a
+#: single oversized cache would hold that whole list in memory for the duration of the
+#: call (and, for the prewarm, once per batch). Reaching the ceiling is treated as
+#: unresolvable — the fail-closed answer, ambiguous for every row — because a source
+#: that floods the claim list is exactly the case a credential grant must not trust.
+#: Generous against any real catalog (a store lists a handful of apps per registry)
+#: while bounding the footprint.
+_MAX_FOREIGN_CLAIMS = 5000
+
+#: Ceiling on one retained ``repo``-key string. A real git URL or bare name is well
+#: under this; a claim longer than this is a malformed or padded entry and makes the
+#: whole call unresolvable (fail closed), never a silent drop. A drop would be
+#: fail-open: ``_normalize_git_target`` strips trailing-slash padding, so a key padded
+#: past this cap could normalize to another registry's real URL and compare equal via
+#: ``_same_git_target`` -- dropping it undercounts the claimants and lets an
+#: owner-credentialed clone through on a key that is actually shared. Treated as an
+#: overflow instead, so a source that pads a claim gets the ambiguous-for-every-row
+#: answer a shared key must produce.
+_MAX_CLAIM_STRING_LEN = 2048
+
+
+#: Process-once guard for the claim-overflow warning. A set mutated in place, not a
+#: rebound flag: the facade's one namespace forbids a module-level ``global`` rebind,
+#: and ``_repo_key_claims`` runs on every blob request, so a plain per-call
+#: ``logger.warning`` would spam. Emptied only by process restart.
+_CLAIM_OVERFLOW_LOGGED: set[bool] = set()
+
+
+def _log_claim_overflow() -> None:
+    """Warn once per process that a source flooded the claim list past the ceiling."""
+    if True in _CLAIM_OVERFLOW_LOGGED:
+        return
+    _CLAIM_OVERFLOW_LOGGED.add(True)
+    logger.warning(
+        "A configured registry source declares more than %d repo-key claims; "
+        "treating provenance as unresolvable (ambiguous) for every row until it shrinks.",
+        _MAX_FOREIGN_CLAIMS,
+    )
+
+
+def _repo_key_claims(
+    *, strict: bool, except_registry: str | None = None
+) -> tuple[bool, list[list[str]]]:
+    """The ``repo`` keys each configured SOURCE publishes, grouped by source.
+
+    ONE counting core for the two credential gates that ask the same question of
+    the same source union — which configured sources publish a given ``repo`` key
+    — so they cannot drift apart. The blob proxy's per-request carve-out
+    (:func:`_repo_key_owner_count`) and the prewarm's per-batch provenance gate
+    (``store_art._prewarm_foreign_claims``) both read exactly this, differing only
+    in the ``strict`` flag and whether they exclude a registry they are attributing
+    to.
+
+    Walks the bundled registry file (one source, always first) plus every source in
+    :func:`_effective_registries`, reading each external registry's local sync cache
+    with ``ignore_ttl`` — never fetching, so it is safe on the per-request blob
+    worker thread. Returns ``(unresolvable, sources)`` where ``sources`` is one
+    ``repo``-key list per consulted source (bundled first) and ``unresolvable`` is
+    True when the claims cannot be established:
+
+    - ``strict=True`` (the prewarm's fail-closed reading): a sibling whose cache is
+      ABSENT or unreadable (``None``) could publish any key — an unfetched or GC'd
+      sibling — so it is not a proven non-claimant; the walk stops and reports
+      unresolvable. The caller then treats every key as ambiguous, because a
+      provenance that cannot be established must never buy an owner-credentialed
+      clone.
+    - ``strict=False`` (the blob proxy's counting reading): an absent cache is
+      simply skipped (contributes no source), because the proxy counts the sources
+      that DO declare the key and one unfetched sibling does not make an otherwise
+      single-owner key ambiguous on its own.
+
+    Either way, ANY read that raises reports unresolvable (fail closed).
+
+    The claim list is bounded, and both bounds are fail-closed: a retained ``repo``
+    string longer than :data:`_MAX_CLAIM_STRING_LEN`, or a total retained across all
+    sources that would exceed :data:`_MAX_FOREIGN_CLAIMS`, returns unresolvable — the
+    fail-closed answer, ambiguous for every row — logged once. An over-long string is
+    an overflow rather than a drop because ``_normalize_git_target`` strips
+    trailing-slash padding, so a padded key could compare equal to another registry's
+    real URL and a drop would undercount the claimants (fail-open). An untrusted
+    external cache can list an unbounded number of entries, and this is what keeps one
+    oversized cache from holding its whole list in memory (per call, and once per
+    prewarm batch) or a flood of claims from silently passing the single-owner gate.
+
+    *except_registry* excludes the source whose :func:`_public_registry_name` equals
+    it — the prewarm's "every OTHER source" reading, so a registry is not counted as
+    a rival claimant of its own key. The blob proxy passes ``None`` and counts every
+    source, including the one an entry was served through.
+    """
+    try:
+        sources: list[list[str]] = []
+        retained = 0
+
+        def _bounded(repos: Iterable[str]) -> tuple[list[str], bool]:
+            """Stop at either cap while STREAMING *repos*, reporting overflow (fail closed).
+
+            *repos* is an ITERATOR, not a materialised list: a source's rows are pulled
+            one at a time and the cap is applied per element as it is read, so the moment
+            either cap trips the iteration STOPS and the source's remaining (unbounded)
+            rows are never pulled into memory. Building the full ``[e["repo"] for e in
+            cached]`` list first and capping it afterwards defeated the cap it was there to
+            enforce -- an oversized cache's whole repo list was materialised before a
+            single element was checked.
+
+            Returns ``(kept, overflow)``: *kept* is the sub-list accumulated so far,
+            *overflow* is True when the running total reached :data:`_MAX_FOREIGN_CLAIMS`
+            OR a string longer than :data:`_MAX_CLAIM_STRING_LEN` was met. An over-long
+            string is NOT dropped: ``_normalize_git_target`` strips trailing-slash
+            padding, so a key padded past the cap could compare equal via
+            ``_same_git_target`` to another registry's real URL -- dropping it would
+            undercount the claimants and let an owner-credentialed clone through on a key
+            that is actually shared. It is treated as an OVERFLOW instead, so the whole
+            call is unresolvable (ambiguous for every row), which is the fail-closed
+            answer a padded claim must produce. A list, not a rebound counter, carries the
+            running total, since the facade's one namespace forbids a ``nonlocal`` rebind
+            -- but a nested closure cannot see a rebind anyway, so the caller updates
+            ``retained`` from the returned length instead.
+            """
+            kept: list[str] = []
+            for value in repos:
+                if len(value) > _MAX_CLAIM_STRING_LEN:
+                    # A padded/malformed key. It cannot be dropped: normalization would
+                    # strip the padding and it could then match a real URL, so a drop
+                    # is fail-open. Overflow instead -> the call is unresolvable, and
+                    # the iterator's remaining rows are never pulled.
+                    return kept, True
+                if retained + len(kept) >= _MAX_FOREIGN_CLAIMS:
+                    return kept, True
+                kept.append(value)
+            return kept, False
+
+        # A generator, so ``_bounded`` pulls a row at a time and stops at the cap; the
+        # bundled file's full repo list is never built up front.
+        bundled = (e["repo"] for e in _load_registry_file() if isinstance(e.get("repo"), str))
+        kept, overflow = _bounded(bundled)
+        sources.append(kept)
+        retained += len(kept)
+        if overflow:
+            _log_claim_overflow()
+            return True, []
+        for reg in _effective_registries():
+            if except_registry is not None and _public_registry_name(reg) == except_registry:
+                # The registry being attributed to; it is the claimant, not a rival.
+                continue
+            cached = _read_external_registry_cache(
+                _external_registry_cache_identity(reg), ignore_ttl=True
+            )
+            if cached is None:
+                if strict:
+                    # An absent/unreadable sibling could publish any key: fail closed.
+                    return True, sources
+                continue
+            # Same streaming shape as the bundled source: a generator ``_bounded``
+            # consumes one row at a time, so an oversized sibling cache stops at the
+            # cap instead of its whole repo list being materialised first.
+            declared = (
+                e["repo"] for e in cached if isinstance(e, dict) and isinstance(e.get("repo"), str)
+            )
+            kept, overflow = _bounded(declared)
+            sources.append(kept)
+            retained += len(kept)
+            if overflow:
+                _log_claim_overflow()
+                return True, []
+        return False, sources
+    except Exception:  # provenance unresolvable → caller treats as ambiguous, never grant
+        logger.debug("_repo_key_claims: read failed", exc_info=True)
+        return True, []
+
+
+def _repo_key_owner_count(repo: str) -> int:
+    """Count the configured registry SOURCES that publish an entry keyed on ``repo``.
+
+    The blob credential carve-out grants owner credentials only when
+    :func:`_owner_designated_repo_target` confirms the resolved entry's clone URL is
+    byte-identical to *its own* registry's configured ``repo``.  That predicate is
+    entry-scoped and sound for the entry it is handed — but the entry is SELECTED
+    by :func:`get_registry_app_by_repo`, which returns the FIRST source (bundled,
+    then each external/federated registry) whose entry ``repo`` key equals the
+    served ``repo``.  The selection is keyed on ``repo`` alone and provenance-blind.
+
+    So if two configured registries both publish the same ``repo`` key, a request
+    reachable through registry B can resolve to registry A's owner-designated
+    entry and clone A's private repo with A's credentials, serving A's private
+    image bytes to a caller who only had access to B — a cross-registry
+    confused-deputy read.  The grant is only honestly attributable to a single
+    owner when exactly ONE configured source claims the key.
+
+    This counts the DISTINCT sources (the bundled registry counts once; each
+    external registry counts once) whose entries carry ``entry["repo"] == repo``,
+    reading the SAME source union the prewarm gate reads via the shared
+    :func:`_repo_key_claims` core (``strict=False``: an absent sibling cache is not
+    counted; every source is consulted, none excluded).  A return of ``> 1`` means
+    the provenance is ambiguous and the caller must downgrade to anonymous+strict.
+    An unresolvable read (any raise) counts as ``2`` (treat-as-ambiguous): a
+    provenance we cannot establish must never buy a credential grant.
+    """
+    unresolvable, sources = _repo_key_claims(strict=False)
+    if unresolvable:
+        return 2  # provenance unresolvable → treat as ambiguous, never grant
+    count = 0
+    for source in sources:
+        if any(_same_git_target(claimed, repo) for claimed in source):
+            count += 1
+            if count > 1:
+                return count  # already ambiguous — no need to keep counting
+    return count

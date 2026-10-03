@@ -51,6 +51,7 @@ from kiro_crew.apps.registry_pipeline import (
     manifests,
     recovery,
     sources,
+    store_art,
     subprocess_env,
 )
 
@@ -70,6 +71,7 @@ PARTS: tuple[ModuleType, ...] = (
     sources,
     recovery,
     checkout,
+    store_art,
     indexes,
     manifests,
     catalog,
@@ -86,9 +88,11 @@ FROZEN_NAMES: tuple[str, ...] = (
     "FIRST_PARTY_AUTHORS",
     "IPv6Address",
     "InstalledTreeRefused",
+    "Iterable",
     "Iterator",
     "Literal",
     "Path",
+    "PinnedPathRefusal",
     "PlatformCompositionError",
     "RESERVED_APP_NAME_CODE",
     "SOURCE_REGISTRY_PREFIX",
@@ -285,6 +289,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "is_clone_host_trusted",
     "is_module_style_entry_point",
     "is_registry_source",
+    "is_reparse_point",
     "is_reserved_app_name",
     "json",
     "known_registry_repos",
@@ -295,6 +300,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "logging",
     "minimal_env",
     "official_catalog",
+    "open_pinned_descendant_dir",
     "os",
     "platform_compat",
     "posixpath",
@@ -316,7 +322,10 @@ FROZEN_NAMES: tuple[str, ...] = (
     "sha256",
     "shipped_builtin_names",
     "shutil",
+    "stat",
     "sys",
+    "tempfile",
+    "threading",
     "time",
     "timezone",
     "trusted_app_repository",
@@ -739,14 +748,50 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
                     manifest=AppManifest.from_dict({}),
                     self_managed=False,
                 )
-        heads = [argv[:3] for argv in spawned]
-        assert heads == [
-            ("git", "remote", "get-url"),
+
+        # The hooks/fsmonitor neutralizer splices a variable number of leading
+        # ``-c KEY=VALUE`` pairs after ``git``, so ``argv[:3]`` of a git spawn is now
+        # all neutralizer tokens and never shows the subcommand. Read the subcommand
+        # positionally (skip ``git`` and every ``-c KEY`` pair) instead, and pin the
+        # two git call sites (indexes' index clone, manifests' throwaway clone) at
+        # their subcommand slot AND its ``--depth 1``.
+        def _git_subcommand_index(argv: tuple[str, ...]) -> int:
+            i = 1
+            while i < len(argv) and argv[i] == "-c":
+                i += 2
+            return i
+
+        # The non-git spawns keep their fixed leading shape.
+        non_git = [argv for argv in spawned if not (argv and argv[0] == "git")]
+        assert non_git == [
             ("/bin/sh", "-c", "true"),
-            ("git", "clone", "--depth"),
-            ("git", "clone", "--depth"),
             ("/opt/test/npm", "install"),
-        ]
+        ], non_git
+        git_spawns = [argv for argv in spawned if argv and argv[0] == "git"]
+        # ``git remote get-url`` (the checkout origin read) plus the two clone sites.
+        assert len(git_spawns) == 3, git_spawns
+        origin, *clones = git_spawns
+        assert origin[_git_subcommand_index(origin) : _git_subcommand_index(origin) + 3] == (
+            "remote",
+            "get-url",
+            "origin",
+        ), origin
+        # Both remaining git spawns are the anonymous ``git clone --depth 1`` of
+        # indexes' and manifests' call sites: assert the subcommand slot and the
+        # ``--depth`` argument right after it.
+        assert len(clones) == 2, clones
+        for clone in clones:
+            sub = _git_subcommand_index(clone)
+            assert clone[sub] == "clone", clone
+            assert clone[sub + 1 : sub + 3] == ("--depth", "1"), clone
+        # The order the call sites ran in is preserved (indexes before manifests).
+        assert [argv[0] for argv in spawned] == [
+            "git",
+            "/bin/sh",
+            "git",
+            "git",
+            "/opt/test/npm",
+        ], [argv[0] for argv in spawned]
 
     def test_a_cache_reader_patch_reaches_the_catalog_lookups(self) -> None:
         # ``_effective_registries`` is defined in ``sources`` and

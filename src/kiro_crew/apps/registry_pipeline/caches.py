@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -28,6 +29,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.pinned_fs import PinnedPathRefusal, open_pinned_descendant_dir
 
 logger = logging.getLogger(_FACADE)
 
@@ -203,18 +205,270 @@ def _gc_manifest_cache_dir() -> None:
             continue
 
 
-def _write_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> None:
-    """Write app.json to the manifest cache (atomic), keyed on source identity."""
+#: The blob cache root the owner-tier store-art prewarm fills. Defined HERE and
+#: imported by ``store_art`` (which sits ABOVE this module in the facade's layer
+#: order, so it may import down into caches without a cycle), because this GC reclaims
+#: exactly what that prewarm writes: one derivation, one owner, so the sweep root and
+#: the publish root cannot drift. ``store_art`` holds the SAME object by importing it,
+#: which the facade's one-namespace rule requires of every module that holds a name.
+def _blob_cache_dir() -> Path:
+    return config_dir() / "cache" / "blobs"
+
+
+#: Age beyond which a blob-cache file with no fresh manifest referencing it is
+#: reclaimed. A live row's file stays young two ways: the owner-tier prewarm REWRITES
+#: every live row's declared art on each fresh index fetch (at most ``_REWARM_AGE`` =
+#: ``_MANIFEST_CACHE_TTL`` minus ``_EXTERNAL_REGISTRY_CACHE_TTL`` apart), and the blob
+#: proxy's read path TOUCHES a served file's mtime on every serve — so mtime is the
+#: later of last-rewrite and last-serve. The cutoff below (largest TTL plus this grace)
+#: is comfortably wider than the rewrite interval, so a file still referenced by a fresh
+#: manifest is never reclaimed while it is being kept warm, and an index-tier blob the
+#: prewarm never rewrites also survives for as long as it is still being served; only a
+#: file that is neither rewritten by an index-driven ``branch``/``gitUrl`` change or a
+#: delisted row NOR served — whose new coordinates write a DIFFERENT
+#: ``<repo_key>/<branch>/<path>`` and whose old bytes no reader ever derives again —
+#: ages past it.
+_BLOB_CACHE_GC_GRACE = _MANIFEST_CACHE_GC_GRACE
+
+
+#: Directory entries one :func:`_gc_blob_cache_dir` call will examine before it stops
+#: and leaves the rest to the next call. Every entry the streamed walk looks at —
+#: directory or file — debits this budget BEFORE the entry is dispatched on type, so a
+#: single directory with more children than the budget is never fully listed. The sweep
+#: runs inline on the manifest-cache write path (a listing/refresh already doing IO), so
+#: it is bounded per call rather than walking an arbitrarily large tree in one pass; a
+#: tree bigger than this drains over successive writes, each of which is frequent enough
+#: on an active gateway.
+_BLOB_CACHE_GC_MAX_ENTRIES = 4096
+
+#: How deep below ``cache/blobs`` the sweep descends before it leaves a subtree alone
+#: (logged once). The prewarm writes each asset at ``<repo_key>/<branch>/<declared
+#: path...>/<file>``, so a legitimate tree is only as deep as an asset path plus the two
+#: key/branch levels; a store card's art lives a handful of directories down. Sixteen is
+#: far above any real layout while bounding recursion so an agent-writable tree cannot be
+#: nested arbitrarily deep to drive the sweep into unbounded recursion. A chain deeper
+#: than this is left in place for a later sweep rather than descended, the same
+#: leave-it-for-next-time discipline as the entry budget.
+_BLOB_CACHE_GC_MAX_DEPTH = 16
+
+
+#: Process-once guard for the depth-ceiling notice. A set mutated in place, not a
+#: rebound flag: the facade's one namespace forbids a module-level ``global`` rebind,
+#: and the sweep runs on every manifest-cache write, so a plain per-call
+#: ``logger.warning`` would spam. Emptied only by process restart.
+_BLOB_CACHE_GC_DEPTH_LOGGED: set[bool] = set()
+
+
+def _log_blob_gc_depth_ceiling() -> None:
+    """Warn once per process that a blob-cache subtree is deeper than the sweep walks."""
+    if True in _BLOB_CACHE_GC_DEPTH_LOGGED:
+        return
+    _BLOB_CACHE_GC_DEPTH_LOGGED.add(True)
+    logger.warning(
+        "A blob-cache subtree is nested deeper than %d directories; the reclaim sweep "
+        "leaves it alone rather than recursing without bound.",
+        _BLOB_CACHE_GC_MAX_DEPTH,
+    )
+
+
+def _gc_blob_cache_dir() -> None:
+    """Best-effort age-based reclamation of orphaned blob-cache files.
+
+    The owner-tier store-art prewarm writes each declared asset of every owner-tier
+    row to ``cache/blobs/<repo_key>/<branch>/<path>`` on each fresh fetch. Nothing
+    else reclaims that tree: an index-driven ``branch``/``gitUrl`` change or a
+    delisted row writes the asset under a NEW ``<repo_key>/<branch>`` and no reader
+    ever derives the old path again, so without this the old bytes (up to
+    ``_ART_MAX_BYTES`` per asset) live forever.
+
+    Reclaim is age-based. The prewarm re-publishes a live row's assets on every fresh
+    index fetch, and the blob proxy's read path touches a served file's mtime, so a
+    file stays young by being REWRITTEN or by being SERVED — mtime is the later of the
+    two, and only a file that is neither ages out. Only regular files older than every
+    TTL plus ``_BLOB_CACHE_GC_GRACE`` (wider than the rewrite interval) are removed,
+    then empty directories are pruned bottom-up.
+
+    The walk pins every component against a symlink swap rather than resolving it: the
+    blob cache root and the tree it grows are agent-writable, so ``cache/blobs`` (or
+    any component beneath it) can be replaced with a symlink to an outside directory
+    between the check and the ``unlink``. A by-path ``resolve``/``os.walk`` would then
+    delete regular files in the link target. The root chain is opened through
+    :func:`pinned_fs.open_pinned_descendant_dir`, which on a platform that can pin
+    yields the pinned ``cache/blobs`` descriptor after refusing a link at ``config_dir``,
+    ``cache`` or ``blobs`` (a linked or reparse-point ROOT is refused, so a swapped
+    ``cache/blobs`` is never entered and nothing in the link target is touched), and on
+    a platform that cannot pin ``lstat``-refuses a link at every one of those
+    components and yields ``None`` for the by-name sweep. From there each subdirectory
+    is opened ``O_NOFOLLOW`` relative to its parent fd (a link is refused, not
+    descended) and every removal is ``dir_fd``-relative so no component is re-resolved
+    by name; the by-name fallback ``lstat``-refuses a link at each child.
+
+    Either way the sweep never follows a symlink, never acts outside the pinned root,
+    tolerates per-entry ``OSError``, examines at most ``_BLOB_CACHE_GC_MAX_ENTRIES``
+    entries in one call (debited BEFORE each entry is dispatched on type, so one
+    oversized directory is never fully listed) and descends at most
+    ``_BLOB_CACHE_GC_MAX_DEPTH`` directories deep (a deeper chain is left for a later
+    sweep, logged once); the remainder is reclaimed by the next manifest-cache write.
+    A missing ``cache/blobs`` is a silent no-op. Runs on that write path — the only way
+    the tree grows — which bounds it by construction, the same discipline as
+    ``_gc_manifest_cache_dir``.
+    """
+    cutoff = (
+        time.time() - max(_MANIFEST_CACHE_TTL, _EXTERNAL_REGISTRY_CACHE_TTL) - _BLOB_CACHE_GC_GRACE
+    )
+    # A mutable counter (not a rebound int): the facade's one namespace forbids a
+    # ``global``/``nonlocal`` rebind, so the entry budget is carried in a list.
+    budget = [_BLOB_CACHE_GC_MAX_ENTRIES]
+    try:
+        with open_pinned_descendant_dir(
+            config_dir(), ("cache", "blobs"), what="blob cache root"
+        ) as leaf:
+            if leaf is not None:
+                _gc_blob_cache_sweep_fd(leaf, cutoff, budget, depth=0)
+            else:
+                _gc_blob_cache_sweep_lstat(_blob_cache_dir(), cutoff, budget, depth=0)
+    except PinnedPathRefusal:
+        # A linked/reparse-point/non-directory component on the way to ``cache/blobs``,
+        # or a missing root (nothing to sweep): the refusal the one primitive raises
+        # for a chain it cannot pin.
+        return
+
+
+def _gc_blob_cache_sweep_fd(dir_fd: int, cutoff: float, budget: list[int], *, depth: int) -> None:
+    """Sweep one directory (by fd), descending only into real subdirectories.
+
+    The ``os.scandir`` iterator is consumed lazily and every entry — directory or file
+    — debits *budget* BEFORE it is dispatched on type, so a directory with more entries
+    than the remaining budget is not fully listed. Files older than *cutoff* are
+    unlinked ``dir_fd``-relative; each subdirectory is opened ``O_DIRECTORY|O_NOFOLLOW``
+    relative to this fd (a link raises rather than being followed) and swept when
+    *depth* is below :data:`_BLOB_CACHE_GC_MAX_DEPTH`, then ``rmdir``-ed if it emptied.
+    A subtree at or past that depth is left alone (logged once) rather than recursed.
+    """
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    try:
+        it = os.scandir(dir_fd)
+    except OSError:
+        return
+    try:
+        for item in it:
+            if budget[0] <= 0:
+                return
+            budget[0] -= 1
+            try:
+                st = item.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                if depth + 1 >= _BLOB_CACHE_GC_MAX_DEPTH:
+                    # Deeper than the ceiling: leave it for a later sweep rather than
+                    # recursing without bound into an agent-writable tree.
+                    _log_blob_gc_depth_ceiling()
+                    continue
+                try:
+                    child_fd = os.open(item.name, dir_flags, dir_fd=dir_fd)
+                except OSError:
+                    # A symlinked directory (refused by O_NOFOLLOW) or unopenable
+                    # child; do not follow or remove it.
+                    continue
+                try:
+                    _gc_blob_cache_sweep_fd(child_fd, cutoff, budget, depth=depth + 1)
+                finally:
+                    try:
+                        os.close(child_fd)
+                    except OSError:
+                        pass
+                # Prune the child if it emptied. rmdir refuses a non-empty dir and
+                # never removes a symlink (that would need unlink), so a link left in
+                # place is not torn down here.
+                try:
+                    os.rmdir(item.name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                continue
+            # Only plain files age out; a symlink or other special file is never
+            # followed or removed.
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            if st.st_mtime < cutoff:
+                try:
+                    os.unlink(item.name, dir_fd=dir_fd)
+                except OSError:
+                    continue
+    finally:
+        it.close()
+
+
+def _gc_blob_cache_sweep_lstat(
+    current: Path, cutoff: float, budget: list[int], *, depth: int
+) -> None:
+    """Windows fallback: sweep one directory by name, ``lstat``-refusing a linked child.
+
+    The root itself was already ``lstat``-refused by ``open_pinned_descendant_dir``'s
+    by-name arm. As in the ``dir_fd`` sweep, every entry debits *budget* BEFORE it is
+    dispatched on type (streamed via ``os.scandir`` rather than a materialised list),
+    and a subtree at or past :data:`_BLOB_CACHE_GC_MAX_DEPTH` is left alone.
+    """
+    try:
+        it = os.scandir(current)
+    except OSError:
+        return
+    try:
+        for entry in it:
+            if budget[0] <= 0:
+                return
+            budget[0] -= 1
+            child = Path(entry.path)
+            try:
+                cst = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            reparse_tag: Any = getattr(cst, "st_reparse_tag", 0)
+            if stat.S_ISLNK(cst.st_mode) or reparse_tag:
+                # Never follow or remove a link/reparse point at any component.
+                continue
+            if stat.S_ISDIR(cst.st_mode):
+                if depth + 1 >= _BLOB_CACHE_GC_MAX_DEPTH:
+                    _log_blob_gc_depth_ceiling()
+                    continue
+                _gc_blob_cache_sweep_lstat(child, cutoff, budget, depth=depth + 1)
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass
+                continue
+            if not stat.S_ISREG(cst.st_mode):
+                continue
+            if cst.st_mtime < cutoff:
+                try:
+                    child.unlink()
+                except OSError:
+                    continue
+    finally:
+        it.close()
+
+
+def _write_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> bool:
+    """Write app.json to the manifest cache (atomic), keyed on source identity.
+
+    Returns whether the manifest was persisted. A caller that publishes derived
+    artefacts (the store-art prewarm) checks this first: art must never land for a
+    manifest that is not on disk, or the row would read warm with a bare listing.
+    """
     path = _manifest_cache_path(entry)
     path.parent.mkdir(parents=True, exist_ok=True)
+    written = True
     try:
         atomic_write(
             path,
             json.dumps(data, indent=2) + "\n",
         )
     except OSError as exc:
+        written = False
         logger.warning("Failed to cache manifest for %s: %s", entry.get("name", ""), exc)
     _gc_manifest_cache_dir()
+    _gc_blob_cache_dir()
+    return written
 
 
 _EXTERNAL_REGISTRY_CACHE_TTL = 3600  # 1 hour

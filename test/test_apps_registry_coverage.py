@@ -4676,17 +4676,25 @@ class TestGitFetchAndPullFailClosed:
         monkeypatch.setattr(registry, "_clone_origin_url", _origin)
         monkeypatch.setattr(registry, "_read_clone_branch", lambda path: "main")
         spawned = self._spawns(
-            monkeypatch, [(("git", "pull"), lambda a, k: self._Proc(returncode=1, output=b"no"))]
+            monkeypatch,
+            [(("git", "-c"), lambda a, k: self._Proc(returncode=1, output=b"no"))],
         )
         log: list[str] = []
         result = await registry._git_clone_or_pull(url, "main", dest, log)
+        # The in-place update is a network ``git fetch`` then a LOCAL update; the
+        # fetch fails closed here, so only the fetch spawn ran and the local
+        # ``reset`` is never reached. (``git pull`` would run the checkout with the
+        # operator's config live, so it was split into a masked local step.)
         assert result == {
             "ok": False,
-            "error": "git pull failed (exit 1); not installing stale code",
+            "error": "git fetch failed (exit 1); not installing stale code",
         }
-        assert spawned == [("git", "pull", "--ff-only", url, "main")]
-        assert log[-1] == "git pull failed (exit 1) — aborting"
-        assert (dest / ".git").is_dir(), "a failed pull leaves the checkout in place"
+        hooks = ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
+        assert spawned == [
+            ("git", *hooks, "fetch", "--no-auto-maintenance", "--no-tags", url, "main")
+        ]
+        assert log[-1] == "git fetch failed (exit 1) — aborting"
+        assert (dest / ".git").is_dir(), "a failed fetch leaves the checkout in place"
 
     @pytest.mark.asyncio
     async def test_a_pull_that_outlives_its_budget_is_killed_and_refused(
@@ -4721,6 +4729,9 @@ class TestGitFetchAndPullFailClosed:
         monkeypatch.setattr(registry.asyncio, "wait_for", _no_wait)
         log: list[str] = []
         result = await registry._git_clone_or_pull(url, "main", dest, log)
-        assert result == {"ok": False, "error": "git pull timed out; not installing stale code"}
+        # The network ``git fetch`` step outlives its budget: it is killed via the
+        # patched process-group seam and the update refuses (the local ``reset`` step
+        # is never reached).
+        assert result == {"ok": False, "error": "git fetch timed out; not installing stale code"}
         assert len(killed) == 1
-        assert log[-1] == "git pull timed out — aborting"
+        assert log[-1] == "git fetch timed out — aborting"

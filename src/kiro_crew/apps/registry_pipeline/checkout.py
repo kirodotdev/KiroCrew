@@ -17,6 +17,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _GIT_EXEC_NEUTRALIZER_PAIRS,
     _git_output_is_auth_shaped,
     _git_target_is_unsupported,
     _git_transport_env,
@@ -51,6 +52,22 @@ _COMMIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 # Timeout limits (seconds)
 _CLONE_TIMEOUT = 60
+
+
+# Config overrides that stop the REPOSITORY (or the user's global git config)
+# supplying a program git runs, prepended to EVERY git invocation this module
+# spawns -- not just the network one. ``git checkout`` fires ``post-checkout`` and
+# ``git init`` honours ``init.templateDir``, so a repo shipping ``.githooks/`` plus a
+# global ``core.hooksPath`` runs arbitrary code as the gateway user during the local
+# steps that :func:`_git_transport_env` (network only) never reaches. ``-c`` on our
+# own argv beats every config file. ``core.hooksPath`` points at ``os.devnull``, a
+# non-directory OS device under which git finds no hook and into which no directory
+# can be created (the ``_HOOKS_SINK`` reasoning in ``dashboard/handlers/worktree.py``);
+# ``core.fsmonitor=false`` refuses a repo-named filesystem-monitor command git would
+# otherwise spawn on index reads.
+_HOOKS_NEUTRALIZER_ARGV: tuple[str, ...] = tuple(
+    token for key, value in _GIT_EXEC_NEUTRALIZER_PAIRS for token in ("-c", f"{key}={value}")
+)
 
 
 async def _rmtree_force_settled(path: str | Path) -> None:
@@ -410,11 +427,29 @@ async def _git_fetch_ref(
         timeout: int,
         network: bool = False,
     ) -> tuple[int, str]:
+        # Prepend the hooks/fsmonitor neutralizer to EVERY git spawn (network or
+        # not): the init/checkout steps run with *clone_env*, which carries no such
+        # override, so without this a repo-shipped ``post-checkout`` executes during
+        # checkout. ``argv[0]`` is always ``git``; the ``-c`` overrides go right after
+        # it so they precede the subcommand.
+        argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *argv[1:]]
         sandboxed, _cleanup = await wrap_argv_async(argv, mode=sandbox_mode, _prepare=wrap_argv)
         sandboxed = cgroup_scope_argv(sandboxed)
-        process_env = (
-            _git_transport_env(credential_target, git_url, clone_env) if network else clone_env
-        )
+        if network:
+            process_env = _git_transport_env(credential_target, git_url, clone_env)
+        else:
+            # The local steps (init, checkout, branch) need no credential helper,
+            # so they run with system and global git config disabled. A repository
+            # selects filter drivers by name through ``.gitattributes``; the
+            # PROGRAM behind that name comes from the operator's global/system
+            # config, and with those files out of scope no ``filter.<name>.smudge``
+            # resolves, so a checkout can execute nothing a repository chose. The
+            # network step keeps the operator's config for its credential helpers.
+            process_env = {
+                **clone_env,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+            }
         proc = await create_subprocess_limited(
             *sandboxed,
             cwd=str(cwd) if cwd else None,
@@ -943,58 +978,116 @@ async def _git_clone_or_pull(
             # state was unknown and re-convergence was skipped) — fetch and
             # fast-forward. (The origin-mismatch gate above guarantees this
             # checkout's origin is the same normalized target as git_url: a
-            # mismatched checkout was moved aside and never reused. Pull from the
-            # current registry URL through the command-scoped rewrite, so rotated
-            # credentials take effect without ever being persisted in origin.)
+            # mismatched checkout was moved aside and never reused.)
+            #
+            # Split into a network FETCH and a LOCAL update rather than one
+            # ``git pull``. ``git pull`` is a single process that both talks to the
+            # network AND checks files out into the worktree, so it runs the merge
+            # and checkout with the credential-bearing transport env AND the
+            # operator's global/system git config live -- and a repository selects a
+            # ``filter.<name>.smudge`` program by name through ``.gitattributes``,
+            # whose PROGRAM the operator's config supplies, so a checkout in that
+            # process can run code the repository chose. The clone path already masks
+            # global/system config on its LOCAL steps; this path is the matching one.
+            # ``git fetch <url> <branch>`` is the only network step and receives the
+            # transport env; ``git reset --hard FETCH_HEAD`` is a LOCAL step run with
+            # ``GIT_CONFIG_NOSYSTEM``/``GIT_CONFIG_GLOBAL`` disabling the operator's
+            # config (so no filter program resolves) plus the hooks/fsmonitor
+            # neutralizer, exactly like the fresh-clone/fetch path. ``--ff-only`` is
+            # preserved as intent: a fast-forward advances the branch to the fetched
+            # tip, and ``reset --hard FETCH_HEAD`` lands the SAME worktree a
+            # fast-forward pull would, without the merge machinery that runs config.
             log_lines.append(
                 f"Updating {_strip_git_target_userinfo(git_url)} (branch: {branch})..."
             )
-            # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
-            # the fresh-clone path below — the cgroup DoS ceiling is the outermost
-            # layer but must not replace the wrap_argv sandbox on this
-            # agent-influenced git spawn.
-            pull_cmd, _cleanup = await wrap_argv_async(
-                ["git", "pull", "--ff-only", git_url, branch],
-                mode=sandbox_mode,
-                _prepare=wrap_argv,
-            )
-            pull_cmd = cgroup_scope_argv(pull_cmd)
-            pull_env = _git_transport_env(credential_target, git_url, clone_env)
-            proc = await create_subprocess_limited(
-                *pull_cmd,
-                cwd=str(dest),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-                env=pull_env,
-            )
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-                log_lines.append(
-                    _loggable_git_transport_output(
-                        stdout.decode(errors="replace").strip(),
-                        credentialed=credentialed_transport,
-                    )
+
+            async def _update_step(
+                argv: list[str], *, timeout: int, network: bool
+            ) -> tuple[int, str]:
+                # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
+                # the fresh-clone path -- the cgroup DoS ceiling is the outermost layer
+                # but must not replace the wrap_argv sandbox on this agent-influenced
+                # git spawn. The neutralizer is spliced after ``git`` on every step.
+                spliced = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *argv[1:]]
+                wrapped, _cleanup = await wrap_argv_async(
+                    spliced, mode=sandbox_mode, _prepare=wrap_argv
                 )
-                if proc.returncode != 0:
-                    # Fail closed: installing whatever the checkout happens to hold
-                    # while persisting the catalog URL as its provenance would
-                    # record a source the installed code was never fetched from.
-                    log_lines.append(f"git pull failed (exit {proc.returncode}) — aborting")
+                wrapped = cgroup_scope_argv(wrapped)
+                if network:
+                    step_env = _git_transport_env(credential_target, git_url, clone_env)
+                else:
+                    # The local update needs no credential helper, so it runs with
+                    # system and global git config disabled: with those files out of
+                    # scope no ``filter.<name>.smudge`` resolves, so the checkout can
+                    # execute nothing a repository selected through ``.gitattributes``.
+                    step_env = {
+                        **clone_env,
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_CONFIG_GLOBAL": os.devnull,
+                    }
+                step_proc = await create_subprocess_limited(
+                    *wrapped,
+                    cwd=str(dest),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                    env=step_env,
+                )
+                try:
+                    step_out, _ = await asyncio.wait_for(step_proc.communicate(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    await _kill_process_group(step_proc)
+                    return 124, "timed out"
+                except asyncio.CancelledError:
+                    await _kill_process_group(step_proc)
+                    raise
+                return (
+                    step_proc.returncode or 0,
+                    _loggable_git_transport_output(
+                        step_out.decode(errors="replace").strip(),
+                        credentialed=credentialed_transport if network else False,
+                    ),
+                )
+
+            code, out = await _update_step(
+                [
+                    "git",
+                    "fetch",
+                    "--no-auto-maintenance",
+                    "--no-tags",
+                    git_url,
+                    branch,
+                ],
+                timeout=30,
+                network=True,
+            )
+            log_lines.append(out)
+            if code != 0:
+                # Fail closed: installing whatever the checkout happens to hold
+                # while persisting the catalog URL as its provenance would record a
+                # source the installed code was never fetched from.
+                if code == 124:
+                    log_lines.append("git fetch timed out — aborting")
                     return {
                         "ok": False,
-                        "error": (
-                            f"git pull failed (exit {proc.returncode}); "
-                            "not installing stale code"
-                        ),
+                        "error": "git fetch timed out; not installing stale code",
                     }
-            except asyncio.TimeoutError:
-                await _kill_process_group(proc)
-                log_lines.append("git pull timed out — aborting")
+                log_lines.append(f"git fetch failed (exit {code}) — aborting")
                 return {
                     "ok": False,
-                    "error": "git pull timed out; not installing stale code",
+                    "error": (f"git fetch failed (exit {code}); not installing stale code"),
+                }
+            code, out = await _update_step(
+                ["git", "reset", "--hard", "FETCH_HEAD"],
+                timeout=30,
+                network=False,
+            )
+            if code != 0:
+                log_lines.append(f"git update failed (exit {code}) — aborting")
+                return {
+                    "ok": False,
+                    "error": (f"git update failed (exit {code}); not installing stale code"),
                 }
             return None
 
@@ -1041,6 +1134,7 @@ async def _git_clone_or_pull(
         dest.parent.mkdir(parents=True, exist_ok=True)
         clone_cmd = [
             "git",
+            *_HOOKS_NEUTRALIZER_ARGV,
             "clone",
             "--depth",
             "1",

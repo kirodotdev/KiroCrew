@@ -123,6 +123,14 @@ a missing or broken hero degrades instead of leaving a blank panel. The detail
 page sizes its container to whichever ratio it resolved, so a 16:9 hero used as
 a banner is not cropped.
 
+**Commit the bytes, not Git LFS pointers.** Registry checkouts (the install
+clone and the store-art fetch) run git's local steps with the operator's global
+and system config masked, so a repository cannot pick a filter driver -- Git LFS
+included -- that runs a program on the operator's machine while checking out
+untrusted content. An LFS-tracked icon or screenshot therefore arrives as its
+pointer file, which is not an image; keep art as plain committed files under the
+size caps, and do not store install payloads in LFS either.
+
 ## 5. Setup and lifecycle scripts
 
 ```json
@@ -468,8 +476,34 @@ apps/
 
 With this layout the store lists, installs, and renders icons/screenshots for
 those apps using the owner's credentials. Apps in separate repos on the same
-private forge do not benefit from the carve-out: they fail to clone, and their
-icons and screenshots fall back to the name-seeded gradient.
+private forge do not benefit from the carve-out: under the default `index` tier
+they fail to clone, and their icons and screenshots fall back to the name-seeded
+gradient.
+
+**Owner-tier registries** (a registry the build pins with `trust: "owner"`; the
+tier cannot be set from `config.json` or the API) lift that for the multi-repo
+layout too. When such a registry's index is fetched fresh, the store fetches
+each listed app's `app.json` and declared images once with the owner's
+credentials and caches them where the icon/screenshot proxy reads, so the apps
+render fully before install. Only the fresh index drives this — never a cached
+row — and nothing from the clone runs.
+
+**Owner-tier art needs an unambiguous `repo` key across ALL your registries.**
+The prewarm clones an owner-tier row with owner credentials only when exactly one
+configured source could be claiming that `repo` key — the same single-owner rule
+the icon/screenshot proxy enforces, so cached bytes can never be served to a
+request that reaches the same key through a different registry. It reads this from
+each OTHER registry's on-disk index cache, and it fails closed: a sibling
+registry whose index cache is **absent or unreadable** — one that has not fetched
+yet on a fresh gateway, or whose cache the periodic GC has reclaimed — counts as a
+possible claimant of every key, so until that sibling fetches, every owner-tier
+row is treated as ambiguous and left cold (its card shows the name-seeded gradient
+rather than its real art). Operators see one `store art prewarm: skipping <app>
+(repo key provenance ambiguous across configured sources)` warning per skipped row.
+The art warms itself on the next fresh index run once every configured registry
+has a readable cache; if it stays cold, check that each sibling registry is
+reachable and refreshing (`POST /api/apps/registries/refresh`) rather than failing
+to fetch.
 
 **Keep the configured URL byte-identical.** Because the carve-out is exact
 string equality, editing the registry `repo` between otherwise-equivalent forms

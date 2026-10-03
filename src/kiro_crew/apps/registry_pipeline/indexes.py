@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ from kiro_crew.apps.registry_pipeline.caches import (
 )
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
+    _HOOKS_NEUTRALIZER_ARGV,
     _communicate_with_timeout,
     _git_fetch_branch,
     _rmtree_force_settled,
@@ -49,6 +49,10 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _registry_trust_tier,
     _sel_credential_decision,
     _sel_fn,
+)
+from kiro_crew.apps.registry_pipeline.store_art import (
+    _SAFE_BRANCH_RE,
+    _prewarm_owner_tier_store_assets,
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import minimal_env
 from kiro_crew.sandbox import (
@@ -82,10 +86,13 @@ async def _owner_tier_confirmed(entry: dict[str, Any]) -> bool:
     from a cache. Consequences, all deliberate:
 
     - **Install only.** Callers are the explicit per-app install action. The
-      automatic browse/refresh clones keep the credential-free posture
-      unconditionally, per :func:`anonymous_git_env`'s contract — they are not
-      gated by any owner action, and a network round trip per listed row would be
-      the wrong cost anyway.
+      automatic browse/refresh clones keep the credential-free posture, per
+      :func:`anonymous_git_env`'s contract — they are not gated by any owner
+      action, and a network round trip per listed row would be the wrong cost
+      anyway. The ONE browse-time exception shares this function's authority
+      rather than weakening it: ``store_art._prewarm_owner_tier_store_assets``
+      runs on the rows a fresh index fetch just returned, in the same call, so it
+      needs no re-fetch — the fresh index IS its input, never the cache.
     - **Fail closed, never fall back.** An unreachable index, a parse failure, a
       missing entry, or a URL that does not match exactly all return ``False``,
       which leaves the anonymous posture in place. The cost is availability on a
@@ -214,7 +221,7 @@ async def _fetch_external_registry_index(
     if not _looks_like_git_url(repo):
         logger.warning("Rejecting non-cloneable external registry repo")
         return None
-    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_\-./]*$", branch) or ".." in branch:
+    if not _SAFE_BRANCH_RE.match(branch) or ".." in branch:
         logger.warning("Rejecting invalid branch name: %r", branch)
         return None
 
@@ -266,6 +273,7 @@ async def _fetch_external_registry_index(
         else:
             clone_cmd = [
                 "git",
+                *_HOOKS_NEUTRALIZER_ARGV,
                 "clone",
                 "--depth",
                 "1",
@@ -447,6 +455,16 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         return []
 
     all_entries: list[dict[str, Any]] = []
+    # Registries whose index was FRESHLY fetched in this load, with the in-memory
+    # rows that fetch returned. Their store art is prewarmed AFTER the gather
+    # below settles, not inside ``_load_one``: the prewarm's provenance gate reads
+    # every sibling registry's cache, and the siblings are fetched concurrently,
+    # so a prewarm run inside the per-registry load would find the siblings'
+    # caches still unwritten on a first load and skip every row as ambiguous.
+    # After the gather each fresh sibling has written its cache. The rows handed
+    # over are still the fresh in-memory lists -- a cache hit never reaches this
+    # list, so a poisoned cache row can never reach the prewarm.
+    fresh: list[tuple[Any, list[dict[str, Any]]]] = []
 
     async def _load_one(reg) -> list[dict[str, Any]]:
         cache_name = _external_registry_cache_identity(reg)
@@ -465,6 +483,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         # Fetch from repo (writes the cache on success).
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is not None:
+            fresh.append((reg, entries))
             return entries
 
         # Fall back to stale cache (stale > missing)
@@ -500,5 +519,25 @@ async def _load_external_registries() -> list[dict[str, Any]]:
                     credentialed=_strip_git_target_userinfo(reg.repo) != reg.repo,
                 ),
             )
+
+    if fresh:
+        # One bounded batch per fresh owner-tier registry, run together so the
+        # listing waits at most one batch budget (plus its cancellation cleanup)
+        # for art, however many registries were fresh. A failing prewarm is
+        # logged and never fails the listing: the rows are already in hand.
+        outcomes = await asyncio.gather(
+            *[_prewarm_owner_tier_store_assets(reg, entries) for reg, entries in fresh],
+            return_exceptions=True,
+        )
+        for (reg, _entries), outcome in zip(fresh, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                logger.warning(
+                    "store art prewarm for registry %s failed: %s",
+                    _public_registry_name(reg),
+                    _loggable_git_transport_output(
+                        str(outcome),
+                        credentialed=_strip_git_target_userinfo(reg.repo) != reg.repo,
+                    ),
+                )
 
     return all_entries
