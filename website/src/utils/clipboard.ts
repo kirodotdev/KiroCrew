@@ -31,6 +31,12 @@ export interface CopyOutcome {
 export async function copyWithOutcome(text: string): Promise<CopyOutcome> {
   const write = navigator.clipboard?.writeText
   if (!write) return { ok: execCommandCopy(text), hadAsyncApi: false }
+  // Unfocused, the async API can resolve without landing the text (a copy from a
+  // closing context menu), so fall back to execCommandCopy, which selects its own
+  // textarea. hasFocus absent => treat as focused (#9920).
+  if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    return { ok: execCommandCopy(text), hadAsyncApi: true }
+  }
   try {
     await navigator.clipboard.writeText(text)
     return { ok: true, hadAsyncApi: true }
