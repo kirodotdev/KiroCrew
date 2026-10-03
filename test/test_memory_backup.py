@@ -548,6 +548,89 @@ class TestARestartCannotShrinkTheRetentionWindow:
         assert mb.back_up_all_stores(keep=7)["backed_up"] == 1
 
 
+class TestTheManualVerbTakesTheCopyItWasAskedFor:
+    """``kirocrew memory backup`` is an operator asking for a copy NOW.
+
+    The interval guard exists for the heartbeat, whose per-process tick counter would
+    otherwise take a copy on every restart. An operator running the verb by hand is
+    usually about to do something risky -- a restore, an out-of-band edit -- and needs
+    the store as it is now, not as it was up to a day ago. The dashboard's
+    "back up now" and the pre-update copy already bypass the guard; the CLI verb must
+    too, and the two sides of that asymmetry are pinned here so a refactor cannot
+    collapse them in either direction.
+    """
+
+    @staticmethod
+    def _run_cli_backup(keep: int = 7) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.cli_commands import _memory_backup_cmd
+
+        _memory_backup_cmd("backup", SimpleNamespace(keep=keep))
+
+    def test_the_cli_verb_copies_even_when_a_fresh_backup_exists(
+        self, live_store: VectorMemoryStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        assert mb.back_up_all_stores(keep=7)["backed_up"] == 1  # the sweep, seconds ago
+        assert len(mb.list_backups(src)) == 1
+
+        self._run_cli_backup()
+
+        assert len(mb.list_backups(src)) == 2
+        # The declared finance store has never been opened: nothing to copy, and that
+        # is said rather than folded into three zeros.
+        assert capsys.readouterr().out == (
+            "Backed up 1 store(s); removed 0 old; 0 failed; 1 skipped (nothing to copy).\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_timer_still_declines_inside_the_interval(
+        self, live_store: VectorMemoryStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The other half of the asymmetry: the scheduled pass keeps the guard.
+
+        Forcing it too would reintroduce the restart loop the interval exists to stop,
+        so the heartbeat's own pass is driven here, against the same fresh copy the
+        CLI test copies over, and must leave the directory as it found it.
+
+        The pass FAILS SOFT -- ``_back_up_memory`` logs and swallows any exception --
+        so an unchanged directory alone would also be what a pass that never ran leaves.
+        The warning it logs on that path is asserted absent, which is what makes the
+        unchanged count evidence of a decline rather than of a crash.
+        """
+        import logging
+        from unittest.mock import MagicMock
+
+        from kiro_crew.heartbeat import HeartbeatService
+
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        assert mb.back_up_all_stores(keep=7)["backed_up"] == 1  # the sweep, seconds ago
+        service = HeartbeatService(MagicMock(), consolidator=MagicMock())
+        try:
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.heartbeat"):
+                await service._back_up_memory()
+        finally:
+            service.stop()
+
+        assert not [r for r in caplog.records if r.name == "kiro_crew.heartbeat"], caplog.text
+        assert len(mb.list_backups(src)) == 1
+
+    def test_the_summary_line_reports_the_skipped_count(
+        self, home: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A pass that copied nothing must say so, not print three reassuring zeros.
+
+        ``home`` declares two stores and opens neither, so there is nothing to copy; a
+        line reading only ``0 ... 0 ... 0`` has to carry the count that explains it.
+        """
+        self._run_cli_backup()
+
+        assert capsys.readouterr().out == (
+            "Backed up 0 store(s); removed 0 old; 0 failed; 2 skipped (nothing to copy).\n"
+        )
+
+
 class TestAFailedCopyIsCountedAndNotMistakenForASkip:
     def test_a_copy_failure_reaches_the_failed_counter(self, live_store: VectorMemoryStore) -> None:
         """The counter was unreachable while "nothing to copy" and "copy failed" both

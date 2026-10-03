@@ -3439,10 +3439,21 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         keep = getattr(args, "keep", None)
         if keep is None:
             keep = KiroCrewConfig.load().memory.backup_keep
-        result = memory_backup.back_up_all_stores(int(keep))
+        # ``force``: the interval guard exists for the heartbeat, whose per-process tick
+        # counter would otherwise take a copy on every restart. An operator typing this
+        # verb is asking for a copy of the store as it is NOW -- usually right before a
+        # restore or an out-of-band edit -- and silently declining for the next twenty
+        # hours made the verb do nothing at all. Same call the dashboard's "back up now"
+        # and the pre-update snapshot make; the scheduled sweep alone keeps the guard.
+        result = memory_backup.back_up_all_stores(int(keep), force=True)
+        # All four counters. With the guard bypassed, ``skipped`` is ``backup_store``'s
+        # other outcome -- the store has never been opened or its file is empty -- and a
+        # pass that copied nothing must say so rather than print three zeros that read
+        # as a successful no-op.
         print(
             f"Backed up {result['backed_up']} store(s); "
-            f"removed {result['pruned']} old; {result['failed']} failed."
+            f"removed {result['pruned']} old; {result['failed']} failed; "
+            f"{result['skipped']} skipped (nothing to copy)."
         )
 
     elif action == "backups":
