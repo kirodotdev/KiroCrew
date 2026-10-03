@@ -21,7 +21,7 @@ from typing import Optional
 
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes, ssm, ui
-from kiro_crew.cloud.aws import AWSError
+from kiro_crew.cloud.aws import AWSError, BoundaryCreateDenied
 from kiro_crew.cloud.config import DEFAULT_REGION
 from kiro_crew.cloud.launch_state import LaunchState
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
@@ -536,8 +536,10 @@ def launch(
                 ui.detail(
                     f"Grant `{exc.missing_action}` (see `kirocrew cloud iam-policy`) and retry."
                 )
-            else:
-                # Surface the detailed on-box failure and how to dig further.
+            elif not isinstance(exc, BoundaryCreateDenied):
+                # Surface the detailed on-box failure and how to dig further. A
+                # denied boundary create stops before any stack exists, so its own
+                # message is the whole remedy.
                 for f in ec2.get_stack_failures(tag, profile, region)[:4]:
                     ui.detail(f"  {f['resource']}: {f['reason'][:240]}")
                 ui.detail(

@@ -94,7 +94,10 @@ here, and opens the dashboard — all from your laptop.
    machine the `cloud-install.sh` (macOS/Linux) or `install.ps1` (Windows)
    bootstrapper does this and hands off to the wizard. Verify prerequisites with
    `kirocrew cloud doctor`. Attach the least-privilege policy printed by
-   `kirocrew cloud iam-policy` to the AWS profile you'll launch with.
+   `kirocrew cloud iam-policy` to the AWS profile you'll launch with. That policy
+   cannot create the instance permissions boundary, so an AWS admin runs
+   `kirocrew cloud iam-boundary --profile <admin-profile>` once per account first
+   (`<admin-profile>` is an AWS CLI profile with IAM admin rights).
 2. **Launch.** Run `kirocrew cloud launch` — interactive (size picker + confirm),
    or non-interactive, e.g. `kirocrew cloud launch --size power --region us-west-2
    --profile dev -y`. Useful flags: `--new` (a separate box instead of resuming

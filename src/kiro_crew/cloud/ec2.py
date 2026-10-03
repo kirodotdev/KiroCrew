@@ -771,11 +771,11 @@ def deploy(
     reused = existing is not None
 
     # Ensure the SHARED, immutable instance permissions boundary exists (created
-    # once by launcher code, not per-launch CFN — see source.ensure_instance_boundary
-    # / cloud.iam). Every launch references it by its deterministic ARN; the
-    # InstanceRole is capped by it. Done before the source upload so a
-    # boundary-create failure (e.g. missing iam:CreatePolicy) surfaces before we
-    # ship anything to S3.
+    # once by an admin via `kirocrew cloud iam-boundary`, not per-launch CFN — see
+    # source.ensure_instance_boundary / cloud.iam). Every launch references it by
+    # its deterministic ARN; the InstanceRole is capped by it. Done before the
+    # source upload so a missing boundary (the least-privilege launcher policy can
+    # read it but not create it) surfaces before we ship anything to S3.
     boundary_arn = source_mod.ensure_instance_boundary(profile, region)
 
     # Package + upload the local source so the box installs from S3 (no GitHub

@@ -41,11 +41,11 @@ LEGACY_ROLE_ARN = f"arn:aws:iam::*:role/{ROLE_NAME_PREFIX}*"
 # The permissions-boundary managed-policy name. This is a SINGLE, shared,
 # account/region-agnostic, CONTENT-FIXED managed policy (NO per-tag suffix), so
 # its content is identical for every launch and it can be created ONCE and reused
-# immutably. It is created by launcher CODE (source.ensure_instance_boundary),
-# NOT per-launch CloudFormation, and the launcher policy grants only
-# CreatePolicy/GetPolicy on this exact name (never CreatePolicyVersion/Delete*),
-# so once the correct boundary exists a leaked launcher credential cannot make it
-# permissive. iam:CreateRole is gated on this name so a kirocrew-ec2-* role MUST
+# immutably. An admin creates it once (`kirocrew cloud iam-boundary`, through
+# source.ensure_instance_boundary), NOT per-launch CloudFormation, and the
+# launcher policy grants only GetPolicy/GetPolicyVersion on this exact name (no
+# CreatePolicy, never CreatePolicyVersion/Delete*), so a leaked launcher
+# credential can neither mint the boundary nor make an existing one permissive. iam:CreateRole is gated on this name so a kirocrew-ec2-* role MUST
 # carry it. NB: this is a superset match of ROLE_NAME_PREFIX + "boundary", kept
 # distinct so the PermissionsBoundary condition can't be satisfied by a role.
 BOUNDARY_NAME = "kirocrew-ec2-boundary"
@@ -470,11 +470,10 @@ def policy_document() -> dict[str, Any]:
             # iam:CreateRole is the enforcement point: a kirocrew-ec2-* role can
             # ONLY be created WITH our permissions boundary (iam:PermissionsBoundary
             # must ArnLike-match arn:...:policy/kirocrew-ec2-boundary). Because the
-            # boundary is a single content-fixed policy the launcher creates ONCE
-            # and can never re-version/delete (see IamInstanceBoundaryCreateOnce),
-            # this ceiling is real even against a leaked LAUNCHER credential: it
-            # can't author a permissive boundary at that name (CreatePolicy on an
-            # existing name fails EntityAlreadyExists), so any role it creates is
+            # boundary is a single content-fixed policy an admin creates ONCE and
+            # the launcher can only read (see IamInstanceBoundaryRead), this
+            # ceiling is real even against a leaked LAUNCHER credential: it can't
+            # author a boundary at that name at all, so any role it creates is
             # capped to SSM-core + source read. A boundary set at creation can't be
             # removed by PutRolePolicy (only DeleteRolePermissionsBoundary does
             # that, which we don't grant), so every such role stays permanently
@@ -578,50 +577,32 @@ def policy_document() -> dict[str, Any]:
             ],
         },
         {
-            # The SHARED, IMMUTABLE instance permissions boundary. The launcher
-            # CODE (source.ensure_instance_boundary) creates this ONCE, idempotently
-            # (tolerating EntityAlreadyExists), from a content-fixed document — it
-            # is NOT created per-launch by CloudFormation anymore. We grant ONLY
-            # CreatePolicy + GetPolicy + GetPolicyVersion, scoped to the EXACT
-            # boundary name (no wildcard suffix):
-            #   * GetPolicy — check whether the boundary already exists + read its
-            #     default version id.
-            #   * GetPolicyVersion — read the existing boundary's document so the
-            #     launcher can VERIFY it matches the content-fixed document before
-            #     reusing it (source._verify_boundary_content); a permissive
-            #     boundary seeded at this name is detected + refused, not trusted.
-            #   * CreatePolicy — create it the first time.
-            # We deliberately do NOT grant CreatePolicyVersion / DeletePolicyVersion
-            # / DeletePolicy / SetDefaultPolicyVersion. That is the crux of the fix:
-            # CreatePolicy on a FIXED name fails with EntityAlreadyExists once the
-            # boundary exists, and without a version/delete verb a holder of the
-            # generated policy CANNOT replace the content of an existing boundary —
-            # only (harmlessly) try to re-create the identical one. So the ceiling
-            # is immutable against a leaked launcher credential, not just against
-            # the on-box agent.
-            #
-            # Residual (see security model in docs/system-specs/modules/cloud.md):
-            # the first CreatePolicy
-            # is a first-write race, but now for AVAILABILITY only — the launcher
-            # verifies the existing boundary's content and FAILS CLOSED on a
-            # mismatch, so a permissive boundary seeded at this name is refused
-            # (it can never under-cap a role), it can only block launches (a DoS).
-            # Operators who want to eliminate even that pre-create the boundary as an
-            # admin (kirocrew cloud iam-boundary) and drop this statement — the
-            # launcher then only *references* the boundary ARN.
-            "Sid": "IamInstanceBoundaryCreateOnce",
+            # READ-ONLY access to the shared, immutable permissions boundaries. An
+            # admin creates each boundary ONCE (`kirocrew cloud iam-boundary`, run
+            # with admin credentials); the launcher only VERIFIES it before use:
+            #   * GetPolicy -- does the boundary exist, and what is its default
+            #     version id.
+            #   * GetPolicyVersion -- read that version's document so the launcher
+            #     can check it equals the content-fixed document before reusing it
+            #     (source._verify_boundary_content). A permissive policy seeded at
+            #     this name is refused, not trusted.
+            # NO iam:CreatePolicy. A holder of this policy must not be able to mint
+            # the very ceiling its own roles are capped by -- that is a self-create
+            # path, even with the content check behind it. Nor any version/delete
+            # verb (CreatePolicyVersion / DeletePolicy / SetDefaultPolicyVersion),
+            # so an existing boundary's content cannot be replaced either. A launch
+            # by a principal holding only this policy, on an account with no
+            # boundary yet, fails with a message naming `kirocrew cloud
+            # iam-boundary` (source._ensure_boundary).
+            "Sid": "IamInstanceBoundaryRead",
             "Effect": "Allow",
             "Action": [
-                "iam:CreatePolicy",
                 "iam:GetPolicy",
                 "iam:GetPolicyVersion",
             ],
-            # Two EXACT names, never a prefix. `policy/kirocrew-*` would let a
-            # leaked launcher credential author any policy whose name started that
-            # way and then attach it, which is the whole escalation this statement
-            # is shaped to prevent. The Fargate crew boundary is listed beside the
-            # EC2 one because it is created the same way -- once, content-fixed,
-            # never re-versioned -- and needs the same three verbs and no others.
+            # Exact names, never a prefix: `policy/kirocrew-*` would widen the read
+            # to every policy a caller named that way. The Fargate crew boundaries
+            # sit beside the EC2 one because they are verified the same way.
             "Resource": [
                 f"arn:aws:iam::*:policy/{BOUNDARY_NAME}",
                 f"arn:aws:iam::*:policy/{CREW_BOUNDARY_NAME}",

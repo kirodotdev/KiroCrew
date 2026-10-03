@@ -302,24 +302,39 @@ class TestPolicyDocument:
                 "iam:PermissionsBoundary" not in se
             ), f"{st['Sid']} uses StringEquals on iam:PermissionsBoundary (wildcard won't match)"
 
-    def test_boundary_create_once_is_immutable(self):
-        # The launcher CODE creates the shared boundary once (not per-launch CFN).
-        # The generated policy must grant ONLY CreatePolicy + GetPolicy on the
-        # EXACT boundary ARN — and NEVER the version/delete verbs, because those
-        # would let a leaked launcher credential mutate/replace an existing
-        # boundary's content (the whole vulnerability). CreatePolicy on a fixed
-        # name fails EntityAlreadyExists once it exists, so it can't be made
-        # permissive after the fact.
+    def test_launcher_policy_cannot_create_any_boundary(self):
+        # No self-create path: a holder of the printed launcher policy must not be
+        # able to mint the boundary its own roles are capped by. An admin creates
+        # it once (`kirocrew cloud iam-boundary`). Checked over EVERY statement,
+        # not one Sid, so the grant cannot come back under another name.
+        boundary_arns = {
+            f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}",
+            f"arn:aws:iam::*:policy/{iam.CREW_BOUNDARY_NAME}",
+            f"arn:aws:iam::*:policy/{iam.CREW_EXEC_BOUNDARY_NAME}",
+        }
+        for st in iam.policy_document()["Statement"]:
+            assert st["Sid"] != "IamInstanceBoundaryCreateOnce"
+            if st["Effect"] != "Allow":
+                continue
+            actions = st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
+            resources = st.get("Resource", [])
+            resources = resources if isinstance(resources, list) else [resources]
+            hits_boundary = any(
+                r == "*" or r in boundary_arns or r.endswith("policy/kirocrew-*") for r in resources
+            )
+            if hits_boundary:
+                for verb in ("iam:CreatePolicy", "iam:CreatePolicyVersion", "iam:*"):
+                    assert verb not in actions, f"{st['Sid']} grants {verb} on a boundary"
+
+    def test_boundary_read_is_read_only(self):
+        # The launcher still VERIFIES an existing boundary before reuse
+        # (source._verify_boundary_content needs GetPolicy for the default version
+        # id and GetPolicyVersion for the document). Those two reads, and nothing
+        # that writes.
         st = next(
-            s
-            for s in iam.policy_document()["Statement"]
-            if s["Sid"] == "IamInstanceBoundaryCreateOnce"
+            s for s in iam.policy_document()["Statement"] if s["Sid"] == "IamInstanceBoundaryRead"
         )
-        # CreatePolicy + the two READ verbs the content-verification needs
-        # (GetPolicy for the default version id, GetPolicyVersion for the doc).
-        # NO version/delete/set-default verbs.
         assert set(st["Action"]) == {
-            "iam:CreatePolicy",
             "iam:GetPolicy",
             "iam:GetPolicyVersion",
         }
@@ -737,7 +752,18 @@ _ROLE_MGMT_VERBS = (
 #    handler's two SSM association reads are added, all on "*".
 #  * Role management and the SSM-core attach/detach gain ROLE_PATH beside the
 #    root-path prefix, which stays so pre-path stacks can still be destroyed.
+#  * iam:CreatePolicy on the three permissions boundaries is revoked: the
+#    launcher could mint the ceiling its own roles are capped by. An admin
+#    creates them (`kirocrew cloud iam-boundary`); the two reads stay.
 EXPECTED_PERMISSION_DELTA_REMOVED = {
+    *(
+        ("Allow", "iam:CreatePolicy", "Resource", f"arn:aws:iam::*:policy/{name}", "null")
+        for name in (
+            "kirocrew-ec2-boundary",
+            "kirocrew-crew-boundary",
+            "kirocrew-crew-exec-boundary",
+        )
+    ),
     *(("Allow", a, "Resource", "*", "null") for a in _EC2_DESCRIBES_REPLACED),
     ("Allow", "iam:CreateRole", "Resource", _ROOT_ROLE, _BOUNDARY_COND),
     ("Allow", "iam:PutRolePolicy", "Resource", _ROOT_ROLE, _TAG_COND),
@@ -1208,18 +1234,15 @@ class TestCrewPermissionsBoundary:
         assert arn == "arn:aws:iam::123456789012:policy/kirocrew-crew-boundary"
         assert iam.CREW_BOUNDARY_NAME == "kirocrew-crew-boundary"
 
-    def test_the_create_once_grant_names_both_boundaries_exactly(self):
-        """Three exact names, never a prefix.
+    def test_the_boundary_read_grant_names_every_boundary_exactly(self):
+        """Three exact names, never a prefix, and only the two read verbs.
 
-        ``policy/kirocrew-*`` would let a leaked launcher credential author any
-        policy whose name began that way and attach it, which is the escalation
-        this statement's shape exists to prevent. Only the three create-once verbs,
-        so an existing boundary's content cannot be replaced.
+        ``policy/kirocrew-*`` would widen the grant to any policy whose name began
+        that way. No create, version or delete verb, so the launcher can neither
+        mint a boundary nor replace an existing one's content.
         """
         statement = next(
-            s
-            for s in iam.policy_document()["Statement"]
-            if s["Sid"] == "IamInstanceBoundaryCreateOnce"
+            s for s in iam.policy_document()["Statement"] if s["Sid"] == "IamInstanceBoundaryRead"
         )
         assert set(statement["Resource"]) == {
             f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}",
@@ -1230,12 +1253,12 @@ class TestCrewPermissionsBoundary:
         for resource in statement["Resource"]:
             assert not resource.endswith("kirocrew-*"), resource
         assert set(statement["Action"]) == {
-            "iam:CreatePolicy",
             "iam:GetPolicy",
             "iam:GetPolicyVersion",
         }, statement["Action"]
-        # Never the verbs that could re-author an existing boundary.
+        # Never the verbs that could author or re-author a boundary.
         for forbidden in (
+            "iam:CreatePolicy",
             "iam:CreatePolicyVersion",
             "iam:DeletePolicy",
             "iam:SetDefaultPolicyVersion",

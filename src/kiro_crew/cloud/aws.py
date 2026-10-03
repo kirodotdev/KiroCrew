@@ -175,6 +175,16 @@ class AWSError(Exception):
         self.stderr = stderr
 
 
+class BoundaryCreateDenied(AWSError):
+    """These credentials may not create a permissions boundary.
+
+    Raised before any stack exists, so a caller must not point the user at
+    CloudFormation events, and it never carries ``missing_action``: the remedy is
+    an admin running ``kirocrew cloud iam-boundary``, not granting the launcher
+    ``iam:CreatePolicy``.
+    """
+
+
 def _build_argv(args: list[str], profile: str, region: str) -> list[str]:
     """Build an ``aws`` argv with optional ``--profile`` / ``--region``.
 
