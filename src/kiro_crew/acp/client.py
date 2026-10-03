@@ -311,6 +311,7 @@ from kiro_crew.security.credential_sources import tool_output_fingerprints
 from kiro_crew.sel import sel
 from kiro_crew.session_token_sig import schedule_session_token_publish
 from kiro_crew.skill_usage import get_global_skill_read_observer
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -2447,7 +2448,9 @@ def _project_settings_restrictions(path: Path) -> list[tuple[str, str]] | None:
     finally:
         os.close(fd)
     try:
-        data = json.loads(raw.decode("utf-8"))
+        # A hand-edited settings file may carry a leading UTF-8 byte-order mark,
+        # and its rules must still be carried.
+        data = loads_user_json(raw.decode("utf-8"))
     except ValueError:
         return []
     except RecursionError:

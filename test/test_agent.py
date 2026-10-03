@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import contextlib
 import json
 import logging
@@ -152,6 +153,19 @@ class TestInstallAgent:
         config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
         assert "ReadFile" in config["tools"]
+
+    def test_fresh_install_applies_bom_saved_user_overrides(self, tmp_path: Path):
+        """An agent.json saved with a UTF-8 byte-order mark still overrides."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir()
+        (user_home / "agent.json").write_bytes(
+            codecs.BOM_UTF8 + json.dumps({"model": "user-pick"}).encode("utf-8")
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+
+        assert json.loads(path.read_text(encoding="utf-8"))["model"] == "user-pick"
 
     def test_fresh_install_preserves_safe_managed_server_overrides(self, tmp_path: Path):
         """A clean rebuild keeps preferences without ceding invocation ownership."""
@@ -2546,6 +2560,25 @@ class TestKiroHooksFiltering:
             assert "auto_approve_tools" not in repaired["hooks"]
             assert "postToolUse" in repaired["hooks"]
             assert "futureHookEvent" in repaired["hooks"]
+
+    def test_sanitize_agent_hooks_repairs_a_bom_saved_owned_file(self, tmp_path: Path):
+        """A hand-saved owned spec with a byte-order mark is repaired, not skipped."""
+        from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks
+        from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        spec = {"name": "kirocrew", "hooks": {"auto_approve_tools": ["x"], "stop": []}}
+        target = kiro_dir / sorted(OWNED_KIRO_AGENT_FILES)[0]
+        target.write_bytes(codecs.BOM_UTF8 + json.dumps(spec).encode("utf-8"))
+
+        _hooks_sanitized_mtimes.clear()
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
+            _sanitize_agent_hooks()
+
+        raw = target.read_bytes()
+        assert not raw.startswith(codecs.BOM_UTF8)
+        assert json.loads(raw)["hooks"] == {"stop": []}
 
     @pytest.mark.parametrize(
         "filename", ["other-tool.json", "kirocrew-custom.json", "sample-app--worker.json"]
