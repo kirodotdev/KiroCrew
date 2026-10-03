@@ -96,7 +96,7 @@ describe('kiro-light shell hooks', () => {
     // the other or the swap becomes visible.
     const src = read('pages', 'chat', 'PinnedPrompt.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'PinnedPrompt.tsx'])).toMatch(
-      /className="user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 /,
+      /className="user-bubble flex items-start gap-2 rounded-xl bg-card text-card-fg ring-1 /,
     )
   })
 

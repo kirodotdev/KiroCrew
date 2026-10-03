@@ -328,20 +328,6 @@ through `mountIndex` and `estimateRowTop`. The page keeps `overflow-anchor: auto
 on the scroller as the browser's own stabiliser. WebKit ships none, so the hook
 carries its own anchors as well.
 
-The pinned-prompt card is an overlay beside the scroller, not a row in it, and
-it paints above the composer dock, so nothing but geometry bounds it. Its
-ceiling is the transcript FLOOR: the scroller's bottom less the scroller's own
-`padding-bottom`, which is each host's statement of where readable rows stop
-(the main chat pads by the dock's height plus a clearance). `usePinnedPrompt`
-measures that floor off the scroller rather than taking it as a prop, clamps the
-fold's live height to it and hands it to the card as `maxH`, which lands as
-`max-height` on the bubble; the body is a shrinkable flex column so the cap
-scrolls the prompt instead of clipping it. A host that moves its floor (a dock
-that grows a status bar) only has to keep its `padding-bottom` honest. A prompt
-whose part still below the band is taller than the resting card is not pinned
-at all: the real bubble stays in the transcript, so a long prompt reads and
-scrolls as itself, and the card takes over only once what remains fits it.
-
 | What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
 |---|---|
 | Following the live turn, the jump-to-latest pill, scrolling to a row | `followPolicy.ts` (every write goes through its `writeScrollTop`) |

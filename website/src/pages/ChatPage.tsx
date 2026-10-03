@@ -1612,7 +1612,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     pinExpanded,
     setPinExpanded,
     onPinCollapsedHeight,
-    scrollTranscriptBy,
     updatePinnedPrompt,
     onScrollPin,
     scrollToPinnedPrompt,
@@ -5694,15 +5693,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   images={pinned.images}
                   bodyBeyondPreview={pinned.bodyBeyondPreview}
                   pushUp={pinned.push}
-                  liveH={pinned.liveH}
-                  maxH={pinned.maxH}
                   bannerH={pinned.bannerH}
                   expanded={pinExpanded}
                   onToggleExpanded={() => setPinExpanded(p => !p)}
                   onJump={() => scrollToPinnedPrompt(pinned.idx)}
                   cardRef={pinCardRef}
                   onCollapsedHeight={onPinCollapsedHeight}
-                  scrollTranscriptBy={scrollTranscriptBy}
                 />
               )}
             </div>
@@ -5863,37 +5859,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 if (item.kind === 'turn') {
                   return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} /></div>
                 }
-                // This row's bubble is the one the pinned banner is standing in for
-                // (identity rule below): hide the row and mark it for index.css. The
-                // marker reads `folding` while the hook reports the row's re-shown
-                // action strip still UNCOVERED — some of it below the card's resting
-                // bottom, on screen. That is the whole fold and the strip's own
-                // height of scroll after it: the card rests at its clamp while the
-                // strip, hanging under the bubble, is still sliding under it, so a
-                // marker keyed on the fold alone dropped the strip out from under
-                // the pointer for that last stretch. Once the strip is under the card
-                // or behind the header the marker is empty and the strip hides with
-                // its row again, or Tab would stop on controls nobody can see.
-                const pinnedStandin = !!(pinned && (pinned.ts != null
-                  ? (item.kind === 'single' && item.msg.ts === pinned.ts)
-                  : pinned.idx === displayIdx))
-                return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-4 mx-auto w-full py-1`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : '') : undefined} style={{
+                return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-4 mx-auto w-full py-1`} style={{
                   maxWidth: 'var(--mc-content-width, 900px)',
                   // The pinned banner is styled as this row's own bubble and sits
-                  // at the exact position and width the bubble had when its top
-                  // edge reached the fold, so leaving both visible is what betrays
-                  // them as two containers. Hide the real one (visibility, NOT
-                  // display — the virtualizer must keep measuring its height or
+                  // at the exact position and width the bubble had when its bottom
+                  // edge reached the band's bottom, so leaving both visible is what
+                  // betrays them as two containers. Hide the real one (visibility,
+                  // NOT display — the virtualizer must keep measuring its height or
                   // the transcript would reflow under the reader) and the bubble
-                  // appears to simply stop travelling and stick. The row hides the
-                  // moment its top crosses the fold (the top-edge hand-off), and
-                  // the card then folds down the BUBBLE's remaining height, so the
-                  // row's action strip beneath the bubble is never behind the card
-                  // — `data-pinned-standin` lets index.css re-show that strip
-                  // (visibility is inherited, so a `visible` descendant of a hidden
-                  // row is drawn and clickable). Without it a prompt taller than
-                  // the viewport never shows its copy / copy-link / pin row at all:
-                  // its bottom is only on screen once its top is above the fold.
+                  // appears to simply stop travelling and stick. A row is only ever
+                  // hidden once it is entirely behind the band, so a tall prompt
+                  // never leaves a visible hole above the response.
                   //
                   // Match by message IDENTITY (ts), not display index. `pinned.idx`
                   // is computed in a scroll rAF against `displayItemsRef`, which is
@@ -5904,7 +5880,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   // alongside the banner — the "two stacked boxes" bug. The ts is
                   // stable across any index shift, so it hides the right row every
                   // frame; fall back to the index only for a message with no ts.
-                  visibility: pinnedStandin ? 'hidden' : undefined,
+                  visibility: (pinned && (pinned.ts != null
+                    ? (item.kind === 'single' && item.msg.ts === pinned.ts)
+                    : pinned.idx === displayIdx)) ? 'hidden' : undefined,
                 }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                 if (item.msgs.every(m => m.role === 'permission')) return null

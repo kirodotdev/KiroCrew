@@ -130,7 +130,7 @@ const PROSE = [
   '',
   '<unknownTag attr="1">kept verbatim</unknownTag>',
   '',
-  '<div onclick="x()" style="color:red" data-message-edit="1" data-ok="1">raw div</div>',
+  '<div onclick="x()" style="color:red" data-ok="1">raw div</div>',
   '',
   '<code class="language-js">inline classed</code> and <script>alert(1)</script>',
   '',

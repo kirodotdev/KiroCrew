@@ -137,7 +137,7 @@ const ATTRS: Record<string, unknown> = {
   preload: 'none', open: true, dateTime: '2026-01-01', viewBox: '0 0 1 1', xmlns: 'http://www.w3.org/2000/svg',
   fill: 'none', stroke: 'red', strokeWidth: '1', d: 'M0 0', points: '0,0', x: '0', cx: '0', r: '1', offset: '0',
   stopColor: 'red', transform: 'scale(1)', refX: '0', orient: 'auto', ariaLabel: 'l', dataFoo: 'f',
-  dataMessageEdit: 'reserved', 'data-message-actions': 'reserved', style: 'color:red', onClick: 'x()',
+  style: 'color:red', onClick: 'x()',
   onerror: 'x()', formAction: 'x', srcDoc: '<b>', background: 'x', ping: 'x', xlinkHref: 'x',
 }
 
