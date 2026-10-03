@@ -70,6 +70,7 @@ from kiro_crew import (
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agents_janitor import sweep_agents_dir
+from kiro_crew.apps.cron_sdk import app_owner_name
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     CONSECUTIVE_FAILURE_REASON,
@@ -3786,6 +3787,7 @@ class GatewayOrchestrator:
                         job.id,
                         job.secret_env,
                         job.secret_env_pin,
+                        app_owner_name(job.created_by),
                         timeout=_claim_backstop(job, cmd_timeout),
                     )
                     if result.get("status") == "cancelled":
@@ -4164,6 +4166,7 @@ class GatewayOrchestrator:
                             job.thread_ts or "",
                         ),
                         self._live_internal_secret,
+                        app_owner_name(job.created_by),
                         timeout=_claim_backstop(job, script_timeout),
                     )
                     status = result.get("status", "error")

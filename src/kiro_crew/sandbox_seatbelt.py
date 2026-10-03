@@ -38,6 +38,7 @@ def _build_seatbelt_profile(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> str:
@@ -244,7 +245,25 @@ def _build_seatbelt_profile(
     # to its mask would be a mask lift by another name), so every entry here is a
     # PROPER descendant and the ``(literal …)`` denies emitted for the target
     # cannot reach it.
-    extra_private_windows = _private_window_spellings(extra_private_dirs, extra_hidden_targets)
+    # A READ-ONLY window may contain another caller-hidden target (an app bundle
+    # holding that app's ``.app_secret``). It is carved out of the read deny only, and
+    # the contained target's own denies -- emitted by this same loop, deny-wins --
+    # still hold inside it. Read-write windows keep the refusal, so callers that pass
+    # no read-only windows get exactly the windows they did before.
+    readonly_windows = {os.path.abspath(path) for path in extra_readonly_private_dirs}
+    extra_private_windows = list(
+        dict.fromkeys(
+            _private_window_spellings(
+                tuple(d for d in extra_private_dirs if os.path.abspath(d) not in readonly_windows),
+                extra_hidden_targets,
+            )
+            + _private_window_spellings(
+                tuple(d for d in extra_private_dirs if os.path.abspath(d) in readonly_windows),
+                extra_hidden_targets,
+                remasks_contained_targets=True,
+            )
+        )
+    )
     # Read-only carve-outs inside an extra-hidden dir (the enforced adapter's
     # ``~/.aws/config``). READ only: the write and hardlink denies below stay
     # blanket over the subpath, exactly as the ``.ssh/known_hosts`` carve-out
@@ -264,6 +283,13 @@ def _build_seatbelt_profile(
             window_exceptions = " ".join(
                 f"(require-not (subpath {json.dumps(w)}))" for w in windows
             )
+            # A read-only window is carved out of the READ deny only; writes and
+            # hardlinks stay denied across it except under a read-write window.
+            write_exceptions = " ".join(
+                f"(require-not (subpath {json.dumps(w)}))"
+                for w in windows
+                if w not in readonly_windows
+            )
             # An exposed file under the same tree keeps its READ carve-out; it
             # gets no write or link exception, matching the blanket branch below.
             carved_here = sorted(f for f in extra_expose_abs if f.startswith(target + os.sep))
@@ -273,7 +299,10 @@ def _build_seatbelt_profile(
             subpath = f"(subpath {json.dumps(target)})"
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
             for operation in ("file-write*", "file-link"):
-                rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
+                if write_exceptions:
+                    rules.append(f"(deny {operation} (require-all {subpath} {write_exceptions}))")
+                else:
+                    rules.append(f"(deny {operation} {subpath})")
             # Stat-able ancestors, for the same ``realpath`` reason as the tier loop.
             for ancestor in _window_ancestors(target, windows):
                 rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
