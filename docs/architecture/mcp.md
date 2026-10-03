@@ -1649,9 +1649,9 @@ answers `tools/list` from):
     deliver into the parent's chat window. An unresolvable identity refuses the
     call rather than guessing.
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
-  `ask_question`, `suggest_followup`, `monitor_start`, `monitor_watch`,
-  `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
-  `reset_conversation`, `chat_tag`
+  `ask_question`, `nothing_to_do`, `suggest_followup`, `monitor_start`,
+  `monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`,
+  `set_project`, `reset_conversation`, `chat_tag`
 - **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
   once through `require_strict_session_key` and passes that same identity to the gateway.
   Missing identity returns the shared gate's refusal and installation diagnosis.
@@ -2645,10 +2645,10 @@ identity, would hand the answer to whichever session the shared process last saw
 and let a sub-agent's card land in its parent's slot.
 
 **Return a session directive and let the session-aware consumer apply it.** This
-is what the `ask_question` MCP tool itself does, along with `monitor_start`,
-`monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`
-and `suggest_followup`, `reset_conversation` and `chat_tag`
-(`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
+is what the `ask_question` MCP tool itself does, along with `nothing_to_do`,
+`monitor_start`, `monitor_watch`, `monitor_update`, `monitor_stop`,
+`autonudge_stop`, `set_project` and `suggest_followup`, `reset_conversation` and
+`chat_tag` (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
 decodes the marker, applies the effect against **its own** `slot.key`, then
@@ -2656,6 +2656,26 @@ strips the marker from the stored transcript. Sub-agent isolation is therefore
 structural rather than cryptographic: a sub-agent's tool result flows through the
 sub-agent's own runner, so it can only bind to the sub-agent's session. There is
 no walk to get wrong.
+
+**Terminal directives carry a structured turn-end signal.** Two directives are
+the turn's intended LAST act — a shown `ask_question` card and a recorded
+`nothing_to_do` quiet end (`session_directive_apply.TERMINAL_DIRECTIVES`). Their
+applier returns a `DirectiveOutcome(text, ends_turn=True)` through
+`apply_session_directive_outcome`, and only on the path where the effect landed
+(a card a client will render; a quiet step recorded): a refusal, an error text or
+a dropped card leaves `ends_turn` False. Both consumers read that flag — the
+dashboard runner skips its empty-response ladder, the channel driver owes no
+empty-turn notice — and neither derives it from the outcome prose (the
+`QUESTION_CARD_SHOWN_PREFIX` match the first fix used was the thing #9324 asked
+to replace). The string-returning `apply_session_directive` remains for callers
+that need the text alone. `nothing_to_do` exists for the turn-end contract the
+base prompt states: after its tool calls a turn ends with a closing text or with
+`nothing_to_do`, never by stopping bare after an ordinary tool — a bare stop
+keeps the recovery ladder, which is what makes the directive the only sanctioned
+silent exit. It takes no surface, slot or provenance gate (a cron wake or a
+patrol cycle with nothing to report is its designed caller, and it mutates
+nothing a wrong identity could misdirect); isolation from a sub-agent is the
+same structural isolation every directive has.
 
 The directive marker is model-visible, since it comes back as tool-result text,
 so the consumer defends against forgery by honoring a directive only when the

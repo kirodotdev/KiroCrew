@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 
 # The raw arguments the model sent. Long enough to matter, quoted enough to have
 # defeated the naive repair, and carrying the ``_meta`` block KAS attaches to
@@ -165,8 +166,8 @@ async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None
     client.context_usage_pct = MagicMock(return_value=1.0)
     client.client = None
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-    spy = AsyncMock(return_value="[applied]")
-    monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+    spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+    monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
     await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
     task = getattr(slot, "task", None)
     if task is not None:
@@ -569,8 +570,8 @@ class TestEmptyArgumentDirectives:
         client.context_usage_pct = MagicMock(return_value=1.0)
         client.client = None
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        spy = AsyncMock(return_value="[applied]")
-        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+        spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+        monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
         await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
         spy.assert_called_once()
         assert spy.call_args.args[3] == "reset_conversation"
@@ -626,8 +627,8 @@ class TestPlantedRecordIsNotClaimedByADifferentTool:
         client.context_usage_pct = MagicMock(return_value=1.0)
         client.client = None
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        spy = AsyncMock(return_value="[applied]")
-        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+        spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+        monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
         await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
         spy.assert_not_called()
         assert directive_queue.depth(effective_session_key(slot)) == 1, "record left parked"
@@ -735,8 +736,8 @@ class TestNativeSubagentCannotReachTheParentThroughASharedDigest:
         client.context_usage_pct = MagicMock(return_value=1.0)
         client.client = None
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        spy = AsyncMock(return_value="[applied]")
-        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+        spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+        monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
         with caplog.at_level("WARNING"):
             await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
         spy.assert_not_called()
@@ -1016,8 +1017,8 @@ class TestTheDisplayTitleCannotForgeTheTool:
         client.context_usage_pct = MagicMock(return_value=1.0)
         client.client = None
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        spy = AsyncMock(return_value="[applied]")
-        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+        spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+        monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
         await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
         spy.assert_not_called()
         assert directive_queue.depth(effective_session_key(slot)) == 1
@@ -1488,8 +1489,8 @@ class TestConcurrentDirectivesInOneSession:
         client.context_usage_pct = MagicMock(return_value=1.0)
         client.client = None
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        spy = AsyncMock(return_value="[applied]")
-        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+        spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+        monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
         await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
 
         applied = [

@@ -54,6 +54,11 @@ from typing import Any
 # arrives as an ordinary next message that resumes the session (the full
 # transcript/context reloads), rather than blocking the turn on a server-side
 # wait. This drops only the mid-turn pause — never a capability.
+# ``nothing_to_do`` is the other TERMINAL directive: a turn that ran tools and
+# has nothing the user needs to read ends on it instead of on a closing reply
+# (the turn-end contract: text, or ``nothing_to_do``, never a bare tool stop).
+# The consumer records the applied directive as ending the turn so the
+# empty-response recovery stays out of a deliberately quiet turn.
 DIRECTIVE_TOOLS: frozenset[str] = frozenset(
     {
         "monitor_start",
@@ -64,6 +69,7 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
         "set_project",
         "suggest_followup",
         "ask_question",
+        "nothing_to_do",
         "reset_conversation",
         "chat_tag",
     }
