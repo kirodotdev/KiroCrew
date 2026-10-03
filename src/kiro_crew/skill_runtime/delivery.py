@@ -37,12 +37,13 @@ _SKIPPED_PROJECT_KEY_LOG_CHARS = 200
 class SkippedProjectSkills:
     """Project ``always: true`` skills left out, bounded where they are retained.
 
-    ``count`` covers every skipped row. ``logged`` (warning items, each key cut to
-    ``_SKIPPED_PROJECT_KEY_LOG_CHARS``) and ``notice`` (whole-key read pointers)
-    each keep only their leading items that fit ``_SKIPPED_PROJECT_KEYS_MAX_CHARS``
-    together. The warning always names the first row; the notice names none whose
-    pointer alone is past the bound. Each list closes at its first item that does
-    not fit, so the rows it names are the first ones skipped.
+    ``count`` covers every skipped row. ``logged`` (warning items, each key's
+    ``repr`` cut to ``_SKIPPED_PROJECT_KEY_LOG_CHARS`` plus its quotes) and
+    ``notice`` (whole-key read pointers) each keep only their leading items that
+    fit ``_SKIPPED_PROJECT_KEYS_MAX_CHARS`` together. The warning always names the
+    first row; the notice names none whose pointer alone is past the bound. Each
+    list closes at its first item that does not fit, so the rows it names are the
+    first ones skipped.
     """
 
     def __init__(self) -> None:
@@ -57,7 +58,11 @@ class SkippedProjectSkills:
     def add(self, key: str, reason: str) -> None:
         self.count += 1
         if not self._logged_closed:
-            item = f"{key[:_SKIPPED_PROJECT_KEY_LOG_CHARS]!r} ({reason})"
+            # Capped AFTER rendering as well: ``repr`` turns a non-printable code
+            # point into as many as ten characters, so the cut key alone does not
+            # bound what is kept (the two extra characters are the quotes).
+            shown = repr(key[:_SKIPPED_PROJECT_KEY_LOG_CHARS])[: _SKIPPED_PROJECT_KEY_LOG_CHARS + 2]
+            item = f"{shown} ({reason})"
             self._logged_chars += len(item) + 2
             if self._logged_chars > _SKIPPED_PROJECT_KEYS_MAX_CHARS and self.logged:
                 self._logged_closed = True
