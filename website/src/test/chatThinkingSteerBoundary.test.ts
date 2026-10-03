@@ -95,11 +95,13 @@ describe('sseThinkingChunk turn-boundary scan', () => {
 describe('mergePreservedThinking anchoring across a steer', () => {
   /** Drive the refresh that fires on chat_done, returning the merged rows. */
   function refreshWith(s: State, serverMessages: Array<Record<string, unknown>>): State {
-    return reducer(s, {
-      type: refreshSlot.fulfilled.type,
-      payload: { key: SLOT, messages: serverMessages, running: false, hasMore: false, queue: [], nextBefore: 0 },
-      meta: { arg: SLOT },
-    })
+    const requestId = 'thinking-refresh'
+    const pending = reducer(s, refreshSlot.pending(requestId, SLOT))
+    return reducer(pending, refreshSlot.fulfilled(
+      { key: SLOT, messages: serverMessages, running: false, hasMore: false, total: serverMessages.length, queue: [], nextBefore: 0 } as never,
+      requestId,
+      SLOT,
+    ))
   }
 
   it('re-inserts the block above its answer when a steer sits between them', () => {

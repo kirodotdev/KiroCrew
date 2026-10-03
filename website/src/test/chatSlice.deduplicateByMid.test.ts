@@ -23,6 +23,7 @@ describe('deduplicateByMid in slot-detail reducers (#5981)', () => {
     // assistant row twice under one server-minted mid. Only deduplicateByMid
     // collapses by mid — the merge helpers' contracts are narrower — so this
     // test fails if the deduplicateByMid call is removed from the reducer.
+    store.dispatch(refreshSlot.pending('r1', 'weixin-slot'))
     store.dispatch(refreshSlot.fulfilled(slotPayload('weixin-slot', [
       { role: 'assistant', content: 'stale copy', cls: 'msg msg-a', ts: '2026-08-25T19:31:00Z', meta: { mid: 'm-dup1' } },
       { role: 'assistant', content: 'fresh copy', cls: 'msg msg-a', ts: '2026-08-25T19:31:00Z', meta: { mid: 'm-dup1' } },
@@ -51,6 +52,7 @@ describe('deduplicateByMid in slot-detail reducers (#5981)', () => {
   it('refreshSlot.fulfilled keeps distinct-mid rows intact', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('weixin-slot'))
+    store.dispatch(refreshSlot.pending('r1', 'weixin-slot'))
     store.dispatch(refreshSlot.fulfilled(slotPayload('weixin-slot', [
       { role: 'assistant', content: 'First reply', cls: 'msg msg-a', ts: '2026-08-25T19:31:00Z', meta: { mid: 'm-111' } },
       { role: 'assistant', content: 'Second reply', cls: 'msg msg-a', ts: '2026-08-25T19:32:00Z', meta: { mid: 'm-222' } },
@@ -68,6 +70,7 @@ describe('deduplicateByMid in slot-detail reducers (#5981)', () => {
     // role AND ts) collapses.
     const store = makeStore()
     store.dispatch(setActiveSlot('weixin-slot'))
+    store.dispatch(refreshSlot.pending('r1', 'weixin-slot'))
     store.dispatch(refreshSlot.fulfilled(slotPayload('weixin-slot', [
       { role: 'user', content: 'first message', cls: 'msg msg-u', ts: '2026-08-25T19:31:00Z', meta: { mid: 'm-reused' } },
       { role: 'user', content: 'second, distinct message', cls: 'msg msg-u', ts: '2026-08-25T19:33:00Z', meta: { mid: 'm-reused' } },

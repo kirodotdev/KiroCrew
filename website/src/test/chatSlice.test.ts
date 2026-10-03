@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { ChatMessage, SubagentActivity, ToolActivity } from '../types'
 import type { RootState } from '../store'
-import reducer, {
+import baseReducer, {
   TOOL_OUTPUT_MAX_CHARS,
   clampToolOutput,
   setActiveSlot,
@@ -57,6 +57,22 @@ import reducer, {
 } from '../store/chatSlice'
 import './mockApiClient'
 
+
+type ChatState = ReturnType<typeof baseReducer>
+type ChatAction = Parameters<typeof baseReducer>[1]
+
+const reducer = (state: ChatState | undefined, action: ChatAction): ChatState => {
+  let current = state ?? baseReducer(undefined, { type: '@@INIT' })
+  const meta = (action as { meta?: { requestId?: string } }).meta
+  const key = (action as { payload?: { key?: unknown } }).payload?.key
+  if (action.type === refreshSlot.fulfilled.type
+      && typeof meta?.requestId === 'string'
+      && typeof key === 'string'
+      && current.refreshIssueByRequest[meta.requestId] === undefined) {
+    current = baseReducer(current, refreshSlot.pending(meta.requestId, key))
+  }
+  return baseReducer(current, action)
+}
 describe('chatSlice reducers', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
 

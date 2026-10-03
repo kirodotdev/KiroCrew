@@ -7,6 +7,8 @@
 import type { ChatMessage } from '../../types'
 import { jsonEqual } from '../../utils/structuralEqual'
 import { secureRandomId } from '../../utils/secureId'
+import { injectDispatchedTurn } from './turnInject'
+import { isSystemNoticeKind } from '../../lib/systemNotice'
 
 /** Durable client-side identity for a message born WITHOUT a `ts` that will be
  *  mutated across dispatches (streaming/thinking accumulation). ChatPage keys
@@ -213,6 +215,7 @@ function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
   return a.role === b.role && a.content === b.content && a.cls === b.cls
     && a.ts === b.ts && a.rawText === b.rawText && a.kind === b.kind
     && a.variant_idx === b.variant_idx && a._toolCount === b._toolCount
+    && hasClientPendingPersistenceProof(a) === hasClientPendingPersistenceProof(b)
     && jsonEqual(a.variants, b.variants) && jsonEqual(a.meta, b.meta)
 }
 
@@ -225,29 +228,55 @@ export function sameTranscript(prev: ChatMessage[], next: ChatMessage[]): boolea
   return true
 }
 
-/** The chunk-seq floor a slot snapshot vouches for: the `seq` the server folded
- *  onto the snapshot's trailing `streaming` row (chat_utils._prepare_messages),
- *  i.e. the newest chunk whose text that snapshot already contains. A live
- *  `chat_chunk` with a seq at or below it is a replay of text the snapshot
- *  holds and must be dropped, not appended — the duplicated leading fragment
- *  seen after a reconnect. Returns `undefined` for a snapshot without one (an
- *  older gateway, or no stream in flight), which leaves the guard as it was. */
-export const snapshotChunkSeq = (messages: ChatMessage[]): number | undefined => {
+/** The fetched page's newest assistant statement.
+ *
+ * A running page can expose the statement in one of three states: `open` while
+ * the server still projects its chunk accumulator as `streaming`, `finalized`
+ * once a segment boundary has converted that same statement to `assistant`, or
+ * `absent` before any assistant text reaches the page. User/tool rows may trail
+ * the statement, so the reader walks backward to the newest relevant row.
+ *
+ * This is the one page-segment interpretation used by stream selection and the
+ * replay-floor readers. In particular, `finalized` is positive authority, not
+ * the absence of an open stream. */
+export type PageSegment =
+  | { status: 'absent' }
+  | { status: 'open'; index: number; message: ChatMessage; seq?: number; gen?: string }
+  | { status: 'finalized'; index: number; message: ChatMessage }
+
+/** A real finalized assistant reply, excluding assistant-role system notices. */
+export const isRealAssistantReplySegment = (message: ChatMessage): boolean =>
+  message.role === 'assistant'
+    && !isSystemNoticeKind(message.kind ?? (message.meta?.kind as string | undefined))
+
+export function readPageSegment(messages: ChatMessage[]): PageSegment {
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role === 'streaming') return typeof m.seq === 'number' ? m.seq : undefined
+    const message = messages[i]
+    if (message.role === 'streaming') {
+      return {
+        status: 'open',
+        index: i,
+        message,
+        seq: typeof message.seq === 'number' ? message.seq : undefined,
+        gen: typeof message.gen === 'string' ? message.gen : undefined,
+      }
+    }
+    if (isRealAssistantReplySegment(message)) return { status: 'finalized', index: i, message }
   }
-  return undefined
+  return { status: 'absent' }
 }
 
-/** The generation a snapshot's trailing streaming row was numbered by (the
- *  `gen` the server folds beside `seq`); `undefined` for an older gateway. */
+/** The chunk-seq floor a slot snapshot vouches for: the `seq` on its open page
+ * segment. A finalized or absent segment has no replay floor to seed. */
+export const snapshotChunkSeq = (messages: ChatMessage[]): number | undefined => {
+  const segment = readPageSegment(messages)
+  return segment.status === 'open' ? segment.seq : undefined
+}
+
+/** The generation that numbered a snapshot's open page segment. */
 export const snapshotChunkGen = (messages: ChatMessage[]): string | undefined => {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role === 'streaming') return typeof m.gen === 'string' ? m.gen : undefined
-  }
-  return undefined
+  const segment = readPageSegment(messages)
+  return segment.status === 'open' ? segment.gen : undefined
 }
 
 /** The seq floor to order an incoming chunk or snapshot against, given the
@@ -299,6 +328,123 @@ export function rowIdentities(m: ChatMessage): string[] {
   return ids
 }
 
+/** Exact segment identity across two transcripts of one slot: the nearest
+ * preceding SHARED anchor row plus the ordinal of the segment after it.
+ *
+ * A reply that streamed while the slot was in the background has no `mid`, so
+ * the only proof that a fetched row IS that reply is position relative to a row
+ * both arrays identify. An anchor is a durable row whose `mid` or `sendId`
+ * names exactly one row in EACH array and whose resolved rows have the same
+ * role plus either an equal non-empty timestamp or, for a receipt-confirmed
+ * `sendId`, the same second unique server `mid` -- a user send (`sendId` before
+ * the echo, both ids after its receipt), a dispatched `inject` row (`injectDispatchedTurn`: cron,
+ * auto-nudge, app message, recovery, replay), or any other durable row both
+ * sides already hold under one id, such as the previously fetched assistant
+ * that opens a bounded mid-turn page. Rows one side identifies and the other
+ * does not are skipped, not anchors: a local segment without a `mid` and its
+ * fetched copy with one would otherwise key off different rows. A note or
+ * display-only inject carries no kind and is appended client-first, so its
+ * position is not shared and it anchors nothing.
+ *
+ * The ordinal counts the real `assistant` reply rows between the anchor and the
+ * segment. Assistant-role system notices remain transcript rows but do not count,
+ * so segment N of a turn can never be confused with segment N-1: a stale page
+ * holding segment 1 under the turn's opener keys `#1`, a live segment 2 keys
+ * `#2`. Tool, thinking and user rows inside the turn are not counted. A slot
+ * holds one open accumulator and it is the newest row, so no `streaming` row
+ * can precede a compared segment.
+ *
+ * Two segments with equal keys are the same segment; two with unequal keys are
+ * different ones (the shared anchors are the same rows in both arrays, so the
+ * nearest one before the same segment is the same row). A side with no shared
+ * anchor before its segment is `unknown`, and callers decline to delete on it.
+ * Content never takes part. Timestamps only validate a single-id anchor; they
+ * do not order or identify reply segments. */
+export type SegmentComparison = 'same' | 'different' | 'unknown'
+
+export type SegmentComparer = {
+  compare: (leftSegmentIndex: number, rightSegmentIndex: number) => SegmentComparison
+  /** Does `left` hold (by shared unique identity) some anchor row that precedes
+   * the segment in `right`? Then `left`'s range reaches above the segment: if
+   * `left` were current it would carry the segment under the same key. */
+  leftHoldsRowBefore: (rightSegmentIndex: number) => boolean
+  /** Does `right` identify (unique in `right`) some anchor row that precedes the
+   * segment? A segment with none is placeable by neither side. */
+  rightIdentifiesRowBefore: (rightSegmentIndex: number) => boolean
+}
+
+/** Rows that can anchor a position: durable, and for an `inject` only one the
+ * gateway dispatched (a note is appended client-first and flushed later). */
+const anchorRole = (row: ChatMessage): boolean =>
+  isDurableRow(row) && (row.role !== 'inject' || injectDispatchedTurn(row))
+
+export function createSegmentComparer(left: ChatMessage[], right: ChatMessage[]): SegmentComparer {
+  const count = (rows: ChatMessage[]): Map<string, number> => {
+    const counts = new Map<string, number>()
+    for (const row of rows) {
+      for (const id of rowIdentities(row)) counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+    return counts
+  }
+  const leftCounts = count(left)
+  const rightCounts = count(right)
+  const rowForId = (rows: ChatMessage[], id: string): ChatMessage | undefined =>
+    rows.find(candidate => rowIdentities(candidate).includes(id))
+  const identifiesSameAnchorRow = (id: string): boolean => {
+    if (leftCounts.get(id) !== 1 || rightCounts.get(id) !== 1) return false
+    const leftRow = rowForId(left, id)
+    const rightRow = rowForId(right, id)
+    if (leftRow === undefined || rightRow === undefined || leftRow.role !== rightRow.role) return false
+    const sameTimestamp = typeof leftRow.ts === 'string'
+      && leftRow.ts.length > 0
+      && leftRow.ts === rightRow.ts
+    if (sameTimestamp) return true
+    // An HTTP receipt can stamp the server `mid` while the optimistic row still
+    // carries its browser timestamp. A later page has the canonical timestamp,
+    // so timestamp equality alone rejects the very row the receipt identified.
+    // Relax only with TWO unique shared identities: the client-minted sendId
+    // being examined and the same server-minted mid on both resolved rows.
+    if (!id.startsWith('send:')) return false
+    const leftMid = leftRow.meta?.mid
+    const rightMid = rightRow.meta?.mid
+    if (typeof leftMid !== 'string' || !leftMid || leftMid !== rightMid) return false
+    const midId = `mid:${leftMid}`
+    return leftCounts.get(midId) === 1 && rightCounts.get(midId) === 1
+  }
+  const sharedAnchorId = (row: ChatMessage): string | undefined => anchorRole(row)
+    ? rowIdentities(row).find(identifiesSameAnchorRow)
+    : undefined
+  const key = (rows: ChatMessage[], segmentIndex: number): string | undefined => {
+    let ordinal = 1
+    for (let i = segmentIndex - 1; i >= 0; i--) {
+      const id = sharedAnchorId(rows[i])
+      if (id !== undefined) return `${id}#${ordinal}`
+      if (isRealAssistantReplySegment(rows[i])) ordinal += 1
+    }
+    return undefined
+  }
+  return {
+    compare: (leftSegmentIndex, rightSegmentIndex) => {
+      const l = key(left, leftSegmentIndex)
+      const r = key(right, rightSegmentIndex)
+      if (l === undefined || r === undefined) return 'unknown'
+      return l === r ? 'same' : 'different'
+    },
+    leftHoldsRowBefore: (rightSegmentIndex) => {
+      for (let i = rightSegmentIndex - 1; i >= 0; i--) {
+        if (sharedAnchorId(right[i]) !== undefined) return true
+      }
+      return false
+    },
+    rightIdentifiesRowBefore: (rightSegmentIndex) => {
+      for (let i = rightSegmentIndex - 1; i >= 0; i--) {
+        if (anchorRole(right[i]) && rowIdentities(right[i]).some(id => rightCounts.get(id) === 1)) return true
+      }
+      return false
+    },
+  }
+}
+
 /** Rows of `tail` that `page` does not already carry, by identity.
  *
  *  A row with NO identity is kept: dropping a local row on the strength of a
@@ -308,6 +454,109 @@ export function tailNotInPage(tail: ChatMessage[], page: ChatMessage[]): ChatMes
   const seen = new Set<string>()
   for (const m of page) for (const id of rowIdentities(m)) seen.add(id)
   return tail.filter(m => !rowIdentities(m).some(id => seen.has(id)))
+}
+
+/** Client-owned proof that a server-confirmed user row was retained because the
+ *  running slot-detail page has not persisted it yet. A symbol cannot arrive
+ *  through server JSON or `ChatMessage.meta`; enumerable symbol properties still
+ *  survive Immer copies and object spreads along the warm-cache/switch-back paths.
+ *  Coverage skips only a row carrying this proof. */
+const CLIENT_PENDING_PERSISTENCE = Symbol('clientPendingPersistence')
+
+type ClientPendingPersistenceRow = {
+  [CLIENT_PENDING_PERSISTENCE]?: true
+}
+
+export function hasClientPendingPersistenceProof(row: object): boolean {
+  return (row as ClientPendingPersistenceRow)[CLIENT_PENDING_PERSISTENCE] === true
+}
+
+const isConfirmedUserSend = (m: ChatMessage): boolean =>
+  m.role === 'user'
+    && m.meta?.optimistic !== true
+    && typeof m.meta?.sendId === 'string'
+    && m.meta.sendId.length > 0
+
+/** Server-confirmed user sends that landed after a running slot-detail snapshot.
+ *
+ * Preserve only confirmed user rows carrying the one-shot send identity, and
+ * only while the fetched slot still reports running. An empty running page is
+ * the reachable first-send race: it has no durable anchor yet, so only the
+ * confirmed user suffix of the current client tail is safe to retain (stepping
+ * over client-only transient rows). A non-empty snapshot must anchor its
+ * newest identified server row uniquely. It may end in an identity-less `streaming` row; that client-only suffix does not make the
+ * preceding server row ambiguous, so step over it. Any other unidentified tail
+ * still declines rather than guessing. These gates keep an authoritative idle
+ * deletion authoritative, while `tailNotInPage` makes the catch-up snapshot
+ * idempotent by sendId or mid. */
+function confirmedUserTailAfterPage(
+  prior: ChatMessage[],
+  page: ChatMessage[],
+  running: boolean,
+): ChatMessage[] {
+  if (!running) return []
+  if (page.length === 0) {
+    const sends: ChatMessage[] = []
+    for (let i = prior.length - 1; i >= 0; i--) {
+      const row = prior[i]
+      if (!isDurableRow(row)) continue
+      if (!isConfirmedUserSend(row)) break
+      sends.push(row)
+    }
+    sends.reverse()
+    return sends
+  }
+  let pageAnchorIdx = page.length - 1
+  while (pageAnchorIdx >= 0) {
+    const row = page[pageAnchorIdx]
+    const mid = row.meta?.mid
+    if (typeof mid === 'string' && mid.length > 0) break
+    if (row.role !== 'streaming') return []
+    pageAnchorIdx--
+  }
+  const pageAnchorMid = page[pageAnchorIdx]?.meta?.mid
+  const anchored = idAnchorsOneRow(
+    pageAnchorMid, prior, page, midOccurrences(prior), midOccurrences(page), { requireTs: true },
+  )
+  if (!anchored) return []
+  const cutIdx = prior.findIndex(m => m.meta?.mid === pageAnchorMid)
+  if (cutIdx < 0) return []
+  return tailNotInPage(prior.slice(cutIdx + 1).filter(isConfirmedUserSend), page)
+}
+
+/** Rebuild a stale running page with the confirmed user rows that landed after
+ *  its durable anchor, using the same insertion rule as the live reducers.
+ *  A retained steer freezes the current trailing stream before its bubble is
+ *  appended; an ordinary retained send deliberately leaves [streaming, user]
+ *  intact until the turn ends. The fetched rows belong to the action payload,
+ *  so clone the stream before finalization changes its role/rawText or removes
+ *  a placeholder. Retained rows are cloned too: adding client-owned proof
+ *  must not mutate either the prior array or an action payload object. */
+export function mergeConfirmedUserTailAfterPage(
+  prior: ChatMessage[],
+  page: ChatMessage[],
+  running: boolean,
+): ChatMessage[] {
+  const retained = confirmedUserTailAfterPage(prior, page, running)
+  if (retained.length === 0) return page
+  const merged = [...page]
+  for (const row of retained) {
+    const pending: ChatMessage & ClientPendingPersistenceRow = {
+      ...row,
+      meta: row.meta ? { ...row.meta } : undefined,
+      [CLIENT_PENDING_PERSISTENCE]: true,
+    }
+    if (pending.meta?.steer === true) {
+      for (let i = merged.length - 1; i >= 0; i--) {
+        if (merged[i].role !== 'streaming') continue
+        merged[i] = { ...merged[i], meta: merged[i].meta ? { ...merged[i].meta } : undefined }
+        break
+      }
+      finalizeTrailingStreaming(merged)
+    }
+    merged.push(pending)
+  }
+  return merged
 }
 
 /** Epoch ms for a transcript `ts`, or `null` when it cannot be read.

@@ -27,6 +27,28 @@ function makeStore() {
   })
 }
 
+type TestStore = ReturnType<typeof makeStore>
+
+function registeredSwitch(
+  store: TestStore,
+  payload: Parameters<typeof switchSlot.fulfilled>[0],
+  requestId: string,
+  arg: Parameters<typeof switchSlot.fulfilled>[2],
+) {
+  store.dispatch(switchSlot.pending(requestId, arg))
+  return switchSlot.fulfilled(payload, requestId, arg)
+}
+
+function registeredRefresh(
+  store: TestStore,
+  payload: Parameters<typeof refreshSlot.fulfilled>[0],
+  requestId: string,
+  arg: Parameters<typeof refreshSlot.fulfilled>[2],
+) {
+  store.dispatch(refreshSlot.pending(requestId, arg))
+  return refreshSlot.fulfilled(payload, requestId, arg)
+}
+
 describe('sseSubagentBatchChunks — prototype-pollution guard (bug chat/subagents.ts)', () => {
   it('ignores a poisoned __proto__ id and does not pollute Object.prototype', () => {
     const store = makeStore()
@@ -235,7 +257,7 @@ describe('slot-detail hydration is centralized (shared hydrateQueuedBubbles path
     const store = makeStore()
     store.dispatch(setActiveSlot('active'))
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail('active', [
           { content: 'q-one', queueId: 'q1', ts: '2026-01-01T00:00:00.000Z' },
           { content: 'q-two', queueId: 'q2', ts: '2026-01-01T00:00:01.000Z' },
@@ -257,7 +279,7 @@ describe('slot-detail hydration is centralized (shared hydrateQueuedBubbles path
     store.dispatch(setActiveSlot('active'))
     // Seed one queued bubble via a switch.
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail('active', [{ content: 'stale', queueId: 'qOld', ts: '2026-01-01T00:00:00.000Z' }]),
         'r0',
         'active',
@@ -267,7 +289,7 @@ describe('slot-detail hydration is centralized (shared hydrateQueuedBubbles path
 
     // A refresh (e.g. on chat_done) reports a different canonical queue set.
     store.dispatch(
-      refreshSlot.fulfilled(
+      registeredRefresh(store,
         detail('active', [{ content: 'fresh', queueId: 'qNew', ts: '2026-01-01T00:00:02.000Z' }]),
         'r1',
         'active',
@@ -302,7 +324,7 @@ describe('queue entries carry their attachment lists onto the queued row', () =>
     const store = makeStore()
     store.dispatch(setActiveSlot('active'))
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail([
           { content: `x\n[attached_file 1] ${spaced}`, queueId: 'q1', ts: 't', files: [spaced], dirs: ['/srv/d'] },
           { content: 'plain', queueId: 'q2', ts: 't' },
@@ -373,7 +395,7 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
     // so the finalized assistant row (carrying its server id) is present and
     // there is NO trailing 'streaming' row to reconcile into.
     store.dispatch(
-      refreshSlot.fulfilled(
+      registeredRefresh(store,
         detail('active', [
           { role: 'user', content: 'go', cls: '', ts: '2026-08-05T23:00:00.000000+00:00', meta: { mid: 'm-aaa1' } },
           { role: 'assistant', content: 'the answer', cls: '', ts: '2026-08-05T23:00:01.000000+00:00', meta: { mid: 'm-aaa2' } },
@@ -546,7 +568,7 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
     // The slot-detail endpoint redacts on emit, so the SAME row comes back with
     // different bytes. Content equality misses; the row id does not.
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail('active', [
           { role: 'assistant', content: 'the token is [REDACTED: credential]', cls: '', ts: '2026-08-05T23:12:00.000000+00:00', meta: { mid: 'm-h1' } },
         ]),
@@ -570,7 +592,7 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
       ts: '2026-08-05T23:16:00.000000+00:00', meta: { mid: 'm-j2' },
     }))
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail('active', [
           { role: 'assistant', content: 'Done.', cls: '', ts: '2026-08-05T23:15:00.000000+00:00', meta: { mid: 'm-j1' } },
         ]),
@@ -596,7 +618,7 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
     expect([local[0].role, local[0].meta?.mid]).toEqual(['assistant', undefined])
 
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail('active', [
           { role: 'assistant', content: 'finished without an id', cls: '', ts: '2026-08-05T23:17:00.000000+00:00', meta: { mid: 'm-k1' } },
         ]),
@@ -641,7 +663,7 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
     }))
     // Server snapshot predates the reply — different row id, different content.
     store.dispatch(
-      switchSlot.fulfilled(
+      registeredSwitch(store,
         detail('active', [
           { role: 'user', content: 'go', cls: '', ts: '2026-08-05T23:13:00.000000+00:00', meta: { mid: 'm-i1' } },
         ]),

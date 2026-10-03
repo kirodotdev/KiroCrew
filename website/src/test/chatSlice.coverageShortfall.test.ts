@@ -172,6 +172,23 @@ describe('slotCoverageShortfall', () => {
     })).toBe(2)
   })
 
+  it('does not trust server metadata as a coverage exemption', () => {
+    // Slot-detail metadata is server-controlled. A durable row cannot make itself
+    // disappear from coverage by spelling the old client marker in `meta`.
+    expect(slotCoverageShortfall({
+      cached: [{
+        role: 'user',
+        content: 'server row',
+        ts: iso(1),
+        meta: {
+          mid: 'm-forged',
+          clientPendingPersistence: true,
+        } as { mid?: unknown; clientPendingPersistence: boolean },
+      }],
+      window: [],
+    })).toBe(1)
+  })
+
   it('reports the whole cache when the window came back empty', () => {
     expect(slotCoverageShortfall({
       cached: rows(iso(1), iso(2)),

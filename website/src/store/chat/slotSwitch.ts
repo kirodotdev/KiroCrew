@@ -16,7 +16,7 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq } from './transcript'
+import { createSegmentComparer, deduplicateByMid, floorForGen, isRealAssistantReplySegment, mergeConfirmedUserTailAfterPage, midOccurrences, olderHeadAbovePage, raiseChunkSeq, readPageSegment, rowIdentities, sameTranscript, serverRowCount } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import { bumpRunEpoch, enterActiveSlot, pushHistory } from './runState'
@@ -227,6 +227,18 @@ export const switchSlot = createAsyncThunk<
       if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
       return first
     } catch (e) {
+      // A later-issued refresh can settle while this switch fetch is still in
+      // flight. Its transcript/cursor settlement out-ranks this request (the
+      // reducers apply the same claim test below), so the catch must not first
+      // announce a stale failure or evict a row the refreshed active slot still
+      // names. No application dispatch can interleave while this catch publishes
+      // or suppresses its synchronous notice/eviction side effects.
+      const chatAtFailure = (getState() as RootState).chat
+      const claimAtFailure = chatAtFailure.slotSwitchChunkClaim
+      const refreshOutranksSwitch = !isUnsafeKey(key)
+        && claimAtFailure?.requestId === requestId
+        && claimAtFailure.target === key
+        && (chatAtFailure.refreshAppliedSeq?.[safeKey(key)] ?? 0) > claimAtFailure.refreshIssuedSeq
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
       // which keeps string fields only -- `ApiError.status` (a number) never
       // reaches the consumer, which left `isMissingSlotError` matching prose
@@ -239,6 +251,9 @@ export const switchSlot = createAsyncThunk<
       const status = (e as { status?: unknown } | null)?.status
       if (typeof status === 'number') {
         const payload: StatusRejection = { status, message: errMessage(e) }
+        // Let the rejected reducer consume and settle this request, but do not
+        // publish side effects from a switch the applied refresh superseded.
+        if (refreshOutranksSwitch) return rejectWithValue(payload)
         // A 404 means the target is GONE — classified on the STRUCTURED payload
         // with the same `isMissingSlotError` the rejected reducer applies, so
         // the two ends of this thunk cannot disagree about what a 404 is. The
@@ -348,7 +363,8 @@ export const switchSlot = createAsyncThunk<
       // applies: say the open failed where the user is looking — gated on the
       // live claim like the numeric branch above, so a superseded rejection
       // cannot overwrite the current gesture's notice.
-      if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+      if (!refreshOutranksSwitch
+          && typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
           && (getState() as RootState).chat.slotSwitchRequestId === requestId) {
         const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
         dispatch(setSwitchSlotGone({
@@ -469,21 +485,84 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         state.messages = []
         state.slotLoading = true
       }
+      const retainedTotal = isUnsafeKey(target) ? undefined : state.slotServerTotal?.[safeKey(target)]
+      const refreshIssuedSeq = isUnsafeKey(target)
+        ? 0
+        : state.refreshIssuedSeq?.[safeKey(target)] ?? 0
+      state.slotSwitchChunkClaim = {
+        requestId: action.meta.requestId,
+        target,
+        ...(typeof retainedTotal === 'number' ? { serverTotal: retainedTotal } : {}),
+        refreshIssuedSeq,
+        clientTs: [],
+        finalizers: [],
+        rowlessFinalizer: null,
+        settled: false,
+      }
       state._wsChunkedDuringFetch = false
     })
     .addCase(switchSlot.fulfilled, (state, action) => {
+      const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+      const claim = state.slotSwitchChunkClaim
+      const requestId = action.meta?.requestId ?? (
+        claim?.target === key && state.slotSwitchRequestId === claim.requestId
+          ? claim.requestId
+          : undefined
+      )
+      const ownsClaim = claim != null
+        && claim.requestId === requestId && claim.target === key
+      if (!ownsClaim || claim.settled) return
+      const appliedRefreshSeq = isUnsafeKey(key)
+        ? 0
+        : state.refreshAppliedSeq?.[safeKey(key)] ?? 0
+      if (ownsClaim && claim && appliedRefreshSeq > claim.refreshIssuedSeq) {
+        // A refresh issued after this switch began has applied and already owns
+        // every active-slot projection. Settle only this request, before touching
+        // the response page, count, queue, cursor, context, replay floor, or run
+        // state. An uncached switch stays loading until this decline closes it.
+        claim.settled = true
+        if (state.slotSwitchRequestId === requestId) {
+          state.slotSwitchRequestId = null
+          state.slotSwitchTarget = null
+          state.slotSwitchOrigin = null
+          if (state.activeSlot === key) state.slotLoading = false
+        }
+        return
+      }
+      const claimedClientTs = new Set(ownsClaim ? (claim?.clientTs ?? []) : [])
+      const finalizers = ownsClaim ? (claim?.finalizers ?? []) : []
+      const finalizerByClientTs = new Map(
+        finalizers.map(finalizer => [finalizer.clientTs, finalizer] as const),
+      )
+      const rowlessFinalizer = ownsClaim ? claim?.rowlessFinalizer ?? null : null
+      // The baseline THIS request was dispatched against, never the global entry
+      // read now: a warm or refresh settling mid-flight moves that entry, and a
+      // later value is unordered relative to this response.
+      const baselineTotal = ownsClaim ? claim?.serverTotal : undefined
+      if (ownsClaim && claim) claim.settled = true
       // Before the guards below, so an early return still ends this claim. Keyed
       // on requestId, which a hand-rolled dispatch may omit, so read it safely.
-      if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null; state.slotSwitchOrigin = null }
-      const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+      if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null; state.slotSwitchOrigin = null }
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
       // A payload carrying `comparableTotal` came from the coverage walk: the
       // carried count is the first bounded read's settled one, and only that
       // may become the baseline.
       const comparable = (action.payload as { comparableTotal?: number }).comparableTotal
-      retainServerTotal(state, key, comparable ?? action.payload.total, running,
-        undefined, comparable !== undefined || action.payload.boundedRead)
+      const responseTotal = comparable ?? action.payload.total
+      const responseComparable = comparable !== undefined || action.payload.boundedRead
+      retainServerTotal(state, key, responseTotal, running, undefined, responseComparable)
+      // The warm-cache invariant (slotRefresh.ts): a FALL in the server's own
+      // comparable count means rows were REMOVED remotely between the read that
+      // set the baseline and this one, so a cached row this response lacks was
+      // discarded, not merely predated. Read only under the conditions
+      // `retainServerTotal` accepts for establishing a baseline (idle, or an
+      // explicitly comparable/bounded running read); an absent count on either
+      // side, or a running non-comparable response, declines rather than guesses.
+      const serverShrank = (!running || responseComparable === true)
+        && typeof baselineTotal === 'number'
+        && typeof responseTotal === 'number' && Number.isFinite(responseTotal)
+        && responseTotal < baselineTotal
       state.slotState = running ? 'streaming' : 'idle'
       // Mark stale permissions as resolved so ApprovalBar ignores them
       if (!running) {
@@ -491,68 +570,337 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
           if (m.role === 'permission' && !m.meta?.resolved) m.meta = { ...m.meta, resolved: 'stale' }
         }
       }
-      // If WS already delivered newer streaming content, append it to fetched messages
-      const lastLocal = state.messages[state.messages.length - 1]
-      const preserved = mergePreservedPastes(state.messages, messages)
-      // Does the fetched history already contain the local trailing reply?
-      // The server row id answers it exactly, so when the local reply HAS one
-      // that is the only test — falling back to content as well would let a
-      // stale snapshot row with identical text (a different row, different id)
-      // match and drop the newest reply. Content equality is only for a reply
-      // that has no id yet: streamed in this session and never reloaded, so the
-      // server history cannot hold it under a different id anyway.
-      //
-      // Preferring the id also survives the redaction asymmetry: this endpoint
-      // redacts on emit (chat_utils._prepare_messages) while the streamed copy
-      // is raw, so one row legitimately arrives with different bytes.
-      const localMid = lastLocal?.meta?.mid
-      const serverHasLastLocal = !!lastLocal && (
-        typeof localMid === 'string' && !!localMid
-          ? preserved.some(m => m.role === 'assistant' && m.meta?.mid === localMid)
-          : preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
-      )
-      // Hold the pre-fetch array so the assignment below can be skipped when
-      // the fetched history turns out to be redundant (see sameTranscript).
       const existing = state.messages
-      let next: ChatMessage[]
-      if (
-        state._wsChunkedDuringFetch
-        && lastLocal?.role === 'streaming'
-        && lastLocal.content.length > 0
-      ) {
-        // WS chunks arrived during fetch — use fetched history + local streaming
-        next = [...preserved.filter(m => m.role !== 'streaming'), lastLocal]
-      } else if (
-        lastLocal
-        && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
-        && !!lastLocal.content && lastLocal.content.length > 0
-        && !serverHasLastLocal
-      ) {
-        // The HTTP fetch resolved with a history that predates the reply we
-        // already finalized locally (via applyNonActiveFrame while this slot
-        // was backgrounded). Blindly replacing with the server response here
-        // is the "switch away and back drops the latest response" regression.
-        // Keep the server history but re-attach the local trailing reply.
-        // Guarded by serverHasLastLocal above (row id, else exact content) so
-        // we never duplicate a reply the server already returned, and never
-        // drop a genuinely newer one: a different row has a different id, and
-        // the content fallback stays EXACT rather than fuzzy.
-        //
-        // Only finalize a still-'streaming' partial to 'assistant' when the
-        // turn is NOT still running. If the slot is still streaming
-        // (running=true — e.g. switching back to a background slot whose
-        // reply is mid-flight), coercing to 'assistant' freezes the partial:
-        // the resuming `chunk` handler finds no trailing 'streaming' message
-        // and pushes a NEW one, splitting the single reply across two bubbles
-        // until chat_done heals it. Keep it 'streaming' so the stream resumes
-        // into the same bubble.
-        const finalized: ChatMessage = (lastLocal.role === 'streaming' && !running)
-          ? { ...lastLocal, role: 'assistant' }
-          : lastLocal
-        next = [...preserved.filter(m => m.role !== 'streaming'), finalized]
-      } else {
-        next = preserved
+      // A lower comparable count proves a remote rewind. Do not reinsert a
+      // confirmed user suffix the authoritative page deliberately removed.
+      const reconciledPage = serverShrank
+        ? messages
+        : mergeConfirmedUserTailAfterPage(existing, messages, running)
+      const preserved = mergePreservedPastes(existing, reconciledPage)
+      const pageSegment = readPageSegment(preserved)
+      const snapGen = pageSegment.status === 'open' ? pageSegment.gen : undefined
+      const snapSeq = pageSegment.status === 'open' ? pageSegment.seq : undefined
+      const localMidCounts = midOccurrences(existing)
+      const pageMidCounts = midOccurrences(preserved)
+      // ONE exact segment identity for every local-vs-page comparison below:
+      // the nearest shared anchor row (user send, dispatched inject, any row both
+      // sides hold under one id) plus the segment ordinal after it. See
+      // createSegmentComparer for why neither content nor timestamps take part.
+      const segments = createSegmentComparer(preserved, existing)
+      const compareSegments = segments.compare
+      /* The retained head: rows this tab holds ABOVE the page's oldest row (see
+       * the `olderHead` prepend below). They re-enter `next` verbatim, so they are
+       * not candidates here -- a mid-less reply above the window would otherwise
+       * be inserted once and prepended once. */
+      const priorServerRows = existing.filter(m => m.role !== 'thinking')
+      const { olderHead } = olderHeadAbovePage(priorServerRows, preserved)
+      const headRows = new Set<ChatMessage>(olderHead)
+      type LocalSegment = { index: number; message: ChatMessage }
+      const isClaimed = (message: ChatMessage): boolean => {
+        const clientTs = message.meta?.clientTs
+        return typeof clientTs === 'string' && claimedClientTs.has(clientTs)
       }
+      // Every local reply row below the retained head is a candidate: one a
+      // post-dispatch frame claimed (it carries finalizer evidence), and every
+      // content-bearing cached row no frame claimed -- a reply that streamed and
+      // finalized while the slot was in the background, which carries only a
+      // `clientTs`. Both reconcile through the same exact identity
+      // (`pageProofIndex`): a row is dropped only when the page POSITIVELY holds
+      // it, and kept otherwise. The unclaimed rows are the established
+      // conservative fallback, widened from the newest row to every row so a
+      // stale page that ends after segment 1 of a three-segment turn loses
+      // neither segment 2 nor segment 3. "Kept otherwise" cannot duplicate a
+      // fresh page's copy: the switch read covers every cached row it can
+      // identify (`slotCoverageShortfall` + `walkWindowBackTo`), so a fresh page
+      // holds the anchor of every identified local segment and the key matches;
+      // a cached anchor the page lacks means the page predates it.
+      const candidateSegments: LocalSegment[] = existing.flatMap((message, index) => {
+        if (headRows.has(message)) return []
+        if (!isRealAssistantReplySegment(message) && message.role !== 'streaming') return []
+        return isClaimed(message) || message.content.length > 0 ? [{ index, message }] : []
+      })
+      const localMid = (local: LocalSegment): string | undefined => {
+        const mid = local.message.meta?.mid
+        return typeof mid === 'string' && mid.length > 0 ? mid : undefined
+      }
+      const finalizerFor = (local: LocalSegment) => {
+        const clientTs = local.message.meta?.clientTs
+        return typeof clientTs === 'string' ? finalizerByClientTs.get(clientTs) : undefined
+      }
+      const isFinalizer = (local: LocalSegment): boolean => finalizerFor(local) !== undefined
+      const pageProofIndex = (
+        local: LocalSegment,
+        role: 'assistant' | 'streaming',
+      ): number => {
+        const hasRole = (message: ChatMessage): boolean => role === 'assistant'
+          ? isRealAssistantReplySegment(message)
+          : message.role === 'streaming'
+        const mid = localMid(local)
+        if (mid !== undefined) {
+          if (localMidCounts.get(mid) !== 1) return -1
+          const exact = pageMidCounts.get(mid) === 1
+            ? preserved.findIndex(message => hasRole(message) && message.meta?.mid === mid)
+            : -1
+          if (exact >= 0 || role !== 'streaming') return exact
+        }
+        return preserved.findIndex((message, index) =>
+          hasRole(message)
+          && !(role === 'streaming' && typeof message.meta?.mid === 'string' && message.meta.mid)
+          && compareSegments(index, local.index) === 'same',
+        )
+      }
+      const usedFinalized = new Set<number>()
+      // An unmatched candidate stays only while the page has not proven a
+      // remote rewind. A request claim proves the frame arrived after switch
+      // dispatch, not after the server's final slot-detail snapshot: that read
+      // can retry and observe a later rewind. A confirmed comparable shrink is
+      // therefore authoritative over claimed and unclaimed rows alike. A truly
+      // post-snapshot finalizer is recovered by its own turn-completion refresh;
+      // guessing here would permanently resurrect deleted history.
+      //
+      // Without shrink proof, a claimed row stays. An unclaimed row stays when
+      // the page has no assistant statement at all, when it is the open accumulator the
+      // open-page rules below order by sequence, or when the page provably
+      // PREDATES it: the page's range reaches above the row (the page is the
+      // whole transcript, or holds an identified local row before it -- a fresh
+      // page would then carry this segment under the same key, and does not),
+      // and the row is placeable (it carries a server id, or an identified local
+      // row precedes it). A mid-less row with no identified row before it is
+      // placeable by neither side, and a page sharing no identity with the rows
+      // before it says nothing about them; the page keeps its authority in both,
+      // as it does for every other unidentifiable row (coverage and the retained
+      // head decline the same way).
+      const pageReachesAbove = (local: LocalSegment): boolean =>
+        !hasMore || segments.leftHoldsRowBefore(local.index)
+      const sameCountReplacement = (local: LocalSegment): boolean => {
+        const mid = localMid(local)
+        if (isClaimed(local.message)
+            || !isRealAssistantReplySegment(local.message)
+            || mid === undefined
+            || localMidCounts.get(mid) !== 1
+            || !(!running || responseComparable === true)
+            || typeof baselineTotal !== 'number'
+            || typeof responseTotal !== 'number'
+            || responseTotal !== baselineTotal) return false
+        // A rewrite can replace one identified reply without changing the
+        // collapsed row count. Exact mid lookup then misses by design, but a
+        // different unique server row under the same shared-anchor ordinal is
+        // positive replacement proof. Claimed post-dispatch rows and unknown
+        // segment comparisons stay conservative.
+        return preserved.some((message, index) => {
+          if (!isRealAssistantReplySegment(message)) return false
+          const pageMid = message.meta?.mid
+          return typeof pageMid === 'string'
+            && pageMid.length > 0
+            && pageMid !== mid
+            && pageMidCounts.get(pageMid) === 1
+            && compareSegments(index, local.index) === 'same'
+        })
+      }
+      const unmatchedStays = (local: LocalSegment): boolean => !serverShrank
+        && !sameCountReplacement(local) && (
+        isClaimed(local.message)
+        || pageSegment.status === 'absent'
+        || (pageSegment.status === 'open' && local.message.role === 'streaming')
+        || (pageReachesAbove(local)
+          && (localMid(local) !== undefined || segments.rightIdentifiesRowBefore(local.index))))
+      let localSegments = candidateSegments.filter(local => {
+        const pageIndex = pageProofIndex(local, 'assistant')
+        if (pageIndex >= 0 && !usedFinalized.has(pageIndex)) {
+          usedFinalized.add(pageIndex)
+          return false
+        }
+        return pageIndex >= 0 || unmatchedStays(local)
+      }).map(local => (
+        // An unclaimed background stream the slot has since stopped is a
+        // finished reply (its `_done` ran on the background path); a claimed
+        // stream keeps its live role for the finalizer rules below.
+        local.message.role === 'streaming' && !running && !isClaimed(local.message)
+          ? { ...local, message: { ...local.message, role: 'assistant' as const, rawText: local.message.content } }
+          : local
+      ))
+      const identityCounts = (rows: ChatMessage[]): Map<string, number> => {
+        const counts = new Map<string, number>()
+        for (const row of rows) {
+          for (const identity of rowIdentities(row)) {
+            counts.set(identity, (counts.get(identity) ?? 0) + 1)
+          }
+        }
+        return counts
+      }
+      const existingIdentityCounts = identityCounts(existing)
+      const insertLocalSegments = (
+        base: ChatMessage[],
+        locals: LocalSegment[],
+      ): ChatMessage[] => {
+        let result = base
+        for (const local of locals) {
+          const resultIdentityCounts = identityCounts(result)
+          const suffixIds = new Set(
+            existing.slice(local.index + 1)
+              .flatMap(rowIdentities)
+              .filter(identity => existingIdentityCounts.get(identity) === 1),
+          )
+          const insertionIndex = result.findIndex(message =>
+            rowIdentities(message).some(identity =>
+              suffixIds.has(identity) && resultIdentityCounts.get(identity) === 1,
+            ),
+          )
+          const at = insertionIndex < 0 ? result.length : insertionIndex
+          result = [
+            ...result.slice(0, at), local.message, ...result.slice(at),
+          ]
+        }
+        return result
+      }
+      const finalizePageOpen = (base: ChatMessage[]): ChatMessage[] => {
+        if (pageSegment.status !== 'open') return base
+        const result = [...base]
+        result[pageSegment.index] = {
+          ...pageSegment.message,
+          role: 'assistant',
+          rawText: pageSegment.message.content,
+        }
+        return result
+      }
+      const localSeqAtPageGen = floorForGen(
+        state.lastChunkSeq, state.lastChunkGen, snapGen,
+      )
+      const localOpenIsAtLeastAsNew = (snapGen === undefined || snapGen === state.lastChunkGen)
+        && (snapSeq === undefined
+          || (localSeqAtPageGen !== undefined && localSeqAtPageGen >= snapSeq))
+      const pageGenerationIsNew = snapGen !== undefined
+        && snapGen !== state.lastChunkGen
+      const finalizerIsAtLeastAsNew = (
+        finalizer: { seq?: number; gen?: string } | null | undefined,
+      ): boolean => {
+        if (finalizer == null || snapSeq === undefined) return false
+        const finalizerSeqAtPageGen = floorForGen(
+          finalizer.seq, finalizer.gen, snapGen,
+        )
+        return finalizerSeqAtPageGen !== undefined
+          && finalizerSeqAtPageGen >= snapSeq
+      }
+      const finalizerCanReplacePageOpen = (local: LocalSegment): boolean => {
+        const mid = localMid(local)
+        const exactMid = mid !== undefined
+          && localMidCounts.get(mid) === 1
+          && pageMidCounts.get(mid) === 1
+          && pageSegment.status === 'open'
+          && pageSegment.message.meta?.mid === mid
+        return exactMid || finalizerIsAtLeastAsNew(finalizerFor(local))
+      }
+      // This gate belongs to the matching request/target claim, not the
+      // candidates left after exact-mid rows are removed. Otherwise a rowless
+      // receipt following an exact canonical assistant can finalize the next
+      // open segment in the fetched page.
+      const hasClaimedFinalizer = finalizers.length > 0
+      let nextBase = pageSegment.status === 'finalized'
+        ? preserved.filter(message => message.role !== 'streaming')
+        : preserved
+      const rowlessClosesPageOpen = pageSegment.status === 'open'
+        && rowlessFinalizer !== null
+        && !hasClaimedFinalizer
+        && finalizerIsAtLeastAsNew(rowlessFinalizer)
+      if (rowlessClosesPageOpen) {
+        nextBase = finalizePageOpen(preserved)
+      }
+      // Once a rowless boundary closes the fetched segment, every claimed
+      // local row was created after that boundary. Append those later segments;
+      // do not re-enter open-row replacement and erase the finalized segment.
+      if (pageSegment.status === 'open'
+          && localSegments.length > 0
+          && !rowlessClosesPageOpen) {
+        const insertBeforePageOpen = (
+          base: ChatMessage[], locals: LocalSegment[],
+        ): ChatMessage[] => locals.length === 0 ? base : [
+          ...base.slice(0, pageSegment.index),
+          ...locals.map(local => local.message),
+          ...base.slice(pageSegment.index),
+        ]
+        const matchingIndex = localSegments.findIndex(local =>
+          pageProofIndex(local, 'streaming') === pageSegment.index,
+        )
+        if (matchingIndex >= 0) {
+          const local = localSegments[matchingIndex]
+          nextBase = [...preserved]
+          if (local.message.role === 'assistant') {
+            // Same segment, proven by exact `mid` or by shared anchor and
+            // ordinal. A claimed finalizer still needs its own ordering
+            // evidence to replace the open row (a lower sequence means the
+            // page saw chunks this tab did not). A finalized row with NO
+            // finalizer evidence -- a reply the background path finalized on
+            // the server's own `_done` -- is the completed copy of a segment
+            // the page still projects open, so it converges onto that row
+            // whenever the generations are compatible; a page from another
+            // gateway process keeps the retain-before rule.
+            if (finalizerCanReplacePageOpen(local)
+                || (!isFinalizer(local) && !pageGenerationIsNew)) {
+              nextBase[pageSegment.index] = local.message
+              const earlier = localSegments.slice(0, matchingIndex)
+              nextBase = insertBeforePageOpen(nextBase, earlier)
+            } else {
+              nextBase = insertBeforePageOpen(
+                preserved, localSegments.slice(0, matchingIndex + 1),
+              )
+            }
+          } else {
+            nextBase[pageSegment.index] = localOpenIsAtLeastAsNew
+              ? local.message
+              : pageSegment.message
+            const earlier = localSegments.slice(0, matchingIndex)
+            nextBase = insertBeforePageOpen(nextBase, earlier)
+          }
+          localSegments = localSegments.slice(matchingIndex + 1)
+        } else {
+          const causalFinalizerIndex = localSegments.findIndex(local =>
+            local.message.role === 'assistant' && isFinalizer(local),
+          )
+          if (causalFinalizerIndex >= 0) {
+            const local = localSegments[causalFinalizerIndex]
+            if (finalizerCanReplacePageOpen(local)) {
+              nextBase = [...preserved]
+              nextBase[pageSegment.index] = local.message
+              const earlier = localSegments.slice(0, causalFinalizerIndex)
+              nextBase = insertBeforePageOpen(nextBase, earlier)
+            } else {
+              // The page may already contain a later segment. Keep the older
+              // locally finalized rows in transcript order without granting
+              // them authority over that open row.
+              nextBase = insertBeforePageOpen(
+                preserved, localSegments.slice(0, causalFinalizerIndex + 1),
+              )
+            }
+            localSegments = localSegments.slice(causalFinalizerIndex + 1)
+          } else {
+            const activeLocal = localSegments[localSegments.length - 1]
+            if (pageGenerationIsNew) {
+              const beforeOpen = activeLocal.message.role === 'streaming'
+                ? localSegments.slice(0, -1)
+                : localSegments
+              nextBase = insertBeforePageOpen(preserved, beforeOpen)
+              localSegments = []
+            } else if (activeLocal.message.role === 'streaming' && localMid(activeLocal) === undefined) {
+              const anchor = compareSegments(pageSegment.index, activeLocal.index)
+              if (anchor === 'same') {
+                nextBase = [...preserved]
+                nextBase[pageSegment.index] = localOpenIsAtLeastAsNew
+                  ? activeLocal.message
+                  : pageSegment.message
+                const earlier = localSegments.slice(0, -1)
+                nextBase = insertBeforePageOpen(nextBase, earlier)
+                localSegments = []
+              } else {
+                nextBase = finalizePageOpen(preserved)
+              }
+            } else {
+              nextBase = insertBeforePageOpen(preserved, localSegments)
+              localSegments = []
+            }
+          }
+        }
+      }
+      let next = insertLocalSegments(nextBase, localSegments)
       /* switchSlot fetches a BOUNDED page (OLDER_PAGE_LIMIT), and `pending`
        * restored this slot's cached transcript into `state.messages`, so
        * assigning the page wholesale collapsed a window the reader had paged in
@@ -565,8 +913,6 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
        * the head are collapsed by the `hydrateQueuedBubbles` call below, which
        * strips every queued row before re-adding the authoritative server set.
        */
-      const priorServerRows = existing.filter(m => m.role !== 'thinking')
-      const { olderHead } = olderHeadAbovePage(priorServerRows, preserved)
       if (olderHead.length) next = [...olderHead, ...next]
       // The active slot's server snapshot flipping to running is a turn
       // start (see `ChatState.runEpoch`), as it is in
@@ -586,8 +932,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // the floor is cleared, so a gateway restart (which does restart the
       // counter) cannot leave a stale floor over the next turn's chunks.
       if (running) {
-        const snapGen = snapshotChunkGen(messages)
-        state.lastChunkSeq = raiseChunkSeq(floorForGen(state.lastChunkSeq, state.lastChunkGen, snapGen), snapshotChunkSeq(messages))
+        state.lastChunkSeq = raiseChunkSeq(floorForGen(state.lastChunkSeq, state.lastChunkGen, snapGen), snapSeq)
         if (snapGen !== undefined) state.lastChunkGen = snapGen
       } else {
         state.lastChunkSeq = undefined
@@ -646,7 +991,30 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // Only the CURRENT claim may unwind: a stale rejection (a newer switch
       // already took the requestId) must not fight the switch in flight.
       const target = switchSlotKey(action.meta.arg)
-      const claimed = state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId
+      const requestId = action.meta?.requestId
+      const chunkClaim = state.slotSwitchChunkClaim
+      const ownsChunkClaim = chunkClaim != null
+        && chunkClaim.requestId === requestId && chunkClaim.target === target
+      const appliedRefreshSeq = isUnsafeKey(target)
+        ? 0
+        : state.refreshAppliedSeq?.[safeKey(target)] ?? 0
+      if (ownsChunkClaim && chunkClaim && appliedRefreshSeq > chunkClaim.refreshIssuedSeq) {
+        // Same authority rule as fulfilled: a refresh issued after this switch
+        // has already installed the active transcript and cursor. A rejection
+        // from the older switch settles only its request; unwinding here would
+        // erase the newer refresh with no response page at all.
+        chunkClaim.settled = true
+        if (state.slotSwitchRequestId === requestId) {
+          state.slotSwitchRequestId = null
+          state.slotSwitchTarget = null
+          state.slotSwitchOrigin = null
+          if (state.activeSlot === target) state.slotLoading = false
+        }
+        return
+      }
+      if (chunkClaim?.target === target && (!ownsChunkClaim || chunkClaim.settled)) return
+      if (ownsChunkClaim && chunkClaim) chunkClaim.settled = true
+      const claimed = state.slotSwitchRequestId !== null && state.slotSwitchRequestId === requestId
       const origin = claimed ? state.slotSwitchOrigin : null
       if (claimed) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null; state.slotSwitchOrigin = null }
       if (state.activeSlot !== target) return

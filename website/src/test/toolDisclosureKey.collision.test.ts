@@ -37,7 +37,8 @@ describe('tool-row disclosure identity (#8204)', () => {
       { role: 'tool', content: '🔧 bravo', cls: '', ts: 'tick', meta: { tool_call_id: 'tc2' } },
       { role: 'tool', content: '🔧 charlie', cls: '', ts: 'tick', meta: { tool_call_id: 'tc3' } },
     ]
-    const state = reducer(withSlot, refreshSlot.fulfilled(detailPayload(SLOT, server), 'r1', SLOT))
+    const pending = reducer(withSlot, refreshSlot.pending('r1', SLOT))
+    const state = reducer(pending, refreshSlot.fulfilled(detailPayload(SLOT, server), 'r1', SLOT))
     const tools = state.messages.filter(m => m.role === 'tool')
 
     // Controls: the reducer really ingested 3 rows, they carry 3 distinct

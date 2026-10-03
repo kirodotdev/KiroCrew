@@ -7,7 +7,7 @@ import type { ChatMessage, ToolActivity } from '../../types'
 import { slotIsRemoteBound } from '../dashboardSlice'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
-import type { InjectKind } from '../../pages/chat/RecoveryCard'
+import { TURN_INJECT_KINDS } from './turnInject'
 import type { SlotState } from './state'
 import { safeKey } from './wire'
 import { selectSlotSubagentsActive } from './subagents'
@@ -75,25 +75,6 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
   return !!(dashSlot?.subagents_running || dashSlot?.orchestrating)
 }
 
-/** `meta.injectKind` values the gateway stamps on an `inject` row that dispatched a
- *  turn. Every other inject row opens nothing. Mirrors `_TURN_INJECT_KINDS` in
- *  `dashboard/state.py`. Keyed by `InjectKind` (see `pages/chat/RecoveryCard.tsx`)
- *  so a new kind does not compile until it is classified here, the same guard
- *  `INJECT_KIND_OPENS_TURN` carries. Wider than that record on purpose: it
- *  answers "does this row start a turn the failure streak should count", and
- *  walks past `recovery` / `user_replay` because they resume the same turn;
- *  this one answers "did a dispatch happen that got no reply", and a recovery
- *  or replay dispatch that died is exactly such a turn. */
-const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
-  cron: true,
-  mcp_app: true,
-  recovery: true,
-  synthesis: true,
-  user_replay: true,
-}
-const TURN_INJECT_KINDS: ReadonlySet<unknown> = new Set<string>(
-  (Object.keys(TURN_INJECT_DISPATCHED) as InjectKind[]).filter((k) => TURN_INJECT_DISPATCHED[k]),
-)
 /** Roles the continue scans walk past: they are not the conversation's floor.
  *  Mirrors `_is_interrupted` / `_has_conversation` in
  *  `src/kiro_crew/dashboard/chat_handlers.py`, which likewise only read

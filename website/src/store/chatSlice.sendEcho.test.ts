@@ -148,6 +148,7 @@ describe('dashboard send identity across echoes, receipts and navigation', () =>
 
   it('does not duplicate a history-hydrated row when its echo and receipt arrive late', () => {
     const store = setup()
+    store.dispatch(refreshSlot.pending('refresh-request', slot))
     store.dispatch(refreshSlot.fulfilled({ key: slot, running: false, hasMore: false, total: 2, nextBefore: 0, queue: [], messages: [
       { ...echo, cls: '' },
       { role: 'assistant', content: 'finished answer', cls: '', meta: { mid: 'm-answer' } },

@@ -7,7 +7,7 @@ import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { createSegmentComparer, deduplicateByMid, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, isRealAssistantReplySegment, mergeConfirmedUserTailAfterPage, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, readPageSegment, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { applyWarmRunState, bumpRunEpoch } from './runState'
@@ -16,19 +16,111 @@ import { hydrateQueuedBubbles } from './queue'
 import { walkWindowBackTo } from './windowWalk'
 
 /** Re-fetch messages for a slot without changing activeSlot. Only applies if still active. */
-let refreshSeqCounter = 0
-const nextRefreshSeq = (): number => ++refreshSeqCounter
+/** Three attempts maximum. Each is bounded to one first read, up to eight
+ * older pages, and one newest-edge re-read: at most 30 HTTP requests overall. */
+const REFRESH_QUIET_READ_MAX_ATTEMPTS = 3
+
+/** Whether a fetched snapshot exactly represents the current raced view. */
+const coversRacedView = (
+  page: ChatMessage[],
+  current: ChatMessage[],
+  running: boolean,
+  requiresPositiveState: boolean,
+  replayFloorSeq: number | undefined,
+  replayFloorGen: string | undefined,
+): boolean => {
+  const currentCounts = midOccurrences(current)
+  const pageCounts = midOccurrences(page)
+  if ([...currentCounts.values()].some(count => count !== 1)
+      || [...pageCounts.values()].some(count => count !== 1)) return false
+  const segments = createSegmentComparer(page, current)
+  const pageSegment = readPageSegment(page)
+  const currentSegment = readPageSegment(current)
+  if (requiresPositiveState) {
+    const settled = !running && pageSegment.status !== 'open'
+    const sameFinalized = currentSegment.status === 'finalized'
+      && pageSegment.status === 'finalized'
+      && segments.compare(pageSegment.index, currentSegment.index) === 'same'
+    if (!settled && !sameFinalized) return false
+  }
+
+  const priorRows = current.filter(row => row.role !== 'thinking' && row.role !== 'permission')
+  const headRows = new Set(olderHeadAbovePage(priorRows, page).olderHead)
+  for (let currentIndex = 0; currentIndex < current.length; currentIndex++) {
+    const row = current[currentIndex]
+    if (headRows.has(row) || row.role === 'thinking' || row.role === 'permission') continue
+    if (row.role === 'streaming') {
+      if (pageSegment.status !== 'open') return false
+      if (replayFloorGen !== pageSegment.gen) return false
+      if (typeof replayFloorSeq !== 'number' || typeof pageSegment.seq !== 'number') return false
+      if (pageSegment.seq < replayFloorSeq) return false
+      if (segments.compare(pageSegment.index, currentIndex) !== 'same') return false
+      continue
+    }
+    const mid = row.meta?.mid
+    if (typeof mid === 'string' && mid.length > 0) {
+      if (currentCounts.get(mid) !== 1 || pageCounts.get(mid) !== 1) return false
+      const matched = page.find(candidate => candidate.meta?.mid === mid)
+      if (!matched || matched.role !== row.role) return false
+      if (row.role === 'assistant'
+          && isRealAssistantReplySegment(matched) !== isRealAssistantReplySegment(row)) {
+        return false
+      }
+      continue
+    }
+    if (row.role === 'assistant') {
+      const matched = page.some((candidate, pageIndex) =>
+        isRealAssistantReplySegment(candidate)
+          && segments.compare(pageIndex, currentIndex) === 'same',
+      )
+      if (!matched) return false
+      continue
+    }
+    return false
+  }
+  return true
+}
 
 export const refreshSlot = createAsyncThunk(
   'chat/refreshSlot',
-  async (key: string, { getState }) => {
-    const state = (getState() as { chat: ChatState }).chat
-    if (state.activeSlot !== key) return null
-    // Sampled before the first await: the walk below declines when a live frame
-    // reduced into the view at any point since (see `liveFrameSeq`).
-    const liveAtStart = state.liveFrameSeq ?? 0
-    // Dispatch order, captured before any await (see `refreshAppliedSeq`).
-    const refreshSeq = nextRefreshSeq()
+  async (key: string, { getState, requestId }) => {
+    const initial = (getState() as { chat: ChatState }).chat
+    const issue = initial.refreshIssueByRequest?.[requestId]
+    if (!issue || issue.key !== key) return null
+    if (initial.activeSlot !== key) return null
+    // The pending reducer assigned this request's per-slot issue order before
+    // the payload creator ran. Retries keep that one token.
+    const refreshSeq = issue.issueSeq
+    let retryNeedsCoverage = false
+    let requiresPositiveState = false
+    const noteRacedFrame = (before: ChatMessage[], after: ChatMessage[]): void => {
+      retryNeedsCoverage = true
+      const prior = new Set(before)
+      const addedOrReplaced = after.some(row => !prior.has(row))
+      if (after.length < before.length || !addedOrReplaced) requiresPositiveState = true
+    }
+    const acceptsRetry = (
+      page: ChatMessage[],
+      current: ChatMessage[],
+      running: boolean,
+      replayFloorSeq: number | undefined,
+      replayFloorGen: string | undefined,
+    ): boolean => !retryNeedsCoverage
+      || coversRacedView(
+        page,
+        current,
+        running,
+        requiresPositiveState,
+        replayFloorSeq,
+        replayFloorGen,
+      )
+    for (let attempt = 0; attempt < REFRESH_QUIET_READ_MAX_ATTEMPTS; attempt++) {
+      const state = (getState() as { chat: ChatState }).chat
+      if (state.activeSlot !== key) return null
+      // A raced attempt is discarded, then the next attempt samples the current
+      // view and counter again. Exhausting the fixed budget returns null so the
+      // reducer preserves the live state rather than applying stale data.
+      const liveAtStart = state.liveFrameSeq ?? 0
     // COUNT-MATCHED bound, not a fixed one. The recurring refresh (reconnect,
     // chat_done, variant switch) REPLACES `messages` wholesale, so a fixed
     // bound would delete scrollback the user paged in. Asking for at least as
@@ -113,6 +205,10 @@ export const refreshSlot = createAsyncThunk(
      * same way the pre-fetch check does. */
     const after = (getState() as { chat: ChatState }).chat
     if (after.activeSlot !== key) return null
+    if ((after.liveFrameSeq ?? 0) !== liveAtStart) {
+      noteRacedFrame(view, after.messages)
+      continue
+    }
     const viewNow = after.messages
     const serverRowsNow = viewNow.filter(
       m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
@@ -126,15 +222,25 @@ export const refreshSlot = createAsyncThunk(
      * anchor is guarded rather than indexed blind. */
     const spansView = spanIsTrustworthy && serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    if (!page.hasMore || spansView || overlapsView) return { ...page, refreshSeq }
+    if (!page.hasMore || spansView || overlapsView) {
+      return acceptsRetry(
+        page.messages,
+        viewNow,
+        page.running,
+        after.lastChunkSeq,
+        after.lastChunkGen,
+      )
+        ? { ...page, refreshSeq }
+        : null
+    }
     const walked = await walkWindowBackTo(key, page, viewNow)
     /* The walk adds up to `WINDOW_WALK_MAX_PAGES` more awaits, and every row it
      * returns is no newer than the FIRST page. A live chunk or a new row that
      * reduces in that window is in the view but not in the walked payload, and
      * the fulfilled reducer rebuilds `messages` from the payload -- so accepting
-     * it would erase streamed text the user already saw. Decline instead: the
-     * view keeps its live rows, and the end-of-turn refresh reconciles it once
-     * nothing is streaming.
+     * it would erase streamed text the user already saw. Discard that attempt
+     * and retry from the current view; if the bounded quiet-read budget cannot
+     * settle, returning null leaves the live rows for a later refresh.
      *
      * The test is the live-frame counter, not the array's shape. Shape tests fail
      * both ways: array identity trips on any nested write (an approval retiring
@@ -144,8 +250,21 @@ export const refreshSlot = createAsyncThunk(
      * counts it, so the counter answers exactly the question asked. */
     const settled = (getState() as { chat: ChatState }).chat
     if (settled.activeSlot !== key) return null
-    if ((settled.liveFrameSeq ?? 0) !== liveAtStart) return null
-    return { ...walked, refreshSeq }
+    if ((settled.liveFrameSeq ?? 0) !== liveAtStart) {
+      noteRacedFrame(viewNow, settled.messages)
+      continue
+    }
+    return acceptsRetry(
+      walked.messages,
+      settled.messages,
+      walked.running,
+      settled.lastChunkSeq,
+      settled.lastChunkGen,
+    )
+      ? { ...walked, refreshSeq }
+      : null
+    }
+    return null
   },
 )
 
@@ -299,20 +418,60 @@ export const warmSlotCache = createAsyncThunk(
 
 export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>): void {
   builder
+    .addCase(refreshSlot.pending, (state, action) => {
+      const key = action.meta.arg
+      if (isUnsafeKey(key)) return
+      const requests = (state.refreshIssueByRequest ??= {})
+      if (requests[action.meta.requestId]?.key === key) return
+      const safe = safeKey(key)
+      const issued = (state.refreshIssuedSeq ??= {})
+      const issueSeq = (issued[safe] ?? 0) + 1
+      issued[safe] = issueSeq
+      const retainedTotal = state.slotServerTotal?.[safe]
+      requests[action.meta.requestId] = {
+        key,
+        issueSeq,
+        ...(typeof retainedTotal === 'number' ? { serverTotal: retainedTotal } : {}),
+      }
+    })
     .addCase(refreshSlot.fulfilled, (state, action) => {
+      const requestId = action.meta?.requestId
+      const requestIssue = requestId === undefined
+        ? undefined
+        : state.refreshIssueByRequest?.[requestId]
+      if (requestId !== undefined && state.refreshIssueByRequest) {
+        delete state.refreshIssueByRequest[requestId]
+      }
       if (!action.payload) return
       const { key, messages, running, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away
-      // An older refresh settling after a newer one already applied describes a
-      // transcript that one replaced -- drop it (see `refreshAppliedSeq`).
-      const refreshSeq = (action.payload as { refreshSeq?: number }).refreshSeq
-      if (typeof refreshSeq === 'number') {
-        const applied = (state.refreshAppliedSeq ??= {})
-        if ((applied[safeKey(key)] ?? 0) > refreshSeq) return
-        applied[safeKey(key)] = refreshSeq
-      }
-      retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
+      // A real thunk settlement may mutate this slot only while its pending
+      // registration still owns the same key. Eviction removes that entry, so
+      // a late response cannot populate a recreated slot from its stale page.
+      if (requestIssue?.key !== key) return
+      // A refresh issued before another may settle after it. Order by the
+      // per-slot token minted at pending, not by settlement time.
+      const refreshSeq = requestIssue.issueSeq
+      const applied = (state.refreshAppliedSeq ??= {})
+      if ((applied[safeKey(key)] ?? 0) > refreshSeq) return
+      applied[safeKey(key)] = refreshSeq
+      // Compare with this request's dispatch-time baseline. Another switch,
+      // warm, or refresh can move the global retained count while the fetch is
+      // in flight, and that later value is unordered relative to this page.
+      const retainedTotal = requestIssue.serverTotal
+      const responseTotal = action.payload.total
+      const responseComparable = !running || action.payload.boundedRead === true
+      const serverShrank = responseComparable
+        && typeof retainedTotal === 'number'
+        && typeof responseTotal === 'number' && Number.isFinite(responseTotal)
+        && responseTotal < retainedTotal
+      // A lower comparable count proves a remote rewind. The missing confirmed
+      // send was deleted, not merely omitted by an early persistence snapshot.
+      const reconciledPage = serverShrank
+        ? messages
+        : mergeConfirmedUserTailAfterPage(state.messages, messages, running)
+      retainServerTotal(state, key, responseTotal, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
       const statePerms = new Map<string, typeof state.messages[0]>()
@@ -359,7 +518,11 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
        * counts disagree) are owned by `pagingCursorAfterKeptHead`, not clamped. */
       const keptCursor = pagingCursorAfterKeptHead(
         hasMore, nextBefore, serverRowCount(olderHead))
-      const merged = [...olderHead, ...messages.filter(m => m.role !== 'permission'), ...statePerms.values()]
+      const merged = [
+        ...olderHead,
+        ...reconciledPage.filter(m => m.role !== 'permission'),
+        ...statePerms.values(),
+      ]
       const mergedWithPastes = mergePreservedPastes(state.messages, merged)
       // Only sort if permissions were re-injected (they need positional merge).
       // Backend messages arrive in order; sorting with mixed ts formats reorders them.
@@ -422,6 +585,12 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       }
       setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore)
       seedContextUsage(state, key, action.payload.context)
+    })
+    .addCase(refreshSlot.rejected, (state, action) => {
+      const requestId = action.meta?.requestId
+      if (requestId !== undefined && state.refreshIssueByRequest) {
+        delete state.refreshIssueByRequest[requestId]
+      }
     })
     .addCase(warmSlotCache.fulfilled, (state, action) => {
       if (!action.payload) return

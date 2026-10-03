@@ -219,6 +219,7 @@ describe('slotOlderError is scoped to the slot that failed', () => {
     const store = afterFailedOlderFetch()
 
     store.dispatch(setActiveSlot('other'))
+    store.dispatch(switchSlot.pending('req-switch', 'other'))
     store.dispatch(
       switchSlot.fulfilled(
         {
@@ -261,6 +262,7 @@ describe('slotOlderError is scoped to the slot that failed', () => {
   it('clears the flag when refreshSlot re-bases the active chat', () => {
     const store = afterFailedOlderFetch()
 
+    store.dispatch(refreshSlot.pending('req-refresh', 'active'))
     store.dispatch(
       refreshSlot.fulfilled(
         { key: 'active', messages: HISTORY.slice(TOTAL - PAGE), running: false, hasMore: true, total: TOTAL, nextBefore: TOTAL - PAGE, queue: [] } as never,

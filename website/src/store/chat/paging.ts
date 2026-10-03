@@ -3,7 +3,7 @@
  *  coverage shortfall, the paging-cursor shift after a kept head, and the abort
  *  handle of the one older-history page in flight. */
 import type { ChatMessage } from '../../types'
-import { hasUnidentifiedDurableRow, isDurableRow, transcriptTsMs } from './transcript'
+import { hasClientPendingPersistenceProof, hasUnidentifiedDurableRow, isDurableRow, transcriptTsMs } from './transcript'
 
 /** Rows for the initial slot-open page and each older-history page. One size
  *  for both keeps the scrollback walk uniform: the first page a slot opens
@@ -185,11 +185,16 @@ export function slotCoverageShortfall(input: {
   window: readonly CoverageRow[]
 }): number {
   const { cached, window: win } = input
-  // Rows this comparison can say anything about at all. Two independent reasons a row
-  // is excluded, and they are NOT the same question:
+  // Rows this comparison can say anything about at all. Three independent reasons
+  // a row is excluded, and they are NOT the same question:
   //   `isDurableRow` -- can the server's window contain this row even in principle?
-  //   a readable `ts`  -- can the row be placed, so its identity key is whole?
-  const comparable = (r: CoverageRow) => isDurableRow(r) && transcriptTsMs(r.ts) !== null
+  //   a readable `ts` -- can the row be placed, so its identity key is whole?
+  //   client-owned pending-persistence proof -- the server confirmed this row,
+  //     but the stale page is known not to contain it yet; widening cannot close
+  //     that window. The proof is a non-JSON symbol, never `ChatMessage.meta`.
+  const comparable = (r: CoverageRow) => isDurableRow(r)
+    && transcriptTsMs(r.ts) !== null
+    && !hasClientPendingPersistenceProof(r)
   const held = cached.filter(comparable)
   if (held.length === 0) return 0
   const floor = win.filter(comparable)

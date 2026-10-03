@@ -12,7 +12,8 @@ import { clearFiledFolderSuggestions } from './composerCards'
 /** Chat state keyed by a slot.
  *
  *  Single owner of what is keyed per slot, read by every teardown path, so a new
- *  per-slot map registered here is reached by all of them.
+ *  per-slot map registered here is reached by all of them. Request-keyed refresh
+ *  bookkeeping is handled separately below because its values carry slot keys.
  *
  *  Spelling is mixed rather than uniform: several of these are written with the
  *  bare key at some call sites and through `safeKey()` — which rewrites
@@ -33,18 +34,19 @@ const slotKeyedMaps = (state: ChatState) => [
   // server count belongs with them: kept past an eviction it would read as a
   // fall against a recreated slot's first fetch and drop a legitimate tail.
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
-  state.slotServerTotalSeq,
+  state.slotServerTotalSeq, state.refreshIssuedSeq, state.refreshAppliedSeq,
   state.thinkingOrphans,
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
  *
  *  A reconcile can only evict a slot it visits, so this has to cover the same
- *  ephemeral surfaces `evictSlotState` clears — including the two that are not plain
- *  slot-keyed maps: `mcpApps`, whose keys carry the slot as a prefix, and
- *  `slotHistory`, where a slot can outlive every map entry. */
+ *  ephemeral surfaces `evictSlotState` clears — including the ones that are not
+ *  plain slot-keyed maps: `refreshIssueByRequest`, whose values carry the slot;
+ *  `mcpApps`, whose keys carry it as a prefix; and `slotHistory`. */
 const slotKeysWithResidue = (state: ChatState): Set<string> => new Set([
   ...slotKeyedMaps(state).flatMap(m => Object.keys(m)),
+  ...Object.values(state.refreshIssueByRequest ?? {}).map(issue => issue.key),
   ...Object.keys(state.mcpApps ?? {}).map(k => k.split(MCP_APP_KEY_SEP)[0]),
   ...(state.slotHistory ?? []),
 ])
@@ -78,6 +80,11 @@ export const evictSlotState = (state: ChatState, slotKey: string): void => {
   const spellings = [slotKey, safeKey(slotKey)]
   for (const m of slotKeyedMaps(state)) {
     for (const spelling of spellings) delete m[spelling]
+  }
+  for (const [requestId, issue] of Object.entries(state.refreshIssueByRequest ?? {})) {
+    if (spellings.includes(issue.key) || spellings.includes(safeKey(issue.key))) {
+      delete state.refreshIssueByRequest[requestId]
+    }
   }
   evictMcpApps(state, slotKey)
   state.slotHistory = (state.slotHistory ?? []).filter(k => k !== slotKey)

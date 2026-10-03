@@ -363,7 +363,7 @@ describe('the cursor cannot be used across a switch', () => {
   })
 })
 
-describe('a background refresh must not re-validate a cursor a pending switch invalidated', () => {
+describe('a newer refresh out-ranks a pending same-slot switch and owns its cursor', () => {
   /** The payload refreshSlot.fulfilled receives, at an offset of its own. */
   const refreshPayload = (key: string, nextBefore: number) => ({
     key,
@@ -384,34 +384,39 @@ describe('a background refresh must not re-validate a cursor a pending switch in
     resumed(store)
     store.dispatch(switchSlot('A'))
     await flush()
+    store.dispatch(refreshSlot.pending('req-refresh', 'A'))
     store.dispatch(refreshSlot.fulfilled(refreshPayload('A', 40), 'req-refresh', 'A'))
     await flush()
   }
 
-  it('leaves the cursor invalidated: the pending switch still owns it', async () => {
+  it('installs the winning refresh cursor while the stale switch is pending', async () => {
     const store = makeStore()
     await refreshInsidePendingSwitch(store)
-    expect(store.getState().chat.slotCursorKey).toBeNull()
+    expect(store.getState().chat.slotCursorKey).toBe('A')
+    expect(store.getState().chat.slotOldestIndex).toBe(40)
   })
 
-  it('does not page while a switch is pending, even after a refresh lands', async () => {
+  it('pages from the winning refresh while the stale switch is pending', async () => {
     const store = makeStore()
     await refreshInsidePendingSwitch(store)
 
     const mock = api.chatSlotDetail as unknown as { mock: { calls: unknown[][] } }
     const before = mock.mock.calls.length
-    void store.dispatch(loadOlderMessages())
+    const older = store.dispatch(loadOlderMessages())
     await flush()
+    releaseOlder[0]()
+    await older
     const paged = mock.mock.calls.slice(before).filter((c) => c[2] !== undefined)
-    // A call here pages against the refresh's offset and then rewinds the cursor
-    // the switch is about to install.
-    expect(paged).toEqual([])
+    // The refresh was issued after this switch and has already out-ranked it;
+    // the switch settlement will decline rather than overwrite this offset.
+    expect(paged).toEqual([['A', 100, 40, expect.anything()]])
   })
 
   it('still re-keys when no switch is pending, so a refresh does not dead-end paging', async () => {
     const store = makeStore()
     resumed(store)
 
+    store.dispatch(refreshSlot.pending('req-refresh', 'A'))
     store.dispatch(refreshSlot.fulfilled(refreshPayload('A', 40), 'req-refresh', 'A'))
     await flush()
 

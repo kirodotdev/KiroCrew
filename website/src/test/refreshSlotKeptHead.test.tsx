@@ -33,13 +33,11 @@ describe('refreshSlot.fulfilled keeps the paged-in older head', () => {
     const archived = [msg('2026-01-01T00:00:01Z', 'archived one'), msg('2026-01-01T00:00:02Z', 'archived two')]
     const live = [msg('2026-01-01T01:00:00Z', 'boundary row'), msg('2026-01-01T01:00:01Z', 'tail row')]
     const before = stateWith([...archived, ...live])
-    const after = reducer(before, {
-      type: refreshSlot.fulfilled.type,
-      payload: {
-        key: 's1', messages: live, queue: [], running: false, stopping: false,
-        hasMore: true, nextBefore: 278, total: 1280,
-      },
-    })
+    const pending = reducer(before, refreshSlot.pending('refresh-with-head', 's1'))
+    const after = reducer(pending, refreshSlot.fulfilled({
+      key: 's1', messages: live, queue: [], running: false, stopping: false,
+      hasMore: true, nextBefore: 278, total: 1280,
+    }, 'refresh-with-head', 's1'))
     const contents = after.messages.map(m => m.content)
     expect(contents).toEqual(['archived one', 'archived two', 'boundary row', 'tail row'])
     // Cursor shifted DOWN by the kept head's row count, so the next "load
@@ -52,13 +50,11 @@ describe('refreshSlot.fulfilled keeps the paged-in older head', () => {
   it('a refresh with no paged-in head behaves as before', () => {
     const live = [msg('2026-01-01T01:00:00Z', 'boundary row'), msg('2026-01-01T01:00:01Z', 'tail row')]
     const before = stateWith(live)
-    const after = reducer(before, {
-      type: refreshSlot.fulfilled.type,
-      payload: {
-        key: 's1', messages: live, queue: [], running: false, stopping: false,
-        hasMore: true, nextBefore: 278, total: 1280,
-      },
-    })
+    const pending = reducer(before, refreshSlot.pending('refresh-no-head', 's1'))
+    const after = reducer(pending, refreshSlot.fulfilled({
+      key: 's1', messages: live, queue: [], running: false, stopping: false,
+      hasMore: true, nextBefore: 278, total: 1280,
+    }, 'refresh-no-head', 's1'))
     expect(after.messages.map(m => m.content)).toEqual(['boundary row', 'tail row'])
     expect(after.slotOldestIndex).toBe(278)
   })

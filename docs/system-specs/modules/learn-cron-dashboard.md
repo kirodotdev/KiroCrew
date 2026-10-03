@@ -1388,6 +1388,241 @@ HTTP receipts still confirm delivery but never insert a skipped bubble.
 Uncorrelated sends, actual queued/steered sends, and in-band/relay streams keep
 their existing event paths.
 
+The bounded slot-detail reader already merges a captured in-memory unflushed tail
+with its durable page and retries when that captured revision moves. That cannot
+order two independent HTTP responses: the reader can take its final snapshot
+before the send appends its echo, while the earlier read response reaches the
+browser after the later send acknowledgement. Neither response carries one
+shared monotonic server revision that proves their order. The queue-persistence
+stale-writer guard also deliberately refuses a whole-slot save rather than
+overwrite a newer durable queued prompt. The active-slot refresh and switch-back
+reducers therefore retain server-confirmed user rows with a `sendId` that follow
+the fetched page's newest uniquely identified durable row and are not already in
+the page. When the
+running page is empty, only the confirmed user-send suffix of the current client
+tail is eligible, stepping over client-only transient rows in the shared
+non-durable-role set; this covers the first send without resurrecting older
+history when no durable anchor exists. A trailing identity-less `streaming`
+suffix is skipped when finding a non-empty page's anchor; any other unidentified
+tail still declines rather than guessing. Retained rows follow the live insertion
+rule: a steer finalizes the current stream before its bubble, so later chunks open
+below it; an ordinary send leaves the open stream above it until the turn ends.
+The fetched streaming row and each retained row are cloned before any change, so
+reducer payload objects are never mutated. A rescued row receives client-owned
+symbol proof outside `ChatMessage.meta`; server JSON cannot forge that property,
+and JSON serialization drops it. The proof survives the in-memory slot-cache and
+switch-back copies, and coverage exempts only a locally rescued copy carrying it
+because a wider server read cannot contain that row until persistence catches up.
+Independently, `refreshSlot` samples the active slot's `liveFrameSeq` around
+each bounded read. Every accepted live frame advances it, and an HTTP receipt that
+changes a locally inserted active user row advances the same race token. A movement
+discards that attempt, then
+the thunk re-snapshots the current view and counter, recomputes the count-matched
+limit, and retries. The budget is three bounded attempts, not three HTTP calls:
+each attempt performs one first read and may run the existing capped walk of up
+to eight older pages plus one newest-edge re-read, for at most
+`3 * (1 + 8 + 1) = 30` bounded slot-detail requests overall. A quiet retry
+applies only
+when the newly sampled current view is exactly represented. A durable `mid` must
+name one row in that view and one row in the fetched page, with compatible role
+semantics; content and timestamps take no part. A mid-less finalized assistant
+must match the same shared durable anchor and segment ordinal through
+`createSegmentComparer`. An open stream must match that exact segment key and a
+compatible generation, and the fetched sequence must reach the active slot's
+local replay floor sampled after the raced frame. A rowless or removal-only
+mutation additionally requires positive page state: an idle page with no open
+stream, or the same exactly identified finalized segment. This evidence is
+re-resolved against the current view on every attempt, so a row removed by a
+later live frame is not required forever. Continuous churn, unknown or ambiguous
+evidence, a retry page that cannot vouch for the current rows, or a slot switch
+returns no payload, preserving the live view rather than applying stale data.
+Directly acceptable first pages check before returning, and a multi-page window
+walk checks again after its final await. The counter advances only for a live frame that reduces into the active view or a
+receipt that actually changes its matching active row, so duplicate receipts and
+unrelated nested state changes do not starve reconciliation.
+The reducers install proof only while the fetched slot reports running; an idle
+page remains authoritative, and the confirmed row is never relabelled
+`optimistic`. A later canonical server row carries no proof, so it differs from
+the rescued copy and reconciles by `sendId` or `mid`, replacing and deduplicating
+the temporary copy. On switch-back, `pending` opens a serializable claim containing
+its request id, target slot, and a deduplicated list of claimed local `clientTs`
+ids capped to the fetched page size. Finalizer rows are a bounded subset keyed by
+that exact `clientTs`; each carries the accepted frame's `seq` and generation when
+known. One separate nullable rowless-finalizer record carries the same evidence
+without inventing a row identity. Every accepted post-dispatch chunk passes its
+replay guard before ensuring its accumulator has a collision-free `clientTs` and
+adding that exact id once while the claim still owns the active request. The
+accepted `assistant`, `_segment`, and `_done` finalizers likewise record evidence
+only after any replay or redelivery guard applicable to that frame accepts it,
+immediately before changing or removing an existing row. A direct assistant
+with no stream is built and assigned its collision-free id, claimed as a finalizer,
+then appended. A rowless `_segment` or `_done` updates the single rowless evidence
+record instead. When that ordered evidence closes the fetched open segment and a
+later chunk has already opened another local segment, settlement finalizes the fetched
+segment once and inserts every later local segment after it; it never re-enters open-row
+replacement. Without positive `same` anchor proof, two open rows likewise remain two
+segments instead of collapsing on `unknown`. A removed placeholder had a real claimed
+row before removal, so
+it never records a rowless candidate and leaves no local candidate for `fulfilled`
+to find. Several segment cycles produce several ids in local order. When the page
+bound is reached, retiring the oldest row identity retires its finalizer evidence
+too, so the two bounded collections cannot disagree. Only a settlement with the
+claim's request id and target may consume it. A metadata-free compatibility
+settlement resolves to that id only while `slotSwitchRequestId` still names the same
+target claim; a missing, settled, or replaced claim declines without mutation. The
+matching settlement marks the claim settled and keeps that marker until the next
+pending switch, so older same-target fulfillments or rejections are declined on
+either side of it.
+
+`readPageSegment` reads the reconciled page that the reducer will modify -- after
+retained-steer finalization or placeholder removal -- so its state and replacement
+index always describe the same array. It recognizes an empty open row too. A shared
+pure predicate defines a finalized assistant reply as `role === "assistant"`
+excluding `isSystemNoticeKind(message.kind ?? message.meta.kind)`. Page-segment
+reading, segment ordinals, page assistant matching, and local candidate selection
+all use that predicate. Compaction, stuck-turn (carried as a compaction notice), and
+session-reload assistant rows therefore remain in their transcript position but
+never finalize, identify, or increment a reply segment. A notice-only page has no
+reply segment.
+
+Every local reply row below the retained head is a candidate: a row a
+post-dispatch frame claimed, and every content-bearing cached real `assistant`
+reply or `streaming` row no frame claimed -- a reply that streamed and finalized
+while the slot was in the background carries only a `clientTs`. All of them
+reconcile through ONE exact segment identity
+(`createSegmentComparer` in `transcript.ts`): the same unique `mid` accepts the
+canonical row; a different unique local `mid` proves a different row; otherwise the
+segment is keyed by the nearest preceding anchor row BOTH arrays identify (a `mid` or
+`sendId` naming exactly one row in each, whose resolved rows carry the same role and
+either an equal non-empty timestamp or, for a receipt-confirmed `sendId`, the same
+second unique server `mid` -- a user send, an `inject` row the gateway dispatched per
+`injectDispatchedTurn` in `turnInject.ts`, the one module both the selectors and the transcript reconciliation read the kind set from, or any durable row both
+sides already hold under one id, such as the fetched assistant that opens a bounded
+mid-turn page) plus the ordinal of `assistant` rows after it, so segment N of one
+turn is never confused with segment N-1. A row one side identifies and the other does
+not is skipped, not an anchor. A note or display-only inject carries no kind and is
+appended client-first, so it anchors nothing. A duplicated identity, role mismatch,
+missing timestamp, or timestamp mismatch without the dual unique send/row proof is
+ambiguous and anchors nothing. Content never identifies a segment; a timestamp only
+validates that a shared ID resolves to the same anchor row.
+
+Refresh order is request issuance, not settlement. `refreshSlot.pending` increments
+`refreshIssuedSeq[safeKey(slot)]` and records `{key, issueSeq, serverTotal?}` under
+its request id in `refreshIssueByRequest`; `serverTotal` is the comparable retained
+count at dispatch. The payload creator reads only that request's token, so its
+bounded retries keep one issue identity and no reducer consults a module global.
+Fulfilled removes its own request entry before any payload guard, then applies only
+when that registration exists and owns the payload's same key; its shrink decision
+compares the response with that registration's count, never the mutable global count
+another switch, warm, or refresh may have moved while this request was in flight.
+The payload's copied
+token never authorizes a settlement after eviction removed its registration.
+Metadata-free or otherwise unowned fulfillments therefore decline without mutating a
+recreated slot. An owned fulfillment updates `refreshAppliedSeq` only when that issue
+applies. A rejected refresh removes its request entry without advancing applied
+order. Thus two refreshes settling out of order keep the newest-issued one, while a
+pre-eviction response cannot populate a later incarnation of the same key.
+
+The switch claim captures the target's latest `refreshIssuedSeq` at `pending`, using
+zero when that per-slot map has no entry. Before `fulfilled` mutates any page-derived
+state, it compares the target's latest applied issue token with that issuance baseline.
+Only an applied refresh issued after the switch can win: a refresh issued before the
+switch remains older even when its held fetch applies afterwards. A winning refresh
+already supplied the active transcript, cursor, retained count, queue, context, replay
+floor, and run state. `setPagingCursor` exempts only the exact current switch claim
+once that applied refresh token exceeds the claim's issuance baseline; an equal or
+older refresh remains blocked from taking the switch's cursor. Whether it fulfills or
+rejects, the older switch therefore settles and clears only its own request and
+applies none of its payload or unwind state. Before a rejected thunk announces a
+failed user gesture or evicts a 404 row, its catch applies the same owned-claim
+issuance check; a winning refresh suppresses both pre-reducer side effects, so the
+refreshed active slot cannot disappear from the sidebar first. It also clears
+`slotLoading` when that refreshed target is active, including a switch that had no
+cached messages when it began. The comparison is per safe-keyed target: another
+slot's refresh and an equal or older issue token do not decline the switch. A stale settlement that does not own the
+current claim cannot settle it, and a newer same-target switch keeps its own baseline
+and request fields. Rejection and unwind continue to use their existing origin
+snapshot. Slot eviction clears issued/applied order and any in-flight request entries
+for that slot.
+
+A candidate is DROPPED only when the page positively holds its segment, or when a
+confirmed remote REWIND makes the page authoritative over every unmatched cached
+candidate, claimed or unclaimed. The same shrink proof is computed before confirmed-
+send reconciliation in both switch and refresh reducers, so a prompt the server
+removed is not mistaken for an early persistence omission and reinserted. `pending`
+captures the target's retained comparable
+server count (`slotServerTotal`) on the request-owned claim as `serverTotal`, and the
+settlement reads a lower comparable response count against THAT baseline -- never the
+global entry, which another response can move while the fetch is in flight -- under
+the same conditions `retainServerTotal` accepts for establishing a baseline (idle, or
+an explicitly comparable or bounded running read). A request claim proves only that
+the frame arrived after switch dispatch, not after the server's final slot-detail
+snapshot: the handler can retry its read after that frame and observe a later rewind.
+Re-attaching the claimed row then permanently resurrects deleted history. A truly
+post-snapshot finalizer is recovered by its own turn-completion refresh instead. An
+absent count on either side, an equal or rising count, or a running non-comparable
+response supplies no shrink proof, so claimed candidates retain their ordinary
+request-local precedence. Equal comparable counts separately prove a one-for-one
+rewrite when an unclaimed identified local assistant and a different unique server
+assistant occupy the same positively identified anchor-plus-ordinal segment. That
+superseded local row is dropped; claimed rows, streaming rows, duplicate identities,
+and `unknown` segment comparisons keep the conservative path. This is the warm
+cache's own invariant (`serverShrank` and `sameCountRewrite` in
+`slotRefresh.ts`): a fall in the server's count means the rows the page lacks were
+removed, so re-attaching them would resurrect the rewind. Otherwise an unmatched
+unclaimed row stays when the page has no
+assistant statement, when it is the open accumulator the open-page rules order by
+sequence, or when the page provably predates it: the page's range reaches above the
+row (the page is the whole transcript, or holds an identified local row before it --
+a fresh page would then carry the segment under the same key) and the row is
+placeable (it carries a server `mid`, or an identified local row precedes it). The
+coverage walk is what makes "reaches above and lacks it" mean stale rather than cut:
+a switch read extends its window until it covers every cached row it can identify,
+so a fresh page always holds the anchor of an identified local segment. A mid-less
+row with no identified row before it, and a page sharing no identity with the rows
+before it, are placeable by neither side, and the page keeps its authority there as
+coverage and the retained head do. In the open-page rules an unclaimed finalized row
+whose key matches the fetched open row is the completed copy of a segment the page
+still projects open: with a compatible generation it replaces that row (one
+segment), while another gateway generation keeps the retain-before rule. Compatible
+generations compare the cached replay floor with the page `seq`: the local row wins
+at or above that sequence, while a higher page sequence wins; a newly identified page
+generation remains authoritative.
+
+For an open page segment, a unique exact `mid` proves the same row and permits
+its claimed local finalization to replace the fetched open copy without weaker
+ordering inference. Other exact-row, eligible-anchor, and causal matches compare
+compatible chunk sequence and generation authority. A row finalizer may replace
+the fetched open row only when its own evidence carries a sequence at or above
+the page sequence and `floorForGen` retains that sequence for the page generation. An older or unordered finalized local segment is retained
+before the fetched open row instead of replacing or finalizing it. A rowless
+finalizer uses the same
+ordering rule and leaves the fetched row open when either sequence is unknown. It
+also applies only when the matching request/target claim contains no row finalizer;
+that gate is derived before exact-`mid` assistants are removed from local candidates,
+so a redundant rowless boundary after canonical segment 1 cannot finalize open
+segment 2. A known page generation is compatible only with the same known
+finalizer generation: a missing or different finalizer generation leaves the page
+authoritative because those sequence counters may belong to different gateway
+processes. When the page generation itself is absent, `floorForGen` keeps the
+sequence-only floor for an older gateway. No generation is manufactured. This
+rule applies to exact-row, anchor-matched, causal-finalizer, and rowless paths; an
+unordered anchor-matched assistant is retained before the fetched open row rather
+than consumed merely because its anchor matched. With compatible ordering proof,
+an earlier fetched open row is cloned and finalized before later claimed segments
+are inserted, so the next chunk cannot append above them.
+Preserved segments use exact identities of following local rows as insertion boundaries; ambiguous order appends rather than guessing.
+Content and timestamps alone never identify a
+segment, because consecutive turns may return the same text and server emission
+may redact one copy. A locally finalized reply with a server row identity is
+retained unless the fetched page contains that exact identity, so
+two legitimate same-text assistant rows with different `mid` values never
+collapse by content. `snapshotChunkSeq` and
+`snapshotChunkGen` derive from that same state and expose values only for an
+open segment. Replacing the selected open row in place preserves ordinary
+`[streaming, user]` order; only confirmed sends retained outside the fetched
+page need an identity-based insertion boundary.
+
 ### Queue turn boundary finalize
 
 A successor turn dispatched WITHOUT a `chat_done` -- the tail-drain starting a

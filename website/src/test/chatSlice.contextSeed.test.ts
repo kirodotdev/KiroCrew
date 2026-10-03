@@ -92,7 +92,11 @@ describe('slot-detail context seeding', () => {
   })
 
   it('refreshSlot seeds the active slot', () => {
-    const state = reducer({ ...initial, activeSlot: 'A' }, {
+    let state = reducer({ ...initial, activeSlot: 'A' }, {
+      type: 'chat/refreshSlot/pending',
+      meta: { arg: 'A', requestId: 'r1', requestStatus: 'pending' },
+    })
+    state = reducer(state, {
       type: 'chat/refreshSlot/fulfilled',
       meta: { arg: 'A', requestId: 'r1', requestStatus: 'fulfilled' },
       payload: detailPayload('A', CTX),

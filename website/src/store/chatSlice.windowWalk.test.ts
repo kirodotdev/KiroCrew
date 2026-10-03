@@ -36,6 +36,8 @@ let TURN_ENDS_MID_WALK = false
 let NEWEST_READS = 0
 /** Fired once, on the first OLDER page request -- the moment the walk is in flight. */
 let ON_OLDER: (() => void) | null = null
+/** Fired once, after a newest-page request starts but before its promise settles. */
+let ON_NEWEST: (() => void) | null = null
 
 vi.mock('../api/client', () => ({
   api: {
@@ -53,6 +55,11 @@ vi.mock('../api/client', () => ({
       const eff = limit === undefined ? undefined : Math.min(limit, SERVER_CLAMP)
       const start = eff === undefined ? 0 : Math.max(0, end - eff)
       const newestRead = before === undefined ? ++NEWEST_READS : 0
+      if (before === undefined && ON_NEWEST) {
+        const fire = ON_NEWEST
+        ON_NEWEST = null
+        fire()
+      }
       return Promise.resolve({
         messages: corpus.slice(start, end),
         has_more: start > 0,
@@ -69,6 +76,7 @@ import chatReducer, {
   PANE_HYDRATE_LIMIT,
   WINDOW_WALK_MAX_PAGES,
   appendSlotMessage,
+  confirmOptimisticSend,
   hydrateSlotMessages,
   refreshSlot,
   setActiveSlot,
@@ -101,9 +109,40 @@ describe('walkWindowBackTo', () => {
     TURN_ENDS_MID_WALK = false
     NEWEST_READS = 0
     ON_OLDER = null
+    ON_NEWEST = null
   })
 
   describe('refreshSlot', () => {
+    it('keeps a receipt-confirmed send when a stale idle page missed its echo', async () => {
+      HISTORY = []
+      const store = makeStore()
+      store.dispatch(appendSlotMessage({
+        slot: SLOT,
+        message: {
+          role: 'user', content: 'confirmed while refreshing', cls: 'msg msg-u',
+          ts: '2026-01-02T00:00:00Z', meta: { sendId: 's-receipt-race' },
+        },
+      }))
+      const beforeSeq = store.getState().chat.liveFrameSeq
+      ON_NEWEST = () => {
+        store.dispatch(confirmOptimisticSend({
+          slot: SLOT, sendId: 's-receipt-race', mid: 'm-receipt-race',
+        }))
+      }
+
+      const payload = await store.dispatch(refreshSlot(SLOT)).unwrap()
+
+      expect(payload).toBeNull()
+      expect(requests()).toHaveLength(2)
+      const after = store.getState().chat
+      expect(after.messages.map(message => message.content)).toEqual(['confirmed while refreshing'])
+      expect(after.messages[0].meta).toMatchObject({
+        sendId: 's-receipt-race', mid: 'm-receipt-race',
+      })
+      expect(after.messages[0].meta?.optimistic).toBeUndefined()
+      expect(after.liveFrameSeq).toBe(beforeSeq + 1)
+    })
+
     it('stops the walk at the first page that reaches the view, not at the start', async () => {
       // The tab holds the newest 40 rows of a 1300-row transcript; the server then
       // gains 700. The count-matched page (floor 50) is clear of the view, so the

@@ -25,7 +25,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 
-import chatReducer, {
+import baseChatReducer, {
   appendSlotMessage,
   appendQueuedMessage,
   clearFocusToolCallId,
@@ -132,6 +132,21 @@ const lifecycle = (type: string, arg: string, payload: unknown) => ({
   meta: { arg, requestId: 'req-1', requestStatus: type.endsWith('fulfilled') ? 'fulfilled' : 'pending' },
   payload,
 })
+
+type ChatState = ReturnType<typeof baseChatReducer>
+type ChatAction = Parameters<typeof baseChatReducer>[1]
+
+const chatReducer = (state: ChatState | undefined, action: ChatAction): ChatState => {
+  let current = state ?? baseChatReducer(undefined, { type: '@@INIT' })
+  const meta = (action as { meta?: { arg?: unknown; requestId?: string } }).meta
+  if (action.type === 'chat/refreshSlot/fulfilled'
+      && typeof meta?.arg === 'string'
+      && typeof meta.requestId === 'string'
+      && current.refreshIssueByRequest[meta.requestId] === undefined) {
+    current = baseChatReducer(current, lifecycle('chat/refreshSlot/pending', meta.arg, undefined))
+  }
+  return baseChatReducer(current, action)
+}
 
 /** The pristine slice state, for the deliberately-partial-state cases below. */
 const initial = chatReducer(undefined, { type: '@@INIT' })

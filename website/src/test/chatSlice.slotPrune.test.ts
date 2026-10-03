@@ -182,6 +182,11 @@ describe('slot teardown parity', () => {
       automations: Object.fromEntries(keys.map(k => [k, terminalMonitor(k)])),
       slotPaneHasMore: Object.fromEntries(keys.map(k => [k, true])),
       slotPaneBounded: Object.fromEntries(keys.map(k => [k, 50])),
+      refreshIssuedSeq: Object.fromEntries(keys.map(k => [k, 2])),
+      refreshAppliedSeq: Object.fromEntries(keys.map(k => [k, 1])),
+      refreshIssueByRequest: Object.fromEntries(
+        keys.map(k => [`refresh-${k}`, { key: k, issueSeq: 2 }]),
+      ),
       thinkingOrphans: Object.fromEntries(keys.map(k => [k, [{ msg: { role: 'thinking', content: `reasoning for ${k}`, cls: '' } as ChatMessage, anchor: { text: 'OLD ANSWER' } }]])),
     }
   }
@@ -191,7 +196,8 @@ describe('slot teardown parity', () => {
     'slotSideClosed', 'slotStatusDetail', 'slotContextPct', 'slotContextTokens',
     'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued',
     'automations',
-    'slotPaneHasMore', 'slotPaneBounded',
+    'slotPaneHasMore', 'slotPaneBounded', 'refreshIssuedSeq',
+    'refreshAppliedSeq',
     // Client-only and unrecoverable, so a slot that leaves has to take it with it.
     'thinkingOrphans',
   ] as const
@@ -205,6 +211,7 @@ describe('slot teardown parity', () => {
     for (const map of perSlotMaps) {
       expect(keysOf(next, map)).toEqual(['chat-1'])
     }
+    expect(Object.keys(next.refreshIssueByRequest)).toEqual(['refresh-chat-1'])
     expect(next.slotHistory).toEqual(['chat-1'])
   })
 
@@ -217,6 +224,7 @@ describe('slot teardown parity', () => {
     for (const map of perSlotMaps) {
       expect(keysOf(reconciled, map)).toEqual(keysOf(deleted, map))
     }
+    expect(reconciled.refreshIssueByRequest).toEqual(deleted.refreshIssueByRequest)
     expect(reconciled.slotHistory).toEqual(deleted.slotHistory)
   })
 
@@ -227,6 +235,15 @@ describe('slot teardown parity', () => {
     const state = { ...seeded(['chat-1']), subagentQueued: { ghost: 3 }, automations: {}, pendingQuestions: {} }
     const next = chatReducer(state, sseSlots([slot('chat-1')]))
     expect(next.subagentQueued['ghost']).toBeUndefined()
+  })
+
+  it('the reconcile evicts a slot whose only residue is refresh request bookkeeping', () => {
+    const state = {
+      ...seeded(['chat-1']),
+      refreshIssueByRequest: { 'refresh-ghost': { key: 'ghost', issueSeq: 1 } },
+    }
+    const next = chatReducer(state, sseSlots([slot('chat-1')]))
+    expect(next.refreshIssueByRequest).toEqual({})
   })
 
   it('the reconcile evicts a slot whose only residue is parked reasoning', () => {

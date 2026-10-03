@@ -165,13 +165,16 @@ export const messageReducers = {
   confirmOptimisticSend(state: ChatState, action: PayloadAction<{ slot: string; sendId: string; mid?: string }>) {
     const { slot, sendId, mid } = action.payload
     if (isUnsafeKey(slot)) return
-    const confirm = (msgs: ChatMessage[] | undefined): boolean => {
-      if (!msgs) return false
+    const confirm = (msgs: ChatMessage[] | undefined): { found: boolean; changed: boolean } => {
+      if (!msgs) return { found: false, changed: false }
       const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
       for (let i = msgs.length - 1; i >= floor; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         const meta = { ...(m.meta || {}) }
+        const changed = meta.optimistic === true
+          || meta.deliveryUnconfirmed !== undefined
+          || Boolean(mid && !meta.mid)
         delete meta.optimistic
         // A receipt that arrives after all is the confirmation the deadline
         // mark said was missing.
@@ -185,11 +188,21 @@ export const messageReducers = {
         // reconciled (identity must not change once assigned).
         if (mid && !meta.mid) meta.mid = mid
         m.meta = meta
-        return true
+        return { found: true, changed }
       }
-      return false
+      return { found: false, changed: false }
     }
-    if (!confirm(state.messages)) confirm(state.slotMessages[safeKey(slot)])
+    const active = confirm(state.messages)
+    if (active.found) {
+      // A receipt-confirmed row is as authoritative as a live echo for refresh
+      // replacement: a snapshot started before this mutation must retry or
+      // leave the local row intact when the echo itself was missed.
+      if (active.changed && state.activeSlot === slot) {
+        state.liveFrameSeq = (state.liveFrameSeq ?? 0) + 1
+      }
+      return
+    }
+    confirm(state.slotMessages[safeKey(slot)])
   },
   /** Record that a send's own receipt never came: the transport deadline
    *  fired (`response-late`) and no correlated echo has confirmed the row, so

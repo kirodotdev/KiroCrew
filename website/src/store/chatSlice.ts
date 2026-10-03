@@ -338,11 +338,97 @@ function applyNonActiveFrame(
  *  half above (`applyNonActiveFrame`) so the main chat's path is unchanged by
  *  it. */
 /** Count a live frame that is about to change the ACTIVE view (see
- *  `ChatState.liveFrameSeq`). Called on each branch of `applyActiveFrame` only
- *  once that frame is known to reduce -- after the replay floor and the
- *  redelivery guard -- so a dropped replay stays a true no-op. */
+ *  `ChatState.liveFrameSeq`). The confirmed-send receipt reducer advances the
+ *  same refresh race token when it changes a locally inserted active row.
+ *  Called on each branch of `applyActiveFrame` only once that frame is known to
+ *  reduce -- after the replay floor and the redelivery guard -- so a dropped
+ *  replay stays a true no-op. */
 function countLiveFrame(state: ChatState): void {
   state.liveFrameSeq = (state.liveFrameSeq ?? 0) + 1
+}
+
+/** Sequence/generation position attached to a finalizer after its replay or
+ * redelivery guard has accepted the frame. A missing generation stays unknown;
+ * it is never synthesized from a different source. */
+type SwitchFinalizerOrder = { seq?: number; gen?: string }
+
+const switchFinalizerOrder = (
+  state: ChatState,
+  frame: Pick<ChatFrame, 'seq' | 'gen'>,
+): SwitchFinalizerOrder => {
+  const seq = frame.seq ?? state.lastChunkSeq
+  const gen = frame.gen ?? state.lastChunkGen
+  return {
+    ...(seq !== undefined ? { seq } : {}),
+    ...(gen !== undefined ? { gen } : {}),
+  }
+}
+
+/** Give a row a collision-free client identity and bind it to the current
+ * switch request. Finalizers carry their accepted causal position separately
+ * from ordinary chunk claims. Both row collections stay bounded to the page
+ * whose settlement can consume them. */
+function claimRowForSwitch(
+  state: ChatState,
+  slot: string,
+  row: ChatMessage,
+  finalizer?: SwitchFinalizerOrder,
+): ChatMessage {
+  const current = row.meta?.clientTs
+  const unique = typeof current === 'string' && current.length > 0
+    && !state.messages.some(message => message !== row && message.meta?.clientTs === current)
+  if (!unique) row.meta = { ...(row.meta || {}), clientTs: mintMsgId() }
+  const clientTs = row.meta?.clientTs
+  const claim = state.slotSwitchChunkClaim
+  if (claim
+      && !claim.settled
+      && claim.requestId === state.slotSwitchRequestId
+      && claim.target === slot
+      && typeof clientTs === 'string') {
+    if (!claim.clientTs.includes(clientTs)) {
+      if (claim.clientTs.length >= OLDER_PAGE_LIMIT) {
+        const retired = claim.clientTs.shift()
+        if (retired !== undefined) {
+          claim.finalizers = claim.finalizers.filter(item => item.clientTs !== retired)
+        }
+      }
+      claim.clientTs.push(clientTs)
+    }
+    if (finalizer) {
+      const evidence = { clientTs, ...finalizer }
+      const prior = claim.finalizers.findIndex(item => item.clientTs === clientTs)
+      if (prior >= 0) claim.finalizers[prior] = evidence
+      else claim.finalizers.push(evidence)
+    }
+  }
+  return row
+}
+
+/** Claim the latest active stream before changing or removing it. */
+function claimStreamingRowForSwitch(
+  state: ChatState,
+  slot: string,
+  stream?: ChatMessage,
+  finalizer?: SwitchFinalizerOrder,
+): ChatMessage | undefined {
+  const row = stream ?? state.messages.findLast(message => message.role === 'streaming')
+  return row ? claimRowForSwitch(state, slot, row, finalizer) : undefined
+}
+
+/** Record the latest finalizer that found no row. One record is sufficient for
+ * one request: repeated rowless boundaries do not identify distinct rows. */
+function claimRowlessFinalizerForSwitch(
+  state: ChatState,
+  slot: string,
+  finalizer: SwitchFinalizerOrder,
+): void {
+  const claim = state.slotSwitchChunkClaim
+  if (claim
+      && !claim.settled
+      && claim.requestId === state.slotSwitchRequestId
+      && claim.target === slot) {
+    claim.rowlessFinalizer = finalizer
+  }
 }
 
 function applyActiveFrame(state: ChatState, p: ChatFrame): void {
@@ -361,6 +447,9 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   // WS segment — finalize streaming into assistant without resetting sequence or slot state
   if (role === '_segment') {
     countLiveFrame(state)
+    const finalizer = switchFinalizerOrder(state, p)
+    const stream = claimStreamingRowForSwitch(state, slot, undefined, finalizer)
+    if (!stream) claimRowlessFinalizerForSwitch(state, slot, finalizer)
     finalizeTrailingStreaming(state.messages)
     return
   }
@@ -398,6 +487,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     for (let i = state.messages.length - 1; i >= 0; i--) {
       if (state.messages[i].role === 'streaming') { streamIdx = i; break }
     }
+    let stream: ChatMessage
     if (streamIdx >= 0) {
       const msg = state.messages[streamIdx]
       // Defensive non-batched gap detection. The live WS path always sets
@@ -411,9 +501,18 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
       }
       msg.content += content
       msg.rawText = msg.content
+      stream = msg
     } else {
-      state.messages.push({ role: 'streaming', content, cls: 'msg msg-a', rawText: content, meta: { clientTs: mintMsgId() } })
+      stream = {
+        role: 'streaming',
+        content,
+        cls: 'msg msg-a',
+        rawText: content,
+        meta: { clientTs: mintMsgId() },
+      }
+      state.messages.push(stream)
     }
+    claimStreamingRowForSwitch(state, slot, stream)
     if (seq !== undefined) state.lastChunkSeq = seq
     return
   }
@@ -421,14 +520,14 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   if (role === '_done') {
     countLiveFrame(state)
     state.slotState = 'idle'
+    const finalizer = switchFinalizerOrder(state, p)
+    const stream = claimStreamingRowForSwitch(state, slot, undefined, finalizer)
     state.lastChunkSeq = undefined
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === 'streaming') {
-        const msg = state.messages[i]
-        msg.role = 'assistant'
-        msg.rawText = msg.content
-        break
-      }
+    if (stream) {
+      stream.role = 'assistant'
+      stream.rawText = stream.content
+    } else {
+      claimRowlessFinalizerForSwitch(state, slot, finalizer)
     }
     state.slotRunning = false
     state.slotStopping = false
@@ -500,17 +599,36 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   }
   // Replace streaming placeholder with final assistant message
   if (role === 'assistant') {
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === 'streaming') {
-        state.messages[i].role = 'assistant'; state.messages[i].content = content; if (ts) state.messages[i].ts = ts
-        // Carry the frame's meta — crucially `mid`, this row's server
-        // identity. The row was minted client-side by the first `chunk` and
-        // has none until now; without it a later redelivery of THIS frame is
-        // unrecognisable and would overwrite whatever is streaming then.
-        if (meta) state.messages[i].meta = { ...(state.messages[i].meta || {}), ...meta }
-        return
+    const finalizer = switchFinalizerOrder(state, p)
+    const stream = claimStreamingRowForSwitch(state, slot, undefined, finalizer)
+    if (stream) {
+      stream.role = 'assistant'; stream.content = content; if (ts) stream.ts = ts
+      // Carry the frame's meta — crucially `mid`, this row's server
+      // identity. The row was minted client-side by the first `chunk` and
+      // has none until now; without it a later redelivery of THIS frame is
+      // unrecognisable and would overwrite whatever is streaming then.
+      if (meta) {
+        const clientTs = stream.meta?.clientTs
+        stream.meta = {
+          ...(stream.meta || {}),
+          ...meta,
+          ...(typeof clientTs === 'string' ? { clientTs } : {}),
+        }
       }
+      return
     }
+    const assistant = ensureMsgId({
+      role, content, cls: cls || '', ts, meta: effectiveMeta, kind,
+    })
+    const claim = state.slotSwitchChunkClaim
+    if (claim
+        && !claim.settled
+        && claim.requestId === state.slotSwitchRequestId
+        && claim.target === slot) {
+      claimRowForSwitch(state, slot, assistant, finalizer)
+    }
+    state.messages.push(assistant)
+    return
   }
   // New user message = new turn — clear activity log
   if (role === 'user') {

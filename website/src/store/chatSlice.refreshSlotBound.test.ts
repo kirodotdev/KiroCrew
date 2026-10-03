@@ -27,7 +27,15 @@ const TOTAL = 300
  *  request above it comes back SHORT here exactly as it would in production. */
 const SERVER_CLAMP = 500
 
-type Row = { role: string; content: string; cls: string; ts: string; meta?: { mid: string } }
+type Row = {
+  role: string
+  content: string
+  cls: string
+  ts: string
+  meta?: { mid: string; kind?: string; notice?: string }
+  seq?: number
+  gen?: string
+}
 
 const rows = (n: number, from = 0): Row[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -42,6 +50,8 @@ let HISTORY: Row[] = rows(TOTAL)
 let RUNNING = false
 /** Fired once, inside the next `chatSlotDetail` call. */
 let DURING_FETCH: (() => void) | null = null
+/** Fired once after the mock has frozen the response snapshot. */
+let DURING_FETCH_AFTER_SNAPSHOT: (() => void) | null = null
 
 vi.mock('../api/client', () => ({
   api: {
@@ -57,6 +67,11 @@ vi.mock('../api/client', () => ({
         fire()
       }
       const corpus = [...HISTORY]
+      if (DURING_FETCH_AFTER_SNAPSHOT) {
+        const fire = DURING_FETCH_AFTER_SNAPSHOT
+        DURING_FETCH_AFTER_SNAPSHOT = null
+        fire()
+      }
       const total = corpus.length
       const end = before !== undefined ? Math.max(0, Math.min(before, total)) : total
       const eff = limit === undefined ? undefined : Math.min(limit, SERVER_CLAMP)
@@ -126,6 +141,7 @@ describe('refreshSlot count-matched bound', () => {
     HISTORY = rows(TOTAL)
     RUNNING = false
     DURING_FETCH = null
+    DURING_FETCH_AFTER_SNAPSHOT = null
   })
 
   it('bounds the recurring refresh instead of pulling the whole transcript', async () => {
@@ -796,6 +812,32 @@ describe('refreshSlot count-matched bound', () => {
       expect(store.getState().chat.messages).toHaveLength(held)
     })
 
+    it('declines an acceptable first page when a live chunk lands during the fetch', async () => {
+      // The page reaches the start of history, so it takes the one-page fast path.
+      // A live chunk reduced after dispatch is newer than that snapshot and must win.
+      HISTORY = rows(30)
+      RUNNING = true
+      const store = makeStore({
+        messages: [
+          ...HISTORY,
+          { role: 'streaming', content: 'partial', cls: 'msg msg-a', rawText: 'partial' },
+        ],
+        slotHasMore: false,
+        slotOldestIndex: 0,
+        slotCursorKey: SLOT,
+      })
+      DURING_FETCH = () => {
+        store.dispatch(sseChatMessage({ slot: SLOT, role: 'chunk', content: ' more' } as never))
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(limits()).toEqual([PANE_HYDRATE_LIMIT, PANE_HYDRATE_LIMIT])
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.messages.find(m => m.role === 'streaming')?.content)
+        .toBe('partial more')
+    })
+
     it('keeps a row streamed in while the walk was paging older', async () => {
       // Disjoint page -> walk. A live chunk lands during the walk's SECOND request,
       // after the first page was read, so it is in the view but in no walked page.
@@ -844,6 +886,274 @@ describe('refreshSlot count-matched bound', () => {
       expect(after.at(-1)?.content).toBe('queued-next')
     })
 
+    it('retries a passive frame race and restores canonical history plus the frame', async () => {
+      HISTORY = rows(2)
+      const passive: Row = {
+        role: 'assistant',
+        content: 'The turn has been quiet for five minutes.',
+        cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:03.000Z',
+        meta: {
+          mid: 'mid-passive-notice',
+          kind: 'compaction',
+          notice: 'stuck_turn',
+        },
+      }
+      const store = makeStore({ messages: [HISTORY[0]], slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        HISTORY = [...HISTORY, passive]
+        store.dispatch(sseChatMessage({
+          slot: SLOT,
+          ...passive,
+          kind: 'compaction',
+          meta: { ...passive.meta, kind: 'compaction', notice: 'stuck_turn' },
+        } as never))
+      }
+
+      await store.dispatch(refreshSlot(SLOT) as never)
+
+      expect(limits()).toEqual([PANE_HYDRATE_LIMIT, PANE_HYDRATE_LIMIT])
+      expect(store.getState().chat.messages.map(message => message.content)).toEqual([
+        'm0',
+        'm1',
+        passive.content,
+      ])
+      expect(store.getState().chat.messages.at(-1)?.meta).toEqual(expect.objectContaining({
+        kind: 'compaction', notice: 'stuck_turn',
+      }))
+    })
+
+    it('retries a live chunk race without duplicating or rewinding the canonical stream', async () => {
+      RUNNING = true
+      const anchor = rows(1)[0]
+      const stream: Row = {
+        role: 'streaming', content: 'server partial', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:02.000Z',
+      }
+      HISTORY = [anchor, stream]
+      const store = makeStore({ messages: HISTORY.slice(), slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        HISTORY = [anchor, {
+          ...stream, content: 'server partial more', seq: 2, gen: 'g-live',
+        } as Row]
+        store.dispatch(sseChatMessage({
+          slot: SLOT, role: 'chunk', content: ' more', seq: 2, gen: 'g-live',
+        } as never))
+      }
+
+      await store.dispatch(refreshSlot(SLOT) as never)
+
+      expect(limits()).toEqual([PANE_HYDRATE_LIMIT, PANE_HYDRATE_LIMIT])
+      expect(store.getState().chat.messages.filter(message => message.role === 'streaming'))
+        .toEqual([expect.objectContaining({ content: 'server partial more', seq: 2, gen: 'g-live' })])
+    })
+
+    it('declines identical open bytes from a different segment ordinal', async () => {
+      RUNNING = true
+      const anchor = rows(1)[0]
+      const priorSegment: Row = {
+        role: 'assistant', content: 'Earlier segment.', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:01.000Z',
+      }
+      const open: Row = {
+        role: 'streaming', content: 'identical bytes', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:02.000Z', seq: 1,
+      }
+      HISTORY = [anchor, priorSegment, open]
+      const store = makeStore({ messages: HISTORY.slice(), slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        HISTORY = [anchor, { ...open, seq: 2 }]
+        store.dispatch(sseChatMessage({
+          slot: SLOT, role: 'chunk', content: '', seq: 2,
+        } as never))
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.messages.map(message => message.content)).toEqual([
+        anchor.content, priorSegment.content, open.content,
+      ])
+    })
+
+    it.each(['current view', 'fetched page'] as const)(
+      'declines a mid duplicated in the %s',
+      async (duplicateSide) => {
+        const duplicateMid = 'mid-duplicate-retry'
+        const first: Row = {
+          role: 'assistant', content: 'first copy', cls: 'msg msg-a',
+          ts: '2026-01-01T00:00:01.000Z', meta: { mid: duplicateMid },
+        }
+        const second: Row = {
+          role: 'assistant', content: 'second copy', cls: 'msg msg-a',
+          ts: '2026-01-01T00:00:02.000Z', meta: { mid: duplicateMid },
+        }
+        const notice: Row = {
+          role: 'assistant', content: 'retry notice', cls: 'msg msg-a',
+          ts: '2026-01-01T00:00:03.000Z',
+          meta: { mid: 'mid-duplicate-race', kind: 'compaction' },
+        }
+        HISTORY = [first]
+        const store = makeStore({
+          messages: duplicateSide === 'current view' ? [first, second] : [first],
+          slotHasMore: false,
+        })
+        DURING_FETCH_AFTER_SNAPSHOT = () => {
+          HISTORY = duplicateSide === 'fetched page'
+            ? [first, second, notice]
+            : [first, notice]
+          store.dispatch(sseChatMessage({ slot: SLOT, ...notice } as never))
+        }
+
+        const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+        expect(result.payload).toBeNull()
+      },
+    )
+
+    it('accepts byte-different redaction when one unique mid identifies the row', async () => {
+      const anchor = rows(1)[0]
+      const local: Row = {
+        role: 'assistant', content: 'Token AKIA-LIVE was removed.', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:01.000Z', meta: { mid: 'mid-redacted-retry' },
+      }
+      const redacted: Row = { ...local, content: 'Token [redacted] was removed.' }
+      HISTORY = [anchor]
+      const store = makeStore({ messages: [anchor], slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        HISTORY = [anchor, redacted]
+        store.dispatch(sseChatMessage({ slot: SLOT, ...local } as never))
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(result.payload).not.toBeNull()
+      expect(store.getState().chat.messages.at(-1)?.content).toBe(redacted.content)
+    })
+
+    it('declines newer same-text stream sequence from an incompatible generation', async () => {
+      RUNNING = true
+      const anchor = rows(1)[0]
+      const open: Row = {
+        role: 'streaming', content: 'same text', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:01.000Z', seq: 1,
+      }
+      HISTORY = [anchor, open]
+      const store = makeStore({ messages: HISTORY.slice(), slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        HISTORY = [anchor, { ...open, seq: 3, gen: 'g-other' }]
+        store.dispatch(sseChatMessage({
+          slot: SLOT, role: 'chunk', content: '', seq: 2,
+        } as never))
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.messages.at(-1)).toEqual(expect.objectContaining({
+        role: 'streaming', content: open.content,
+      }))
+      expect(store.getState().chat.lastChunkSeq).toBe(2)
+      expect(store.getState().chat.lastChunkGen).toBeUndefined()
+    })
+
+    it('covers a mid-less finalized race only by the same shared anchor and ordinal', async () => {
+      RUNNING = true
+      const anchor = rows(1)[0]
+      const open: Row = {
+        role: 'streaming', content: 'local unredacted bytes', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:01.000Z', seq: 1, gen: 'g-finalized',
+      }
+      const canonical: Row = {
+        role: 'assistant', content: 'canonical redacted bytes', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:02.000Z',
+      }
+      HISTORY = [anchor]
+      const store = makeStore({ messages: [anchor, open], slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        HISTORY = [anchor, canonical]
+        store.dispatch(sseChatMessage({
+          slot: SLOT, role: '_segment', content: '', seq: 1, gen: 'g-finalized',
+        } as never))
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(result.payload).not.toBeNull()
+      expect(store.getState().chat.messages.at(-1)?.content).toBe(canonical.content)
+    })
+
+    it('does not reintroduce a placeholder removed by a rowless live boundary', async () => {
+      RUNNING = true
+      const anchor = rows(1)[0]
+      const placeholder: Row = {
+        role: 'streaming', content: '', cls: 'msg msg-a',
+        ts: '2026-01-01T00:00:01.000Z',
+      }
+      HISTORY = [anchor, placeholder]
+      const store = makeStore({ messages: HISTORY.slice(), slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        store.dispatch(sseChatMessage({ slot: SLOT, role: '_segment', content: '' } as never))
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.messages).toEqual([anchor])
+    })
+
+    it('stops after three changing reads and preserves the local live state', async () => {
+      HISTORY = rows(1)
+      const store = makeStore({ messages: HISTORY.slice(), slotHasMore: false })
+      let frame = 0
+      const churn = () => {
+        frame += 1
+        store.dispatch(sseChatMessage({
+          slot: SLOT,
+          role: 'assistant',
+          content: `passive-${frame}`,
+          meta: { mid: `mid-passive-${frame}`, kind: 'compaction' },
+        } as never))
+        DURING_FETCH_AFTER_SNAPSHOT = churn
+      }
+      DURING_FETCH_AFTER_SNAPSHOT = churn
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(limits()).toEqual([
+        PANE_HYDRATE_LIMIT,
+        PANE_HYDRATE_LIMIT,
+        PANE_HYDRATE_LIMIT,
+      ])
+      expect(limits()).not.toContain(undefined)
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.messages.map(message => message.content)).toEqual([
+        'm0', 'passive-1', 'passive-2', 'passive-3',
+      ])
+    })
+
+    it('declines when the active slot changes during a retry', async () => {
+      HISTORY = rows(2)
+      const store = makeStore({ messages: [HISTORY[0]], slotHasMore: false })
+      DURING_FETCH_AFTER_SNAPSHOT = () => {
+        store.dispatch(sseChatMessage({
+          slot: SLOT,
+          role: 'assistant',
+          content: 'passive race',
+          meta: { mid: 'mid-passive-race', kind: 'compaction' },
+        } as never))
+        DURING_FETCH_AFTER_SNAPSHOT = () => {
+          store.dispatch({ type: 'chat/setActiveSlot', payload: 'other-slot' })
+        }
+      }
+
+      const result = await store.dispatch(refreshSlot(SLOT) as never) as { payload: unknown }
+
+      expect(limits()).toEqual([PANE_HYDRATE_LIMIT, PANE_HYDRATE_LIMIT])
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe('other-slot')
+    })
+
     it('still lands the walk when only a row ABOVE the tail changed during it', async () => {
       // An approval retiring mid-walk rewrites one earlier row: a new array, nothing
       // streamed. Declining here would drop every row the reconnect walked for.
@@ -871,6 +1181,8 @@ describe('refreshSlot count-matched bound', () => {
         key: SLOT, messages: [...HISTORY.slice(0, -1), { ...HISTORY[HISTORY.length - 1], content }],
         running: false, hasMore: false, nextBefore: 0, total: TOTAL, queue: [], stopping: false, refreshSeq: seq,
       })
+      store.dispatch(refreshSlot.pending('r1', SLOT))
+      store.dispatch(refreshSlot.pending('r2', SLOT))
       store.dispatch(refreshSlot.fulfilled(payload(2, 'switched-variant') as never, 'r2', SLOT))
       store.dispatch(refreshSlot.fulfilled(payload(1, 'old-variant') as never, 'r1', SLOT))
 

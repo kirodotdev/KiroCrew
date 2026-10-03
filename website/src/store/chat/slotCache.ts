@@ -14,8 +14,21 @@ import { isUnsafeKey, safeKey } from './wire'
  */
 export function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number): void {
   // A switch installs a cursor only for the slot it targets, so a writer that
-  // activated a different slot must write: nothing else will.
-  if (state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot) return
+  // activated a different slot must write: nothing else will. A newer refresh
+  // issued after this exact claim is the exception: it already owns the active
+  // transcript and every other projection, and the switch settlement will
+  // decline. Blocking its cursor here leaves that winning bounded page looking
+  // unbounded until another fetch happens.
+  const claim = state.slotSwitchChunkClaim
+  const active = state.activeSlot
+  const refreshOutranksSwitch = active !== null
+    && !isUnsafeKey(active)
+    && claim?.requestId === state.slotSwitchRequestId
+    && claim.target === active
+    && (state.refreshAppliedSeq?.[safeKey(active)] ?? 0) > claim.refreshIssuedSeq
+  if (state.slotSwitchRequestId !== null
+      && state.slotSwitchTarget === active
+      && !refreshOutranksSwitch) return
   state.slotHasMore = hasMore
   state.slotOldestIndex = hasMore ? nextBefore : 0
   state.slotCursorKey = state.activeSlot

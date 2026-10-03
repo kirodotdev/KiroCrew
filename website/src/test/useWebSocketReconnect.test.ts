@@ -448,10 +448,15 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
    *  snapshot whose trailing streaming row carries the newest folded seq. The
    *  reducer raises `lastChunkSeq` from it and later drops batched parts at or
    *  below that floor. */
-  const snapshotWithFloor = (seq: number) => refreshSlot.fulfilled({
-    key: 'chat-active', running: true, hasMore: false, total: 1, queue: [], stopping: false,
-    messages: [{ role: 'streaming', content: 'SNAPSHOT', cls: 'msg msg-a', seq }],
-  }, 'r1', 'chat-active')
+  let snapshotRequest = 0
+  const applySnapshotWithFloor = (seq: number) => {
+    const requestId = `snapshot-floor-${++snapshotRequest}`
+    testStore.dispatch(refreshSlot.pending(requestId, 'chat-active'))
+    testStore.dispatch(refreshSlot.fulfilled({
+      key: 'chat-active', running: true, hasMore: false, total: 1, queue: [], stopping: false,
+      messages: [{ role: 'streaming', content: 'SNAPSHOT', cls: 'msg msg-a', seq }],
+    }, requestId, 'chat-active'))
+  }
 
   it('coalesces multiple chunks in a frame into one deferred flush', () => {
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
@@ -484,7 +489,7 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
     })
     // The slot is then refreshed by a snapshot whose trailing streaming row
     // already holds text up to seq 3 (a variant switch keeps the entry alive).
-    act(() => { testStore.dispatch(snapshotWithFloor(3)) })
+    act(() => { applySnapshotWithFloor(3) })
     expect(testStore.getState().chat.lastChunkSeq).toBe(3)
     act(() => {
       // seq 2 and 3 are replays of text the snapshot already contains; seq 4 is new.
@@ -514,7 +519,7 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
     })
     // A refreshed snapshot holds text up to seq 2 only: 'a' and 'b' are covered,
     // 'c' is not and must still reach the transcript.
-    act(() => { testStore.dispatch(snapshotWithFloor(2)) })
+    act(() => { applySnapshotWithFloor(2) })
     act(() => {
       ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'd', seq: 4 } })
     })
@@ -536,7 +541,7 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
     // No further chunk arrives; the refreshed snapshot (floor 2) lands during
     // the requestAnimationFrame window. The reducer applies the floor when the
     // batched frame is dispatched, so the covered parts never reach the row.
-    act(() => { testStore.dispatch(snapshotWithFloor(2)) })
+    act(() => { applySnapshotWithFloor(2) })
     act(() => { rafCbs.forEach(cb => cb(0)) })
     const streaming = testStore.getState().chat.messages.find(m => m.role === 'streaming')
     expect(streaming?.content).toBe('SNAPSHOTc')
@@ -725,7 +730,10 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
           { role: 'streaming', content: 'Hello wor', cls: 'msg msg-a', seq: 3 },
         ],
       }, 'r1', 'chat-active')
-      act(() => { testStore.dispatch(refreshed) })
+      act(() => {
+        testStore.dispatch(refreshSlot.pending('r1', 'chat-active'))
+        testStore.dispatch(refreshed)
+      })
       expect(testStore.getState().chat.lastChunkSeq).toBe(3)
       // The frames that raced the snapshot are batched by the flush buffer and
       // handed to the reducer with each part's seq; the reducer drops the parts

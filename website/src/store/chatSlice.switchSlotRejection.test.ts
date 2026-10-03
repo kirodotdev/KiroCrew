@@ -15,8 +15,8 @@ import { configureStore, type Middleware } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
-import { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
+import chatReducer, { switchSlot, refreshSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
+import dashboardReducer, { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
 import { buildErrorPrompt } from '../utils/errorReport.prompt'
@@ -617,6 +617,60 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     await unwrapRejection(p.unwrap())
     expect(goneNotices(actions)).toHaveLength(1)
     expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('a newer applied refresh suppresses stale 404 side effects before rejected settlement', async () => {
+    let rejectDetail: ((e: unknown) => void) | undefined
+    detail.mockImplementation((key: string) => {
+      if (key === 'home') return Promise.resolve(OK_PAGE)
+      return new Promise((_, reject) => { rejectDetail = reject })
+    })
+    const actions: Array<{ type: string; payload?: unknown }> = []
+    const recorder: Middleware = () => (next) => (action) => {
+      actions.push(action as { type: string; payload?: unknown })
+      return next(action)
+    }
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer },
+      middleware: (getDefault) => getDefault({ immutableCheck: false }).concat(recorder),
+    })
+    store.dispatch(fetchSlots.fulfilled([
+      { key: 'home', title: 'Home' },
+      { key: 'gone', title: 'Ghost session' },
+    ] as never, 'seed-slots', undefined) as never)
+    await store.dispatch(switchSlot('home'))
+
+    const stale = store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true }))
+    // The refresh is issued after switch pending and applies a bounded
+    // canonical page while the older switch request is still in flight.
+    store.dispatch(refreshSlot.pending('newer-refresh', 'gone'))
+    store.dispatch(refreshSlot.fulfilled({
+      key: 'gone',
+      nextBefore: 12,
+      messages: [{ role: 'user', content: 'canonical refreshed row', ts: '2026-01-01T00:00:01.000Z' }],
+      running: false,
+      stopping: false,
+      hasMore: true,
+      total: 13,
+      queue: [],
+      context: undefined,
+    } as never, 'newer-refresh', 'gone'))
+    expect(store.getState().chat.messages.map(m => m.content)).toEqual(['canonical refreshed row'])
+    expect(store.getState().chat.slotOldestIndex).toBe(12)
+
+    rejectDetail!(apiError(404, 'slot unavailable'))
+    const e = await unwrapRejection(stale.unwrap())
+    expect(e).toEqual({ status: 404, message: 'slot unavailable' })
+    // The catch runs before switchSlot.rejected. It must therefore apply the
+    // same issuance-order authority check before publishing either side effect.
+    expect(goneNotices(actions)).toHaveLength(0)
+    expect(evictions(actions)).toHaveLength(0)
+    expect(store.getState().dashboard.slots.some(s => s.key === 'gone')).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('gone')
+    expect(store.getState().chat.messages.map(m => m.content)).toEqual(['canonical refreshed row'])
+    expect(store.getState().chat.slotOldestIndex).toBe(12)
+    expect(store.getState().chat.slotSwitchRequestId).toBeNull()
+    expect(store.getState().chat.slotLoading).toBe(false)
   })
 
   it('re-activating the session already open stays SILENT and the row is KEPT', async () => {

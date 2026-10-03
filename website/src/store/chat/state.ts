@@ -153,6 +153,39 @@ export interface ChatState {
   slotSwitchRequestId: string | null
   /** Slot the in-flight switch targets; it only installs a cursor for that one. */
   slotSwitchTarget: string | null
+  /** Exact local stream rows changed while the current switch fetch is in flight.
+   * Chunk identities and finalizer evidence are deduplicated separately so
+   * settlement can distinguish accumulated text from a causal boundary.
+   * Finalizers carry the accepted frame's sequence/generation position, with
+   * one evidence record for a boundary that found no row. The row collections
+   * are capped to the switch page size by the recorder. A settled claim stays
+   * until the next pending switch so older same-target settlements remain
+   * rejectable. `serverTotal` is the target's comparable retained server count
+   * (`slotServerTotal`) as it stood when THIS request was dispatched -- the
+   * baseline its own settlement reads a remote rewind against, captured here
+   * because another response can move the global entry while the fetch is in
+   * flight and a later global value is unordered relative to this request.
+   * Absent when no comparable count was retained. `refreshIssuedSeq` is the
+   * target slot's latest issued refresh token at switch dispatch, defaulting to
+   * zero; only a refresh issued after this switch can advance the applied issue
+   * token beyond it and make the switch response stale. */
+  slotSwitchChunkClaim: {
+    requestId: string
+    target: string
+    serverTotal?: number
+    refreshIssuedSeq: number
+    clientTs: string[]
+    finalizers: Array<{
+      clientTs: string
+      seq?: number
+      gen?: string
+    }>
+    rowlessFinalizer: {
+      seq?: number
+      gen?: string
+    } | null
+    settled: boolean
+  } | null
   /** Pre-switch selection, recorded by `switchSlot.pending` so `rejected` can
    *  restore it when the target turns out to be GONE (404). `pending` mutates
    *  four things atomically -- `activeSlot`, the outgoing slot's activity, its
@@ -204,19 +237,28 @@ export interface ChatState {
    *  generation replaces the floor instead of being ordered against it. */
   lastChunkGen: string | undefined
   _wsChunkedDuringFetch: boolean
-  /** Count of live frames reduced into the ACTIVE view (`applyActiveFrame`),
-   *  for the life of this tab. A thunk that awaits across several requests
-   *  samples it before and after, and declines to replace `messages` when it
-   *  moved: that is the one exact test for "a live chunk or row landed while I
-   *  was away", where any structural comparison of the array either misses an
-   *  in-place chunk on a non-tail row or trips on an unrelated nested write. */
+  /** Count of authoritative mutations reduced into the ACTIVE view, for the
+   *  life of this tab: every accepted live frame and every HTTP receipt that
+   *  confirms a locally inserted user row. A thunk that awaits across several
+   *  requests samples it before and after, and declines to replace `messages`
+   *  when it moved. That is the exact test for "a live chunk or confirmed row
+   *  landed while I was away", where structural array comparisons either miss
+   *  an in-place chunk or trip on an unrelated nested write. */
   liveFrameSeq: number
-  /** Per slot, the dispatch order (`refreshSeq`) of the newest `refreshSlot`
-   *  whose payload was applied. A refresh's payload describes the transcript as
-   *  of its own reads, and a walking one reads for several round trips, so two
-   *  overlapping refreshes can settle newest-first; the older one must then be
-   *  dropped rather than restore what the newer one already replaced (a variant
-   *  switch, a reconcile). Same rule `warmSlotCache` orders by with `warmSeq`. */
+  /** Latest refresh issue token minted per safe-keyed slot. Tokens are assigned
+   *  by `refreshSlot.pending`, so reducers never read a module-global counter. */
+  refreshIssuedSeq: Record<string, number>
+  /** In-flight refresh request identity. Fulfilled and rejected both retire it;
+   *  the payload creator reads only its own request's token. `serverTotal` is
+   *  the comparable count at dispatch, before another response can move the
+   *  slot's global retained count. */
+  refreshIssueByRequest: Record<string, { key: string; issueSeq: number; serverTotal?: number }>
+  /** Per slot, the issue order of the newest `refreshSlot` whose payload was
+   *  applied. A refresh's payload describes the transcript as of its own reads,
+   *  and a walking one reads for several round trips, so two overlapping
+   *  refreshes can settle newest-issued-first; the older-issued one must then be
+   *  dropped rather than restore what the newer one already replaced. Same rule
+   *  `warmSlotCache` orders by with `warmSeq`. */
   refreshAppliedSeq: Record<string, number>
   /** How many `chat_message` frames were dropped as redeliveries (see
    *  `isRedeliveredMessage`), across every slot, for the life of this tab.
@@ -510,6 +552,7 @@ export const initialState: ChatState = {
   slotCursorKey: null,
   slotSwitchRequestId: null,
   slotSwitchTarget: null,
+  slotSwitchChunkClaim: null,
   slotSwitchOrigin: null,
   switchSlotGone: null,
   loadingOlder: false,
@@ -518,6 +561,8 @@ export const initialState: ChatState = {
   lastChunkGen: undefined,
   _wsChunkedDuringFetch: false,
   liveFrameSeq: 0,
+  refreshIssuedSeq: {},
+  refreshIssueByRequest: {},
   refreshAppliedSeq: {},
   _redeliveredFramesDropped: 0,
   history: [],
