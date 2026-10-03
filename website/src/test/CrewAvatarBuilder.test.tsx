@@ -14,6 +14,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ACCESSORIES, BROWS, BRAND_PURPLE, EYES, MOUTHS, PROPS, TILES } from '../lib/kiroGhostAvatar'
+import { DEFAULT_POSE, POSE_IDS } from '../lib/avatarPoses'
 
 vi.mock('framer-motion', async () => {
   const React = await import('react')
@@ -73,6 +74,22 @@ async function pickAxis(label: string) {
 async function switchToPicture() {
   fireEvent.click(screen.getByRole('radio', { name: 'Picture' }))
   await screen.findByTestId('avatar-upload-pane')
+}
+
+/** The builder now opens on the ICON tier for a crew with no override, so a
+ *  ghost-tier test reaches the "捏脸" face builder the way a user does: by
+ *  clicking the Ghost face tab. Returns the mount utils. */
+async function switchToFace() {
+  fireEvent.click(screen.getByRole('radio', { name: 'Ghost face' }))
+  await screen.findByTestId('avatar-builder-preview')
+}
+
+/** Mount and land on the Ghost face tab — the fixture every ghost-tier test
+ *  starts from now that Icon is the default pane. */
+async function mountFace(value: CrewAvatarOverride | null = null) {
+  const utils = mount(value)
+  await switchToFace()
+  return utils
 }
 
 /* ────────────── canvas + image doubles for the picture tier ────────────── */
@@ -149,8 +166,8 @@ afterEach(() => {
 /* ──────────────────────────── ghost tier ──────────────────────────── */
 
 describe('CrewAvatarBuilder — ghost tier', () => {
-  it('randomize draws every axis from the shipped vocabulary and Apply hands it over', () => {
-    const { onSave } = mount()
+  it('randomize draws every axis from the shipped vocabulary and Apply hands it over', async () => {
+    const { onSave } = await mountFace()
     fireEvent.click(screen.getByTestId('avatar-builder-randomize'))
     apply()
     const saved = lastSaved(onSave) as Ghost
@@ -167,7 +184,7 @@ describe('CrewAvatarBuilder — ghost tier', () => {
   })
 
   it('the Blush axis is a two-option tab: off first, then on', async () => {
-    const { onSave } = mount()
+    const { onSave } = await mountFace()
     await pickAxis('Blush')
     fireEvent.click(screen.getByTestId('avatar-opt-blush'))
     apply()
@@ -178,7 +195,7 @@ describe('CrewAvatarBuilder — ghost tier', () => {
   })
 
   it('the Background axis pins the tile and labels swatches with color names, not hex', async () => {
-    const { onSave } = mount()
+    const { onSave } = await mountFace()
     await pickAxis('Background')
     const steel = screen.getByTestId('avatar-opt-25679d')
     expect(steel).toHaveAttribute('aria-label', 'Steel blue')
@@ -187,8 +204,8 @@ describe('CrewAvatarBuilder — ghost tier', () => {
     expect((lastSaved(onSave) as Ghost).traits.tile).toBe('#25679d')
   })
 
-  it('the mirror toggle flips the face relative to the seeded default', () => {
-    const { onSave } = mount()
+  it('the mirror toggle flips the face relative to the seeded default', async () => {
+    const { onSave } = await mountFace()
     const sw = screen.getByRole('switch', { name: 'Flip direction' })
     const before = sw.getAttribute('aria-checked') === 'true'
     fireEvent.click(sw)
@@ -202,6 +219,65 @@ describe('CrewAvatarBuilder — ghost tier', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onSave).not.toHaveBeenCalled()
+  })
+})
+
+/* ──────────────────────────── icon tier ──────────────────────────── */
+
+describe('CrewAvatarBuilder — icon tier', () => {
+  it('is the default pane for a crew with no override', () => {
+    mount()
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('avatar-icon-preview')).toBeInTheDocument()
+  })
+
+  it('a stored ghost crew still opens on the Ghost face pane', () => {
+    mount({ kind: 'ghost', traits: { eyes: 'wink', brows: 'none', mouth: 'smile', accessory: 'none', prop: 'none', blush: false, flip: false, tile: BRAND_PURPLE } })
+    expect(screen.getByTestId('avatar-builder-preview')).toBeInTheDocument()
+    expect(screen.queryByTestId('avatar-icon-pane')).not.toBeInTheDocument()
+  })
+
+  it('picking a pose and Apply hands over an icon override', () => {
+    const { onSave } = mount()
+    fireEvent.click(screen.getByTestId('avatar-icon-pose-pose-3'))
+    apply()
+    const saved = lastSaved(onSave)
+    expect(saved?.kind).toBe('icon')
+    expect(saved).toMatchObject({ kind: 'icon', pose: 'pose-3' })
+    expect((saved as { bg: string }).bg).toMatch(/^#[0-9a-f]{6}$/)
+  })
+
+  it('a fresh draft applies the default pose without any pick', () => {
+    const { onSave } = mount()
+    apply()
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', pose: DEFAULT_POSE })
+  })
+
+  it('every shipped pose is offered as a swatch', () => {
+    mount()
+    for (const pose of POSE_IDS) {
+      expect(screen.getByTestId(`avatar-icon-pose-${pose}`)).toBeInTheDocument()
+    }
+  })
+
+  it('a background swatch pins the colour the override carries', () => {
+    const { onSave } = mount()
+    fireEvent.click(screen.getByTestId('avatar-icon-bg-25679d'))
+    apply()
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', bg: '#25679d' })
+  })
+
+  it('a stored icon crew reopens on its pose and colour', () => {
+    mount({ kind: 'icon', pose: 'pose-5', bg: '#25679d' })
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('avatar-icon-pose-pose-5')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('avatar-icon-bg-25679d')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('the icon tier offers no Reactions tab — a pose is static', () => {
+    mount()
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).not.toBeInTheDocument()
   })
 })
 

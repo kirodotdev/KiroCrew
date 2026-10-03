@@ -57,6 +57,7 @@ import {
   type AvatarSounds,
 } from '../lib/crewAvatarState'
 import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
+import { DEFAULT_POSE_BG, poseDataUri } from '../lib/avatarPoses'
 import PackAvatar from './appearancePacks/PackAvatar'
 
 /** Kiro's own ghost, built on the shipped mark. See `lib/kiroGhostAvatar.ts`. */
@@ -91,6 +92,12 @@ export type CrewAvatarOverride =
       token?: string
     }
   | { kind: 'pack'; id: string }
+  /** The ICON tier — a shipped ghost POSE over a solid background the user
+   *  picks. The whole override is `pose` + `bg`: the pose names one of the
+   *  hand-drawn silhouettes (`lib/avatarPoses.ts`), `bg` is a `#rrggbb` painted
+   *  behind it. No traits, no reactions — the pose is the whole face, and it is
+   *  how new crews are built. See `iconAvatarFrom`. */
+  | { kind: 'icon'; pose: string; bg: string }
 
 const TILE_RE = /^#[0-9a-f]{6}$/
 
@@ -127,6 +134,36 @@ export function packAvatarFrom(avatar: unknown): { id: string } | null {
   // character the backend counts it as.
   if (!id || [...id].length > MAX_PACK_ID_LEN || !PACK_ID_RE.test(id)) return null
   return { id }
+}
+
+/**
+ * Interpret a crew record's `avatar` field as an ICON override — a shipped pose
+ * over a solid background. Returns the resolved pose id and `#rrggbb`, or `null`
+ * when the field is absent, junk, or another tier. Total for the same reason as
+ * `ghostTraitsFrom`: roster rows carry the field untyped.
+ *
+ * The pose and colour are returned RAW, exactly as stored — resolution to a
+ * drawable pose / legal colour happens only at RENDER (`poseDataUri`, which
+ * resolves internally). Returning the raw value is load-bearing for
+ * forward-compat: the editor seeds its draft from this reader and an unrelated
+ * save ships that draft back, so resolving here would rewrite a pose a newer
+ * client wrote (`pose-99`) down to the default and permanently lose it on the
+ * next model-change save — the exact wipe `_safe_avatar` keeps the raw pose to
+ * avoid. A record whose `pose` is not a string at all is not an icon override
+ * and returns null, so an unrelated save cannot read it as one.
+ */
+export function iconAvatarFrom(avatar: unknown): { pose: string; bg: string } | null {
+  if (!avatar || typeof avatar !== 'object') return null
+  const a = avatar as Record<string, unknown>
+  if (a.kind !== 'icon' || typeof a.pose !== 'string' || !a.pose) return null
+  return {
+    // Raw, not resolved — see the forward-compat note above. `bg` falls back to
+    // the default only when absent/non-string (a record with no colour), which
+    // is a real "no colour stored" case, not a value being rewritten; a present
+    // string rides through verbatim and `poseDataUri` pins it at render.
+    pose: a.pose,
+    bg: typeof a.bg === 'string' && a.bg ? a.bg : DEFAULT_POSE_BG,
+  }
 }
 
 /**
@@ -192,7 +229,8 @@ export function hasAvatarOverride(avatar: unknown): boolean {
   return (
     ghostTraitsFrom(avatar) !== null ||
     imageAvatarFrom(avatar) !== null ||
-    packAvatarFrom(avatar) !== null
+    packAvatarFrom(avatar) !== null ||
+    iconAvatarFrom(avatar) !== null
   )
 }
 
@@ -307,6 +345,7 @@ export default function CrewAvatar({
   const traits = useMemo(() => ghostTraitsFrom(avatar), [avatar])
   const image = useMemo(() => imageAvatarFrom(avatar), [avatar])
   const pack = useMemo(() => packAvatarFrom(avatar), [avatar])
+  const icon = useMemo(() => iconAvatarFrom(avatar), [avatar])
   // An explicit `state` wins; a bare `working` is the older spelling of it.
   const shownState: AvatarFaceState = state ?? (working ? 'working' : 'idle')
   // The built-in pack IS the name-derived ghost, and its art ships in this
@@ -318,17 +357,18 @@ export default function CrewAvatar({
   // A reaction is the ghost's: `motionsFrom` is ghost-gated, and the tier guard
   // repeats that here so the DEFAULT motion cannot reach a served tier either —
   // the ghost drawn as a broken picture's fallback is a still face, not a crew
-  // reporting a turn it never ran. Sounds are the other half of the reaction
+  // reporting a turn it never ran. An icon is a static drawing like a picture,
+  // so it is excluded here too. Sounds are the other half of the reaction
   // layer and are deliberately NOT this component's business: they belong to
   // the state hook.
   const motions = useMemo(
-    () => (image || packId ? null : motionsFrom(avatar)),
-    [avatar, image, packId],
+    () => (image || packId || icon ? null : motionsFrom(avatar)),
+    [avatar, image, packId, icon],
   )
   // Memo-stable so it cannot churn the src memo below.
   const reaction = useMemo(
-    () => (image || packId ? null : motionFor(motions, shownState)),
-    [motions, shownState, image, packId],
+    () => (image || packId || icon ? null : motionFor(motions, shownState)),
+    [motions, shownState, image, packId, icon],
   )
   const intensity = shownState === 'working' ? (working ?? 'subtle') : undefined
   // An uploaded picture that fails to load (file deleted out-of-band, stale
@@ -385,6 +425,24 @@ export default function CrewAvatar({
       className={`shrink-0 rounded-md border border-border bg-bg-elevated ${className}`}
     />
   )
+
+  // The ICON tier: a shipped pose over a solid background, composed locally into
+  // a data URI exactly like a pinned-trait ghost — nothing is fetched, so there
+  // is no load-failure path and no fallback to latch. It wins over the served
+  // tiers because a record is only ever one kind; the readers are exclusive.
+  if (icon) {
+    return (
+      <img
+        src={poseDataUri(icon.pose, icon.bg)}
+        alt=""
+        aria-hidden="true"
+        width={size}
+        height={size}
+        style={{ width: size, height: size }}
+        className={`shrink-0 rounded-md border border-border bg-bg-elevated ${className}`}
+      />
+    )
+  }
 
   // The pack tier. NOT latched the way the picture tier is: `PackAvatar` owns
   // the read, and a read that failed (a gateway blip) is refetched on the next
