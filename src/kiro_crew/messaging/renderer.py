@@ -341,6 +341,32 @@ def new_approval_nonce() -> str:
     return secrets.token_urlsafe(8)
 
 
+def nonce_eq(minted: str, candidate: str) -> bool:
+    """Whether *candidate* is the *minted* nonce — total over every ``str``.
+
+    The press side of the mint: every channel resolves its widget press through
+    this one compare, just as every channel mints through
+    :func:`new_approval_nonce`. ``secrets.compare_digest`` raises ``TypeError``
+    when either side is a ``str`` holding a non-ASCII character, and *candidate*
+    arrives from a press payload the platform echoes back — so a bare str/str
+    compare turns the fail-closed refusal the callers document into an exception
+    that escapes before the caller's audit line runs.
+
+    Both sides go through the injective UTF-8 ``surrogatepass`` mapping instead,
+    which every plaintext platform payload survives (UTF-8 round-trips it) and a
+    lone surrogate that ``json.loads`` accepted survives as well: equal strings
+    keep matching, unequal strings keep refusing, and a malformed press answers
+    False — the same mismatch an ordinary wrong nonce gets — rather than raising.
+    Empty sides deny: an unarmed nonce must never match a press that carries none.
+    """
+    if not minted or not candidate:
+        return False
+    return secrets.compare_digest(
+        minted.encode("utf-8", "surrogatepass"),
+        candidate.encode("utf-8", "surrogatepass"),
+    )
+
+
 def _default_redactor(text: str) -> str:
     """The same pair ``TurnDriver`` streams provider text through.
 

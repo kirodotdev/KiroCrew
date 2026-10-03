@@ -31,11 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 from typing import Any, Awaitable, Callable
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging.approval import adoptable_reservation
+from kiro_crew.messaging.renderer import nonce_eq
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -235,9 +235,9 @@ class TeamsApprovalDecider:
         """
         rid = str(request_id)
         expected = self._nonces.get(rid)
-        # compare_digest, not ``!=``: a nonce is a secret the client echoes back, so
-        # the comparison is constant-time like every other secret comparison here.
-        if not expected or not nonce or not secrets.compare_digest(nonce, expected):
+        # Constant time via the shared nonce compare, not ``!=``: a nonce is a
+        # secret the client echoes back, so a mismatch is a security answer.
+        if not expected or not nonce or not nonce_eq(expected, nonce):
             sel().log_api_access(
                 caller=self.session_key or "unknown",
                 operation="teams_approval.resolve",

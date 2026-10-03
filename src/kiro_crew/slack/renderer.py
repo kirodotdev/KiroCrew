@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import secrets
 import time
 from typing import Any, Awaitable, Callable
 
@@ -58,6 +57,7 @@ from kiro_crew.messaging.renderer import (
     chunk_text,
     count_redaction_tags,
     new_approval_nonce,
+    nonce_eq,
     redaction_notice,
 )
 from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
@@ -516,7 +516,7 @@ class SlackApprovalDecider:
         expected = cls._NONCES.get(str(registry_key))
         if not expected or not nonce:
             return False
-        return secrets.compare_digest(nonce, expected)
+        return nonce_eq(expected, nonce)
 
     @classmethod
     def resolve_global(cls, registry_key: str | int, approved: bool, *, nonce: str = "") -> bool:

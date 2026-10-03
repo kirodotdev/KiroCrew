@@ -47,14 +47,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.renderer import new_approval_nonce
+from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -579,7 +578,7 @@ class PendingApprovals:
         key, fut = found
         if expected_nonce:
             minted = self._nonces.get(key, "")
-            if not minted or not secrets.compare_digest(expected_nonce, minted):
+            if not minted or not nonce_eq(minted, expected_nonce):
                 return False
         fut.set_result(bool(approved))
         return True
