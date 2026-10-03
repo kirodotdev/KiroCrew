@@ -2470,6 +2470,41 @@ def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
     return False
 
 
+def _reorder_queued_rows(messages: list[dict], order: list[str]) -> None:
+    """Re-seat the 'queued' placeholders so they follow *order* (queue ids).
+
+    The rows named in *order* come first in that order, then any other queued
+    rows in their existing order; every non-queued row keeps its place ahead of
+    them. Matched on the queue id in either twin spelling, as in
+    ``_remove_queued_by_id``: ``queueId`` in ``meta`` (the app twin, whose ``cls``
+    is plain CSS) or ``queue_id`` in a JSON ``cls`` (the cron twin). Shared by the
+    queue card's reorder route and ``session_queue``'s move, so the two cannot
+    disagree about where a moved entry's row lands.
+    """
+    queued_msgs = [m for m in messages if m.get("role") == "queued"]
+    other_msgs = [m for m in messages if m.get("role") != "queued"]
+    queued_by_id: dict[str, dict] = {}
+    for m in queued_msgs:
+        meta = m.get("meta")
+        # Only a string can be a queue id. A malformed restored value (a list,
+        # say) is skipped rather than raising mid-reorder, after the caller has
+        # already re-seated ``_queue``; that row then trails like any unmatched one.
+        if isinstance(meta, dict) and meta.get("queueId"):
+            if isinstance(meta["queueId"], str):
+                queued_by_id[meta["queueId"]] = m
+            continue
+        try:
+            cls = json.loads(m.get("cls", "{}"))
+            qid = cls.get("queue_id")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            continue
+        if isinstance(qid, str):
+            queued_by_id[qid] = m
+    reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
+    remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
+    messages[:] = other_msgs + reordered_msgs + remaining_msgs
+
+
 def _edit_queued_by_id(messages: list[dict], queue_id: str, content: str) -> bool:
     """Update the content of a 'queued' placeholder by queue_id stored in cls JSON."""
     for m in messages:

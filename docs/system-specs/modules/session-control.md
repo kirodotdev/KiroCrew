@@ -31,11 +31,23 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+| `session_queue` | `POST /api/session-control/queue` | List, cancel or move queue entries on a session the caller created; cancel and move reach only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
 
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
 the way the Stop button does, creating opens an empty session, and sending
-delivers a message that the target runs as its next turn. Delivery is the
+delivers a message that the target runs as its next turn. `session_queue` adds
+no new content to the target: its `cancel` and `move` arms remove or reorder an
+entry already in the target's queue, and the queued transcript row that mirrors
+it, and only for entries the caller itself queued. Each such change is published
+(the tab frame and the success reply) only after an awaited save confirms the
+queue on disk matches; a save that does not land rolls the change back and awaits
+the restored queue's save the same way, refusing `queue_not_durable` when it
+lands and `queue_state_unknown` when it does not. The listing that follows is built only after both
+gates run again and resolve the same slot (`target_changed` otherwise, including
+when the re-run gate itself refuses, since the change was already applied, and the
+change is audited `allowed` before that re-gate), because
+the save is the one suspension point between the gate and that listing. Delivery is the
 sharpest verb and is bounded accordingly: the body is redacted through
 `sanitize_outbound` before it is persisted, it is prefixed with a `[sent by
 session <caller> via <verb>]` envelope so the target's transcript can never
