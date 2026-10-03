@@ -423,6 +423,84 @@ authored spec whose display text passes `_DISPLAY_TEXT_WARN_BYTES` and the
 directory total past `_DISPLAY_TEXT_TOTAL_WARN_BYTES`. That text still reaches
 every reply from the authored copy, so the fix for it is at its source.
 
+The strict resolver (`NativeSkillProjection.agent`, used by `session/set_mode`)
+refuses any name it never projected, so an agent cannot switch to a mode outside
+the scope it launched under. Two seams around it must not open a hole. First, a
+spec that `list_agents` enumerated (its FILE exists) but `_read_agent_spec` could
+not read -- a hardlink/symlink the trusted-root gate refuses, a parse failure, an
+oversize file -- is RECORDED AS A REFUSAL (`errors`, under its name), never
+silently skipped: passing its name through would let kiro-cli activate the on-disk
+spec with none of the projection's hardening. `spawn_agent` keeps the soft no-view
+pass-through for a name with NO matching projected view, so an agent whose spec is
+not among the projected agents (a work_dir that simply carries no such file)
+spawns under its own authored name instead of failing to start, while a name whose
+spec the reader refused fails closed. (kiro-cli resolves `--agent` by the spec's
+declared `name`, not its filename stem -- verified empirically against the
+installed CLI: a spec whose filename stem differs from its declared name registers
+and resolves only under the declared name, and `--agent <stem>` does not resolve.
+So a stem is not a second backend-resolvable identity, and no stem map, stem
+refusal, or on-disk re-walk is needed to close a stem bypass that cannot occur.)
+Every identity the loop retains (name, refusal) goes through one shared population
+cap and name-length bound, so an operator- or package-writable agents directory
+cannot grow the maps without bound. When the cap IS reached at least one on-disk
+spec is dropped unrecorded, so the projection sets `identity_cap_reached` and
+`spawn_agent` then fails CLOSED on any unknown identity (refusing it rather than
+passing it through to a raw unprojected load) -- the cap can never become a
+fail-open bypass. The gate COUNTS the distinct identities the cap refused into a
+single integer and reports the overflow ONCE per preparation with that COUNT, not
+merely that the ceiling exists -- a bound that discards part of its input says how
+much it discarded. The count's own dedup set is itself bounded by the same cap:
+once that many distinct refusals are recorded the dedup stops and further refusals
+increment the counter directly, so the bookkeeping cannot grow with directory size
+(a 6k-identity directory would otherwise retain ~5k rejected names -- the unbounded
+growth the cap exists to prevent). The over-report that bound permits is in the
+safe direction for an advisory count. The latch is `dropped_count > 0`, so the
+counting and the fail-closed behaviour share one source of truth. The
+launch identity gets NO exemption from this: `prepare_native_skill_projection`
+takes no launch-identity argument, so `spawn_agent_name` (set by the direct client
+only AFTER the projection is built) is admitted on iteration order alone -- a
+past-cap launch name is exactly the dropped-unrecorded case, so exempting it would
+reopen the bypass for the one identity most likely to be spawned. Second, the launched agent's OWN
+activation must not be refused because the process is already running as it even
+with no prepared view -- but this is scoped to session START, not mid-session
+switches, and the two spawn paths handle it differently. The shared runtime hosts
+MANY sessions and allows activating `self._agent` at EVERY session-start bracket
+(`_activate_mode_bracketed`), keyed on `self._agent`; it does NOT set
+`spawn_agent_name`, because that field also makes `request()` -- the general
+outbound path a mid-session `set_mode` takes -- tolerate the launch agent
+indefinitely, which would reactivate a cached unprojected spec after its view
+vanished. The direct client is one process / one session: it sets
+`spawn_agent_name`, its `request()` tolerates the launched agent's FIRST
+`set_mode` and then clears it, so a later mid-session switch back to it takes the
+strict resolver again and fails closed. The general (mid-session) `set_mode` path
+stays strict for both. The create/load availability gate (`_verify_spawn_agent_active`,
+Guard A/A2) reads the RAW session reply, so the names it compares are the ones the
+process actually launched under: `--agent` was rewritten to `spawn_agent(self._agent)`,
+which is the view ALIAS for a projected agent, or the
+raw name for a launch agent with no prepared view. The gate therefore accepts the
+launch identity under ANY name the spawn/start path would have forwarded it as --
+the forwarded `spawn_agent` identity AND the raw launch name -- so a
+projected agent launched under its alias and a no-view launch agent launched under
+its own name both pass, independent of the direct-client switch exemption
+(`spawn_agent_name`, empty on the shared runtime). This narrows nothing: a genuine
+substitution (the backend ran its own default after refusing the spec) matches
+NEITHER candidate and still fails closed via `_mode_available` (a backend that
+advertises no `modes` list is no evidence of substitution and is admitted; an
+advertised list that omits the agent fails closed). Because the start reads the
+session reply's `availableModes` BEFORE it sends `set_mode`, `frame` keeps the
+launched agent's own mode in projected `availableModes` whenever
+`advertised_launch_name` is set -- otherwise it would advertise no mode the
+process could activate and fail the session open during initialization. That
+advertising field is set by BOTH spawn paths (direct client and shared runtime)
+and is kept DISTINCT from `spawn_agent_name`: advertising the launch mode at
+session open is safe for both runtimes (it only decides what the start can see),
+whereas `request()`'s mid-session tolerance stays direct-client-only and strict on
+the shared runtime. Unlike `spawn_agent_name`, `advertised_launch_name` is never
+consumed -- it describes a fixed launch fact -- and `recognise()` carries it onto a
+refreshed projection (frame runs on the current projection, which the shared runtime
+adopts mid-session), while still refusing to carry `spawn_agent_name`. A projection
+no spawn claimed sets neither field, so an unprojected agent stays hidden.
+
 Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec
 `.kirocrew-skill-projection-metadata` directory. Each sidecar records the alias's

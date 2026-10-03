@@ -7746,6 +7746,26 @@ class AcpClient:
             )
         return binary, [binary, *launch.acp_args], launch.spawn_label, launch.binary
 
+    def _resolve_spawn_agent_argv(self) -> str:
+        """The ``--agent`` value for the launch, converting a refusal to ``AcpError``.
+
+        ``spawn_agent`` resolves a projected name/stem but raises a bare
+        ``ValueError`` for an ``errors`` entry (an authored ``@kirocrew-core``
+        exclusion, or the "its spec could not be read" refusal row). Raised raw out
+        of ``_spawn`` that ``ValueError`` escapes ``ensure_ready``'s transport
+        ladder (``AcpToolGateUnroutable``, ``(AcpTimeoutError, AcpError, OSError)``)
+        uncaught, skipping ``_cleanup_failed_live_spawn``/``_reset_state`` and
+        losing the actionable sentence -- the exact class the sandbox-floor
+        boundary above documents as already fixed once. Convert it to ``AcpError``
+        so the refusal takes the same cleanup+requeue path, carrying its own
+        message.
+        """
+        assert self._native_skill_projection is not None
+        try:
+            return self._native_skill_projection.spawn_agent(self._agent)
+        except ValueError as exc:
+            raise AcpError(str(exc)) from exc
+
     async def _spawn(self) -> None:
         """Start the ACP backend subprocess with stdio pipes.
 
@@ -8356,12 +8376,23 @@ class AcpClient:
             self._native_skill_projection = await asyncio.to_thread(
                 prepare_native_skill_projection, self._work_dir, per_session_element=False
             )
+            if self._native_skill_projection is not None:
+                # The agent this process is launched as: its own FIRST ``set_mode``
+                # activation is tolerated even with no prepared view (see
+                # NativeSkillProjection.request), which consumes the exemption --
+                # so a later switch, including back to this same agent once its
+                # view has vanished, takes the strict resolver and fails closed.
+                self._native_skill_projection.spawn_agent_name = self._agent
+                # Advertised independently of the request() exemption above: the
+                # start must find the launch agent's mode in availableModes even
+                # with no prepared view (see NativeSkillProjection.frame).
+                self._native_skill_projection.advertised_launch_name = self._agent
             argv = [
                 kiro_bin,
                 KIRO_CLI_SUBCMD,
                 "--agent",
                 (
-                    self._native_skill_projection.agent(self._agent)
+                    self._resolve_spawn_agent_argv()
                     if self._native_skill_projection is not None
                     else self._agent
                 ),
@@ -9958,7 +9989,23 @@ class AcpClient:
         #    escalation. Self-heal (B, in _spawn) regenerates the managed default
         #    so the common case never reaches this branch.
         if self._is_kiro:
-            if not self._modes_advertised or self._agent in self._available_mode_ids:
+            # The advertised ids were rewritten to each agent's DECLARED name by
+            # the projection's reverse map (frame()), so a process launched under
+            # a filename STEM that differs from its spec's declared name would
+            # find its stem absent here and fail closed on an otherwise valid
+            # start. Compare the DECLARED name the projection publishes --
+            # resolving the stem through the SAME projection already on this
+            # client (no new start-path state) -- while still sending the launch
+            # identity as the modeId, which request() tolerates for the agent's
+            # own first activation. A stem with no projected view, or any
+            # non-kiro path, resolves to itself and the guard is unchanged.
+            projection = getattr(self, "_native_skill_projection", None)
+            advertised_name = (
+                projection.launch_identity_name(self._agent)
+                if projection is not None
+                else self._agent
+            )
+            if not self._modes_advertised or advertised_name in self._available_mode_ids:
                 await self._send_request(
                     METHOD_SET_MODE,
                     {"sessionId": self._session_id, "modeId": self._agent},

@@ -1354,6 +1354,10 @@ _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
         ("list_agents", "unknown"),
     ],
+    # The native-skill projection's positive-verification pass takes NO scope
+    # verdict of its own: it reuses the single decision ``list_agents`` already
+    # took (the project dirs it admitted), so there is no ``_project_scope_denied``
+    # call site here to pin.
 }
 
 
