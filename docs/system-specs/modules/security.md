@@ -456,7 +456,21 @@ a live application backend owned by this gateway; an unknown peer is refused.
 Linux namespace and macOS sandbox queries retained for that bootstrap are host
 authorization checks, not member-memory isolation. On Linux, a CLI peer in a
 different user or mount namespace is refused unless it is a live application
-backend tracked by this gateway. This intentional owner-token bootstrap restriction
+backend tracked by this gateway. A script cron child is such a peer, and so is
+the `kirocrew token` it shells out to: `run_script_sandboxed` launches every
+script cron through `wrap_argv`, so the child never shares the gateway's
+namespaces. That refusal is kept deliberately rather than given a cron-registry
+accept branch of the app-backend shape. A cron body is agent-writable, and an
+owner token reaches the keystone writes under `/api/security`, `disable_all`
+among them, so a live-cron exception would let an agent switch off its own
+denied-command rules from a cron. Script crons drive the dashboard with their
+own internal-secret credential instead: `ScriptContext.open_session` and its
+siblings in [learn-cron-dashboard](learn-cron-dashboard.md). That secret is not
+admitted to `/api/security` or `/api/governance`, and the internal branch sets no
+`user` claim, so the owner gates refuse it. Pinned by
+`test/test_script_cron_owner_bootstrap.py` and
+`test/integration/test_script_cron_sessions.py`. This intentional owner-token
+bootstrap restriction
 also applies to installations with no members. Container, Snap and Flatpak CLI login across
 namespaces is not claimed as verified.
 

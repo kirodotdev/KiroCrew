@@ -1069,11 +1069,18 @@ item. Three refusals had to move for that, and one deliberately did not:
   (`_caller_is_ownership_fenced` is the single predicate both admissions and the
   fence read, so they cannot drift). A cron reaches the sessions it created and
   nothing else, fail-closed on an unowned slot. `unattended_target` still stands,
-  so a cron cannot reach another job's tab.
+  so a cron cannot reach another job's tab. A slot a script cron opens through
+  the chat routes carries `_created_by` as well, set to its `cron:<job id>` key,
+  so that slot reads as the job's and never as the user's own tab, and the chat
+  routes apply the same fence: a `cron:` caller that names another creator's
+  slot, live or persisted, is refused with `not_creator`.
 - **The global switch still gates a cron.** Unlike a member, a cron gets no
   bypass: the switch is the user's statement that agents may open and drive
   sessions at all, and a job running while they are asleep is the last caller
-  that should be exempt from it.
+  that should be exempt from it. A script cron that presents its `cron:` key
+  meets the same refusal on the two chat routes it writes to. The
+  `agent.session_control` entry under Configuration states that rule and its
+  scope.
 
 **An APP-owned cron is refused, and ownership is read from the job.** This is the
 one place admitting a cron would otherwise open something. `_app` is how every
@@ -1638,6 +1645,38 @@ conductor is in the second class for `session_create` and `session_read_message`
 loop runs with nobody at the keyboard and must not block on an approval no one is
 there to give. An operator who wants folder tools without session control names the
 folder tools individually.
+
+The chat routes check the switch for a script cron as well. While it is off, the
+gateway refuses a caller that presents a `cron:` session key on
+`POST /api/chat/slots` and `POST /api/chat` with `session_control_disabled`. These
+are the two routes `ScriptContext.open_session` and
+`ScriptContext.send_to_session` call. The check is `_cron_session_control_refusal`
+in `private_chat_route_refusal`, the gate every internal chat-route call passes
+after the internal secret validates, and it answers with the same 403 body the
+session-control routes send. The same two routes apply this module's creator
+fence to a `cron:` caller: `cron_creator_refusal` in the chat handlers refuses a
+key whose slot was not created by that `cron:` key with 403 `not_creator`, the
+code `authorize_target` answers. A live slot is judged on its `_created_by`
+through `_created_by_other`. A key with no live slot is judged on the
+`created_by` its persisted metadata line records, so a cron cannot mint a
+closed session's key as its own, and a key with neither a slot nor a transcript
+is left to mint as the cron's own. `_cron_session_control_refusal` and
+`cron_creator_refusal` are mirrors of this module's cron gate, the switch gate
+and the `_created_by_other` fence, not a second rule: a change to how this
+module gates a cron must change those helpers with it. Both checks key on the
+key the caller presents, so they are a courtesy for `ScriptContext` callers and
+do not stop a holder of the internal secret. Owner and member callers are
+unaffected and keep their own gates. The folder routes are not gated, because
+folders are not session control.
+
+A slot a `cron:` caller opens on either route is labelled cron-created:
+`cron_slot_creator` reads the attested key off the scope the gate resolved, and
+the slot is minted with `origin` `CRON` and `_created_by` set to that
+`cron:<job id>` key. It is not counted as a user-created session, the
+`slots:user` scope does not expose it, and the owner sees it in the sidebar as
+any cron tab. The seeded first message is still queued as a user-role turn, a
+trade-off the PR that added these methods records. A slot that already exists
+under the name a cron sends is never re-labelled.
 
 `agent.member_dispatch` (bool, default **true**). The operator ceiling on the
 member switch bypass described under "Member callers". At its default a member DM

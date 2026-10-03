@@ -196,7 +196,12 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
-from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
+    cron_creator_refusal,
+    cron_slot_creator,
+    read_bounded_json,
+)
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.remote_adopt import (
     ADOPT_PEER_MODE_UNKNOWN,
@@ -634,6 +639,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # receives a plausible reply with none of the inherited transcript context.
     # Check immediately before creation, with no await between this lookup and
     # `get_or_create_slot`, so a same-loop removal cannot land in the gap.
+    # The cron attribution and its creator fence are resolved first, so their
+    # awaits stay outside it.
+    cron_creator = await cron_slot_creator(request)
+    if cron_creator:
+        fenced = await cron_creator_refusal(request, state, slot_name, cron_creator)
+        if fenced is not None:
+            return fenced
     relay_requested = request.query.get("relay") == "1"
     if relay_requested:
         relay_key = _normalize_slot_key(slot_name) if slot_name else ""
@@ -648,12 +660,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         slot = state.get_or_create_slot(
             slot_name,
             app=request.get("app", ""),
-            origin=request_slot_origin(request.get("app", "")),
+            origin=request_slot_origin(request.get("app", ""), cron_creator=cron_creator),
             mode=requested_mode,
             memory_mode=requested_memory_mode,
             # Human request-layer path: a person sending a chat message. The
-            # origin conjunct in state.py still excludes app-token callers.
-            count_user_session=True,
+            # origin conjunct in state.py still excludes app-token callers. A
+            # slot an attested cron opens is not a person's and is not counted.
+            count_user_session=not cron_creator,
         )
     except ValueError as exc:
         sel().log_api_access(
@@ -665,6 +678,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             error=str(exc),
         )
         return web.json_response({"error": str(exc)}, status=409)
+    if cron_creator and created_in_send:
+        # Attribute the slot to the cron that opened it, inside the synchronous
+        # window after the mint, as session_control.create_session does for an
+        # agent cron's child. Never re-stamped on an existing slot a cron names.
+        slot._created_by = cron_creator
 
     # App ownership check (App Kit §5.2): deny-by-default for app tokens.
     # Apps keep access to their own slots. The sessionApproval grant lets an
@@ -2152,6 +2170,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # resolution reads the local default it always did.
     slot_workspace = peer_meta.get("workspace") or workspace
 
+    # Resolved before the mint decision below: nothing may await between that
+    # read and `get_or_create_slot`, and these are the two awaits this path adds.
+    cron_creator = await cron_slot_creator(request)
+    if cron_creator and name:
+        fenced = await cron_creator_refusal(request, state, str(name), cron_creator)
+        if fenced is not None:
+            return fenced
+
     # Whether this request will MINT a genuinely new slot, decided before
     # get_or_create_slot runs. `name` can address an already-open slot (the
     # handler is also the rehydrate/reopen path), which returns unchanged — and
@@ -2217,13 +2243,19 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 memory_mode=memory_mode,
                 ephemeral=body.get("ephemeral"),
                 app=request.get("app", ""),
-                origin=request_slot_origin(request.get("app", "")),
+                origin=request_slot_origin(request.get("app", ""), cron_creator=cron_creator),
                 # Human request-layer path: the dashboard new-chat tab. The
                 # origin conjunct in state.py still excludes app-token callers.
-                count_user_session=True,
+                # A slot an attested cron opens is not a person's and is not
+                # counted.
+                count_user_session=not cron_creator,
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=409)
+        if cron_creator and is_new_slot:
+            # Same attribution as the send auto-create: a cron-opened slot
+            # carries its creator and never reads as a person's own tab.
+            slot._created_by = cron_creator
         if is_new_slot and cfg is not None and not instance_id:
             if is_owner_dashboard_request(request):
                 # Take the slot lock before the newborn's first await: a later

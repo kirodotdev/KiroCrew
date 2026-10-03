@@ -2520,7 +2520,7 @@ class SlotOrigin:
     SYSTEM = "system"  # gateway-internal (startup, migration, etc.)
 
 
-def request_slot_origin(app: str) -> str:
+def request_slot_origin(app: str, *, cron_creator: str = "") -> str:
     """Origin for a slot created while serving an HTTP request.
 
     The request layer is the only place that knows whether an app token was
@@ -2532,7 +2532,15 @@ def request_slot_origin(app: str) -> str:
     they have no request and would mislabel their slot as a person's, which is
     exactly what `slots:user` grants an app access to. They declare their own
     origin, or leave it untagged.
+
+    ``cron_creator`` is the attested ``cron:<job id>`` key of the caller when
+    the request carried one (``handlers._shared.cron_slot_creator``), and it
+    wins: a slot a cron opens is CRON, never USER, for the same reason the
+    background callers above declare it, so ``slots:user`` never exposes a
+    cron's work. It is empty for a person and for an app token.
     """
+    if cron_creator:
+        return SlotOrigin.CRON
     return SlotOrigin.APP if app else SlotOrigin.USER
 
 

@@ -35,7 +35,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
+from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState, _normalize_slot_key
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     MEMBER_CHAT_PRINCIPAL_KEY,
@@ -991,8 +991,159 @@ async def internal_memory_scope(
     )
 
 
+#: The two chat routes a script cron opens and seeds sessions on. Session control
+#: is what ``agent.session_control`` switches off, and these are its writes.
+_CRON_SESSION_CONTROL_PATHS = frozenset(
+    {"/api/chat", "/api/chat/", "/api/chat/slots", "/api/chat/slots/"}
+)
+
+
+async def _cron_session_control_refusal(request: web.Request) -> web.Response | None:
+    """Refuse a cron's session-control write while ``agent.session_control`` is off.
+
+    This sits in :func:`private_chat_route_refusal` because that is the one gate
+    every internal chat-route call passes after the internal secret validates.
+    Only a ``cron:`` key is checked, because the switch gates a cron caller the
+    same way the session-control routes do. Owner and member callers keep their
+    own gates. Only the two routes a script cron writes to are checked. The
+    folder routes are not session control.
+    """
+    if request.method != "POST" or request.path not in _CRON_SESSION_CONTROL_PATHS:
+        return None
+    if not request.headers.get("X-Session-Key", "").startswith("cron:"):
+        return None
+    from kiro_crew.dashboard.session_control import session_control_enabled
+
+    # The config read can touch the disk, so it runs off the loop.
+    if await asyncio.to_thread(session_control_enabled):
+        return None
+    message = "session control is disabled in config (agent.session_control)"
+
+    def _write() -> None:
+        from kiro_crew.sel import sel as _sel
+
+        _sel().log_api_access(
+            caller="internal",
+            operation="chat.control",
+            outcome="denied",
+            source="session_control",
+            resources=request.path,
+            error="session_control_disabled",
+        )
+
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.debug("SEL audit for a switched-off cron chat call failed", exc_info=True)
+    return web.json_response({"error": message, "code": "session_control_disabled"}, status=403)
+
+
+async def cron_slot_creator(request: web.Request) -> str:
+    """The attested ``cron:<job id>`` key of the caller, or ``""`` for anyone else.
+
+    The two slot-creating chat routes stamp a slot a cron opens with it: origin
+    CRON and ``_created_by`` set, so the slot is neither counted nor exposed as a
+    person's own tab. Read from the scope the chat-route gate already resolved
+    for this request, so only a key the transport attests is given a cron's
+    attribution; a caller that merely asserts the header gets none.
+    """
+    if request.get("internal_auth") is not True:
+        return ""
+    scope = await member_request_scope(request)
+    session = scope.session or ""
+    if not scope.verified or not session.startswith("cron:"):
+        return ""
+    return session
+
+
+async def cron_creator_refusal(
+    request: web.Request, state: Any, slot_name: str | None, cron_creator: str
+) -> web.Response | None:
+    """The creator fence for a ``cron:`` caller on the two chat routes, or ``None``.
+
+    A script cron opens a slot with ``POST /api/chat/slots`` and seeds it with
+    ``POST /api/chat``. Both routes mint a fresh slot under any key that is not
+    live, and both act on whatever live slot a key names. This mirrors
+    session-control's ``_created_by_other`` fence, so a cron reaches only slots
+    it created: a live slot is judged on its ``_created_by``, and a key with no
+    live slot is judged on the ``created_by`` its persisted metadata line
+    records. Reading that line is what keeps a cron from minting a closed
+    session's key as its own. A key with no live slot and no transcript is left
+    to mint, as it is for any caller, and the new slot carries the cron as its
+    creator. A transcript that cannot be read refuses. Like the switch check,
+    this keys on the session key the caller presents.
+
+    The persisted read runs off the loop. The live slot is judged again after
+    that read, so a slot opened while it ran is judged as live. The caller
+    therefore makes its mint decision with no await after this returns.
+    """
+    if not cron_creator or not slot_name:
+        return None
+    key = _normalize_slot_key(str(slot_name))
+    if not key:
+        return None
+    from kiro_crew.dashboard.session_control import _created_by_other
+
+    slot = state._slots.get(key)
+    if slot is None:
+        log = getattr(state, "conversation_log", None)
+        if log is None:
+            return None
+        from kiro_crew.dashboard.chat_utils import slot_transcript_key
+
+        history_key = slot_transcript_key(key)
+
+        def _persisted_creator() -> str | None:
+            if not log.has_log(history_key):
+                return None
+            meta = log.get_metadata(history_key)
+            return str(meta.get("created_by") or "")
+
+        try:
+            persisted = await asyncio.to_thread(_persisted_creator)
+        except Exception:
+            logger.debug("persisted creator of slot %s unreadable", key, exc_info=True)
+            refused = True
+        else:
+            refused = persisted is not None and _created_by_other(
+                SimpleNamespace(_created_by=persisted), cron_creator
+            )
+        slot = state._slots.get(key)
+        if slot is None and not refused:
+            return None
+    if slot is not None and not _created_by_other(slot, cron_creator):
+        return None
+
+    def _write() -> None:
+        from kiro_crew.sel import sel as _sel
+
+        _sel().log_api_access(
+            caller="internal",
+            operation="chat.control",
+            outcome="denied",
+            source="session_control",
+            resources=f"{request.path} slot={key}",
+            error="not_creator",
+        )
+
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.debug("SEL audit for a cron chat call on another's slot failed", exc_info=True)
+    return web.json_response(
+        {
+            "error": "a scheduled run can only control sessions it created itself",
+            "code": "not_creator",
+        },
+        status=403,
+    )
+
+
 async def private_chat_route_refusal(request: web.Request) -> web.Response | None:
     """Keep member tools within their admitted chat controls."""
+    switched_off = await _cron_session_control_refusal(request)
+    if switched_off is not None:
+        return switched_off
     scope, refusal = await internal_memory_scope(request, "chat.control")
     if refusal is not None:
         # Let the ordinary internal-auth middleware produce its established
