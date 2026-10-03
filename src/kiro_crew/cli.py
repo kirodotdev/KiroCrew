@@ -28,6 +28,7 @@ _ensure_ssl_certs()
 import argparse
 import asyncio
 import atexit
+import errno
 import faulthandler
 import importlib
 import importlib.machinery
@@ -935,6 +936,12 @@ def _redirect_fds_to(path: Path, fds: tuple[int, ...] = (1, 2)) -> None:
         os.close(raw_fd)
 
 
+# errnos that will not clear by retrying: the log file cannot be reopened.
+_LOG_FATAL_ERRNOS = frozenset({errno.ENOSYS, errno.EPERM, errno.EACCES, errno.EROFS})
+# Consecutive OSErrors (any errno) after which file logging stops anyway.
+_LOG_ERROR_STREAK_LIMIT = 3
+
+
 class _FdTrackingRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler that re-points raw fds 1/2 after each rollover.
 
@@ -946,7 +953,50 @@ class _FdTrackingRotatingFileHandler(RotatingFileHandler):
     stderr disappears from every retained log. Re-pointing the fds at the
     freshly created ``gateway.log`` inside ``doRollover`` keeps raw-write
     capture continuous across the file's whole retention lifecycle.
+
+    If the reopen inside a rollover fails, the fds stay on the RENAMED file
+    and the stdlib ``handleError`` would print a traceback there for every
+    later record, escaping the size cap. So an OSError streak prints only its
+    first traceback, and while no file is open a non-retryable errno (or a
+    long streak) stops file logging: emit becomes a no-op and fds 1/2 move to
+    ``os.devnull``.
     """
+
+    _error_streak = 0
+    _stopped = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._stopped:
+            return
+        streak = self._error_streak
+        super().emit(record)
+        if self._error_streak == streak:
+            self._error_streak = 0  # this record was written: streak over
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        exc = sys.exc_info()[1]
+        if not isinstance(exc, OSError):
+            super().handleError(record)
+            return
+        self._error_streak += 1
+        if self._error_streak == 1:
+            super().handleError(record)  # one traceback per streak, not per record
+        # Stop only when no file is open (a rollover could not reopen it): a
+        # write error on the live, still-rotated file may clear by itself.
+        if self.stream is None and (
+            exc.errno in _LOG_FATAL_ERRNOS or self._error_streak >= _LOG_ERROR_STREAK_LIMIT
+        ):
+            self._stop_file_logging(exc)
+
+    def _stop_file_logging(self, exc: OSError) -> None:
+        self._stopped = True
+        line = f"file logging to {self.baseFilename} stopped ({exc!r}); records are dropped\n"
+        try:
+            sys.stderr.write(line)  # same stream the stdlib traceback went to
+            sys.stderr.flush()
+        except (AttributeError, OSError, ValueError):  # None, broken or closed
+            pass  # nowhere left to report to; the devnull re-point still matters
+        _redirect_fds_to(Path(os.devnull))
 
     def doRollover(self) -> None:
         super().doRollover()

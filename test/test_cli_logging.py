@@ -19,8 +19,11 @@ Covers:
 """
 
 import ast
+import errno
+import io
 import logging
 import os
+import sys
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -234,6 +237,151 @@ class TestFdTrackingRotatingFileHandler:
         # file); the invariant is: every rollover re-pointed at the base file.
         assert calls
         assert all(c == Path(handler.baseFilename) for c in calls)
+
+
+def _big_record(msg: str = "x" * 100) -> logging.LogRecord:
+    return logging.LogRecord("t", logging.WARNING, __file__, 1, msg, None, None)
+
+
+class TestRolloverFailureStopsFileLogging:
+    """When the reopen inside a rollover fails, fds 1/2 stay on the RENAMED
+    file. A traceback per record there escapes the 2 MB cap and fills the
+    disk, so an OSError streak prints one traceback and, for a non-retryable
+    errno or a long streak, file logging stops."""
+
+    @pytest.fixture
+    def redirects(self, monkeypatch):
+        # Record fd re-points instead of performing them: a real dup2 onto
+        # fd 2 would swallow pytest's own output.
+        calls: list[Path] = []
+        monkeypatch.setattr(
+            cli_mod, "_redirect_fds_to", lambda path, fds=(1, 2): calls.append(Path(path))
+        )
+        return calls
+
+    @staticmethod
+    def _deny_reopen(handler, monkeypatch, err: int) -> None:
+        def _open():
+            raise OSError(err, os.strerror(err), handler.baseFilename)
+
+        monkeypatch.setattr(handler, "_open", _open)
+
+    def test_eacces_on_reopen_stops_file_logging(self, tmp_path, monkeypatch, redirects):
+        err = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", err)
+        handler = _FdTrackingRotatingFileHandler(
+            tmp_path / "gateway.log", maxBytes=64, backupCount=2, encoding="utf-8"
+        )
+        handler.emit(_big_record())  # fills past maxBytes: the next emit rolls
+        self._deny_reopen(handler, monkeypatch, errno.EACCES)
+        for _ in range(20):
+            handler.emit(_big_record())
+        handler.close()
+        out = err.getvalue()
+        assert out.count("--- Logging error ---") == 1
+        assert len([ln for ln in out.splitlines() if "file logging to" in ln]) == 1
+        assert redirects == [Path(os.devnull)]
+
+    def test_retryable_errno_stops_at_streak_limit(self, tmp_path, monkeypatch, redirects):
+        err = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", err)
+        handler = _FdTrackingRotatingFileHandler(
+            tmp_path / "gateway.log", maxBytes=64, backupCount=2, encoding="utf-8"
+        )
+        handler.emit(_big_record())
+        self._deny_reopen(handler, monkeypatch, errno.ENOSPC)
+        for _ in range(20):
+            handler.emit(_big_record())
+        handler.close()
+        out = err.getvalue()
+        assert out.count("--- Logging error ---") == 1
+        assert len([ln for ln in out.splitlines() if "file logging to" in ln]) == 1
+        assert redirects == [Path(os.devnull)]
+
+    def test_transient_error_below_limit_keeps_logging(self, tmp_path, monkeypatch, redirects):
+        err = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", err)
+        log = tmp_path / "gateway.log"
+        handler = _FdTrackingRotatingFileHandler(log, maxBytes=0, backupCount=2, encoding="utf-8")
+        failing = {"on": False}
+        real = handler.shouldRollover
+
+        def _maybe_fail(record):
+            if failing["on"]:
+                raise OSError(errno.ENOENT, "transient", handler.baseFilename)
+            return real(record)
+
+        monkeypatch.setattr(handler, "shouldRollover", _maybe_fail)
+        # Two bursts of two failures each: four in all, past the limit of 3
+        # unless the success between the bursts resets the streak.
+        for burst in range(2):
+            failing["on"] = True
+            for _ in range(2):
+                handler.emit(_big_record("fail"))
+            failing["on"] = False
+            handler.emit(_big_record(f"ok-{burst}"))
+        handler.close()
+        text = log.read_text(encoding="utf-8")
+        assert "ok-0" in text and "ok-1" in text
+        assert err.getvalue().count("--- Logging error ---") == 2  # one per streak
+        assert redirects == []
+
+    def test_write_error_on_open_file_never_stops(self, tmp_path, monkeypatch, redirects):
+        # A disk-full write to the live, still-rotated file may clear by
+        # itself: suppress the repeat tracebacks but keep the handler alive.
+        err = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", err)
+        log = tmp_path / "gateway.log"
+        handler = _FdTrackingRotatingFileHandler(log, maxBytes=0, backupCount=2, encoding="utf-8")
+        real = handler.stream
+        failing = {"on": True}
+
+        class _FullDisk:
+            def write(self, text):
+                if failing["on"]:
+                    raise OSError(errno.ENOSPC, "full", handler.baseFilename)
+                return real.write(text)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        handler.stream = _FullDisk()
+        for _ in range(10):
+            handler.emit(_big_record("fail"))
+        failing["on"] = False
+        handler.emit(_big_record("back"))
+        handler.close()
+        assert "back" in log.read_text(encoding="utf-8")
+        assert err.getvalue().count("--- Logging error ---") == 1
+        assert redirects == []
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows cannot rename a file another handle holds open, so "
+        "stderr cannot follow the renamed inode there.",
+    )
+    def test_renamed_backup_does_not_grow_after_failure(self, tmp_path, monkeypatch, redirects):
+        log = tmp_path / "gateway.log"
+        handler = _FdTrackingRotatingFileHandler(log, maxBytes=64, backupCount=2, encoding="utf-8")
+        # Stands in for fd 2 after the detached redirect: it follows the inode
+        # through the rename, exactly as raw stderr does.
+        stderr_file = open(log, "a", encoding="utf-8")
+        try:
+            monkeypatch.setattr(sys, "stderr", stderr_file)
+            handler.emit(_big_record())
+            self._deny_reopen(handler, monkeypatch, errno.EACCES)
+            handler.emit(_big_record())  # renames gateway.log -> .1, reopen fails
+            stderr_file.flush()
+            backup = tmp_path / "gateway.log.1"
+            size_after_failure = backup.stat().st_size
+            for _ in range(50):
+                handler.emit(_big_record())
+            stderr_file.flush()
+            assert backup.stat().st_size == size_after_failure
+        finally:
+            monkeypatch.undo()
+            stderr_file.close()
+            handler.close()
 
 
 class TestSetupCliLoggingDetached:
