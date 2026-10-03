@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
     WAIT_REASON_INPUT,
     RefusalInfo,
     StructuredStatus,
+    TurnUsage,
     classify_stop_reason,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
@@ -433,10 +434,12 @@ from kiro_crew.hooks import (  # noqa: F401
 )
 from kiro_crew.image_artifacts import register_images_off_loop
 from kiro_crew.llm_helpers import (  # noqa: F401
+    _NO_PRIOR_STATS,
     TRANSIENT_RETRIES,
     TURN_FALLBACK_ATTR,
     FallbackState,
     PromptBusyExhaustedError,
+    _billing_stats,
     acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
@@ -448,6 +451,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     provider_active_model,
     provider_advertised_ids,
     provider_fallback_active,
+    provider_last_turn_usage,
     provider_raw_model,
     record_interaction_event,
     resolve_substitute_set_model,
@@ -7269,6 +7273,110 @@ _TODO_BLOCK_READ_EVENT_KINDS = frozenset(
 )
 
 
+class _AbnormalTurnEvent:
+    """Minimal ``event`` carrier for the abnormal-end usage row.
+
+    ``_build_token_record`` reads a turn's billing off ``event.usage`` and its
+    terminal reason off ``event.stop_reason`` -- the same two attributes an
+    ``AcpEvent`` exposes at ``EVENT_COMPLETE``. A turn that ends through
+    ``_persist_partial_reply`` never produced that event, so this wraps the
+    recovered :class:`TurnUsage` and the turn's stop reason in the shape the
+    record builder already reads, and nothing more.
+    """
+
+    __slots__ = ("usage", "stop_reason")
+
+    def __init__(self, usage: TurnUsage, stop_reason: str) -> None:
+        self.usage = usage
+        self.stop_reason = stop_reason
+
+
+async def _persist_abnormal_turn_usage(
+    slot: "_ChatSlot",
+    client: object,
+    session_key: str,
+    *,
+    elapsed_ms: int,
+    stop_reason: str,
+    since: object = _NO_PRIOR_STATS,
+) -> bool:
+    """Write the usage row for a turn ending without ``EVENT_COMPLETE``.
+
+    The dashboard's one ``persist_token_record_async`` call sits in the
+    ``EVENT_COMPLETE`` branch, so every turn that ends through
+    ``_persist_partial_reply`` instead -- the turn ceiling, the Stop button, a
+    signed-out CLI mid-turn, and the other recovery paths that share that seam
+    -- records no credits however much it billed. This is the accounting half of
+    that gap: it recovers the turn's billing from the still live provider
+    (``provider_last_turn_usage`` reads the credits kiro-cli accumulated on
+    ``last_prompt_stats``) and writes the same row the complete path writes,
+    keyed and attributed the same way. This seam persists the row ONLY -- it
+    emits no histogram sample. The row's persist opts out of the metric
+    (``emit_metric=False``) because the persist would key the sample on
+    ``slot.key``, filing a linked-channel abnormal turn under ``dashboard``
+    instead of its channel surface; abnormal-turn sampling is out of this
+    change's scope, so the sample is simply not emitted rather than re-keyed.
+
+    ``client`` is the OUTER provider wrapper (``providers/acp`` /
+    ``acp/session_provider``): attribution reads -- ``provider_seam``,
+    ``read_context_tokens``, the effective agent -- live there, so the inner
+    ``AcpClient`` would label every row ``provider="acp"`` with a ``(0, 0)``
+    context window. The caller passes the inner handle only to decide liveness,
+    and runs this before the ``finally`` drops ``slot._acp_client`` -- the one
+    point the credits are still reachable.
+
+    ``since`` is the per-turn stats object snapshotted BEFORE the turn's
+    cancellable work: a dispatch that dies before the runtime installs fresh
+    stats (a busy session, a dead runtime, an expired credential) leaves the
+    PREVIOUS turn's object in place, still carrying credits already recorded, and
+    ``provider_last_turn_usage``'s identity check against ``since`` reports
+    nothing rather than billing that earlier turn a second time.
+
+    Gated by ``usage_has_billing`` for the same reason the ``EVENT_COMPLETE``
+    call is: a turn that billed nothing writes no row. Returns ``True`` once the
+    row has been written, so the caller marks the turn recorded and this stays
+    once-per-turn across the seam's callers. Never raises -- these are
+    best-effort analytics, as the complete path's own persist is.
+    """
+    try:
+        usage = provider_last_turn_usage(client, since=since)
+        if not usage_has_billing(usage):
+            return False
+        _provider_name = capabilities_of(client).provider_seam
+        _record_model = read_turn_model(client) or slot.model
+        _ctx_used, _ctx_window = read_context_tokens(client)
+        await persist_token_record_async(
+            slot.key,
+            _record_model,
+            _AbnormalTurnEvent(usage, stop_reason),
+            provider=_provider_name,
+            surface=telemetry_channel_of(session_key),
+            agent=read_effective_agent(client) or slot.agent or "",
+            context_used=_ctx_used,
+            context_window=_ctx_window,
+            app=getattr(slot, "_app", "") or "",
+            elapsed_ms=elapsed_ms,
+            model_source=client,
+            # Abnormal-turn histogram sampling is out of this change's scope
+            # (the usage ROW is the deliverable); opt the row's persist out of
+            # the metric so it does not file a sample under slot.key, which for a
+            # linked-channel turn would mis-attribute to session_source=dashboard.
+            emit_metric=False,
+        )
+        return True
+    except asyncio.CancelledError:
+        # This runs inside the turn's CancelledError teardown, so its own
+        # analytics I/O can be cancelled in turn. Swallow it: the row and sample
+        # are best-effort, and re-raising here would escape _run_chat's recovery
+        # handler and strand the durable completion the finally block still owes
+        # (test_raw_complete_survives_cancellation_during_token_persistence).
+        logger.debug("Abnormal-turn usage write cancelled for slot %s", slot.key)
+        return False
+    except Exception:
+        logger.debug("Failed to persist abnormal-turn usage for slot %s", slot.key, exc_info=True)
+        return False
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -7362,6 +7470,33 @@ async def _run_chat(
     _current_message: dict | None = None,
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
+
+    # Written true the first time this turn's usage row lands, whether at
+    # EVENT_COMPLETE or at the abnormal-end seam (_persist_partial_reply), so the
+    # two paths cannot both bill one turn and the seam's several callers write it
+    # once. Hoisted here so the seam closure's ``nonlocal`` binds to this scope.
+    _turn_usage_persisted = False
+
+    # The abnormal-end seam (_persist_partial_reply, run from the CancelledError /
+    # AcpAuthRequired / AcpProcessDied / AcpError recovery arms) reads these four
+    # when it builds the usage row. A cancellation BETWEEN the client's
+    # publication (``slot._acp_client = ...``) and these variables' own, later
+    # assignment -- a slot close or runtime disconnect during pre-prompt memory
+    # and hook work -- unwinds into those arms with the names still unbound, so
+    # the seam's keyword list would raise NameError OUT of the recovery handler
+    # and strand the error card / session reset it owes. Initialised here, where
+    # the body's single entry cannot miss them, and overwritten with their real
+    # values further down; the seam then always reads a bound name.
+    _turn_t0 = time.monotonic()
+    _stop_reason = ""
+    slot_ctx_blocks: dict[str, int] = {}
+    slot_ctx_phase = ""
+    # The per-turn billing stats observed BEFORE this turn's cancellable work, so
+    # the abnormal seam can tell a turn that installed fresh stats from one that
+    # died before doing so and still carries the PREVIOUS turn's object. Snapshot
+    # once the client is published; the sentinel means "nothing to compare" for a
+    # death before even that point. See _persist_abnormal_turn_usage(since=).
+    _turn_stats0: object = _NO_PRIOR_STATS
 
     # A decision outcome still pending when a turn STARTS belongs to a turn that
     # has already finished, and one whose own turn produced no assistant row has
@@ -7778,7 +7913,7 @@ async def _run_chat(
     # viewer only -- see ``security.redaction_switch``).
     _wsred = StreamRedactor()
 
-    def _persist_partial_reply() -> None:
+    async def _persist_partial_reply(reason: str = "") -> None:
         """Persist the partial reply of a turn that is ending abnormally.
 
         ONE helper for every recovery path, so the log copy cannot be forgotten by
@@ -7793,33 +7928,107 @@ async def _run_chat(
         continuing. What they share with it is the obligation to record the body.
         ``interrupted`` is what makes the entry honest -- this text is what the
         turn had produced when it died, not a reply it finished.
+
+        The usage row is the same obligation at the same seam: a turn ending here
+        reached neither ``EVENT_COMPLETE`` (the dashboard's one
+        ``persist_token_record_async`` call) nor its ``_attach_turn_stats``, so
+        its credits go unrecorded however much it billed. It is written whether or
+        not the turn produced partial text -- a turn cut after 91 tool calls bills
+        credits with no final assistant segment -- so it sits outside the
+        ``assistant_text`` guard, and the client is still live here because the
+        ``finally`` that drops ``slot._acp_client`` runs only after this returns.
+        The text is saved BEFORE the usage write: the text save is synchronous
+        but the usage write awaits a cancellable provider call, and a shutdown
+        that interrupts that await must not also drop the body the user watched
+        stream. The row is the recoverable loss (a continuation re-reads provider
+        stats; the streamed text does not re-materialise), so it goes last.
+
+        Every recovery seam records the row, including the post-token transient
+        seam: a transient attempt's spend lives only in the live session's
+        ``last_prompt_stats``, which the next prompt ``carry_over()``-zeroes, so
+        no continuation can carry it forward and the seam is the only place that
+        can bill it. The once-per-turn ``_turn_usage_persisted`` guard keeps a
+        second seam on the same turn from double-billing, and the recovery
+        continuation is a separate turn with its own fresh stats and guard.
         """
-        if not assistant_text:
+        # Save the interrupted text FIRST, then write the usage row. The text
+        # save is synchronous (append + crew-log emit); the usage write awaits a
+        # provider call that can be cancelled by a shutdown mid-await. Doing the
+        # text save first means a shutdown that interrupts the usage write cannot
+        # also drop the body the user watched stream. The usage row is the
+        # recoverable loss (a continuation re-reads provider stats; the text does
+        # not re-materialise), so it goes last.
+        if assistant_text:
+            # Same glued-marker repair as _flush_segment: the interrupted body is
+            # the same accumulated text, and it is rendered by the same grammar.
+            body = _reflow_label_and_audit(slot, assistant_text)
+            slot.purge_chunks()
+            # Records come out of the same pass for the reason _redact_segment
+            # gives: after this line only the placeholder exists, so an
+            # interrupted reply would otherwise lose what it explains for good.
+            _redacted, _blocked, _redactions = _redact_segment(slot, body)
+            _note_reply_row(
+                slot,
+                slot.append(
+                    "assistant",
+                    _redacted,
+                    "msg msg-a",
+                    meta=_segment_row_meta(slot, _blocked, _redactions),
+                ),
+            )
+            crew_log_emit.on_message_sent(
+                _crew_log_sid,
+                _crew_log_turn_no,
+                step=_crew_log_step,
+                text=_redacted,
+                interrupted=True,
+            )
+        # The usage row is written whether or not the turn produced partial text
+        # -- a turn cut after many tool calls bills credits with no final
+        # assistant segment -- so it sits outside the ``assistant_text`` guard.
+        await _record_abnormal_turn_usage(reason)
+
+    async def _record_abnormal_turn_usage(reason: str) -> None:
+        """Write this turn's usage row once when it ends without EVENT_COMPLETE.
+
+        Idempotent across the seam's callers via ``_turn_usage_persisted``: more
+        than one recovery handler can fire in a turn's teardown, and the row must
+        be written once. ``reason`` is the recovery arm's own classification --
+        an ``error:``-shaped reason for a process-died / auth-required / terminal
+        AcpError end, and ``cancelled`` only for a genuine Stop press -- so
+        ``turn_outcome`` sorts dying runtimes into the fault bucket and keeps
+        ``cancelled`` reserved for the one end the operator causes deliberately.
+        An involuntary cancel that is not a Stop (tab close, idle-slot sweep,
+        shutdown, or the turn ceiling) is labelled the neutral
+        ``error: cancelled`` by its arm: telling the ceiling apart from the other
+        involuntary cancels is a separate concern no row consumer here needs, so
+        there is deliberately no distinct ``timeout:`` ceiling label. A caller
+        that cannot name a cause (the plain CancelledError arm reached without a
+        Stop press) falls back to the turn's own provider stop reason, then
+        ``cancelled``.
+
+        The usage row is attributed from the OUTER provider wrapper (``client``),
+        not the inner ``AcpClient`` handle: ``provider_seam`` and the
+        context-window read live on the wrapper, so the inner handle alone would
+        stamp every row ``provider="acp"`` with a ``(0, 0)`` window. The inner
+        handle (``slot._acp_client``) is read only to gate on liveness -- it is
+        the ref the ``finally`` drops, so a non-None read means the credits are
+        still reachable.
+        """
+        nonlocal _turn_usage_persisted
+        if _turn_usage_persisted:
             return
-        # Same glued-marker repair as _flush_segment: the interrupted body is the
-        # same accumulated text, and it is rendered by the same grammar.
-        body = _reflow_label_and_audit(slot, assistant_text)
-        slot.purge_chunks()
-        # Records come out of the same pass for the reason _redact_segment gives:
-        # after this line only the placeholder exists, so an interrupted reply
-        # would otherwise lose what it explains for good.
-        _redacted, _blocked, _redactions = _redact_segment(slot, body)
-        _note_reply_row(
+        if slot._acp_client is None:
+            return
+        if await _persist_abnormal_turn_usage(
             slot,
-            slot.append(
-                "assistant",
-                _redacted,
-                "msg msg-a",
-                meta=_segment_row_meta(slot, _blocked, _redactions),
-            ),
-        )
-        crew_log_emit.on_message_sent(
-            _crew_log_sid,
-            _crew_log_turn_no,
-            step=_crew_log_step,
-            text=_redacted,
-            interrupted=True,
-        )
+            client,
+            session_key,
+            elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+            stop_reason=reason or _stop_reason or STOP_REASON_CANCELLED,
+            since=_turn_stats0,
+        ):
+            _turn_usage_persisted = True
 
     def _flush_text_stream() -> None:
         """Emit the redactor's withheld tail as a final chat_chunk before a
@@ -9377,6 +9586,13 @@ async def _run_chat(
         # (the dashboard steer handler) can reach the running session's client
         # to inject a mid-turn steer. Cleared in the finally below.
         slot._acp_client = getattr(client, "client", None)
+        # Billing stats as they stand BEFORE this turn's prompt is sent. The
+        # runtime installs a fresh per-turn stats object only inside the dispatch
+        # below; a turn that dies before that (expired credential, broken pipe)
+        # still carries the PREVIOUS turn's object, whose credits were already
+        # recorded. The abnormal seam compares identity against this snapshot and
+        # bills nothing when they match, rather than double-billing that turn.
+        _turn_stats0 = _billing_stats(client)
         # Append-only the session's log (flag-gated, fail-soft). The id is read
         # once here and reused at every emit site below, so a turn that never
         # got a session id emits nothing rather than guessing one. ``owner`` is
@@ -9711,7 +9927,8 @@ async def _run_chat(
 
         # Per-turn injection breakdown, recorded on the usage row at turn end.
         # Empty when this turn injected nothing (no context builder / raw path).
-        slot_ctx_blocks: dict[str, int] = {}
+        # Annotated at the hoisted init above; a plain reassignment here.
+        slot_ctx_blocks = {}
         slot_ctx_phase = ""
         # Chars this turn prepends between the request header and the user's
         # text; set in the context_builder branch, 0 elsewhere.
@@ -14185,7 +14402,65 @@ async def _run_chat(
                 # (timeout, tool-stall, cancel-unacked) can carry cost or cache
                 # tokens with zero fresh tokens and zero credits, and the
                 # footer above already reads _u.cost_usd for the same event.
+                #
+                # ── Turn-completion histogram (OTel M2) ──
+                # kirocrew.turn.duration → turn latency p50/p90 + fault rate.
+                # Emitted HERE, BEFORE the cancellable persist await below, and
+                # UNCONDITIONALLY (outside the usage_has_billing gate), for three
+                # reasons the gated persist cannot serve:
+                #
+                #   1. The persist await is offloaded to a thread and can be
+                #      cancelled mid-turn. Emitting after it means a cancellation
+                #      landing on that await unwinds past this call into the
+                #      abnormal-end seam, which — seeing the row already claimed —
+                #      records nothing, so the turn's ONLY kirocrew.turn.* sample
+                #      is lost. Emitting first makes the sample survive a
+                #      cancelled persist (GPT/Opus terminal-metric finding).
+                #   2. The persist sits behind usage_has_billing. A turn that
+                #      timed out having billed nothing writes no row, and letting
+                #      the row's absence swallow the sample would drop exactly the
+                #      faults fault_rate exists to count, so this emit is
+                #      unconditional.
+                #   3. session_key is the EFFECTIVE session, which for a linked
+                #      channel conversation is its channel key, while the row
+                #      stays keyed by slot.key for title and navigation joins.
+                #      Attributing the sample to the slot would file every linked
+                #      Slack or Telegram turn under `dashboard`.
+                # `_record_model` here is pre-backfill, but the emit prefers
+                # `_turn_model` (the served id) and the backfill only fills a
+                # blank model for a CC row, so the sample's attribution is
+                # unaffected.
+                _emit_turn_metric(
+                    event.usage.duration_ms,
+                    event.stop_reason,
+                    session_key,
+                    elapsed_ms=_turn_elapsed_ms,
+                    exhausted=_turn_exhausted,
+                    # The same usage object the persist call below is given, so
+                    # the row store and the instruments describe one turn's
+                    # NUMBERS identically.
+                    usage=event.usage,
+                    model=_turn_model or _record_model,
+                    provider=_provider_name,
+                )
                 if usage_has_billing(_u):
+                    # Claim the turn's single usage row BEFORE the persist await
+                    # below, then SHIELD the write so a turn cancellation cannot
+                    # drop it. persist_token_record_async offloads the append via
+                    # asyncio.to_thread, and a cancel delivered BEFORE the executor
+                    # thread picks up the write cancels that future so the append
+                    # never lands -- while the claim above already told the
+                    # abnormal-end seam the row was written, so the seam writes
+                    # nothing and the row is lost (GPT 6.1 F1). asyncio.shield runs
+                    # the write as its own task the turn's cancel cannot reach, so
+                    # the append completes; the CancelledError still propagates
+                    # afterwards. The claim-before-await also keeps the double-bill
+                    # guard: were the claim set only after the await, that
+                    # cancellation would unwind into the abnormal-end seam with the
+                    # guard still False and the seam would re-read live stats and
+                    # bill the turn a second time. Claimed here, the seam sees it
+                    # recorded and writes nothing (GPT/Opus double-bill finding).
+                    _turn_usage_persisted = True
                     # Late backfill: CC reports model only via the `init`
                     # system event which arrives after the run starts, so
                     # slot.model may still be empty here even though the
@@ -14215,55 +14490,42 @@ async def _run_chat(
                         if _canonical:
                             slot.model = _canonical
                             _record_model = _canonical
-                    await persist_token_record_async(
-                        slot.key,
-                        _record_model,
-                        event,
-                        provider=_provider_name,
-                        # The row stays keyed by its dashboard slot for title and
-                        # navigation joins; source follows the session the turn
-                        # actually ran on, including linked channel sessions.
-                        surface=telemetry_channel_of(session_key),
-                        # Resolved agent, not the slot alias: resolve_agent_bindings
-                        # maps e.g. "default" to "kirocrew" before dispatch, so the
-                        # alias would credit an agent that never ran.
-                        agent=read_effective_agent(client) or slot.agent or "",
-                        context_used=_ctx_used,
-                        context_window=_ctx_window,
-                        # Ownership is recorded at write time (see
-                        # _build_token_record): the row must outlive the slot
-                        # without becoming readable by whoever recreates its name.
-                        app=getattr(slot, "_app", "") or "",
-                        # Same wall clock the turn-duration histogram below is
-                        # given, so the row store and the histogram can never
-                        # disagree about one turn. acp reports 0 here.
-                        elapsed_ms=_turn_elapsed_ms,
-                        model_source=client,
-                        # This surface emits its own sample below, OUTSIDE the
-                        # usage_has_billing gate this call sits behind — which is
-                        # also where its exhausted-aware outcome reaches the
-                        # histogram.
-                        emit_metric=False,
+                    await asyncio.shield(
+                        persist_token_record_async(
+                            slot.key,
+                            _record_model,
+                            event,
+                            provider=_provider_name,
+                            # The row stays keyed by its dashboard slot for title
+                            # and navigation joins; source follows the session the
+                            # turn actually ran on, including linked channel
+                            # sessions.
+                            surface=telemetry_channel_of(session_key),
+                            # Resolved agent, not the slot alias:
+                            # resolve_agent_bindings maps e.g. "default" to
+                            # "kirocrew" before dispatch, so the alias would credit
+                            # an agent that never ran.
+                            agent=read_effective_agent(client) or slot.agent or "",
+                            context_used=_ctx_used,
+                            context_window=_ctx_window,
+                            # Ownership is recorded at write time (see
+                            # _build_token_record): the row must outlive the slot
+                            # without becoming readable by whoever recreates its
+                            # name.
+                            app=getattr(slot, "_app", "") or "",
+                            # Same wall clock the turn-duration histogram below is
+                            # given, so the row store and the histogram can never
+                            # disagree about one turn. acp reports 0 here.
+                            elapsed_ms=_turn_elapsed_ms,
+                            model_source=client,
+                            # The turn's sample is emitted ABOVE, before this
+                            # cancellable persist and outside the usage_has_billing
+                            # gate, where its exhausted-aware outcome and the
+                            # effective session key reach the histogram; this call
+                            # must not also sample, so it opts out.
+                            emit_metric=False,
+                        )
                     )
-                # ── Turn-completion histogram (OTel M2) ──
-                # kirocrew.turn.duration → turn latency p50/p90 + fault rate.
-                # Every OTHER dispatch surface gets its sample from
-                # persist_token_record_async, the one call they all make once per
-                # turn, which is what keeps the metric from reading as
-                # dashboard-only. This surface emits HERE instead, for two
-                # reasons its persist call cannot serve:
-                #
-                #   1. That call sits behind ``usage_has_billing``. A turn that
-                #      timed out having billed nothing writes no row, and letting
-                #      the row's absence swallow the sample would drop exactly
-                #      the faults fault_rate exists to count, so this emit is
-                #      unconditional.
-                #   2. ``session_key`` is the EFFECTIVE session, which for a
-                #      linked channel conversation is its channel key, while the
-                #      row stays keyed by ``slot.key`` for title and navigation
-                #      joins. Attributing the sample to the slot would file every
-                #      linked Slack or Telegram turn under ``dashboard`` — the
-                #      same blind spot in a new place.
                 # The turn's crew log closers are STASHED, not emitted here. This
                 # point is inside the stream loop, and the turn's LAST assistant
                 # message is flushed after the loop breaks -- so emitting now puts
@@ -14290,27 +14552,6 @@ async def _run_chat(
                     "context_used": _ctx_used,
                     "context_window": _ctx_window,
                 }
-                _emit_turn_metric(
-                    event.usage.duration_ms,
-                    event.stop_reason,
-                    session_key,
-                    elapsed_ms=_turn_elapsed_ms,
-                    exhausted=_turn_exhausted,
-                    # The same usage object the persist call above is given, so
-                    # the row store and the instruments describe one turn's
-                    # NUMBERS identically.
-                    usage=event.usage,
-                    # Attribution: `_turn_model` is the id the backend actually
-                    # served (read_turn_model), so a turn a fallback model served
-                    # is attributed to the model that ran rather than dropped
-                    # from the split. `_record_model` is the fallback for a
-                    # backend whose wrapper chain reported no id — which for a
-                    # fallback-served turn is the live served model read off the
-                    # provider directly, so the row and this sample name the same
-                    # model rather than diverging.
-                    model=_turn_model or _record_model,
-                    provider=_provider_name,
-                )
                 if "timeout" in (event.stop_reason or ""):
                     # Hang-resilience series: attribute the CAUSE of a turn
                     # timeout (the 2h-ceiling hang class). Both attrs are
@@ -16163,7 +16404,19 @@ async def _run_chat(
                 await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
         _crew_log_error = "CancelledError"
-        _persist_partial_reply()
+        # A bare CancelledError here is either the operator's Stop press — the
+        # one cancel they cause deliberately, labelled the non-fault
+        # ``cancelled`` — or an involuntary cancel (tab close, idle-slot sweep,
+        # shutdown, or the turn ceiling, which `_bounded_turn` converts to a
+        # TimeoutError one frame up). The involuntary cases share a neutral
+        # ``error: cancelled``: recording the credits is this change's goal,
+        # and telling the ceiling apart from the other involuntary
+        # cancels is a separate concern no row consumer here needs.
+        if _stop_pressed():
+            _cancel_reason = STOP_REASON_CANCELLED
+        else:
+            _cancel_reason = "error: cancelled"
+        await _persist_partial_reply(_cancel_reason)
     except AcpAuthRequired as exc:
         # The signed-out CLI is discovered HERE, not by a probe: this is the
         # authoritative logout signal now that readiness is latched at boot.
@@ -16191,7 +16444,7 @@ async def _run_chat(
         )
         _auth_required = True
         needs_session_reset = True
-        _persist_partial_reply()
+        await _persist_partial_reply("error: auth required")
         _auth_msg = str(exc)
         # Stamped with a kind (live broadcast `kind`, rebuilt transcript
         # `meta.kind`) so the frontend can offer the fix -- a deep link to the
@@ -16213,7 +16466,7 @@ async def _run_chat(
             # Every steer written into this turn sits in the same stalled pipe as
             # its prompt, so the teardown requeues each as possibly delivered.
             slot._steer_possibly_delivered.update(slot._pending_steers)
-        _persist_partial_reply()
+        await _persist_partial_reply("error: process died")
         # WHOSE failure was this? A process this slot was sharing -- with a
         # sub-agent of its own, or with a co-tenant session -- died for reasons
         # this slot has no account of, and charging it to this slot's recovery
@@ -16289,7 +16542,7 @@ async def _run_chat(
         # re-queue only when retry-eligible; see per-branch handling below).
         logger.info("Prompt busy exhausted in slot %s — resetting session", slot.key)
         needs_session_reset = True  # checked in finally block
-        _persist_partial_reply()
+        await _persist_partial_reply("error: prompt busy exhausted")
         slot._prompt_busy_retries += 1
         await _requeue_after_prompt_busy(
             slot,
@@ -16341,7 +16594,7 @@ async def _run_chat(
             # the generic else: no reset (the next turn hits the dead process)
             # and the failure never counting toward the exhaustion threshold.
             needs_session_reset = True  # checked in finally block
-            _persist_partial_reply()
+            await _persist_partial_reply("error: process died")
             # Option Y: pipe-death ("process exited"/"not running") shares the
             # _acp_pipe_death_retries counter with the AcpProcessDied handler;
             # genuine "already in progress" busy uses _prompt_busy_retries.
@@ -16451,7 +16704,7 @@ async def _run_chat(
                 slot.key,
             )
             needs_session_reset = True  # checked in finally block
-            _persist_partial_reply()
+            await _persist_partial_reply("error: session not found")
             # A Stop that already resolved to idle is invisible to the suppress
             # check; the replay snapshots below are post-Stop, so only this gate
             # can see it.
@@ -16516,7 +16769,7 @@ async def _run_chat(
             # replay would re-inline the same bytes, so it must fall through to
             # the terminal error whose formatted text already says to remove or
             # re-encode the attachment.
-            _persist_partial_reply()
+            await _persist_partial_reply("error: terminal")
             slot._prestream_exhausted_cycles = 0
             slot._poisoned_reset_used = True
             needs_conversation_discard = True
@@ -16841,7 +17094,22 @@ async def _run_chat(
             # Persist the streamed partial as a real assistant message (copy of
             # the terminal else: persist pattern): redact, strip the live chunk
             # messages, then append the finalized assistant bubble.
-            _persist_partial_reply()
+            #
+            # BILLING: record this attempt's spend HERE, at the seam, BEFORE the
+            # recovery helper runs its backoff + requeue. A post-token transient
+            # means the attempt already streamed credits that the live session's
+            # `last_prompt_stats` still holds right now, but will NOT survive
+            # forward: the next prompt on the live session runs `carry_over()`,
+            # which zeroes the credit/token counters (only context state survives
+            # — AcpPromptStats.carry_over), so NO continuation's EVENT_COMPLETE
+            # can ever recover this attempt's billing. Recording at the seam is
+            # safe from double-counting: the recovery continuation is a SEPARATE
+            # `_run_chat` turn with its own fresh (zeroed-then-refilled) stats
+            # object and its own `_turn_usage_persisted` guard, so it bills only
+            # its own spend. This is true for BOTH the ordinary successful requeue
+            # and the drop-after-backoff arm inside the helper — neither can carry
+            # this attempt's credits, so the seam is the only place that bills them.
+            await _persist_partial_reply("error: transient attempt")
             await _recover_posttoken_transient(
                 slot,
                 _msg,
@@ -17171,7 +17439,7 @@ async def _run_chat(
                                 # by kind would destroy co-queued unrelated recoveries.
                                 slot._model_access_recovery_queue_id = _ma_replay_qid or ""
         else:
-            _persist_partial_reply()
+            await _persist_partial_reply("error: terminal")
             # ── Poisoned-conversation escalation ────────────────────────────
             # A transient-classified error that reaches this terminal branch
             # with ZERO output means a full retry ladder was exhausted

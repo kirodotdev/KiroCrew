@@ -879,7 +879,6 @@ test/test_thread_parent_context.py
 test/test_toolbox_migration.py
 test/test_trusted_apps_api.py
 test/test_turn_duration_hooks.py
-test/test_turn_duration_recorded.py
 test/test_turn_duration_slack.py
 test/test_turn_duration_task_runner.py
 test/test_turn_duration_workflow.py
