@@ -23,6 +23,7 @@ import sys
 import types
 import urllib.error
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -143,6 +144,21 @@ class TestTokenRefusal:
     """A gateway that ANSWERS with an error is not a gateway that could not be
     reached: the operator needs the reason the gateway gave, not a network hint."""
 
+    @pytest.fixture(autouse=True)
+    def _route_secret_transport(self, monkeypatch):
+        # These tests stub loopback_urlopen to simulate the verified gateway's
+        # HTTP response. Route the owner-verified secret transport through that
+        # stub so they drive the real send path without standing up a unix
+        # socket + SO_PEERCRED peer. The transport's own proof is covered by
+        # TestOwnerVerifiedSecretTransport.
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": cli_server.loopback_urlopen(
+                req, timeout=timeout
+            ),
+        )
+
     def test_403_prints_the_gateway_reason(self, monkeypatch, capsys) -> None:
         import io
         import json
@@ -160,6 +176,8 @@ class TestTokenRefusal:
 
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
         monkeypatch.setattr(cli_server, "loopback_urlopen", refused)
         with pytest.raises(SystemExit) as exc:
@@ -175,6 +193,8 @@ class TestTokenRefusal:
 
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
         monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
         with pytest.raises(SystemExit) as exc:
@@ -188,16 +208,563 @@ class TestTokenRefusal:
 # --------------------------------------------------------------------------
 
 
-class TestLogout:
-    """Every failure mode exits non-zero with an operator-facing reason."""
+class TestPortOwnershipGuard:
+    """token and logout verify the gateway owns 127.0.0.1:<port> before reading
+    or sending the local secret, in the strongest form each platform can bear.
+    On POSIX the proof is pid/uid ownership and fails CLOSED -- an unverifiable
+    port refuses rather than sending the owner-minting secret to an unverified
+    listener. Off POSIX the proof drops only the uid step and keeps the rest: it
+    requires the pid the gateway recorded for this port to be the SOLE LIVE
+    127.0.0.1 loopback owner (netstat -ano -- an overlap-bind that adds any other
+    pid refuses) with a matching start token, AND the live pid's
+    OWN access-token owner SID to equal this account's. That owner-SID check is
+    an independent OS read a co-resident user cannot forge by writing the
+    (world-writable) run record -- their listener process is owned by them -- so
+    a forged record pointing at an attacker's listener refuses. It fails CLOSED
+    on no record, token mismatch, not-the-live-owner, a foreign owner SID, or an
+    unresolvable owner SID. A genuine same-user gateway (recorded pid IS the live
+    loopback owner, owned by this account) still signs in. The owner-minting
+    secret is sent only on confirmed LIVE, same-account ownership. Both the deny
+    and the allow decision emit a SEL audit event (denied / allowed), like the
+    neighboring _stop / _restart gateway decisions.
+    This pre-flight is early defense in depth, not the sole gate: when the POSIX
+    lookup tool (lsof) is genuinely absent it does NOT hard-fail (that would
+    remove sign-in from a supported tool-less config) -- it proceeds and defers
+    to the authoritative connection-bound proof in _owner_verified_secret_urlopen
+    (unix SO_PEERCRED needs no lsof; the TCP fallback degrades exactly there). A
+    tool pinned OUTSIDE the trusted dirs is still refused (operator-fixable).
+    stop's authenticated-shutdown fallback deliberately does NOT gate here: the
+    argv-declined arm already carries a positive proof and the empty-lookup arm
+    is an intentionally unverified fallback. The proof primitive is the one the
+    update-revalidate poke uses."""
+
+    @pytest.fixture(autouse=True)
+    def _route_secret_transport(self, monkeypatch):
+        # Refusal tests exit in _gateway_ownership_refusal before any send; the
+        # proceed tests reach the send. Route the owner-verified secret transport
+        # through each test's loopback_urlopen stub so the proceed path works
+        # without a real unix socket. The transport's own connection-bound proof
+        # is covered by TestOwnerVerifiedSecretTransport.
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": cli_server.loopback_urlopen(
+                req, timeout=timeout
+            ),
+        )
+
+    def _explode_if_consulted(self, _port):  # pragma: no cover - must never run
+        raise AssertionError("ownership proof consulted where it cannot succeed")
+
+    def test_token_refuses_and_never_reads_the_secret_when_unverified(
+        self, monkeypatch, capsys
+    ) -> None:
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [])
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        # The secret is never read and no request is sent when ownership fails.
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().err
+
+    def test_logout_refuses_and_never_reads_the_secret_when_unverified(
+        self, monkeypatch, capsys
+    ) -> None:
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [])
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().out
+
+    def test_refuses_when_the_tool_is_pinned_outside_the_trusted_dirs(
+        self, monkeypatch, capsys
+    ) -> None:
+        # A tool installed OUTSIDE the dirs Kiro Crew resolves it from is an
+        # operator-fixable misconfiguration, so the pre-flight still refuses and
+        # names the path -- the secret is not read.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: False)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(
+            platform_compat, "tool_outside_trusted_dirs", lambda _t: "/opt/brew/bin/lsof"
+        )
+        read = MagicMock(return_value="s3cr3t")
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [])
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", MagicMock())
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        read.assert_not_called()
+        out = capsys.readouterr().out
+        assert "/opt/brew/bin/lsof" in out
+
+    def test_preflight_defers_to_the_transport_when_the_tool_is_genuinely_absent(
+        self, monkeypatch, capsys
+    ) -> None:
+        # The pre-flight is early defense in depth, not the authoritative gate.
+        # When lsof is genuinely absent (not merely pinned elsewhere) it does NOT
+        # hard-fail -- it proceeds and defers to the connection-bound proof in
+        # _owner_verified_secret_urlopen (routed here through loopback_urlopen).
+        # That transport is where the authoritative decision lives: on Linux it
+        # MATCHes via /proc + uid and signs in; on a host that genuinely cannot
+        # resolve the peer it fails closed (UNAVAILABLE, covered by
+        # TestOwnerVerifiedSecretTransport). This test pins only that the
+        # pre-flight itself keeps sign-in available on a tool-less host.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: False)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(platform_compat, "tool_outside_trusted_dirs", lambda _t: None)
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock(return_value=_Resp(b'{"ok": true}'))
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [])
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        cli_server._logout(5476)  # must NOT raise -- pre-flight proceeds
+        read.assert_called()  # the secret is read and the send is attempted
+        opened.assert_called()
+        assert "revoked" in capsys.readouterr().out.lower()
+
+    def test_token_proceeds_on_non_posix_when_recorded_pid_is_the_same_user_live_owner(
+        self, monkeypatch, capsys
+    ) -> None:
+        # Off POSIX the proof keeps every step but uid: the recorded pid is the
+        # LIVE 127.0.0.1 loopback owner (netstat), its start token matches, AND
+        # the pid's process is owned by this account (an independent OS check the
+        # record cannot forge). The gate proceeds and the POSIX pid/uid proof is
+        # never consulted. read_local_secret returns "" here, so token reports the
+        # gateway down -- proving the gate did NOT refuse.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: ["listener"])
+        monkeypatch.setattr(platform_compat, "loopback_owner_pids", lambda _l: [4242])
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-me")
+        read = MagicMock(return_value="")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        read.assert_called_once()
+        opened.assert_not_called()
+        assert "not verified" not in capsys.readouterr().err
+
+    def test_token_refuses_on_non_posix_when_another_listener_also_holds_the_port(
+        self, monkeypatch, capsys
+    ) -> None:
+        # GPT's overlap-bind: a co-resident process also binds 127.0.0.1:<port>,
+        # so the live loopback-owner set has MORE than our recorded pid. Even
+        # though the token matches and our pid is IN the set, a loopback connect
+        # could land on the co-resident listener -- so the gate requires the
+        # recorded pid to be the SOLE owner and refuses here, never reading the
+        # secret.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: ["a", "b"])
+        # Our pid is in the set, but it is NOT the sole owner.
+        monkeypatch.setattr(platform_compat, "loopback_owner_pids", lambda _l: [4242, 9999])
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-me")
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().err
+
+    def test_token_refuses_on_non_posix_when_a_different_pid_now_holds_the_port(
+        self, monkeypatch, capsys
+    ) -> None:
+        # A stale secret record does not vouch for live ownership: the recorded
+        # pid + token match, but netstat reports a DIFFERENT pid now holding the
+        # v4 loopback port, so the recorded pid is not the live owner. The gate
+        # refuses and never reads the secret -- closing the "record presence is
+        # not live ownership" bypass.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: ["listener"])
+        # netstat reports a DIFFERENT pid now holding the v4 loopback port.
+        monkeypatch.setattr(platform_compat, "loopback_owner_pids", lambda _l: [9999])
+        # Same-user SIDs so the SOLE failing condition is live-ownership.
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-me")
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().err
+
+    def test_logout_refuses_on_non_posix_when_no_ownership_record_exists(
+        self, monkeypatch, capsys
+    ) -> None:
+        # No recorded gateway pid for the port (or an unreadable record): there
+        # is nothing to prove live ownership against, so the gate refuses and
+        # never reads the secret -- closing GPT's non-POSIX bypass.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: None)
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().out
+
+    def test_token_refuses_on_non_posix_when_start_token_mismatches(
+        self, monkeypatch, capsys
+    ) -> None:
+        # The recorded pid is the live loopback owner, but its start token no
+        # longer matches -- a crashed gateway's pid recycled onto an unrelated
+        # process. The claim cannot be inherited, so the gate refuses.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "old"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "new")
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: ["listener"])
+        monkeypatch.setattr(platform_compat, "loopback_owner_pids", lambda _l: [4242])
+        # Same-user SIDs so the SOLE failing condition is the start-token mismatch.
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-me")
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().err
+
+    def test_token_refuses_on_non_posix_when_live_owner_is_a_different_user(
+        self, monkeypatch, capsys
+    ) -> None:
+        # GPT's forged-record attack: off POSIX the run record is writable by
+        # co-resident users, so an attacker writes its OWN listener's pid+token
+        # into the record. The token matches and that pid IS the live
+        # 127.0.0.1 loopback owner -- but the pid's process is owned by the
+        # ATTACKER, not this account. The independent OS owner-SID check (which a
+        # record write cannot forge) refuses, so the owner-minting secret is never
+        # sent to the attacker's listener.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: ["listener"])
+        monkeypatch.setattr(platform_compat, "loopback_owner_pids", lambda _l: [4242])
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        # The live pid's process is owned by a DIFFERENT user (the attacker).
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-attacker")
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().err
+
+    def test_token_refuses_on_non_posix_when_owner_sid_is_unresolvable(
+        self, monkeypatch, capsys
+    ) -> None:
+        # The owner-SID check fails closed when the live pid's owner cannot be
+        # resolved (process_owner_sid returns None) even though token + live
+        # ownership hold -- an unverifiable owner is not a matching owner.
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: ["listener"])
+        monkeypatch.setattr(platform_compat, "loopback_owner_pids", lambda _l: [4242])
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: None)
+        read = MagicMock(return_value="s3cr3t")
+        opened = MagicMock()
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", opened)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        read.assert_not_called()
+        opened.assert_not_called()
+        assert "not verified" in capsys.readouterr().err
+
+    def test_token_refusal_emits_a_denied_sel_audit_event(
+        self, monkeypatch, capsys, sel_rec
+    ) -> None:
+        # Opus: the deny-by-default owner-minting-credential gate must leave an
+        # audit record, like its neighbors (_stop, _restart). An unverified
+        # POSIX port refuses and emits a `denied` gateway_token event.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [])
+        monkeypatch.setattr(cli_server, "read_local_secret", MagicMock(return_value="s3cr3t"))
+        monkeypatch.setattr(cli_server, "loopback_urlopen", MagicMock())
+        with pytest.raises(SystemExit):
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        denied = [c for c in sel_rec.calls if c.get("outcome") == "denied"]
+        assert denied and denied[-1]["operation"] == "gateway_token"
+        assert "gateway_ownership_unverified" in denied[-1]["resources"]
+
+    def test_logout_refusal_emits_a_denied_sel_audit_event(
+        self, monkeypatch, capsys, sel_rec
+    ) -> None:
+        # The _logout refusal arm carries the same audit as _token.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [])
+        monkeypatch.setattr(cli_server, "read_local_secret", MagicMock(return_value="s3cr3t"))
+        monkeypatch.setattr(cli_server, "loopback_urlopen", MagicMock())
+        with pytest.raises(SystemExit):
+            cli_server._logout(5476)
+        denied = [c for c in sel_rec.calls if c.get("outcome") == "denied"]
+        assert denied and denied[-1]["operation"] == "gateway_logout"
+        assert "gateway_ownership_unverified" in denied[-1]["resources"]
+
+    def test_token_allow_path_emits_an_allowed_sel_audit_event(
+        self, monkeypatch, capsys, sel_rec
+    ) -> None:
+        # The allow path audits consistently with the denial: a verified gateway
+        # emits an `allowed` gateway_token event before the secret is read.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "read_local_secret", MagicMock(return_value="s3cr3t"))
+        monkeypatch.setattr(
+            cli_server, "loopback_urlopen", lambda *a, **k: _Resp(b'{"token": "tok"}')
+        )
+        monkeypatch.setattr(
+            cli_server,
+            "KiroCrewConfig",
+            MagicMock(
+                load=lambda: MagicMock(
+                    dashboard=MagicMock(url="", tailscale=MagicMock(enabled=False))
+                )
+            ),
+        )
+        monkeypatch.setattr(cli_server, "dashboard_origin", lambda _u: "")
+        monkeypatch.setattr(
+            cli_server, "resolve_dashboard_host", lambda local_only=True: "h.invalid"
+        )
+        monkeypatch.setattr(cli_server, "_probe_dashboard_health", lambda _p: None)
+        cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        allowed = [c for c in sel_rec.calls if c.get("outcome") == "allowed"]
+        assert allowed and allowed[-1]["operation"] == "gateway_token"
+        assert "gateway_ownership_verified" in allowed[-1]["resources"]
+
+    def test_preflight_deferral_audits_as_deferred_not_verified(
+        self, monkeypatch, capsys, sel_rec
+    ) -> None:
+        # Audit integrity: when the pre-flight cannot verify (lsof absent, not
+        # pinned-elsewhere) it defers to the connection-bound proof and proceeds
+        # WITHOUT a verification. The allow event must name what it actually
+        # measured -- `deferred` -- not falsely claim `verified`.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: False)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(platform_compat, "tool_outside_trusted_dirs", lambda _t: None)
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", MagicMock(return_value="s3cr3t"))
+        # Short-circuit the send so only the pre-flight audit matters here.
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda *a, **k: _Resp(b'{"token": "tok"}'),
+        )
+        monkeypatch.setattr(
+            cli_server,
+            "KiroCrewConfig",
+            MagicMock(
+                load=lambda: MagicMock(
+                    dashboard=MagicMock(url="", tailscale=MagicMock(enabled=False))
+                )
+            ),
+        )
+        monkeypatch.setattr(cli_server, "dashboard_origin", lambda _u: "")
+        monkeypatch.setattr(
+            cli_server, "resolve_dashboard_host", lambda local_only=True: "h.invalid"
+        )
+        monkeypatch.setattr(cli_server, "_probe_dashboard_health", lambda _p: None)
+        cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        allowed = [c for c in sel_rec.calls if c.get("outcome") == "allowed"]
+        assert allowed and allowed[-1]["operation"] == "gateway_token"
+        assert "gateway_ownership_deferred" in allowed[-1]["resources"]
+        assert "gateway_ownership_verified" not in allowed[-1]["resources"]
+
+    def test_token_proceeds_when_the_gateway_is_verified(self, monkeypatch, capsys) -> None:
+        # The positive path: a verified POSIX gateway reaches the secret and
+        # mints the token.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        read = MagicMock(return_value="s3cr3t")
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(
+            cli_server, "loopback_urlopen", lambda *a, **k: _Resp(b'{"token": "tok"}')
+        )
+        monkeypatch.setattr(
+            cli_server,
+            "KiroCrewConfig",
+            # tailscale.enabled=False keeps _emit_session_urls out of the tailnet
+            # branch, which would otherwise shell out to the host `tailscale`
+            # binary on a machine that has one -- a real subprocess side effect.
+            MagicMock(
+                load=lambda: MagicMock(
+                    dashboard=MagicMock(url="", tailscale=MagicMock(enabled=False))
+                )
+            ),
+        )
+        monkeypatch.setattr(cli_server, "dashboard_origin", lambda _u: "")
+        monkeypatch.setattr(
+            cli_server, "resolve_dashboard_host", lambda local_only=True: "h.invalid"
+        )
+        monkeypatch.setattr(cli_server, "_probe_dashboard_health", lambda _p: None)
+        cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        read.assert_called_once()
+        assert "token=tok" in capsys.readouterr().out
+
+    def test_logout_proceeds_when_the_gateway_is_verified(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        read = MagicMock(return_value="s3cr3t")
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: _Resp(b'{"ok": true}'))
+        cli_server._logout(5476)
+        read.assert_called_once()
+        assert "revoked" in capsys.readouterr().out
+
+    def test_logout_peer_refused_does_not_report_gateway_down(self, monkeypatch, capsys) -> None:
+        # Issue 2: a live gateway whose connection-bound ownership proof refused
+        # must NOT be mislabelled "Gateway not running". _GatewayPeerRefused is
+        # NOT an OSError, so it escapes do_open's OSError->URLError wrap and
+        # reaches the dedicated handler instead of the (URLError, OSError) arm.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+
+        def _refuse(*_a, **_k):
+            raise cli_server._GatewayPeerRefused("peer not proven")
+
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", _refuse)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "ownership not verified" in out
+        assert "Gateway not running" not in out
+
+    def test_shutdown_never_consults_ownership_and_reaches_the_secret(self, monkeypatch) -> None:
+        # The authenticated-shutdown fallback does NOT apply the ownership gate:
+        # the argv-declined arm already proved identity and the empty-lookup arm
+        # is an intentionally unverified fallback. Ownership must never be
+        # consulted on this path, on any platform.
+        read = MagicMock(return_value="s3cr3t")
+        resp = MagicMock(status=200)
+        resp.read.return_value = b'{"ok": true, "shutting_down": true}'
+        ctx = MagicMock()
+        ctx.__enter__.return_value = resp
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(
+            cli_server, "_verified_loopback_gateway_pids", self._explode_if_consulted
+        )
+        monkeypatch.setattr(cli_server, "read_local_secret", read)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: ctx)
+        assert cli_server._request_gateway_shutdown(5476) is True
+        read.assert_called_once()
 
     @pytest.fixture
     def secret_home(self, monkeypatch, tmp_path):
         (tmp_path / ".local_secret").write_text("s3cr3t\n", encoding="utf-8", newline="\n")
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
         return tmp_path
 
     def test_missing_secret_reports_gateway_down(self, monkeypatch, tmp_path, capsys) -> None:
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "")
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
@@ -241,6 +808,480 @@ class TestLogout:
             cli_server._logout(5476)
         assert exc.value.code == 1
         assert "Gateway not running" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# _owner_verified_secret_urlopen — the secret rides a proof-bound transport
+# --------------------------------------------------------------------------
+
+
+class TestOwnerVerifiedSecretTransport:
+    """The secret-bearing send binds its ownership proof to the connected
+    socket on every path, verifying the PEER OF THE ESTABLISHED CONNECTION, not
+    who owns the port now. With the gateway's own unix socket present (the
+    ordinary POSIX case) it goes over that socket (which no other user can
+    answer) with a verify_peer hook (SO_PEERCRED via check_peer_is_self) that
+    refuses a non-self peer before any byte is written. When no AF_UNIX socket
+    exists -- a TCP-only gateway (a supported config) or native Windows (no
+    AF_UNIX) -- the secret rides TCP, but the proof is bound to the connection
+    via tcp_verified_urlopen's verify_peer, which resolves the pid on the far
+    end of this exact 4-tuple connection (get_tcp_peer_pid, not a port snapshot)
+    and proves it is this install's gateway owned by this account -- by uid on
+    POSIX, by access-token owner SID on Windows. The secret is sent ONLY on a
+    positive MATCH: a resolved foreign peer (MISMATCH) and a peer that cannot be
+    resolved at all (UNAVAILABLE -- e.g. lsof-less macOS) BOTH refuse (fail
+    closed), so the owner-minting secret never rides an unproven connection. The
+    POSIX uid proof is what lets a legitimate TCP-only gateway reach MATCH, so a
+    supported loopback-TCP config works without the no-proof path failing open."""
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"),
+        reason="asserts the AF_UNIX socket is preferred over TCP; AF_UNIX-only",
+    )
+    def test_prefers_the_unix_socket_with_a_peer_verifier_when_it_exists(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        sock_file = tmp_path / "gw.sock"
+        sock_file.write_bytes(b"")  # the file must EXIST to be preferred
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: sock_file)
+        captured: dict = {}
+
+        def fake_unix(req, timeout, *, socket_path, verify_peer):
+            captured["socket_path"] = socket_path
+            captured["verify_peer"] = verify_peer
+            return _Resp(b'{"ok": true}')
+
+        tcp_called = MagicMock()
+        monkeypatch.setattr(cli_server, "unix_socket_urlopen", fake_unix)
+        monkeypatch.setattr(cli_server, "loopback_urlopen", tcp_called)
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        with cli_server._owner_verified_secret_urlopen(
+            req, 5476, timeout=5, operation="gateway_logout"
+        ) as resp:
+            assert b"ok" in resp.read()
+        assert captured["socket_path"] == str(sock_file)
+        assert callable(captured["verify_peer"])
+        tcp_called.assert_not_called()
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"),
+        reason="drives the AF_UNIX verify_peer refusal; AF_UNIX-only",
+    )
+    def test_verify_peer_refuses_a_non_self_socket_peer(self, monkeypatch, tmp_path) -> None:
+        # The verify_peer handed to the unix opener must raise unless the kernel
+        # confirms the connected peer is this principal (MATCH).
+        from kiro_crew.mcp_gateway import socketsec
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        sock_file = tmp_path / "gw.sock"
+        sock_file.write_bytes(b"")
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: sock_file)
+
+        def capture_verifier():
+            holder: dict = {}
+
+            def fake_unix(req, timeout, *, socket_path, verify_peer):
+                holder["verify_peer"] = verify_peer
+                return _Resp(b"{}")
+
+            monkeypatch.setattr(cli_server, "unix_socket_urlopen", fake_unix)
+            req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+            cli_server._owner_verified_secret_urlopen(
+                req, 5476, timeout=5, operation="gateway_logout"
+            )
+            return holder["verify_peer"]
+
+        # The helper imports check_peer_is_self at call time, so patch the module
+        # BEFORE each capture so the closure binds the stubbed verdict.
+        monkeypatch.setattr(socketsec, "check_peer_is_self", lambda _s: PeerCredResult.MISMATCH)
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            capture_verifier()(object())
+
+        # Same-uid peer (MATCH) but NOT this install's recorded gateway (a
+        # same-uid impostor that rebound the socket path) must still refuse --
+        # the uid alone is insufficient.
+        monkeypatch.setattr(socketsec, "check_peer_is_self", lambda _s: PeerCredResult.MATCH)
+        monkeypatch.setattr(
+            cli_server, "_connected_unix_peer_is_recorded_gateway", lambda _s, _p: False
+        )
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            capture_verifier()(object())
+
+        # Same-uid peer that IS the recorded gateway (pid + start token match)
+        # proceeds.
+        monkeypatch.setattr(
+            cli_server, "_connected_unix_peer_is_recorded_gateway", lambda _s, _p: True
+        )
+        capture_verifier()(object())  # must not raise
+
+    def test_posix_without_a_unix_socket_sends_over_tcp_with_the_peer_proof(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # A TCP-only gateway (no AF_UNIX socket) is a supported config: sign-in
+        # must still work. The send falls through to the connection-bound TCP
+        # proof instead of hard-failing, and a MATCH sends.
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock")
+        captured: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            captured["verify_peer"] = verify_peer
+            return _Resp(b'{"ok": true}')
+
+        unix = MagicMock()
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+        monkeypatch.setattr(cli_server, "unix_socket_urlopen", unix)
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        with cli_server._owner_verified_secret_urlopen(
+            req, 5476, timeout=5, operation="gateway_logout"
+        ) as resp:
+            assert b"ok" in resp.read()
+        unix.assert_not_called()  # no socket to prefer
+        verify_peer = captured["verify_peer"]
+        # MATCH: the connected peer is our gateway -> sends.
+        monkeypatch.setattr(
+            cli_server, "_connected_peer_verdict", lambda _s: cli_server._ConnectedPeerVerdict.MATCH
+        )
+        verify_peer(object())  # must not raise
+
+    def test_posix_tcp_fallback_refuses_a_resolved_foreign_peer(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # The co-resident-rival hole stays closed on the TCP fallback: a resolved
+        # foreign peer (MISMATCH) refuses the secret, exactly as the unix path
+        # refuses a non-self peer.
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock")
+        captured: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            captured["verify_peer"] = verify_peer
+            return _Resp(b"{}")
+
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        cli_server._owner_verified_secret_urlopen(req, 5476, timeout=5, operation="gateway_logout")
+        verify_peer = captured["verify_peer"]
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
+        )
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            verify_peer(object())
+
+    def test_posix_tcp_fallback_refuses_when_the_peer_is_unresolvable(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # Fail closed: on a host that cannot resolve the connected peer at all
+        # (lsof-less macOS -> UNAVAILABLE), the owner-minting secret must NOT be
+        # sent -- an unprovable peer is exactly where a foreign listener on a
+        # crash-freed port could be the far end. UNAVAILABLE refuses, like
+        # MISMATCH.
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock")
+        captured: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            captured["verify_peer"] = verify_peer
+            return _Resp(b"{}")
+
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        cli_server._owner_verified_secret_urlopen(req, 5476, timeout=5, operation="gateway_logout")
+        verify_peer = captured["verify_peer"]
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.UNAVAILABLE,
+        )
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            verify_peer(object())  # fail closed -- unprovable peer is refused
+
+    def test_connection_bound_denial_emits_a_denied_sel_audit_event(
+        self, monkeypatch, tmp_path, sel_rec
+    ) -> None:
+        # Audit integrity: the pre-flight may allow/defer, then the authoritative
+        # connection-bound gate still refuses. That denial must leave its own
+        # `denied` SEL event -- it must not be silent while the pre-flight's
+        # allow stands, or the audit trail asserts a verified allow for an
+        # operation that was actually denied.
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock")
+        captured: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            captured["verify_peer"] = verify_peer
+            return _Resp(b"{}")
+
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.UNAVAILABLE,
+        )
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        cli_server._owner_verified_secret_urlopen(req, 5476, timeout=5, operation="gateway_logout")
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            captured["verify_peer"](object())
+        denied = [c for c in sel_rec.calls if c.get("outcome") == "denied"]
+        assert denied and denied[-1]["operation"] == "gateway_logout"
+        assert "connected_peer_unverified" in denied[-1]["resources"]
+
+    def test_connection_bound_grant_emits_an_allowed_sel_audit_event(
+        self, monkeypatch, tmp_path, sel_rec
+    ) -> None:
+        # Audit integrity, mirror of the denial: when the connected peer verifies
+        # (MATCH) the authoritative gate authorizes the owner-minting send. That
+        # positive permission decision must leave exactly one `allowed` SEL event
+        # naming the verified-peer basis -- the grant cannot be unrecorded while
+        # the denial is audited.
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock")
+        captured: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            captured["verify_peer"] = verify_peer
+            return _Resp(b"{}")
+
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.MATCH,
+        )
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        cli_server._owner_verified_secret_urlopen(req, 5476, timeout=5, operation="gateway_logout")
+        captured["verify_peer"](object())  # MATCH -- authorizes the send, no raise
+        allowed = [
+            c
+            for c in sel_rec.calls
+            if c.get("outcome") == "allowed" and "connected_peer_verified" in c.get("resources", "")
+        ]
+        assert len(allowed) == 1
+        assert allowed[0]["operation"] == "gateway_logout"
+        assert f"port={5476}" in allowed[0]["resources"]
+
+    def test_connected_unix_peer_is_recorded_gateway_requires_pid_and_token(
+        self, monkeypatch
+    ) -> None:
+        # The uid check proves only same-account; a same-uid impostor that
+        # rebound the socket path passes it. The pid + start-token bind defeats
+        # that: only the recorded gateway's pid, carrying the recorded start
+        # token, is this install's gateway.
+        from kiro_crew.mcp_gateway import socketsec
+
+        monkeypatch.setattr(cli_server.run_marker, "pid_start_token", lambda _pid: "tok-real")
+
+        def record(pid, token):
+            monkeypatch.setattr(
+                cli_server.run_marker, "read_pid_record_path", lambda _p: (pid, token)
+            )
+
+        # Peer pid == recorded pid AND start token matches -> recorded gateway.
+        monkeypatch.setattr(socketsec, "get_peer_pid", lambda _s: 4242)
+        record(4242, "tok-real")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 5476) is True
+
+        # Same-uid impostor on a DIFFERENT pid -> refused.
+        monkeypatch.setattr(socketsec, "get_peer_pid", lambda _s: 9999)
+        record(4242, "tok-real")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 5476) is False
+
+        # Recorded pid but a start token that does not match the live one
+        # (a recycled pid / forged record) -> refused.
+        monkeypatch.setattr(socketsec, "get_peer_pid", lambda _s: 4242)
+        record(4242, "tok-stale")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 5476) is False
+
+        # Peer pid unreadable -> fail closed.
+        monkeypatch.setattr(socketsec, "get_peer_pid", lambda _s: None)
+        record(4242, "tok-real")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 5476) is False
+
+        # No recorded gateway for the port -> fail closed.
+        monkeypatch.setattr(socketsec, "get_peer_pid", lambda _s: 4242)
+        monkeypatch.setattr(cli_server.run_marker, "read_pid_record_path", lambda _p: None)
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 5476) is False
+
+    def test_windows_binds_the_proof_to_the_connected_tcp_socket(self, monkeypatch) -> None:
+        # Native Windows has no AF_UNIX, so the secret rides TCP -- but the proof
+        # is bound to the connected socket: tcp_verified_urlopen gets a
+        # verify_peer that passes only when the PEER OF THE ESTABLISHED
+        # CONNECTION is our recorded gateway owned by this account.
+        import kiro_crew.cli_server as cs
+
+        monkeypatch.delattr(cs.socket, "AF_UNIX", raising=False)
+        captured: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            captured["verify_peer"] = verify_peer
+            return _Resp(b'{"ok": true}')
+
+        monkeypatch.setattr(cs, "tcp_verified_urlopen", fake_tcp)
+        unix = MagicMock()
+        monkeypatch.setattr(cs, "unix_socket_urlopen", unix)
+        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
+        with cs._owner_verified_secret_urlopen(
+            req, 5476, timeout=5, operation="gateway_logout"
+        ) as resp:
+            assert b"ok" in resp.read()
+        unix.assert_not_called()
+        verify_peer = captured["verify_peer"]
+        # verify_peer delegates to the connected-connection peer identity proof.
+        # Windows always resolves (owner-PID table), so only MATCH sends and a
+        # MISMATCH refuses.
+        monkeypatch.setattr(
+            cs, "_connected_peer_verdict", lambda _s: cs._ConnectedPeerVerdict.MATCH
+        )
+        verify_peer(object())  # must not raise
+        monkeypatch.setattr(
+            cs, "_connected_peer_verdict", lambda _s: cs._ConnectedPeerVerdict.MISMATCH
+        )
+        with pytest.raises(cs._GatewayPeerRefused):
+            verify_peer(object())
+
+    def test_connected_peer_identity_proof(self, monkeypatch) -> None:
+        # The connection-bound proof: the PEER PID of THIS established 4-tuple
+        # connection (get_tcp_peer_pid, not a port snapshot) must equal the
+        # recorded gateway pid, with a matching token, owned by this account --
+        # by uid on POSIX, by access-token owner SID on Windows.
+        import kiro_crew.cli_server as cs
+        from kiro_crew.instances import run_marker
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 5476)
+
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+
+        # --- POSIX: ownership proven by uid (process_owner_uid == os.getuid). A
+        # legitimate same-user TCP-only gateway resolves to MATCH -- this is the
+        # path that keeps POSIX loopback-TCP working (F2).
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cs.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
+
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 4242)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MATCH
+
+        # A DIFFERENT pid than the record (an attacker that accepted this
+        # connection) -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 9999)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MISMATCH
+
+        # Peer pid matches but is owned by a DIFFERENT uid -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 4242)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 65534)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MISMATCH
+
+        # Peer uid unresolvable (process gone) -- MISMATCH, fail closed.
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: None)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MISMATCH
+
+        # Peer identity unresolvable on this exact connection, on a host that CAN
+        # resolve (proof available) -- MISMATCH, never a port snapshot.
+        monkeypatch.setattr(cs, "_connected_peer_proof_available", lambda: True)
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: None)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MISMATCH
+
+        # --- Windows: ownership proven by access-token owner SID (no uid there).
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 4242)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MATCH
+        # Foreign owner SID -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-attacker")
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MISMATCH
+
+    def test_connected_peer_proof_passes_the_gateway_endpoint_as_client(self, monkeypatch) -> None:
+        # Pin the inversion: the gateway is the far end, so its endpoint (our
+        # getpeername) is passed as client_endpoint and ours (getsockname) as
+        # server_endpoint, so get_tcp_peer_pid resolves the GATEWAY's pid.
+        import kiro_crew.cli_server as cs
+        from kiro_crew.instances import run_marker
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 5476)
+
+        seen: dict = {}
+
+        def fake_peer_pid(*, server_endpoint, client_endpoint):
+            seen["server"] = server_endpoint
+            seen["client"] = client_endpoint
+            return 4242
+
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", fake_peer_pid)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cs.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MATCH
+        assert seen["client"] == ("127.0.0.1", 5476)  # gateway endpoint
+        assert seen["server"] == ("127.0.0.1", 54321)  # our endpoint
+
+    def test_unresolvable_peer_is_mismatch_when_resolvable_else_unavailable(
+        self, monkeypatch
+    ) -> None:
+        # The verdict that drives graceful degradation: an unresolvable peer
+        # (get_tcp_peer_pid -> None) is a fail-closed MISMATCH on a host that CAN
+        # resolve peers, but UNAVAILABLE (degrade, don't refuse) on a host that
+        # structurally cannot (lsof-less macOS). Linux/Windows always resolve.
+        import kiro_crew.cli_server as cs
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 5476)
+
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: None)
+
+        monkeypatch.setattr(cs, "_connected_peer_proof_available", lambda: True)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.MISMATCH
+
+        monkeypatch.setattr(cs, "_connected_peer_proof_available", lambda: False)
+        assert cs._connected_peer_verdict(_Sock()) is cs._ConnectedPeerVerdict.UNAVAILABLE
+
+    def test_connected_peer_proof_available_is_true_on_linux_and_windows(self, monkeypatch) -> None:
+        # Linux reads /proc and Windows reads the owner-PID table with no
+        # external tool, so the proof is always available there; macOS depends
+        # on lsof.
+        import kiro_crew.cli_server as cs
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        assert cs._connected_peer_proof_available() is True
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(cs.sys, "platform", "linux")
+        assert cs._connected_peer_proof_available() is True
+
+        # macOS: gated on the listener tool (lsof).
+        monkeypatch.setattr(cs.sys, "platform", "darwin")
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: False)
+        assert cs._connected_peer_proof_available() is False
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        assert cs._connected_peer_proof_available() is True
 
 
 # --------------------------------------------------------------------------
@@ -1865,6 +2906,19 @@ class TestUpdateGatewayPoke:
     proves the same contract from a different angle: it may print, but it must
     never raise and never change the exit code.
     """
+
+    @pytest.fixture(autouse=True)
+    def _route_secret_transport(self, monkeypatch):
+        # The revalidate poke carries X-Local-Secret, so it now sends through the
+        # owner-verified transport. Route it to the stubbed loopback_urlopen so
+        # these best-effort-contract tests drive the send without a unix socket.
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": cli_server.loopback_urlopen(
+                req, timeout=timeout
+            ),
+        )
 
     def test_success_reports_the_refresh(self, monkeypatch, capsys) -> None:
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 8674)

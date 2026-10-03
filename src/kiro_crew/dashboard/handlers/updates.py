@@ -2669,13 +2669,20 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     12-hourly clock. A bare re-check cannot close that race; the invalidation can.
 
     Authenticated like the other CLI→gateway endpoints (``/api/token/local``,
-    ``/api/logout``): loopback origin plus the per-generation local secret in
+    ``/api/logout``): a loopback origin OR a kernel-attested same-user AF_UNIX
+    peer (the owner-only socket transport arrives with an empty
+    ``request.remote``), plus the per-generation local secret in
     ``X-Local-Secret``, compared in constant time. This is a CLI-only endpoint —
     the dashboard panel reconciles through ``GET /api/update/check`` — so it does
     NOT use the browser owner gate, whose identity the raw local-secret request
     never carries.
     """
-    if not is_loopback(request.remote or ""):
+    # Admit the kernel-attested AF_UNIX peer the same way /api/token/local and
+    # /api/logout do, through the one shared helper rather than a second copy.
+    # Local import keeps the module-load order free of a core<->updates cycle.
+    from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
+
+    if not is_loopback(request.remote or "") and not _unix_peer_is_self(request):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="non-loopback"
         )

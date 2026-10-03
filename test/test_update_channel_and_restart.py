@@ -578,6 +578,35 @@ class TestUpdateRevalidate:
         assert resp.status == 403
         assert called == []
 
+    def test_unix_peer_match_is_admitted(self, _isolated_channel_home):
+        # kirocrew's revalidate poke reaches the gateway over the owner-only unix
+        # socket (empty request.remote); a positive kernel same-principal check
+        # admits it, like /api/token/local and /api/logout.
+        update_layout.set_release_channel("stable")
+        calls: list[str] = []
+
+        async def _fake_check() -> None:
+            calls.append("recheck")
+            updates._set_update_info(
+                channel="stable",
+                update_available=False,
+                latest_version="",
+                check_status="succeeded",
+            )
+
+        from kiro_crew.dashboard.handlers import core as _core
+
+        with (
+            patch.object(updates, "_invalidate_update_check", lambda ch: calls.append(f"inv:{ch}")),
+            patch.object(updates, "_do_update_check", _fake_check),
+            patch.object(_core, "_unix_peer_is_self", lambda _r: True),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", remote=""))
+            )
+        assert resp.status == 200
+        assert calls == ["inv:stable", "recheck"]
+
     def test_non_ascii_secret_is_refused_not_crashed(self, _isolated_channel_home):
         """A non-ASCII X-Local-Secret must be an audited 403, never a TypeError/500.
 
