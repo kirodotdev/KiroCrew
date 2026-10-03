@@ -1,11 +1,15 @@
 /**
  * Host runtime — read-only WSL2 state of the machine the desktop shell runs on.
  *
- * Served by the `wsl:detect` IPC channel (electron/main.js), which rejects any
- * WebContents the local gateway did not serve: a connection window pointed at a
- * REMOTE gateway renders "unavailable" here rather than the host's distro
- * inventory. The card self-hides where the answer cannot exist — in a plain
- * browser tab (no bridge) and on macOS/Linux (no WSL subsystem).
+ * Served by the `wsl:detect` IPC channel (electron/ipc-registrar.js), which
+ * rejects any WebContents the local gateway did not serve. A window the desktop
+ * shell opened against a configured remote crew gets no `wslAPI` bridge at all
+ * (electron/preload.js withholds it), so the card self-hides there like in a
+ * plain browser; a window pointed at a remote gateway after it was created still
+ * has the bridge and renders "unavailable" from the handler's rejection rather
+ * than the host's distro inventory. The card also self-hides where the answer
+ * cannot exist — in a plain browser tab (no bridge) and on macOS/Linux (no WSL
+ * subsystem).
  *
  * Detection spawns wsl.exe, so this is NOT polled like the rest of the plane.
  * React Query refetches on remount — switching System planes suffices — and
