@@ -4092,6 +4092,17 @@ measurement (patch the module's own TTL function) so the count is the walk's sha
 its duration. Reproduce by advancing a fake clock per entry processed: the bigger walk
 crosses the floor on any host.
 
+**A pin whose precondition is "the loop woke before a timer's `when`" stands the loop
+clock still.** Widening `loop._clock_resolution` makes asyncio pop a handle early only
+when some wake lands before its `when`, and a starved Windows runner's 10 ms poll can
+return after a 50 ms timer is already due, so the precondition assertion reds with the
+defect never reached (`test_the_ramp_is_woken_when_the_pump_timer_fires_inside_the_clock_resolution`).
+Patch `loop.time` to a constant inside `monkeypatch.context()` for the wait, so every
+wake reads the arm instant and asyncio's own pop rule fires the handle early on every
+host; restore it before teardown awaits a real timeout. Compare against the frozen
+`now` with the production expression itself (`now < when <= now + delay`), since
+`when - now` can round past `delay`.
+
 **`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
 cancelled before its first tool call takes the one-shot auto-continue branch: it returns
 normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`
