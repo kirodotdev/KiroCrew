@@ -240,7 +240,8 @@
       "stream_ended_without_completion": "স্ট্রিম সম্পূর্ণ হওয়ার আগেই শেষ হয়ে গেছে",
       "token_not_accepted": "এই সাইন-ইন URL গৃহীত হয়নি। kirocrew token আবার চালাও এবং নতুন সাইন-ইন URL নিচে পেস্ট করো।",
       "token_exchange_unreachable": "গেটওয়েতে পৌঁছানো যায়নি, তাই সাইন-ইন URL যাচাই করা হয়নি। এটি চলছে কিনা নিশ্চিত করে আবার Enter চাপো।",
-      "unexpected_server_response": "সার্ভার থেকে অপ্রত্যাশিত সাড়া"
+      "unexpected_server_response": "সার্ভার থেকে অপ্রত্যাশিত সাড়া",
+      "no_pending_approval": "এই অনুমোদনটি আর অপেক্ষমাণ নেই।"
     }
   },
   "app": {
@@ -9458,7 +9459,6 @@
       "cron": "Cron{{detail}}",
       "cron_running": "Cron · চলছে",
       "deny": "প্রত্যাখ্যান",
-      "failed": "ব্যর্থ",
       "idle": "নিষ্ক্রিয়",
       "kiro_is_working": "kiro কাজ করছে…",
       "loading_thread": "থ্রেড লোড হচ্ছে…",

@@ -4,7 +4,8 @@
  * (website/dist) gateway-free with stubDashboardApi.
  *
  * A settled approval is RETIRED: kept, Approve/Reject withdrawn, no critical
- * border or unread dot, and its ordinary close X still dismisses it. A decide
+ * border (a quiet unread dot until the reader has seen it), and its ordinary
+ * close X still dismisses it. A decide
  * the server refused (404) is an error, so its sentence is an alert; an
  * outcome that landed or an expiry is a neutral status line. Two approval rows
  * are seeded, so every feed frame also shows the other row keeps its buttons.
@@ -24,8 +25,9 @@
  *   09-popover-404-retired    frame 01 in the topbar bell popover
  *   13-popover-ws-expiry-gone the approval expires server-side (socket
  *                             `approval_resolved`, decision `expired`): the
- *                             row stays with the neutral muted status line,
- *                             no error notice, in the bell popover
+ *                             row stays with a muted status line saying the
+ *                             wait expired and the request was denied, no
+ *                             error notice, in the bell popover
  *   14-feed-decide-in-flight  a decide still in flight: both buttons disabled
  *                             and busy, nothing retired yet
  *   15-popover-live-expiry.webm  recording of the expiry arriving while the
@@ -35,7 +37,7 @@
  * Usage: npm run build && node scripts/capture-notification-approval-refusal.mjs [outDir]
  */
 import { chromium } from 'playwright'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
 
@@ -43,16 +45,25 @@ const OUT = process.argv[2] || '../temp-screenshots/notification-approval-refusa
 mkdirSync(OUT, { recursive: true })
 
 const GONE = 'This approval has expired or was already decided'
+const EXPIRED = 'The approval wait expired, so the request was denied.'
 // The chat card's sentence for the same refusal, as one sentence.
 const REFUSED = GONE
 const REASON = 'only the session owner can decide this approval'
 const HEDGED = 'may not have been recorded'
 
+// Every approval row names the request it was raised for: the id plus the
+// coordinator's server-issued instance (and its slot, '' here).
 const note = (ts, id, title) => ({
   kind: 'approval', source: 'system', channel: 'system.approval', priority: 'critical',
   title, body: 'Nightly backup wants to run `rsync -a ~/data /mnt/backup`.',
-  ts, acked: false, approval_id: id,
+  ts, acked: false, approval_id: id, approval_instance: `inst-${id}`,
 })
+// The authority's answer for requests still pending: the reconcile retires
+// any listed row whose request is not in it.
+const pendingOf = (rows, slot = '') => rows.filter(n => n.kind === 'approval').map(n => ({
+  id: n.approval_id, instance: n.approval_instance, slot, source: 'agent', tool: 'shell',
+  tool_input: 'rsync -a ~/data /mnt/backup', ts: Date.parse(n.ts) / 1000,
+}))
 const NOTES = [
   note('2026-09-28T02:00:00.000000+00:00', 'apr-backup', 'Tool approval: shell (Nightly backup)'),
   note('2026-09-28T01:00:00.000000+00:00', 'apr-report', 'Tool approval: shell (Weekly report)'),
@@ -92,6 +103,7 @@ async function open(theme, { status, error, popover = false }) {
         await json(route, { notifications: notes, unread: notes.filter(n => !n.acked).length })
         return true
       }
+      if (path === '/api/approvals') { await json(route, pendingOf(notes)); return true }
       if (path.startsWith('/api/approvals/')) {
         // No status: the request never gets a response (a dropped connection).
         if (!status) { await route.abort('connectionreset'); return true }
@@ -190,8 +202,10 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
 
 // 13: the approval expires server-side while the reader is in its chat. The
 // coordinator's `approval_resolved` frame (decision `expired`) retires the row
-// as `gone`, which is neutral: nothing this view sent failed, so the row shows
-// the muted status line, with no error notice. Driven through
+// as `expired`, which is neutral: nothing this view sent failed, so the row
+// shows a muted line saying the request was denied, with no error notice.
+// "Expired or already decided" would leave the reader unsure whether the
+// command ran. Driven through
 // the real socket handlers: an `approval` frame, then its expiry.
 {
   const SLOT = 'chat-nightly-backup'
@@ -213,6 +227,8 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
     extra: async (path, route) => {
       if (path === '/api/notifications' && route.request().method() === 'DELETE') { counts.deletes += 1; await json(route, { ok: true }); return true }
       if (path === '/api/notifications') { await json(route, { notifications: listed, unread: 1 }); return true }
+      // Still pending when the tab opens: the reconcile keeps the row live.
+      if (path === '/api/approvals') { await json(route, pendingOf(listed, SLOT)); return true }
       if (path.startsWith('/api/chat/slots/')) { await json(route, { running: true, has_more: false, total: 0, queue: [], messages: [] }); return true }
       return false
     },
@@ -220,14 +236,14 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
   let ws = null
   await page.routeWebSocket(/\/api\/ws/, s => { ws = s })
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
-  // Let the first-connect reconcile (an empty /api/approvals) settle first.
+  // Let the first-connect reconcile settle first.
   await page.waitForTimeout(2500)
   const push = async (type, data) => { ws?.send(JSON.stringify({ type, data })); await page.waitForTimeout(900) }
   await push('approval', {
-    id: PRESSED.approval_id, slot: SLOT, source: 'agent', tool: 'shell',
+    id: PRESSED.approval_id, instance: PRESSED.approval_instance, slot: SLOT, source: 'agent', tool: 'shell',
     tool_input: 'rsync -a ~/data /mnt/backup', ts: Number(tsSeconds),
   })
-  await push('approval_resolved', { id: PRESSED.approval_id, slot: SLOT, approved: false, decision: 'expired' })
+  await push('approval_resolved', { id: PRESSED.approval_id, origin: 'coordinator', instance: PRESSED.approval_instance, slot: SLOT, approved: false, decision: 'expired' })
   await page.getByRole('button', { name: 'Notifications', exact: true }).first().click()
   await page.waitForTimeout(600)
   const row = page.locator('[data-notif-row]').first()
@@ -237,11 +253,12 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
     alert: (await row.getByRole('alert').allInnerTexts()).join(' | '),
     buttons: await row.getByRole('button', { name: /^(Approve|Reject)$/ }).count(),
     dismiss: await row.getByRole('button', { name: 'Dismiss notification' }).count(),
-    dot: await row.locator('[data-priority]').count(),
+    // Nobody has seen the expiry yet: the row keeps a quiet (settled) unread dot.
+    dot: await row.locator('[data-priority="settled"]').count(),
     deletes: counts.deletes,
   }
   await shot(page, '13-popover-ws-expiry-gone',
-    s.status.includes(GONE) && s.alert === '' && s.buttons === 0 && s.dismiss === 1 && s.dot === 0 && s.deletes === 0,
+    s.status.includes(EXPIRED) && !s.status.includes(GONE) && s.alert === '' && s.buttons === 0 && s.dismiss === 1 && s.dot === 1 && s.deletes === 0,
     JSON.stringify(s))
 }
 
@@ -261,10 +278,11 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
 
 // 15 (video): the live moment a still cannot show. The approval is on screen
 // with Approve/Reject in the bell popover, then the coordinator's expiry frame
-// arrives while the reader watches: the buttons leave and the neutral line
-// takes their place. Recorded as webm.
+// arrives while the reader watches: the buttons leave and the line saying the
+// request was denied takes their place. Recorded as webm.
 {
   const SLOT = 'chat-nightly-backup'
+  const VIDEO_DIR = mkdtempSync(`${OUT}/.video-`)
   const tsSeconds = String(Date.parse(PRESSED.ts) / 1000)
   const slots = [{
     key: SLOT, title: 'Nightly backup', running: true, last_message: 'Waiting on your approval.',
@@ -273,7 +291,9 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
   }]
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 }, colorScheme: 'dark',
-    recordVideo: { dir: `${OUT}/.video`, size: { width: 1280, height: 800 } },
+    // A run-private directory: the recording is moved out of it, and only it
+    // is removed afterwards, never a directory the caller already had.
+    recordVideo: { dir: VIDEO_DIR, size: { width: 1280, height: 800 } },
   })
   const page = await context.newPage()
   logPageProblems(page)
@@ -284,6 +304,8 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
     extra: async (path, route) => {
       if (path === '/api/notifications' && route.request().method() === 'DELETE') { await json(route, { ok: true }); return true }
       if (path === '/api/notifications') { await json(route, { notifications: listed, unread: 1 }); return true }
+      // Still pending when the tab opens: the reconcile keeps the row live.
+      if (path === '/api/approvals') { await json(route, pendingOf(listed, SLOT)); return true }
       if (path.startsWith('/api/chat/slots/')) { await json(route, { running: true, has_more: false, total: 0, queue: [], messages: [] }); return true }
       return false
     },
@@ -294,24 +316,25 @@ await feedFrame('09-popover-404-retired', 'dark', { status: 404, error: 'not fou
   await page.waitForTimeout(2500)
   const push = async (type, data) => { ws?.send(JSON.stringify({ type, data })); await page.waitForTimeout(900) }
   await push('approval', {
-    id: PRESSED.approval_id, slot: SLOT, source: 'agent', tool: 'shell',
+    id: PRESSED.approval_id, instance: PRESSED.approval_instance, slot: SLOT, source: 'agent', tool: 'shell',
     tool_input: 'rsync -a ~/data /mnt/backup', ts: Number(tsSeconds),
   })
   await page.getByRole('button', { name: 'Notifications', exact: true }).first().click()
   const row = page.locator('[data-notif-row]').first()
   await row.getByRole('button', { name: /^Approve$/ }).waitFor()
   await page.waitForTimeout(1800)
-  await push('approval_resolved', { id: PRESSED.approval_id, slot: SLOT, approved: false, decision: 'expired' })
+  await push('approval_resolved', { id: PRESSED.approval_id, origin: 'coordinator', instance: PRESSED.approval_instance, slot: SLOT, approved: false, decision: 'expired' })
   await row.getByTestId('notif-approval-retired').waitFor()
   await page.waitForTimeout(2200)
   const buttons = await row.getByRole('button', { name: /^(Approve|Reject)$/ }).count()
+  const status = (await row.getByRole('status').allInnerTexts()).join(' | ')
   const video = page.video()
   await context.close()
-  const ok = buttons === 0
-  console.log(`15-popover-live-expiry.webm: ${ok ? 'OK' : 'MISMATCH'} ${JSON.stringify({ buttons })}`)
+  const ok = buttons === 0 && status.includes(EXPIRED) && !status.includes(GONE)
+  console.log(`15-popover-live-expiry.webm: ${ok ? 'OK' : 'MISMATCH'} ${JSON.stringify({ buttons, status })}`)
   if (!ok) failed = true
   else await video.saveAs(`${OUT}/15-popover-live-expiry.webm`)
-  rmSync(`${OUT}/.video`, { recursive: true, force: true })
+  rmSync(VIDEO_DIR, { recursive: true, force: true })
 }
 
 await browser.close()

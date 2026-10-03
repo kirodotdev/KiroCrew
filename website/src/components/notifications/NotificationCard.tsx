@@ -49,8 +49,9 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
   /** A silenced row: the pane thins to the `glass-faded` tint step, its
    *  content dims and its title reads muted. */
   muted?: boolean
-  /** A settled row (a retired approval): no unread dot, and it recedes like a
-   *  read row, whatever its ack flag says. */
+  /** A settled row (a retired approval): no danger signal. Until it is read
+   *  it keeps a quiet unread dot, since its outcome (often a denial) is still
+   *  news; once read it recedes like any read row. */
   settled?: boolean
   /** Rendered under the actions (a failure notice the card must keep showing). */
   footer?: ReactNode
@@ -92,7 +93,7 @@ export default function NotificationCard({
 }: NotificationCardProps) {
   const km = KIND_META[n.kind] || DEFAULT_META
   const prio = notePriority(n)
-  const dim = muted ? 'opacity-50' : ((n.acked || settled) && !active) || prio === 'passive' ? 'opacity-55' : ''
+  const dim = muted ? 'opacity-50' : (n.acked && !active) || prio === 'passive' ? 'opacity-55' : ''
   const body = (
     <>
       <span className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center shrink-0 text-[13px] ${km.color}`}>{km.icon}</span>
@@ -105,8 +106,8 @@ export default function NotificationCard({
       <div className="flex flex-col items-end gap-0.5 shrink-0">
         <span className="text-[11px] text-muted">{fmtRelativeMinute(n.ts)}</span>
         {trailing}
-        {!muted && !n.acked && !settled && (
-          <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
+        {!muted && !n.acked && (
+          <span className={`w-1.5 h-1.5 rounded-full ${settled ? 'bg-accent' : `animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`}`} data-priority={settled ? 'settled' : prio} />
         )}
       </div>
     </>

@@ -858,7 +858,7 @@ class TestResolveApprovalSlotFallback:
             "approval_resolved",
             # ``slot`` keys the frame for the slot-scoped WS gate — it must name
             # the slot that actually owned the resolved future.
-            {"id": "req-42", "approved": True, "slot": "chat-1-test"},
+            {"id": "req-42", "approved": True, "slot": "chat-1-test", "origin": "native"},
         )
         state.push_slots_update.assert_called_once()
 
@@ -881,7 +881,7 @@ class TestResolveApprovalSlotFallback:
         # decision in the frame.
         state.broadcast_ws.assert_called_with(
             "approval_resolved",
-            {"id": "req-43", "approved": False, "slot": "chat-1-test"},
+            {"id": "req-43", "approved": False, "slot": "chat-1-test", "origin": "native"},
         )
 
     @pytest.mark.asyncio
@@ -1585,6 +1585,7 @@ class TestExpiredApprovalRetiresTheCard:
             "slot": slot.key,
             "decision": "expired",
             "instance": self._raised_instance(state, "req-exp"),
+            "origin": "coordinator",
         }
         mock_sel.log_tool_invocation.assert_called_once_with(
             session_key=slot.key,
@@ -1617,6 +1618,7 @@ class TestExpiredApprovalRetiresTheCard:
             "slot": slot_key,
             "decision": "expired",
             "instance": self._raised_instance(state, "req-removed-slot"),
+            "origin": "coordinator",
         }
 
     @pytest.mark.asyncio
@@ -1639,6 +1641,7 @@ class TestExpiredApprovalRetiresTheCard:
             "approved": False,
             "decision": "expired",
             "instance": self._raised_instance(state, "req-bg"),
+            "origin": "coordinator",
         }
         assert "req-bg" not in state._pending_approvals
         assert "req-bg" not in state._approval_futures
@@ -1679,6 +1682,7 @@ class TestExpiredApprovalRetiresTheCard:
             "id": "req-ok",
             "approved": True,
             "instance": self._raised_instance(state, "req-ok"),
+            "origin": "coordinator",
         }
         cls = json.loads(slot.messages[-1]["cls"])
         assert "resolved" not in cls
@@ -1702,6 +1706,7 @@ class TestExpiredApprovalRetiresTheCard:
             "id": "req-no",
             "approved": False,
             "instance": self._raised_instance(state, "req-no"),
+            "origin": "coordinator",
         }
         assert "req-no" not in state._pending_approvals
         assert "req-no" not in state._approval_futures
@@ -2866,7 +2871,15 @@ class TestHostPreDeclinedRowIsBornResolved:
             for i, t in enumerate(timeline)
             if t[:2] == ("ws", "approval_resolved") and t[2].get("id") == "req-1"
         )
-        assert timeline[retire_at][2] == {"id": "req-1", "approved": False, "slot": slot.key}
+        (permission_row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        assert timeline[retire_at][2] == {
+            "id": "req-1",
+            "approved": False,
+            "slot": slot.key,
+            # The runner's own request, named by the row it wrote.
+            "origin": "native",
+            "mid": row_mid(permission_row),
+        }
         denied_at = next(i for i, t in enumerate(timeline) if t[:2] == ("row", "tool"))
         assert retire_at < denied_at, (
             "the failed post did not retire the card before the turn moved on to "
@@ -2940,9 +2953,10 @@ class TestHostPreDeclinedRowIsBornResolved:
             m.get("role") == "error" and m.get("content") == no_budget_card for m in slot.messages
         ), "the no-budget card was rendered for a prompt the user had already approved"
         retire = [t for t in timeline if t[:2] == ("ws", "approval_resolved")]
-        assert retire == [
-            ("ws", "approval_resolved", {"id": "req-1", "approved": True, "slot": slot.key})
-        ]
+        (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        # The runner's own request, named by the row it wrote.
+        resolved = {"id": "req-1", "approved": True, "slot": slot.key, "origin": "native"}
+        assert retire == [("ws", "approval_resolved", {**resolved, "mid": row_mid(row)})]
         (stored,) = [m for m in slot.messages if m.get("role") == "permission"]
         assert json.loads(stored["cls"])["resolved"] == "approved"
         # The posted Slack card is cleaned up now that the decision is in.
@@ -2996,9 +3010,10 @@ class TestHostPreDeclinedRowIsBornResolved:
         client.approve_tool.assert_awaited_once_with("req-1")
         client.reject_tool.assert_not_awaited()
         retire = [t for t in timeline if t[:2] == ("ws", "approval_resolved")]
-        assert retire == [
-            ("ws", "approval_resolved", {"id": "req-1", "approved": True, "slot": slot.key})
-        ]
+        (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        # The runner's own request, named by the row it wrote.
+        resolved = {"id": "req-1", "approved": True, "slot": slot.key, "origin": "native"}
+        assert retire == [("ws", "approval_resolved", {**resolved, "mid": row_mid(row)})]
         (stored,) = [m for m in slot.messages if m.get("role") == "permission"]
         assert json.loads(stored["cls"])["resolved"] == "approved"
         # Nothing was posted, so nothing is cleaned up on the Slack side.

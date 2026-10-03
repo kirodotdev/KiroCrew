@@ -7271,8 +7271,15 @@ class DashboardState:
         tool_purpose: str = "",
         slot: str = "",
         is_background: bool = False,
+        task_run: str = "",
+        task_index: int | None = None,
     ) -> bool:
-        """Request interactive approval and deny on timeout or cancellation."""
+        """Request interactive approval and deny on timeout or cancellation.
+
+        *task_run* and *task_index* name a task gate's run and task, which
+        its request id cannot. They are listed and broadcast with the record;
+        a decide binds by the record's instance.
+        """
         return await _approvals_for(self).request(
             self,
             approval_id,
@@ -7282,6 +7289,8 @@ class DashboardState:
             tool_purpose=tool_purpose,
             slot=slot,
             is_background=is_background,
+            task_run=task_run,
+            task_index=task_index,
             redact_url=redact_exfiltration_urls,
             redact_secret=redact_credentials,
         )
@@ -7315,9 +7324,16 @@ class DashboardState:
         approved: bool,
         decision: str = "",
         *,
+        origin: str = "",
         instance: str = "",
+        mid: str = "",
     ) -> None:
-        """Audit and broadcast one approval decision."""
+        """Audit and broadcast one approval decision.
+
+        *origin* (``coordinator`` or ``native``) names the registry that held
+        the request; the frame carries it so a client settles only that
+        registry's rows.
+        """
         _approvals_for(self).audit_and_broadcast(
             self,
             session_key,
@@ -7325,7 +7341,9 @@ class DashboardState:
             approved,
             decision,
             audit_provider=sel,
+            origin=origin,
             instance=instance,
+            mid=mid,
         )
 
     def _audit_approval(
@@ -7340,6 +7358,23 @@ class DashboardState:
         """Resolve only a state-level background approval."""
         return _approvals_for(self).resolve_state(self, approval_id, approved)
 
+    def resolve_coordinator_approval(
+        self,
+        approval_id: str,
+        approved: bool,
+        *,
+        slot: str,
+        instance: str,
+    ) -> bool:
+        """Resolve the coordinator request an owner-bound target names.
+
+        The dashboard's decide route uses this for every coordinator approval;
+        see :meth:`ApprovalCoordinator.resolve_target`.
+        """
+        return _approvals_for(self).resolve_target(
+            self, approval_id, approved, slot=slot, instance=instance
+        )
+
     def resolve_approval(
         self,
         approval_id: str,
@@ -7347,7 +7382,13 @@ class DashboardState:
         *,
         rejected_once: bool = False,
     ) -> bool:
-        """Resolve one state- or slot-level approval without widening authority."""
+        """Resolve one state- or slot-level approval without widening authority.
+
+        By bare id, for callers that hold their own link to the request (a
+        channel button, a bulk sweep). A dashboard control decides through an
+        owner-bound target instead (:meth:`resolve_coordinator_approval`, or a
+        native target on the slot approve route).
+        """
         return _approvals_for(self).resolve(
             self,
             approval_id,

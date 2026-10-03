@@ -18,7 +18,7 @@
  *
  * Two chokepoints already exist and neither can fire:
  *
- *   - `api.resolveApproval` is typed to the three honored actions.
+ *   - `api.decideApproval` is typed to the three honored actions.
  *   - `api_approval_resolve` returns 400 for anything outside them.
  *
  * Both reject a trust verb SENT to the endpoint, but the verb never arrives as
@@ -155,7 +155,10 @@ const noInlineOneShotDecision = {
             : callee.type === 'Identifier'
               ? callee.name
               : null
-        if (name !== 'resolveApproval') return
+        // The dashboard decides through `decideApproval`. `resolveApproval`
+        // stays in the match so a helper under that name is held to the same
+        // rule (approvalBareIdGuard.test.ts refuses one in the client).
+        if (name !== 'resolveApproval' && name !== 'decideApproval') return
         const decision = node.arguments[1]
         if (!decision) return
         const scope = sourceCode.getScope ? sourceCode.getScope(decision) : context.getScope()

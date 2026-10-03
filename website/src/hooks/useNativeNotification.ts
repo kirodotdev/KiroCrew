@@ -53,8 +53,9 @@ import { nativeNotificationPermitted, postNativeNotification } from '../lib/nati
 import { i18nT } from '../i18n/t'
 
 export function useNativeNotification(botName: string, avatar: string) {
-  // The shared unread rule, so a retired approval whose ack was rolled back
-  // is not taken for a new arrival and announced.
+  // The shared unread rule, the one the badges read. Retiring an approval
+  // leaves its row unread, so the count does not grow and nothing is
+  // announced twice.
   const unacked = useAppSelector(selectUnreadNotes)
   const notifCount = unacked.length
   const latestNotif = unacked.length > 0 ? unacked[unacked.length - 1] : null

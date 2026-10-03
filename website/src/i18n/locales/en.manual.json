@@ -240,7 +240,8 @@
       "stream_ended_without_completion": "Stream ended without completion",
       "token_not_accepted": "That sign-in URL was not accepted. Run kirocrew token again and paste the new sign-in URL below.",
       "token_exchange_unreachable": "Could not reach the gateway, so the sign-in URL was not checked. Make sure it is running, then press Enter again.",
-      "unexpected_server_response": "Unexpected server response"
+      "unexpected_server_response": "Unexpected server response",
+      "no_pending_approval": "This approval is no longer pending."
     }
   },
   "app": {

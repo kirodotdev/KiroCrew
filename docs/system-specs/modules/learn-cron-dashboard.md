@@ -1884,7 +1884,9 @@ turn completion is not evidence that the whole task succeeded.
 Slot approval projections carry explicit `native` or `coordinator` origin. A native
 permission row's host-minted `meta.mid` must be bound to the exact live slot
 future; a matching connection-scoped request ID alone is insufficient. Strict
-native submissions carry this `request_mid`, and replacement requests receive
+native submissions carry this `request_mid`; a coordinator projection carries the
+record's `request_instance`, and the dashboard decides it through that instance and
+the slot, never by its id alone. Replacement requests receive
 distinct card identities even when ACP reuses an ID. Late cleanup cannot remove
 or announce resolution of a replacement future. Unbound or replayed stale rows
 confer no identity. Dynamic Dashboard keeps colliding native and coordinator request IDs

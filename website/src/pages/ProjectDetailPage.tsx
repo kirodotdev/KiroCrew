@@ -13,6 +13,9 @@ import { api } from '../api/client';
 import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
 import { Badge } from '../components/ui';
 import ErrorNotice from '../components/ErrorNotice';
+import { isTerminalApprovalRefusal, noPendingApprovalError } from '../api/apiError';
+import { refusedNotice } from '../components/notifications/notifMeta';
+import { coordinatorTarget, type CoordinatorApprovalTarget } from '../types/approvalTarget';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -20,6 +23,9 @@ type ViewMode = 'dag' | 'phased';
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+/** A gate decide's failure: a refusal for a gate that is gone reads the same
+ *  sentence every other approval surface uses (`refusedNotice`). */
+const decideErrText = (e: unknown): string => (isTerminalApprovalRefusal(e) ? refusedNotice() : errText(e));
 
 /** Minimal shape of a step returned by api.updatePlan (subset of TaskDetail). */
 interface SavedStep {
@@ -38,6 +44,8 @@ interface Props {
 const tabCls = (active: boolean) =>
   `px-4 py-1.5 text-[13px] rounded cursor-pointer border transition-all ${active ? 'bg-accent text-accent-fg border-accent' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`;
 
+const NO_GATES: Record<number, CoordinatorApprovalTarget | null> = {};
+
 export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('tasks');
   const [view, setView] = useState<ViewMode>('dag');
@@ -54,20 +62,42 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
   const selected = selectedTask !== null ? tasks.find(t => t.index === selectedTask) : null;
 
   // Poll pending approvals for force_approval gates
-  const { data: approvalMap = {}, isError: approvalsFailed, error: approvalsError } = useQuery({
+  // Each gate keeps the owner-bound target the listing sent with it (its
+  // slot and server-issued instance), so a decide names the request this page
+  // showed and never a later one that reused the gate's id. The listing is
+  // global and up to three runs execute at once, each with its own task
+  // indexes, so only a gate whose listed `task_run` is THIS run is mapped,
+  // keyed by its `task_index`; the decide is bound by the gate's instance,
+  // which names that record alone. A gate that names no run belongs to no run
+  // this page can claim and is left out. A listing entry without an instance names
+  // no request, so nothing could decide it: it offers no Approve/Reject, and
+  // the page says up front that it is no longer pending.
+  const { data: gates = NO_GATES, isError: approvalsFailed, error: approvalsError } = useQuery({
     queryKey: ['approvals', run.task_id],
     queryFn: async () => {
       const list = await api.approvals();
-      const map: Record<number, string> = {};
+      const map: Record<number, CoordinatorApprovalTarget | null> = {};
       for (const a of list) {
-        const m = a.id?.match(/^task-gate-(\d+)-/);
-        if (m) map[Number(m[1])] = a.id;
+        if (a.task_run !== run.task_id || !Number.isInteger(a.task_index)) continue;
+        map[a.task_index as number] = coordinatorTarget(a.id, a.slot, a.instance);
       }
       return map;
     },
     enabled: run.status === 'running',
     refetchInterval: 3000,
   });
+  const approvalMap = useMemo(() => {
+    const ids: Record<number, string> = {};
+    for (const [index, target] of Object.entries(gates)) if (target) ids[Number(index)] = target.id;
+    return ids;
+  }, [gates]);
+  const anyGateGone = Object.values(gates).some(target => target === null);
+  const decideGate = (index: number, decision: 'approve' | 'reject') => {
+    if (!Object.hasOwn(gates, index)) return undefined;
+    const target = gates[index];
+    if (!target) throw noPendingApprovalError();
+    return api.decideApproval(target, decision);
+  };
 
   // The last approval decision / approval-flag toggle that failed. Both used
   // to vanish: the mutations had no onError and nothing read isError, so a
@@ -77,8 +107,8 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
   const queryClient = useQueryClient();
   const { mutate: handleApprove } = useMutation({
     mutationFn: async (decision: 'approve' | 'reject') => {
-      if (!selected || !approvalMap[selected.index]) return;
-      return api.resolveApproval(approvalMap[selected.index], decision);
+      if (!selected) return;
+      return decideGate(selected.index, decision);
     },
     onMutate: () => setActionError(''),
     onSuccess: (_, decision) => {
@@ -86,13 +116,11 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       onRefresh?.();
       if (decision === 'reject' && selected) setSelectedTask(selected.index);
     },
-    onError: (e) => setActionError(errText(e)),
+    onError: (e) => setActionError(decideErrText(e)),
   });
   const { mutate: dagApprove } = useMutation({
     mutationFn: async ({ index, decision }: { index: number; decision: 'approve' | 'reject' }) => {
-      const approvalId = approvalMap[index];
-      if (!approvalId) return;
-      return api.resolveApproval(approvalId, decision);
+      return decideGate(index, decision);
     },
     onMutate: () => setActionError(''),
     onSuccess: (_, { index, decision }) => {
@@ -100,7 +128,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       onRefresh?.();
       if (decision === 'reject') setSelectedTask(index);
     },
-    onError: (e) => setActionError(errText(e)),
+    onError: (e) => setActionError(decideErrText(e)),
   });
   const { mutateAsync: toggleApprovalMut } = useMutation({
     mutationFn: ({ index, updates }: { index: number; updates: Record<string, boolean> }) =>
@@ -246,6 +274,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             override. A hand-off unmounts all of it. */}
         <ErrorNotice message={approvalsFailed ? errText(approvalsError) : ''} className="mx-4 mt-2 shrink-0" testId="project-detail-approvals-error" />
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="project-detail-action-error" />
+        <ErrorNotice message={run.status === 'running' && anyGateGone ? refusedNotice() : ''} className="mx-4 mt-2 shrink-0" testId="project-detail-gate-gone" />
         <ErrorNotice message={exportMutation.isError ? errText(exportMutation.error) : ''} onDismiss={() => exportMutation.reset()} className="mx-4 mt-2 shrink-0" testId="project-detail-export-error" />
 
         {/* Approval banner */}

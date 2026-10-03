@@ -242,7 +242,8 @@
       "stream_ended_without_completion": "Поток прервался до завершения",
       "token_not_accepted": "Этот URL для входа не принят. Запустите kirocrew token снова и вставьте новый URL для входа ниже.",
       "token_exchange_unreachable": "Не удалось связаться со шлюзом, поэтому URL для входа не был проверен. Убедитесь, что он запущен, и нажмите Enter снова.",
-      "unexpected_server_response": "Неожиданный ответ сервера"
+      "unexpected_server_response": "Неожиданный ответ сервера",
+      "no_pending_approval": "Это подтверждение больше не ожидает решения."
     }
   },
   "app": {
@@ -9712,7 +9713,6 @@
       "cron": "Cron{{detail}}",
       "cron_running": "Cron · выполняется",
       "deny": "Запретить",
-      "failed": "не удалось",
       "idle": "Простой",
       "kiro_is_working": "kiro работает…",
       "loading_thread": "Загрузка ветки…",

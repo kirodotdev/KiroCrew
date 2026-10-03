@@ -239,7 +239,8 @@
       "stream_ended_without_completion": "스트림이 완료되지 않은 채 종료되었습니다",
       "token_not_accepted": "이 로그인 URL은 거부되었습니다. kirocrew token 을 다시 실행하고 새 로그인 URL을 아래에 붙여넣으세요.",
       "token_exchange_unreachable": "게이트웨이에 연결할 수 없어 로그인 URL을 확인하지 못했습니다. 실행 중인지 확인한 뒤 Enter를 다시 누르세요.",
-      "unexpected_server_response": "예기치 않은 서버 응답"
+      "unexpected_server_response": "예기치 않은 서버 응답",
+      "no_pending_approval": "이 승인은 더 이상 대기 중이 아닙니다."
     }
   },
   "app": {
@@ -9331,7 +9332,6 @@
       "cron": "정기 실행{{detail}}",
       "cron_running": "정기 실행 · 실행 중",
       "deny": "거부",
-      "failed": "실패",
       "idle": "유휴",
       "kiro_is_working": "kiro가 작업 중…",
       "loading_thread": "스레드 불러오는 중…",

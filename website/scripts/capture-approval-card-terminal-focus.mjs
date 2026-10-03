@@ -6,7 +6,8 @@
  * Drives the isolated capture entry (website/capture/approval-card-terminal-focus.html),
  * which mounts the REAL ApprovalCard. Approve is pressed from the keyboard, and
  * each frame asserts before it is written that the buttons are gone, the notice
- * says the approval is no longer pending, and focus is on the notice's wrapper.
+ * says the press came too late and was not recorded, and focus is on the
+ * notice's wrapper.
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6822 --strictPort   # in another shell

@@ -2766,9 +2766,16 @@ can recur in the same slot, so a card rendered from an expired record cannot
 resolve the request that replaced it. An earlier wait's exit removes only its own
 record and future, judged by the future it created, so a replacement registered
 under the same ID stays resolvable. A selector naming no instance is malformed
-and returns 400. The native slot endpoint's optional
+and returns 400. A task gate's record also carries `task_run` and `task_index`,
+because its ID cannot say whose gate it is (up to three runs execute at once and
+their task indexes overlap). They are listed and broadcast with the record so the
+project page, which reads the global listing, finds its own run's gate; the
+decide carries neither, because the instance is minted per record and already
+names that record. The native slot endpoint's optional
 `origin: native` body selector requires an explicit request ID, `request_mid`
-and one-shot action. The host permission row's existing `meta.mid` is associated
+and a one-shot or pending-card trust action (`trust`, `trust_reads`,
+`trust_command`, `trust_base`; never `yolo`), so a standing grant is bound to
+the exact request the card showed. The host permission row's existing `meta.mid` is associated
 with the exact registered future; projection and submission both verify that
 association, so ACP reconnect ID reuse cannot transfer old consent. Cleanup
 only removes the future and association it owns and never broadcasts a stale

@@ -10350,6 +10350,14 @@ class GatewayOrchestrator:
                 source="taskrunner",
                 tool=f"Task {task.index}: {clean_title}",
                 tool_purpose="Task requires manual approval before execution",
+                # Names the run and task this gate holds. Up to three runs
+                # execute at once and their task indexes overlap, so the id's
+                # index alone cannot say which run a gate belongs to; a project
+                # page shows only the gates whose run is its own, and decides
+                # each by the record's instance. The executor sets the task's
+                # run before it awaits this callback.
+                task_run=task.run_task_id,
+                task_index=task.index,
             )
             sel().log_api_access(
                 caller="taskrunner",

@@ -4,6 +4,7 @@
  *  log. */
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage, ToolActivity } from '../../types'
+import { permissionRowTarget, sameApprovalTarget, type ApprovalTarget } from '../../types/approvalTarget'
 import { SPAWN_LAUNCH_MARKER } from '../../pages/chat/types'
 import { persistActivityOpen, type ChatState } from './state'
 import { clampToolOutput, isUnsafeKey, safeKey } from './wire'
@@ -118,14 +119,19 @@ export const activityReducers = {
     log.push(entry)
     if (log.length > 100) log.splice(0, log.length - 100)
   },
-  sseActivityEvent(state: ChatState, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string }>) {
+  sseActivityEvent(state: ChatState, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string; approval_target?: ApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot)) return
     const log = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).toolLog
       : state.toolLog
     if (action.payload.kind === 'approval_resolved') {
       const id = action.payload.approval_id
-      const entry = log.find(e => e.type === 'approval' && e.approval_id === id)
+      // With a target, only the request it names: the id recurs, and a chat
+      // runner's row can share it.
+      const target = action.payload.approval_target
+      const entry = log.find(e => e.type === 'approval' && (target
+        ? sameApprovalTarget(e.approval_target, target)
+        : e.approval_id === id))
       if (entry) entry.type = 'approval_resolved'
       // Resolve against the OWNING slot's message array — active slot uses
       // state.messages, a background slot its slotMessages entry. Reading only
@@ -135,7 +141,9 @@ export const activityReducers = {
       const msgs = action.payload.slot !== state.activeSlot
         ? (state.slotMessages[safeKey(action.payload.slot)] ?? [])
         : state.messages
-      const msg = msgs.findLast(m => m.role === 'permission' && (m.meta as Record<string,unknown>)?.approval_id === id)
+      const msg = msgs.findLast(m => m.role === 'permission' && (target
+        ? sameApprovalTarget(permissionRowTarget(m.meta, action.payload.slot), target)
+        : (m.meta as Record<string,unknown>)?.approval_id === id))
       if (msg && !(msg.meta as Record<string,unknown>).resolved) (msg.meta as Record<string,unknown>).resolved = 'approved'
       // Stamp execution_started_at on the EXACT tool entry linked to this
       // approval via the permission message's tool_call_id. This persists in
@@ -151,6 +159,7 @@ export const activityReducers = {
     const entry: ToolActivity = { type: action.payload.kind, text: action.payload.text, ts: Date.now() }
     if (action.payload.approval_id) entry.approval_id = action.payload.approval_id
     if (action.payload.approval_type) entry.approval_type = action.payload.approval_type
+    if (action.payload.approval_target) entry.approval_target = action.payload.approval_target
     log.push(entry)
   },
   sseToolResult(state: ChatState, action: PayloadAction<{ slot: string; output: string; tool_call_id?: string }>) {

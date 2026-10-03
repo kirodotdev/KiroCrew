@@ -3674,13 +3674,12 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
-        pending = state._pending_approvals.get(approval_id)
-        # No await between checking the record and resolving its state-only future.
-        ok = bool(
-            pending
-            and pending.get("slot") == slot
-            and pending.get("instance") == instance
-            and state.resolve_state_approval(approval_id, action == "approve")
+        # Verified against the record and resolved with no await between; a
+        # chat runner's request is decided on its slot's approve route
+        # (``origin: native``), never here. The instance is minted per record,
+        # so it already names the record's subject: no subject is sent here.
+        ok = state.resolve_coordinator_approval(
+            approval_id, action == "approve", slot=slot, instance=instance
         )
     else:
         ok = state.resolve_approval(

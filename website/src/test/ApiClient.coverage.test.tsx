@@ -2038,6 +2038,8 @@ describe('every api method issues one well-formed /api request', () => {
     // Memory reads take typed objects; positional strings do not satisfy the
     // query/record contract and would manufacture undefined URL parameters.
     memoryRecords: ['member-reviewer', { q: 'contact', kind: 'fact' }, 0, 50],
+    // A decide takes the typed target it is bound to, not a bare id.
+    decideApproval: [{ origin: 'native', id: 'sw-1', slot: 'sw-2', mid: 'sw-3' }, 'approve'],
     memoryRecordHistory: ['member-reviewer', { kind: 'fact', id: 'user.contact' }, 25, 0],
     // `invokeFileMenuItem(item, ctx)`: the URL is `item.endpoint`.
     invokeFileMenuItem: [

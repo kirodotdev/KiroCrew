@@ -6,6 +6,7 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
+import { permissionRowTarget, sameApprovalTarget, type ApprovalTarget } from '../../types/approvalTarget'
 import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
@@ -311,6 +312,44 @@ export const messageReducers = {
           log[i].rejected = true; break
         }
       }
+    }
+  },
+  /** Settle the permission row raised for *target* (types/approvalTarget):
+   *  only a row naming that exact request, so a coordinator resolution never
+   *  lands on a chat runner's row under the same id, nor the reverse, nor on
+   *  an earlier request's row under a recurring id. Decision rules as in
+   *  `resolveByApprovalId`. */
+  resolveApprovalRow(state: ChatState, action: PayloadAction<{ target: ApprovalTarget; decision: string }>) {
+    const { target, decision } = action.payload
+    const slot = target.slot
+    if (!slot || isUnsafeKey(slot)) return
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const m = messages?.find(message => message.role === 'permission'
+      && sameApprovalTarget(permissionRowTarget(message.meta, slot), target))
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    const toolCallId = m.meta.tool_call_id as string | undefined
+    if (isRejectedDecision(decision) && toolCallId) {
+      const log = slot === state.activeSlot
+        ? state.toolLog
+        : state.slotActivity[safeKey(slot)]?.toolLog ?? []
+      for (let i = log.length - 1; i >= 0; i--) {
+        if (log[i].type === 'tool' && log[i].tool_call_id === toolCallId) {
+          log[i].rejected = true; break
+        }
+      }
+    }
+  },
+  /** Settle a chat runner's pending rows under *id* in *slot*, for a
+   *  resolution that names no row (a frame without a mid). Only the runner's
+   *  own rows: a coordinator row under the same id is never touched. */
+  resolveNativeApprovalRows(state: ChatState, action: PayloadAction<{ id: string; slot: string; decision: string }>) {
+    const { id, slot, decision } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    for (const m of messages ?? []) {
+      if (m.role !== 'permission' || m.meta?.registry === 'coordinator' || m.meta?.approval_id !== id || m.meta.resolved) continue
+      m.meta.resolved = decision
     }
   },
   /** Mark all unresolved permission messages as resolved (e.g. when stop is pressed). */

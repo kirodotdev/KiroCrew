@@ -239,7 +239,8 @@
       "stream_ended_without_completion": "ストリームが完了せずに終了しました",
       "token_not_accepted": "このサインイン URL は受け付けられませんでした。kirocrew token を再実行し、新しいサインイン URL を下に貼り付けてください。",
       "token_exchange_unreachable": "ゲートウェイに接続できなかったため、サインイン URL は検証されていません。起動していることを確認して、もう一度 Enter を押してください。",
-      "unexpected_server_response": "予期しないサーバーレスポンス"
+      "unexpected_server_response": "予期しないサーバーレスポンス",
+      "no_pending_approval": "この承認はすでに保留中ではありません。"
     }
   },
   "app": {
@@ -9331,7 +9332,6 @@
       "cron": "定期実行{{detail}}",
       "cron_running": "Cron · 実行中",
       "deny": "却下",
-      "failed": "失敗しました",
       "idle": "アイドル",
       "kiro_is_working": "kiro が作業中…",
       "loading_thread": "スレッドを読み込み中…",

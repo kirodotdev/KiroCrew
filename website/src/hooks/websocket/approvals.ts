@@ -1,23 +1,30 @@
 /** Coordinator-registry approvals as the socket sees them.
  *
- *  Owns the provenance of every approval the coordinator registry raised in
- *  this tab, its retirement (from `approval_resolved`, or as stale when the
- *  authority no longer lists it), the attention and feed half of a live
- *  `approval` frame, and the snapshot rules the reconnect reconcile applies.
+ *  Every approval here is handled as the request its target names
+ *  (types/approvalTarget), never by its id: the coordinator's id is the
+ *  caller's and recurs, and a chat runner's request id can collide with it.
+ *  This module owns the targets of the coordinator approvals this tab shows,
+ *  their retirement (from `approval_resolved`, or as stale when the authority
+ *  no longer lists them), the attention and feed half of a live `approval`
+ *  frame, and the snapshot rules the boot and reconnect reconcile applies.
  *  The permission row an approval injects into its owning chat is
  *  synthesized by `useWebSocket` beside the frame routing. */
 import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { addNotification, retireApprovalRow, liveApprovalRows } from '../../store/notificationsSlice'
-import { resolveByApprovalId, sseActivityEvent, sseSubagentSpawn, sseSubagentDone } from '../../store/chatSlice'
+import { addNotification, deleteNotification, retireApprovalRow, liveApprovalRows, approvalDecideTarget } from '../../store/notificationsSlice'
+import { resolveApprovalRow, resolveNativeApprovalRows, sseActivityEvent, sseSubagentSpawn, sseSubagentDone } from '../../store/chatSlice'
 import { dispatchMcNotification, dispatchLiveNotification, APPROVAL_KIND } from '../notificationEvent'
 import { loadUnreadOnAttention } from '../unreadOnAttention'
 import { approvalNotificationBody } from '../../lib/approvalNotificationBody'
 import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
-import type { Notification } from '../../types'
+import type { ChatMessage, Notification } from '../../types'
+import {
+  approvalTargetKey, coordinatorTarget, nativeTarget, permissionRowTarget, sameApprovalTarget,
+  type ApprovalTarget, type CoordinatorApprovalTarget,
+} from '../../types/approvalTarget'
 import { isSlotOnScreen } from './attention'
 import { recordInBoundedLog, resolvedSince } from './retiredIds'
 import type { FrameData } from './frames'
@@ -25,222 +32,244 @@ import type { FrameData } from './frames'
 type AuthorityApproval = Awaited<ReturnType<typeof api.approvals>>[number]
 
 export interface ApprovalRegistry {
-  /** Reconcile against `GET /api/approvals`: retire every approval held
-   *  before the read that the answer no longer lists, then adopt each listed
-   *  one this tab lacks (not retired while the read was in flight, not
-   *  already in the feed, not already a permission row in its slot):
-   *  register it, add its feed note, and hand it to `writeRow` for its
-   *  transcript row. Rejects when the read does; the caller swallows. */
-  reconcilePending(writeRow: (approval: AuthorityApproval, slot: string) => void): Promise<void>
-  /** A live `approval` frame's attention and feed half; returns the owning
-   *  slot ('' when the approval has none). */
-  onApprovalFrame(data: FrameData, reconnecting: boolean): string
+  /** Reconcile against `GET /api/approvals`, the authority on which requests
+   *  are still pending. Every coordinator request this tab shows (a feed row,
+   *  a chat row, or one it tracks) that the answer does not list is retired as
+   *  stale, unless a live frame raised it while the read was in flight. Rows
+   *  that name no request at all are retired too: nothing can decide them.
+   *  Each listed request this tab lacks is adopted: its feed note is added and
+   *  `writeRow` writes its transcript row. Rejects when the read does; the
+   *  caller swallows. */
+  reconcilePending(writeRow: (approval: AuthorityApproval, slot: string, target: CoordinatorApprovalTarget) => void): Promise<void>
+  /** A live `approval` frame's attention and feed half. Returns the owning
+   *  slot ('' when the approval has none) and the request's target, null
+   *  when the frame names no request. */
+  onApprovalFrame(data: FrameData, reconnecting: boolean): { slot: string; target: CoordinatorApprovalTarget | null }
   onApprovalResolved(data: FrameData): void
 }
 
+/** The permission rows a slot holds, wherever the store keeps them. */
+function slotRows(slot: string): ChatMessage[] {
+  const chat = store.getState().chat
+  if (!slot) return []
+  if (slot === chat.activeSlot) return chat.messages
+  return Object.hasOwn(chat.slotMessages, slot) ? chat.slotMessages[slot] ?? [] : []
+}
+
+/** Every coordinator request a pending chat row names, across loaded slots. */
+function pendingChatTargets(): CoordinatorApprovalTarget[] {
+  const chat = store.getState().chat
+  const out: CoordinatorApprovalTarget[] = []
+  const scan = (slot: string, rows: ChatMessage[]) => {
+    for (const m of rows) {
+      if (m.role !== 'permission' || m.meta?.resolved) continue
+      const t = permissionRowTarget(m.meta, slot)
+      if (t?.origin === 'coordinator') out.push(t)
+    }
+  }
+  if (chat.activeSlot) scan(chat.activeSlot, chat.messages)
+  for (const slot of Object.keys(chat.slotMessages)) {
+    if (slot !== chat.activeSlot) scan(slot, chat.slotMessages[slot] ?? [])
+  }
+  return out
+}
+
 export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryClient): ApprovalRegistry {
-  // Only coordinator-registry approvals enter this map. Chat-runner permission
-  // rows can share an id, so registry provenance is required before a
-  // reconnect reconcile may retire a client-injected row.
-  const coordinatorApprovalsRef = useRef<Map<string, string>>(new Map())
-  // The server-issued instance of the request each entry above names. The id
-  // is the caller's and recurs; the instance tells this request's feed row
-  // apart from an earlier one's under the same id.
-  const coordinatorInstancesRef = useRef<Map<string, string>>(new Map())
-  // Coordinator ids retired by live frames, keyed by monotonic sequence.
-  // Reconnect snapshots consult this log so an authority response cannot
-  // revive an entry retired while that response was in flight.
-  const retiredApprovalIdsRef = useRef<Map<string, number>>(new Map())
-  const retiredApprovalSeqRef = useRef(0)
+  // The coordinator requests this tab shows, by target key. A decided frame
+  // names no slot, so this is where the owning slot is found again.
+  const targetsRef = useRef<Map<string, CoordinatorApprovalTarget>>(new Map())
+  // Targets retired, and targets raised, by live frames, keyed by monotonic
+  // sequence. A reconcile consults both from its watermark on: an authority
+  // answer cannot revive a request retired while it was in flight, nor
+  // retire one raised after it was taken.
+  const retiredRef = useRef<Map<string, number>>(new Map())
+  const raisedRef = useRef<Map<string, number>>(new Map())
+  const seqRef = useRef(0)
 
   return useMemo<ApprovalRegistry>(() => {
-    const retireApproval = (
-      id: string,
-      slot: string | undefined,
-      approved: boolean,
-      decision?: string,
-      slotlessResolution = false,
-      instance = '',
-    ) => {
-      if (!id) return
-      const coordinatorSlot = coordinatorApprovalsRef.current.get(id)
-      const provenance = coordinatorApprovalsRef.current.has(id)
-        && (slotlessResolution || slot === coordinatorSlot)
-      const targetSlot = slot || undefined
-      const chatState = store.getState().chat
-      const targetMessages = targetSlot === chatState.activeSlot
-        ? chatState.messages
-        : targetSlot && Object.hasOwn(chatState.slotMessages, targetSlot)
-          ? chatState.slotMessages[targetSlot] ?? []
-          : []
-      // Settled rows no longer compete for a resolution. A still-pending unmarked
-      // row is a chat-runner collision, so the frame cannot safely claim the
-      // coordinator registry even when its id and slot match the provenance map.
-      const pendingMatches = targetMessages.filter(message =>
-        message.role === 'permission'
-        && message.meta?.approval_id === id
-        && !message.meta?.resolved)
-      const coordinatorRow = pendingMatches.some(message => message.meta?.registry === 'coordinator')
-      // A frame naming the instance this tab tracks under the id is the
-      // coordinator's own resolution: that is ownership outright, and a
-      // colliding chat-runner row in the same slot is not what it settled.
-      // A frame naming none keeps the collision check.
-      const tracked = !!instance && coordinatorInstancesRef.current.get(id) === instance
-      const ownsCoordinatorEntry = tracked || (provenance && coordinatorRow
-        && !pendingMatches.some(message => message.meta?.registry == null))
-      queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
-      // Only rows still live compete: the id recurs, so a retired row for an
-      // earlier request can share it. A row bound to an instance goes only
-      // with a frame naming that instance (an approval with no owning slot,
-      // such as a cron job's, has no chat row to check). A row that predates
-      // instances goes only on ownership as decided above.
-      const rows = liveApprovalRows(store.getState().notifications, id).filter((n: Notification) =>
-        n.approval_instance ? !!instance && n.approval_instance === instance : ownsCoordinatorEntry)
-      // Retired, not removed: the server still lists the note until it is
-      // dismissed, so the row stays and only loses Approve/Reject. Retiring
-      // also marks it read, so it stops lighting the unread badge.
-      const why = decision === 'expired' || decision === 'stale' ? 'gone' : approved ? 'approve' : 'reject'
-      for (const row of rows) dispatch(retireApprovalRow(row.ts, why))
-      const displayDecision = decision === 'expired' ? 'stale' : decision
-      // Tracked but with no coordinator row in the slot: the only pending row
-      // under the id is a chat runner's, which this resolution did not settle.
-      if (!tracked || coordinatorRow) dispatch(resolveByApprovalId({
-        id,
-        slot: targetSlot,
-        decision: displayDecision ?? (approved ? 'approved' : 'rejected'),
-        ...(ownsCoordinatorEntry ? { registry: 'coordinator' } : {}),
-      }))
+    /** Side effects a settled request has beyond its own rows: the activity
+     *  log entry and a spawn card. Keyed by the target, in the slot that
+     *  raised it; guessing activeSlot writes into an unrelated conversation. */
+    const settleActivity = (target: ApprovalTarget, approved: boolean, decision?: string) => {
+      const slot = target.slot
+      if (!slot) return
+      const id = target.id
       // A stale retirement carries no outcome: the approval may have been
       // answered either way where this client could not see it (another window,
       // a channel, or auto-approve). An explicit expiry is known to be denied,
       // but keeps the stale chat vocabulary while terminating a spawn card.
       const outcomeKnown = decision !== 'stale'
-      // Resolve only in the slot that raised the card. Guessing activeSlot here
-      // writes subagent spawn/done entries into an unrelated conversation.
       const resolvedType = id.startsWith('spawn:') ? 'spawn' : 'chat'
-      if (targetSlot) {
-        const chatState = store.getState().chat
-        const log = targetSlot === chatState.activeSlot
-          ? chatState.toolLog
-          : chatState.slotActivity[targetSlot]?.toolLog ?? []
-        const hasMatchingApproval = log.some(e => e.approval_id === id && e.type === 'approval')
-        if (hasMatchingApproval || resolvedType === 'spawn') {
-          dispatch(sseActivityEvent({
-            slot: targetSlot,
-            kind: 'approval_resolved',
-            text: '',
-            approval_id: id,
-            approval_type: resolvedType,
+      const chatState = store.getState().chat
+      const log = slot === chatState.activeSlot
+        ? chatState.toolLog
+        : chatState.slotActivity[slot]?.toolLog ?? []
+      const hasMatchingApproval = log.some(e => e.type === 'approval' && sameApprovalTarget(e.approval_target, target))
+      if (hasMatchingApproval || resolvedType === 'spawn') {
+        dispatch(sseActivityEvent({
+          slot,
+          kind: 'approval_resolved',
+          text: '',
+          approval_id: id,
+          approval_type: resolvedType,
+          approval_target: target,
+        }))
+      }
+      if (target.origin === 'coordinator' && id.startsWith('spawn:') && outcomeKnown) {
+        const agentId = id.replace('spawn:', '')
+        if (approved) {
+          dispatch(sseSubagentSpawn({ slot, id: agentId, task: '', agent: '' }))
+        } else {
+          // The spawn card renders this value verbatim under its error label,
+          // so both denials have to arrive as a sentence: the raw `expired` or
+          // `rejected` token read as a subagent crash when it was a decision.
+          dispatch(sseSubagentDone({
+            slot,
+            id: agentId,
+            elapsed: 0,
+            error: decision === 'expired'
+              ? i18nT('hooks.useWebSocket.approval_wait_expired')
+              : i18nT('hooks.useWebSocket.approval_rejected'),
           }))
         }
-        if (id.startsWith('spawn:') && outcomeKnown) {
-          const agentId = id.replace('spawn:', '')
-          if (approved) {
-            dispatch(sseSubagentSpawn({ slot: targetSlot, id: agentId, task: '', agent: '' }))
-          } else {
-            // The spawn card renders this value verbatim under its error label,
-            // so both denials have to arrive as a sentence: the raw `expired` or
-            // `rejected` token read as a subagent crash when it was a decision.
-            dispatch(sseSubagentDone({
-              slot: targetSlot,
-              id: agentId,
-              elapsed: 0,
-              error: decision === 'expired'
-                ? i18nT('hooks.useWebSocket.approval_wait_expired')
-                : i18nT('hooks.useWebSocket.approval_rejected'),
-            }))
-          }
-        }
       }
-      recordInBoundedLog(retiredApprovalIdsRef.current, retiredApprovalSeqRef, id)
-      if (ownsCoordinatorEntry) {
-        coordinatorApprovalsRef.current.delete(id)
-        coordinatorInstancesRef.current.delete(id)
+    }
+
+    /** Retire the coordinator request *target* names, and only it. */
+    const retireCoordinator = (target: CoordinatorApprovalTarget, approved: boolean, decision?: string) => {
+      queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+      // An expiry is retired in place: the row loses Approve/Reject and keeps
+      // a line saying the wait expired and the request was denied, unread,
+      // until the reader dismisses it, because nobody may know yet that the
+      // job was denied. A retirement whose outcome is unknown (`stale`) keeps
+      // the "no longer pending" line instead, since it cannot say which. A decision made
+      // elsewhere (another tab, the chat card, a channel) leaves nothing to
+      // explain, so its row is retired and then removed once the server
+      // confirms. A decision this tab's feed or detail panel is waiting on
+      // is left to that view, which settles it when its own response lands.
+      const why = decision === 'expired' ? 'expired' : decision === 'stale' ? 'gone' : approved ? 'approve' : 'reject'
+      const kept = why === 'gone' || why === 'expired'
+      const notifications = store.getState().notifications
+      const decidingHere = !!notifications.decidingApprovals?.[approvalTargetKey(target)]
+      for (const row of liveApprovalRows(notifications, target)) {
+        dispatch(retireApprovalRow(row.ts, why))
+        if (!kept && !decidingHere) void dispatch(deleteNotification(row.ts))
       }
+      const displayDecision = decision === 'expired' ? 'stale' : decision
+      if (target.slot) {
+        dispatch(resolveApprovalRow({ target, decision: displayDecision ?? (approved ? 'approved' : 'rejected') }))
+      }
+      settleActivity(target, approved, decision)
+      const key = approvalTargetKey(target)
+      recordInBoundedLog(retiredRef.current, seqRef, key)
+      targetsRef.current.delete(key)
+    }
+
+    /** The tracked target for a frame's id and instance: its slot is the one
+     *  the request was raised in, which a decided frame does not repeat. */
+    const trackedTarget = (id: string, instance: string, frameSlot: string | undefined): CoordinatorApprovalTarget | null => {
+      const probe = coordinatorTarget(id, frameSlot ?? '', instance)
+      if (!probe) return null
+      return targetsRef.current.get(approvalTargetKey(probe)) ?? probe
     }
 
     return {
       async reconcilePending(writeRow) {
-        // Only approvals held before this authority read may be retired from its
-        // answer. A live frame can inject another approval while the read is in
-        // flight, and that approval is outside this snapshot's ordering boundary.
-        // Each entry keeps the instance it held then: the id recurs, so a
-        // request that replaced it during the read must not be retired as it.
-        const instances = coordinatorInstancesRef.current
-        const before = [...coordinatorApprovalsRef.current].map(([id, slot]) => [id, slot, instances.get(id)] as const)
-        const retiredSeen = retiredApprovalSeqRef.current
+        const watermark = seqRef.current
         const approvals = await api.approvals()
-        const retiredDuringFetch = new Set(resolvedSince(retiredApprovalIdsRef.current, retiredSeen))
-        const pendingIds = new Set(approvals.map(a => a.id))
-        for (const [id, slot, instance] of before) {
-          if (pendingIds.has(id)) continue
-          // Replaced during the read: the new request owns the id, its chat
-          // row and its provenance, so only the earlier one's feed row goes.
-          if (coordinatorApprovalsRef.current.has(id)
-            && (coordinatorApprovalsRef.current.get(id) !== slot || instances.get(id) !== instance)) {
-            for (const row of liveApprovalRows(store.getState().notifications, id)) {
-              if (instance && row.approval_instance === instance) dispatch(retireApprovalRow(row.ts, 'gone'))
-            }
+        // A request this tab has retired is gone for good (an instance is never
+        // reissued), whether the retirement landed before this read or during
+        // it, so the answer can neither revive nor retire it again.
+        const retiredHere = retiredRef.current
+        const raisedDuringFetch = new Set(resolvedSince(raisedRef.current, watermark))
+        const pending = new Map<string, { approval: AuthorityApproval; target: CoordinatorApprovalTarget }>()
+        for (const a of approvals) {
+          const target = coordinatorTarget(a.id, a.slot || '', a.instance)
+          if (target) pending.set(approvalTargetKey(target), { approval: a, target })
+        }
+        const stillPending = (t: CoordinatorApprovalTarget) => {
+          const key = approvalTargetKey(t)
+          return pending.has(key) || raisedDuringFetch.has(key)
+        }
+        // Retire what this tab shows that the authority no longer lists:
+        // tracked requests, chat rows, and feed rows. The feed is the case a
+        // fresh tab needs: its rows come from the stored notifications, and an
+        // approval that expired before the tab opened is not pending.
+        const shown = new Map<string, CoordinatorApprovalTarget>()
+        for (const t of targetsRef.current.values()) shown.set(approvalTargetKey(t), t)
+        for (const t of pendingChatTargets()) shown.set(approvalTargetKey(t), t)
+        const notifications = store.getState().notifications
+        const retired = notifications.retiredApprovals ?? {}
+        for (const n of notifications.items) {
+          if (n.kind !== 'approval' || Object.hasOwn(retired, n.ts)) continue
+          const t = approvalDecideTarget(n)
+          if (!t) {
+            // A row from an older build names no request, so it cannot be
+            // decided. When the authority still lists its id in its slot, the
+            // adoption below raises a live row for that request: this one
+            // would only duplicate it as gone, so it is removed instead.
+            const listed = approvals.some(a => a.id === n.approval_id && (a.slot || '') === (n.slot || ''))
+            if (listed) void dispatch(deleteNotification(n.ts))
+            else dispatch(retireApprovalRow(n.ts, 'gone'))
             continue
           }
-          retireApproval(id, slot, false, 'stale', false, instance)
+          const key = approvalTargetKey(t)
+          if (!shown.has(key)) shown.set(key, t)
         }
-        const existing = store.getState().notifications.items
-        const currentChat = store.getState().chat
-        for (const a of approvals) {
-          if (retiredDuringFetch.has(a.id)) continue
-          const slot = a.slot || ''
-          const slotMessages = slot === currentChat.activeSlot
-            ? currentChat.messages
-            : slot && Object.hasOwn(currentChat.slotMessages, slot)
-              ? currentChat.slotMessages[slot] ?? []
-              : []
-          // Already in the feed as THIS request: the same instance, or (for a
-          // listing without one) a live row under the id. A retired row for an
-          // earlier request under a recurring id is not this one.
-          if (a.instance
-            ? existing.some((n: Notification) => n.approval_id === a.id && n.approval_instance === a.instance)
-            : liveApprovalRows(store.getState().notifications, a.id).length > 0) continue
-          // A settled row under a recurring id is an earlier request's.
-          if (slotMessages.some(message => message.role === 'permission'
-            && message.meta?.approval_id === a.id && !message.meta?.resolved)) continue
-          coordinatorApprovalsRef.current.set(a.id, slot)
-          if (a.instance) coordinatorInstancesRef.current.set(a.id, a.instance)
-          else coordinatorInstancesRef.current.delete(a.id)
-          dispatch(addNotification({
-            kind: 'approval',
-            title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
-            body: approvalNotificationBody(a.source, a.tool_input),
-            ts: String(a.ts || Date.now() / 1000),
-            approval_id: a.id,
-            ...(a.instance ? { approval_instance: a.instance } : {}),
-            ...(slot ? { slot } : {}),
-          } as Notification))
-          writeRow(a, slot)
+        for (const [key, t] of shown) {
+          if (stillPending(t) || retiredHere.has(key)) continue
+          // The slot this tab tracked it under, when it did.
+          retireCoordinator(targetsRef.current.get(key) ?? t, false, 'stale')
+        }
+        // Adopt each listed request this tab lacks.
+        const items = store.getState().notifications.items
+        for (const [key, { approval: a, target }] of pending) {
+          if (retiredHere.has(key)) continue
+          targetsRef.current.set(key, target)
+          if (!items.some((n: Notification) => sameApprovalTarget(approvalDecideTarget(n), target))) {
+            dispatch(addNotification({
+              kind: 'approval',
+              title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
+              body: approvalNotificationBody(a.source, a.tool_input),
+              ts: String(a.ts || Date.now() / 1000),
+              approval_id: a.id,
+              approval_instance: target.instance,
+              ...(target.slot ? { slot: target.slot } : {}),
+            } as Notification))
+          }
+          if (!slotRows(target.slot).some(m => m.role === 'permission'
+            && sameApprovalTarget(permissionRowTarget(m.meta, target.slot), target))) {
+            writeRow(a, target.slot, target)
+          }
         }
       },
       onApprovalFrame(data, reconnecting) {
         queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
-        if (typeof data.id === 'string') {
-          coordinatorApprovalsRef.current.set(
-            data.id,
-            typeof data.slot === 'string' ? data.slot : '',
-          )
-          if (typeof data.instance === 'string' && data.instance) {
-            coordinatorInstancesRef.current.set(data.id, data.instance)
-          } else {
-            coordinatorInstancesRef.current.delete(data.id)
+        const approvalSlot = typeof data.slot === 'string' && data.slot ? data.slot : ''
+        const target = coordinatorTarget(data.id, approvalSlot, data.instance)
+        if (target) {
+          const key = approvalTargetKey(target)
+          // A new request under an id this tab already tracks replaces the
+          // earlier one on the server, whose wait then ends with no frame of
+          // its own: retire the earlier request's rows here, so they do not
+          // stay actionable only to answer 404.
+          for (const prior of [...targetsRef.current.values()]) {
+            if (prior.id === target.id && prior.instance !== target.instance) retireCoordinator(prior, false, 'stale')
           }
+          targetsRef.current.set(key, target)
+          recordInBoundedLog(raisedRef.current, seqRef, key)
         }
         // Approval-blocked chime: the agent is stuck until the user acts.
         // Suppressed during reconnect catch-up (same policy as turn-done).
         if (!reconnecting) {
           dispatchMcNotification(APPROVAL_KIND)
           // Blocked on the user: badge it under the done-or-waiting opt-in.
-          if (typeof data.slot === 'string' && data.slot && loadUnreadOnAttention() && !isSlotOnScreen(data.slot)) {
-            dispatch(markSlotUnread({ slot: data.slot }))
+          if (approvalSlot && loadUnreadOnAttention() && !isSlotOnScreen(approvalSlot)) {
+            dispatch(markSlotUnread({ slot: approvalSlot }))
           }
         }
+        // A frame that names no request raises no row: nothing could decide it.
+        if (!target) return { slot: approvalSlot, target: null }
         // No OS toast here. The addNotification below is what reaches the
         // OS: useNativeNotification watches the unacked count and posts ONE
         // toast per new note, tagged with its approval_id, only while the
@@ -252,15 +281,13 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // `targetsCurrentView` gate can tell "this chat is on screen" (the
         // inline permission card already shows it there) from "the user is
         // on another surface" (the banner is the interrupt).
-        const approvalSlot = typeof data.slot === 'string' && data.slot ? data.slot : ''
-        const approvalInstance = typeof data.instance === 'string' ? data.instance : ''
         const approvalNote = {
           kind: 'approval',
           title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
           body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose),
           ts: String(data.ts || Date.now() / 1000),
-          approval_id: data.id,
-          ...(approvalInstance ? { approval_instance: approvalInstance } : {}),
+          approval_id: target.id,
+          approval_instance: target.instance,
           ...(approvalSlot ? { slot: approvalSlot } : {}),
         } as Notification
         dispatch(addNotification(approvalNote))
@@ -271,18 +298,39 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // quiet for a focused window); away from the window the toast takes
         // over and `shouldBannerNote` skips it.
         if (!reconnecting) dispatchLiveNotification(approvalNote)
-        return approvalSlot
+        return { slot: approvalSlot, target }
       },
       onApprovalResolved(data) {
         const id = typeof data.id === 'string' ? data.id : ''
         const frameSlot = typeof data.slot === 'string' ? data.slot : undefined
-        const targetSlot = frameSlot ?? coordinatorApprovalsRef.current.get(id)
-        // A decided frame carries no decision: approved/rejected derives
-        // from `approved`. An explicit expiry is a known auto-denial, but
-        // retireApproval keeps its chat-row display token as `stale`.
-        const decision = data.decision === 'expired' ? 'expired' : undefined
         const instance = typeof data.instance === 'string' ? data.instance : ''
-        retireApproval(id, targetSlot, !!data.approved, decision, frameSlot === undefined, instance)
+        const target = data.origin === 'coordinator' || instance ? trackedTarget(id, instance, frameSlot) : null
+        // Whatever the frame settles, the shared inventory the command center
+        // reads is out of date (a coordinator retirement refreshes it itself).
+        if (!target) queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+        if (!id) return
+        if (data.origin === 'coordinator' || instance) {
+          // A coordinator frame that names no request settles nothing.
+          if (!target) return
+          // A decided frame carries no decision: approved/rejected derives
+          // from `approved`. An explicit expiry is a known auto-denial, but
+          // its chat row keeps the `stale` display token.
+          retireCoordinator(target, !!data.approved, data.decision === 'expired' ? 'expired' : undefined)
+          return
+        }
+        // A chat runner's resolution. It never touches a coordinator row or a
+        // feed note (the runner raises none), whatever their id.
+        if (!frameSlot) return
+        const decision = data.approved ? 'approved' : 'rejected'
+        const named = nativeTarget(id, frameSlot, data.mid)
+        if (named) {
+          dispatch(resolveApprovalRow({ target: named, decision }))
+          settleActivity(named, !!data.approved)
+        } else {
+          // A frame without the row's mid: the runner's own pending rows under
+          // the id in that slot, never a coordinator row.
+          dispatch(resolveNativeApprovalRows({ id, slot: frameSlot, decision }))
+        }
       },
     }
   }, [dispatch, queryClient])

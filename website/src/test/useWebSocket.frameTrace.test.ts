@@ -46,6 +46,8 @@ vi.mock('../api/client', () => ({
     approvals: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
     ackNotification: vi.fn().mockResolvedValue({ ok: true }),
+    // Never settles, so a trace pins the request and not when it lands.
+    deleteNotification: vi.fn(() => new Promise(() => {})),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0, queue: [] }),
     autonudgeList: vi.fn().mockResolvedValue({ enabled: false, loops: [] }),
     monitorsList: vi.fn().mockResolvedValue({ enabled: false, monitors: [] }),
@@ -269,7 +271,7 @@ async function run(setup: Frame[], frames: Frame[]): Promise<string[]> {
   return trace
 }
 
-const approval = { id: 'ap-1', slot: ACTIVE, tool: 'shell', source: 'agent', tool_input: 'ls', ts: '1790000000' }
+const approval = { id: 'ap-1', instance: 'inst-ap-1', slot: ACTIVE, tool: 'shell', source: 'agent', tool_input: 'ls', ts: '1790000000' }
 
 const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ['dashboard status', [], [{ type: 'dashboard', data: { version: '1.0', bundle_id: 'b1' } }]],
@@ -317,12 +319,12 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'notifications_clear', data: {} },
   ]],
   ['approval in the owning slot', [], [{ type: 'approval', data: { ...approval, tool_call_id: 'tc-1', tool_purpose: 'List files' } }]],
-  ['approval for a spawn', [], [{ type: 'approval', data: { id: 'spawn:agent-1', slot: ACTIVE, tool: 'spawn_run(write docs)', source: 'agent', ts: '1790000004' } }]],
-  ['approval from a subagent', [], [{ type: 'approval', data: { id: 'ap-sub', slot: ACTIVE, tool: 'shell', source: 'subagent', ts: '1790000005' } }]],
-  ['approval with no slot', [], [{ type: 'approval', data: { id: 'ap-free', tool: 'shell', source: 'cron', ts: '1790000006' } }]],
-  ['approval_resolved for a coordinator approval', [{ type: 'approval', data: approval }], [{ type: 'approval_resolved', data: { id: 'ap-1', slot: ACTIVE, approved: true } }]],
-  ['approval_resolved expired spawn', [{ type: 'approval', data: { id: 'spawn:agent-2', slot: ACTIVE, tool: 'spawn_run(x)', source: 'agent', ts: '1790000007' } }], [{ type: 'approval_resolved', data: { id: 'spawn:agent-2', slot: ACTIVE, approved: false, decision: 'expired' } }]],
-  ['approval_resolved without a slot', [{ type: 'approval', data: approval }], [{ type: 'approval_resolved', data: { id: 'ap-1', approved: false } }]],
+  ['approval for a spawn', [], [{ type: 'approval', data: { id: 'spawn:agent-1', instance: 'inst-agent-1', slot: ACTIVE, tool: 'spawn_run(write docs)', source: 'agent', ts: '1790000004' } }]],
+  ['approval from a subagent', [], [{ type: 'approval', data: { id: 'ap-sub', instance: 'inst-ap-sub', slot: ACTIVE, tool: 'shell', source: 'subagent', ts: '1790000005' } }]],
+  ['approval with no slot', [], [{ type: 'approval', data: { id: 'ap-free', instance: 'inst-ap-free', tool: 'shell', source: 'cron', ts: '1790000006' } }]],
+  ['approval_resolved for a coordinator approval', [{ type: 'approval', data: approval }], [{ type: 'approval_resolved', data: { id: 'ap-1', origin: 'coordinator', instance: 'inst-ap-1', slot: ACTIVE, approved: true } }]],
+  ['approval_resolved expired spawn', [{ type: 'approval', data: { id: 'spawn:agent-2', instance: 'inst-agent-2', slot: ACTIVE, tool: 'spawn_run(x)', source: 'agent', ts: '1790000007' } }], [{ type: 'approval_resolved', data: { id: 'spawn:agent-2', origin: 'coordinator', instance: 'inst-agent-2', slot: ACTIVE, approved: false, decision: 'expired' } }]],
+  ['approval_resolved without a slot', [{ type: 'approval', data: approval }], [{ type: 'approval_resolved', data: { id: 'ap-1', origin: 'coordinator', instance: 'inst-ap-1', approved: false } }]],
   ['refresh with history', [], [{ type: 'refresh', data: { kinds: ['history'] } }]],
   ['slot_clear active and background', [], [{ type: 'slot_clear', data: { slot: ACTIVE } }, { type: 'slot_clear', data: { slot: BACKGROUND } }]],
   ['slot_agent_switch', [], [{ type: 'slot_agent_switch', data: { slot: ACTIVE } }]],
@@ -773,7 +775,7 @@ describe('useWebSocket lifecycle trace', () => {
     localStorage.setItem('mc-unread-on-attention', '1')
     const { ws } = await mountOpen()
     act(() => {
-      ws.frame({ type: 'approval', data: { id: 'ap-bg', slot: BACKGROUND, tool: 'shell', source: 'agent', ts: '1790000008' } })
+      ws.frame({ type: 'approval', data: { id: 'ap-bg', instance: 'inst-ap-bg', slot: BACKGROUND, tool: 'shell', source: 'agent', ts: '1790000008' } })
       ws.frame({ type: 'question_card', data: { slot: BACKGROUND, card_id: 'card-bg', questions: [{ question: 'Which?' }] } })
     })
     // Every other scenario runs with the opt-in off (localStorage is cleared),
@@ -984,53 +986,52 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "approval in the owning slot": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"slot\":\"slot-a\"}",
-    "event mc-live-notification {\"note\":{\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"slot\":\"slot-a\"}}",
-    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-1","source":"agent","registry":"coordinator","tool_call_id":"tc-1"}}',
-    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-1","approval_type":"chat"}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files","ts":"1790000000","approval_id":"ap-1","approval_instance":"inst-ap-1","slot":"slot-a"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files","ts":"1790000000","approval_id":"ap-1","approval_instance":"inst-ap-1","slot":"slot-a"}}',
+    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-1","source":"agent","registry":"coordinator","approval_target":{"origin":"coordinator","id":"ap-1","slot":"slot-a","instance":"inst-ap-1"},"tool_call_id":"tc-1"}}',
+    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-1","approval_type":"chat","approval_target":{"origin":"coordinator","id":"ap-1","slot":"slot-a","instance":"inst-ap-1"}}',
   ],
   "approval for a spawn": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","slot":"slot-a"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","slot":"slot-a"}}',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] spawn_run(write docs)","ts":"1790000004","meta":{"tool_input":"","approval_id":"spawn:agent-1","source":"agent","registry":"coordinator"}}',
-    'action chat/sseSubagentPending {"slot":"slot-a","id":"agent-1","task":"write docs","approval_id":"spawn:agent-1"}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","approval_instance":"inst-agent-1","slot":"slot-a"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","approval_instance":"inst-agent-1","slot":"slot-a"}}',
+    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] spawn_run(write docs)","ts":"1790000004","meta":{"tool_input":"","approval_id":"spawn:agent-1","source":"agent","registry":"coordinator","approval_target":{"origin":"coordinator","id":"spawn:agent-1","slot":"slot-a","instance":"inst-agent-1"}}}',
+    'action chat/sseSubagentPending {"slot":"slot-a","id":"agent-1","task":"write docs","approval_id":"spawn:agent-1","approval_target":{"origin":"coordinator","id":"spawn:agent-1","slot":"slot-a","instance":"inst-agent-1"}}',
   ],
   "approval from a subagent": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","slot":"slot-a"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","slot":"slot-a"}}',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[subagent] shell","ts":"1790000005","meta":{"tool_input":"","approval_id":"ap-sub","source":"subagent","registry":"coordinator"}}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","approval_instance":"inst-ap-sub","slot":"slot-a"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","approval_instance":"inst-ap-sub","slot":"slot-a"}}',
+    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[subagent] shell","ts":"1790000005","meta":{"tool_input":"","approval_id":"ap-sub","source":"subagent","registry":"coordinator","approval_target":{"origin":"coordinator","id":"ap-sub","slot":"slot-a","instance":"inst-ap-sub"}}}',
   ],
   "approval with no slot": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free"}}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free","approval_instance":"inst-ap-free"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free","approval_instance":"inst-ap-free"}}',
   ],
   "approval_resolved for a coordinator approval": [
     'query invalidateQueries ["global-approvals"]',
     'action notifications/retireApprovalNote {"ts":"1790000000","why":"approve"}',
-    'action notifications/ack/pending',
-    'action chat/resolveByApprovalId {"id":"ap-1","slot":"slot-a","decision":"approved","registry":"coordinator"}',
-    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat"}',
+    "action notifications/delete/pending",
+    'action chat/resolveApprovalRow {"target":{"origin":"coordinator","id":"ap-1","slot":"slot-a","instance":"inst-ap-1"},"decision":"approved"}',
+    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat","approval_target":{"origin":"coordinator","id":"ap-1","slot":"slot-a","instance":"inst-ap-1"}}',
   ],
   "approval_resolved expired spawn": [
     'query invalidateQueries ["global-approvals"]',
-    'action notifications/retireApprovalNote {"ts":"1790000007","why":"gone"}',
-    'action notifications/ack/pending',
-    'action chat/resolveByApprovalId {"id":"spawn:agent-2","slot":"slot-a","decision":"stale","registry":"coordinator"}',
-    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"spawn:agent-2","approval_type":"spawn"}',
+    'action notifications/retireApprovalNote {"ts":"1790000007","why":"expired"}',
+    'action chat/resolveApprovalRow {"target":{"origin":"coordinator","id":"spawn:agent-2","slot":"slot-a","instance":"inst-agent-2"},"decision":"stale"}',
+    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"spawn:agent-2","approval_type":"spawn","approval_target":{"origin":"coordinator","id":"spawn:agent-2","slot":"slot-a","instance":"inst-agent-2"}}',
     'action chat/sseSubagentDone {"slot":"slot-a","id":"agent-2","elapsed":0,"error":"The approval wait expired, so the request was denied."}',
   ],
   "approval_resolved without a slot": [
     'query invalidateQueries ["global-approvals"]',
     'action notifications/retireApprovalNote {"ts":"1790000000","why":"reject"}',
-    'action notifications/ack/pending',
-    'action chat/resolveByApprovalId {"id":"ap-1","slot":"slot-a","decision":"rejected","registry":"coordinator"}',
-    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat"}',
+    "action notifications/delete/pending",
+    'action chat/resolveApprovalRow {"target":{"origin":"coordinator","id":"ap-1","slot":"slot-a","instance":"inst-ap-1"},"decision":"rejected"}',
+    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat","approval_target":{"origin":"coordinator","id":"ap-1","slot":"slot-a","instance":"inst-ap-1"}}',
   ],
   "refresh with history": [
     'action dashboard/triggerRefresh undefined',
@@ -1375,10 +1376,6 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "approval without an id": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","slot":"slot-a"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","slot":"slot-a"}}',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000008","meta":{"tool_input":"","source":"agent","registry":"coordinator"}}',
-    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_type":"chat"}',
   ],
   "unknown and prototype-named types": [],
 }
@@ -1539,9 +1536,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action notifications/addNotification {"kind":"info","title":"Replayed","ts":"1790000009"}',
     'event mc-notification {"kind":"info"}',
     'query invalidateQueries ["global-approvals"]',
-    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\",\"ts\":\"1790000000\",\"approval_id\":\"ap-replay\",\"slot\":\"slot-a\"}",
-    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-replay","source":"agent","registry":"coordinator"}}',
-    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-replay","approval_type":"chat"}',
+    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\",\"ts\":\"1790000000\",\"approval_id\":\"ap-replay\",\"approval_instance\":\"inst-ap-1\",\"slot\":\"slot-a\"}",
+    'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-replay","source":"agent","registry":"coordinator","approval_target":{"origin":"coordinator","id":"ap-replay","slot":"slot-a","instance":"inst-ap-1"}}}',
+    'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-replay","approval_type":"chat","approval_target":{"origin":"coordinator","id":"ap-replay","slot":"slot-a","instance":"inst-ap-1"}}',
     'action chat/sseChatMessage {"slot":"slot-b","role":"assistant","content":"old","ts":"2026-09-01T00:00:00.000Z"}',
     'event mc-theme-sound {"trigger":"message-received"}',
     'query invalidateQueries ["command-center","questions"]',

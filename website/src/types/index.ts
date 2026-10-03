@@ -1,3 +1,5 @@
+import type { ApprovalTarget, CoordinatorApprovalTarget } from './approvalTarget'
+
 export interface StatusData {
   uptime: string
   start_time?: number
@@ -1506,6 +1508,8 @@ export interface SubagentActivity {
   stalledAt?: number
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
+  /** The coordinator request a pending spawn waits on (types/approvalTarget). */
+  approval_target?: CoordinatorApprovalTarget
   approving?: boolean
   /** Inline terminal output for native (`native:*`) cards only. Native cards
    *  cannot lazy-load from disk (no SubagentManager record), so the bounded
@@ -1537,6 +1541,8 @@ export interface ToolActivity {
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
   approval_id?: string  // pending approval ID
+  /** The request a pending approval entry was raised for (types/approvalTarget). */
+  approval_target?: ApprovalTarget
   approval_type?: string // 'chat' or 'spawn'
   tool_call_id?: string  // for matching tool results
   rejected?: boolean     // true when approval was rejected
@@ -1589,6 +1595,8 @@ export interface NotificationChannel {
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
+  /** A coordinator request's server-issued instance (see types/approvalTarget). */
+  request_instance?: string
   tool_purpose?: string
   tool: string
   tool_input: string

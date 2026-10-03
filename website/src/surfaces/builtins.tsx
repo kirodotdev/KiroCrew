@@ -28,8 +28,7 @@ import type { RootState } from '../store'
 // a `(n)` in the title that no surface the user can open accounts for: the bell
 // omits it and the feed keeps silenced rows behind the muted disclosure, so
 // there is nothing to click that would clear it.
-// `selectUnreadNotes` also leaves out a retired approval, which asks for
-// nothing even while its ack is being rolled back.
+// `selectUnreadNotes` is the one unread rule every badge reads.
 const selectUnacknowledgedNotificationCount = createSelector(
   (s: RootState) => selectUnreadNotes(s),
   unread => unread.length,

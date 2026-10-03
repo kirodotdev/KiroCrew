@@ -372,6 +372,24 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
     return text
 
 
+def _carry_row_mid(meta: dict, msg: dict) -> dict:
+    """*meta* (parsed from a row's ``cls``) with the row's own ``mid`` kept.
+
+    A row whose structured fields live in ``cls`` (a permission row) keeps its
+    delivery identity, ``mid``, in the stored ``meta`` dict instead. The live
+    ``chat_message`` frame merges the two, so a card rendered live carries the
+    mid a native decide is bound by; a reader that rebuilt meta from ``cls``
+    alone dropped it, and every card rendered after a reload (or over the
+    stream) then named no request and refused its own presses. Only the mid is
+    carried: the rest of the stored meta keeps its own handling on each path.
+    """
+    stored = msg.get("meta")
+    mid = stored.get("mid") if isinstance(stored, dict) else None
+    if isinstance(mid, str) and mid and "mid" not in meta:
+        return {**meta, "mid": mid}
+    return meta
+
+
 def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
     """Build a JSON SSE chunk from a slot message, with meta redaction for permissions.
 
@@ -387,6 +405,8 @@ def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is not None:
+        meta = _carry_row_mid(meta, msg)
     if meta is None and include_row_meta:
         row_meta = msg.get("meta")
         if isinstance(row_meta, dict):
@@ -4386,6 +4406,7 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
+            meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, meta), live_child
             )

@@ -1,19 +1,19 @@
 /**
- * A retired approval asks for nothing, so no unread surface may count it,
- * whatever its ack flag says. `retireApprovalRow` marks the row read through
- * the ordinary ack, and when that POST is refused `ackNotification.rejected`
- * puts the flag back to unread. The row's own dot already ignores the flag, so
- * a surface reading `acked` alone would light a badge (or announce a banner)
- * that no highlighted row explains. Every unread surface reads
- * `selectUnreadNotes` from the slice instead.
+ * An approval that retires while nobody is looking stays unread on every
+ * surface. An expiry while the reader was away (or one a fresh tab's reconcile
+ * finds at boot) means the job was denied, and clearing the bell, dock and
+ * tab-title badges on that alone would hide it. The row keeps a quiet dot for
+ * as long as it counts, and it is read the way any note is: opened, marked
+ * read, or dismissed. Every unread surface reads `selectUnreadNotes`, so they
+ * agree.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { createTestStore } from './helpers'
 import { useNativeNotification } from '../hooks/useNativeNotification'
-import { addNotification, retireApprovalRow, selectUnreadNotes } from '../store/notificationsSlice'
+import { ackNotificationByTs, addNotification, retireApprovalRow, selectUnreadNotes } from '../store/notificationsSlice'
 import { selectAllSurfacesAttention, selectSurfaceBadgeCount } from '../surfaces/registry'
 import '../surfaces/builtins'
 import type { RootState } from '../store'
@@ -37,15 +37,7 @@ const approval: AppNotification = {
   kind: 'approval', ts: '1.0', title: 'Tool approval', body: 'Bash', approval_id: 'ap-1', acked: false,
 }
 
-/** Retire the approval with its ack refused, and wait for the rollback. */
-async function retireWithRefusedAck(store: ReturnType<typeof createTestStore>) {
-  mockAck.mockRejectedValueOnce(new Error('network down'))
-  act(() => { store.dispatch(retireApprovalRow('1.0', 'gone')) })
-  // The rollback has run: the flag is back to unread.
-  await waitFor(() => { expect(store.getState().notifications.items[0].acked).toBe(false) })
-}
-
-describe('a retired approval stays out of every unread count when its ack is refused', () => {
+describe('an approval that retires unseen stays unread until the reader sees it', () => {
   beforeEach(() => {
     mockAck.mockReset()
     mockAck.mockResolvedValue({})
@@ -58,25 +50,31 @@ describe('a retired approval stays out of every unread count when its ack is ref
     delete (document as { hidden?: boolean }).hidden
   })
 
-  it('the shared selector and the tab-title / surface badge leave it out', async () => {
+  it('the shared selector and the tab-title / surface badge keep counting it, with no ack sent', () => {
     const store = createTestStore()
     act(() => { store.dispatch(addNotification(approval)) })
     const state = () => store.getState() as unknown as RootState
     expect(selectAllSurfacesAttention(state())).toBe(1)
-    await retireWithRefusedAck(store)
+    act(() => { store.dispatch(retireApprovalRow('1.0', 'gone')) })
+    expect(mockAck).not.toHaveBeenCalled()
+    expect(selectUnreadNotes(state()).map(n => n.ts)).toEqual(['1.0'])
+    expect(selectAllSurfacesAttention(state())).toBe(1)
+    expect(selectSurfaceBadgeCount('notifications')(state())).toBe(1)
+    // Read the ordinary way, it leaves every count.
+    act(() => { store.dispatch(ackNotificationByTs('1.0')) })
     expect(selectUnreadNotes(state())).toEqual([])
     expect(selectAllSurfacesAttention(state())).toBe(0)
     expect(selectSurfaceBadgeCount('notifications')(state())).toBe(0)
   })
 
-  it('the native banner is not fired a second time for it', async () => {
+  it('the native banner is not fired a second time for it', () => {
     const store = createTestStore()
     renderHook(() => useNativeNotification('Kiro Crew', '/avatar.png'), {
       wrapper: ({ children }) => createElement(Provider, { store }, children),
     })
     act(() => { store.dispatch(addNotification(approval)) })
     expect(FakeNotification.instances).toEqual(['Tool approval'])
-    await retireWithRefusedAck(store)
+    act(() => { store.dispatch(retireApprovalRow('1.0', 'gone')) })
     expect(FakeNotification.instances).toEqual(['Tool approval'])
   })
 })

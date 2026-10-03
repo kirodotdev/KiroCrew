@@ -15,7 +15,7 @@ vi.mock('../api/client', () => ({
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     ackNotification: vi.fn().mockResolvedValue({}),
     deleteNotification: (...args: unknown[]) => mockDeleteNotification(...args),
-    resolveApproval: (...args: unknown[]) => mockResolveApproval(...args),
+    decideApproval: (...args: unknown[]) => mockResolveApproval(...args),
     updateNotificationChannelSettings: vi.fn().mockResolvedValue({}),
   },
 }))
@@ -54,8 +54,9 @@ describe('safeInternalUrl (RFC Phase 4 security)', () => {
 describe('NotificationFeed Phase 4: inline approval actions', () => {
   const approval = mkN({
     ts: '1', kind: 'approval', title: 'Tool approval: shell',
-    approval_id: 'apr-123', priority: 'critical',
+    approval_id: 'apr-123', approval_instance: 'inst-123', priority: 'critical',
   })
+  const target = { origin: 'coordinator', id: 'apr-123', slot: '', instance: 'inst-123' }
 
   it('renders Approve/Reject on unacked approval rows', () => {
     renderFeed([approval])
@@ -66,13 +67,13 @@ describe('NotificationFeed Phase 4: inline approval actions', () => {
   it('one-click approve resolves via the approvals endpoint', () => {
     renderFeed([approval])
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
-    expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'approve', undefined)
+    expect(mockResolveApproval).toHaveBeenCalledWith(target, 'approve')
   })
 
   it('one-click reject resolves via the approvals endpoint', () => {
     renderFeed([approval])
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
-    expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'reject', undefined)
+    expect(mockResolveApproval).toHaveBeenCalledWith(target, 'reject')
   })
 
   it('acked approval rows show no inline buttons', () => {

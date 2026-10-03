@@ -23,7 +23,7 @@ import { ApiError } from '../api/apiError'
 import type { Notification } from '../types'
 
 vi.mock('../api/client', () => ({
-  api: { resolveApproval: vi.fn(), ackNotification: vi.fn().mockResolvedValue({}), unackNotification: vi.fn().mockResolvedValue({}), deleteNotification: vi.fn().mockResolvedValue({}) },
+  api: { decideApproval: vi.fn(), ackNotification: vi.fn().mockResolvedValue({}), unackNotification: vi.fn().mockResolvedValue({}), deleteNotification: vi.fn().mockResolvedValue({}) },
 }))
 vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <span>{content}</span>,
@@ -35,7 +35,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 const approvalNote: Notification = {
   kind: 'approval', ts: '2026-09-28T13:55:22Z', title: 'Tool approval: shell',
-  body: 'gh issue view 14704', approval_id: 'apr-gone', acked: true,
+  body: 'gh issue view 14704', approval_id: 'apr-gone', approval_instance: 'inst-gone', acked: true,
 }
 const notFound = () => Object.assign(new Error('not found or expired'), { status: 404 })
 
@@ -46,22 +46,32 @@ function renderPanel(onClose = vi.fn()) {
 }
 
 beforeEach(() => {
-  vi.mocked(api.resolveApproval).mockReset()
+  vi.mocked(api.decideApproval).mockReset()
   vi.mocked(api.deleteNotification).mockReset()
   vi.mocked(api.deleteNotification).mockResolvedValue({})
 })
 
 describe('NotificationDetailPanel approval decisions', () => {
   it('a decide on a slotless coordinator row is bound to its instance', async () => {
-    vi.mocked(api.resolveApproval).mockResolvedValue({})
+    vi.mocked(api.decideApproval).mockResolvedValue({})
     const n: Notification = { ...approvalNote, approval_instance: 'inst-cron' }
     const store = createTestStore({ notifications: { items: [n] } as RootState['notifications'] })
     renderWithProviders(<NotificationDetailPanel n={n} onClose={vi.fn()} />, { store })
     await userEvent.click(screen.getByRole('button', { name: /Reject/ }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('apr-gone', 'reject', { origin: 'coordinator', slot: '', instance: 'inst-cron' })
+    expect(api.decideApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'apr-gone', slot: '', instance: 'inst-cron' }, 'reject')
+  })
+  it('a row that names no request sends nothing and retires as refused', async () => {
+    const { approval_instance: _none, ...n } = approvalNote
+    const store = createTestStore({ notifications: { items: [n] } as RootState['notifications'] })
+    renderWithProviders(<NotificationDetailPanel n={n} onClose={vi.fn()} />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    expect(api.decideApproval).not.toHaveBeenCalled()
+    expect(store.getState().notifications.retiredApprovals).toEqual({ [n.ts]: 'refused' })
+    expect(screen.getByTestId('notif-approval-retired')).toHaveTextContent(refusedNotice())
+    expect(store.getState().notifications.decidingApprovals ?? {}).toEqual({})
   })
   it('a 404 retires the row: buttons withdrawn, error notice, no DELETE, panel stays open', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(notFound())
+    vi.mocked(api.decideApproval).mockRejectedValue(notFound())
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     expect(await screen.findByTestId('notif-approval-retired')).toHaveTextContent(refusedNotice())
@@ -75,7 +85,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   })
 
   it('a 404 moves keyboard focus to the notice that replaced the pressed button', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(notFound())
+    vi.mocked(api.decideApproval).mockRejectedValue(notFound())
     renderPanel()
     screen.getByRole('button', { name: /Approve/ }).focus()
     await userEvent.keyboard('{Enter}')
@@ -85,7 +95,7 @@ describe('NotificationDetailPanel approval decisions', () => {
 
   it('a 404 does not pull focus away from a reader who has moved on', async () => {
     let refuse: (e: unknown) => void = () => {}
-    vi.mocked(api.resolveApproval).mockImplementationOnce(() => new Promise((_, rej) => { refuse = rej }))
+    vi.mocked(api.decideApproval).mockImplementationOnce(() => new Promise((_, rej) => { refuse = rej }))
     renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     const markUnread = screen.getByRole('button', { name: /Mark unread/i })
@@ -94,6 +104,14 @@ describe('NotificationDetailPanel approval decisions', () => {
     await screen.findByTestId('notif-approval-retired')
     expect(document.activeElement).toBe(markUnread)
     await userEvent.click(markUnread)
+  })
+
+  it('a server expiry says the request was denied', () => {
+    const { store } = renderPanel()
+    act(() => { store.dispatch(retireApprovalNote({ ts: approvalNote.ts, why: 'expired' })) })
+    const line = screen.getByTestId('notif-approval-retired')
+    expect(line).toHaveTextContent(i18nT('hooks.useWebSocket.approval_wait_expired'))
+    expect(line).not.toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
   })
 
   it('Dismiss on a retired row removes it once the server confirms, then closes', async () => {
@@ -105,7 +123,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   })
 
   it('a decision that lands but whose DELETE fails keeps the row and the panel, with the outcome', async () => {
-    vi.mocked(api.resolveApproval).mockResolvedValue({})
+    vi.mocked(api.decideApproval).mockResolvedValue({})
     vi.mocked(api.deleteNotification).mockRejectedValueOnce(new Error('network down'))
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Reject/ }))
@@ -144,7 +162,7 @@ describe('NotificationDetailPanel approval decisions', () => {
 
   it('Approve/Reject are disabled while the decision is in flight', async () => {
     let settle: (v: unknown) => void = () => {}
-    vi.mocked(api.resolveApproval).mockImplementationOnce(() => new Promise(res => { settle = res }))
+    vi.mocked(api.decideApproval).mockImplementationOnce(() => new Promise(res => { settle = res }))
     const { onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     // The pressed button says it is working; the other only disables.
@@ -155,11 +173,11 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).not.toHaveTextContent(i18nT('components.notifications.notificationFeed.rejecting'))
     await act(async () => { settle({}) })
     await waitFor(() => { expect(onClose).toHaveBeenCalledTimes(1) })
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
   })
 
   it('a non-terminal failure keeps both buttons and quotes the server reason', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new ApiError(403, 'approval belongs to another session'))
+    vi.mocked(api.decideApproval).mockRejectedValue(new ApiError(403, 'approval belongs to another session'))
     const { store } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     expect(await screen.findByTestId('notif-approval-refusal')).toHaveTextContent(
@@ -171,7 +189,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   })
 
   it('a transport failure with no response keeps the buttons and says the decision may not have landed', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.mocked(api.decideApproval).mockRejectedValue(new TypeError('Failed to fetch'))
     renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Reject/ }))
     expect(await screen.findByTestId('notif-approval-refusal')).toHaveTextContent(

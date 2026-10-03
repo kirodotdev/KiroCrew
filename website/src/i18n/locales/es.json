@@ -241,7 +241,8 @@
       "stream_ended_without_completion": "La transmisión terminó sin completarse",
       "token_not_accepted": "Esa URL de inicio de sesión no se ha aceptado. Ejecuta kirocrew token de nuevo y pega abajo la nueva URL de inicio de sesión.",
       "token_exchange_unreachable": "No se pudo contactar con la puerta de enlace, así que la URL de inicio de sesión no se ha verificado. Comprueba que está en marcha y vuelve a pulsar Intro.",
-      "unexpected_server_response": "Respuesta inesperada del servidor"
+      "unexpected_server_response": "Respuesta inesperada del servidor",
+      "no_pending_approval": "Esta aprobación ya no está pendiente."
     }
   },
   "app": {
@@ -9585,7 +9586,6 @@
       "cron": "Cron{{detail}}",
       "cron_running": "Cron · en ejecución",
       "deny": "Denegar",
-      "failed": "falló",
       "idle": "Inactivo",
       "kiro_is_working": "kiro está trabajando…",
       "loading_thread": "Cargando hilo…",

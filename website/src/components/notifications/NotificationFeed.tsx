@@ -239,9 +239,16 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       return rest
     }
     setDecideFailed(without)
-    // Bound to the request this row showed, when the row names it: the id
-    // recurs, and a bare-id decide resolves whichever request holds it now.
-    api.resolveApproval(key, action, approvalDecideTarget(n))
+    // Bound to the request this row showed: the id recurs, so only the row's
+    // own target may be decided. A row that names none has nothing to decide.
+    const target = approvalDecideTarget(n)
+    if (!target) {
+      dispatch(approvalDecideSettled(key))
+      focusRescueRef.current = n.ts
+      dispatch(retireApprovalRow(n.ts, 'refused', { seen: true }))
+      return
+    }
+    api.decideApproval(target, action)
       .then(() => {
         focusRescueRef.current = n.ts
         dispatch(settleDecidedApproval(n.ts, action))
@@ -250,7 +257,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           focusRescueRef.current = n.ts
           // `refused`, not `gone`: this request failed, so the row shows it
           // as an error rather than as the neutral settled line.
-          dispatch(retireApprovalRow(n.ts, 'refused'))
+          dispatch(retireApprovalRow(n.ts, 'refused', { seen: true }))
           return
         }
         // eslint-disable-next-line no-console -- keep the raw failure for diagnosis
@@ -492,7 +499,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                           ? <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>
                           : retiredWhy === 'reject'
                             ? <><Ban className="lucide-inline" /> {i18nT('components.approvalCard.rejected')}</>
-                            : i18nT('components.approvalCard.approval_no_longer_pending')}
+                            : retiredWhy === 'expired'
+                              ? i18nT('hooks.useWebSocket.approval_wait_expired')
+                              : i18nT('components.approvalCard.approval_no_longer_pending')}
                       </div>
                     )}
                   </div>
@@ -549,7 +558,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       />
                     ) : (
                     <div data-notif-row data-ts={n.ts}
-                      className={`group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || settled || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
+                      className={`group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
                     >
                       <div className="flex items-center gap-2.5">
                       <Clickable
@@ -569,8 +578,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                           <span className="text-[11px] text-muted font-mono">{fmtTime(n.ts)}</span>
                           {silenced ? (
                             <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
-                          ) : !n.acked && !settled ? (
-                            <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
+                          ) : !n.acked ? (
+                            // A retired approval the reader has not seen keeps a
+                            // quiet dot: it no longer asks for a decision, but
+                            // its outcome (often a denial) is still news.
+                            <span className={`w-1.5 h-1.5 rounded-full ${settled ? 'bg-accent' : `animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`}`} data-priority={settled ? 'settled' : prio} />
                           ) : null}
                         </div>
                       </Clickable>

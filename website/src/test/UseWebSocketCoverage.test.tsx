@@ -13,7 +13,7 @@
  * explicitly and reset it afterwards, matching useWebSocket.approvalRouting.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -29,7 +29,8 @@ import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation, resolveByApprovalId } from '../store/chatSlice'
 import { sseSlots, addSlotOptimistic, armConfirmedCloseHold, removeSlotOptimistic } from '../store/dashboardSlice'
-import { addNotification, deleteNotification, retireApprovalNote } from '../store/notificationsSlice'
+import { addNotification, approvalDecideStarted, approvalDecideSettled, deleteNotification, retireApprovalNote } from '../store/notificationsSlice'
+import { approvalTargetKey } from '../types/approvalTarget'
 import type { ChatSlot } from '../types'
 import { recentErrors } from '../utils/errorReport'
 import { structuredMonitorLoop } from './monitorFixtures'
@@ -43,6 +44,8 @@ vi.mock('../api/client', () => ({
     voiceConfig: vi.fn().mockResolvedValue({ autoSpeak: false }),
     approvals: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
+    ackNotification: vi.fn().mockResolvedValue({ ok: true }),
+    deleteNotification: vi.fn(() => new Promise(() => {})),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0, queue: [] }),
     autonudgeList: vi.fn().mockResolvedValue({ enabled: false, loops: [] }),
     monitorsList: vi.fn().mockResolvedValue({ enabled: false, monitors: [] }),
@@ -443,7 +446,7 @@ describe('useWebSocket frame router', () => {
 
   it.each(['live', 'reconciled'])('fences %s approval commands while preserving its purpose policy', async delivery => {
     const approval = {
-      id: 'ap-literal', source: 'cron', tool: 'execute_bash',
+      id: 'ap-literal', instance: 'inst-ap-literal', source: 'cron', tool: 'execute_bash',
       tool_input: 'echo ```; rm -rf *cache*', tool_purpose: '**Reason:** cleanup', ts: 5,
     }
     if (delivery === 'reconciled') vi.mocked(api.approvals).mockResolvedValueOnce([approval])
@@ -456,6 +459,65 @@ describe('useWebSocket frame router', () => {
     const note = testStore.getState().notifications.items.find(n => n.approval_id === approval.id)
     const body = '**Source:** cron\n\n````approval-command\necho ```; rm -rf *cache*\n````'
     expect(note?.body).toBe(delivery === 'live' ? `${body}\n\n**Reason:** cleanup` : body)
+  })
+
+  it('a fresh tab retires a stored approval row the authority no longer holds, and keeps the live one', async () => {
+    // The tab opens after B expired: the stored notes still list both rows,
+    // but only A is pending, so B must show as gone and never offer a decide.
+    const live = { kind: 'approval', title: 'Live', body: '', ts: '60', approval_id: 'ap-live', approval_instance: 'inst-live', slot: ACTIVE } as Parameters<typeof addNotification>[0]
+    const expired = { kind: 'approval', title: 'Expired', body: '', ts: '61', approval_id: 'ap-expired-before', approval_instance: 'inst-old', slot: ACTIVE } as Parameters<typeof addNotification>[0]
+    // A row from an older build names no request at all.
+    const unnamed = { kind: 'approval', title: 'Unnamed', body: '', ts: '62', approval_id: 'ap-unnamed' } as Parameters<typeof addNotification>[0]
+    ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ notifications: [live, expired, unnamed], unread: 3 })
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { id: 'ap-live', instance: 'inst-live', slot: ACTIVE, source: 'agent', tool: 'execute_bash', ts: 60 },
+    ])
+    // The reconcile reads the singleton store (see the harness note above).
+    for (const n of [live, expired, unnamed]) globalStore.dispatch(addNotification(n))
+    try {
+      mount()
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
+      expect(retiredWhy('ap-expired-before')).toBe('gone')
+      expect(retiredWhy('ap-unnamed')).toBe('gone')
+      expect(retiredWhy('ap-live')).toBeUndefined()
+      // Retired at boot, before anyone saw it: still unread, so the badge
+      // tells the reader the job was denied.
+      const rowOf = (id: string) => globalStore.getState().notifications.items.find(n => n.approval_id === id)
+      expect(rowOf('ap-expired-before')?.acked).toBeFalsy()
+      expect(api.ackNotification).not.toHaveBeenCalledWith('61')
+      // The live request gets its card in its chat, bound to its own target.
+      const card = chat().messages.find(m => m.role === 'permission' && m.meta?.approval_id === 'ap-live')
+      expect(card?.meta?.approval_target).toEqual({ origin: 'coordinator', id: 'ap-live', slot: ACTIVE, instance: 'inst-live' })
+      expect(chat().messages.some(m => m.meta?.approval_id === 'ap-expired-before')).toBe(false)
+    } finally {
+      for (const ts of ['60', '61', '62']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it('a stored row that names no request is removed, not retired, when the authority still lists its id', async () => {
+    // Written before rows carried the instance: the request it was raised for
+    // is still pending, so the reconcile adopts a live row for it, and a gone
+    // copy beside that row would only be a duplicate.
+    const unnamed = { kind: 'approval', title: 'Unnamed', body: '', ts: '70', approval_id: 'ap-legacy', slot: ACTIVE } as Parameters<typeof addNotification>[0]
+    ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ notifications: [unnamed], unread: 1 })
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { id: 'ap-legacy', instance: 'inst-legacy', slot: ACTIVE, source: 'agent', tool: 'execute_bash', ts: 71 },
+    ])
+    globalStore.dispatch(addNotification(unnamed))
+    try {
+      mount()
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
+      expect(api.deleteNotification).toHaveBeenCalledWith('70')
+      // The reconcile reads the singleton store and writes through the
+      // Provider store: the live row is adopted there, the unnamed row is on
+      // its way out (its DELETE is sent), and neither is retired as gone.
+      const notes = testStore.getState().notifications
+      const rows = notes.items.filter(n => n.approval_id === 'ap-legacy')
+      expect(rows.map(n => [n.ts, n.approval_instance])).toEqual([['70', undefined], ['71', 'inst-legacy']])
+      expect(notes.retiredApprovals ?? {}).toEqual({})
+    } finally {
+      for (const ts of ['70', '71']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
   })
 
   it('hands an approval to the feed and raises no desktop notification of its own', () => {
@@ -474,7 +536,7 @@ describe('useWebSocket frame router', () => {
       act(() => {
         ws.simulateMessage({
           type: 'approval',
-          data: { id: 'ap-1', slot: ACTIVE, source: 'agent', tool: 'execute_bash', tool_input: '{}', ts: 5 },
+          data: { id: 'ap-1', instance: 'inst-ap-1', slot: ACTIVE, source: 'agent', tool: 'execute_bash', tool_input: '{}', ts: 5 },
         })
       })
       expect(MockNotification.instances).toHaveLength(0)
@@ -494,7 +556,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'spawn:agent-7', slot: ACTIVE, source: 'agent', tool: 'spawn_run(write the tests)', ts: 6 },
+        data: { id: 'spawn:agent-7', instance: 'inst-spawn:agent-7', slot: ACTIVE, source: 'agent', tool: 'spawn_run(write the tests)', ts: 6 },
       })
     })
     const pending = chat().subagents['agent-7']
@@ -510,7 +572,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-sub', slot: ACTIVE, source: 'subagent', tool: 'fs_read', ts: 7 },
+        data: { id: 'ap-sub', instance: 'inst-ap-sub', slot: ACTIVE, source: 'subagent', tool: 'fs_read', ts: 7 },
       })
     })
     expect(chat().messages.some(m => m.meta?.approval_id === 'ap-sub')).toBe(true)
@@ -523,26 +585,27 @@ describe('useWebSocket frame router', () => {
     // The resolve path looks the raised card up in the SINGLETON store, so the
     // feed row and the activity row have to exist there for it to find them.
     globalStore.dispatch(addNotification({
-      kind: 'approval', title: 'Tool approval', body: '', ts: '8', approval_id: 'ap-2',
+      kind: 'approval', title: 'Tool approval', body: '', ts: '8', approval_id: 'ap-2', approval_instance: 'inst-ap-2', slot: ACTIVE,
     } as Parameters<typeof addNotification>[0]))
     globalStore.dispatch(sseActivityEvent({
       slot: ACTIVE, kind: 'approval', text: 'execute_bash', approval_id: 'ap-2', approval_type: 'chat',
+      approval_target: { origin: 'coordinator', id: 'ap-2', slot: ACTIVE, instance: 'inst-ap-2' },
     }))
     try {
       act(() => {
         ws.simulateMessage({
           type: 'approval',
-          data: { id: 'ap-2', slot: ACTIVE, source: 'agent', tool: 'execute_bash', ts: 8 },
+          data: { id: 'ap-2', instance: 'inst-ap-2', slot: ACTIVE, source: 'agent', tool: 'execute_bash', ts: 8 },
         })
       })
       expect(testStore.getState().notifications.items).toHaveLength(1)
 
       act(() => {
-        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-2', slot: ACTIVE, approved: true } })
+        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-2', origin: 'coordinator', instance: 'inst-ap-2', slot: ACTIVE, approved: true } })
       })
       expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
-        type: 'chat/resolveByApprovalId',
-        payload: { id: 'ap-2', decision: 'approved', slot: ACTIVE, registry: 'coordinator' },
+        type: 'chat/resolveApprovalRow',
+        payload: { target: { origin: 'coordinator', id: 'ap-2', slot: ACTIVE, instance: 'inst-ap-2' }, decision: 'approved' },
       }))
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-2')?.meta?.resolved).toBe('approved')
       expect(retiredWhy('ap-2')).toBe('approve')
@@ -559,16 +622,16 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-shared', slot: ACTIVE, source: 'agent', tool: 'slot_a_tool', ts: 9 },
+        data: { id: 'ap-shared', instance: 'inst-ap-shared', slot: ACTIVE, source: 'agent', tool: 'slot_a_tool', ts: 9 },
       })
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-shared', slot: BACKGROUND, source: 'agent', tool: 'slot_b_tool', ts: 10 },
+        data: { id: 'ap-shared', instance: 'inst-ap-shared-b', slot: BACKGROUND, source: 'agent', tool: 'slot_b_tool', ts: 10 },
       })
     })
 
     act(() => {
-      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-shared', slot: ACTIVE, approved: false } })
+      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-shared', origin: 'coordinator', instance: 'inst-ap-shared', slot: ACTIVE, approved: false } })
     })
 
     expect(chat().messages.find(m => m.meta?.approval_id === 'ap-shared')?.meta?.resolved).toBeUndefined()
@@ -595,7 +658,7 @@ describe('useWebSocket frame router', () => {
       globalStore.dispatch(sseChatMessage(runner))
       ws.simulateMessage({
         type: 'approval',
-        data: { id, slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 17 },
+        data: { id, instance: `inst-${id}`, slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 17 },
       })
       globalStore.dispatch(addNotification(notification))
     })
@@ -643,7 +706,7 @@ describe('useWebSocket frame router', () => {
 
   it('does not duplicate a surviving coordinator row after its notification is cleared', async () => {
     const approval = {
-      id: 'ap-surviving-row', slot: ACTIVE, source: 'agent', tool: 'surviving_tool', ts: 22,
+      id: 'ap-surviving-row', instance: 'inst-ap-surviving-row', slot: ACTIVE, source: 'agent', tool: 'surviving_tool', ts: 22,
     }
     ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([approval])
     const dispatchSpy = vi.spyOn(testStore, 'dispatch')
@@ -702,7 +765,7 @@ describe('useWebSocket frame router', () => {
       globalStore.dispatch(sseChatMessage(runner))
       ws.simulateMessage({
         type: 'approval',
-        data: { id, slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 24 },
+        data: { id, instance: `inst-${id}`, slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 24 },
       })
       ws.simulateMessage({
         type: 'approval_resolved',
@@ -732,7 +795,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-collision', slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 18 },
+        data: { id: 'ap-collision', instance: 'inst-ap-collision', slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 18 },
       })
       testStore.dispatch(sseChatMessage({
         slot: BACKGROUND,
@@ -781,7 +844,7 @@ describe('useWebSocket frame router', () => {
 
   it('retires matching coordinator provenance once after ignoring a colliding slot', async () => {
     const notification = {
-      kind: 'approval', title: 'Matching approval', body: '', ts: '20', approval_id: 'ap-matching',
+      kind: 'approval', title: 'Matching approval', body: '', ts: '20', approval_id: 'ap-matching', approval_instance: 'inst-ap-matching', slot: ACTIVE,
     } as Parameters<typeof addNotification>[0]
     const dispatchSpy = vi.spyOn(testStore, 'dispatch')
     const { ws } = mount()
@@ -789,7 +852,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-matching', slot: ACTIVE, source: 'agent', tool: 'matching_tool', ts: 20 },
+        data: { id: 'ap-matching', instance: 'inst-ap-matching', slot: ACTIVE, source: 'agent', tool: 'matching_tool', ts: 20 },
       })
       testStore.dispatch(sseChatMessage({
         slot: BACKGROUND,
@@ -813,14 +876,15 @@ describe('useWebSocket frame router', () => {
       act(() => {
         ws.simulateMessage({
           type: 'approval_resolved',
-          data: { id: 'ap-matching', slot: ACTIVE, approved: true },
+          data: { id: 'ap-matching', origin: 'coordinator', instance: 'inst-ap-matching', slot: ACTIVE, approved: true },
         })
       })
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-matching')?.meta?.resolved).toBe('approved')
       expect(retiredWhy('ap-matching')).toBe('approve')
 
       const retirementCount = () => dispatchSpy.mock.calls.filter(([action]) =>
-        action.type === 'chat/resolveByApprovalId' && action.payload?.id === 'ap-matching').length
+        (action.type === 'chat/resolveNativeApprovalRows' && action.payload?.id === 'ap-matching')
+        || (action.type === 'chat/resolveApprovalRow' && action.payload?.target?.id === 'ap-matching')).length
       expect(retirementCount()).toBe(2)
 
       ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ notifications: [], unread: 0 })
@@ -842,21 +906,22 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('uses coordinator provenance to retire a mapped row from a slotless resolution', () => {
+  it('uses the tracked target to retire a mapped row from a slotless resolution', () => {
     const { ws } = mount()
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-state', slot: ACTIVE, source: 'agent', tool: 'active_tool', ts: 11 },
+        data: { id: 'ap-state', instance: 'inst-ap-state', slot: ACTIVE, source: 'agent', tool: 'active_tool', ts: 11 },
       })
     })
     globalStore.dispatch(addNotification({
-      kind: 'approval', title: 'State approval', body: '', ts: '11', approval_id: 'ap-state',
+      kind: 'approval', title: 'State approval', body: '', ts: '11', approval_id: 'ap-state', approval_instance: 'inst-ap-state',
     } as Parameters<typeof addNotification>[0]))
     const invalidateSpy = vi.spyOn(testQueryClient, 'invalidateQueries')
     try {
       act(() => {
-        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-state', approved: false } })
+        // A decided coordinator frame names no slot: the tracked target does.
+        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-state', origin: 'coordinator', instance: 'inst-ap-state', approved: false } })
       })
 
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-state')?.meta?.resolved).toBe('rejected')
@@ -902,6 +967,79 @@ describe('useWebSocket frame router', () => {
     }
   })
 
+  it('a new request under a tracked id retires the request it replaced', () => {
+    const id = 'ap-superseded'
+    const { ws } = mount()
+    try {
+      act(() => {
+        ws.simulateMessage({ type: 'approval', data: { id, instance: 'inst-a', slot: ACTIVE, source: 'agent', tool: 'first_tool', ts: 40 } })
+      })
+      expect(testStore.getState().notifications.retiredApprovals?.['40']).toBeUndefined()
+      // The hook reads rows from the app store (see the test above).
+      globalStore.dispatch(addNotification({
+        kind: 'approval', title: 'First', body: '', ts: '40', approval_id: id, approval_instance: 'inst-a', slot: ACTIVE,
+      } as Parameters<typeof addNotification>[0]))
+      act(() => {
+        // The server replaced A under the same id; A's wait ends with no frame.
+        ws.simulateMessage({ type: 'approval', data: { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'second_tool', ts: 41 } })
+      })
+      const marks = testStore.getState().notifications.retiredApprovals
+      expect(marks?.['40']).toBe('gone')
+      expect(marks?.['41']).toBeUndefined()
+    } finally {
+      for (const ts of ['40', '41']) {
+        testStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+        globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+      }
+    }
+  })
+
+  it('a decision made elsewhere removes its row once the server confirms; an expiry stays', async () => {
+    const del = api.deleteNotification as unknown as ReturnType<typeof vi.fn>
+    del.mockClear()
+    del.mockResolvedValueOnce({ ok: true })
+    const decided = { kind: 'approval', title: 'Decided', body: '', ts: '70', approval_id: 'ap-elsewhere', approval_instance: 'inst-e', slot: ACTIVE } as Parameters<typeof addNotification>[0]
+    const expired = { ...decided, title: 'Expired', ts: '71', approval_id: 'ap-expiring', approval_instance: 'inst-x' }
+    const { ws } = mount()
+    for (const n of [decided, expired]) { testStore.dispatch(addNotification(n)); globalStore.dispatch(addNotification(n)) }
+    try {
+      act(() => {
+        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-elsewhere', approved: true, instance: 'inst-e' } })
+        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-expiring', approved: false, decision: 'expired', instance: 'inst-x' } })
+      })
+      expect(del).toHaveBeenCalledTimes(1)
+      expect(del).toHaveBeenCalledWith('70')
+      await waitFor(() => expect(testStore.getState().notifications.items.some(n => n.ts === '70')).toBe(false))
+      // The server's expiry is a known denial, so its row says so.
+      expect(retiredWhy('ap-expiring')).toBe('expired')
+    } finally {
+      for (const ts of ['70', '71']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it("a decision this tab's feed is waiting on is left for that view to settle", () => {
+    const del = api.deleteNotification as unknown as ReturnType<typeof vi.fn>
+    del.mockClear()
+    const row = { kind: 'approval', title: 'Mine', body: '', ts: '72', approval_id: 'ap-mine', approval_instance: 'inst-m', slot: ACTIVE } as Parameters<typeof addNotification>[0]
+    const key = approvalTargetKey({ origin: 'coordinator', id: 'ap-mine', slot: ACTIVE, instance: 'inst-m' })
+    const { ws } = mount()
+    // The frame handler reads the singleton store (see the harness note above).
+    for (const st of [testStore, globalStore]) {
+      st.dispatch(addNotification(row))
+      st.dispatch(approvalDecideStarted({ id: key, action: 'approve' }))
+    }
+    try {
+      act(() => {
+        ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-mine', approved: true, instance: 'inst-m' } })
+      })
+      expect(retiredWhy('ap-mine')).toBe('approve')
+      expect(del).not.toHaveBeenCalled()
+    } finally {
+      globalStore.dispatch(approvalDecideSettled(key))
+      globalStore.dispatch(deleteNotification.fulfilled('72', '', '72'))
+    }
+  })
+
   it('retires a slotless cron approval on its expiry, which has no chat row to match', () => {
     const { ws } = mount()
     try {
@@ -920,7 +1058,7 @@ describe('useWebSocket frame router', () => {
           data: { id: 'ap-cron', approved: false, decision: 'expired', instance: 'inst-cron' },
         })
       })
-      expect(retiredWhy('ap-cron')).toBe('gone')
+      expect(retiredWhy('ap-cron')).toBe('expired')
     } finally {
       globalStore.dispatch(deleteNotification.fulfilled('41', '', '41'))
     }
@@ -1075,13 +1213,13 @@ describe('useWebSocket frame router', () => {
     await act(async () => { await Promise.resolve() })
 
     const notification = {
-      kind: 'approval', title: 'Gap approval', body: '', ts: '12', approval_id: 'ap-gap',
+      kind: 'approval', title: 'Gap approval', body: '', ts: '12', approval_id: 'ap-gap', approval_instance: 'inst-ap-gap',
     } as Parameters<typeof addNotification>[0]
     try {
       act(() => {
         ws.simulateMessage({
           type: 'approval',
-          data: { id: 'ap-gap', slot: ACTIVE, source: 'agent', tool: 'gap_tool', ts: 12 },
+          data: { id: 'ap-gap', instance: 'inst-ap-gap', slot: ACTIVE, source: 'agent', tool: 'gap_tool', ts: 12 },
         })
         globalStore.dispatch(addNotification(notification))
       })
@@ -1116,7 +1254,7 @@ describe('useWebSocket frame router', () => {
           meta: { approval_id: 'ap-gap' },
         }))
         reconnected.simulateMessage({
-          type: 'approval_resolved', data: { id: 'ap-gap', approved: true },
+          type: 'approval_resolved', data: { id: 'ap-gap', origin: 'coordinator', instance: 'inst-ap-gap', approved: true },
         })
       })
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-gap')?.meta?.resolved).toBeUndefined()
@@ -1163,7 +1301,7 @@ describe('useWebSocket frame router', () => {
     let release: (value: ApprovalSnapshot) => void = () => {}
     const pending = new Promise<ApprovalSnapshot>((resolve) => { release = resolve })
     const staleNotification = {
-      kind: 'approval', title: 'Stale approval', body: '', ts: '14', approval_id: 'ap-resolved-during-sync',
+      kind: 'approval', title: 'Stale approval', body: '', ts: '14', approval_id: 'ap-resolved-during-sync', approval_instance: 'inst-ap-resolved-during-sync',
     } as Parameters<typeof addNotification>[0]
     ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       notifications: [staleNotification], unread: 1,
@@ -1174,7 +1312,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-resolved-during-sync', slot: ACTIVE, source: 'agent', tool: 'stale_tool', ts: 14 },
+        data: { id: 'ap-resolved-during-sync', instance: 'inst-ap-resolved-during-sync', slot: ACTIVE, source: 'agent', tool: 'stale_tool', ts: 14 },
       })
       globalStore.dispatch(addNotification(staleNotification))
     })
@@ -1189,7 +1327,7 @@ describe('useWebSocket frame router', () => {
       act(() => {
         ws.simulateMessage({
           type: 'approval_resolved',
-          data: { id: 'ap-resolved-during-sync', slot: ACTIVE, approved: true },
+          data: { id: 'ap-resolved-during-sync', origin: 'coordinator', instance: 'inst-ap-resolved-during-sync', slot: ACTIVE, approved: true },
         })
         globalStore.dispatch(deleteNotification.fulfilled('14', '', '14'))
       })
@@ -1197,8 +1335,8 @@ describe('useWebSocket frame router', () => {
 
       await act(async () => {
         release([
-          { id: 'ap-resolved-during-sync', slot: ACTIVE, source: 'agent', tool: 'stale_tool', ts: 14 },
-          { id: 'ap-still-pending', slot: ACTIVE, source: 'agent', tool: 'live_tool', ts: 15 },
+          { id: 'ap-resolved-during-sync', instance: 'inst-ap-resolved-during-sync', slot: ACTIVE, source: 'agent', tool: 'stale_tool', ts: 14 },
+          { id: 'ap-still-pending', instance: 'inst-ap-still-pending', slot: ACTIVE, source: 'agent', tool: 'live_tool', ts: 15 },
         ])
         await pending
         await Promise.resolve()
@@ -1233,24 +1371,24 @@ describe('useWebSocket frame router', () => {
     expect(api.approvals).toHaveBeenCalledTimes(1)
 
     const notification = {
-      kind: 'approval', title: 'Injected approval', body: '', ts: '16', approval_id: 'ap-injected-during-sync',
+      kind: 'approval', title: 'Injected approval', body: '', ts: '16', approval_id: 'ap-injected-during-sync', approval_instance: 'inst-ap-injected-during-sync',
     } as Parameters<typeof addNotification>[0]
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-injected-during-sync', slot: ACTIVE, source: 'agent', tool: 'injected_tool', ts: 16 },
+        data: { id: 'ap-injected-during-sync', instance: 'inst-ap-injected-during-sync', slot: ACTIVE, source: 'agent', tool: 'injected_tool', ts: 16 },
       })
       globalStore.dispatch(addNotification(notification))
       ws.simulateMessage({
         type: 'approval_resolved',
-        data: { id: 'ap-injected-during-sync', slot: ACTIVE, approved: false },
+        data: { id: 'ap-injected-during-sync', origin: 'coordinator', instance: 'inst-ap-injected-during-sync', slot: ACTIVE, approved: false },
       })
       globalStore.dispatch(deleteNotification.fulfilled('16', '', '16'))
     })
 
     try {
       await act(async () => {
-        release([{ id: 'ap-injected-during-sync', slot: ACTIVE, source: 'agent', tool: 'injected_tool', ts: 16 }])
+        release([{ id: 'ap-injected-during-sync', instance: 'inst-ap-injected-during-sync', slot: ACTIVE, source: 'agent', tool: 'injected_tool', ts: 16 }])
         await pending
         await Promise.resolve()
       })
@@ -1276,7 +1414,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-before', slot: ACTIVE, source: 'agent', tool: 'before_tool', ts: 14 },
+        data: { id: 'ap-before', instance: 'inst-ap-before', slot: ACTIVE, source: 'agent', tool: 'before_tool', ts: 14 },
       })
     })
     await act(async () => {
@@ -1288,7 +1426,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-during', slot: ACTIVE, source: 'agent', tool: 'during_tool', ts: 15 },
+        data: { id: 'ap-during', instance: 'inst-ap-during', slot: ACTIVE, source: 'agent', tool: 'during_tool', ts: 15 },
       })
     })
     await act(async () => {
@@ -1314,7 +1452,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-decided', slot: ACTIVE, source: 'agent', tool: 'decided_tool', ts: 18 },
+        data: { id: 'ap-decided', instance: 'inst-ap-decided', slot: ACTIVE, source: 'agent', tool: 'decided_tool', ts: 18 },
       })
     })
     await act(async () => {
@@ -1326,7 +1464,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval_resolved',
-        data: { id: 'ap-decided', slot: ACTIVE, approved: true },
+        data: { id: 'ap-decided', origin: 'coordinator', instance: 'inst-ap-decided', slot: ACTIVE, approved: true },
       })
     })
     expect(chat().messages.find(m => m.meta?.approval_id === 'ap-decided')?.meta?.resolved).toBe('approved')
@@ -1353,7 +1491,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-local', slot: ACTIVE, source: 'agent', tool: 'local_tool', ts: 19 },
+        data: { id: 'ap-local', instance: 'inst-ap-local', slot: ACTIVE, source: 'agent', tool: 'local_tool', ts: 19 },
       })
     })
     await act(async () => {
@@ -1391,7 +1529,7 @@ describe('useWebSocket frame router', () => {
       }))
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'coordinator-only', slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 17 },
+        data: { id: 'coordinator-only', instance: 'inst-coordinator-only', slot: ACTIVE, source: 'agent', tool: 'coordinator_tool', ts: 17 },
       })
     })
     await act(async () => {
@@ -1412,7 +1550,7 @@ describe('useWebSocket frame router', () => {
     // empty list rather than throwing, and a chat-type resolution with no raised
     // card writes no activity row.
     act(() => {
-      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-bg', slot: BACKGROUND, approved: false } })
+      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-bg', origin: 'coordinator', instance: 'inst-ap-bg', slot: BACKGROUND, approved: false } })
     })
     expect(chat().slotActivity[BACKGROUND]?.toolLog ?? []).toEqual([])
   })
@@ -1421,8 +1559,8 @@ describe('useWebSocket frame router', () => {
     const dispatchSpy = vi.spyOn(testStore, 'dispatch')
     const { ws } = mount()
     act(() => {
-      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'spawn:ok', slot: ACTIVE, approved: true } })
-      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'spawn:no', slot: ACTIVE, approved: false } })
+      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'spawn:ok', origin: 'coordinator', instance: 'inst-spawn:ok', slot: ACTIVE, approved: true } })
+      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'spawn:no', origin: 'coordinator', instance: 'inst-spawn:no', slot: ACTIVE, approved: false } })
     })
     const spawned = dispatchSpy.mock.calls.filter(([action]) =>
       action.type === 'chat/sseSubagentSpawn' && action.payload?.id === 'ok')
@@ -1443,20 +1581,20 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-expired', slot: ACTIVE, source: 'agent', tool: 'execute_bash', ts: 30 },
+        data: { id: 'ap-expired', instance: 'inst-ap-expired', slot: ACTIVE, source: 'agent', tool: 'execute_bash', ts: 30 },
       })
     })
 
     act(() => {
       ws.simulateMessage({
         type: 'approval_resolved',
-        data: { id: 'ap-expired', slot: ACTIVE, approved: false, decision: 'expired' },
+        data: { id: 'ap-expired', origin: 'coordinator', instance: 'inst-ap-expired', slot: ACTIVE, approved: false, decision: 'expired' },
       })
     })
 
     expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'chat/resolveByApprovalId',
-      payload: { id: 'ap-expired', decision: 'stale', slot: ACTIVE, registry: 'coordinator' },
+      type: 'chat/resolveApprovalRow',
+      payload: { target: { origin: 'coordinator', id: 'ap-expired', slot: ACTIVE, instance: 'inst-ap-expired' }, decision: 'stale' },
     }))
     expect(chat().messages.find(m => m.meta?.approval_id === 'ap-expired')?.meta?.resolved).toBe('stale')
   })
@@ -1470,7 +1608,7 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'spawn:agent-x', slot: ACTIVE, source: 'agent', tool: 'spawn_run(agent-x)', ts: 31 },
+        data: { id: 'spawn:agent-x', instance: 'inst-spawn:agent-x', slot: ACTIVE, source: 'agent', tool: 'spawn_run(agent-x)', ts: 31 },
       })
     })
     expect(chat().subagents['agent-x']?.status).toBe('pending')
@@ -1478,13 +1616,13 @@ describe('useWebSocket frame router', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval_resolved', data: {
-          id: 'spawn:agent-x', slot: ACTIVE, approved: false, decision: 'expired',
+          id: 'spawn:agent-x', origin: 'coordinator', instance: 'inst-spawn:agent-x', slot: ACTIVE, approved: false, decision: 'expired',
         },
       })
     })
     expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'chat/resolveByApprovalId',
-      payload: { id: 'spawn:agent-x', decision: 'stale', slot: ACTIVE, registry: 'coordinator' },
+      type: 'chat/resolveApprovalRow',
+      payload: { target: { origin: 'coordinator', id: 'spawn:agent-x', slot: ACTIVE, instance: 'inst-spawn:agent-x' }, decision: 'stale' },
     }))
     expect(chat().messages.find(m => m.meta?.approval_id === 'spawn:agent-x')?.meta?.resolved).toBe('stale')
     expect(doneFor('agent-x')).toHaveLength(1)
@@ -1509,7 +1647,7 @@ describe('useWebSocket frame router', () => {
       for (const [id, ts] of [['spawn:gone', 32], ['spawn:no', 33]] as const) {
         ws.simulateMessage({
           type: 'approval',
-          data: { id, slot: ACTIVE, source: 'agent', tool: `spawn_run(${id})`, ts },
+          data: { id, instance: `inst-${id}`, slot: ACTIVE, source: 'agent', tool: `spawn_run(${id})`, ts },
         })
       }
     })
@@ -1539,7 +1677,7 @@ describe('useWebSocket frame router', () => {
       act(() => {
         reconnected.simulateMessage({
           type: 'approval_resolved',
-          data: { id: 'spawn:no', slot: ACTIVE, approved: false },
+          data: { id: 'spawn:no', origin: 'coordinator', instance: 'inst-spawn:no', slot: ACTIVE, approved: false },
         })
       })
       expect(lifecycleFor('no')).toHaveLength(1)
@@ -1555,7 +1693,7 @@ describe('useWebSocket frame router', () => {
   it('ignores an approval resolution that names no owning slot', () => {
     const { ws } = mount()
     act(() => {
-      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'spawn:orphan', approved: true } })
+      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'spawn:orphan', origin: 'coordinator', instance: 'inst-spawn:orphan', approved: true } })
     })
     expect(chat().subagents['orphan']).toBeUndefined()
   })
@@ -2396,7 +2534,7 @@ describe('useWebSocket frame router', () => {
       const { ws } = mount()
       act(() => {
         ws.simulateMessage({ type: 'notification', data: { kind: 'info', title: 'Boom', ts: '1' } })
-        ws.simulateMessage({ type: 'approval', data: { id: 'ap-boom', slot: ACTIVE, tool: 'execute_bash', ts: 2 } })
+        ws.simulateMessage({ type: 'approval', data: { id: 'ap-boom', instance: 'inst-ap-boom', slot: ACTIVE, tool: 'execute_bash', ts: 2 } })
         ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } })
       })
       // Each arm swallowed the listener failure and completed its real work.
@@ -2825,18 +2963,18 @@ describe('useWebSocket connection lifecycle', () => {
 
   it('rehydrates approvals and question cards the socket missed', async () => {
     ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      { id: 'ap-missed', slot: ACTIVE, source: 'cron', tool: 'execute_bash', tool_input: '{}', tool_call_id: 'tc-1', ts: 3 },
-      // Already in the feed: skipped rather than delivered twice.
-      { id: 'ap-known', slot: ACTIVE, source: 'cron', tool: 'execute_bash', ts: 4 },
+      { id: 'ap-missed', instance: 'inst-ap-missed', slot: ACTIVE, source: 'cron', tool: 'execute_bash', tool_input: '{}', tool_call_id: 'tc-1', ts: 3 },
+      // Already in the feed: its note is not delivered twice.
+      { id: 'ap-known', instance: 'inst-ap-known', slot: ACTIVE, source: 'cron', tool: 'execute_bash', ts: 4 },
       // No slot: feed only.
-      { id: 'ap-global' },
+      { id: 'ap-global', instance: 'inst-ap-global' },
     ])
     ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       { ask_id: 'ask-missed', slot: ACTIVE, questions: [{ question: 'Resume?', options: [{ label: 'Yes' }] }] },
     ])
     // The dedupe check reads the SINGLETON feed.
     globalStore.dispatch(addNotification({
-      kind: 'approval', title: 'known', body: '', ts: '4', approval_id: 'ap-known',
+      kind: 'approval', title: 'known', body: '', ts: '4', approval_id: 'ap-known', approval_instance: 'inst-ap-known', slot: ACTIVE,
     } as Parameters<typeof addNotification>[0]))
 
     try {
@@ -2848,8 +2986,11 @@ describe('useWebSocket connection lifecycle', () => {
       expect(notifs.filter(n => n.approval_id === 'ap-missed')).toHaveLength(1)
       expect(notifs.some(n => n.approval_id === 'ap-known')).toBe(false)
       expect(notifs.some(n => n.approval_id === 'ap-global')).toBe(true)
-      // Only the slot-owning approval got an inline card.
-      expect(testStore.getState().chat.messages.filter(m => m.role === 'permission')).toHaveLength(1)
+      // Each slot-owning approval gets its inline card, including the one the
+      // feed already held (a fresh tab has the stored note but no chat row);
+      // the slotless one gets none.
+      expect(testStore.getState().chat.messages.filter(m => m.role === 'permission').map(m => m.meta?.approval_id))
+        .toEqual(['ap-missed', 'ap-known'])
       expect(testStore.getState().chat.pendingQuestions[ACTIVE]?.ask_id).toBe('ask-missed')
       expect(result.current.forceReconnect).toBeTypeOf('function')
     } finally {

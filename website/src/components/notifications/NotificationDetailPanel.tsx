@@ -90,14 +90,20 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
     setDecideFailure(null)
     // Approve/Reject are disabled while the decision is in flight, so a slow
     // press does not look dead or invite a second one.
+    // Bound to the request this row showed (see the feed's decide).
+    const target = approvalDecideTarget(n)
+    if (!target) {
+      dispatch(approvalDecideSettled(decisionKey))
+      dispatch(retireApprovalRow(n.ts, 'refused', { seen: true }))
+      return
+    }
     try {
-      // Bound to the request this row showed (see the feed's decide).
-      await api.resolveApproval(decisionKey, action, approvalDecideTarget(n))
+      await api.decideApproval(target, action)
     } catch (e) {
       dispatch(approvalDecideSettled(decisionKey))
       if (isTerminalApprovalRefusal(e)) {
         // `refused`: this request failed, so it renders as an error.
-        dispatch(retireApprovalRow(n.ts, 'refused'))
+        dispatch(retireApprovalRow(n.ts, 'refused', { seen: true }))
         return
       }
       // eslint-disable-next-line no-console -- keep the raw failure for diagnosis
@@ -279,7 +285,9 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
                     ? <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>
                     : retiredWhy === 'reject'
                       ? <><Ban className="lucide-inline" /> {i18nT('components.approvalCard.rejected')}</>
-                      : i18nT('components.approvalCard.approval_no_longer_pending')}
+                      : retiredWhy === 'expired'
+                        ? i18nT('hooks.useWebSocket.approval_wait_expired')
+                        : i18nT('components.approvalCard.approval_no_longer_pending')}
                 </div>
               )}
               <ErrorNotice

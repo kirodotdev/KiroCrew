@@ -752,8 +752,8 @@ function NotificationsBellButton() {
   const { open, containerRef, bellRef } = sheet
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
-  // _unread_count semantics. A retired approval is excluded too: it asks for
-  // nothing, even while a refused ack puts its flag back to unread.
+  // _unread_count semantics. One selector (`selectUnreadNotes`) for every
+  // unread surface, so they cannot drift apart.
   const unacked = useAppSelector(selectUnreadNotes)
 
   // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.
