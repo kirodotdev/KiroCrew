@@ -785,8 +785,10 @@ component bodies.
 Landing rule (Crewmates page): with no crewmates the page
 shows a single empty-state hero (ghost avatar, "No crewmates yet", one line,
 "New crewmate") in place of a roster call to action and a "pick a member" pane;
-with crewmates and no `?member=`, the remembered crewmate opens, else the most
-recently used one (greatest `last_active_ts`, ties keep roster order). Below md
+with crewmates and no `?member=`, the remembered row opens (including the
+built-in `default` assistant when a roster click last picked it; a
+`?member=default` link is not remembered), else the most recently used crewmate
+(greatest `last_active_ts`, ties keep roster order; never `default`). Below md
 nothing auto-opens — the roster is the page. A `?member=` naming a crewmate that
 is gone falls back the same way, under the existing swap notice. The page's copy
 says crewmate / Crewmates and "Built from"; the crew record, its API and its

@@ -194,16 +194,19 @@ const LAST_MEMBER_KEY = 'mc-members-last-member'
  *  use, not on `ordered`'s position — #11763 rejected priming the user on
  *  whichever row the SORT floated to the top, and a recency the user produced
  *  themselves is a different thing from a sort they may not have chosen.
- *  `undefined` when no crewmate exists: the built-in `default` assistant is not one.
- *  Pure, so the cases — restore, most-recently-used, tie, stale, empty — are
- *  tested directly. */
+ *  The built-in `default` assistant is not a crewmate: a remembered `default`
+ *  (the user opened it deliberately) restores only while at least one real
+ *  crewmate exists, and the most-recently-used fallback never picks it, so a
+ *  roster holding only `default` resolves to `undefined` and shows the
+ *  empty-state hero. Pure, so the cases — restore, most-recently-used, tie,
+ *  stale, empty — are tested directly. */
 export function resolveDefaultMember(
   remembered: string | null,
   ordered: readonly MemberRosterRow[],
 ): MemberRosterRow | undefined {
-  if (remembered && remembered !== 'default') {
+  if (remembered) {
     const hit = ordered.find((m) => m.name === remembered)
-    if (hit) return hit
+    if (hit && (hit.name !== 'default' || !hasNoCrewmates(ordered))) return hit
   }
   let best: MemberRosterRow | undefined
   for (const m of ordered) {
@@ -1193,6 +1196,12 @@ export default function MembersPage() {
   // ref, not state: it is a note between two runs of one effect, and must
   // not re-arm it.
   const goneStandInRef = useRef('')
+  // The member a roster click is about to open. Set by `openMember` right
+  // before its URL write, read (and cleared) by the open that write triggers.
+  // It is what tells a deliberate pick of the built-in `default` (remembered)
+  // from a `?member=default` link or a restore (not remembered): only the
+  // click is the user choosing `default` over the crewmate they had.
+  const rowPickRef = useRef('')
   // The open member's thread, as the thread endpoint last answered it. The
   // roster's `bound`/`slot_key` are never trusted as mountable: dm.json
   // outlives the live slot (a restart drops an unmessaged slot while the
@@ -2602,15 +2611,16 @@ export default function MembersPage() {
   // Open a member's thread and remember it as the last one opened. Called by
   // the URL sync effect only (plus the same-member re-click below), so every
   // way of arriving at a member — click, back/forward, shallow link, restore
-  // on return — runs one code path. `remember` is false only for the member
+  // on return — runs one code path. `remember` is false for the member
   // opened IN PLACE OF one a link named that is gone: that open is the page's
   // choice, not the user's, so one stale link must not overwrite the member
-  // they had actually chosen.
+  // they had actually chosen. It is also false for the built-in `default`
+  // unless a roster click picked it (`rowPickRef`).
   const activate = useCallback(
     (m: MemberRosterRow, remember = true) => {
       activeNameRef.current = m.name
       setActiveName(m.name)
-      if (remember && m.name !== 'default') safeSetItem(LAST_MEMBER_KEY, m.name)
+      if (remember) safeSetItem(LAST_MEMBER_KEY, m.name)
       // A Side Chat belongs to the member it was asked about; nothing to reset
       // here — the panel's strip is bucketed per member slot, so switching
       // members swaps the whole strip and a Side tab stays with its member.
@@ -2644,6 +2654,7 @@ export default function MembersPage() {
         return true
       }
       const go = () => {
+        rowPickRef.current = m.name
         if (urlMember || !isMobile) {
           // Switching between members while one is open REPLACES the entry, and
           // so does opening one above md, where the roster and the thread sit
@@ -2799,7 +2810,11 @@ export default function MembersPage() {
         // user's choice and must not become the memory (see `activate`).
         const standIn = goneStandInRef.current === hit.name
         goneStandInRef.current = ''
-        if (hit.name !== activeNameRef.current) activate(hit, !standIn)
+        const picked = rowPickRef.current === hit.name
+        rowPickRef.current = ''
+        if (hit.name !== activeNameRef.current) {
+          activate(hit, !standIn && (hit.name !== 'default' || picked))
+        }
         // The notice belongs to the member shown in place of the gone one;
         // opening anyone else retires it. Functional updates throughout, and
         // `gone` is NOT a dependency: the URL write below is a router
@@ -2863,10 +2878,14 @@ export default function MembersPage() {
     // does the fallback pick among the listed rows -- and when nothing but the
     // default crew is listed while hidden crewmates exist, it opens the most
     // recently used of those (listed while open), so the page never lands on an
-    // empty pane or claims there are no crewmates.
+    // empty pane or claims there are no crewmates. A remembered built-in
+    // `default` (a roster click picked it) is restored only while a real
+    // crewmate exists: a default-only roster still lands on the hero.
     const remembered = safeGetItem(LAST_MEMBER_KEY)
     const rememberedRow =
-      remembered && remembered !== 'default' ? members.find((m) => m.name === remembered) : undefined
+      remembered && (remembered !== 'default' || !hasNoCrewmates(members))
+        ? members.find((m) => m.name === remembered)
+        : undefined
     const target =
       rememberedRow ?? resolveDefaultMember(null, listedMembers) ?? resolveDefaultMember(null, orderedMembers)
     if (!target) {

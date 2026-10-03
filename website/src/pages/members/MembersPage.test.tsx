@@ -3982,6 +3982,17 @@ describe('resolveDefaultMember', () => {
     expect(resolveDefaultMember('default', defaultOnly)).toBeUndefined()
   })
 
+  it('restores a remembered default once a real crewmate exists', () => {
+    const withDefault = [row({ name: 'default', slug: 'default' }), ...ordered]
+    expect(resolveDefaultMember('default', withDefault)?.name).toBe('default')
+  })
+
+  it('the most-recently-used fallback never picks the built-in default', () => {
+    const withDefault = [row({ name: 'default', slug: 'default', last_active_ts: 999 }), ...ordered]
+    expect(resolveDefaultMember(null, withDefault)?.name).toBe('beta')
+    expect(resolveDefaultMember('ghost', withDefault)?.name).toBe('beta')
+  })
+
 
   it('an empty roster resolves to undefined, never throws', () => {
     expect(resolveDefaultMember('beta', [])).toBeUndefined()
@@ -4029,6 +4040,44 @@ describe('MembersPage default member, memory and URL', () => {
 
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('alpha')
+  })
+
+  it('re-clicking the open default row remembers it', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
+    await renderPage([
+      row({ name: 'default', slug: 'default' }),
+      row({ name: 'alpha', slug: 'alpha' }),
+    ], 'kirocrew', { route: '/members?member=default' })
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
+    fireEvent.click(await rosterRow('default'))
+    await waitFor(() => expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('default'))
+  })
+
+  it('clicking the built-in default, leaving, and returning restores default', async () => {
+    const rows = [
+      row({ name: 'default', slug: 'default', last_active_ts: 300 }),
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 200 }),
+    ]
+    const first = await renderPage(rows)
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
+    fireEvent.click(await rosterRow('default'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-default'))
+    expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('default')
+    first.unmount()
+
+    // Back via the rail: a bare `/members` with no `?member=`.
+    await renderPage(rows)
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
+    expect(currentUrl()).toBe('/members?member=default')
+  })
+
+  it('a remembered default on a default-only roster still shows the hero', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'default')
+    await renderPage([row({ name: 'default', slug: 'default', last_active_ts: 999 })])
+    expect(await screen.findAllByTestId('crewmate-empty-hero')).toHaveLength(2)
+    expect(api.memberThread).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    expect(currentUrl()).toBe('/members')
   })
 
   it('a refresh-frame refetch never reorders the roster; a membership change re-sorts it', async () => {
