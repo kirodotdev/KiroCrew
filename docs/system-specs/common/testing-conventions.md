@@ -4075,6 +4075,14 @@ call, or `await asyncio.to_thread(...)`. `test_crew_log_off_loop_pin.py` fails a
 on-loop call is refused. Do not fix it by patching `_on_event_loop`: that hides the
 on-loop hazard from the product code under test too.
 
+A **negative control that calls the crew log on the loop on purpose** meets those same
+two holders, left behind by its own setup write, before it reaches the holder it
+planted: the on-loop write's preparing fold is refused with a bare `OSError` instead of
+the `CrewLedgerNotRecorded` the control expects. Settle the setup first --
+`emit.flush()` for the writer, then `eager.drain()` for the folder -- so the planted
+holder is the only one the deliberate on-loop call can meet.
+`TestSeedingSurvivesABriefLogLock.test_the_held_lock_is_real_contention` does this.
+
 Two more shapes, both MEASURED in a 5x full-suite run on Windows:
 
 - **A completion signalled from another thread.** `await handler(...)` returning does
