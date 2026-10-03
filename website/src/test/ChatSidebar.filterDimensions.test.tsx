@@ -182,11 +182,11 @@ describe('all three consumers derive from the single filterDimensions declaratio
   it('the declaration holds every dimension', () => {
     const decl = flat.match(/const filterDimensions = useMemo<FilterDimension\[\]>.*?\}, \[[^\]]*\]\)/)?.[0]
     expect(decl).toBeDefined()
-    // Tags, search, status, folder. One count suffices: the compiler already
-    // forces every entry to carry all four fields, so one field's occurrence
-    // count pins the number of dimensions declared here. Bump it in the same
-    // commit as a fifth entry so the addition is a decision, not drift.
-    expect([...decl!.matchAll(/\bfiltersRow:/g)]).toHaveLength(4)
+    // Tags, model, search, status, folder. One count suffices: the compiler
+    // already forces every entry to carry all four fields, so one field's
+    // occurrence count pins the number of dimensions declared here. Bump it in
+    // the same commit as a sixth entry so the addition is a decision, not drift.
+    expect([...decl!.matchAll(/\bfiltersRow:/g)]).toHaveLength(5)
   })
 
   // The consumer pins below hold the COMPLETE normalized expression, not

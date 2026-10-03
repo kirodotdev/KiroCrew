@@ -11682,7 +11682,16 @@
       "archived_sessions_kept_one": "{{count}} archivierte Sitzung bleibt in Ältere Sitzungen",
       "archived_sessions_kept_other": "{{count}} archivierte Sitzungen bleiben in Ältere Sitzungen",
       "archived_count_one": "{{count}} archiviert",
-      "archived_count_other": "{{count}} archiviert"
+      "archived_count_other": "{{count}} archiviert",
+      "models": "Nach Modell filtern",
+      "model_default_label": "Kein Modell gewählt (Agent-Standard)",
+      "show_only_sessions_using_model": "Nur Sitzungen anzeigen, die {{name}} verwenden",
+      "stop_filtering_by_model": "Nicht mehr nach {{name}} filtern",
+      "hide_selected_models": "Ausgewählte Modelle ausblenden",
+      "hide_selected_models_hint": "Alle Sitzungen anzeigen außer denen mit den ausgewählten Modellen",
+      "tick_a_model_first": "Zuerst ein Modell auswählen",
+      "not_models": "Nicht {{models}}",
+      "hide_sessions_using_model": "Sitzungen ausblenden, die {{name}} verwenden"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

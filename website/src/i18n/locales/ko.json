@@ -11501,7 +11501,16 @@
       "delete_empty_folders_other": "빈 폴더 {{count}}개 삭제",
       "deleting_folders": "삭제 중…",
       "archived_sessions_kept_other": "보관된 세션 {{count}}개는 이전 세션에 남습니다",
-      "archived_count_other": "보관됨 {{count}}개"
+      "archived_count_other": "보관됨 {{count}}개",
+      "models": "모델로 필터링",
+      "model_default_label": "선택한 모델 없음 (에이전트 기본값)",
+      "show_only_sessions_using_model": "{{name}}을(를) 사용하는 세션만 표시",
+      "stop_filtering_by_model": "{{name}} 필터 해제",
+      "hide_selected_models": "선택한 모델 숨기기",
+      "hide_selected_models_hint": "선택한 모델을 사용하는 세션을 제외한 모든 세션 표시",
+      "tick_a_model_first": "먼저 모델을 선택하세요",
+      "not_models": "{{models}} 제외",
+      "hide_sessions_using_model": "{{name}}을(를) 사용하는 세션 숨기기"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

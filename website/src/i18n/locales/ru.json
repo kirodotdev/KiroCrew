@@ -12044,7 +12044,16 @@
       "archived_count_few": "{{count}} в архиве",
       "archived_count_many": "{{count}} в архиве",
       "archived_count_one": "{{count}} в архиве",
-      "archived_count_other": "{{count}} в архиве"
+      "archived_count_other": "{{count}} в архиве",
+      "models": "Фильтр по модели",
+      "model_default_label": "Модель не выбрана (по умолчанию агента)",
+      "show_only_sessions_using_model": "Показывать только сессии, использующие {{name}}",
+      "stop_filtering_by_model": "Отключить фильтр по {{name}}",
+      "hide_selected_models": "Скрыть выбранные модели",
+      "hide_selected_models_hint": "Показывать все сессии, кроме использующих выбранные модели",
+      "tick_a_model_first": "Сначала выбери модель",
+      "not_models": "Кроме {{models}}",
+      "hide_sessions_using_model": "Скрыть сессии, использующие {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

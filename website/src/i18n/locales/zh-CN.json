@@ -11501,7 +11501,16 @@
       "delete_empty_folders_other": "删除 {{count}} 个空文件夹",
       "deleting_folders": "正在删除…",
       "archived_sessions_kept_other": "{{count}} 个已归档会话保留在“较早的会话”中",
-      "archived_count_other": "已归档 {{count}} 个"
+      "archived_count_other": "已归档 {{count}} 个",
+      "models": "按模型筛选",
+      "model_default_label": "未选择模型（智能体默认）",
+      "show_only_sessions_using_model": "仅显示使用 {{name}} 的会话",
+      "stop_filtering_by_model": "停止按 {{name}} 筛选",
+      "hide_selected_models": "隐藏所选模型",
+      "hide_selected_models_hint": "显示除使用所选模型以外的所有会话",
+      "tick_a_model_first": "请先选择一个模型",
+      "not_models": "非 {{models}}",
+      "hide_sessions_using_model": "隐藏使用 {{name}} 的会话"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

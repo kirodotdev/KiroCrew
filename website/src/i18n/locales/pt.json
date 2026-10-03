@@ -11863,7 +11863,16 @@
       "archived_sessions_kept_other": "{{count}} sessões arquivadas continuam em Sessões antigas",
       "archived_count_many": "{{count}} arquivadas",
       "archived_count_one": "{{count}} arquivada",
-      "archived_count_other": "{{count}} arquivadas"
+      "archived_count_other": "{{count}} arquivadas",
+      "models": "Filtrar por modelo",
+      "model_default_label": "Nenhum modelo escolhido (padrão do agente)",
+      "show_only_sessions_using_model": "Mostrar apenas as sessões que usam {{name}}",
+      "stop_filtering_by_model": "Parar de filtrar por {{name}}",
+      "hide_selected_models": "Ocultar os modelos selecionados",
+      "hide_selected_models_hint": "Mostrar todas as sessões exceto as que usam os modelos selecionados",
+      "tick_a_model_first": "Selecione um modelo primeiro",
+      "not_models": "Exceto {{models}}",
+      "hide_sessions_using_model": "Ocultar as sessões que usam {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",
