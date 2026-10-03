@@ -32,6 +32,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew import vector_memory
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.context import (
     CONTEXT_GROUP_MEMORY,
@@ -83,6 +84,20 @@ def store(tmp_path: Path):
     embedder.calls.clear()
     yield memory
     memory.close()
+
+
+@pytest.fixture
+def distinct_write_instants(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp each write later than the one before, so the last row written is the newest.
+
+    ``updated_at`` comes from ``vector_memory._now_iso``, which reads the wall
+    clock, and that ticks about every 15.6 ms on Windows under Python 3.12, so two
+    rows written back to back can carry one stamp. ``get_lessons`` orders on the
+    stamp alone, so such a pair comes back in an order no stamp decides. A case
+    whose assertion rests on recency takes its stamps from here.
+    """
+    ticks = iter(f"2026-01-01T00:00:00.{tick:06d}+00:00" for tick in range(1, 1000))
+    monkeypatch.setattr(vector_memory, "_now_iso", lambda: next(ticks))
 
 
 def build_first_turn(
@@ -663,6 +678,7 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
             recall_query=recall_query,
         )
 
+    @pytest.mark.usefixtures("distinct_write_instants")
     def test_the_first_embedded_row_does_not_reshuffle_the_rows_behind_it(self, tmp_path) -> None:
         """One row gaining a vector leaves the order of the rows it cannot rank unchanged.
 
@@ -671,7 +687,9 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
         alone separates them. The rare row's half is 0.408 against the common
         rows' 0.057, so it scores 0.163 against their 0.023. The same store is
         rendered twice, once with no query vector and once with one, and the
-        three rows keep their order.
+        three rows keep their order. The two common rows tie on every score, so
+        recency alone puts the newer ``COMMON_B`` first, which is why the writes
+        take distinct stamps.
 
         Fails if the keyword half with a vector is the capped overlap count:
         one rare word scores 0.1 and two common words 0.2, so the rare row
@@ -823,6 +841,7 @@ class TestTheKeywordHalfStaysBounded:
         finally:
             memory.close()
 
+    @pytest.mark.usefixtures("distinct_write_instants")
     def test_two_rows_at_the_cap_are_ordered_by_rarity_not_recency(self, tmp_path) -> None:
         """Rows tied ON the cap at one cosine are separated by the score behind it.
 
@@ -830,10 +849,10 @@ class TestTheKeywordHalfStaysBounded:
         every word of both, each held by no other row, so their raw halves are
         2.000 and 1.732 -- both above the cap, so both are capped to 1.0.
         Neither has a stored vector, so both score exactly 0.4 and the primary
-        score cannot order them. ``richer`` is written FIRST, so the caller's
-        newest-first order puts ``shorter`` ahead of it, and only the
-        ``-lexical`` tie-break puts the row with the larger rarity-weighted
-        overlap back on top.
+        score cannot order them. ``richer`` is written FIRST, and the writes
+        take distinct stamps, so the caller's newest-first order puts
+        ``shorter`` ahead of it, and only the ``-lexical`` tie-break puts the
+        row with the larger rarity-weighted overlap back on top.
 
         Fails if ``-lexical[index]`` is dropped from the sort key: the stable
         sort then returns the tied pair newest-first and ``shorter`` leads,
