@@ -43,6 +43,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,13 +66,14 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_F
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
+    WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     is_markdown_spec,
     iter_agent_spec_files,
 )
-from kiro_crew.atomic_write import read_json_or, replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -2349,20 +2351,37 @@ def get_shipped_tools() -> dict[str, list[str]]:
     return {k: shipped.get(k, []) for k in ("tools", "allowedTools")}
 
 
+class _AgentSpecUnreadable(Exception):
+    """The spec exists but could not be read, so it must not be rebuilt over.
+
+    Distinct from a missing or invalid spec: those rebuild from defaults, while
+    a read failure on a present file (a Windows sharing violation that outlasted
+    the read retry, a permission error) says nothing about its contents.
+    """
+
+
 def _load_existing_config(
     path: Path, *, gated_off: "frozenset[str] | None" = None
 ) -> tuple[dict, bool]:
     """Load and refresh an existing kirocrew.json.
 
     Returns (config, fresh_install).  Falls back to build_agent_config()
-    when the file is corrupt or refresh fails.
+    when the file is missing, invalid JSON, or refresh fails. The read goes
+    through :func:`read_bytes_with_retry`, so a Windows sharing violation while
+    another writer replaces the file is retried first; a read that still fails
+    on a present file raises :class:`_AgentSpecUnreadable`, because defaults
+    persisted on that path would erase the user's spec.
 
     *gated_off* is the caller's spec-gate snapshot, forwarded so whichever branch
     runs reads the same decision the caller's audit will report.
     """
     try:
-        config = loads_user_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        config = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
+    except FileNotFoundError:
+        config = None
+    except OSError as exc:
+        raise _AgentSpecUnreadable(f"{type(exc).__name__}: {exc}") from exc
+    except ValueError:
         config = None
     if not isinstance(config, dict):
         return build_agent_config(gated_off=gated_off), True
@@ -3106,6 +3125,80 @@ _projected_ceiling_generation: int | None = None
 #: on every confirming poll.
 _pending_projection_warned_generation: int | None = None
 
+#: Why the main agent spec was last left unprojected, or ``None`` when the last
+#: rebuild that reached it wrote it. Set when a rebuild finds ``kirocrew.json``
+#: present but unreadable and keeps it rather than writing defaults over it; its
+#: on-disk ``allowedTools`` then still carry whatever ceiling they were last
+#: derived under, and those grants never reach the PreToolUse gate. While set,
+#: :func:`require_fork_governance` refuses every session, since no agent name can
+#: be shown not to run that spec or the two specs mirrored from it. An unchanged
+#: ceiling is no exemption: managed-server spec gates and user-installed servers
+#: also shape those grants without moving the ceiling's generation. Cleared by the
+#: next rebuild that writes it and re-derives both mirrors under an unchanged
+#: ceiling with no newer episode recorded meanwhile, including the retry that gate
+#: runs itself. The value names
+#: the cause and what to check, because an unreadable file and an incomplete
+#: rebuild are repaired in different places; every rebuild that keeps the record
+#: restates it.
+_main_spec_unprojected: str | None = None
+
+#: Counts the unreadable-spec episodes recorded in ``_main_spec_unprojected``. A
+#: rebuild reads it before it reads the spec and clears or restates the record
+#: only while it is unchanged, so a rebuild that started earlier can never erase
+#: a refusal a later one recorded.
+_main_spec_unprojected_episode = 0
+
+#: Guards compound reads and updates of the two values above.
+_main_spec_state_lock = threading.Lock()
+
+
+def _rebuild_incomplete(path: Path) -> str:
+    """The recorded cause once the spec reads but its rebuild has not finished.
+
+    Covers every way that can happen: a mirror install failing, a later sibling
+    step raising, or the rebuild raising before it reached the mirrors.
+    """
+    return (
+        f"the agent spec {path} reads, but the rebuild that re-projects it and the "
+        "kirocrew-heartbeat and kirocrew-worker specs mirrored from it did not "
+        "complete; check the gateway log and that those specs can be written"
+    )
+
+
+def _settle_full_projection(path: Path, start_episode: int, start_generation: int) -> None:
+    """Record a rebuild that re-derived the main spec and both mirrors.
+
+    Only a rebuild whose own read and writes all happened under one ceiling, with
+    no refusal recorded since it started, may do so. A rebuild that started
+    earlier and finishes after a later one recorded a refusal under a tightened
+    ceiling would otherwise clear that refusal and admit sessions on grants the
+    new ceiling forbids. Such a rebuild changes nothing here, and the record
+    waits for the next rebuild, which the refresh poll and the gate retry both run.
+    """
+    global _main_spec_unprojected
+    from kiro_crew.platform.context import governance_generation
+
+    with _main_spec_state_lock:
+        if _main_spec_unprojected_episode != start_episode:
+            return
+        if governance_generation() != start_generation:
+            return
+        if _main_spec_unprojected is not None:
+            logger.info("the agent spec %s is readable again and was rebuilt", path)
+            _main_spec_unprojected = None
+
+
+def _main_spec_refusal() -> str | None:
+    """The recorded cause while sessions are refused, else ``None``."""
+    with _main_spec_state_lock:
+        return _main_spec_unprojected
+
+
+#: Serializes the spawn gate's re-projection attempt. The gate only rebuilds
+#: once a plain read of the spec succeeds, so while the file stays unreadable a
+#: session start costs one read, not a rebuild.
+_main_spec_retry_lock = threading.Lock()
+
 
 def prime_ceiling_projection() -> None:
     """Record the ceiling generation boot projected the agent config under.
@@ -3188,10 +3281,10 @@ def reproject_for_ceiling_change() -> None:
         if _pending_projection_warned_generation != generation:
             _pending_projection_warned_generation = generation
             logger.warning(
-                "ceiling generation %s is pending: this instance may not rewrite "
-                "the shared agent home, so its on-disk auto-approvals still "
-                "reflect the previous ceiling until the owning instance projects "
-                "the new one (or this instance's refusal clears)",
+                "ceiling generation %s is pending: this instance did not rewrite "
+                "the agent spec (the shared agent home is not its to rewrite, or "
+                "the spec could not be read), so its on-disk auto-approvals still "
+                "reflect the previous ceiling until a rebuild writes the new one",
                 generation,
             )
         return
@@ -3238,14 +3331,24 @@ def rebuild_agent_config(
         clean: If True, ignore existing config and regenerate from defaults.
         _wrote_out: private — when given, receives one bool: ``True`` after
             the write landed and the whole function returned, ``False`` when
-            the shared-home guard refused. Pass a FRESH empty list: the
+            the shared-home guard refused or the existing spec could not be
+            read. Pass a FRESH empty list: the
             reader consumes the first element, so a reused list misreports.
     """
+    global _main_spec_unprojected, _main_spec_unprojected_episode
+    from kiro_crew.platform.context import governance_generation
+
     declined = _decline_shared_agent_home()
     if declined is not None:
         if _wrote_out is not None:
             _wrote_out.append(False)
         return declined
+
+    # Read BEFORE the spec is, so the end of this rebuild can tell whether a
+    # later rebuild recorded a refusal or the ceiling moved while it ran.
+    with _main_spec_state_lock:
+        start_episode = _main_spec_unprojected_episode
+        start_generation = governance_generation()
 
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / AGENT_FILENAME
@@ -3272,7 +3375,37 @@ def rebuild_agent_config(
     if not clean and path.exists():
         # Existing config — preserve user customizations, only refresh
         # security-critical and dynamic fields.
-        config, fresh_install = _load_existing_config(path, gated_off=gated_off)
+        try:
+            config, fresh_install = _load_existing_config(path, gated_off=gated_off)
+        except _AgentSpecUnreadable as exc:
+            # Writing defaults here is the data loss this arm exists to prevent,
+            # so the file stays as it is. Its grants were derived under an
+            # earlier ceiling, though, so the spec is recorded as unprojected:
+            # the spawn gate refuses every session until a rebuild writes it.
+            # The main spec and its two mirrors are skipped; every other
+            # sibling step still runs.
+            with _main_spec_state_lock:
+                _main_spec_unprojected = (
+                    f"the agent spec {path} could not be read ({exc}); check the file's "
+                    "permissions or what is holding it open"
+                )
+                _main_spec_unprojected_episode += 1
+            # Every refresh poll retries this rebuild while the file stays
+            # unreadable, so the WARNING is once per episode; repeats go to
+            # debug. A successful rebuild below re-arms it.
+            _warn_declined_home_once(
+                "unreadable-spec",
+                path,
+                "cannot read the existing agent spec %s (%s); leaving it in place "
+                "instead of resetting it to defaults. Agent sessions are refused "
+                "until a rebuild can read and re-project it",
+                path,
+                exc,
+            )
+            _install_sibling_specs(refresh_forks, gated_off, mirror_main=False)
+            if _wrote_out is not None:
+                _wrote_out.append(False)
+            return path
     else:
         config = build_agent_config(gated_off=gated_off)
         fresh_install = True
@@ -3394,6 +3527,51 @@ def rebuild_agent_config(
     )
     logger.info("Installed agent config: %s", path)
 
+    # Cleared only once both mirrors are re-derived too: the record covers them,
+    # and a session on a mirror still carrying the old grants must stay refused
+    # until the sibling install has rewritten it. If either install fails, the
+    # record stays and the next rebuild retries. Restated first: the file read
+    # fine, so a sibling step that raises must not leave "could not be read" --
+    # unless a later rebuild recorded that cause itself, which this one did not
+    # disprove.
+    with _main_spec_state_lock:
+        if _main_spec_unprojected is not None and _main_spec_unprojected_episode == start_episode:
+            _main_spec_unprojected = _rebuild_incomplete(path)
+    mirrors_rederived = _install_sibling_specs(refresh_forks, gated_off)
+
+    # The spec was read, so a later unreadable episode warns again.
+    _declined_home_warned.discard((str(path), "unreadable-spec"))
+    if mirrors_rederived:
+        _settle_full_projection(path, start_episode, start_generation)
+
+    if _wrote_out is not None:
+        _wrote_out.append(True)
+    return path
+
+
+def _install_sibling_specs(
+    refresh_forks: bool | Literal["defer"],
+    gated_off: frozenset[str],
+    *,
+    mirror_main: bool = True,
+) -> bool:
+    """The rest of :func:`rebuild_agent_config` after the main spec.
+
+    Every step here writes or re-filters a DIFFERENT file, so it runs whether
+    or not the main spec could be read this cycle: skipping it would leave the
+    sibling specs, the forks and the hook repair on grants an earlier ceiling
+    derived.
+
+    *mirror_main* is False when the main spec could not be read. The heartbeat
+    and worker specs are derived FROM the main spec, so deriving them from a
+    read that failed would rewrite them without the user's servers. They are
+    left as they are instead, and :func:`_require_main_spec_projected` refuses
+    sessions on them until a rebuild re-derives them.
+
+    Returns whether both mirrors were re-derived: ``False`` when *mirror_main*
+    is ``False`` or either install raised, which the caller must not mistake
+    for a clean projection.
+    """
     # Install KiroCrew AIM capabilities package (includes kirocrew-lite)
     _install_aim_capabilities()
 
@@ -3410,10 +3588,13 @@ def rebuild_agent_config(
         logger.debug("kirocrew-research agent install failed", exc_info=True)
 
     # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
-    try:
-        _install_heartbeat_agent()
-    except Exception:
-        logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
+    mirrors_rederived = mirror_main
+    if mirror_main:
+        try:
+            _install_heartbeat_agent()
+        except Exception:
+            mirrors_rederived = False
+            logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
 
     # Install kirocrew-conductor agent (goal decomposition + session-control dispatch)
     try:
@@ -3461,10 +3642,12 @@ def rebuild_agent_config(
     # Being here also means every boot re-filters this spec's grants through the
     # governance ceiling, exactly as it does for the six siblings, so the spec
     # cannot outlive a tightened ceiling.
-    try:
-        worker_agent._install_worker_agent()
-    except Exception:
-        logger.debug("kirocrew-worker agent install failed", exc_info=True)
+    if mirror_main:
+        try:
+            worker_agent._install_worker_agent()
+        except Exception:
+            mirrors_rederived = False
+            logger.debug("kirocrew-worker agent install failed", exc_info=True)
 
     # Bidirectional sync: ensure packages installed for one provider
     # are also available for the other (agents↔plugins, skills).
@@ -3474,14 +3657,135 @@ def rebuild_agent_config(
 
     # Security: sanitize invalid hook keys in agent configs
     repair_agent_configs()
-
-    if _wrote_out is not None:
-        _wrote_out.append(True)
-    return path
+    return mirrors_rederived
 
 
 class ForkGovernanceUnresolved(RuntimeError):
     """A fork-backed agent may not start: fork governance is not projected."""
+
+
+class AgentSpecUnprojected(ForkGovernanceUnresolved):
+    """No agent session may start: the main agent spec could not be re-projected.
+
+    A subclass so every spawn host that already turns a governance refusal into a
+    user-visible spawn error does the same for this one, with no second handler
+    to forget.
+    """
+
+
+#: Filename stems of the specs an unprojected main spec leaves stale: itself and
+#: the two specs mirrored from it.
+_UNPROJECTED_SPEC_STEMS = frozenset(
+    Path(name).stem for name in (AGENT_FILENAME, _HEARTBEAT_AGENT_FILENAME, WORKER_AGENT_FILENAME)
+) | {_MAIN_AGENT_NAME}
+
+
+def _main_spec_read_succeeds() -> bool:
+    """Whether a plain read of the main spec works now (a vanished file counts)."""
+    try:
+        read_bytes_with_retry(kiro_agents_dir_path() / AGENT_FILENAME)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _require_main_spec_projected(agent: str) -> None:
+    """Refuse every session while the main spec's grants are unprojected.
+
+    The rebuild leaves an unreadable ``kirocrew.json`` in place instead of
+    writing defaults over it, so the file keeps the ``allowedTools`` it was last
+    derived with, and the heartbeat and worker specs mirrored from it are not
+    re-derived either. kiro-cli auto-approves those grants before the PreToolUse
+    gate sees the call, so a session started on any of them could run a tool a
+    tightened ceiling now denies. Same posture as an unrefreshed fork: refuse.
+
+    Every other name is refused too, because none can be shown not to run the
+    stale file. Its declared name cannot be read, and kiro-cli matches declared
+    names over an unordered listing, so a readable spec claiming the same name
+    proves nothing. A project spec proves nothing either: kiro-cli re-reads the
+    directories at spawn, after this check, and falls back to the default agent
+    when the named spec fails to load. The refusal says which case it is, so an
+    operator is not sent looking for a derivation that does not exist.
+
+    Recovery needs no other trigger: when a plain read of the spec succeeds, one
+    rebuild is run here first, and the session proceeds once it re-projects the
+    spec. While the file stays unreadable the check costs that one read. Callers
+    run this off the event loop, so the read can wait out a sharing violation.
+    """
+    global _main_spec_unprojected
+    if _main_spec_refusal() is None:
+        return
+    with _main_spec_retry_lock:
+        with _main_spec_state_lock:
+            before = _main_spec_unprojected
+            before_episode = _main_spec_unprojected_episode
+        if before is not None and _main_spec_read_succeeds():
+            try:
+                # Forks have their own gate and refresh triggers; this retry
+                # exists only to re-project the main spec and its mirrors.
+                rebuild_agent_config(refresh_forks=False)
+            except Exception:
+                logger.warning("re-projecting the unreadable agent spec failed", exc_info=True)
+                # A rebuild that raised before restating the record leaves the
+                # old cause in it, which the read just disproved. A newer
+                # episode's cause was not disproved, so it stays.
+                with _main_spec_state_lock:
+                    if (
+                        _main_spec_unprojected is before
+                        and _main_spec_unprojected_episode == before_episode
+                    ):
+                        _main_spec_unprojected = _rebuild_incomplete(
+                            kiro_agents_dir_path() / AGENT_FILENAME
+                        )
+    reason = _main_spec_refusal()
+    if reason is None:
+        return
+    if agent in _UNPROJECTED_SPEC_STEMS:
+        relation = f"agent {agent!r} runs on, or is mirrored from, the main agent spec"
+    else:
+        relation = (
+            f"agent {agent!r} cannot be shown not to run the main agent spec (its "
+            "declared name is unknown until it is re-projected)"
+        )
+    raise AgentSpecUnprojected(
+        f"{relation}, and that spec's auto-approvals were not re-projected against the "
+        "current governance ceiling, so a session that could run them is refused: "
+        f"{reason}. The next session start retries."
+    )
+
+
+def main_spec_unprojected() -> bool:
+    """Whether agent sessions are refused because the main spec is unprojected.
+
+    One module global read under its lock, no file I/O, so an event-loop
+    caller can skip the thread hop to :func:`require_main_spec_projected` on the
+    common path.
+    """
+    return _main_spec_refusal() is not None
+
+
+def main_spec_refusal_reason() -> str | None:
+    """The recorded cause while agent sessions are refused, else ``None``.
+
+    Read by the operator notice (:mod:`kiro_crew.notifications.agent_spec`); one
+    module global under its lock, no file I/O.
+    """
+    return _main_spec_refusal()
+
+
+def require_main_spec_projected(agent: str | None) -> None:
+    """Refuse a session on an ALREADY-SPAWNED runtime while the main spec is unprojected.
+
+    :func:`require_fork_governance` runs at spawn, but a warm runtime starts and
+    resumes further sessions on its running backend, and each ``session/new`` or
+    ``session/load`` can pick up the stale spec's grants just as a fresh spawn
+    would. Same verdict and same retry as the spawn gate: raises
+    :class:`AgentSpecUnprojected`. Blocking (it may read the file and rebuild),
+    so call it off the event loop.
+    """
+    _require_main_spec_projected(agent or _MAIN_AGENT_NAME)
 
 
 def _lineage_unreadable_refusal(agent: str, exc: BaseException) -> str:
@@ -3564,7 +3868,8 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     A fork's ``allowedTools``/``autoApprove`` bypass the PreToolUse gate, so a
     session consuming a fork the refresh never re-filtered would run grants the
     ceiling has since tightened away. Non-fork agents never wait and never
-    raise. Raises :class:`ForkGovernanceUnresolved` only.
+    raise, except while the main spec is unprojected (below). Raises
+    :class:`ForkGovernanceUnresolved` only.
 
     *project_dir* is the cwd the backend will run with. kiro-cli resolves
     ``--agent`` against ``<cwd>/.kiro/agents`` BEFORE the global directory, so
@@ -3573,7 +3878,14 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     validated the sanitized global one. A fork whose name is shadowed by the
     project is therefore refused outright; project shadowing of NON-fork
     agents stays the documented discovery feature and is untouched here.
+
+    The main spec gets the same fail-closed treatment while a rebuild could not
+    read and re-project it: see :func:`_require_main_spec_projected`, which
+    raises :class:`AgentSpecUnprojected` (a :class:`ForkGovernanceUnresolved`).
     """
+    # Before the empty-name return: a session with no --agent runs the default
+    # agent, which is no more provably clear of the stale spec than any other.
+    _require_main_spec_projected(agent or _MAIN_AGENT_NAME)
     if not agent:
         return
     # Each failure class gets its own refusal, because each is repaired
@@ -3683,11 +3995,12 @@ def rebuild_agent_config_reporting() -> tuple[Path, bool]:
     """:func:`rebuild_agent_config`, reporting whether it actually wrote.
 
     Returns ``(path, wrote)``. ``wrote`` is ``False`` exactly when the
-    shared-home guard refused the write — the one non-raising path that ends
-    with no spec written — and ``path`` is then the spec path that was NOT
-    rewritten. ``wrote=True`` additionally requires the WHOLE rebuild to have
-    returned: an exception after the write escapes instead, the memo a caller
-    keeps stays behind, and the next poll rewrites — the safe direction. The
+    shared-home guard refused the write or the existing spec could not be
+    read — the two non-raising paths that end with no spec written — and
+    ``path`` is then the spec path that was NOT rewritten. ``wrote=True``
+    additionally requires the WHOLE rebuild to have returned: an exception
+    after the write escapes instead, the memo a caller keeps stays behind, and
+    the next poll rewrites — the safe direction. The
     verdict comes from the rebuild's own single guard evaluation, so no
     caller-side probe exists for a concurrent default-home boot to race. A
     caller needing ``clean`` uses :func:`rebuild_agent_config` directly — the

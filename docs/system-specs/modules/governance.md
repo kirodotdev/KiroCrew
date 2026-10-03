@@ -975,12 +975,44 @@ install a new ceiling and a first-call baseline would record that generation and
 rebuild it needed. And the memo advances **only after a confirmed write**: the hook calls
 `rebuild_agent_config_reporting()`, which returns `(path, wrote)` from the same single
 evaluation that gates the write. A failure still raises through the hook runner, which logs
-and moves on — and a **refused** rebuild (an instance the shared-home write guard declines:
-non-default `KIROCREW_HOME`, pod, or foreign-pinned specs) returns `wrote=False` and holds the
-memo the same way, logging the pending projection at WARNING once per generation. Either way,
-marking the generation synchronised would lose the retry the next poll gives and leave
-forbidden auto-approvals on disk for the process lifetime; holding the memo means every later
-poll retries and the projection lands the moment the failure or refusal clears. The verdict
+and moves on. Two non-raising rebuilds also end with no spec written, return `wrote=False` and
+hold the memo the same way, logging the pending projection at WARNING once per generation: a
+**refused** rebuild (an instance the shared-home write guard declines: non-default
+`KIROCREW_HOME`, pod, or foreign-pinned specs), and an **unreadable** spec (`kirocrew.json` is
+present but its read still fails after `read_bytes_with_retry`, so writing defaults over it
+would erase the user's spec). Either way, marking the generation synchronised would lose the
+retry the next poll gives and leave forbidden auto-approvals on disk for the process lifetime;
+holding the memo means every later poll retries and the projection lands the moment the
+failure or refusal clears. An unreadable spec also fails closed at spawn: the rebuild records
+it as unprojected, leaves the heartbeat and worker specs mirrored from it untouched, and still
+runs every other sibling step, fork refresh included. `require_fork_governance` then refuses
+every session, raising `AgentSpecUnprojected`, even when the ceiling has not moved since the
+spec was last projected: managed-server spec gates and user-installed servers also shape its
+`allowedTools` without moving the ceiling's generation, so an unchanged generation does not
+show the grants on disk are current. The unreadable file may also declare any name, and
+the backend matches declared names over an unordered listing, so no name can be proven clear
+of it. A project spec claiming the name is no proof either, because kiro-cli re-reads the
+directories at spawn, after the check, and falls back to the default agent when the named
+spec fails to load. The record is cleared only after the rebuild has also re-derived both
+mirrors; if either mirror install fails, it stays set. Rebuilds are not serialized, so a
+rebuild clears or restates the record only if no refusal was recorded and the ceiling did not
+move since it began: an earlier rebuild finishing late cannot erase a later refusal. Each refusal first re-reads the file and, if
+the read succeeds, rebuilds, so the first session start after the file is readable again
+re-projects it and proceeds. The record names one of two causes with what to check: the file
+cannot be read (its permissions or a lock holder), or it reads but the rebuild of it and its
+mirrors did not complete (the gateway log and the mirror specs). Each rebuild that keeps the
+record restates it, so a refusal never names a cause the last read disproved. The same check guards an
+already-spawned kiro-cli or KAS runtime: `AcpRuntime.create_session` and `load_session` ask
+`require_main_spec_projected` before writing `session/new` or `session/load`, because a warm
+process would otherwise open sessions on the stale grants that the spawn gate refused; the
+entitlement probe's promptless `session/new` is skipped for the same reason. The
+common path reads module globals on the event loop; only a refusal in force moves to a
+thread. A start is admitted at that check and is not re-checked at the frame write: a start
+admitted just before a refusal is recorded runs the same file it would have run without the
+refusal, the stale-grant lag every ceiling change already has until its rebuild writes. While the
+record is set, the gateway heartbeat also posts it to the notification feed as a critical
+`system.agent` note (app-notifications.md), because cron, channel and subagent starts have no
+one watching their refusal. The verdict
 comes from inside the rebuild itself, never a separate guard probe, which would race a
 concurrent default-home rewrite and record a projection that never landed. An unseeded
 baseline rebuilds once rather than skipping — a redundant rewrite costs a file write, a

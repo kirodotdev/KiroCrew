@@ -101,6 +101,7 @@ from kiro_crew.messaging.link import (
     split_namespaced_channel_id,
 )
 from kiro_crew.messaging.renderer import display_safe
+from kiro_crew.notifications.agent_spec import AgentSpecRefusalNotifier
 from kiro_crew.notifications.bus import (
     NotificationBus,
     NotificationValidationError,
@@ -6080,6 +6081,10 @@ class DashboardState:
         # system.resources. State-owned like the bus/limiter/settings so its
         # lifecycle matches the gateway instance.
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
+        # Agent-spec refusal producer: while an unreadable kirocrew.json refuses
+        # every session, an unattended start has no one to see its refusal, so
+        # the heartbeat turns the recorded cause into system.agent notes.
+        self.agent_spec_refusal_notifier = AgentSpecRefusalNotifier(self.notification_bus)
         # Channel turn-ceiling producer. Registered HERE, once, beside the bus it
         # delivers through, rather than injected per channel: a channel that
         # forgot the wire would be a channel whose pauses are invisible to the

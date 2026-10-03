@@ -14316,3 +14316,77 @@ async def test_read_path_revalidation_reuses_the_shared_probe_not_a_second_one()
     # refresh path — proof the read path did not grow a second parser/probe.
     assert calls["n"] == 1
     assert [m["modelId"] for m in handle.available_models] == ["auto", "claude-opus-5"]
+
+
+@pytest.fixture
+def unprojected_main_spec(monkeypatch):
+    """Record the main spec as unprojected, with the file still unreadable."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod,
+        "_main_spec_unprojected",
+        "the agent spec kirocrew.json could not be read; check the file's permissions",
+    )
+    monkeypatch.setattr(agent_mod, "_main_spec_read_succeeds", lambda: False)
+    return agent_mod
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+async def test_a_warm_runtime_refuses_new_sessions_while_the_main_spec_is_unprojected(
+    unprojected_main_spec, backend
+):
+    """The spawn gate ran when the process started; session/new must ask again.
+
+    A runtime spawned before the spec went unprojected can still start and
+    resume sessions on its running backend, each of which could pick up the
+    stale spec's auto-approvals. Both are refused before any frame is written.
+    """
+    rt, _reader, proc = _make_runtime()
+    rt._acp_backend = backend
+    rt._can_load_session = True
+    with pytest.raises(AcpRuntimeError, match="could not be read"):
+        await rt.create_session(cwd="/work", agent="personal")
+    with pytest.raises(AcpRuntimeError, match="could not be read"):
+        await rt.load_session("session.json", "sid-1", cwd="/work", agent="personal")
+    with pytest.raises(AcpRuntimeError, match="could not be read"):
+        # No agent named: the runtime's own agent is gated, not skipped.
+        await rt.create_session(cwd="/work")
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_entitlement_probe_opens_no_session_while_the_main_spec_is_unprojected(
+    unprojected_main_spec,
+):
+    """A promptless probe still starts the spec's own servers, so it waits too."""
+    rt, _reader, proc = _make_runtime()
+    assert await rt.probe_advertised_models(force=True) == []
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_warm_runtime_check_stays_off_the_thread_pool_when_nothing_is_recorded(
+    monkeypatch,
+):
+    """The common path reads one global and never hops threads for the gate."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_main_spec_unprojected", None)
+    rt, _reader, _proc = _make_runtime()
+    with patch("kiro_crew.acp.runtime.require_main_spec_projected") as gate:
+        await rt._refuse_unprojected_main_spec("kirocrew")
+    gate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_backend_whose_spawn_skips_the_gate_is_not_gated_on_reuse(
+    unprojected_main_spec,
+):
+    """Only the two backends whose spawn asks the main-spec gate ask it on reuse."""
+    rt, _reader, _proc = _make_runtime()
+    rt._acp_backend = "codex"
+    with patch("kiro_crew.acp.runtime.require_main_spec_projected") as gate:
+        await rt._refuse_unprojected_main_spec("kirocrew")
+    gate.assert_not_called()

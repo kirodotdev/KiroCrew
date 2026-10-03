@@ -1111,6 +1111,616 @@ class TestInstallAgent:
         config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
 
+    @staticmethod
+    def _custom_spec(tmp_path: Path) -> Path:
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        spec = kiro_dir / "kirocrew.json"
+        existing = {
+            "model": "claude-user-custom",
+            "tools": ["@user-server"],
+            "allowedTools": [],
+            "mcpServers": {"user-server": {"command": "/opt/user-server", "args": []}},
+        }
+        spec.write_text(json.dumps(existing), encoding="utf-8")
+        return spec
+
+    @staticmethod
+    def _locked_reads(spec: Path, failures: int | None):
+        """Patch ``Path.read_bytes`` so reads of *spec* raise a sharing violation.
+
+        *failures* bounds how many reads fail before the real read returns;
+        ``None`` keeps it locked. Returns the patcher and the attempt counter.
+        """
+        real_read_bytes = Path.read_bytes
+        attempts = [0]
+
+        def _read_bytes(self: Path):
+            if self == spec:
+                attempts[0] += 1
+                if failures is None or attempts[0] <= failures:
+                    raise PermissionError(13, "The process cannot access the file", str(self))
+            return real_read_bytes(self)
+
+        return patch.object(Path, "read_bytes", _read_bytes), attempts
+
+    @pytest.fixture
+    def main_spec_state(self, monkeypatch):
+        """Reset the unprojected-spec record, and let the read retry run fast."""
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_main_spec_unprojected", None)
+        monkeypatch.setattr(agent_mod, "_declined_home_warned", set())
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        return agent_mod
+
+    def test_unreadable_spec_warns_once_per_episode(self, tmp_path: Path, caplog, main_spec_state):
+        """Every refresh poll retries an unreadable spec; only the first one WARNs.
+
+        A successful rebuild re-arms the warning, so a later unreadable episode
+        is reported again instead of staying at debug for the process lifetime.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+
+        def _spec_warnings() -> int:
+            return sum(
+                1
+                for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "cannot read the existing agent spec" in r.getMessage()
+            )
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
+            locked, _attempts = self._locked_reads(spec, failures=None)
+            with locked:
+                _run_install(tmp_path, cfg_dir)
+                _run_install(tmp_path, cfg_dir)
+            assert _spec_warnings() == 1
+
+            _run_install(tmp_path, cfg_dir)
+            assert main_spec_state._main_spec_unprojected is None
+
+            locked, _attempts = self._locked_reads(spec, failures=None)
+            with locked:
+                _run_install(tmp_path, cfg_dir)
+            assert _spec_warnings() == 2
+
+    def test_a_bom_prefixed_spec_is_read_not_reset(self, tmp_path: Path, main_spec_state):
+        """A spec saved as UTF-8 with a BOM keeps the user's fields through a rebuild."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        spec.write_bytes(b"\xef\xbb\xbf" + spec.read_bytes())
+
+        wrote_out: list[bool] = []
+        _run_install(tmp_path, cfg_dir, _wrote_out=wrote_out)
+
+        assert wrote_out == [True]
+        config = json.loads(spec.read_text(encoding="utf-8-sig"))
+        assert config["model"] == "claude-user-custom"
+        assert "user-server" in config["mcpServers"]
+
+    def test_unreadable_existing_spec_is_kept_not_reset(
+        self, tmp_path: Path, caplog, main_spec_state
+    ):
+        """A present spec that stays unreadable is left on disk, not overwritten.
+
+        A read failure on a valid file says nothing about its contents, so the
+        rebuild must not persist defaults over the user's customizations. It
+        records the spec as unprojected, leaves the two specs mirrored from it
+        alone, and every other step (sibling specs, fork refresh, hook repair)
+        still runs.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        before = spec.read_bytes()
+        locked, _attempts = self._locked_reads(spec, failures=None)
+
+        wrote_out: list[bool] = []
+        with (
+            locked,
+            patch("kiro_crew.agent.worker_agent._install_worker_agent") as worker,
+            patch("kiro_crew.agent._install_heartbeat_agent") as heartbeat,
+            patch("kiro_crew.agent.service_agents._install_knowledge_agent") as knowledge,
+            patch("kiro_crew.agent.fork_refresh.refresh_after_rebuild") as forks,
+            patch("kiro_crew.agent.repair_agent_configs") as repair,
+            caplog.at_level(logging.WARNING, logger="kiro_crew.agent"),
+        ):
+            path = _run_install(tmp_path, cfg_dir, _wrote_out=wrote_out)
+
+        assert path == spec
+        assert spec.read_bytes() == before
+        assert wrote_out == [False]
+        assert main_spec_state._main_spec_unprojected is not None
+        assert str(spec) in main_spec_state._main_spec_unprojected
+        assert "permissions" in main_spec_state._main_spec_unprojected
+        worker.assert_not_called()
+        heartbeat.assert_not_called()
+        knowledge.assert_called_once_with()
+        forks.assert_called_once()
+        repair.assert_called_once_with()
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and str(spec) in r.getMessage()
+        ]
+        assert len(warnings) == 1
+
+    def test_sharing_violation_is_retried_before_the_spec_counts_as_unreadable(
+        self, tmp_path: Path, main_spec_state
+    ):
+        """One sharing violation is waited out; the rebuild then reads and writes."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        locked, attempts = self._locked_reads(spec, failures=1)
+
+        def _windows_read(path, **kwargs):
+            # The retry only sleeps over a sharing violation on Windows. Scoped
+            # to this one read, so the rest of the rebuild keeps the host's paths.
+            with patch.object(aw.platform_compat, "IS_WINDOWS", True):
+                return aw.read_bytes_with_retry(path, **kwargs)
+
+        wrote_out: list[bool] = []
+        with locked, patch("kiro_crew.agent.read_bytes_with_retry", _windows_read):
+            _run_install(tmp_path, cfg_dir, _wrote_out=wrote_out)
+
+        assert attempts[0] >= 2
+        assert wrote_out == [True]
+        assert main_spec_state._main_spec_unprojected is None
+        config = json.loads(spec.read_text(encoding="utf-8"))
+        assert config["model"] == "claude-user-custom"
+        assert "user-server" in config["mcpServers"]
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="a real read lock needs Windows byte-range locking"
+    )
+    def test_a_real_windows_read_lock_keeps_the_spec_and_recovers(
+        self, tmp_path: Path, monkeypatch, main_spec_state
+    ):
+        """No mock: another handle holds an OS lock on the spec's bytes.
+
+        A lock held across the whole rebuild keeps the user's spec and refuses
+        sessions; once it is released, the next session start re-projects the
+        spec and proceeds. A lock released mid-retry is waited out, and the
+        rebuild writes with the user's fields intact.
+        """
+        import msvcrt
+
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        before = spec.read_bytes()
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", spec.parent)
+
+        def _lock() -> int:
+            fd = os.open(spec, os.O_RDWR | getattr(os, "O_BINARY", 0))
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, len(before))
+            return fd
+
+        def _unlock(fd: int) -> None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, len(before))
+            os.close(fd)
+
+        fd = _lock()
+        try:
+            wrote_out: list[bool] = []
+            _run_install(tmp_path, cfg_dir, _wrote_out=wrote_out)
+            assert wrote_out == [False]
+            with pytest.raises(agent_mod.AgentSpecUnprojected, match="could not be read"):
+                agent_mod._require_main_spec_projected("kirocrew")
+        finally:
+            _unlock(fd)
+        assert spec.read_bytes() == before
+
+        def _rebuild(**kwargs):
+            return _run_install(tmp_path, cfg_dir, **kwargs)
+
+        with patch("kiro_crew.agent.rebuild_agent_config", side_effect=_rebuild):
+            agent_mod._require_main_spec_projected("kirocrew")
+        assert agent_mod._main_spec_unprojected is None
+
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0.1)
+        fd = _lock()
+        release = threading.Timer(0.15, _unlock, args=(fd,))
+        release.start()
+        try:
+            wrote_out = []
+            _run_install(tmp_path, cfg_dir, _wrote_out=wrote_out)
+        finally:
+            release.join(timeout=10)
+        assert wrote_out == [True]
+        assert agent_mod._main_spec_unprojected is None
+        config = json.loads(spec.read_text(encoding="utf-8"))
+        assert config["model"] == "claude-user-custom"
+        assert "user-server" in config["mcpServers"]
+
+    def test_unreadable_spec_refuses_main_agent_sessions(
+        self, tmp_path: Path, monkeypatch, main_spec_state
+    ):
+        """While the spec is unprojected, sessions on it and its mirrors are refused.
+
+        A still-unreadable spec costs the gate one read, never a rebuild.
+        """
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        before = spec.read_bytes()
+        locked, _attempts = self._locked_reads(spec, failures=None)
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", spec.parent)
+        with locked:
+            _run_install(tmp_path, cfg_dir)
+            with patch("kiro_crew.agent.rebuild_agent_config") as retry:
+                with pytest.raises(agent_mod.AgentSpecUnprojected) as refused:
+                    agent_mod.require_fork_governance("kirocrew", None)
+                for mirror in ("kirocrew-worker", "kirocrew-heartbeat"):
+                    with pytest.raises(agent_mod.AgentSpecUnprojected):
+                        agent_mod.require_fork_governance(mirror, None)
+        retry.assert_not_called()
+        assert isinstance(refused.value, agent_mod.ForkGovernanceUnresolved)
+        assert str(spec) in str(refused.value)
+        assert "could not be read" in str(refused.value)
+        assert "permissions" in str(refused.value)
+        assert spec.read_bytes() == before
+
+    def test_every_global_name_is_refused_while_the_spec_is_unreadable(
+        self, tmp_path: Path, monkeypatch, main_spec_state
+    ):
+        """No global name can be proven clear of the unreadable spec: refuse them all.
+
+        The unreadable file may declare any name, and the backend matches declared
+        names over an unordered listing, so even an agent with its own readable
+        spec could be served the stale one. The refusal tells the two cases apart.
+        """
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        spec.write_text(json.dumps({"name": "personal", "tools": []}), encoding="utf-8")
+        other = spec.parent / "other.json"
+        other.write_text(json.dumps({"name": "other", "tools": []}), encoding="utf-8")
+        locked, _attempts = self._locked_reads(spec, failures=None)
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", spec.parent)
+        with locked:
+            _run_install(tmp_path, cfg_dir)
+            with pytest.raises(agent_mod.AgentSpecUnprojected):
+                agent_mod._require_main_spec_projected("personal")
+            with pytest.raises(agent_mod.AgentSpecUnprojected) as refused:
+                agent_mod._require_main_spec_projected("other")
+            with pytest.raises(agent_mod.AgentSpecUnprojected) as main_refused:
+                agent_mod._require_main_spec_projected("kirocrew")
+        assert "cannot be shown not to run" in str(refused.value)
+        assert "runs on, or is mirrored from" in str(main_refused.value)
+
+    def test_a_project_spec_does_not_vouch_for_a_name(
+        self, tmp_path: Path, monkeypatch, main_spec_state
+    ):
+        """A project spec is read here, but kiro-cli re-reads the tree at spawn.
+
+        It can vanish or fail to load in between, and kiro-cli then falls back to
+        the default agent, so a name a project spec declares is refused too.
+        """
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        project = tmp_path / "checkout"
+        (project / ".kiro" / "agents").mkdir(parents=True)
+        (project / ".kiro" / "agents" / "proj.json").write_text(
+            json.dumps({"name": "proj", "tools": []}), encoding="utf-8"
+        )
+        locked, _attempts = self._locked_reads(spec, failures=None)
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", spec.parent)
+        with locked:
+            _run_install(tmp_path, cfg_dir)
+            with pytest.raises(agent_mod.AgentSpecUnprojected):
+                agent_mod.require_fork_governance("proj", project)
+
+    def test_the_record_stays_until_the_mirrors_are_rederived(
+        self, tmp_path: Path, main_spec_state
+    ):
+        """The heartbeat and worker specs still carry old grants until rewritten.
+
+        So the record is cleared after the sibling install, not before it, and
+        stays when that install raises or a mirror install fails inside it. Each
+        time it stays, the cause is restated: the file read fine, so the refusal
+        must not blame the read.
+        """
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        self._custom_spec(tmp_path)
+        locked_record = "the agent spec kirocrew.json could not be read (locked)"
+        agent_mod._main_spec_unprojected = locked_record
+        seen: list[str | None] = []
+
+        def _siblings(*_args, **_kwargs):
+            seen.append(agent_mod._main_spec_unprojected)
+            raise RuntimeError("sibling install died")
+
+        with patch.object(agent_mod, "_install_sibling_specs", side_effect=_siblings):
+            with pytest.raises(RuntimeError, match="sibling install died"):
+                _run_install(tmp_path, cfg_dir)
+        assert len(seen) == 1 and seen[0] is not None
+        assert seen[0] != locked_record
+        assert agent_mod._main_spec_unprojected == seen[0]
+        assert "did not complete" in agent_mod._main_spec_unprojected
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config"),
+            pytest.raises(agent_mod.AgentSpecUnprojected, match="did not complete") as unfinished,
+        ):
+            agent_mod._require_main_spec_projected("kirocrew")
+        assert "gateway log" in str(unfinished.value)
+        assert "could not be read" not in str(unfinished.value)
+        assert "permissions" not in str(unfinished.value)
+
+        with patch(
+            "kiro_crew.agent.worker_agent._install_worker_agent",
+            side_effect=RuntimeError("worker install died"),
+        ):
+            _run_install(tmp_path, cfg_dir)
+        assert agent_mod._main_spec_unprojected is not None
+        assert "did not complete" in agent_mod._main_spec_unprojected
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config"),
+            pytest.raises(agent_mod.AgentSpecUnprojected, match="did not complete") as mirror,
+        ):
+            agent_mod._require_main_spec_projected("kirocrew-worker")
+        # The file reads fine here, so the refusal must not blame its permissions.
+        assert "those specs can be written" in str(mirror.value)
+        assert "permissions" not in str(mirror.value)
+
+        _run_install(tmp_path, cfg_dir)
+        assert agent_mod._main_spec_unprojected is None
+
+    def test_a_retry_that_raises_does_not_keep_the_disproved_cause(
+        self, tmp_path: Path, monkeypatch, main_spec_state
+    ):
+        """The gate's own retry fails before the rebuild restates the record.
+
+        The file just read fine, which disproves "could not be read" and its
+        permissions advice; the refusal names the incomplete rebuild instead.
+        """
+        agent_mod = main_spec_state
+        spec = self._custom_spec(tmp_path)
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", spec.parent)
+        agent_mod._main_spec_unprojected = (
+            f"the agent spec {spec} could not be read (locked); check the file's permissions"
+        )
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config", side_effect=OSError("disk full")),
+            pytest.raises(agent_mod.AgentSpecUnprojected) as refused,
+        ):
+            agent_mod._require_main_spec_projected("kirocrew")
+        message = str(refused.value)
+        assert "did not complete" in message
+        assert "gateway log" in message
+        assert "could not be read" not in message
+        assert "permissions" not in message
+
+    def test_readable_spec_again_unblocks_sessions(self, tmp_path: Path, main_spec_state):
+        """The gate's own retry re-projects a spec that became readable, and admits."""
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        locked, _attempts = self._locked_reads(spec, failures=None)
+        with locked:
+            _run_install(tmp_path, cfg_dir)
+        assert agent_mod._main_spec_unprojected is not None
+
+        def _rebuild(**kwargs):
+            return _run_install(tmp_path, cfg_dir, **kwargs)
+
+        with (
+            patch.object(agent_mod, "KIRO_AGENTS_DIR", spec.parent),
+            patch("kiro_crew.agent.rebuild_agent_config", side_effect=_rebuild) as retry,
+        ):
+            agent_mod._require_main_spec_projected("kirocrew")
+        retry.assert_called_once_with(refresh_forks=False)
+
+        assert agent_mod._main_spec_unprojected is None
+        config = json.loads(spec.read_text(encoding="utf-8"))
+        assert config["model"] == "claude-user-custom"
+
+    def test_a_burst_of_blocked_starts_runs_one_rebuild(self, main_spec_state):
+        """Concurrent starts after the file reads again share one recovery rebuild.
+
+        The first start to take the retry lock rebuilds and clears the record; the
+        rest wait on that lock for the one rebuild, then find nothing to retry.
+        """
+        agent_mod = main_spec_state
+        agent_mod._main_spec_unprojected = "the agent spec kirocrew.json could not be read"
+        calls: list[int] = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _rebuild(**_kwargs):
+            calls.append(1)
+            entered.set()
+            assert release.wait(5)
+            with agent_mod._main_spec_state_lock:
+                agent_mod._main_spec_unprojected = None
+
+        errors: list[BaseException] = []
+
+        def _start() -> None:
+            try:
+                agent_mod._require_main_spec_projected("kirocrew")
+            except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+                errors.append(exc)
+
+        with (
+            patch.object(agent_mod, "_main_spec_read_succeeds", return_value=True),
+            patch("kiro_crew.agent.rebuild_agent_config", side_effect=_rebuild),
+        ):
+            threads = [threading.Thread(target=_start) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            assert entered.wait(5)
+            release.set()
+            for thread in threads:
+                thread.join(5)
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == []
+        assert calls == [1]
+        assert agent_mod._main_spec_unprojected is None
+
+    def test_an_earlier_rebuild_cannot_clear_a_later_refusal(self, tmp_path: Path, main_spec_state):
+        """Rebuilds are not serialized, so one can finish after a later one began.
+
+        Here a rebuild reads the spec, and while it installs the mirrors a second
+        rebuild (a ceiling refresh) finds the spec unreadable and records the
+        refusal. The first one finishing must leave that refusal in force.
+        """
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        real_siblings = agent_mod._install_sibling_specs
+        nested: list[bool] = []
+
+        def _siblings(refresh_forks, gated_off, *, mirror_main=True):
+            if mirror_main and not nested:
+                nested.append(True)
+                locked, _attempts = self._locked_reads(spec, failures=None)
+                with locked:
+                    _run_install(tmp_path, cfg_dir)
+                assert agent_mod._main_spec_unprojected is not None
+            return real_siblings(refresh_forks, gated_off, mirror_main=mirror_main)
+
+        with patch.object(agent_mod, "_install_sibling_specs", side_effect=_siblings):
+            _run_install(tmp_path, cfg_dir)
+        assert nested == [True]
+        assert agent_mod._main_spec_unprojected is not None
+        assert "could not be read" in agent_mod._main_spec_unprojected
+        with (
+            patch.object(agent_mod, "_main_spec_read_succeeds", return_value=False),
+            pytest.raises(agent_mod.AgentSpecUnprojected, match="could not be read"),
+        ):
+            agent_mod._require_main_spec_projected("kirocrew")
+
+        # The next rebuild that starts after the episode clears it.
+        _run_install(tmp_path, cfg_dir)
+        assert agent_mod._main_spec_unprojected is None
+
+    def test_a_ceiling_move_during_the_rebuild_leaves_the_record(
+        self, tmp_path: Path, main_spec_state
+    ):
+        """A rebuild that started under one ceiling cannot vouch for the next one."""
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        self._custom_spec(tmp_path)
+        agent_mod._main_spec_unprojected = "the agent spec kirocrew.json could not be read"
+        generation = [7]
+        real_siblings = agent_mod._install_sibling_specs
+
+        def _siblings(*args, **kwargs):
+            generation[0] += 1  # a tighter ceiling installed while the mirrors are written
+            return real_siblings(*args, **kwargs)
+
+        with (
+            patch("kiro_crew.platform.context.governance_generation", lambda: generation[0]),
+            patch.object(agent_mod, "_install_sibling_specs", side_effect=_siblings),
+        ):
+            _run_install(tmp_path, cfg_dir)
+            assert agent_mod._main_spec_unprojected is not None
+        with patch("kiro_crew.platform.context.governance_generation", lambda: generation[0]):
+            _run_install(tmp_path, cfg_dir)
+            assert agent_mod._main_spec_unprojected is None
+
+    def test_an_unreadable_spec_refuses_sessions_even_under_an_unchanged_ceiling(
+        self, tmp_path: Path, main_spec_state
+    ):
+        """An unchanged ceiling generation does not show the grants on disk are current.
+
+        Managed-server spec gates and user-installed servers shape the spec's
+        ``allowedTools`` without moving the ceiling's generation, so a spec this
+        process projected under the current ceiling and cannot read now is
+        refused like any other until a rebuild re-projects it.
+        """
+        agent_mod = main_spec_state
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        with patch("kiro_crew.platform.context.governance_generation", lambda: 3):
+            _run_install(tmp_path, cfg_dir)
+            assert agent_mod._main_spec_unprojected is None
+            locked, _attempts = self._locked_reads(spec, failures=None)
+            with locked:
+                _run_install(tmp_path, cfg_dir)
+                assert agent_mod.main_spec_unprojected()
+                with (
+                    patch.object(agent_mod, "_main_spec_read_succeeds", return_value=False),
+                    pytest.raises(agent_mod.AgentSpecUnprojected, match="could not be read"),
+                ):
+                    agent_mod.require_fork_governance("kirocrew", None)
+                with (
+                    patch.object(agent_mod, "_main_spec_read_succeeds", return_value=False),
+                    pytest.raises(agent_mod.AgentSpecUnprojected, match="could not be read"),
+                ):
+                    agent_mod.require_main_spec_projected("personal")
+            # Readable again: the next rebuild under the same ceiling clears it.
+            _run_install(tmp_path, cfg_dir)
+            assert not agent_mod.main_spec_unprojected()
+
+    def test_forks_fail_closed_when_the_spec_is_unreadable(
+        self, tmp_path: Path, monkeypatch, main_spec_state
+    ):
+        """The unreadable arm still runs the fork pass, so a failed pass refuses forks.
+
+        Skipping the refresh would leave the failure set empty, and the fork
+        gate would then admit forks nobody had re-filtered.
+        """
+        from kiro_crew.agent_materialization import fork_refresh
+
+        agent_mod = main_spec_state
+        monkeypatch.setattr(fork_refresh, "_fork_refresh_failed", frozenset())
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        locked, _attempts = self._locked_reads(spec, failures=None)
+        with (
+            locked,
+            patch.object(
+                fork_refresh,
+                "_refresh_forked_templates_locked",
+                side_effect=RuntimeError("fork pass died"),
+            ),
+        ):
+            _run_install(tmp_path, cfg_dir, refresh_forks="defer")
+            assert fork_refresh._fork_refresh_settled.wait(timeout=10)
+            # The deferred runner records its own failure after the event is set;
+            # join it so that write cannot land after monkeypatch restores the set.
+            for thread in threading.enumerate():
+                if thread.name == "fork-refresh":
+                    thread.join(timeout=10)
+
+        assert "*" in fork_refresh._fork_refresh_failed
+        # The fork's own refusal, with the main-spec record out of the way: it
+        # would refuse this global name first.
+        monkeypatch.setattr(agent_mod, "_main_spec_unprojected", None)
+        with (
+            patch.object(agent_mod.agent_state, "get_fork_info", return_value={"x": 1}),
+            patch.object(agent_mod, "project_agent_names", return_value=frozenset()),
+        ):
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="refresh failed"):
+                agent_mod.require_fork_governance("my-fork", None)
+
+    def test_spec_removed_before_read_installs_defaults(self, tmp_path: Path, main_spec_state):
+        """A spec that vanishes between the existence check and the read is missing."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        spec = kiro_dir / "kirocrew.json"
+        spec.write_text(json.dumps({"model": "claude-user-custom"}), encoding="utf-8")
+
+        real_read_bytes = Path.read_bytes
+
+        def _gone_read_bytes(self: Path):
+            if self == spec:
+                raise FileNotFoundError(2, "No such file or directory", str(self))
+            return real_read_bytes(self)
+
+        with patch.object(Path, "read_bytes", _gone_read_bytes):
+            _run_install(tmp_path, cfg_dir)
+        config = json.loads(spec.read_text(encoding="utf-8"))
+        assert config["model"] == "claude-default"
+        assert main_spec_state._main_spec_unprojected is None
+
     def test_missing_bundled_defaults_raises_when_existing_config_present(self, tmp_path: Path):
         """Error propagates when bundled defaults are absent during refresh."""
         cfg_dir = tmp_path / "config"

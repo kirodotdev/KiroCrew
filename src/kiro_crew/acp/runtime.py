@@ -156,7 +156,13 @@ from kiro_crew.acp.types import (
     backends_retired_by_host_logout,
     overlay_project_scope,
 )
-from kiro_crew.agent import ensure_agent_materialized, markdown_spec_for_agent
+from kiro_crew.agent import (
+    ForkGovernanceUnresolved,
+    ensure_agent_materialized,
+    main_spec_unprojected,
+    markdown_spec_for_agent,
+    require_main_spec_projected,
+)
 from kiro_crew.agent_sdk.tool_search import (
     ToolSearchSettings,
     kas_client_meta_settings,
@@ -6704,6 +6710,27 @@ class AcpRuntime:
             logger.info("skill view %s maps back to agent %s", agent, source)
         return source
 
+    async def _refuse_unprojected_main_spec(self, agent: str | None) -> None:
+        """Refuse ``session/new`` and ``session/load`` while the main spec is unprojected.
+
+        The spawn hosts for kiro-cli and KAS ask :func:`require_fork_governance`
+        before the process starts, but a warm runtime opens and resumes further
+        sessions on that process, and each can pick up the stale spec's
+        auto-approvals just as a fresh spawn would. So the same verdict is asked
+        again here, for the same two backends, before any frame is written. The
+        common path reads one module global and stays on the event loop; only a
+        recorded refusal hops to a thread, where the check may read the file and
+        rebuild.
+        """
+        if self.acp_backend not in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+            return
+        if not main_spec_unprojected():
+            return
+        try:
+            await asyncio.to_thread(require_main_spec_projected, agent or self._agent)
+        except ForkGovernanceUnresolved as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -6766,6 +6793,7 @@ class AcpRuntime:
             self._stderr_lines.clear()
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
+        await self._refuse_unprojected_main_spec(agent)
 
         # Inject the shared gateway's broker stubs unless the caller supplied an
         # explicit list. A session-injected server outranks the same-named entry
@@ -7545,6 +7573,11 @@ class AcpRuntime:
                 return []
             if not self._initialized or self._dead or self._process is None:
                 return []
+            if self.acp_backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS) and main_spec_unprojected():
+                # A promptless probe still opens a session on the agent's spec and
+                # starts that spec's own MCP servers, so it waits out the same
+                # refusal as create_session. [] is "no evidence", as on a failure.
+                return []
             params = build_session_new_params(await self._session_work_dir(), mcp_servers=[])
             session_id = ""
             self._session_inits_in_flight += 1
@@ -7639,6 +7672,7 @@ class AcpRuntime:
         if not self._can_load_session:
             raise AcpRuntimeError("Backend does not advertise session/load support")
         agent = await self._source_agent(agent)
+        await self._refuse_unprojected_main_spec(agent)
 
         # Re-declare the pooled broker stubs so a resumed session keeps talking
         # to the broker — same injection as create_session() and the AcpClient

@@ -266,8 +266,10 @@ def test_the_worker_install_runs_on_the_rebuild_path():
 
     from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
 
-    src = inspect.getsource(agent.rebuild_agent_config)
-    assert "_install_worker_agent()" in src
+    # The sibling installs live in one helper the rebuild calls on BOTH of its
+    # paths (spec written, spec unreadable and kept), so check both links.
+    assert "_install_sibling_specs(" in inspect.getsource(agent.rebuild_agent_config)
+    assert "_install_worker_agent()" in inspect.getsource(agent._install_sibling_specs)
     assert WORKER_AGENT_FILENAME not in REQUIRED_KIRO_AGENT_FILES
 
 

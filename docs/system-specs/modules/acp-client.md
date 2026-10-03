@@ -1086,6 +1086,19 @@ wire itself, so a built-in a later engine adds under a new id fails loudly
 instead of resurrecting the silent substitution. (Guard (B) is the spawn-flag check for a markdown-only spec on a
 JSON-only host, `_spawn_agent_not_loaded_reason`.)
 
+On kiro-cli and KAS, `session/new` and `session/load` also refuse while the main
+agent spec is recorded as unprojected (governance.md, the ceiling-projection
+memo). `AcpRuntime._refuse_unprojected_main_spec` asks
+`agent.require_main_spec_projected` before the request is built. That entry
+check is the start's admission point. A start admitted before a refusal is
+recorded runs the spec as it stood before the refusal, which is the same file
+a start that finished a moment earlier ran, so the start is not re-checked at
+the frame write. Until any rebuild writes, every start already runs the grants
+derived under the previous ceiling (governance.md, the ceiling-projection
+memo); the refusal changes which starts are admitted from that point on, not
+what an admitted one sends. `_send_and_await` and the frame write are
+unchanged.
+
 Step 4 (`set_model`) is **conditional**: only sent when `model` is explicitly
 set (i.e., for the default kirocrew agent).  Custom agents skip this so
 kiro-cli uses the model from their own agent config file.

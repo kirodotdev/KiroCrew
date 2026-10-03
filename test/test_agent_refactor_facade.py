@@ -456,6 +456,7 @@ _SHARED_IMPORTS = frozenset(
     {
         "AGENT_FILENAME",
         "Any",
+        "Callable",
         "DERIVED_KEY",
         "Literal",
         "OWNED_KIRO_AGENT_FILES",
