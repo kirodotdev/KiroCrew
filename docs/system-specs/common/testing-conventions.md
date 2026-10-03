@@ -287,6 +287,14 @@ which reads the unit on its own thread after every entry. Retention removes them
 after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
 (`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
 
+**Hold the eager folder before patching a store read it also makes.** The folder scans
+the session slot index on its own thread, and a scan that read the headers before a
+test patched `_read_header_line` can assign `_slot_index` after the test's own read,
+replacing the map the test is about to check with one that proves every unit. A test
+that patches a store read and then inspects the index does it inside
+`_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
+tests in `test_issue_radar_crew_store.py` do.
+
 ### Host tool dialects
 
 A test double for a platform-specific CLI must not depend on another host's
