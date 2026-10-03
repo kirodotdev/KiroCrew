@@ -49,9 +49,15 @@
   },
   {
     "id": "credential-exfil-env-grep-aws",
-    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?:grep|awk|sed)(?!\\w).*AWS(?:(?![A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
+    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?:grep|sed)(?!\\w).*AWS(?:(?![A-Za-z0-9_]|-[A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
     "category": "credential-exfil",
-    "description": "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, `typeset`, `/proc/<pid>/environ`) through grep/awk/sed for the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one such as `AWS_S`, which leaks any credentials stored there. Selecting a named non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+    "description": "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, `typeset`, `/proc/<pid>/environ`) through grep/sed for the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one such as `AWS_S`, which leaks any credentials stored there. Selecting a named non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+  },
+  {
+    "id": "credential-exfil-env-awk-aws",
+    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*awk(?!\\w).*AWS(?:(?![A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
+    "category": "credential-exfil",
+    "description": "Blocks piping an environment dump through awk (including gawk/mawk/nawk) with the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation such as `AWS_S`. Awk evaluates code, so `AWS-x` keeps the bare `AWS` boundary rather than counting as a harmless hyphenated text selector."
   },
   {
     "id": "credential-exfil-python-boto3-get-credentials",

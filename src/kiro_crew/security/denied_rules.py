@@ -114,6 +114,15 @@ _AWS_VAR_SELECTOR = (
     rf"|_{_AWS_SECRET_VAR_NAMES}"
     rf"|_(?:{_AWS_SECRET_WORD_PREFIXES})(?![A-Za-z0-9_]))"
 )
+# A TEXT filter (grep, sed) reads ``AWS-`` before a name character as a literal,
+# which no secret-bearing name or credential value contains (``aws-account-id=``),
+# so its selector lets that shape pass; any other hyphen can take a quantifier
+# (``AWS-?``) and still ends the prefix. awk EVALUATES ``AWS-x`` as code on the
+# variable ``AWS``, so its rule keeps the boundary above. sed's ``e`` and ``s///e``
+# hand text to a shell, where ``AWS-x`` is a word and ``${AWS-x}`` names ``AWS``.
+_AWS_TEXT_VAR_SELECTOR = _AWS_VAR_SELECTOR.replace(
+    r"AWS(?:(?![A-Za-z0-9_])", r"AWS(?:(?![A-Za-z0-9_]|-[A-Za-z0-9_])", 1
+)
 
 # Spellings that DUMP the environment. ``environ`` is one because
 # ``/proc/<pid>/environ`` IS the process environment under a path, and ``typeset``
@@ -169,9 +178,12 @@ _ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
 _ENV_DUMP_GREP_AWS_PATTERN = (
     rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
     + r".*\|.*"
-    + r"(?:grep|awk|sed)(?!\w)"
+    + r"(?:grep|sed)(?!\w)"
     + r".*"
-    + _AWS_VAR_SELECTOR
+    + _AWS_TEXT_VAR_SELECTOR
+)
+_ENV_DUMP_AWK_AWS_PATTERN = (
+    rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)" + r".*\|.*" + r"awk(?!\w)" + r".*" + _AWS_VAR_SELECTOR
 )
 
 # ``printenv NAME...`` prints the named variables' VALUES, so naming a
@@ -458,10 +470,21 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         category="credential-exfil",
         description=(
             "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, "
-            "`typeset`, `/proc/<pid>/environ`) through grep/awk/sed for the bare "
+            "`typeset`, `/proc/<pid>/environ`) through grep/sed for the bare "
             "`AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one "
             "such as `AWS_S`, which leaks any credentials stored there. Selecting a named "
             "non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-env-awk-aws",
+        pattern=_ENV_DUMP_AWK_AWS_PATTERN,
+        category="credential-exfil",
+        description=(
+            "Blocks piping an environment dump through awk (including gawk/mawk/nawk) "
+            "with the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a "
+            "truncation such as `AWS_S`. Awk evaluates code, so `AWS-x` keeps the bare "
+            "`AWS` boundary rather than counting as a harmless hyphenated text selector."
         ),
     ),
     DeniedCommandRule(
@@ -3109,6 +3132,7 @@ _ENV_CRED_PATTERNS: list[re.Pattern[str]] = [
 # cannot be switched off was the weaker of the two).
 _ENV_CRED_SHARED_RULE_IDS: tuple[str, ...] = (
     "credential-exfil-env-grep-aws",
+    "credential-exfil-env-awk-aws",
     "credential-exfil-printenv-aws",
 )
 

@@ -153,12 +153,17 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again, from 28,399, for the AWS env-filter rules. grep/sed read the
+#: selector as text and awk evaluates it as code, so they are two catalog rows the
+#: keystone both enforces (one row would need a top-level alternation, which leaves
+#: the linear fragment matcher); only the text selector lets ``aws-account-id=`` pass.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_423
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
