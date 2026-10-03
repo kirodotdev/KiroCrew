@@ -126,7 +126,7 @@ from kiro_crew.cron import (  # noqa: F401
     effective_wake_budget,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
-from kiro_crew.dashboard import cautious_boot, start_dashboard
+from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import (
     _arm_queued_delivery_settlement,
@@ -850,6 +850,145 @@ async def _pinned_kiro_cli(purpose: str) -> str | None:
     if pinned is None and unpinned_exists:
         logger.warning("%s is skipped: %s.", purpose, PATH_ONLY_INSTALL_NOTE)
     return pinned
+
+
+# Restart step named by the boot refusal. Deliberately static: probing for the
+# installed service would stat HOME, which may be a hung network mount.
+BOOT_RESTART_HINT = "kirocrew restart"
+
+# Boot deadline for the signing-key preflight. Its lstat and key load normally
+# take milliseconds (the loader's own retry budget is well under a second), so a
+# preflight still running at this point is stuck on the filesystem.
+_SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS = 30.0
+
+
+async def _run_signing_key_preflight_bounded(timeout: float | None = None) -> None:
+    """Run :func:`signing_key_preflight` off the loop, with a deadline.
+
+    A daemon thread rather than ``asyncio.to_thread``: a default-executor worker
+    stuck in a filesystem call is joined at interpreter exit, so the timeout's
+    ``SystemExit`` would itself hang. A daemon thread is abandoned at exit, which
+    is what lets the boot fail closed when the data home stops answering.
+
+    Raises whatever the preflight raised (its ``SystemExit`` refusal included),
+    ``TimeoutError`` at the deadline, and ``RuntimeError`` when no thread can be
+    started.
+    """
+    loop = asyncio.get_running_loop()
+    outcome: asyncio.Future[BaseException | None] = loop.create_future()
+
+    def _settle(exc: BaseException | None) -> None:
+        if not outcome.done():
+            outcome.set_result(exc)
+
+    def _worker() -> None:
+        result: BaseException | None = None
+        try:
+            signing_key_preflight()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the loop
+            result = exc
+        try:
+            loop.call_soon_threadsafe(_settle, result)
+        except RuntimeError:
+            pass  # the loop already closed: the boot gave up on this thread
+
+    threading.Thread(target=_worker, name="kc-signing-key-preflight", daemon=True).start()
+    exc = await asyncio.wait_for(
+        outcome, _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS if timeout is None else timeout
+    )
+    if exc is not None:
+        raise exc
+
+
+def signing_key_preflight() -> None:
+    """Refuse to boot on a truncated dashboard signing key.
+
+    A ``token_signing.key`` shorter than 32 bytes is never accepted as a key. The
+    loader's fallback for it is a random in-memory secret, so the gateway would come
+    up, every dashboard browser would be asked for a fresh login token, every
+    HMAC-certified tag grant would be quarantined, and the same would happen again
+    on the next restart, with one WARNING line and nothing else saying why. The file
+    is deliberately NOT repaired here: an in-place heal races an operator's restore,
+    a sibling gateway and the sandbox, and each guard against one of those opens a
+    seam for the next, while the operator holding the file is the one actor who can
+    move it safely. So this fails loud, early and
+    with the manual repair steps, the way the persistence preflight does.
+
+    Absent (first boot), non-regular (``other``) and sandbox-masked keys pass
+    through: the first is normal and the loader publishes a key; the others are
+    reported by ``doctor`` and by the loader's own WARNING.
+
+    Two looks, and the second is the one that counts. The ``lstat`` probe supplies
+    the path and a first shape verdict, which decides only whether the load runs.
+    It can be stale in either direction: an in-place rewrite
+    that begins after it and stays short through the loader's retry budget would
+    still reach the ephemeral fallback, and a short answer can be a sibling
+    gateway's momentary empty file from the in-place creator on a link-less home,
+    which the loader waits out and then reads. So every ok, absent, short or
+    unstatable key is LOADED here, through the memoized getter the dashboard signs
+    with. A load that fell back on a truncated file refuses with the manual repair
+    steps. A load that fell back to an ephemeral secret while the key file exists,
+    or after an ``unstatable`` probe, refuses through
+    :func:`_refuse_unreadable_signing_key` (check owner and mode; nothing is
+    removed). Only an absent key whose fallback could not classify anything keeps
+    the probe's verdict and passes through. The probe decides alone when an
+    earlier caller already memoized the secret.
+    Blocking filesystem I/O: call it off the event loop.
+    """
+    state, key_path = token_secret.signing_key_health()
+    if state in ("ok", "absent", "short", "unstatable"):
+        loaded = token_secret.load_boot_secret()
+        if loaded in ("loaded", "short"):
+            state = loaded
+        elif loaded == "ephemeral" and (state == "unstatable" or os.path.lexists(key_path)):
+            # The loader fell back to a random secret although a key file is
+            # there, or the key leaf could not even be stat'ed (EIO, ESTALE), so
+            # one may be: it could not read it through its whole retry budget
+            # (denied, an I/O error, a writer holding it exclusively). Booting
+            # would sign with a secret no restart reproduces, the outcome this
+            # preflight exists to refuse. A sibling's momentary empty file cannot
+            # reach here, because the loader waits that window out and reads the
+            # key. ``lexists`` alone would answer False on that same EIO.
+            _refuse_unreadable_signing_key(key_path)
+    if state != "short":
+        return
+    # The literal hint, not restart_command_hint(): that helper stats the
+    # per-user unit file under HOME, which can block without bound on a
+    # disconnected network mount, and the boot must refuse rather than hang.
+    steps = token_secret.signing_key_remedy(key_path, BOOT_RESTART_HINT)
+    logger.critical(
+        "Signing key preflight failed — refusing to start: %s is shorter than 32 "
+        "bytes, so every restart would sign with an ephemeral secret and log every "
+        "dashboard session out. Repair it by hand: %s",
+        key_path,
+        " ".join(steps),
+    )
+    print(
+        f"❌ Truncated token signing key at {key_path}. Repair it by hand:",
+        *(f"   {step}" for step in steps),
+        sep="\n",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def _refuse_unreadable_signing_key(key_path: Path) -> None:
+    """Refuse the boot on a signing key that exists but could not be read."""
+    logger.critical(
+        "Signing key preflight failed — refusing to start: %s exists but could not "
+        "be read, so this boot would sign with an ephemeral secret and log every "
+        "dashboard session out. Check its owner and mode (a regular file, mode 0600, "
+        "owned by the gateway's user), then restart: %s",
+        key_path,
+        BOOT_RESTART_HINT,
+    )
+    print(
+        f"❌ Token signing key at {key_path} exists but could not be read.\n"
+        f"   Check its owner and mode (mode 0600, owned by the gateway's user), "
+        f"then restart: {BOOT_RESTART_HINT}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 class GatewayOrchestrator:
@@ -12437,6 +12576,37 @@ class GatewayOrchestrator:
                 file=sys.stderr,
             )
             raise SystemExit(1)
+
+        # Refuse to boot on a truncated signing key (see signing_key_preflight).
+        # Off-loop for the same reason as the persistence probe, and bounded: a
+        # key leaf on a disconnected mount must refuse the boot, not stall it.
+        try:
+            await _run_signing_key_preflight_bounded()
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            logger.critical(
+                "Signing key preflight failed — refusing to start: it did not finish "
+                "within %.0fs (unresponsive data home?)",
+                _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
+            )
+            print(
+                f"❌ The signing key preflight did not finish within "
+                f"{_SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS:.0f}s. Check that the data "
+                f"home is reachable, then restart: {BOOT_RESTART_HINT}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+        except RuntimeError as exc:
+            # No worker thread at boot (executor exhaustion/shutdown). Running
+            # the preflight inline would put its lstat and key load on the event
+            # loop, so a stalled data home would wedge boot instead of refusing
+            # it. Exit loud, the way the persistence preflight above does.
+            logger.critical(
+                "Signing key preflight failed — refusing to start: cannot run it off the "
+                "event loop: %s",
+                exc,
+            )
+            print(f"❌ Cannot run the signing key preflight: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
 
         # Clean up orphaned kiro-cli processes from previous runs
         from kiro_crew.session import cleanup_orphaned_sessions
