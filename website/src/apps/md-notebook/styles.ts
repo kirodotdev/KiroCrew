@@ -28,6 +28,8 @@ export const MDNB_CSS = `
   opacity:0;pointer-events:none;transition:opacity .12s}
 .mdnb-row:hover .mdnb-row-actions,
 .mdnb-row-actions:has(:focus-visible){opacity:1;pointer-events:auto}
+@media (hover:none){.mdnb-folder-actions{opacity:1;pointer-events:auto;
+  position:relative;top:auto;right:auto;transform:none;margin-left:6px;flex-shrink:0}}
 .mdnb-act:hover{background:var(--bg-hover);color:var(--text)}
 .mdnb-act-danger:hover{background:var(--danger-subtle);color:var(--danger)}
 .mdnb-dlg-cancel:hover{background:var(--bg-hover)}
