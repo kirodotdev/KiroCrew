@@ -9765,6 +9765,7 @@
       "downloading_decoder": "Загрузка аудиодекодера: {{pct}} ({{done}} из {{total}})",
       "downloading_speech_model": "Загрузка речевой модели: {{pct}} ({{done}} из {{total}})",
       "loading_speech_model": "Загрузка речевой модели в память…",
+      "stream_error_aws_access_denied": "AWS отказал в доступе к Amazon Transcribe. Обнови учётные данные профиля AWS, указанного в настройках распознавания речи, и попробуй снова. Если это не поможет, разреши профилю вызывать StartStreamTranscription.",
       "stream_error_consent_required": "AWS Transcribe нужно разрешение, прежде чем он сможет слушать. Подтверди его в разделе Настройки → Голос и попробуй снова.",
       "stream_error_decode_failed": "Распознавание речи не смогло завершить эту расшифровку. Продиктуй ещё раз.",
       "stream_error_max_duration": "Диктовка достигла предела длительности. Начни новую запись, чтобы продолжить.",

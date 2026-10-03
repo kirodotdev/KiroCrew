@@ -23,8 +23,10 @@ from aiohttp import WSMsgType, web
 # can diagnose. api_ws_stt() re-checks and returns a friendly WS error.
 try:
     from amazon_transcribe.client import TranscribeStreamingClient
+    from amazon_transcribe.exceptions import UnknownServiceException
 except ImportError:  # pragma: no cover — exercised by test_import_error_*
     TranscribeStreamingClient = None  # type: ignore[assignment,misc]
+    UnknownServiceException = None  # type: ignore[assignment,misc]
 
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
@@ -136,6 +138,12 @@ _CODE_SESSION_FAILED = "stt_session_failed"
 # profile+region. Distinct from `_CODE_SESSION_FAILED` because the fix is an
 # operator action in Settings rather than a retry.
 _CODE_CONSENT_REQUIRED = "stt_consent_required"
+# AWS refused to start the stream because the configured credentials are not
+# allowed to. Distinct from `_CODE_SESSION_FAILED` because every retry is refused
+# the same way: the fix is the profile's credentials or permissions.
+_CODE_AWS_ACCESS_DENIED = "stt_aws_access_denied"
+# The error type AWS returns for an authorization refusal.
+_AWS_ACCESS_DENIED_ERROR = "AccessDeniedException"
 
 # ── Semantic endpointing (stt.endpointing, default off) ──
 # On each stable Transcribe `final`, a fast background model judges whether the
@@ -983,6 +991,24 @@ def _apple_start_failure_code(cfg: "KiroCrewConfig") -> str:
     return availability_detail(cfg.stt).code or _CODE_SESSION_FAILED
 
 
+def _transcribe_start_failure(exc: Exception) -> tuple[str, str]:
+    """The ``(message, code)`` for a Transcribe stream that would not start.
+
+    Only AWS's authorization refusal gets its own code. AWS authorizes the call
+    when the stream opens, and the consent gate's ``sts:GetCallerIdentity`` probe
+    needs no permission, so credentials that may not stream pass every earlier
+    check and are refused again on every retry. An authentication failure is not
+    that case: an expired or invalid token fails the probe on the next attempt with
+    AWS's own reason, and one IAM has not propagated yet is accepted seconds later,
+    so "record again" stays the right advice for it.
+
+    The message stays fixed text because AWS's own carries the caller's ARN.
+    """
+    if isinstance(exc, UnknownServiceException) and exc.error_code == _AWS_ACCESS_DENIED_ERROR:
+        return "AWS denied access to transcribe:StartStreamTranscription", _CODE_AWS_ACCESS_DENIED
+    return "failed to start transcription", _CODE_SESSION_FAILED
+
+
 async def _run_apple_session(
     ws: web.WebSocketResponse,
     cfg: "KiroCrewConfig",
@@ -1412,9 +1438,10 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                 enable_partial_results_stabilization=True,
                 partial_results_stability="high",
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to start Transcribe stream")
-            await _send_error(ws, "failed to start transcription", _CODE_SESSION_FAILED)
+            message, code = _transcribe_start_failure(exc)
+            await _send_error(ws, message, code)
             await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 

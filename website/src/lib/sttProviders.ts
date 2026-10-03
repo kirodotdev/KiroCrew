@@ -136,6 +136,7 @@ export function unavailableMessage(code: string, detail = ''): string {
 export const STREAM_ERROR_CODE_KEY: Record<string, string> = {
   stt_decode_failed: 'lib.sttProviders.stream_error_decode_failed',
   stt_session_failed: 'lib.sttProviders.stream_error_session_failed',
+  stt_aws_access_denied: 'lib.sttProviders.stream_error_aws_access_denied',
   stt_max_duration_exceeded: 'lib.sttProviders.stream_error_max_duration',
   stt_model_missing: 'lib.sttProviders.stream_error_model_missing',
   stt_consent_required: 'lib.sttProviders.stream_error_consent_required',

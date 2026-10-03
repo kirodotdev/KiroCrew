@@ -9638,6 +9638,7 @@
       "downloading_decoder": "Baixando o decodificador de áudio: {{pct}} ({{done}} de {{total}})",
       "downloading_speech_model": "Baixando o modelo de voz: {{pct}} ({{done}} de {{total}})",
       "loading_speech_model": "Carregando o modelo de voz…",
+      "stream_error_aws_access_denied": "A AWS negou o acesso ao Amazon Transcribe. Atualize as credenciais do perfil AWS indicado nas configurações de voz para texto e tente novamente. Se não resolver, dê ao perfil permissão para chamar StartStreamTranscription.",
       "stream_error_consent_required": "O AWS Transcribe precisa de permissão antes de poder ouvir. Confirme em Configurações → Voz e tente novamente.",
       "stream_error_decode_failed": "O reconhecimento de fala não conseguiu concluir esta transcrição. Dite novamente.",
       "stream_error_max_duration": "O ditado atingiu o limite de duração. Inicie uma nova gravação para continuar.",

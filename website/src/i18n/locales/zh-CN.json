@@ -9384,6 +9384,7 @@
       "downloading_decoder": "正在下载音频解码器：{{pct}}（{{done}} / {{total}}）",
       "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）",
       "loading_speech_model": "正在加载语音模型…",
+      "stream_error_aws_access_denied": "AWS 拒绝了对 Amazon Transcribe 的访问。请刷新语音转文字设置中所选 AWS 配置的凭证，然后重试。如果仍然不行，请授予该配置调用 StartStreamTranscription 的权限。",
       "stream_error_consent_required": "AWS Transcribe 需要先获得许可才能开始听写。请在“设置 → 语音”中确认，然后重试。",
       "stream_error_decode_failed": "语音识别未能完成这段转写。请重新口述一次。",
       "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",

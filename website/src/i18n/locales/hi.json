@@ -9511,6 +9511,7 @@
       "downloading_decoder": "ऑडियो डिकोडर डाउनलोड हो रहा है: {{pct}} ({{total}} में से {{done}})",
       "downloading_speech_model": "वाक् मॉडल डाउनलोड हो रहा है: {{pct}} ({{total}} में से {{done}})",
       "loading_speech_model": "वाक् मॉडल लोड हो रहा है…",
+      "stream_error_aws_access_denied": "AWS ने Amazon Transcribe तक पहुँच देने से मना कर दिया। वाक्-से-पाठ सेटिंग में दी गई AWS प्रोफ़ाइल के क्रेडेंशियल्स रीफ़्रेश करो, फिर दोबारा कोशिश करो। अगर तब भी काम न बने, तो प्रोफ़ाइल को StartStreamTranscription कॉल करने की अनुमति दो।",
       "stream_error_consent_required": "AWS Transcribe को सुनने से पहले अनुमति चाहिए। इसे सेटिंग्स → वॉइस में पुष्टि करो, फिर दोबारा कोशिश करो।",
       "stream_error_decode_failed": "वाक् पहचान यह प्रतिलेख पूरा नहीं कर सकी। इसे दोबारा बोलकर लिखवाओ।",
       "stream_error_max_duration": "डिक्टेशन अपनी अवधि सीमा पर पहुँच गया। जारी रखने के लिए नई रिकॉर्डिंग शुरू करो।",

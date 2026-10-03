@@ -9384,6 +9384,7 @@
       "downloading_decoder": "オーディオデコーダーをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
       "downloading_speech_model": "音声モデルをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
       "loading_speech_model": "音声モデルを読み込み中…",
+      "stream_error_aws_access_denied": "AWS が Amazon Transcribe へのアクセスを拒否しました。音声入力の設定にある AWS プロファイルの認証情報を更新してから、もう一度お試しください。それでも解決しない場合は、そのプロファイルに StartStreamTranscription を呼び出す権限を付与してください。",
       "stream_error_consent_required": "AWS Transcribe は音声を聞き取る前に許可が必要です。設定 → 音声で許可してから、もう一度お試しください。",
       "stream_error_decode_failed": "音声認識はこの書き起こしを完了できませんでした。もう一度口述してください。",
       "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",

@@ -9638,6 +9638,7 @@
       "downloading_decoder": "Téléchargement du décodeur audio : {{pct}} ({{done}} sur {{total}})",
       "downloading_speech_model": "Téléchargement du modèle vocal : {{pct}} ({{done}} sur {{total}})",
       "loading_speech_model": "Chargement du modèle vocal…",
+      "stream_error_aws_access_denied": "AWS a refusé l’accès à Amazon Transcribe. Actualise les identifiants du profil AWS indiqué dans les paramètres de reconnaissance vocale, puis réessaie. Si ça ne suffit pas, autorise le profil à appeler StartStreamTranscription.",
       "stream_error_consent_required": "AWS Transcribe a besoin d'une autorisation avant de pouvoir écouter. Confirme-la dans Paramètres → Voix, puis réessaie.",
       "stream_error_decode_failed": "La reconnaissance vocale n'a pas pu terminer cette transcription. Dicte-la à nouveau.",
       "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",

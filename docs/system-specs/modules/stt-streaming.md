@@ -184,8 +184,9 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
   a cap. The English `message` is advisory and the `code` is the contract, because
   the dashboard renders localised text and cannot key off a sentence. Codes the
   `stt` package already owns travel through unchanged rather than being remapped;
-  the transport adds `_CODE_MAX_DURATION` and `_CODE_SESSION_FAILED` for the two
-  conditions only it can see. Only the FIRST fatal claimant sends a frame
+  the transport adds its own for the conditions only it can see:
+  `_CODE_MAX_DURATION`, `_CODE_SESSION_FAILED`, `_CODE_CONSENT_REQUIRED` and
+  `_CODE_AWS_ACCESS_DENIED`. Only the FIRST fatal claimant sends a frame
   (`_claim_fatal`): otherwise the duration cap and a concurrent failure each emit
   one in the window before the other's close lands, and the client shows two
   contradictory errors for a single failure. `useStreamingStt` resolves the code
@@ -229,7 +230,12 @@ After the three gates, each provider has its own precondition and failure frame:
   cannot run it" from "the Swift toolchain is missing", because only the second
   has a fix.
 - **transcribe**: `amazon_transcribe` must be importable, and
-  `aws_consent.authorize(SERVICE_TRANSCRIBE, profile, region)` must grant.
+  `aws_consent.authorize(SERVICE_TRANSCRIBE, profile, region)` must grant. AWS
+  authorizes the stream only when it opens, and the consent gate's
+  `sts:GetCallerIdentity` probe needs no permission, so the gate passes
+  credentials that may not stream. Their `AccessDeniedException` arrives as
+  `_CODE_AWS_ACCESS_DENIED`, because every retry is refused the same way; any
+  other start failure is `_CODE_SESSION_FAILED`.
 
 ### The AWS consent gate is an authorization, not a preference
 

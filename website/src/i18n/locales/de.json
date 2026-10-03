@@ -9511,6 +9511,7 @@
       "downloading_decoder": "Audio-Decoder wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
       "downloading_speech_model": "Sprachmodell wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
       "loading_speech_model": "Sprachmodell wird geladen…",
+      "stream_error_aws_access_denied": "AWS hat den Zugriff auf Amazon Transcribe verweigert. Aktualisiere die Anmeldedaten des in den Spracherkennungseinstellungen ausgewählten AWS-Profils und versuche es dann noch einmal. Falls das nicht hilft, erlaube dem Profil, StartStreamTranscription aufzurufen.",
       "stream_error_consent_required": "AWS Transcribe braucht eine Freigabe, bevor es zuhören kann. Bestätige sie unter Einstellungen → Sprache und versuche es dann erneut.",
       "stream_error_decode_failed": "Die Spracherkennung konnte diese Transkription nicht abschließen. Diktiere sie noch einmal.",
       "stream_error_max_duration": "Das Diktat hat seine Längenbegrenzung erreicht. Starte eine neue Aufnahme, um weiterzumachen.",
