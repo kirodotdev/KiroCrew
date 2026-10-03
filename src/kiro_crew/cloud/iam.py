@@ -330,7 +330,7 @@ def policy_document() -> dict[str, Any]:
             # cap. The trade: the launcher can read EC2 metadata across the
             # account; it gains no write. The Describe calls that return secrets
             # (instance and launch-template user data, Spot launch specs, VPN
-            # pre-shared keys) are cut back out by DenyForeignUserData and
+            # pre-shared keys, account-wide tag values) are cut back out by DenyForeignUserData and
             # DenySecretReads below.
             # ssm:DescribeAssociation / ListAssociations are the Instance
             # handler's association reads.
@@ -821,7 +821,7 @@ def policy_document() -> dict[str, Any]:
             # token is already TTL-short and loopback-only; this shrinks the
             # discovery path further). The agent chokepoint additionally denies
             # GetCommandInvocation from an agent session (see cloud.aws).
-            "Sid": "SsmSessionControlAndRead",
+            "Sid": "SsmStatusRead",
             "Effect": "Allow",
             "Action": [
                 "ssm:DescribeInstanceInformation",
@@ -832,7 +832,7 @@ def policy_document() -> dict[str, Any]:
             "Resource": "*",
         },
         {
-            "Sid": "SsmAmiParameter",
+            "Sid": "SsmAmi",
             "Effect": "Allow",
             "Action": ["ssm:GetParameter", "ssm:GetParameters"],
             "Resource": "arn:aws:ssm:*::parameter/aws/service/*",
@@ -877,14 +877,18 @@ def policy_document() -> dict[str, Any]:
         },
         {
             # The other ec2:Describe* calls that return secrets: launch-template
-            # and Spot launch specifications carry user data, and VPN
-            # connections carry the pre-shared keys. The template uses none of
-            # them, so they are denied outright.
+            # and Spot launch specifications carry user data, VPN connections
+            # carry the pre-shared keys, and DescribeTags lists free-text tag
+            # values of every resource in the account. The template and the
+            # CLI use none of them (instance discovery goes through
+            # tag:GetResources and DescribeInstances), so they are denied
+            # outright.
             "Sid": "DenySecretReads",
             "Effect": "Deny",
             "Action": [
                 "ec2:DescribeLaunchTemplateVersions",
                 "ec2:DescribeSpot*Requests",
+                "ec2:DescribeTags",
                 "ec2:DescribeVpnConnections",
             ],
             "Resource": "*",

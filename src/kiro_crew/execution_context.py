@@ -482,6 +482,7 @@ def resolve_member_execution(
     validate_memory_files: bool = False,
 ) -> ExecutionContext:
     """Capture an explicitly selected existing member and its store together."""
+    from kiro_crew.config.loader import member_template_id
     from kiro_crew.memory_stores import require_member_memory_store
 
     alias, agent = (
@@ -498,7 +499,7 @@ def resolve_member_execution(
         member_id=member_id,
         store=MemoryStoreRef(store, member_id),
         selection_kind="member",
-        template_id=agent.kiro_agent or "kirocrew",
+        template_id=member_template_id(agent),
         memory_mode=memory_mode,
         app=app,
         selection_name=alias,

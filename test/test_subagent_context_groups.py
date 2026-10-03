@@ -194,7 +194,8 @@ class TestEpisodicMemoryGate:
             get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "[PREFERENCE-SENTINEL]",
-            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
         return builder

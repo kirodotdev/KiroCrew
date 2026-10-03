@@ -539,7 +539,7 @@ describe('ActivityViewer — subagent card controls', () => {
       />
     )
     const { rerender } = renderPanel(props('line one'))
-    const body = screen.getByText('Output').parentElement?.querySelector('pre') as HTMLElement
+    const body = screen.getByTestId('subagent-output-body')
     // jsdom reports zero metrics, so give the body a real scrollable geometry.
     Object.defineProperty(body, 'clientHeight', { configurable: true, value: 100 })
     Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 500 })
@@ -1133,5 +1133,31 @@ describe('ActivityViewer — live model downgrade flag (#5326)', () => {
       />,
     )
     expect(screen.queryByTestId('subagent-model')).toBeNull()
+  })
+})
+
+/* ── Subagent card: markdown panes (#12734) ─────────────────────────────────*/
+
+describe('ActivityViewer — subagent panes render markdown', () => {
+  const md = '- one\n- two\n\n```py\nprint(1)\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+
+  it('renders lists, fences and tables in the input and output panes', () => {
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ s1: mkAgent('s1', { status: 'running', task: md, streaming: md }) }} />,
+    )
+    const out = screen.getByTestId('subagent-output-body')
+    expect(out.querySelector('.code-block')).not.toBeNull()
+    expect(out.querySelector('table')).not.toBeNull()
+    expect(out.querySelectorAll('li')).toHaveLength(2)
+    const input = screen.getByText('Input').nextElementSibling as HTMLElement
+    expect(input.querySelector('.code-block')).not.toBeNull()
+    expect(input.querySelector('table')).not.toBeNull()
+  })
+
+  it('does not crash on a half-typed fence while the output streams', () => {
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ s1: mkAgent('s1', { status: 'running', streaming: 'Result:\n```ts\nconst x =' }) }} />,
+    )
+    expect(screen.getByTestId('subagent-output-body').textContent).toContain('Result:')
   })
 })

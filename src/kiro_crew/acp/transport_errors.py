@@ -248,6 +248,10 @@ class AcpError(Exception):
         # an unentitled model are also terminal, but a new context can succeed,
         # so they are not structural terminality.
         self.structural_terminal: bool = False
+        # Narrow structural subtype for a model-window rejection. Higher layers
+        # inspect the flag instead of importing another ACP exception across
+        # their architecture boundary.
+        self.context_overflow: bool = False
         # Whether this error happened while STARTING a session rather than on a
         # prompt or another request. The twin of
         # ``AcpRequestTimeout.session_start_failed`` on the runtime path: the two
@@ -279,7 +283,28 @@ class AcpPermissionNeeded(AcpError):  # noqa: N818
 
 
 class AcpProcessDied(AcpError):  # noqa: N818
-    """kiro-cli process exited unexpectedly."""
+    """kiro-cli process exited unexpectedly.
+
+    ``ambiguous_delivery`` is True when the death followed a request-frame drain
+    stall: the frame had already been handed to the transport, so a kiro-cli that
+    merely paused reading could still consume it after the death is raised. The
+    recovery path must then NOT replay the prompt verbatim (that would run its
+    tools a second time) -- it resumes from restored conversation state instead,
+    the same choice it makes once a turn has emitted output. A write that never
+    reached the transport (a lock-phase stall, a broken pipe before the write)
+    leaves this False: the replay is the frame's first and only delivery.
+    An ambiguous death is never transient: a retry ladder that re-sends on a
+    transient verdict would replay exactly the prompt that may have run, so the
+    verdict is pinned False rather than left to the message's wording.
+    """
+
+    def __init__(self, *args: object, ambiguous_delivery: bool = False, **kwargs: object) -> None:
+        # Forward transient/code to AcpError so AcpRegistrationRateLimited (which
+        # subclasses this and passes transient=True) keeps working.
+        if ambiguous_delivery:
+            kwargs["transient"] = False
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.ambiguous_delivery = ambiguous_delivery
 
 
 class AcpAuthRequired(AcpError):  # noqa: N818
@@ -937,6 +962,14 @@ _RE_PROCESS_FAILED = re.compile(r"failed to process the request", re.IGNORECASE)
 # never drift.
 _RE_MALFORMED_REQUEST = re.compile(r"[Ii]mproperly formed request", re.IGNORECASE)
 
+# kiro-cli's deterministic context-window rejection. It can arrive before the
+# first model event, when a custom agent's prompt, resources, and MCP schemas
+# already fill the window, or mid-conversation, when accumulated history does.
+# The same native session cannot shrink the envelope it was rejected on, so
+# replaying there reproduces the rejection; only a fresh session or a smaller
+# always-loaded set can succeed.
+_RE_CONTEXT_WINDOW_OVERFLOW = re.compile(r"\bcontext window overflowed\b", re.IGNORECASE)
+
 # Kiro's image validator rejects either the machine reason or its typed wrapper.
 # The wrapper is the only stable token present in some ACP error data, while the
 # machine reason appears in kiro-cli's own log. Both mean the identical
@@ -1050,8 +1083,9 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence:
     unentitled-model(terminal) → usage-limit(terminal) →
-    malformed-request(terminal) → unsupported-image(terminal) →
-    oversized-request(terminal) → model-unavailable → throttle →
+    malformed-request(terminal) → context-window-overflow(terminal) →
+    unsupported-image(terminal) → oversized-request(terminal) →
+    model-unavailable → throttle →
     credential-propagation(transient) → auth(terminal) →
     session-expiry(terminal) → connection failure(transient) → generic 5xx /
     pre-stream generation failure → unknown(terminal). Every step mirrors
@@ -1092,6 +1126,10 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # intentional and self-documenting, not incidental to the False
         # fall-through, and so a future transient marker added below cannot
         # accidentally match malformed-request wording.
+        return False
+    if _RE_CONTEXT_WINDOW_OVERFLOW.search(data):
+        # Terminal on this native session: its startup/turn envelope already
+        # exceeds the model window, so replaying it reproduces the rejection.
         return False
     if _RE_IMAGE_FORMAT_UNSUPPORTED.search(data):
         # Terminal and structural: the validator rejected image data in this
@@ -1354,6 +1392,20 @@ def _format_acp_error(
                 f"{_limit_detail} Retrying will not help until the limit resets. "
                 f"Check your plan's usage allowance, or switch to a model or "
                 f"account tier with remaining capacity."
+                f"{req_id_suffix}"
+            )
+        elif _RE_CONTEXT_WINDOW_OVERFLOW.search(data):
+            # The provider rejected the whole envelope it was sent. The formatter
+            # is surface-blind: it cannot tell a first turn from a later one, so
+            # it names neither and gives both remedies. Retrying on this native
+            # session reproduces the failure either way; only the caller knows
+            # which cause applies.
+            formatted = (
+                "The agent context exceeded the model window. "
+                "Retrying on the same model session will not help. In an established "
+                "conversation the accumulated history no longer fits, so start a fresh "
+                "session; in a fresh session the always-loaded agent resources and "
+                "tools already fill the window, so reduce them."
                 f"{req_id_suffix}"
             )
         elif _RE_IMAGE_FORMAT_UNSUPPORTED.search(data):
@@ -1629,11 +1681,11 @@ def _raise_acp_error(
     *,
     backend: str = "",
 ) -> None:
-    """Format and raise the appropriate AcpError subclass for *error*.
+    """Format and raise the appropriate :class:`AcpError` for *error*.
 
-    Delegates formatting to ``_format_acp_error`` and raises either
-    ``AcpPromptBusy`` (when the backend reports a concurrent in-flight prompt)
-    or the generic ``AcpError`` for all other cases.
+    Delegates formatting to ``_format_acp_error``. Prompt-busy uses
+    ``AcpPromptBusy``; other failures use ``AcpError`` and receive any
+    structural, model, auth, or usage tags from their raw frame.
 
     *available_models* is passed to BOTH the formatter and the transient
     classifier so a model-rejection's wording and its retry verdict are decided
@@ -1656,18 +1708,25 @@ def _raise_acp_error(
     err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Three
-    # answers carry the tag: the backend's malformed-request rejection, its image
-    # validator's rejection, and kiro-cli's own refusal of a request it could not
+    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four
+    # answers carry the tag: context-window overflow, malformed request, image
+    # validation failure, and kiro-cli's own refusal of a request it could not
     # shrink to fit -- each reproduced exactly by re-sending the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
+    _context_overflow = bool(_RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field))
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
     if (
-        _RE_MALFORMED_REQUEST.search(raw_data_field)
+        _context_overflow
+        or _RE_MALFORMED_REQUEST.search(raw_data_field)
         or _image_format_unsupported
         or _RE_OVERSIZED_REQUEST.search(raw_data_field)
     ):
         err.structural_terminal = True
+    if _context_overflow:
+        # Explicit even though the shared classifier reaches the same verdict:
+        # subtype metadata and same-session retry eligibility stay inseparable.
+        err.transient = False
+        err.context_overflow = True
     if _image_format_unsupported:
         err.image_format_unsupported = True
     # Tag a model-rejection so the SUBSTITUTE (background) retry layer can pick a

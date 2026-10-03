@@ -268,7 +268,7 @@ there.
 
 ## ConversationLog (`history.py` facade)
 
-Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).
+Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A writer may also pass `extra_meta` (`append` / `append_if_absent`), a dict of display fields merged into the row's `meta` — e.g. `{"turn_stats": …}` for the usage footer; the merge never overrides `mid` (`{**extra_meta, **{"mid": …}}`). The multi-row off-loop writer `append_rows_if_absent_off_loop` takes `row_meta`, a sequence aligned with its `rows` by index, applying each entry as that row's `extra_meta`. A row appended with neither `mid` nor a non-empty `extra_meta` carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated); supplying `extra_meta` alone now writes a `meta` dict even without a `mid`.
 
 - Append-only for LLM cache efficiency
 - Rotation at 10MB (keeps metadata + last 200 messages, atomic write), enforced
@@ -421,6 +421,50 @@ unreadable records remain execution refusals. Member/store integrity and ordinar
 authorization are still checked. Async restore prefetches this record off-loop alongside
 the transcript and applies the resulting name on the event loop.
 
+**Where the code lives.** `chat_persistence.py` is the facade every caller imports
+from. It keeps the orchestration: the save transaction `_save_slot_to_history`
+(snapshot, refusals, the transcript lock, the atomic replace and the witness
+stamping) with its on-loop entry point `save_slot_off_loop`; the restore drivers
+and slot builders (`restore_open_slots`, `restore_recent_sessions`, their async
+twins, `_rehydrate_slot_from_history`, `_apply_recent_session` and the prefetch
+reads they share); the reasoning-effort allowlist; the persisted-entry memo
+`_build_message_entry` with its bounds; the private member-store assignment; and
+the retired-mode map. The rules those consult live in `dashboard/slot_persistence/`,
+and each file names the work that belongs in it:
+
+- `write_guards.py` -- the paired window/queue snapshot, the routing snapshot, the
+  note-row filter, the line a full save folds, the delete witness with the
+  lock-free `session_was_deleted` / `session_transcript_remains` probes,
+  `_keep_owed_after_refusal`, and the guarded-write registry. New refusal paths.
+- `metadata_line.py` -- the full-save line fold (`build_full_line`), the
+  empty-window merge (`merge_empty_window`), the `memory_mode` ratchet and its
+  worker-to-loop witness, `last_user_at` and the dismissed source-link line. New
+  slot-owned metadata fields.
+- `transcript_merge.py` -- the frozen prefix, the foreign-append merge and its
+  time-ordered interleave, the dedup and rewrite archives, and the composed
+  payload (`compose_payload`). New rules about what a save keeps from the file it
+  replaces.
+- `message_entries.py` -- the persisted-row projection
+  (`_build_message_entry_uncached`) and the restored-variant attach. New fields a
+  persisted row carries.
+- `restored_metadata.py` -- the re-validation of the title state, the
+  auto-compaction threshold and the dismissed source links on restore. New
+  validation of a persisted slot field.
+- `restore_inputs.py` -- the restore-time reads and screens: the agent-to-model
+  map, the restore config, the open-tab snapshot and its key screen, the committed
+  agent, the delete-during-read witness, the app-owned channel-row screen and the
+  MCP-app claim recovery. New restore-time reads.
+- `turn_marker.py` -- the turn-in-flight marker's validation and reconcile. New
+  rules about a turn a restart did not see finish.
+
+The orchestration stays in the facade because gates key the restore builders, the
+prefetch reads, the async drivers, `save_slot_off_loop` and the recreate-won guard
+to `chat_persistence.py`, and test fixtures reset its process state there. Every
+name the facade bound is still importable from it, and the owners read every name
+a test rebinds on it through it at call time;
+`test/test_chat_persistence_composition_contract.py` pins both, plus the bytes a
+save writes.
+
 `_save_slot_to_history` persists dashboard chat slots. It models the session
 file as a **frozen prefix + live window** so on-disk history is never
 overwritten or truncated — a slot that restored only the last ~500 messages can
@@ -429,7 +473,8 @@ no longer destroy older turns.
 - **Frozen prefix**: the first `slot._disk_older_count` on-disk message lines —
   the turns OLDER than the in-memory window (set at restore/resume/rehydrate
   from `len(disk) - window`). These bytes are read verbatim and NEVER rewritten.
-  They are cached on the slot keyed by `(file-mtime, _disk_older_count)` so a
+  They are cached on the slot keyed by the file's `(mtime, size)` and
+  `_disk_older_count`, together with the foreign lines that save kept, so a
   steady 5s flush is O(window), not O(file size).
 - **Live window**: all of `slot.messages` (small, bounded by the 10000-message
   cap). It is **re-serialized in full on every save**. Re-serializing the whole
@@ -515,7 +560,9 @@ no longer destroy older turns.
   asyncio lock (unusable from the thread), so the save instead takes a
   consistent snapshot: it reads `_disk_older_count`, snapshots
   `list(slot.messages)`, and re-checks `_disk_older_count` (bounded retry) so a
-  concurrent trim cannot interleave with the read-serialize-write.
+  concurrent trim cannot interleave with the read-serialize-write. The durable
+  queue is read in the same stretch and the pair is proven, not assumed (see
+  Queued prompt durability in `session.md`).
 - **Explicit-snapshot pairing (`expected_disk_older_count`)**: a caller that
   freezes its own `messages` snapshot on the loop and then awaits the save cannot
   use that retry — the snapshot is already frozen, and the counter the worker
@@ -603,8 +650,11 @@ no longer destroy older turns.
   the save therefore aborts cleanly (no write, no error — the flush loop
   clears `_dirty`) when the file is gone AND the slot has OBSERVED its session
   on disk. The observation witness is `_disk_meta_created_at` — recorded
-  exactly at the hydrate sites and at each committed save, nowhere else — and
-  it is the SOLE gate: the window counters take no part in either direction,
+  exactly at the hydrate sites and at each committed save, nowhere else — with
+  the `_disk_meta_observed` bit standing in for legacy metadata that records no
+  `created_at` (set at the same sites, and when a deferred-note hold merge lands
+  in an existing line). It is the SOLE gate: the window counters take no part in
+  either direction,
   because fork/transfer set `_resumed_count` optimistically after a
   best-effort first save (a transient first-write failure must not read as a
   deletion and eat the retry), and a restored zero-message session has
@@ -621,13 +671,16 @@ no longer destroy older turns.
   the slot last observed at restore or at its own save; a known-vs-known
   mismatch aborts rather than merging the deleted window into the new
   transcript, while a readable-but-absent `created_at` (legacy meta) fails
-  open. The metadata is read through `get_metadata_status`, and an UNREADABLE
+  open, and so does a CORRUPT line, which the save rewrites under the strictest
+  mode. The metadata is read through `get_metadata_status`, and an UNREADABLE
   line fails CLOSED: the save raises (leaving `_dirty` armed for the flush
   retry) and `session_was_deleted` returns True (the copy is refused,
   retryably) — a transient read failure must not blank the identity
   comparison and let deleted content overwrite a replacement session. A brand-new slot's first
   save has none of that evidence and creates the file normally. The abort
-  returns `False` (every other completion returns `True`), and
+  returns `False`, as do the save's other refusals (frozen-prefix drift, an
+  unproven window/queue pairing, routing moved off `expected_history_key`, a
+  stale queue snapshot, recreate-won); every other completion returns `True`, and
   `save_slot_off_loop` forwards it — for BOTH `best_effort` modes the skip
   raises nothing, so a clean return no longer proves a committed write.
   Callers that republish the slot's content elsewhere check it: the fork
@@ -765,7 +818,10 @@ no longer destroy older turns.
   lock in that gap. A bare `meta + frozen + window` replace would then delete
   that acknowledged append, so the save first scans the on-disk WINDOW region
   (the bytes after the frozen prefix) for lines the in-memory window does not
-  represent and carries them into the payload as `foreign_lines`. Matching is
+  represent and carries them into the payload as `foreign_lines`, merged back
+  into the window by timestamp (`_interleave_foreign_lines`) rather than parked
+  after it. A save warns once per fresh set of kept lines (keyed by line hash in
+  `slot._foreign_reported`), not on every re-scan. Matching is
   **count-bounded** (deques of window-entry indices; each disk line matches at
   most one window entry and each window entry absorbs at most one disk line) and
   runs in ordered passes so the outcome is independent of disk-line order:
@@ -854,6 +910,52 @@ no longer destroy older turns.
     append that lands between the pre-lock window snapshot and the lock — a known,
     narrow residual window (the dropped tail is handled by the rewrite's
     archive-diff, not the foreign scan).
+- **The metadata line is a fold, and three of its fields only move one way**
+  (`metadata_line.py`). A full save rebuilds the slot-owned fields from slot state
+  and carries every key another layer owns (`carry_unowned_metadata`); a forced
+  or closing save of a message-less slot merges instead, writing clearable fields
+  even when empty because a merge cannot delete a key, and only into a line that
+  exists. `memory_mode` is the stricter of the retained mode (the slot's, folded
+  with the session's execution record, live or durable) and the line's own, a carried
+  `execution_context` record is tightened to match, and the committed tightening
+  reaches the event loop through `pending_slot_memory_mode`. `last_user_at` is
+  the later of the stored stamp and the newest row carrying
+  `HUMAN_TURN_META_KEY`, compared one candidate at a time so an unusable stamp
+  costs only itself; it is unowned, so a window with no human row keeps the
+  stored value. `dismissed_source_links` is the union of the slot's set and the
+  on-disk line -- dismissals only grow -- written as the sorted, validated,
+  cap-smallest prefix (`_capped_dismissed_line`); while the slot's set is
+  unhydrated or an unlink transaction is open, only the on-disk line is carried
+  forward (re-validated and capped the same way).
+- **The turn-in-flight marker** (`turn_marker.py`). While a local turn sits
+  between admission and teardown the line carries `turn_in_flight_generation`
+  and a bounded copy of the turn's opening row (`turn_in_flight_prompt`); both
+  are slot-owned, so the full save clears them by omitting them, and the
+  empty-window merge, which cannot delete a key, writes the cleared values (`0`
+  and `null`). Every restore path calls
+  `_reconcile_local_turn_marker` once its window is loaded: a copy with no row of
+  its identity anywhere on disk is re-appended, and unless the tail already shows
+  the interruption or ends in the user's own Stop card, one `error` row
+  (`meta.kind = "gateway_restart_interruption"`) lands past the window boundary
+  so the next save writes it. A second restart before that save re-decides from
+  the same bytes, so rows do not accumulate.
+- **Title state round-trips with its provenance** (`restored_metadata.py`). The
+  save writes `title_origin`, `title_refresh_mark` and `title_low_signal` beside
+  the title; a restore redacts the title for display and resolves the three
+  (a legacy titled session with no origin reads as `"user"`), then
+  `_rebase_rehydrated_refresh_mark` re-bases the mark against the user rows the
+  window holds -- after the marker reconcile, which can re-append an opener.
+  Restored dismissed source links are re-validated against the identity grammar
+  and capped at `_MAX_DISMISSED_SOURCE_LINKS`, with the drop logged once.
+- **Retired modes restore as plain chat.** A slot persisted under a
+  `_RETIRED_MODES` value (`crew`, `orchestrator`) comes back with no mode
+  (`_restored_mode`), and a request still naming `orchestrator` is coerced to
+  plain chat (`_coerce_requested_mode`).
+- **The persisted-entry memo.** `_build_message_entry` caches the post-redaction
+  entry keyed by a hash of the whole message plus its attachment target, bounded
+  by `dashboard.chat_entry_cache_max_entries` / `chat_entry_cache_max_bytes`
+  (re-read after a config write) and a per-entry ceiling; a window longer than
+  the entry bound, or whose content alone exceeds the byte bound, skips the memo.
 - **Consolidation offset & rotation generation**: `last_consolidated` is an
   absolute message index the consolidator snapshots (as `total`) BEFORE its slow
   LLM call and writes back via `mark_consolidated`. A rotation firing during that
@@ -1243,6 +1345,72 @@ the dashboard.
 Non-blocking via `asyncio.create_task`. Requires `SessionManager` to be passed
 at construction time; consolidation is silently skipped if no session manager
 is available.
+
+**Bounded prompt input.** A history pass renders at most
+`_CONSOLIDATION_PROMPT_BUDGET_CHARS` (65,536 characters) of transcript, taken as
+a message-aligned prefix of the unconsolidated tail by `_consolidation_chunk()`.
+The budget counts characters rather than bytes because it exists to fit a
+context window, which is measured in tokens: code points track tokens evenly
+across scripts, while a byte budget would give a CJK transcript a third of the
+span it gives a Latin one.
+The tail is otherwise unbounded — a session that goes a long time between passes,
+or whose consolidation kept failing, renders every message since the marker into
+one prompt, and past some length no provider accepts it, so the span that most
+needs extracting becomes the one that can never be extracted. The budget charges
+the `"\n"` the prompt builder joins with, one per message after the first.
+
+The split is message-aligned because `last_consolidated` counts messages: a
+prompt cut mid-message would leave the marker describing a boundary that does
+not exist in the transcript. A first message that alone exceeds the budget is
+prompted anyway rather than refused — its size is a permanent property of the
+transcript, so refusing stalls that session (and everything queued behind that
+message) forever, while sending it is no worse than the unbounded prompt the
+budget replaces and terminates through the ordinary attempt cap.
+
+**The marker follows the prompt, not the snapshot.** Both the success path and
+the abandon path advance `last_consolidated` to the end of the PROMPTED prefix
+(`AttemptedSpan.prompted`), never to the snapshot total. Advancing past the
+prefix would mark messages consolidated that no model has read, dropping them
+from memory silently — the same loss on the failure path as on the success path.
+A long tail therefore drains over successive passes.
+
+`AttemptedSpan.total` stays the transcript's extent at snapshot time and is not
+collapsed into `prompted`. The retry accounting stamps both
+(`consolidation_attempts_count` and `consolidation_attempts_prompted`) and needs
+both. `total` is what a later transcript is compared against to tell new content
+from the same content; collapsing it into the prefix would read as growth on
+every later check, handing a failing span an unlimited supply of billed retries.
+`prompted` is what says whether that comparison means anything: an attempt that
+stopped short of `total` covered a prefix, and appending messages cannot change a
+prefix, so `_attempts_describe_current_span` does NOT let growth release the cap
+for a bounded attempt. Without that, a permanently over-budget head message in a
+session still receiving turns would reset its attempts on every idle window and
+never reach the cap that abandons it.
+
+**Draining.** One history pass consolidates one budget's worth, so a tail larger
+than the budget needs several. In the gateway the rate is one budget per history
+pass: the idle sweep (once per `history_idle_secs` idle window, behind its own
+post-pass throttle) or a session-end hook. Per-turn callers do not drain it —
+they go through `maybe_consolidate`, whose `include_history=False` passes never
+advance `last_consolidated`. `consolidate_now()` (the `kirocrew consolidate`
+CLI, whose process exits when it returns) has no sweep behind it, so it loops
+`_consolidate` itself until the tail is drained or a pass makes no progress, and
+the CLI prints the remainder rather than `done` when one is left. After a gateway
+restart a deferred tail waits for that session's next idle window or session-end
+hook; nothing sweeps it on startup.
+
+**Sensitive sessions.** The idle sweep keeps its pinned behaviour: a session that
+touched a sensitive path is still consolidated for memory, and only skill
+synthesis is suppressed. `consolidate_now()` skips such a session outright, and
+because its drain prompts a tail the up-front check never saw — a live session
+keeps appending between passes — it re-runs the same whole-session check before
+every later pass and stops the drain once the session turns sensitive.
+
+Prefs-only passes (`include_history=False`) keep the whole tail. Their window is
+an in-memory offset that `maybe_consolidate`'s done-callback advances to the
+count it scheduled against, with no channel back from the pass, so bounding that
+prompt without also making the offset follow the bound would drop the remainder
+from preference and project extraction outright.
 
 **Loop safety:** the task body runs on the event loop thread, so any blocking
 work inside it must be offloaded. `_write_structured_memory` and `_save_lessons`

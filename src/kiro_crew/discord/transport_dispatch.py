@@ -112,7 +112,9 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
     entry_channel,
+    entry_person_origin,
     owner_token,
+    person_tag,
     register_drain,
     tag_entry,
 )
@@ -164,6 +166,7 @@ from kiro_crew.messaging.queue_receipt import (
     ReceiptSurface,
     receipt_address_key,
 )
+from kiro_crew.start_priority import person_priority
 
 logger = logging.getLogger(__name__)
 
@@ -887,6 +890,7 @@ class DiscordDispatcher:
                 _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
                 provider, is_new, resumed = await self.sessions.get_or_create(
                     session_key,
+                    start_priority=person_priority(msg.person_origin),
                     agent=agent,
                     channel_id=chan_id,
                     wait_if_busy=False,
@@ -1035,6 +1039,7 @@ class DiscordDispatcher:
                 # next conversation") when one is already live, so the two agree.
                 provider, is_new, resumed = await self.sessions.get_or_create(
                     session_key,
+                    start_priority=person_priority(msg.person_origin),
                     agent=agent,
                     channel_id=chan_id,
                     model=self._model_pref.get(scope_id) or None,
@@ -1696,6 +1701,7 @@ class DiscordDispatcher:
             # by one of them during the other's turn is answered into the other's
             # channel and attributed to them.
             origin=_inbound_origin(msg),
+            person_origin=msg.person_origin,
         ):
             await self.handle_message(msg)
 
@@ -1751,6 +1757,8 @@ class DiscordDispatcher:
             # The origin this iteration answers, taken from the FIRST entry it
             # collapses. None until that entry is read.
             origin: _QueuedOrigin | None = None
+            # Whether a person sent any entry this turn collapses.
+            person = False
             async with self._queue.lock:
                 while True:
                     item = self.sessions.dequeue(session_key)
@@ -1790,6 +1798,7 @@ class DiscordDispatcher:
                     if fits:
                         texts.append(item[1])
                         attachments.extend(item_attachments)
+                        person = person or entry_person_origin(item[2])
                     else:
                         # Once one message does not fit, defer it and everything
                         # behind it so queue order remains exact.
@@ -1857,6 +1866,9 @@ class DiscordDispatcher:
                     text=combined,
                     thread_id=origin.thread_id or None,
                     attachments=attachments,
+                    # The queued entries' own flag: a gateway-built wake can have been
+                    # queued too (kiro_crew.start_priority).
+                    person_origin=person,
                 ),
                 drain=False,
                 interpret_commands=False,
@@ -1872,10 +1884,14 @@ class DiscordDispatcher:
         *,
         attachments: list[Any] | None = None,
         origin: _QueuedOrigin,
+        person_origin: bool = False,
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
         receipt, under ``self._queue.lock``. Returns True if queued; False if the
         turn finished in the window (caller runs the message as a fresh turn).
+
+        *person_origin* is the message's own ``InboundMessage.person_origin``, which
+        the drained replay's start priority is read from.
 
         *origin* is REQUIRED and keyword-only: it is who sent THIS message and where
         its reply goes, and the drain replays the entry under it. A default would be
@@ -1891,6 +1907,7 @@ class DiscordDispatcher:
                 force=False,
                 attachments=list(attachments or []),
                 **_origin_kwargs(origin),
+                **person_tag(person_origin),
             ):
                 return False
             # An attachment-only message has no text; show a placeholder rather
@@ -2285,6 +2302,8 @@ class DiscordDispatcher:
                 conversation_id=itx.channel_id,
                 text=choice_text,
                 thread_id=thread_id or None,
+                # A person's own message, re-dispatched (kiro_crew.start_priority).
+                person_origin=True,
             )
             # An option label is MODEL-AUTHORED: the agent chose the text of the
             # button, and the press only says which one the user picked. So the
@@ -3360,5 +3379,7 @@ class DiscordDispatcher:
             conversation_id=itx.channel_id,
             text=f"!{name} {argument}".strip(),
             thread_id=thread_id or None,
+            # A person's own message, re-dispatched (kiro_crew.start_priority).
+            person_origin=True,
         )
         await self.handle_message(synthetic)

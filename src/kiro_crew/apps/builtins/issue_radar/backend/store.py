@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_json_or
 
 logger = logging.getLogger(__name__)
 
@@ -284,10 +284,7 @@ def _read_list_snapshot(path: Path, schema: object, rows_key: str) -> dict | Non
         mtime = path.stat().st_mtime
     except OSError:
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    data = read_json_or(path, None, logger=logger, what="issue-radar list cache")
     if not isinstance(data, dict) or data.get("schema") != schema:
         return None  # stale schema → treat as a miss so the route refetches
     rows = data.get(rows_key)

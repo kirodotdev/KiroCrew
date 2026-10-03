@@ -151,11 +151,12 @@ describe('DisplayPanel — zoom level description', () => {
 
     renderPanel()
 
-    const description = screen.getByText(/原生窗口缩放/)
-    expect(screen.queryByText(/Native window zoom/)).toBeNull()
+    // The sentence is the row's info tip, carried on `title` while closed.
+    const description = screen.getByTitle(/原生窗口缩放/)
+    expect(screen.queryByTitle(/Native window zoom/)).toBeNull()
     // `{{mod}}` must survive interpolation — a missing value renders the raw
     // placeholder, which reads as broken copy rather than as a keyboard hint.
-    expect(description.textContent).not.toContain('{{mod}}')
+    expect(description.getAttribute('title')).not.toContain('{{mod}}')
   })
 })
 

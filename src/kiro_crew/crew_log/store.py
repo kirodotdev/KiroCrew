@@ -280,17 +280,34 @@ def crew_log_path(kind: str, unit_id: str) -> Path:
     return crew_log_dir(kind, unit_id) / LOG_FILE
 
 
+def _numbered_segment_seq(name: str) -> int | None:
+    """The number in a ``log.<n>.jsonl`` name, or ``None`` for any other name.
+
+    Only the canonical spelling ``str(n)`` counts: ASCII digits, no leading
+    zero. ``str.isdigit`` also accepts a superscript, which ``int`` cannot
+    parse, so a stray ``log.².jsonl`` would raise out of every read of the
+    unit. ``int`` does accept Arabic-Indic digits and a leading zero, so
+    ``log.١٢.jsonl`` or ``log.05.jsonl`` would pass for a real segment and
+    break the seq continuity check. All three are stray files, not segments.
+    """
+    prefix = f"{_SEGMENT_STEM}."
+    if not name.startswith(prefix) or not name.endswith(_SEGMENT_SUFFIX):
+        return None
+    middle = name[len(prefix) : -len(_SEGMENT_SUFFIX)]
+    if not (middle.isascii() and middle.isdecimal()):
+        return None
+    number = int(middle)
+    return number if str(number) == middle else None
+
+
 def _segment_first_seq(path: Path) -> int | None:
     """The first seq declared by a canonical segment filename, or ``None``."""
     if path.name == LOG_FILE:
         return 1
-    prefix = f"{_SEGMENT_STEM}."
-    if not path.name.startswith(prefix) or not path.name.endswith(_SEGMENT_SUFFIX):
+    first = _numbered_segment_seq(path.name)
+    if first is None or first <= 1:
         return None
-    middle = path.name[len(prefix) : -len(_SEGMENT_SUFFIX)]
-    if not middle.isdigit() or int(middle) <= 1:
-        return None
-    return int(middle)
+    return first
 
 
 def segment_paths(kind: str, unit_id: str) -> list[Path]:
@@ -1617,12 +1634,10 @@ def _is_segment_name(name: str) -> bool:
     predicate only decides what goes FIRST, so a stray numbered file is better
     grouped with the segments than left to the tail of the pass -- it is history
     by shape, and the ordering exists so the identity files outlive the history.
+    The number itself must still be spelled as a reader parses it, so a name a
+    reader ignores as a stray (``log.².jsonl``, ``log.05.jsonl``) is not history.
     """
-    if name == LOG_FILE:
-        return True
-    if not (name.startswith(f"{_SEGMENT_STEM}.") and name.endswith(_SEGMENT_SUFFIX)):
-        return False
-    return name[len(_SEGMENT_STEM) + 1 : -len(_SEGMENT_SUFFIX)].isdigit()
+    return name == LOG_FILE or _numbered_segment_seq(name) is not None
 
 
 # --------------------------------------------------------------------------- #

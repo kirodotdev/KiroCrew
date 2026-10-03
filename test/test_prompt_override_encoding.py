@@ -46,7 +46,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def builder(tmp_path: Path, opened) -> ContextBuilder:
+def builder(tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch) -> ContextBuilder:
+    # The shipped prompt's ``{{MAX_SUBAGENTS}}`` figure is a live reading of
+    # host free memory, and a session start takes a fresh one. These tests
+    # compare a control render with an override render, so an unpinned figure
+    # can move between the two on a busy xdist worker and fail a prompt that did
+    # degrade. Pin it, as the composition contract does.
+    monkeypatch.setattr(ContextBuilder, "_live_cap_figure", staticmethod(lambda: "4"))
     return ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "ws"),
         skills=opened(SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)),
@@ -113,6 +119,17 @@ class TestUtf16OverrideDegradesToShippedPrompt:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
         assert str(broken) in warnings[0].getMessage()
+
+    def test_control_comparison_holds_while_the_host_cap_moves(
+        self, home: Path, builder: ContextBuilder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The auto-sized cap is read from host free memory on every session
+        # start. Make it move between the two renders, as it does on a
+        # loaded worker; the control comparison above must not depend on it.
+        sizes = iter(range(15, 0, -1))
+        monkeypatch.setattr("kiro_crew.subagent.compute_max_subagents", lambda cfg: next(sizes))
+        monkeypatch.setattr("kiro_crew.resource_status.adaptive_exec_cap", lambda: 0)
+        assert _resolve(builder) == _resolve(builder)
 
     def test_valid_utf8_override_is_still_used(
         self, home: Path, builder: ContextBuilder, caplog: pytest.LogCaptureFixture

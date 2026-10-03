@@ -3,8 +3,8 @@
  * This file is the CSS-first replacement for the Tailwind v3 `tailwind.config.js`
  * that used to exist beside package.json. It carries exactly three things:
  *
- *   1. `@custom-variant` — the `dark:` and `hover:` variants this codebase was
- *      written against.
+ *   1. `@custom-variant` — the `dark:` variant this codebase was written
+ *      against (and the note on why `hover:` is left at Tailwind's default).
  *   2. `@theme` — the utility ↔ token bridge: every `bg-accent`, `text-muted/40`,
  *      `rounded-md`, `shadow-sm`, `font-mono` and `animate-rise` the components
  *      use resolves through here to the runtime design tokens `index.css` declares
@@ -26,15 +26,22 @@
  * `dark:` keys on the palette attribute `useTheme.tsx` writes to <html>, the same
  * selector the v3 `darkMode: ['selector', '[data-theme="dark"]']` produced.
  *
- * `hover:` is restored to an UNGATED `:hover`. Tailwind v4 wraps hover utilities
- * in `@media (hover: hover)`, which drops them entirely on touch devices. This
- * dashboard is a PWA that ships hover-revealed affordances (row actions, the
- * member-name edit pencil, sidebar controls) which a phone user reaches by
- * tapping — on a coarse pointer the tap fires :hover and the control appears.
- * Keeping the v3 behaviour means no touch surface silently loses a control; the
- * `hover:` utilities keep meaning what every component author here intended. */
+ * `hover:` keeps Tailwind v4's default: it applies only inside
+ * `@media (hover: hover)`, and every `group-hover:` / `peer-hover:` compound
+ * inherits that gate. Do not redefine it as a bare `(&:hover)`. On iOS a tap
+ * first dispatches a synthetic hover, and when that hover reveals content (an
+ * `opacity-0 group-hover:opacity-100` cluster, a `hidden group-hover:block`
+ * tooltip) Safari treats the tap as "show the hover state" and drops the click,
+ * so the user has to tap a second time.
+ *
+ * A control that is hidden until hover must therefore carry its own touch
+ * state: `[@media(hover:none)]:opacity-*` (or a `utils/touchActions.ts` class)
+ * keeps it visible where hover cannot happen. Hover-only decoration (colour,
+ * shadow, a hint glyph, a tooltip) simply does not appear on touch. A tooltip
+ * that is the only place its data appears, on an element with no click action,
+ * can opt back into a tap with the explicit `[.group:hover_&]:` selector.
+ * `src/test/hoverVariantPolicy.test.ts` pins both halves. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
-@custom-variant hover (&:hover);
 
 /* ── Theme ──
  * `inline` makes the utility reference the token directly (`background-color:

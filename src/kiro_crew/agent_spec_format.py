@@ -8,8 +8,8 @@ goes through this module rather than a bare ``glob("*.json")`` -- a scan that
 sees only one form lists an agent kiro-cli would run, or projects onto KAS an
 agent that is not there.
 
-This is a leaf module on purpose: it imports nothing from ``kiro_crew``, so the
-config loader, the MCP gateway rewriter and the discovery cache can all reach it
+This is a leaf module on purpose: it imports nothing from ``kiro_crew`` except
+the leaf :mod:`kiro_crew.user_json`, so the config loader, the MCP gateway rewriter and the discovery cache can all reach it
 without an import cycle. It parses bytes it is handed and never opens a file --
 the hardened read (size cap, sensitive-symlink refusal) stays with the caller.
 
@@ -33,13 +33,14 @@ body text and configuration never leaks into the prompt.
 from __future__ import annotations
 
 import codecs
-import json
 import math
 import re
 from pathlib import Path
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]
+
+from kiro_crew.user_json import loads_user_json
 
 #: Suffixes an agents directory entry may carry, lower-case. ``.json`` is the
 #: kiro-cli form; ``.md`` is the markdown form.
@@ -383,7 +384,7 @@ def parse_agent_spec_text(text: str, path: str | Path) -> Any:
     """
     if is_markdown_spec(path):
         return parse_markdown_spec(text)
-    return json.loads(text)
+    return loads_user_json(text)
 
 
 def parse_agent_spec_bytes(raw: bytes, path: str | Path) -> Any:

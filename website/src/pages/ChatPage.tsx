@@ -192,15 +192,7 @@ const TRANSCRIPT_TAIL_SPACER_PX = 16
  * line stops clear of the glass instead of under it. There is no opaque fade band
  * between the two any more — the transcript scrolls under the glass and the
  * material's own blur and tint are what keep the dock legible over it.
- *
- * That holds for the composer alone. While the status stack above it holds a bar
- * (the sub-agent tray, a task or workflow bar, a queued message), or the
- * jump-to-bottom pill shows, the scroller's box instead ENDS above the dock
- * (`marginBottom: dockH`) and keeps only this clearance as padding: dense status
- * rows and a pill over transcript text were unreadable in every theme, so the
- * transcript never passes under them at any scroll position. The welcome hero
- * ends above the dock the same way, so its cards and the Refresh link are never
- * blurred under the glass. ChatPage.dockClearance.test.tsx pins all three.
+ * ChatPage.dockClearance.test.tsx pins the wiring.
  */
 const DOCK_CLEARANCE_PX = 16
 /**
@@ -1244,9 +1236,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (embedded) { tokenConsumingRef.current = false; return }
     const token = new URLSearchParams(window.location.search).get('token')
     if (!token) { tokenConsumingRef.current = false; return }
-    // Always strip token from URL to prevent leakage via referrer/history
-    // Preserves history.state for the same reason as the prefill strip above.
-    window.history.replaceState(window.history.state, '', window.location.pathname)
+    // Always strip token from URL to prevent leakage via referrer/history.
+    // Two layers, both required (PR #11112 review):
+    //  1. Raw replaceState scrubs the visible URL immediately — but ONLY the
+    //     `token` param, preserving `?sid` so a session deep link
+    //     (`/chat?sid=…&token=…`) still names its slot after the strip.
+    //     Preserves history.state for the same reason as the prefill strip.
+    //  2. setSearchParams scrubs the ROUTER's own searchParams state, which
+    //     raw replaceState never updates — the `?sid` sync effects
+    //     (useChatPageSessionController) copy router params back into the URL
+    //     on slot activation, and would otherwise restore the live credential
+    //     into browser history.
+    const scrubbed = new URLSearchParams(window.location.search)
+    scrubbed.delete('token')
+    const scrubbedQs = scrubbed.toString()
+    window.history.replaceState(
+      window.history.state, '', window.location.pathname + (scrubbedQs ? `?${scrubbedQs}` : ''))
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('token')
+      return next
+    }, { replace: true })
     const prompt = extractPromptFromToken(token)
     if (!prompt) { tokenConsumingRef.current = false; return }
     const { sessionKey, channel, threadTs } = extractSlackContextFromToken(token)
@@ -3042,7 +3052,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   // The floating composer dock's measured clearance (see composerDock).
-  const { inputAreaRef, dockH, dockGutter, dockRef, statusStackOccupied } = useComposerDockMetrics(scrollerRef)
+  const { inputAreaRef, dockH, dockGutter, dockRef } = useComposerDockMetrics(scrollerRef)
 
   // Quote / Ask on selected assistant text — the shared chat-core seam
   // (chat-core/composer/selectionActions): Quote lands in this composer with
@@ -3512,13 +3522,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // entry, streaming follow, and append-pin; ChatPage only triggers explicit
   // jumps (send, jump-to-latest pill) through these.
   const isAtBottom = virt.isAtBottom
-  // The jump-to-bottom pill is a row of the dock and shows while the reader is
-  // scrolled up -- which is when transcript text would otherwise pass under
-  // it -- so it reserves the dock's space the same way a status bar does
-  // (`statusStackOccupied`, measured by `useComposerDockMetrics`). The scroller
-  // geometry reads one name: `dockReserved`.
-  const jumpPillVisible = !isAtBottom && messages.length > 0
-  const dockReserved = statusStackOccupied || jumpPillVisible
   // Mirror the virtualizer's follow API into the refs the early effects/handlers
   // (declared above) read. Done in a layout effect rather than the render body
   // so a concurrent render React throws away can't write stale callbacks into
@@ -5763,31 +5766,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               virt={virt}
               loadingOlder={loadingOlder}
               spinnerNearTop={spinnerNearTop}
-              // Two geometries, picked by what the dock holds (`dockReserved`):
-              // - Composer only: the strip of the scroller the floating dock
-              //   covers, plus DOCK_CLEARANCE_PX, alongside
-              //   TRANSCRIPT_TAIL_SPACER_PX. Unlike the tail spacer this one also
-              //   applies to a transcript short enough not to scroll, so both are
-              //   needed for the last line to clear the dock in every state.
-              // - A status bar or the jump-to-bottom pill is up: the scroller's
-              //   BOX ends above the dock (`marginBottom`), so the transcript
-              //   never passes under the sub-agent tray, the task bar or the
-              //   pill at any scroll position; only the clearance remains as
-              //   padding. The dock still floats, over bare page, and the
-              //   composer keeps its glass. Either way the transcript FLOOR the
-              //   pinned-prompt card reads (scroller bottom less padding-bottom)
-              //   stays where readable rows stop.
+              // The strip of the scroller the floating dock covers, plus
+              // DOCK_CLEARANCE_PX, alongside TRANSCRIPT_TAIL_SPACER_PX. Unlike
+              // the tail spacer this one also applies to a transcript short
+              // enough not to scroll, so both are needed for the last line to
+              // clear the dock in every state.
               // `visibility` is not one of the properties the shell claims, so
               // adding it here is inside its documented contract. Hiding rather
               // than unmounting keeps the scroller's geometry and the height
               // cache intact -- the restore needs to WRITE scrollTop while this
               // is up, which a display:none element cannot do.
-              scrollerStyle={{
-                ...(dockReserved
-                  ? { marginBottom: dockH, paddingBottom: DOCK_CLEARANCE_PX }
-                  : { paddingBottom: dockH + DOCK_CLEARANCE_PX }),
-                ...(virt.restoreGate ? { visibility: 'hidden' as const } : null),
-              }}
+              scrollerStyle={{ paddingBottom: dockH + DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }}
               aboveRows={<>
               {/* Mid-switch `slotHasMore` still describes the outgoing chat, so the cursor
                   key gates the bar to match the paging thunk's own precondition. */}
@@ -5963,12 +5952,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 runs the full height of the pane and the conversation scrolls
                 UNDER the glass (iOS toolbar layout). The scroller pays for the
                 covered strip with `paddingBottom: dockH + DOCK_CLEARANCE_PX`,
-                measured from this box by `dockRef` -- while the dock holds
-                only the composer. Once the status stack holds a bar, or the
-                jump-to-bottom pill shows, the scroller's box ends above this
-                dock instead (`marginBottom: dockH`, same measurement), so
-                dense status rows and the pill never sit over transcript text;
-                see `dockReserved`. No z-index here on purpose:
+                measured from this box by `dockRef`. No z-index here on purpose:
                 a positioned box with `z-index: auto` forms no stacking context,
                 so SubagentProgressBar's wave chip keeps its `z-[46]` against
                 the theme-experience overlays it was lifted to clear, and the
@@ -5979,19 +5963,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 span the pane, never catch a wheel of their own — then the empty
                 width either side of the column lets wheel and touch reach the
                 transcript underneath, as the strip beside an iOS toolbar does.
-                While the dock is RESERVED (`dockReserved`) there is no transcript
-                under that strip -- the scroller's box ends above the dock -- so a
-                wheel there would chain to the document instead; the root then
-                takes `pointer-events: auto` and the strip is inert.
                 `right: dockGutter` keeps the scrollbar column clear (above). */}
-            <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter, ...(dockReserved ? { pointerEvents: 'auto' as const } : null) }} data-testid="composer-dock-root">
-              {/* The jump-to-bottom pill is a ROW of the dock, not a float over
-                  the transcript: the pill shows exactly while the reader is
-                  scrolled up, which is exactly when transcript text would pass
-                  under a floating pill (it sat on the sub-agent cards' text,
-                  #15820). In flow it adds its 36px to `dockH`, and `dockReserved`
-                  ends the scroller's box above the dock for as long as it shows. */}
-              <JumpToBottomButton visible={jumpPillVisible} onClick={() => scrollBottom(true)} placement="inline" />
+            <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root">
+              <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
               {/* Status chrome never claims more than half the pane. The dock
                   is anchored to the pane's bottom edge and grows upward, so an
                   opening keyboard — which shrinks the layout viewport — would

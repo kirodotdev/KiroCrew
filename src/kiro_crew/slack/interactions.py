@@ -66,6 +66,7 @@ from kiro_crew.slack.format import (
     OPTIONS_ACTION_PREFIX,
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
+    SESSION_LINK_ACTION,
     build_options_selected_blocks,
     escape_mrkdwn,
     replace_options_blocks,
@@ -98,6 +99,7 @@ from kiro_crew.slack.renderer import (
     split_approval_token,
 )
 from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -654,6 +656,7 @@ async def _handle_shortcut_submission(payload: dict) -> None:
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -725,6 +728,14 @@ async def dispatch(payload: dict) -> None:
 
     # ── OPTIONS checkboxes toggle — no-op, wait for Send ──
     if action_id == OPTIONS_CHECKBOXES_ACTION:
+        return
+
+    # ── "Open session" deep-link button — no-op ──
+    # A URL button opens its link in the browser directly; Slack still POSTs a
+    # block_actions event for it, so ack it here as a no-op rather than letting it
+    # fall through to the tool-approval handler (which would look up a nonexistent
+    # approval). No server work, so no channels-governance gate is needed.
+    if action_id == SESSION_LINK_ACTION:
         return
 
     # ── OPTIONS Send / legacy choice buttons ──
@@ -1499,6 +1510,7 @@ async def _route_action_to_session(
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -1893,6 +1905,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -2143,6 +2156,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -3820,6 +3834,7 @@ async def _handle_review_revise_submit(payload: dict) -> None:
                 subagent_manager=_orch.subagent_mgr,
                 task_runner=_orch.task_runner,
                 channel_activation=ACTIVATION_REVIEW,
+                start_priority=StartPriority.FOREGROUND,
             )
             logger.info("Review revision requested by %s in %s", caller, channel)
         except Exception:

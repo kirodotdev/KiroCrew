@@ -140,6 +140,14 @@ _STATE_DB_TIMEOUT_SECS = 5.0
 #: A changelog entry is not a probe; a release nobody ran stays above the floor.
 SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 
+#: Lowest verified release for both kiro and KAS where deferred Crew tools avoid
+#: the thinking-signature rejection. Older or unknown engines keep Crew tools resident.
+#: Empirical, not a named upstream fix: thinking turns before and after a deferred
+#: kirocrew-* load ran clean on the default engine at 2.26.1 and 2.27.0 and on KAS
+#: (``acp --agent-engine v3``) at 2.27.0. Lowering it needs that same matrix re-run
+#: on both engines at the lower release.
+MANDATORY_MCPS_DROP_MIN_VERSION: tuple[int, int, int] = (2, 27, 0)
+
 #: ``--version`` is a local read of an already-resolved binary, so it gets the
 #: same short leash the readiness probe puts on its own first execution.
 _VERSION_PROBE_TIMEOUT_SECS = 5
@@ -148,6 +156,60 @@ _VERSION_PROBE_TIMEOUT_SECS = 5
 #: its mtime, so ``kiro-cli update`` swapping the binary invalidates the entry
 #: instead of leaving a whole gateway lifetime on a stale verdict.
 _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
+
+
+def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
+    """Whether *version* meets the verified floor for deferring Crew's MCP servers."""
+    return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
+
+
+def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
+    """Allow deferral only for the pinned install and its own chat sibling.
+
+    The executable must match the pin or its chat sibling by realpath, and its
+    invoked directory must match the pin's directory. Both pinned executables
+    must meet the version floor; only those paths are probed. Missing spawn
+    paths, pod bundles, and non-pinned launchers keep Crew's servers resident.
+    An edition companion swapping in a direct executable is trusted gateway
+    code and is not compared. Any failure keeps the servers resident; never raises.
+
+    An operator ``KIROCREW_KIRO_BIN`` override also keeps them resident: its
+    directory is the operator's choice, not a known install directory, so no path
+    derived from it is probed (the KAS spawn skips that sibling for the same reason).
+    """
+    if not spawned_binary or (os.environ.get("KIROCREW_KIRO_BIN") or "").strip():
+        return False
+    try:
+        pinned = pin_kiro_cli()[0]
+        if pinned is None:
+            return False
+        sibling = chat_sibling(pinned)
+        # A POSIX launcher with no sibling in its own directory execs whatever
+        # kiro-cli-chat it finds on PATH, whose version is unknown.
+        if (
+            sibling is None
+            and sys.platform != "win32"
+            and os.path.basename(pinned) == KIRO_CLI_NAME
+        ):
+            return False
+        candidates = [pinned, sibling]
+        if os.path.normcase(os.path.realpath(spawned_binary)) not in {
+            os.path.normcase(os.path.realpath(binary))
+            for binary in candidates
+            if binary is not None
+        } or os.path.normcase(
+            os.path.realpath(os.path.dirname(spawned_binary))
+        ) != os.path.normcase(
+            os.path.realpath(os.path.dirname(pinned))
+        ):
+            return False
+        return all(
+            mandatory_mcps_drop_supported(kiro_cli_version_at(binary))
+            for binary in candidates
+            if binary is not None
+        )
+    except Exception:  # noqa: BLE001 - an unanswerable trust check refuses deferral
+        return False
 
 
 def spec_permissions_supported(version: tuple[int, int, int] | None) -> bool:
@@ -178,18 +240,24 @@ def installed_kiro_cli_version() -> tuple[int, int, int] | None:
     unparseable output) gives the same answer as an old CLI: unknown, which the
     gate reads as "do not write the field".
     """
+    try:
+        binary, _unpinned = pin_kiro_cli()
+    except Exception:  # noqa: BLE001 - an unanswerable probe is not an error here
+        return None
+    return kiro_cli_version_at(binary) if binary is not None else None
+
+
+def kiro_cli_version_at(binary: str) -> tuple[int, int, int] | None:
+    """Probe a resolved executable, cached by path and mtime; failure returns None.
+
+    Call only on a path derived from :func:`pin_kiro_cli`.
+    """
     # The ``--version`` line and the handshake's ``agentInfo.version`` are the
     # same spelling, so the parser is shared rather than copied. Imported here
     # because ``mcp_hot_reload`` reaches ``acp_backends``, and this module is a
     # leaf every setup and launch path imports at boot.
     from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
 
-    try:
-        binary, _unpinned = pin_kiro_cli()
-    except Exception:  # noqa: BLE001 - an unanswerable probe is not an error here
-        return None
-    if binary is None:
-        return None
     try:
         key = (binary, os.stat(binary).st_mtime_ns)
     except OSError:

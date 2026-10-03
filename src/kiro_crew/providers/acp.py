@@ -25,6 +25,7 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
+from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import (
     _READ_PATH_PROBE_DEADLINE_SECS,
@@ -77,6 +78,7 @@ from kiro_crew.agent_sdk.tool_search import (
     ToolSearchSettings,
     clamp_min_pct,
     clamp_min_tokens,
+    resume_takes_tool_search_replay,
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -106,6 +108,14 @@ from kiro_crew.workspace_cli_settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+#: Decoding for the workspace ``cli.json``. The file can be a person's own
+#: workspace settings, and Windows editors save UTF-8 with a byte-order mark,
+#: which ``json.loads`` refuses on decoded text. A refused file reads as empty
+#: here, and the overlay writers then replace it with only Kiro Crew's keys, so
+#: every reader drops one leading mark. Writers emit plain UTF-8.
+_CLI_JSON_ENCODING = "utf-8-sig"
 
 
 def _write_cli_overlay(
@@ -146,7 +156,11 @@ def _write_cli_overlay(
     """
     with workspace_cli_settings_lock(work_dir, timeout=timeout) as cli_json:
         try:
-            existing = json.loads(cli_json.read_text(encoding="utf-8")) if cli_json.exists() else {}
+            existing = (
+                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
+                if cli_json.exists()
+                else {}
+            )
         except (json.JSONDecodeError, OSError):
             existing = {}
         if not isinstance(existing, dict):
@@ -232,7 +246,11 @@ def _write_tool_search_overlay(
     """
     with workspace_cli_settings_lock(work_dir) as cli_json:
         try:
-            existing = json.loads(cli_json.read_text(encoding="utf-8")) if cli_json.exists() else {}
+            existing = (
+                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
+                if cli_json.exists()
+                else {}
+            )
         except (json.JSONDecodeError, OSError):
             existing = {}
         if not isinstance(existing, dict):
@@ -276,7 +294,7 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
             if not cli_json.exists():
                 return True
             try:
-                data = json.loads(cli_json.read_text(encoding="utf-8"))
+                data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
             except json.JSONDecodeError:
                 # A malformed file names no effort for any model, and
                 # ``_read_cli_overlay`` reads it as ``{}`` too, so a respawn
@@ -326,7 +344,7 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
     if not cli_json.exists():
         return {}
     try:
-        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
     except (json.JSONDecodeError, OSError):
         return {}
     if not isinstance(data, dict):
@@ -357,6 +375,9 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
 # so the new gateway resumes LOSSLESSLY. If the lock never clears we fall back
 # to a fresh session + KiroCrew history replay (see _start_kiro_runtime_impl).
 _RESUME_MAX_ATTEMPTS = 4  # total session/load attempts before fresh fallback
+# Bound on the setup failure's own text in the failed-setup warning: enough for
+# an RPC error's message, short enough that one line stays one line.
+_SETUP_FAILURE_LOG_CAP = 300
 _RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s between attempts
 # Substrings (matched case-insensitively) of a session/load error that name a
 # TRANSIENT native-lock condition — one that clears once the previous holder
@@ -411,8 +432,8 @@ class AcpProvider(LLMProvider):
         member_context: bool = False,
         memory_mode: str = "persistent",
         shared_scratch: Path | None = None,
-        on_gate_acquired: Callable[[float], None] | None = None,
-        on_gate_queued: Callable[[], None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
+        on_gate_queued: Callable[..., None] | None = None,
         disposable_work_dir: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
@@ -450,16 +471,15 @@ class AcpProvider(LLMProvider):
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
         # inherited work directory has to reach THAT process.
         self._shared_scratch: Path | None = shared_scratch
-        # Forwarded to ``runtime.create_session`` on the fresh-session path only
-        # (``session/load`` takes no gate permit). Fires at ``SessionStartGate``
-        # EXIT with the queue wait in ms, so a dedicated subagent process can
-        # restart its start clock the way a session-shared one does in
-        # ``_create_shared_session``: a wait for a permit is admission's cost,
-        # not this start's. None -- every non-subagent session -- is inert.
-        self._on_gate_acquired: Callable[[float], None] | None = on_gate_acquired
-        # Its companion for gate ENTRY: the manager freezes the start clock for
-        # the span spent waiting for a permit. Same None-is-inert rule.
-        self._on_gate_queued: Callable[[], None] | None = on_gate_queued
+        # Start-queue exit/entry callbacks, forwarded to BOTH ``runtime.spawn`` calls
+        # (the first spawn and the resume-died respawn: the cold-start admission)
+        # and to ``runtime.create_session`` on the fresh-session path
+        # (``session/load`` takes no gate permit). A dedicated subagent pauses its
+        # start clock while queued at each, as a session-shared one does at the
+        # gate in ``_create_shared_session``: a wait for a permit is admission's
+        # cost, not this start's. None -- every non-subagent session -- is inert.
+        self._on_gate_acquired: Callable[..., None] | None = on_gate_acquired
+        self._on_gate_queued: Callable[..., None] | None = on_gate_queued
         # Whether ``work_dir`` was DERIVED for a one-run session (a subagent, a
         # stateless cron run) and is this provider's to reclaim at shutdown. An
         # explicit caller cwd is never marked, whatever key the session has; and
@@ -1130,7 +1150,9 @@ class AcpProvider(LLMProvider):
         # fresh native session rebuilds that registry, while
         # ``_history_replay_needed`` preserves the Kiro Crew conversation. Linked
         # Slack and other channel dispatchers keep native resume until they own
-        # the same replay-lease contract end to end.
+        # the same replay-lease contract end to end. The decision itself is
+        # ``agent_sdk.tool_search.resume_takes_tool_search_replay``, shared with
+        # the resume prefetch (the dashboard may not import this layer).
         resume_sid = (
             getattr(self._client, "_resume_session_id", "")
             if self.memory_mode == "persistent"
@@ -1138,13 +1160,11 @@ class AcpProvider(LLMProvider):
         )
         session_key = getattr(self._client, "_session_key", None)
         channel_id = getattr(self._client, "_channel_id", None)
-        if (
-            resume_sid
-            and self._tool_search is True
-            and self._client.backend == ACP_BACKEND_KIRO
-            and not channel_id
-            and telemetry_channel_of(session_key if isinstance(session_key, str) else None)
-            == "dashboard"
+        if resume_sid and resume_takes_tool_search_replay(
+            tool_search=self._tool_search,
+            backend=self._client.backend,
+            channel_id=channel_id,
+            session_key=session_key,
         ):
             logger.info(
                 "Tool Search is enabled; replacing native session/load for %s "
@@ -1189,9 +1209,16 @@ class AcpProvider(LLMProvider):
             # subagent runs in, so the second window has to be mounted HERE.
             shared_scratch=self._shared_scratch,
         )
+        # One priority for both start queues this path enters, set by the session
+        # layer for this start (rule: ``kiro_crew.start_priority``).
+        start_priority = self.start_priority
         _t_spawn = time.monotonic()
         try:
-            await runtime.spawn()
+            await runtime.spawn(
+                start_priority=start_priority,
+                on_gate_queued=self._on_gate_queued,
+                on_gate_acquired=self._on_gate_acquired,
+            )
         except AcpRuntimeError as exc:
             # An OS sandbox that refused to build this child is checked FIRST and
             # on all three of this module's startup paths: it is the narrower
@@ -1335,7 +1362,11 @@ class AcpProvider(LLMProvider):
                         shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
                     )
                     try:
-                        await runtime.spawn()
+                        await runtime.spawn(
+                            start_priority=start_priority,
+                            on_gate_queued=self._on_gate_queued,
+                            on_gate_acquired=self._on_gate_acquired,
+                        )
                     except AcpRuntimeError as exc:
                         sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
                         if sandbox_failure is not None:
@@ -1356,6 +1387,7 @@ class AcpProvider(LLMProvider):
                         channel_id=self._owning_channel_id() or "",
                         on_gate_acquired=self._on_gate_acquired,
                         on_gate_queued=self._on_gate_queued,
+                        start_priority=start_priority,
                     )
                 except AcpRuntimeError as exc:
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
@@ -1505,10 +1537,24 @@ class AcpProvider(LLMProvider):
             live_tree = runtime.work_scratch_dir
             if isinstance(live_tree, Path):
                 self._shared_scratch = live_tree
-        except BaseException:
+        except BaseException as setup_exc:
             # No provider owns the runtime yet — kill it so a failed session
             # setup doesn't leak an orphaned kiro-cli process. Best-effort:
             # the cleanup kill must not mask the original exception.
+            if isinstance(setup_exc, Exception):
+                # Named here, before the cleanup, because the kill's own lines
+                # (its attribution, and on Windows a tree still draining) are
+                # otherwise the only trace a repeating setup failure leaves at
+                # the gateway's WARNING level. A cancellation is not a failure.
+                # The text can be backend-authored (an RPC error frame), so it is
+                # redacted and folded to one printable, bounded line: a newline or
+                # an escape sequence in it must not forge or recolor a log line.
+                logger.warning(
+                    "Kiro session setup failed on runtime PID %s (%s: %s); killing the runtime",
+                    runtime.pid,
+                    type(setup_exc).__name__,
+                    sanitize_sink_text(str(setup_exc), _SETUP_FAILURE_LOG_CAP),
+                )
             try:
                 await runtime.kill(expected=True, reason="failed session setup cleanup")
             except Exception:

@@ -259,10 +259,15 @@ pins ride in the policy file for it:
   `_check_for_updates_via_provider`):
   - **A policy provider** (`check_command` below) applies whenever the check
     reports a version.
-  - **A git checkout** on a primary branch applies, and below the floor it skips
-    the voluntary path's `version_newer` gate, so it resets to every new upstream
-    commit, released or not ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A non-primary branch never
-    applies, floor or not.
+  - **A git checkout** on a primary branch applies only toward a build whose
+    `__version__` outranks the running one AND that the checkout can take
+    cleanly (behind-only, or already pulled and awaiting a restart). Below the
+    floor with nothing newer, or with a diverged checkout that a reset would
+    strip of local commits, it notifies and refreshes the badge instead of
+    resetting to every new upstream commit, released or not
+    ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A no-op
+    apply (the required code already on disk) leaves a restart pending without
+    arming a reload. A non-primary branch never applies, floor or not.
   - **The `cli.sh` managed venv** re-runs the installer when the feed has a
     newer build that `source` permits. With nothing newer it writes a log line
     and does not reinstall; About can still read "up to date".
@@ -2882,7 +2887,13 @@ change, mirroring the rows above).
 **A local preset has its own row: `capabilities.decisions_local`.** The row above
 exists because the seam's state reaches a paid third party; a local preset model
 (`decisions/local_models.py`) answers on this machine and sends nothing off it, so a
-fleet that pins hosted Jev off for egress does not thereby withdraw a local model.
+fleet that permits hosted Jev may still want to withdraw local models on its own.
+The local row only NARROWS: a local preset is permitted only while BOTH
+`capabilities.decisions` and `capabilities.decisions_local` permit
+(`capability.is_decisions_denied(local=True)` evaluates the hosted row first). Before
+this row existed, pinning `capabilities.decisions` off withdrew the whole seam, local
+models included, and an upgrade keeps that reach: the hosted row permits while
+absent, so a denial there is always an explicit pin (or the fail-closed degrade).
 `capabilities.decisions_local` (`capability_default=True`, data only) governs the seam
 only while the gateway's own runtime runs the configured preset on its port
 (`capability.is_local_preset`, the runtime's attestation: `config.json` has other
@@ -2895,8 +2906,9 @@ chokepoints select the row from the configured provider and the runtime, never f
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
 `GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER row permits, so the card is withheld
-only when both are pinned off. A fleet that wants no local model pins this row too.
+out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+only when `capabilities.decisions` is pinned off (which covers both sides) or both
+rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 
 **Two chokepoints, because either alone is a half-control.**
 `PUT /api/decisions/consent` refuses an ENABLING write with

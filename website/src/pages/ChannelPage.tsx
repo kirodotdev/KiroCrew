@@ -256,7 +256,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
             </Btn>
           )}
           {onReply && (
-            <Btn onClick={onReply} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text transition-opacity md:opacity-0 md:group-hover:opacity-100">
+            <Btn onClick={onReply} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text transition-opacity md:opacity-0 md:group-hover:opacity-100 [@media(hover:none)]:opacity-100">
               <MessageSquare className="lucide-inline" /> {i18nT('pages.channelPage.reply')}
             </Btn>
           )}

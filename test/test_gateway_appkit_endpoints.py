@@ -271,6 +271,8 @@ class TestAppConfig:
     async def _make_client(self):
         app = web.Application()
         register_app_routes(app)
+        # PUT is owner-gated for a dashboard subject; these rows act as the owner.
+        as_owner(app)
         async with TestClient(TestServer(app)) as c:
             yield c
 

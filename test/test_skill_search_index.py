@@ -536,6 +536,9 @@ class TestTransientLockDoesNotLatch:
             blocker.execute("BEGIN EXCLUSIVE")
             # The write cannot get the lock within the timeout.
             assert index.sync([("k", str(path), second)], live_keys=["k"]) is None
+            # Nor does it keep the write transaction it had opened: every later
+            # explicit transaction on the shared connection would fail on it.
+            assert index._conn is not None and not index._conn.in_transaction
         finally:
             blocker.rollback()
             blocker.close()

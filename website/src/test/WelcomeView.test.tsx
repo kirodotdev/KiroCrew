@@ -78,22 +78,30 @@ describe('WelcomeView', () => {
       expect(setInput).toHaveBeenCalledWith(FALLBACK_PILL)
     })
 
-    it('has no header row; refresh is a "Refresh suggestions" text button after the grid', () => {
+    it('has no header row and no refresh control: the grid is the whole surface', () => {
       renderWithProviders(<WelcomeView {...defaultProps} />)
       expect(screen.queryByText('Suggested for you')).not.toBeInTheDocument()
-      const refresh = screen.getByRole('button', { name: 'Refresh suggestions' })
-      expect(refresh.textContent).toBe('Refresh suggestions')
-      const card = screen.getByRole('button', { name: FALLBACK_PILL })
-      expect(card.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Refresh suggestions' })).not.toBeInTheDocument()
+      // Every button is a suggestion card; nothing trails the grid.
+      const buttons = screen.getAllByRole('button')
+      expect(buttons).toHaveLength(6)
+      for (const b of buttons) expect(b).toHaveAttribute('data-kind')
     })
 
-    it('stacks the refresh row above a hovered card so an expanded last-row card cannot cover it', () => {
+    it('phone rows are bare and tight; the sm+ card chrome is all sm-prefixed', () => {
       renderWithProviders(<WelcomeView {...defaultProps} />)
-      const row = screen.getByRole('button', { name: 'Refresh suggestions' }).parentElement!
-      const cell = screen.getByRole('button', { name: FALLBACK_PILL }).parentElement!
-      expect(row.className).toContain('relative')
-      expect(row.className).toContain('z-20')
-      expect(cell.className).toContain('hover:z-10')
+      const card = screen.getByRole('button', { name: FALLBACK_PILL })
+      const grid = card.parentElement!.parentElement!
+      expect(grid.className).toContain('gap-0.5')
+      expect(grid.className).toContain('sm:gap-3')
+      expect(card.className).toContain('border-transparent')
+      expect(card.className).toContain('sm:border-border')
+      expect(card.className).toContain('bg-transparent')
+      expect(card.className).toContain('sm:bg-card')
+      expect(card.className).toContain('py-1.5')
+      expect(card.className).toContain('hover:bg-bg-hover')
+      // A hovered sm+ card still rises above its neighbours.
+      expect(card.parentElement!.className).toContain('hover:z-10')
     })
 
     it('safe-centres the phone stack, start-aligns short wide windows, and switches to the spread grid only on wide, tall viewports', () => {

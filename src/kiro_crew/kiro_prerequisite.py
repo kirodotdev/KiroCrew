@@ -52,7 +52,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import _process_group_supervisor, hooks, identity_stores, platform_compat
+from kiro_crew import _process_group_supervisor, hooks, identity_stores, platform_compat, sandbox
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -616,7 +616,7 @@ class PrerequisiteStatus:
     # their own fields, and asserting "too old" off a probe that never ran would
     # push the user to update a CLI that is fine. Only a CLEAN "unknown
     # subcommand" verdict from ``acp --help`` sets it False — at which point the
-    # CLI runs and is signed in, but cannot start a single session, so it narrows
+    # CLI runs but cannot start a session, regardless of sign-in, so it narrows
     # ``ready`` exactly like a rejected spec. The remedy is an UPDATE, not a
     # reinstall: the binary is present and only out of date.
     acp_supported: bool = True
@@ -637,6 +637,24 @@ class PrerequisiteStatus:
     # fields the two collapse into ``installed=False`` and the dashboard tells
     # the user to install a CLI that is already there and authenticated.
     sandbox_unavailable: bool = False
+    # Host capability independent of Kiro candidate probes. Kiro can delegate
+    # to its own sandbox on Windows; other harnesses need a Crew OS backend.
+    # This stays "the host has an OS sandbox backend" (the setup screen's copy
+    # keys on that exact meaning); whether a session could nonetheless START
+    # without one is the separate ``unsandboxed_exec_permitted`` below.
+    sandbox_backend_available: bool = False
+    # Whether execution is permitted on this host even with NO OS sandbox
+    # backend — the platform default (native Windows) or an operator opt-in,
+    # the same verdict ``wrap_argv`` gates a backend-less spawn on. A
+    # non-enforced harness (Claude Code, KAS) needs no Crew OS mask, so on such
+    # a host it can start and finish first-run setup even though
+    # ``sandbox_backend_available`` is false; an enforced harness is still held
+    # back by ``sandbox_blocked_backends``. False when the host has a backend
+    # and does not permit unsandboxed exec, or when the field cannot be read.
+    unsandboxed_exec_permitted: bool = False
+    # Runtime-enforced harnesses whose credential mask cannot apply at the
+    # effective configured tier, even when an OS backend exists.
+    sandbox_blocked_backends: list[str] = field(default_factory=list)
     # Machine-readable: "transient" | "foreign_sandbox" | "no_backend". The
     # presentation layer maps this to its own translated remedy copy instead of
     # parsing English prose out of ``sandbox_detail``.
@@ -2711,6 +2729,41 @@ def _unlaunchable_mcp_servers(spec_path: Path) -> str:
     return ""
 
 
+def _kas_spec_load_failures(specs: list[tuple[str, Path]]) -> tuple[list[str], str]:
+    """Return the required specs KAS session creation could not load, plus a reason.
+
+    This is KAS's LOADING contract, not full Kiro CLI schema acceptance.
+    ``KasHarness.session_extras`` loads the active spec with
+    ``kas_agents.load_agent_spec`` and then resolves its prompt through
+    ``build_kas_custom_agents`` -> ``resolve_prompt``; either raising
+    ``KasAgentTranslationError`` refuses the session. This runs those same two
+    steps and nothing else. It stops before ``to_client_custom_agent``, which
+    consults the governance ceiling and writes SEL records, and it does not apply
+    ``_unlaunchable_mcp_servers``, which KAS does not enforce while loading.
+
+    It exists because ``kiro-cli agent validate`` refuses to run while signed out,
+    and a signed-out Kiro CLI is the normal state for KAS. Any other exception is
+    treated as acceptance, matching this module's rule not to invent a repair card.
+    """
+    # circular import: the SDK's spec seam loads the ACP layer, which pulls in
+    # agent discovery, governance and SEL.
+    from kiro_crew.agent_sdk.spec_hooks import kas_spec_load_error
+
+    rejected: list[str] = []
+    detail = ""
+    for filename, spec_path in specs:
+        try:
+            error = kas_spec_load_error(spec_path.parent, Path(filename).stem)
+        except Exception:
+            logger.debug("Could not check KAS loading for %s", filename, exc_info=True)
+            continue
+        if error is not None:
+            rejected.append(filename)
+            if not detail:
+                detail = _sanitize_detail(error)
+    return rejected, detail
+
+
 class KiroPrerequisiteService:
     """Single-gateway coordinator for prerequisite probes and setup operations."""
 
@@ -2869,10 +2922,130 @@ class KiroPrerequisiteService:
 
         return self._initial_setup_complete
 
+    async def record_independent_backend_setup(self, backend: str) -> bool:
+        """Persist first-run completion after the configured harness is usable.
+
+        A browser-local completion bit cannot admit a later browser or a
+        non-owner dashboard user.  Re-check the server's selectable backend,
+        installation, and sandbox facts before writing the owner-only marker.
+        A probe marked UNKNOWN is not proof of installation or sign-in.
+
+        KAS is the one backend that completes here without being an independent
+        harness: it is kiro-cli's relay, so it needs a kiro-cli that speaks ACP
+        (``acp_supported``) rather than the independent-setup bypass, and it does
+        NOT need a kiro-cli login (its own account gate replaces that). This is
+        the SAME rule the onboarding gate admits KAS on, kept in lock-step here
+        so a KAS first run actually records the marker instead of leaving
+        ``initial_setup_complete`` false forever.
+        """
+        from kiro_crew.acp_backends import selectable_backend_values
+        from kiro_crew.agent_sdk.backend_install import INSTALLED, probe_backend
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_KAS,
+            ACP_BACKENDS_INDEPENDENT_SETUP,
+        )
+
+        if backend == ACP_BACKEND_KAS:
+            # KAS runs ON kiro-cli, so it is deliberately absent from
+            # ACP_BACKENDS_INDEPENDENT_SETUP. Its prerequisite is a kiro-cli new
+            # enough to expose the ``acp`` subcommand; only a clean "too old"
+            # verdict (acp_supported False) blocks it, matching the client.
+            if self._status.acp_supported is False:
+                return False
+            # The marker is permanent, so ask the binary again rather than trust
+            # a verdict from an earlier probe: kiro-cli may have been replaced by
+            # an older build since. A too-old answer also updates the served
+            # status, so the gate shows its update card.
+            if not self._viable_binary and not self._assume_ready:
+                # No candidate is resolved yet: the boot probe may still be in its
+                # warm-up delay, and ``acp_supported`` reads True until a probe
+                # answers. Run the probe now so the version check covers the binary
+                # a KAS session launches; with no runnable kiro-cli, KAS cannot start.
+                await self._probe(force=True)
+                if not self._viable_binary or self._status.acp_supported is False:
+                    return False
+            elif self._viable_binary and not await self._probe_acp_support(self._viable_binary):
+                self._status = replace(self._status, acp_supported=False, ready=False)
+                return False
+        elif backend not in ACP_BACKENDS_INDEPENDENT_SETUP:
+            return False
+        if backend not in selectable_backend_values():
+            return False
+        state = await asyncio.to_thread(probe_backend, backend)
+        if state.installed != INSTALLED or state.restart_required:
+            return False
+        status = await self._dashboard_snapshot()
+        kas_load_rejected: list[str] = []
+        if backend == ACP_BACKEND_KAS and not status.get("authenticated"):
+            # No Kiro CLI validation ran, so re-check KAS's local loading contract
+            # now: the probe's answer may predate an edit to the spec.
+            kas_load_rejected, _ = await self._probe_kas_spec_loading()
+        if backend == ACP_BACKEND_KAS and (
+            status.get("missing_agent_specs")
+            or status.get("rejected_agent_specs")
+            or kas_load_rejected
+        ):
+            # KAS loads Kiro Crew's agent specs from kiro-cli's agents dir, so a
+            # missing or rejected spec must stay on the repair card, not finish.
+            return False
+        if (
+            status["sandbox_unavailable"]
+            or not (status["sandbox_backend_available"] or status.get("unsandboxed_exec_permitted"))
+            or backend in status["sandbox_blocked_backends"]
+        ):
+            return False
+        await asyncio.to_thread(self._mark_setup_complete)
+        # Snapshots are served from ``_status``, and this path (unlike the probe,
+        # which rebuilds ``_status`` right after its own marker write) runs no
+        # probe. Without this a non-owner, whose poll cannot force a probe, keeps
+        # reading ``initial_setup_complete: false`` until a restart.
+        self._status = replace(self._status, initial_setup_complete=True)
+        return True
+
     def _snapshot_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = asdict(self._status)
         # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
         result["operation"] = legacy_idle_operation()
+        return result
+
+    async def _dashboard_snapshot(self) -> dict[str, Any]:
+        """Apply host facts to every dashboard response, including repair/update."""
+        result = await self._agent_spec_overlay(self._snapshot_dict())
+        # A missing Kiro candidate cannot produce a sandbox_unavailable verdict,
+        # and Kiro's delegated sandbox does not establish a Crew OS backend for
+        # other harnesses. Use the runtime detector independently, off-loop because
+        # its cold/transient path can probe the host. Test mode never probes it.
+        if self._assume_ready:
+            result["sandbox_backend_available"] = True
+            return result
+
+        def sandbox_facts() -> tuple[bool, bool, list[str]]:
+            from kiro_crew.agent_sdk.backends import registered_backends
+            from kiro_crew.agent_sdk.tool_gate import is_enforced
+
+            available = sandbox.detect_backend() != "none"
+            # Whether a session could START with no OS backend: the platform
+            # default (native Windows) or an operator opt-in, the same verdict
+            # wrap_argv gates a backend-less spawn on. A non-enforced harness
+            # needs no Crew OS mask, so this lets it finish setup on such a host.
+            # A governed isolation floor overrides either grant, just as it
+            # does in wrap_argv's no-backend branch.
+            unsandboxed_permitted = bool(
+                sandbox.unsandboxed_exec_permitted_by()
+            ) and not sandbox._floor_mandates_sandbox(sandbox._governance_sandbox_floor())
+            mask_applies = sandbox.credential_mask_applies(sandbox.configured_sandbox_mode())
+            blocked = (
+                []
+                if mask_applies
+                else sorted(backend for backend in registered_backends() if is_enforced(backend))
+            )
+            return available, unsandboxed_permitted, blocked
+
+        (
+            result["sandbox_backend_available"],
+            result["unsandboxed_exec_permitted"],
+            result["sandbox_blocked_backends"],
+        ) = await asyncio.to_thread(sandbox_facts)
         return result
 
     @staticmethod
@@ -3019,10 +3192,10 @@ class KiroPrerequisiteService:
         # the spec missing, both rebuild, and the second one regenerates the file
         # the first just wrote. Re-reading inside the lock makes the loser a no-op.
         async with self._repair_lock:
-            before = await self._agent_spec_overlay(self._snapshot_dict())
+            before = await self._dashboard_snapshot()
             missing_before = before.get("missing_agent_specs") or []
             # Read off the latched probe result because acceptance costs a
-            # subprocess and the overlay above is deliberately stat-only.
+            # subprocess and the spec overlay only checks file presence.
             rejected_before = before.get("rejected_agent_specs") or []
             # A REJECTED spec is deliberately NOT rebuilt. The file exists, so a
             # regenerate would drop a concurrent api_mcp_toggle edit to the
@@ -3064,7 +3237,7 @@ class KiroPrerequisiteService:
                         await self._probe(force=True)
                     except Exception:  # noqa: BLE001 — stale state beats a 500
                         logger.warning("Re-probe of rejected agent specs failed", exc_info=True)
-                result = await self._agent_spec_overlay(self._snapshot_dict())
+                result = await self._dashboard_snapshot()
                 if not error and auxiliary_missing and (result.get("missing_agent_specs") or []):
                     error = _SPECS_STILL_MISSING_ERROR
                 result["agent_spec_repair_error"] = error
@@ -3080,7 +3253,7 @@ class KiroPrerequisiteService:
                     await self._probe(force=True)
                 except Exception:  # noqa: BLE001 — a failed re-probe keeps stale state, not a 500
                     logger.warning("Re-probe after agent-spec repair failed", exc_info=True)
-            result = await self._agent_spec_overlay(self._snapshot_dict())
+            result = await self._dashboard_snapshot()
             if not error and (result.get("missing_agent_specs") or []):
                 error = _SPECS_STILL_MISSING_ERROR
             result["agent_spec_repair_error"] = error
@@ -3128,7 +3301,8 @@ class KiroPrerequisiteService:
         """Return the latched status, probing only on an explicit ``force``.
 
         Probing is boot-and-explicit-action only (see :meth:`session_ready`), so
-        an ordinary poll reads latched state and spawns nothing. ``force=True``
+        an ordinary poll reads latched CLI state. The independent OS sandbox
+        capability check uses the shared detector/cache. ``force=True``
         (the gate's Check again, and its blocking-state auto-poll) is the
         supported way to re-probe on demand.
 
@@ -3184,7 +3358,7 @@ class KiroPrerequisiteService:
             # cannot loop -- the probe stamps the new identity, so the next poll
             # compares equal.
             await self._probe(force=True)
-        result = await self._agent_spec_overlay(self._snapshot_dict())
+        result = await self._dashboard_snapshot()
 
         # The repair arm deliberately does NOT live here. This is an ``add_get``
         # route, and both dashboard barriers are method-scoped (csrf_middleware
@@ -3866,18 +4040,22 @@ class KiroPrerequisiteService:
             whoami = await self._audited_identity_probe(self._viable_binary, isolate_home=False)
             if whoami.ok:
                 await asyncio.to_thread(self._mark_setup_complete)
-            # Acceptance is checked here, on the probe path, because it costs a
-            # spawn per spec — the every-read overlay stays stat-only. Gated on a
-            # successful identity probe so a broken or signed-out CLI is reported
-            # as exactly that: asking a CLI that cannot authenticate whether it
-            # likes our specs adds spawns and a second card for one fault, and its
-            # answer would not be actionable until sign-in is fixed anyway.
+            # Kiro CLI acceptance is checked here, on the probe path, because it
+            # costs a spawn per spec — the every-read overlay stays stat-only. It
+            # needs a successful identity probe: ``agent validate`` refuses to run
+            # signed out (measured on kiro-cli 2.21.1), so asking would only fail.
             rejected: list[str] = []
             rejection_detail = ""
-            acp_supported = True
             if whoami.ok:
                 rejected, rejection_detail = await self._probe_spec_acceptance(self._viable_binary)
-                acp_supported = await self._probe_acp_support(self._viable_binary)
+            else:
+                # Kiro CLI validation needs sign-in, but KAS runs signed out. Apply
+                # KAS's local loading contract instead so a present spec KAS cannot
+                # load still reaches repair_required and the KAS setup gate.
+                rejected, rejection_detail = await self._probe_kas_spec_loading()
+            # KAS needs ACP support but not a kiro-cli login, so the probe must
+            # check for a too-old relay binary even when signed out.
+            acp_supported = await self._probe_acp_support(self._viable_binary)
             login_cmd, sso_cmd, bundled = login_commands_for(self._viable_binary, self._environ)
             self._status = PrerequisiteStatus(
                 platform=_platform_label(self._platform),
@@ -3963,6 +4141,19 @@ class KiroPrerequisiteService:
                 detail = _sanitize_detail((result.output or "").strip())
         return rejected, detail
 
+    async def _probe_kas_spec_loading(self) -> tuple[list[str], str]:
+        """Check the present required specs against KAS's local loading contract.
+
+        Spawns nothing. Used when Kiro CLI validation did not run; see
+        :func:`_kas_spec_load_failures` for what this does and does not accept.
+        """
+        try:
+            specs = await asyncio.to_thread(self._spec_lister)
+        except Exception:
+            logger.debug("Could not enumerate Kiro Crew agent specs", exc_info=True)
+            return [], ""
+        return await asyncio.to_thread(_kas_spec_load_failures, specs)
+
     async def _probe_acp_support(self, executable: str) -> bool:
         """Ask kiro-cli whether it exposes the ``acp`` subcommand Kiro Crew uses.
 
@@ -3988,9 +4179,9 @@ class KiroPrerequisiteService:
         session-create with the pre-existing error, i.e. no worse than before this
         check existed, whereas a false positive would strand a healthy install.
 
-        A spawn, so it belongs to the probe's boot-and-explicit-action budget and
-        is gated on a successful ``whoami`` by the caller, matching the spec
-        acceptance probe.
+        A spawn, so it belongs to the probe's boot-and-explicit-action budget.
+        The caller probes every viable binary independently of ``whoami``:
+        KAS needs ACP support without requiring a kiro-cli login.
         """
 
         result = await self._audited_probe(
@@ -4030,7 +4221,7 @@ class KiroPrerequisiteService:
         if self._assume_ready:
             # A test / offline gateway asserts its own readiness and has no real
             # CLI to update; running an update there is meaningless.
-            result = await self._agent_spec_overlay(self._snapshot_dict())
+            result = await self._dashboard_snapshot()
             result["cli_update_error"] = ""
             return result
         # Resolve the binary the way the probe does, off-loop.
@@ -4117,7 +4308,7 @@ class KiroPrerequisiteService:
                 await self._probe(force=True)
             except Exception:  # noqa: BLE001 — stale state beats a 500
                 logger.warning("Re-probe after kiro-cli update failed", exc_info=True)
-        result = await self._agent_spec_overlay(self._snapshot_dict())
+        result = await self._dashboard_snapshot()
         if not error and not result.get("acp_supported", True):
             error = (
                 "The update ran but this kiro-cli still has no `acp` command. "

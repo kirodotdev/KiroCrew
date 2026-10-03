@@ -42,7 +42,7 @@ import { workflowReducers } from './chat/workflows'
 import { mcpAppReducers } from './chat/mcpApps'
 import { addSlotListCases, evictSlotState } from './chat/slotResidue'
 import { addSlotSwitchCases, switchSlot } from './chat/slotSwitch'
-import { addSlotRefreshCases } from './chat/slotRefresh'
+import { addSlotRefreshCases, withRefreshRevision } from './chat/slotRefresh'
 import { addLifecycleCases, historyNoticeReducers } from './chat/lifecycle'
 
 /** Frame roles that retire a slot's pending STATELESS question card.
@@ -889,7 +889,7 @@ export const reconcileGoneSubagent = createAsyncThunk<void, { slot: string; id: 
 )
 
 export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, queueEntryAttachments, type QueueEntryAttachments } from './chat/wire'
-export { floorForGen, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
+export { floorForGen, hasUnidentifiedDurableRow, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
 export {
   OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, SLOT_DETAIL_MAX_LIMIT, PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING,
   slotSwitchFetchLimit, slotCoverageShortfall, countMatchedFetchLimit, isSupersededPagingRejection,
@@ -915,4 +915,4 @@ export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'
 export { createSlot, deleteHistorySession, fetchHistory, forkSlot, resumeFromHistory } from './chat/lifecycle'
 
-export default chatSlice.reducer
+export default withRefreshRevision(chatSlice.reducer)

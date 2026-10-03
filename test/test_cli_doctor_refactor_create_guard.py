@@ -21,10 +21,13 @@ subscript is read as a local value, not the facade.
 from __future__ import annotations
 
 import ast
+import importlib
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from stale_package_attribute import package_attribute_replaced
 
 from kiro_crew import cli_doctor
 
@@ -427,17 +430,24 @@ def test_the_facade_is_found_under_every_name_src_binds_it_to() -> None:
     assert {_FACADE} | families <= _FACADE_PATHS
 
 
-def test_the_premise_create_true_through_the_facade_unbinds_the_family() -> None:
-    """Why the scan exists: the one ``create=True`` patch it allows, run for real."""
-    from kiro_crew.doctor_checks import render
+@pytest.mark.parametrize("split", [False, True], ids=["as-imported", "package-attribute-stale"])
+def test_the_premise_create_true_through_the_facade_unbinds_the_family(split: bool) -> None:
+    """Why the scan exists: the one ``create=True`` patch it allows, run for real.
 
-    original = vars(render)["_safe_display"]
-    try:
-        with mock.patch.object(cli_doctor, "_safe_display", create=True):
-            pass
-        assert "_safe_display" not in vars(render)
-    finally:
-        render._safe_display = original
+    The owner is read from ``sys.modules``, where the facade writes. Its package
+    attribute can name another copy once an earlier test in the worker imports it
+    fresh, so reading the attribute would make this check depend on test order.
+    """
+    owner = "kiro_crew.doctor_checks.render"
+    with package_attribute_replaced(owner) if split else nullcontext():
+        render = importlib.import_module(owner)
+        original = vars(render)["_safe_display"]
+        try:
+            with mock.patch.object(cli_doctor, "_safe_display", create=True):
+                pass
+            assert "_safe_display" not in vars(render)
+        finally:
+            vars(render)["_safe_display"] = original
 
 
 def test_no_test_patches_a_forwarded_name_that_it_may_create() -> None:

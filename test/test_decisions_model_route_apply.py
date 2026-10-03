@@ -532,10 +532,21 @@ class TestTheRoutingFlag:
         the defect is an absence: a future edit that re-adds the key would restore
         the hole silently, and no behavioural test of a restored slot can see a key
         nobody wrote."""
+        import importlib
+        import pkgutil
+
         import kiro_crew.dashboard.channel_slots as channel_slots
         import kiro_crew.dashboard.chat_persistence as persistence
+        import kiro_crew.dashboard.slot_persistence as slot_persistence
 
-        for module in (persistence, channel_slots):
+        # The facade composes the metadata-line writer and the restore checks from
+        # these owners, so they are sites that handle this file too.
+        owners = [
+            importlib.import_module(f"{slot_persistence.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(slot_persistence.__path__)
+        ]
+        assert owners, "the owner scan found no module, so it is measuring nothing"
+        for module in (persistence, channel_slots, *owners):
             source = Path(module.__file__).read_text(encoding="utf-8")
             offenders = [
                 line.strip()

@@ -66,7 +66,7 @@ jobs:
   # credential-shape probe and the outbound scrub all happen in `validate`, which
   # holds nothing worth reaching.
   generate:
-    name: Security scope candidates (Fable 5)
+    name: Security scope candidates (Opus 5.5)
     # NOT routed to the CodeBuild fleet. The write fence two steps below
     # hardcodes `Write(//home/runner/work/_actions/**)` -- the GitHub-hosted
     # runner's action-code path -- to stop the untrusted-diff-driven model step
@@ -396,7 +396,7 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Security scope review (Fable 5)
+      - name: Security scope review (Opus 5.5)
         id: review
         # No continue-on-error: a model call that failed (Bedrock throttling /
         # 403 / action error) leaves no `[SCOPE-REVIEWED]` marker, and publish
@@ -409,28 +409,20 @@ jobs:
           steps.scope.outputs.in_scope == 'true'
           && github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
           )
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Fable 5's BARE, REGIONAL (`us.`) Bedrock inference-profile id.
-          # Two reasons it must be this exact form:
-          #  - No `[1m]` tag: that suffix is the Anthropic-API/claude_code
-          #    provider-id form in model_registry.json; the Bedrock path
-          #    (use_bedrock) rejects it as an unknown model.
-          #  - `us.` not `global.`: Fable requires data-retention mode
-          #    `provider_data_share`, set at the ACCOUNT level in us-west-2.
-          #    The regional `us.` profile honors that account setting; the
-          #    `global.` profile routes cross-region and falls back to
-          #    `default`, which the model rejects ("data retention mode
-          #    'default' is not available for this model").
+          # Opus 5.5's BARE, REGIONAL (`us.`) Bedrock inference-profile id.
+          # No `[1m]` tag: that suffix is the Anthropic-API/claude_code
+          # provider-id form in model_registry.json; the Bedrock path
+          # (use_bedrock) rejects it as an unknown model.
           #
-          # --fallback-model pins the overload fallback to Opus 4.8 (regional
+          # --fallback-model pins the overload fallback to Sonnet 5.5 (regional
           # `us.` profile). Without it, Claude Code falls back to its own
-          # smaller/older default when Fable 5 is overloaded; pinning keeps the
-          # reviewer on a top-tier model. us.anthropic.* is already IAM-granted
-          # and honors the account provider_data_share retention mode.
+          # smaller/older default when Opus 5.5 is overloaded; pinning keeps the
+          # reviewer on a current model. us.anthropic.* is already IAM-granted.
           #
           # Write is granted for ONE reason: `candidates.json` is the model's
           # half of the mechanism. What that grant cannot become: the name is
@@ -520,8 +512,8 @@ jobs:
           # holds even if an allowlist entry is later widened. This matches the UX
           # lane, which denies the whole family.
           claude_args: |
-            --model us.anthropic.claude-fable-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 60
             --setting-sources user
             --allowedTools "Read,Grep,Glob,Write"

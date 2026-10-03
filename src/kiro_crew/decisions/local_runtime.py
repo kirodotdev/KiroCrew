@@ -846,11 +846,11 @@ def resume_configured() -> str:
 
     Called at gateway start, off the event loop. A preset whose download or
     install was interrupted resumes from where the receipt left it. Nothing runs
-    when the fleet withdrew local models. The owner's switch is deliberately not
-    consulted: the consent surfaces read the local row only while the runtime is
-    preparing or serving the preset, so stopping it with the switch off would put
-    the switch back under the hosted row -- which a fleet that withdrew hosted Jev
-    denies -- and the owner could never turn it on again.
+    when the fleet withdrew local models, by pinning either
+    ``capabilities.decisions`` or ``capabilities.decisions_local`` off; the preset
+    then stays configured and idle until the owner picks another model. The owner's
+    switch is deliberately not consulted: with it off nothing is sent anyway, and
+    the preset must be running for the send path to read it as local at all.
     """
     cfg = live.snapshot() or KiroCrewConfig.load()
     endpoint = gate.configured_endpoint(cfg)

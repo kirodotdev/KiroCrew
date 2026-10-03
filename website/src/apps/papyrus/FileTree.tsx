@@ -116,7 +116,7 @@ export default function FileTree({
             aria-label={i18nT('apps.papyrus.fileTree.delete_file', { file: node.name })}
             title={i18nT('apps.papyrus.fileTree.delete_file', { file: node.name })}
             onClick={() => onDeleteFile(node.path)}
-            className="p-1 rounded text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-danger hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
+            className="p-1 rounded text-muted opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 hover:text-danger hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
           >
             <Trash2 className="lucide-inline" />
           </button>

@@ -31,6 +31,36 @@ export function parseLoopbackOriginPort(origin: string): number | null {
   return port
 }
 
+// The hosts the server's CSP `frame-src` permits an embedded pane on, matched
+// EXACTLY against `_LOOPBACK_FRAME_SRC` / `_INSTANCES_FRAME_SRC_EXTRA` in
+// src/kiro_crew/dashboard/server.py — not a superset:
+//   - 127.0.0.1, localhost, 0.0.0.0 are admitted under BOTH http and https;
+//   - a single-label `*.localhost` name is admitted under http ONLY;
+//   - IPv6 loopback [::1] is deliberately NOT admitted (a bracketed IPv6 host
+//     with a wildcard port is invalid CSP grammar, so the server omits it).
+// A host/scheme pair outside this set has the browser refuse the pane frame
+// before any gateway check runs, so the pane cannot embed there.
+const IPV4_LOOPBACK_HOST_RE = /^(?:127\.0\.0\.1|localhost|0\.0\.0\.0)$/
+const DOT_LOCALHOST_HOST_RE = /^[a-z0-9-]+\.localhost$/
+
+/**
+ * Return true if a pane iframe can embed under the parent dashboard's own
+ * (protocol, host) — i.e. the pair is in the server's CSP `frame-src` loopback
+ * set. `protocol` is a `window.location.protocol` value ("http:" / "https:");
+ * `host` is a `window.location.hostname` (no brackets, no port). The caller
+ * checks this before mounting the iframe, to decide whether the pane can embed
+ * at all rather than mounting a frame the browser will refuse.
+ */
+export function isEmbeddableLoopbackOrigin(protocol: string, host: string): boolean {
+  if (typeof protocol !== 'string' || typeof host !== 'string') return false
+  if (protocol !== 'http:' && protocol !== 'https:') return false
+  // IPv4 loopback: http or https.
+  if (IPV4_LOOPBACK_HOST_RE.test(host)) return true
+  // *.localhost: http only (the CSP extra is http-only).
+  if (protocol === 'http:' && DOT_LOCALHOST_HOST_RE.test(host)) return true
+  return false
+}
+
 /**
  * Resolve a validated message origin to one of our warm instance ids.
  *

@@ -732,6 +732,9 @@ class TestGenerateTaggingRoute(unittest.IsolatedAsyncioTestCase):
 
     def _req(self, body: dict):
         req = make_mocked_request("POST", "/api/apps/issue-radar/tagging")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value=body)
         return req
 
@@ -1158,6 +1161,9 @@ class TestMalformedRequestShapes(unittest.IsolatedAsyncioTestCase):
 
     def _generate(self, body: dict):
         req = make_mocked_request("POST", "/api/apps/issue-radar/tagging")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value=body)
         return req
 

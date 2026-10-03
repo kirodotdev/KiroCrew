@@ -35,6 +35,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -176,6 +177,9 @@ class TestRecheckOverHttp:
         try:
             # 1. Absent on disk, and the GET says so with the component named.
             row = await _row(client, ACP_BACKEND_DEEPSEEK)
+            assert row["independent_setup"] is True
+            assert (await _row(client, ACP_BACKEND_CLAUDE))["independent_setup"] is True
+            assert (await _row(client, ACP_BACKEND_KAS))["independent_setup"] is False
             assert row["installed"] == MISSING
             assert _binary_name() in row["missing_components"]
             assert row["install_command"]
@@ -204,6 +208,7 @@ class TestRecheckOverHttp:
             rechecked = (await resp.json())["backend"]
 
             assert rechecked["id"] == ACP_BACKEND_DEEPSEEK
+            assert rechecked["independent_setup"] is True
             assert rechecked["installed"] == INSTALLED
             # The claim the button exists to make good on: usable WITHOUT a restart.
             assert rechecked["restart_required"] is False

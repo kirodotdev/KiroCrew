@@ -147,6 +147,11 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   routes = []
+  // Faithful default for the ws fan-out dispatch: the real gateway answers an
+  // accepted send `{ok: true}` (dashboard/chat_handlers.py), which the shared
+  // `readSendReceipt` reads as `accepted`. A per-test `route()` for a refusal
+  // still wins (it unshifts to the front).
+  routes.unshift({ url: '/api/chat?ws=1', method: 'POST', reply: { body: { ok: true } } })
   fetchMock.mockClear()
   api.getWatchlist.mockClear()
   api.updateWatchlist.mockClear()
@@ -727,10 +732,49 @@ describe('panelBridge send', () => {
     expect(bodyOf(calls('/api/chat?ws=1', 'POST')[0]).meta).toBeUndefined()
   })
 
+  it('throws a typed refusal carrying the gateway reason on a non-2xx send', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { ok: false, status: 409, body: { error: 'slot agent mismatch' } }, 'POST')
+    const bridge = await loadBridge()
+    await expect(bridge.sendMessage('hi')).rejects.toMatchObject({
+      name: 'SendRefusedError',
+      status: 409,
+      reason: 'slot agent mismatch',
+    })
+    await expect(bridge.sendMessage('hi')).rejects.toBeInstanceOf(bridge.SendRefusedError)
+  })
+
+  it('a refusal whose body is not JSON throws with no reason, so the panel can fall back', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { ok: false, status: 503, jsonThrows: true }, 'POST')
+    const bridge = await loadBridge()
+    await expect(bridge.sendMessage('hi')).rejects.toMatchObject({
+      name: 'SendRefusedError',
+      status: 503,
+      reason: undefined,
+    })
+  })
+
+  it('a rejected fetch throws a plain transport error, not a refusal', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { reject: true }, 'POST')
+    const bridge = await loadBridge()
+    await expect(bridge.sendMessage('hi')).rejects.not.toBeInstanceOf(bridge.SendRefusedError)
+  })
+
   it('refuses to send into a slot another agent owns', async () => {
     route('/api/chat/slots', { body: { agent: 'someone-else' } }, 'POST')
     const bridge = await loadBridge()
-    await expect(bridge.ensureSlot()).rejects.toThrow(/bound to another agent/)
+    const err = await bridge.ensureSlot().then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect((err as Error).message).toMatch(/bound to another agent/)
+    // A binding refusal is a plain Error (the class the i18n gate exempts) that
+    // carries a recognizable tag, so the panel surfaces its reason rather than
+    // reading it as a connection failure.
+    expect(bridge.slotRefusalReason(err)).toMatch(/bound to another agent/)
+    expect(err).not.toBeInstanceOf(bridge.SendRefusedError)
     expect(calls('/api/chat?ws=1', 'POST')).toHaveLength(0)
   })
 

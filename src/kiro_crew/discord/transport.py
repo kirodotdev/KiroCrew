@@ -644,4 +644,6 @@ class DiscordTransport(MessagingTransport):
             )
             return
         if self._dispatch is not None:
+            # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+            msg.person_origin = True
             await self._dispatch(msg)

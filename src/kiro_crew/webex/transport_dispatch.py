@@ -90,7 +90,9 @@ from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
     entries_queued_by,
     entry_channel,
+    entry_person_origin,
     owner_token,
+    person_tag,
     register_drain,
     tag_entry,
 )
@@ -104,6 +106,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
+from kiro_crew.start_priority import person_priority
 from kiro_crew.webex import cards
 from kiro_crew.webex.attachments import process_webex_attachments
 from kiro_crew.webex.cards import LiveChoices, read_press
@@ -260,8 +263,14 @@ def _queued_place(kwargs: dict) -> _QueuedPlace | None:
     return place
 
 
-def _reply_envelope(inbound: "WebexInbound | None", place: _QueuedPlace) -> "WebexInbound":
+def _reply_envelope(
+    inbound: "WebexInbound | None", place: _QueuedPlace, *, person_origin: bool
+) -> "WebexInbound":
     """The envelope a drained turn answers under: the QUEUED entry's, never the opener's.
+
+    *person_origin* is the queued entries' own flag, never the opener's: the finished
+    turn can have been opened by a gateway-built wake, and a wake can itself have been
+    queued (kiro_crew.start_priority).
 
     Built on *inbound* when the finished turn had one, so a field this replay does not
     address (the spool's ``message_id``, card inputs) keeps whatever that turn carried.
@@ -277,6 +286,7 @@ def _reply_envelope(inbound: "WebexInbound | None", place: _QueuedPlace) -> "Web
         parent_id=place.parent_id,
         person_email=place.person_email,
         room_type=place.room_type,
+        person_origin=person_origin,
     )
 
 
@@ -691,6 +701,7 @@ class WebexDispatcher:
         try:
             await drive_turn(
                 ChannelTurn(
+                    start_priority=person_priority(inbound.person_origin),
                     channel_type="webex",
                     session_key=session_key,
                     inbound_route=inbound_route,
@@ -1315,6 +1326,8 @@ class WebexDispatcher:
                 # carry it could only be replayed onto the opener's routing, which is
                 # a different session key whenever the two differ.
                 webex_room_type=inbound.room_type,
+                # Whether a PERSON sent it: the drained replay's start priority.
+                **person_tag(inbound.person_origin),
                 # Which CHANNEL recorded this entry, and WHOSE it is. Both neutral, and
                 # splatted from the shared helper rather than written as literal
                 # keywords, because the fields above cannot be read until ownership is
@@ -1391,6 +1404,8 @@ class WebexDispatcher:
             # another person (a shared unified key puts two humans on one queue), in
             # another thread, or on another transport entirely.
             place: _QueuedPlace | None = None
+            # Whether a person sent any entry this turn collapses.
+            person = False
             # Latched the moment one owned entry does not fit, so everything behind it
             # defers too and the queue keeps exact arrival order. Mirrors the other three
             # drains; see the collapse test below for what its absence costs.
@@ -1444,6 +1459,7 @@ class WebexDispatcher:
                         and item_sender == place.sender_key
                     ):
                         texts.append(item[1])
+                        person = person or entry_person_origin(item[2])
                         # Collapsed messages contribute their attachments too, in
                         # order, so a burst of "here, and here" screenshots all
                         # reach the one turn that answers them.
@@ -1477,7 +1493,7 @@ class WebexDispatcher:
                     # and ``edit_receipt`` carries the room id, so editing it under the
                     # opener's address reaches a different room where that message id
                     # does not exist.
-                    envelope = _reply_envelope(inbound, place)
+                    envelope = _reply_envelope(inbound, place, person_origin=person)
                     await self._queue.flip_answering_locked(
                         session_key,
                         self._receipt_surface(envelope),
@@ -1515,7 +1531,7 @@ class WebexDispatcher:
             # different room. Falls back to *inbound* only when an entry predates
             # this field (a queue persisted by an older build).
             drained = replace(
-                _reply_envelope(inbound, place),
+                _reply_envelope(inbound, place, person_origin=person),
                 text="\n\n".join(texts),
                 file_urls=tuple(files),
             )

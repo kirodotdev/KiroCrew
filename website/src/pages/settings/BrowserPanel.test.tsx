@@ -434,7 +434,8 @@ describe('BrowserPanel', () => {
     await renderPanel(state({ installed: false }))
     const toggle = screen.getByRole('switch', { name: /Use the built-in browser/ })
     await waitFor(() => expect(toggle.getAttribute('aria-disabled')).toBeNull())
-    expect(screen.getByText(/built-in panel/)).toBeTruthy()
+    // The sentence is the row's info tip (its `title` while closed).
+    expect(screen.getByTitle(/built-in panel/)).toBeTruthy()
     expect(screen.queryByText(/Available in the Kiro Crew desktop app/)).toBeNull()
   })
 

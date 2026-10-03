@@ -196,7 +196,8 @@ def update_auto_skill(
 
     Refuses to overwrite skills NOT in the auto namespace — protects
     hand-authored skills from being clobbered by the refine path.
-    Returns True on success.
+    Returns True on success, and False without writing on any refusal,
+    including a live file that does not vet for a rewrite read.
 
     Caller is responsible for passing already-redacted ``procedure_md``.
     """
@@ -225,7 +226,13 @@ def update_auto_skill(
     # provenance with created_at=now; we override from the existing
     # frontmatter here so the write path is authoritative.  Uses
     # ``dataclasses.replace`` because AutoSkillProvenance is frozen.
-    existing_meta = loader._cached_frontmatter(skill_file, within=None)
+    try:
+        existing_meta = loader._cached_frontmatter(skill_file, within=None, for_write=True)
+    except PermissionError:
+        # A rewrite read the skill file does not vet for: the file is left alone,
+        # and ``False`` lets the refine caller record why it was not applied.
+        logger.warning("Refusing to refine %s: its skill file did not vet", name)
+        return False
     original_created_at = existing_meta.get("created_at")
     if original_created_at:
         provenance = replace(provenance, created_at=original_created_at)

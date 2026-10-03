@@ -120,6 +120,20 @@ def _start_adaptive_controller(
         mgr = self._mcp_gateway_manager
         return {} if mgr is None else await mgr.stats()
 
+    def _runner_lane_stats() -> dict | None:
+        # The runner admission is wired, re-wired and torn down over the
+        # gateway's life, so the lane is read live each tick rather than
+        # captured once. ``None`` when no admission is attached (the lane's
+        # own ``stats()`` is synchronous and non-blocking).
+        admission = getattr(self, "_runner_admission", None)
+        lane = getattr(admission, "lane", None) if admission is not None else None
+        if lane is None:
+            return None
+        try:
+            return lane.stats()
+        except Exception:
+            return None
+
     cfg_gw = cfg.mcp_gateway  # type: ignore[union-attr]  # narrowed above
     try:
         controller = AdaptiveController(
@@ -127,6 +141,7 @@ def _start_adaptive_controller(
             cfg=cfg,
             set_gate_capacity=_set_gate,
             read_gate_stats=_gate_stats,
+            read_runner_lane=_runner_lane_stats,
             gate_initial=int(getattr(cfg_gw, "spawn_concurrency_initial", 4)),
             gate_floor=int(getattr(cfg_gw, "spawn_concurrency_min", 1)),
             gate_ceiling=int(getattr(cfg_gw, "spawn_concurrency_max", 8)),

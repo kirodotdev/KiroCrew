@@ -451,7 +451,7 @@ async def test_concurrent_activations_serialize_on_the_lock_and_spawn_once(
         def __init__(self, **kwargs: Any) -> None:
             built.append(self)
 
-        async def spawn(self) -> None:
+        async def spawn(self, start_priority=None) -> None:
             await asyncio.sleep(0)
 
         def is_alive(self) -> bool:
@@ -759,7 +759,7 @@ async def test_the_generation_number_advances_only_on_a_handed_over_spawn(
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        async def spawn(self) -> None:
+        async def spawn(self, start_priority=None) -> None:
             return None
 
         def is_alive(self) -> bool:

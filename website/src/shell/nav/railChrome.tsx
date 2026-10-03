@@ -52,10 +52,12 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
    * header and the first nav item, without widening the 2px item gaps.
    */
   return (
-    <div className={`relative flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-start' : ''}`}>
+    <div className={`relative flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-center' : ''}`}>
       {/* One persistent click target that toggles the rail. The logo
-          never unmounts, so it stays perfectly still across collapse/
-          expand (no swap, no shift). Only the brand text + collapse arrow
+          never unmounts, so there is no swap across collapse/expand; its
+          size (w-7 ↔ w-9) and collapsed nudge (mt-1) both animate over
+          duration-300, so the mark glides between states rather than
+          jumping. Only the brand text + collapse arrow
           animate — fading in on expand and out on collapse via
           AnimatePresence. No hover tint on the row; on hover only the
           logo rotates (group-hover). */}
@@ -68,23 +70,27 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
           `truncate`.
           Logo is DUAL-SIZE: w-7 (28px) expanded — 1px card border +
           pt-2 + 14 puts the header row's center on the 23px shared
-          control baseline — and w-10 (40px) collapsed, where the
-          icons-only rail keeps the full brand mark (a branding
-          logoClass overrides both). The collapse arrow no longer centers
-          in the row — it pins to top-[6px] so its center stays on the
+          control baseline — and w-9 (36px) collapsed, centered in the
+          icon strip and nudged down (mt-1) so both its symmetric inset
+          and its top clear the rail's rounded-xl corner, which clips
+          anything that reaches it; the mt-1 animates (transition-[margin]
+          duration-300) in lockstep with the glyph's size transition so
+          the flip is a glide, not a jump (a branding logoClass overrides
+          both). The collapse arrow pins to top-[6px] rather than centering
+          in the row — so its center stays on the
           23px shared control baseline (chat title row, its sessions
           toggle, and the activity strip icons) while the two-line
           brand block makes the row taller. */}
       <button
         type="button"
-        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
+        className={`group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left ${effectiveCollapsed ? 'justify-center' : ''}`}
         onClick={toggleNav}
         title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-expanded={!effectiveCollapsed}
       >
-        <span className="flex items-center gap-2.5 min-w-0">
-          <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
+        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1' : ''}`}>
+          <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-9 h-9' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
           <AnimatePresence initial={false}>
             {!effectiveCollapsed && (
               <motion.span

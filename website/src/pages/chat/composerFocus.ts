@@ -323,8 +323,9 @@ export interface ActiveSlotStore {
  * typing intent `focusComposer` expands for, and the autoFocusKey effect
  * leaves a reading preference alone for the same reason. And the caret is not
  * taken from an editable element that holds focus ON the frame. The surfaces
- * themselves never leave one focused: the legacy palette restores nothing on
- * close, and the Command Bar's focus trap captures its own `autoFocus` input
+ * themselves never leave one focused: the legacy palette restores nothing
+ * after a pick (only a dismiss gives focus back), and the Command Bar's
+ * focus trap captures its own `autoFocus` input
  * (React applies `autoFocus` in the commit, before the trap's passive effect
  * reads `document.activeElement`), so its unmount restore reaches a detached
  * node and focus ends on `<body>`. An editable element focused by the time the
@@ -394,7 +395,7 @@ function focusOnceSwitchHasLanded(key: string, store: ActiveSlotStore): void {
  *  they said anything about focus. A lookup that resolves the pane bound to
  *  the opened key is the follow-up; nothing in the DOM names a pane's slot
  *  today. */
-function focusComposerNow(): void {
+export function focusComposerNow(): void {
   if (isTouchDevice()) return
   if (document.querySelector('[data-chat-pane]')) return
   if (activeElementIsEditable()) return

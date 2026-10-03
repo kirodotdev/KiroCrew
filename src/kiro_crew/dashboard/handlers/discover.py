@@ -600,7 +600,8 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 status=500,
             )
         # Invalidate the loader's cache so the skill is immediately discoverable.
-        skills._invalidate_iter_cache()
+        # Off the loop: dropping the stored catalog waits on the index's write lock.
+        await asyncio.to_thread(skills._invalidate_iter_cache)
         kind = "updated" if already_exists else "created"
         logger.info("Installed skill bundle %s: %d files", key, file_count)
     elif already_exists:

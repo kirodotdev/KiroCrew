@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -89,6 +91,14 @@ def _on_disk(tmp_path) -> dict:
     return json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
 
 
+def _row(dotted_key: str) -> SupersededDefault:
+    return next(e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == dotted_key)
+
+
+def _superseded_warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "superseded default" in r.getMessage()]
+
+
 def test_unset_subagent_turn_budget_uses_long_task_default(tmp_path, monkeypatch):
     _point_home(tmp_path, monkeypatch)
     _write_config(tmp_path, {"agent": {}})
@@ -131,6 +141,267 @@ def test_stored_old_subagent_turn_default_is_reported_without_rewriting(tmp_path
     assert entries[0].auto_adopt is False
     assert SD.auto_adoptable(stored) == []
     assert stored == {"agent": {"subagent_max_turns": 100}}
+
+
+# What a 0.6.0 install materialized for two of the defaults 0.7.0 moved without a row.
+_V060_MATERIALIZED = {"skills": {"lazy_load": False}, "agent": {"subagent_spawn_stagger_secs": 2.0}}
+
+
+def test_v060_skill_index_and_spawn_stagger_defaults_are_reported_not_adopted(
+    tmp_path, monkeypatch
+):
+    _point_home(tmp_path, monkeypatch)
+    stored = json.loads(json.dumps(_V060_MATERIALIZED))
+    entries = {e.dotted_key: e for e in superseded_default_drift(stored, acked={})}
+    assert set(entries) == {"skills.lazy_load", "agent.subagent_spawn_stagger_secs"}
+    assert entries["skills.lazy_load"].new_default is True
+    assert entries["agent.subagent_spawn_stagger_secs"].new_default == 0.25
+    assert not any(e.auto_adopt for e in entries.values())
+    assert SD.auto_adoptable(stored) == []
+    assert stored == _V060_MATERIALIZED
+    summary = drift_summary(entries["skills.lazy_load"])
+    assert "skills.lazy_load is stored as False" in summary
+    assert "#12131" in summary
+
+
+def test_the_remedy_names_the_value_the_way_config_json_spells_it():
+    """The operator types the remedy into a JSON file, where a Python ``True`` is invalid."""
+    lazy = _row("skills.lazy_load")
+    lang = _row("stt.language_code")
+    assert "setting it to true adopts" in drift_summary(lazy)
+    assert "setting it to True" not in drift_summary(lazy)
+    assert 'setting it to "auto" adopts' in drift_summary(lang)
+
+
+def test_the_lazy_load_row_says_what_false_means_now_on_every_surface(
+    tmp_path, monkeypatch, caplog, capsys
+):
+    """False changed meaning, so the row cannot just say 'keep it if you chose it'.
+
+    An operator who chose False on 0.6.0 chose the full skills dump. Keeping it today
+    keeps the short eight-name entry instead, and each surface that offers --keep has
+    to say so.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"skills": {"lazy_load": False}})
+    lazy = _row("skills.lazy_load")
+    assert lazy.note and "eight" in lazy.note and "full skills dump" in lazy.note
+
+    assert lazy.note in drift_summary(lazy)
+    with caplog.at_level(logging.WARNING):
+        KiroCrewConfig.load()
+    warned = _superseded_warnings(caplog)
+    assert len(warned) == 1 and lazy.note in warned[0]
+
+    SD.render_doctor_section([])
+    assert lazy.note in capsys.readouterr().out
+
+
+def test_a_row_without_a_note_renders_exactly_as_before():
+    assert FDE_ENTRY.note is None
+    assert "Note:" not in drift_summary(FDE_ENTRY)
+
+
+# Old values a pre-0.8 install materialized for defaults that moved later, each
+# report-only for the reason its registry row gives.
+_LATER_MOVED = [
+    ("session", "watchdog_rss_max_mb", 0, 1536),
+    ("stt", "language_code", "en-US", "auto"),
+    ("decisions", "history_budget_chars", 0, 2000),
+    ("watchdog", "stale_window_secs", 300.0, 600.0),
+    ("watchdog", "tool_stall_suspect_secs", 3600.0, 5400.0),
+    ("watchdog", "tool_stall_hard_cap_secs", 3600.0, 7200.0),
+    ("watchdog", "model_silent_probe_secs", 900.0, 1800.0),
+]
+
+
+@pytest.mark.parametrize(("section", "field", "old", "new"), _LATER_MOVED)
+def test_a_later_moved_default_is_reported_and_loads_unchanged(
+    tmp_path, monkeypatch, caplog, section, field, old, new
+):
+    _point_home(tmp_path, monkeypatch)
+    stored = {section: {field: old}}
+    _write_config(tmp_path, stored)
+
+    entries = superseded_default_drift(_on_disk(tmp_path), acked={})
+    assert [(e.dotted_key, e.new_default) for e in entries] == [(f"{section}.{field}", new)]
+    assert entries[0].auto_adopt is False
+    with caplog.at_level(logging.WARNING):
+        cfg = KiroCrewConfig.load()
+    assert getattr(getattr(cfg, section), field) == old
+    kept = _on_disk(tmp_path)[section][field]
+    assert type(kept) is type(old) and kept == old
+    warned = _superseded_warnings(caplog)
+    assert len(warned) == 1 and f"{section}.{field}" in warned[0]
+
+
+@pytest.mark.parametrize("provider", ["transcribe", "apple"])
+def test_a_stored_en_us_is_not_drift_where_auto_resolves_to_en_us(provider, tmp_path, monkeypatch):
+    """Off the local recogniser "auto" resolves to en-US, so adopting would change
+    nothing and the row must not ask the operator to act."""
+    from kiro_crew.config.sections import SttConfig
+
+    _point_home(tmp_path, monkeypatch)
+    stored = {"stt": {"provider": provider, "language_code": "en-US"}}
+    assert SttConfig(provider=provider).effective_language_code == "en-US"
+    assert superseded_default_drift(stored, acked={}) == []
+
+
+@pytest.mark.parametrize(
+    "stt",
+    [
+        {"language_code": "en-US"},
+        {"provider": "local", "language_code": "en-US"},
+        {"provider": None, "language_code": "en-US"},
+    ],
+)
+def test_a_stored_en_us_is_drift_on_the_local_recogniser(stt, tmp_path, monkeypatch):
+    from kiro_crew.config.sections import SttConfig
+
+    _point_home(tmp_path, monkeypatch)
+    assert SttConfig().effective_language_code == "auto"
+    keys = [e.dotted_key for e in superseded_default_drift({"stt": stt}, acked={})]
+    assert keys == ["stt.language_code"]
+
+
+@pytest.mark.parametrize(
+    ("base", "overlay", "reported"),
+    [
+        # The overlay selects the local recogniser over a base transcribe: the stored
+        # en-US now forces English, which is what the row exists to surface.
+        ({"provider": "transcribe", "language_code": "en-US"}, {"provider": "local"}, True),
+        # The overlay selects transcribe over a base that names no provider: "auto"
+        # would resolve to en-US there too, so adopting changes nothing.
+        ({"language_code": "en-US"}, {"provider": "transcribe"}, False),
+    ],
+)
+def test_the_language_row_asks_about_the_provider_that_actually_runs(
+    tmp_path, monkeypatch, caplog, base, overlay, reported
+):
+    from kiro_crew.config.sections import SttConfig
+
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"stt": base})
+    _write_local(tmp_path, {"stt": overlay})
+
+    keys = [e.dotted_key for e in superseded_default_drift(_on_disk(tmp_path), acked={})]
+    with caplog.at_level(logging.WARNING):
+        cfg = KiroCrewConfig.load()
+    warned = _superseded_warnings(caplog)
+
+    # The loaded value is the stored en-US either way; it is reported exactly when
+    # adopting "auto" would change what the effective provider listens for.
+    assert cfg.stt.effective_language_code == "en-US"
+    adopting_changes_it = SttConfig(provider=cfg.stt.provider).effective_language_code != "en-US"
+    assert adopting_changes_it is reported
+    assert keys == (["stt.language_code"] if reported else [])
+    assert bool(warned) is reported
+
+
+@pytest.mark.parametrize("overlay_text", ["{not json", "[1, 2]", '{"stt": "local"}', "{}"])
+def test_an_overlay_that_names_no_provider_leaves_the_base_provider_standing(
+    tmp_path, monkeypatch, overlay_text
+):
+    _point_home(tmp_path, monkeypatch)
+    (tmp_path / "config.local.json").write_text(overlay_text, encoding="utf-8")
+    on_transcribe = {"stt": {"provider": "transcribe", "language_code": "en-US"}}
+    on_local = {"stt": {"provider": "local", "language_code": "en-US"}}
+    assert superseded_default_drift(on_transcribe, acked={}) == []
+    assert [e.dotted_key for e in superseded_default_drift(on_local, acked={})] == [
+        "stt.language_code"
+    ]
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="no os.mkfifo on Windows")
+def test_a_fifo_overlay_is_not_opened_by_the_language_row(tmp_path, monkeypatch):
+    """The provider read runs inside ``load()``, an event-loop path, and ``open()``
+    on a FIFO waits for a writer forever. A non-regular overlay says nothing, so
+    the base provider decides, as it does for an unreadable one."""
+    _point_home(tmp_path, monkeypatch)
+    fifo = tmp_path / "config.local.json"
+    os.mkfifo(fifo)
+    on_local = {"stt": {"provider": "local", "language_code": "en-US"}}
+    result: list = []
+    reader = threading.Thread(
+        target=lambda: result.append(superseded_default_drift(on_local, acked={})), daemon=True
+    )
+    reader.start()
+    reader.join(timeout=10)
+    if reader.is_alive():
+        # Release the blocked open() so the thread does not outlive the test.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=10)
+        pytest.fail("the language row opened a FIFO overlay and blocked on it")
+    assert [e.dotted_key for e in result[0]] == ["stt.language_code"]
+
+
+def test_only_a_moved_meaning_reaches_the_load_line(tmp_path, monkeypatch, caplog):
+    """The load line is one line so it does not grow with the registry; the only
+    note it carries is the one an operator needs before an unread ``--keep``."""
+    assert {e.dotted_key for e in SD.SUPERSEDED_DEFAULTS if e.meaning_moved} == {"skills.lazy_load"}
+    _point_home(tmp_path, monkeypatch)
+    _write_config(
+        tmp_path,
+        {
+            "skills": {"lazy_load": False},
+            "decisions": {"history_budget_chars": 0},
+            "watchdog": {"tool_stall_suspect_secs": 3600.0},
+        },
+    )
+    rows = {e.dotted_key: e for e in SD.SUPERSEDED_DEFAULTS}
+    with caplog.at_level(logging.WARNING):
+        KiroCrewConfig.load()
+    warned = _superseded_warnings(caplog)
+    assert len(warned) == 1
+    assert rows["skills.lazy_load"].note in warned[0]
+    assert rows["decisions.history_budget_chars"].note not in warned[0]
+    assert rows["watchdog.tool_stall_suspect_secs"].note not in warned[0]
+    # The per-key surfaces still carry every note.
+    assert rows["decisions.history_budget_chars"].note in drift_summary(
+        rows["decisions.history_budget_chars"]
+    )
+
+
+def test_the_tool_stall_pair_says_it_only_moves_together():
+    """The handle waits min(suspect, hard cap), so adopting one of the pair while the
+    other holds 3600 leaves the window at an hour; both rows have to say so."""
+    rows = {e.dotted_key: e for e in SD.SUPERSEDED_DEFAULTS}
+    suspect = rows["watchdog.tool_stall_suspect_secs"]
+    cap = rows["watchdog.tool_stall_hard_cap_secs"]
+    assert suspect.note and suspect.note == cap.note
+    assert suspect.dotted_key in suspect.note and cap.dotted_key in suspect.note
+    assert "smaller" in suspect.note and "adopt both" in suspect.note
+    assert min(suspect.new_default, cap.old_default) == cap.old_default
+    assert min(suspect.old_default, cap.new_default) == suspect.old_default
+    for row in (suspect, cap):
+        assert row.note in drift_summary(row)
+        assert not row.meaning_moved
+
+
+def test_the_decision_budget_row_says_adopting_is_bounded_by_consent():
+    """Adopting cannot send more than the owner consented to, and the report says so
+    rather than implying 2000 characters start leaving the machine."""
+    row = _row("decisions.history_budget_chars")
+    assert row.note and "ceiling" in row.note and "consent" in row.note
+    assert row.note in drift_summary(row)
+    assert not row.meaning_moved
+
+
+def test_v060_materialized_values_load_unchanged_and_are_named_once(tmp_path, monkeypatch, caplog):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, _V060_MATERIALIZED)
+    with caplog.at_level(logging.WARNING):
+        cfg = KiroCrewConfig.load()
+    assert cfg.skills.lazy_load is False
+    assert cfg.agent.subagent_spawn_stagger_secs == 2.0
+    on_disk = _on_disk(tmp_path)
+    assert on_disk["skills"]["lazy_load"] is False
+    assert on_disk["agent"]["subagent_spawn_stagger_secs"] == 2.0
+    warned = _superseded_warnings(caplog)
+    assert len(warned) == 1
+    assert "skills.lazy_load" in warned[0]
+    assert "agent.subagent_spawn_stagger_secs" in warned[0]
+    assert "kirocrew config defaults" in warned[0]
 
 
 # --------------------------------------------------------------------------
@@ -738,10 +1009,12 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         # 4.0 as supported, and the opt-out is 0, not the old default.
         "agent.spawn_min_memory_gb",
     }
-    # Each of these has its stored value pinned as supported by a named test
-    # elsewhere in the suite; adopting one turns that suite red, which is how this
-    # line was found.
-    for pinned in (
+    # The other side as an exact set too, so an appended row has to be placed on
+    # one side by name. Each of these keeps its old value because that value is a
+    # supported configuration -- pinned by a test elsewhere, or for the plain reason
+    # its registry row states.
+    report_only = {e.dotted_key for e in SD.SUPERSEDED_DEFAULTS if not e.auto_adopt}
+    assert report_only == {
         "session.autocompact_pct",
         "dashboard.loop_stall_exit_after_secs",
         "stt.streaming",
@@ -749,8 +1022,34 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "mcp_gateway.forward_declared_env",
         "instances.warm_set_cap",
         "agent.session_control",
-    ):
-        assert pinned not in adopting, f"{pinned}'s stored value is guaranteed elsewhere"
+        "agent.subagent_max_turns",
+        "skills.lazy_load",
+        "agent.subagent_spawn_stagger_secs",
+        "session.watchdog_rss_max_mb",
+        "stt.language_code",
+        "decisions.history_budget_chars",
+        "watchdog.stale_window_secs",
+        "watchdog.tool_stall_suspect_secs",
+        "watchdog.tool_stall_hard_cap_secs",
+        "watchdog.model_silent_probe_secs",
+    }
+
+
+def test_the_spec_table_lists_every_registered_row():
+    """config.md's table is the one human-readable list of rows; it must not drift.
+
+    It names each row once with whether it adopts, so a row added to the registry
+    without the table (or a flipped ``auto_adopt``) goes red here instead of leaving
+    the spec describing a registry that does not exist.
+    """
+    spec = Path(__file__).resolve().parents[1] / "docs" / "system-specs" / "modules" / "config.md"
+    text = spec.read_text(encoding="utf-8")
+    start = text.index("### Auto-adoption, and the line it does not cross")
+    section = text[start : text.index("\n## ", start)]
+    rows = re.findall(r"^\| `([a-z_]+\.[a-z_]+)` \| [^|]+ \| (adopts|reports) \|", section, re.M)
+    table = {key: mode == "adopts" for key, mode in rows}
+    assert len(rows) == len(table), "a key is listed twice in the spec table"
+    assert table == {e.dotted_key: e.auto_adopt for e in SD.SUPERSEDED_DEFAULTS}
 
 
 def test_a_pinned_stored_value_is_never_adopted(tmp_path, monkeypatch):

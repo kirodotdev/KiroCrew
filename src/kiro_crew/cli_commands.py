@@ -156,6 +156,7 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
+from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
@@ -336,7 +337,7 @@ def _spawn(args: argparse.Namespace) -> None:
 
     if action == "list":
         req = urllib.request.Request(
-            f"{base}/api/spawn",
+            f"{base}/api/spawn?queued=1",
             headers={"X-Internal-Secret": _internal_secret(args.port)},
         )
         try:
@@ -353,9 +354,20 @@ def _spawn(args: argparse.Namespace) -> None:
             print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
             sys.exit(1)
         agents = data.get("agents", [])
-        if not agents:
+        queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
+        partial = data.get("queued_truncated") is True
+        if not agents and not queued and not partial:
             print("No subagents.")
             return
+        for q in queued:
+            # Accepted, no run yet (or waiting to resume one): a distinct icon,
+            # so this is never read as a run in progress.
+            tag = "resuming" if q.get("resuming") is True else "queued, not started"
+            print(
+                f"  🕒 {q['id']}  {str(q.get('task') or '')[:60]}  — {tag}: {queued_wait_text(q)}"
+            )
+        if partial:
+            print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
             if a.get("done"):
                 status, note = "✅", ""
@@ -1141,7 +1153,8 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
     installation's first turn resumes the removed app's transcript — and the
     operator who would have to notice that is standing right here, at a command
     that otherwise printed a success tick. The two get different text because they
-    need different actions: stop the gateway, versus fix the storage error.
+    need different actions: stop the gateway, versus fix the storage or lock-file
+    error the log names.
     """
     if cleanup.dropped:
         print(f"   dropped {cleanup.dropped} conversation pointer(s) — a reinstall starts fresh")
@@ -1156,7 +1169,7 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
     elif cleanup.failed:
         print(
             f"   ⚠️  could not clear {name}'s conversation pointers: the session map "
-            f"could not be read or written (see the log for the error). Reinstalling "
+            f"or its lock file could not be used (see the log for the error). Reinstalling "
             f"under this name may resume the removed app's transcript. Fix the cause "
             f"and run `kirocrew app uninstall {name}` again to clear them.",
             file=sys.stderr,

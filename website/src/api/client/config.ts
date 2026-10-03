@@ -31,6 +31,8 @@ export interface AcpBackendProbe {
   id: string
   policy_id: string
   selectable: boolean
+  /** Explicit gateway capability: this harness can complete setup without Kiro CLI. */
+  independent_setup: boolean
   installed: AcpBackendInstalled
   missing_components: string[]
   install_command: string

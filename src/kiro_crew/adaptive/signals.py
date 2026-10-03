@@ -157,6 +157,35 @@ class Sample:
     #: Running sessions with new stream activity since the previous observation.
     #: Unlike healthy_in_flight, merely occupying a slot is not evidence here.
     progressing: int = 0
+    #: The largest running count at a SINGLE admission point (the sub-agent
+    #: manager or the runner lane), not their sum. Each point is bounded by the
+    #: same effective cap on its own, so "a slot is in use at the cap" is a
+    #: per-point question: the progress probe reads this, not ``running``, so a
+    #: long in-flight run buys an exploratory slot only once one point's own
+    #: running fills the cap. Defaults to ``running`` for samples built before
+    #: the lane was folded in.
+    saturating: int = -1
+    #: The largest demand (running + queued) at a SINGLE admission point, not
+    #: the sum across points. The earn gate reads this for its pressure test,
+    #: so demand SPLIT across two points earns nothing until one point alone
+    #: carries cap-deep demand -- two manager plus two lane runs at cap 4 is
+    #: neither point saturated. A deep queue at one point is still demand, so a
+    #: slow-start increase earned by a completion with running below the cap
+    #: holds. Defaults to ``demand`` for samples built before the lane folded
+    #: in.
+    saturating_demand: int = -1
+
+    @property
+    def at_cap_running(self) -> int:
+        """Per-admission-point running for the in-use-at-cap test. Falls back
+        to the total ``running`` when ``saturating`` was not measured."""
+        return self.saturating if self.saturating >= 0 else self.running
+
+    @property
+    def at_cap_demand(self) -> int:
+        """Per-admission-point demand for the earn gate's pressure test. Falls
+        back to the total ``demand`` when it was not measured per point."""
+        return self.saturating_demand if self.saturating_demand >= 0 else self.demand
 
     @property
     def demand(self) -> int:

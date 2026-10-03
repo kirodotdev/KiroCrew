@@ -66,6 +66,7 @@ from kiro_crew.sandbox import (
     sandboxed_spawn_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -1083,7 +1084,7 @@ def _mcp_names_from_file(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     try:
-        data = json.loads(safe_read_file(str(path)))
+        data = loads_user_json(safe_read_file(str(path)))
     except (json.JSONDecodeError, OSError, TypeError):
         return set()
     servers = data.get("mcpServers") if isinstance(data, dict) else None
@@ -1148,7 +1149,7 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
         if not p.is_file():
             continue
         try:
-            data = json.loads(safe_read_file(str(p)))
+            data = loads_user_json(safe_read_file(str(p)))
         except (json.JSONDecodeError, OSError) as exc:
             # PermissionError (subclass of OSError) is raised by
             # safe_read_file when is_sensitive_path() blocks the read.
@@ -3577,7 +3578,7 @@ def register_servers_for_cc(
     existing: dict = {}
     if mcp_json_path.is_file():
         try:
-            existing = json.loads(mcp_json_path.read_text(encoding="utf-8"))
+            existing = loads_user_json(mcp_json_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             existing = {}
 

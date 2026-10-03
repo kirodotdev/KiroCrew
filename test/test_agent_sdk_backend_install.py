@@ -871,6 +871,7 @@ class TestEndpointPayloadShape:
                 "id",
                 "policy_id",
                 "selectable",
+                "independent_setup",
                 "installed",
                 "missing_components",
                 "install_command",
@@ -915,6 +916,7 @@ class TestEndpointPayloadShape:
             "id": "",
             "policy_id": "kiro",
             "selectable": True,
+            "independent_setup": False,
             "installed": "installed",
             "missing_components": [],
             "install_command": "",
@@ -937,6 +939,8 @@ class TestEndpointPayloadShape:
         # Not selectable in this build AND not installed here -- both facts on
         # one row, which is the whole reason the endpoint exists.
         assert by_policy["claude"]["selectable"] is False
+        assert by_policy["claude"]["independent_setup"] is True
+        assert by_policy["kas"]["independent_setup"] is False
         assert by_policy["claude"]["installed"] == "missing"
         assert by_policy["claude"]["missing_components"] == [
             probe.COMPONENT_CLAUDE_ACP_ADAPTER,

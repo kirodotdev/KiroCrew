@@ -733,7 +733,19 @@ class AcpRuntimeError(Exception):
 
 
 class AcpRuntimeDead(AcpRuntimeError):
-    """Raised when the underlying process has died."""
+    """Raised when the underlying process has died.
+
+    ``ambiguous_delivery`` is True when the death followed a request-frame drain
+    stall whose bytes had already reached the transport (see
+    :class:`AcpProcessDied` for the recovery consequence); it rides through
+    ``AcpSessionProvider._translate_dead`` onto the ``AcpProcessDied`` the caller
+    recovers from. False for every other death, including a lock-phase stall that
+    wrote nothing.
+    """
+
+    def __init__(self, *args: object, ambiguous_delivery: bool = False) -> None:
+        super().__init__(*args)
+        self.ambiguous_delivery = ambiguous_delivery
 
 
 class AcpFrameTooLarge(AcpRuntimeError):
@@ -950,7 +962,18 @@ class AcpRuntimeProtocol(Protocol):
 
     def is_alive(self) -> bool: ...
 
-    def _mark_dead(self, reason: str, *, expected: bool = False) -> None:
+    @property
+    def stdin_stall_death(self) -> bool:
+        """Whether the runtime died of a stdin stall with its child still alive."""
+        ...
+
+    def turn_active_at_stall(self, session_id: str) -> bool:
+        """Whether *session_id* had a turn running when that stall killed the runtime."""
+        ...
+
+    def _mark_dead(
+        self, reason: str, *, expected: bool = False, stdin_stalled: bool = False
+    ) -> None:
         """Fail the runtime: poison every session queue and reject pending waits.
 
         Declared rather than reached for with ``getattr`` so a runtime that
@@ -1358,6 +1381,23 @@ class AcpSessionHandle:
         """
         return self._prompt_or_tool_seen
 
+    @property
+    def prompt_outstanding_on_stall(self) -> bool:
+        """Whether this session's death may have left its prompt delivered.
+
+        True when the runtime died of a stdin stall with the child still alive
+        while this session's turn was running with its prompt frame written.
+        That frame is in the pipe the child stopped reading, so the child may
+        still read it and act: the death is an ambiguous delivery (see
+        ``AcpProcessDied``) for every such session, not only for the one whose
+        write tripped the bound. The turn state is the runtime's snapshot at the
+        death, so the answer holds after this turn's own teardown has run.
+        """
+        at_stall = getattr(self._runtime, "turn_active_at_stall", None)
+        return (
+            bool(self._prompt_written) and callable(at_stall) and at_stall(self._session_id) is True
+        )
+
     def _died(self, base: str) -> AcpProcessDied:
         """Build an AcpProcessDied carrying the runtime's death attribution.
 
@@ -1378,14 +1418,24 @@ class AcpSessionHandle:
         a prefix that a per-line signature cannot match — the same reason the
         sandbox corroboration reads it. The typed message keeps one retained
         cause instead of the tail's repeated copies.
+
+        A stdin-stall death is never re-attributed to a throttle: the host
+        knows why the runtime died, and the transient verdict would license
+        replaying a prompt the live child may still read. It carries
+        ``ambiguous_delivery`` when this session's prompt was outstanding
+        (``prompt_outstanding_on_stall``).
         """
-        if not self._prompt_or_tool_seen:
+        stalled = getattr(self._runtime, "stdin_stall_death", False) is True
+        if not stalled and not self._prompt_or_tool_seen:
             tail = getattr(self._runtime, "redacted_stderr_tail", lambda: "")()
             cause = registration_throttle_line(tail) if tail else None
             if cause is not None:
                 return registration_rate_limited_error(base, cause)
         summary = getattr(self._runtime, "death_summary", lambda: None)()
-        return AcpProcessDied(f"{base} — {summary}" if summary else base)
+        return AcpProcessDied(
+            f"{base} — {summary}" if summary else base,
+            ambiguous_delivery=self.prompt_outstanding_on_stall,
+        )
 
     @property
     def is_turn_active(self) -> bool:
@@ -2746,6 +2796,11 @@ class AcpSessionHandle:
             _unregister()
             if not isinstance(exc, Exception):
                 raise
+            if getattr(exc, "ambiguous_delivery", False) is True:
+                # The frame WAS written and sits in a pipe the live child may
+                # still read: not "not written". Raised so the caller requeues
+                # the steer as possibly delivered instead of as fresh text.
+                raise
             logger.debug("steering request not written for %s: %s", session_id, type(exc).__name__)
             return False
 
@@ -2826,6 +2881,19 @@ class AcpSessionHandle:
             raise
         finally:
             ended.cancel()
+        if getattr(self._runtime, "stdin_stall_death", False) is True and not (
+            answer.done() and not answer.cancelled() and answer.exception() is None
+        ):
+            # The frame was written, then the runtime died of a stdin stall
+            # before answering: the live child may still read and inject it.
+            if answer.done():
+                _unregister()
+            else:
+                _abandon()
+            raise AcpRuntimeDead(
+                "runtime died of a stdin stall after the steering frame was written",
+                ambiguous_delivery=True,
+            )
         if not answer.done():
             # The turn ended first, or the answer outlasted the bound the caller's
             # own request can wait: the caller queues the text.
@@ -3340,10 +3408,15 @@ class AcpSessionHandle:
                             poisoned = await self._drain_post_compaction_metadata(buffered=buffered)
                         # Redact backend-echoed summary before it reaches callers
                         # (compact() surfaces this to the dashboard).
-                        return {
-                            "type": s_type,
-                            "summary": redact_text(str(params.get("summary", "") or "")),
-                        }
+                        summary = redact_text(str(params.get("summary", "") or ""))
+                        if s_type == "failed" and not summary:
+                            # kiro-cli leaves `summary` empty on failure, so the
+                            # manual /compact notice would say nothing — carry
+                            # the notification's own reason, read by the same
+                            # extractor the dispatch loop uses for the streaming
+                            # notice. Mirrors AcpClient.wait_for_compaction.
+                            summary = compaction_failure_detail(params)
+                        return {"type": s_type, "summary": summary}
                     continue
                 # Track metadata if it arrives (also consumes it).
                 if msg.method == "_kiro.dev/metadata":

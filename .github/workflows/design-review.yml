@@ -1,6 +1,6 @@
 name: Design Review
 
-# ADVISORY design-level AI review using the "Fable 5" model via Amazon Bedrock.
+# ADVISORY design-level AI review using the "Opus 5.5" model via Amazon Bedrock.
 # Complements the two line-level reviewers (claude-review.yml, codex-review.yml)
 # with a Sage-Phase-1-style DESIGN gate: does the change actually solve the PR's
 # stated problem, is the underlying approach/logic sound, and does the solution
@@ -8,7 +8,7 @@ name: Design Review
 # (the other two own that). It is ADVISORY — it upserts a verdict comment and is
 # NON-BLOCKING because it is not a required status check (the check MAY go red
 # if the review errors, but that red is override-able by a human). Same auth path
-# as claude-review.yml: OIDC → Amazon Bedrock; Fable 5 runs through
+# as claude-review.yml: OIDC → Amazon Bedrock; Opus 5.5 runs through
 # anthropics/claude-code-action with use_bedrock.
 
 on:
@@ -307,8 +307,8 @@ jobs:
           echo "Prefetched the diff ($(wc -c < "$PATCH") bytes) as a data file."
 
       # Dependabot (a design review adds little to a mechanical version bump)
-      # and let the advisory status pass — same skip contract as the Opus 5 /
-      # GPT 5.6 reviewers. github.actor is set by GitHub and cannot be spoofed by
+      # and let the advisory status pass — same skip contract as the Opus 5.5 /
+      # GPT 6.1 reviewers. github.actor is set by GitHub and cannot be spoofed by
       # PR content. Also skip when a human override is recorded, so an OIDC
       # failure can never keep the override from clearing the lane.
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
@@ -321,7 +321,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Design review (Fable 5)
+      - name: Design review (Opus 5.5)
         id: review
         # We deliberately do NOT set continue-on-error: if the model call fails
         # (Bedrock throttling / 403 / action error) this step fails and the
@@ -336,23 +336,16 @@ jobs:
           && (
           github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
           )
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Fable 5's BARE, REGIONAL (`us.`) Bedrock inference-profile id.
-          # Two reasons it must be this exact form:
-          #  - No `[1m]` tag: that suffix is the Anthropic-API/claude_code
-          #    provider-id form in model_registry.json; the Bedrock path
-          #    (use_bedrock) rejects it as an unknown model.
-          #  - `us.` not `global.`: Fable requires data-retention mode
-          #    `provider_data_share`, set at the ACCOUNT level in us-west-2.
-          #    The regional `us.` profile honors that account setting; the
-          #    `global.` profile routes cross-region and falls back to
-          #    `default`, which the model rejects ("data retention mode
-          #    'default' is not available for this model"). Matches the
-          #    working claude-review.yml (`us.anthropic.claude-opus-4-8`).
+          # Opus 5.5's BARE, REGIONAL (`us.`) Bedrock inference-profile id.
+          # No `[1m]` tag: that suffix is the Anthropic-API/claude_code
+          # provider-id form in model_registry.json; the Bedrock path
+          # (use_bedrock) rejects it as an unknown model. The regional `us.`
+          # profile matches claude-review.yml and the role's IAM grant.
           # Read-only tools
           # only — the design reviewer inspects the diff, it does not edit or
           # post; the workflow parses the review from the run's execution_file
@@ -364,15 +357,14 @@ jobs:
           # header is robust. Automation mode: `prompt` runs on the trigger
           # without an @claude mention.
           #
-          # --fallback-model pins the overload fallback to Opus 4.8 (regional
+          # --fallback-model pins the overload fallback to Sonnet 5.5 (regional
           # `us.` profile, as in claude-review.yml). Without it, Claude Code
-          # falls back to its own smaller/older default (e.g. 4.6) when Fable 5
-          # is overloaded; pinning keeps the reviewer on a top-tier model.
-          # us.anthropic.* is already IAM-granted and honors the account
-          # provider_data_share retention mode.
+          # falls back to its own smaller/older default when Opus 5.5 is
+          # overloaded; pinning keeps the reviewer on a current model.
+          # us.anthropic.* is already IAM-granted.
           claude_args: |
-            --model us.anthropic.claude-fable-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -517,6 +509,58 @@ jobs:
             - A "what" with no "why" (no user-visible problem stated) is a minor
               finding.
 
+            TAKE-AWAY CHECK (run it yourself, every review). The author's
+            compatibility claim is an INPUT you check against code, never a
+            finding you accept on its word.
+            1. LIST what the patch takes away: a config key or row removed or
+               renamed; a migration that deletes or rewrites persisted records; a
+               path newly hidden or masked from a child process (e.g.
+               `extra_hidden_dirs`); a validator or schema that now refuses what it
+               accepted; a public function, route, CLI flag or manifest field
+               removed or renamed. Read this off the patch. If it takes nothing
+               away, this check ends here.
+            2. FIND THE READERS yourself. For each take-away, Grep the checked-out
+               tree for it the way readers spell it: the literal key or path, the
+               helper that builds the path, the record field, the symbol. Cover
+               every entry point, not only the one the PR is about: crew page
+               (website/src/, the dashboard routes), chat (dashboard/chat_runner.py,
+               session_agent_selection.py), subagent spawn, continue and resume
+               (subagent_manager/, subagent_persistence.py), cron (cron_script.py,
+               cron_service/), app bundles and manifests (apps/, an app.json's
+               crons and hooks, code an app runs out of its own install dir), the
+               prompt builder (context_assembly/, execution_context.py), and the
+               release path (.github/workflows/release.yml, packaging/). A reader
+               the patch does not touch reads the same in this tree as on the base.
+               For each reader decide from its code: does it still work under the
+               patch? Budget: the 5 take-aways most likely to have readers outside
+               the patch; name any you skipped in Watch.
+            3. COMPARE with the description's `## Backwards compatibility` section.
+               Each listed reader is one line of exactly this shape (a `—` in place
+               of `--` reads the same):
+               `Reader: <path>:<symbol> -- <entry: chat|cron|subagent|app|crew page|release> -- <why it still works | test name>`
+               or the section is the single line `Removes nothing: <why>`. A reader is
+               listed by its `<path>:<symbol>`; an entry label outside that set (e.g.
+               prompt builder) does not unlist it. A reader a `Compatible:` line names
+               by `<path>:<symbol>` counts as listed; one a `Breaking:` line names
+               counts as listed and accepted. A `Compatible:` line naming no reader,
+               or a missing section, is an empty list. When the description file
+               carries the `[description TRUNCATED` notice and the section is missing
+               or is the last section before that notice, its list may sit past the
+               cut: cap this check at CONCERNS and say so. A section that ends before
+               the notice is judged on its text.
+            4. JUDGE:
+               - a reader from step 2 that BREAKS under the patch and is not
+                 listed -> BLOCK (the take-away trigger under VERDICT). `Removes
+                 nothing` lists no reader, so under it every breaking reader is
+                 unlisted;
+               - a listed reader whose reason does not hold against the code you
+                 opened, or whose named test does not exercise that reader ->
+                 CONCERNS;
+               - a break the author lists and accepts -> judge it under CONTRACT &
+                 DATA EVOLUTION as usual.
+               A reader you cannot open from this tree (another branch, an app not
+               in the repo) is not a finding.
+
             SELF-CRITIQUE (run BEFORE you emit): kill-filter each candidate
             finding — "if I were the author, would this change what I build or how
             I think about this design?" If no (a preference, a "consider", a nit,
@@ -585,6 +629,12 @@ jobs:
               is read off the evidence list and the diff, not judged, so the
               tie-breaker above does not reach it. A change that renders
               nothing new (a refactor, a test, a type) needs no evidence.
+            - TAKE-AWAY WITH AN UNLISTED BROKEN READER: the TAKE-AWAY CHECK found
+              a reader outside the patch that breaks under it and the
+              `## Backwards compatibility` section does not list (a `Removes
+              nothing` section lists none). The Blocker names the reader as `<path>:<symbol>` and
+              its entry point, and `Clears when:` names that reader: fixed in this
+              PR, or listed with why it still works and the test that shows it.
             FALSIFY BEFORE YOU BLOCK (mandatory, because BLOCK now blocks): for
             each BLOCK candidate, actively try to KILL it -- name the specific
             requirement the design fails, the concrete alternative that is
@@ -593,7 +643,10 @@ jobs:
             opened (for the missing-evidence trigger the three are: the surface
             the diff adds or reshapes, the evidence list naming no downloaded
             attachment and no committed image for it, and the shape
-            question you therefore could not answer). A matter of taste is
+            question you therefore could not answer; for the take-away
+            trigger they are: the take-away hunk, the reader's
+            `<path>:<symbol>` with the line that breaks and its entry
+            point, and its absence from the author's list). A matter of taste is
             never a BLOCK; "might" and "unclear"
             lower it ONLY when the tie-breaker above finds the consequence
             reversible. Budget: at most 1 BLOCK per review; if you have two, you
@@ -764,7 +817,7 @@ jobs:
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             {
               echo "$MARKER"
-              echo "## Design Review (Fable 5) — ✅ human override accepted"
+              echo "## Design Review (Opus 5.5) — ✅ human override accepted"
               echo
               echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` via \`/ai-review override\` (this commit only)._"
             } > "${RUNNER_TEMP:-/tmp}/ai-override-note.md"
@@ -853,7 +906,7 @@ jobs:
             # Valid verdict → post the review body (redacted below).
             {
               echo "$MARKER"
-              echo "## Design Review (Fable 5) — $badge"
+              echo "## Design Review (Opus 5.5) — $badge"
               echo
               echo "_Design-level review of \`$HEAD\` — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -878,7 +931,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## Design Review (Fable 5) — ⚠️ could not complete"
+              echo "## Design Review (Opus 5.5) — ⚠️ could not complete"
               echo
               echo "_The design review did not produce a verdict for \`$HEAD\` ($why). See the Design Review job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/design-comment.md"

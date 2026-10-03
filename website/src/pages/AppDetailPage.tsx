@@ -1686,7 +1686,7 @@ export default function AppDetailPage() {
                 <div className="relative group/cmd">
                   <pre className="bg-bg border border-border rounded-lg p-3 pr-10 text-[13px] font-mono text-text overflow-x-auto whitespace-pre-wrap break-all">{resolvedShell}</pre>
                   <button
-                    className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 transition-all opacity-0 group-hover/cmd:opacity-100"
+                    className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 transition-all opacity-0 group-hover/cmd:opacity-100 [@media(hover:none)]:opacity-100"
                     aria-label={i18nT('pages.appDetailPage.copy_command')}
                     onClick={async () => {
                       // Gate the confirmation on the boolean: a tick over an

@@ -11,7 +11,7 @@ import asyncio
 import inspect
 import pathlib
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1033,8 +1033,8 @@ class TestEmptyDelta:
         """
         over = [f"chat-{n}-{n}" for n in range(judge.MAX_TARGETS + 2)]
 
-        async def read_session(target: str, since: int) -> tuple[list[dict], int]:
-            return [], since
+        async def read_session(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            return [], since, since
 
         _, dropped = asyncio.run(
             judge.collect_evidence(over, cursors={}, read_session=read_session, read_pr=None)
@@ -1138,6 +1138,87 @@ class TestEmptyDelta:
         """
         source = inspect.getsource(AutoNudgeService._judge_tick_is_quiet)
         assert "dropped=dropped" in source, "the collector's count reaches the point"
+
+
+def _session_row(age: float, text: str, *, seen: bool | None = None) -> dict[str, object]:
+    row: dict[str, object] = {
+        "source": "session:chat-2-2",
+        "kind": point.KIND_TRANSCRIPT_TAIL,
+        "age_s": age,
+        "text": text,
+    }
+    if seen is not None:
+        row["first_seen_this_tick"] = not seen
+    return row
+
+
+class TestNothingNewIsLostAndJudgedCalm:
+    """A bound that sheds a FRESH item makes the tick fire.
+
+    Already-seen items are context and go first; a fresh item is the delta, and a
+    session row past the read cursor is never offered again.
+    """
+
+    def test_the_item_cap_sheds_seen_items_before_fresh_ones(self) -> None:
+        seen = [_session_row(float(age), f"seen {age}", seen=True) for age in range(10)]
+        fresh = [
+            _session_row(float(age), f"fresh {age}")
+            for age in range(100, 100 + point.MAX_EVIDENCE_ITEMS)
+        ]
+        refusals: dict[str, int] = {}
+        screened, dropped = point.screen_evidence([*seen, *fresh], refusals)
+        assert {row["text"] for row in screened} == {row["text"] for row in fresh}
+        assert dropped == len(seen)
+        assert not refusals.get("shed_fresh"), "only already-seen context was given up"
+
+    def test_the_item_cap_counts_every_fresh_item_it_sheds(self) -> None:
+        fresh = [
+            _session_row(float(age), f"row {age}") for age in range(point.MAX_EVIDENCE_ITEMS + 3)
+        ]
+        refusals: dict[str, int] = {}
+        point.screen_evidence(fresh, refusals)
+        assert refusals.get("shed_fresh") == 3
+
+    def test_the_char_budget_sheds_seen_items_first(self) -> None:
+        items = [
+            _session_row(1.0, "DONE: shipped"),
+            _session_row(500.0, "s" * 900, seen=True),
+            _session_row(600.0, "t" * 900, seen=True),
+        ]
+        trace: dict[str, Any] = {}
+        original = point.MAX_STATE_CHARS
+        try:
+            point.MAX_STATE_CHARS = 600
+            state = point.build_state("watch", evidence=items, trace=trace)
+        finally:
+            point.MAX_STATE_CHARS = original
+        assert [row["text"] for row in state["since_last_tick"]] == ["DONE: shipped"]
+        assert trace["shed_fresh"] == 0
+
+    def test_the_char_budget_counts_a_fresh_item_it_sheds(self) -> None:
+        items = [_session_row(float(age), f"step {age} " + "x" * 900) for age in range(1, 4)]
+        trace: dict[str, Any] = {}
+        original = point.MAX_STATE_CHARS
+        try:
+            point.MAX_STATE_CHARS = 1_500
+            point.build_state("watch", evidence=items, trace=trace)
+        finally:
+            point.MAX_STATE_CHARS = original
+        assert trace["shed_fresh"] >= 1
+
+    def test_a_busy_worker_whose_rows_do_not_fit_fires_the_tick(self) -> None:
+        """More fresh text than the budget holds must wake, not be judged on a slice."""
+        rows = [_session_row(float(age), f"step {age} " + "x" * 900) for age in range(2, 14)]
+        rows.append(_session_row(1.0, "DONE: shipped"))
+        verdict = asyncio.run(point.judge_tick("watch", evidence=rows, dropped=0))
+        assert verdict.outcome is Outcome.FALLBACK
+        assert "could not send every evidence item" in verdict.body
+
+    def test_shedding_only_seen_context_does_not_take_the_shed_exit(self) -> None:
+        rows = [_session_row(float(age), "y" * 900, seen=True) for age in range(2, 14)]
+        rows.append(_session_row(1.0, "WORKING"))
+        verdict = asyncio.run(point.judge_tick("watch", evidence=rows, dropped=0))
+        assert "could not send every evidence item" not in verdict.body
 
 
 class TestJudgeTickFallsOpen:
@@ -1476,7 +1557,7 @@ class TestCollectors:
         assert state["since_last_tick"], "an empty state is what produced FALLBACK"
 
     def test_refused_target_is_dropped_and_its_cursor_held(self) -> None:
-        async def refuse(target: str, since: int) -> tuple[list[dict], int]:
+        async def refuse(target: str, since: int) -> tuple[list[dict], int, int | None]:
             raise PermissionError("not the creator")
 
         cursors = {"chat-2-2": 7}
@@ -1497,7 +1578,7 @@ class TestCollectors:
         class Refusal(Exception):
             code = "cursor_unavailable"
 
-        async def refuse(target: str, since: int) -> tuple[list[dict], int]:
+        async def refuse(target: str, since: int) -> tuple[list[dict], int, int | None]:
             raise Refusal("cursor 7 is past the end of this transcript")
 
         cursors = {"chat-2-2": 7}
@@ -1508,12 +1589,121 @@ class TestCollectors:
         assert cursors == {}, "an unusable cursor is cleared, which makes the next read a tail"
 
     def test_cursor_advances_on_a_successful_read(self) -> None:
-        async def read(target: str, since: int) -> tuple[list[dict], int]:
-            return [{"role": "assistant", "content": "progress", "ts": 1.0}], 12
+        async def read(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            return [{"role": "assistant", "content": "progress", "ts": 1.0}], 12, 12
 
         cursors: dict[str, int] = {}
         asyncio.run(judge.collect_evidence(["chat-2-2"], read_session=read, cursors=cursors))
         assert cursors == {"chat-2-2": 12}
+
+    @staticmethod
+    def _transcript_reader(
+        rows: list[dict], *, refuse_from: int | None = None
+    ) -> Callable[[str, int], Awaitable[tuple[list[dict], int, int | None]]]:
+        """A reader with ``read_messages``' paging: the FIRST page from the cursor."""
+
+        async def read(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            if refuse_from is not None and since >= refuse_from:
+                raise PermissionError("refused mid-catch-up")
+            page = rows[since : since + judge.MAX_ROWS_PER_TARGET]
+            return page, since + len(page), len(rows)
+
+        return read
+
+    @staticmethod
+    def _busy_transcript(length: int) -> list[dict]:
+        rows = [
+            {"role": "tool" if n % 2 else "assistant", "content": f"step {n}", "ts": 1.0}
+            for n in range(length - 1)
+        ]
+        rows.append({"role": "assistant", "content": "DONE: shipped", "ts": 2.0})
+        return rows
+
+    def test_a_busy_target_is_paged_to_its_end_so_the_last_line_is_read(self) -> None:
+        """More new rows than one page must not leave the cursor behind.
+
+        A worker that writes 13+ rows per interval must still have its final
+        ``DONE:`` line screened on that tick, not when the quiet-streak floor
+        fires hours later.
+        """
+        rows = self._busy_transcript(judge.MAX_ROWS_PER_TARGET * 2 + 5)
+        cursors = {"chat-2-2": 0}
+        items, dropped = asyncio.run(
+            judge.collect_evidence(
+                ["chat-2-2"], read_session=self._transcript_reader(rows), cursors=cursors
+            )
+        )
+        assert dropped == 0
+        assert cursors == {"chat-2-2": len(rows)}, "the cursor reaches the transcript's end"
+        assert any(item["text"] == "DONE: shipped" for item in items)
+
+    def test_a_target_still_behind_after_the_page_budget_is_dropped(self) -> None:
+        """A partial reading must fire, never be judged quiet on the rows it held."""
+        budget = judge.MAX_ROWS_PER_TARGET * judge.MAX_PAGES_PER_TARGET
+        rows = self._busy_transcript(budget + 5)
+        cursors = {"chat-2-2": 0}
+        items, dropped = asyncio.run(
+            judge.collect_evidence(
+                ["chat-2-2"], read_session=self._transcript_reader(rows), cursors=cursors
+            )
+        )
+        assert dropped == 1
+        assert cursors == {"chat-2-2": budget}, "the cursor keeps every page it read"
+        verdict = asyncio.run(point.judge_tick("watch", evidence=items, dropped=dropped))
+        assert verdict.outcome is Outcome.FALLBACK
+
+    def test_a_tail_read_with_no_cursor_drops_the_rows_it_skipped(self) -> None:
+        """No stored cursor means the reader serves the tail and skips the rest.
+
+        The gateway reads ``since or None``, so cursor 0 returns only the newest
+        page and moves the cursor to the end. A ``BLOCKED:`` row before that page
+        is never offered again, so the tick must fire rather than judge it calm.
+        """
+        rows = [{"role": "assistant", "content": "BLOCKED: need a token", "ts": 1.0}]
+        rows += self._busy_transcript(judge.MAX_ROWS_PER_TARGET)
+
+        async def tail(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            start = since if since else max(0, len(rows) - judge.MAX_ROWS_PER_TARGET)
+            page = rows[start : start + judge.MAX_ROWS_PER_TARGET]
+            return page, start + len(page), len(rows)
+
+        cursors: dict[str, int] = {}
+        items, dropped = asyncio.run(
+            judge.collect_evidence(["chat-2-2"], read_session=tail, cursors=cursors)
+        )
+        assert cursors == {"chat-2-2": len(rows)}
+        assert not any(item["text"].startswith("BLOCKED:") for item in items)
+        assert dropped == 1
+        verdict = asyncio.run(point.judge_tick("watch", evidence=items, dropped=dropped))
+        assert verdict.outcome is Outcome.FALLBACK
+
+    def test_a_tail_read_that_covers_the_whole_transcript_drops_nothing(self) -> None:
+        rows = self._busy_transcript(judge.MAX_ROWS_PER_TARGET)
+
+        async def tail(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            start = since if since else max(0, len(rows) - judge.MAX_ROWS_PER_TARGET)
+            page = rows[start : start + judge.MAX_ROWS_PER_TARGET]
+            return page, start + len(page), len(rows)
+
+        _, dropped = asyncio.run(
+            judge.collect_evidence(["chat-2-2"], read_session=tail, cursors={})
+        )
+        assert dropped == 0
+
+    def test_a_page_that_refuses_keeps_the_pages_already_read(self) -> None:
+        rows = self._busy_transcript(judge.MAX_ROWS_PER_TARGET * 3)
+        cursors = {"chat-2-2": 0}
+        reader = self._transcript_reader(rows, refuse_from=judge.MAX_ROWS_PER_TARGET)
+        _, dropped = asyncio.run(
+            judge.collect_evidence(["chat-2-2"], read_session=reader, cursors=cursors)
+        )
+        assert dropped == 1
+        assert cursors == {"chat-2-2": judge.MAX_ROWS_PER_TARGET}
+
+    def test_the_page_budget_stays_inside_the_points_item_walk(self) -> None:
+        pages = judge.MAX_PAGES_PER_TARGET
+        assert pages >= 2, "one page is the lag this budget exists to close"
+        assert pages * judge.MAX_ROWS_PER_TARGET <= point.MAX_EVIDENCE_ITEMS
 
     def test_absent_reader_drops_rather_than_raising(self) -> None:
         items, dropped = asyncio.run(judge.collect_evidence(["chat-2-2"]))

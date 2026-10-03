@@ -416,8 +416,9 @@ describe('DisplayPanel – font family setting', () => {
     renderPanel()
 
     expect(screen.getByText('Font Family')).toBeInTheDocument()
+    // The sentence is the row's info tip (its `title` while closed).
     expect(
-      screen.getByText('UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own.'),
+      screen.getByTitle('UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own.'),
     ).toBeInTheDocument()
   })
 })

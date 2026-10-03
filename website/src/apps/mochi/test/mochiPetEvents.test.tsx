@@ -57,7 +57,7 @@ describe('panelBridge reports chat lifecycle to the pet state machine', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, agent: 'mochi' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())

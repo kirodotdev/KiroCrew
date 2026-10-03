@@ -38,6 +38,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     legacy_dashboard_mirror_key,
 )
+from kiro_crew.messaging.queue_drain import person_tag
 from kiro_crew.messaging.renderer import (
     DONE,
     STEER_CONSUMED,
@@ -443,7 +444,13 @@ class FakeSessions:
         self._pid: Any = None
 
     async def get_or_create(
-        self, key: str, *, agent: Any = None, channel_id: Any = None, model: Any = None
+        self,
+        key: str,
+        *,
+        agent: Any = None,
+        channel_id: Any = None,
+        model: Any = None,
+        start_priority=None,
     ) -> Any:
         # The shared BACKGROUND session is not a turn, and recording it in the
         # turn-scoped fields makes every turn test read as if two turns ran: the
@@ -7543,6 +7550,8 @@ class TestQueueOrSteerDecision:
             attachments=None,
             privacy_request="",
             origin=_tg_origin(7, 7),
+            # The message's own flag rides to the entry (a test double's default).
+            person_origin=False,
         )
         assert second.kwargs["attachments"] == photos
         assert second.kwargs["attachments"] is not with_photo.attachments
@@ -7556,7 +7565,12 @@ class TestQueueOrSteerDecision:
         asyncio.run(d.handle_message(_dm("later")))
 
         assert sess.queued[0][1] == "later"
-        assert sess.queued[0][2] == {"attachments": [], "privacy_request": "", **_origin(7, 7)}
+        assert sess.queued[0][2] == {
+            "attachments": [],
+            "privacy_request": "",
+            **_origin(7, 7),
+            **person_tag(False),
+        }
         assert [t for t, _ in cli.sent] == ["⏳ Queued (1): “later”"]
 
     def test_a_busy_option_press_is_refused_byte_exact(self) -> None:
@@ -8194,6 +8208,7 @@ class TestCallbackRouting:
             thread_id=None,
             chat_type="private",
             from_widget=True,
+            person_origin=True,
         )
 
     def test_unknown_callback_data_is_inert(self, monkeypatch: Any) -> None:

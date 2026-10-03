@@ -19,7 +19,7 @@ error chains and tracebacks still name the path callers import it from.
 
 | Owner | Owns |
 |---|---|
-| `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain, the no-progress bound on response and notification writes, and the failure-path stderr settle (`settle_drain`) |
+| `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain, the no-progress bound on request, response and notification writes, and the failure-path stderr settle (`settle_drain`) |
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `pick_served_default`, the model-substitution advisory |
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
@@ -1792,8 +1792,14 @@ The `AcpError` family is defined in `acp/transport_errors.py` and re-exported by
 
 `AcpError` (base), `AcpTimeoutError` (has `partial_output`), `AcpPermissionNeeded`, `AcpProcessDied` (and its transient subclass `AcpRegistrationRateLimited`, raised when the death's retained stderr shows a throttled dynamic registration), `AcpAuthRequired`, `AcpPromptBusy`.
 
-- `AcpProcessDied` is raised by every stdin writer on `BrokenPipeError` / `ConnectionResetError`, and additionally by the **response-frame** writers when `stdin.drain()` has not completed within `_RESPONSE_WRITE_BOUND_SECS` (5.0s, sized like chat_runner's `_STEER_NOTICE_BOUND_SECS`): `AcpClient._send_response` / `_send_error` raise it directly, and the shared `AcpRuntime.send_response` / `send_error` (the default kiro backend, one stdin for every multiplexed session) mark the runtime dead and raise `AcpRuntimeDead`, which `AcpSessionProvider` translates to `AcpProcessDied`. `drain()` returns at once while the pipe has room and parks only when the writer is flow-control paused — the pipe behind it is full — which is what a backend that stopped reading looks like, but also what a healthy backend looks like while it consumes another session's multi-MB prompt frame queued ahead of the response on the shared stdin. The bound is therefore a **no-progress** bound (`await_under_no_progress_bound` / `write_response_frame_bounded`): it polls the transport's write-buffer level and only gives up when the level held still for the whole window; a level that moved is activity — a shrink is the reader consuming, a growth is a frame from a writer the lock woke ahead of this caller landing on the pipe — and is measured again from the new level, so a large frame never gets a healthy shared runtime marked dead. A drop only counts when it is at least `_RESPONSE_WRITE_MIN_PROGRESS_BYTES` (4 KiB) per window, and that alone bounds the whole wait by construction: the level is finite and non-negative and every continued window removed at least the floor from it, so a backlog of B bytes is waited on for at most B/floor + 1 windows (plus the same for any sibling frame appended meanwhile). There is deliberately no flat ceiling — the largest frame is unbounded (any number of 5 MiB image blocks), so any fixed figure would either kill a live reader on a valid frame or be arbitrary. An awaitable found complete as a window closes counts as completed. A cancel notification (`cancel_session`, `send_notification`) waits for the lock under the same bound and is appended unlocked if the lock does not come, so the one cooperative signal that can end a wedged turn is never swallowed by the lock. The handle-owned deny sites in `session_handle.py` write their SEL audit before the (now bounded) reject write. Under the proactor loop (`_is_proactor_loop`, keyed to the public `asyncio.ProactorEventLoop`; Windows's subprocess pipes report the whole in-flight overlapped write until it completes, so the level is flat while a live reader consumes a large frame) the wait falls back to the single platform-limited window `_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS`, a fixed 900s (~30 MiB at ~40 KiB/s, the one place a fixed figure remains because there is no level to derive from; test-pinned) — the same declared degradation as the Windows watchdog. That measurement is exact only with one writer in flight, so **every stdin write on a transport takes that transport's write lock** (`_stdin_write_lock`, on both `AcpClient` and `AcpRuntime`; request, notification, response and error frames alike), and the response write waits for the lock under the same no-progress bound — waiting for the lock is waiting for the previous frame's drain, and a lock held by a writer whose buffer no longer shrinks is the same stall. Nothing is appended behind a reader judged dead, and a runtime writer that queued for the lock re-checks `_dead` under it before writing, so a frame is never written into a runtime `_mark_dead` has already torn down. It cannot observe delivery of an accepted frame (the protocol gives no ack for a response); it bounds the wait on a paused writer whose reader consumes nothing, the same undeliverable-response condition a closed pipe reports, and routes it into the same session-reset + bounded-requeue recovery instead of pinning the deny path to the turn deadline. The premise that a healthy backend never leaves stdin unread for a whole window is the protocol's own: ACP is JSON-RPC over stdio, and every harness's stdin reader is the loop that delivers the permission response being written — a backend awaiting that response is, by construction, reading stdin; the window fires only when the level held perfectly still (nothing consumed), never on slow consumption. A transport that exposes no buffer size fails closed at the window. The request id in the warning log and the exception text passes through `_loggable_request_id` (`repr`, the shared `redact_text` scrub over the whole text, then the display cap — redact-before-bound; an id over the input cap is replaced by a length-only marker, never truncated, so a severed secret can never reach the redactor), because the id is backend-authored; every `id=`/`req=`/`method=` log line under `acp/` (client, runtime, session handle, dispatch) uses the same helper for every frame-fed slot on the statement (ids, session ids, tool-call ids, methods), and `test_deny_bounded_write.py` scans for any unlisted one. `_send_request` / `send_request` / `_send_and_await` (caller-sized payloads, bounded end to end by the turn deadline or the caller's own `wait_for`) keep a bare `drain()` under the lock; `cancel_session` / `send_notification` take the best-effort path described above (bounded lock wait, unlocked append fallback, bounded drain) for the notification itself; the `cancelled` answers `cancel_session` then writes for open permission requests are response frames and take the response-write bound, and `_cancelled` is set before the write so the cancel-grace kill still ends the turn if even that fails.
+- `AcpProcessDied` is raised by every stdin writer on `BrokenPipeError` / `ConnectionResetError`, and additionally by the **request-, response- and notification-frame** writers when `stdin.drain()` has not made progress within `_RESPONSE_WRITE_BOUND_SECS` (5.0s, sized like chat_runner's `_STEER_NOTICE_BOUND_SECS`): `AcpClient._send_response` / `_send_error` raise it directly, and the shared `AcpRuntime.send_response` / `send_error` (the default kiro backend, one stdin for every multiplexed session) mark the runtime dead and raise `AcpRuntimeDead`, which `AcpSessionProvider` translates to `AcpProcessDied`. `drain()` returns at once while the pipe has room and parks only when the writer is flow-control paused — the pipe behind it is full — which is what a backend that stopped reading looks like, but also what a healthy backend looks like while it consumes another session's multi-MB prompt frame queued ahead of the response on the shared stdin. The bound is therefore a **no-progress** bound (`await_under_no_progress_bound` / `write_response_frame_bounded`): it polls the transport's write-buffer level and only gives up when the level held still for the whole window; a level that moved is activity — a shrink is the reader consuming, a growth is a frame from a writer the lock woke ahead of this caller landing on the pipe — and is measured again from the new level, so a large frame never gets a healthy shared runtime marked dead. A drop only counts when it is at least `_RESPONSE_WRITE_MIN_PROGRESS_BYTES` (4 KiB) per window, and that alone bounds the whole wait by construction: the level is finite and non-negative and every continued window removed at least the floor from it, so a backlog of B bytes is waited on for at most B/floor + 1 windows (plus the same for any sibling frame appended meanwhile). There is deliberately no flat ceiling — the largest frame is unbounded (any number of 5 MiB image blocks), so any fixed figure would either kill a live reader on a valid frame or be arbitrary. An awaitable found complete as a window closes counts as completed. A cancel notification (`cancel_session`, `send_notification`) waits for the lock under the same bound and is appended unlocked if the lock does not come, so the one cooperative signal that can end a wedged turn is never swallowed by the lock. The handle-owned deny sites in `session_handle.py` write their SEL audit before the (now bounded) reject write. Under the proactor loop (`_is_proactor_loop`, keyed to the public `asyncio.ProactorEventLoop`; Windows's subprocess pipes report the whole in-flight overlapped write until it completes, so the level is flat while a live reader consumes a large frame) the wait falls back to the single platform-limited window `_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS`, a fixed 900s (~30 MiB at ~40 KiB/s, the one place a fixed figure remains because there is no level to derive from; test-pinned) — the same declared degradation as the Windows watchdog. That measurement is exact only with one writer in flight, so **every stdin write on a transport takes that transport's write lock** (`_stdin_write_lock`, on both `AcpClient` and `AcpRuntime`; request, notification, response and error frames alike), and the response write waits for the lock under the same no-progress bound — waiting for the lock is waiting for the previous frame's drain, and a lock held by a writer whose buffer no longer shrinks is the same stall. Nothing is appended behind a reader judged dead, and a runtime writer that queued for the lock re-checks `_dead` under it before writing, so a frame is never written into a runtime `_mark_dead` has already torn down. It cannot observe delivery of an accepted frame (the protocol gives no ack for a response); it bounds the wait on a paused writer whose reader consumes nothing, the same undeliverable-response condition a closed pipe reports, and routes it into the same session-reset + bounded-requeue recovery instead of pinning the deny path to the turn deadline. The premise that a healthy backend never leaves stdin unread for a whole window is the protocol's own: ACP is JSON-RPC over stdio, and every harness's stdin reader is the loop that delivers the permission response being written — a backend awaiting that response is, by construction, reading stdin; the window fires only when the level held perfectly still (nothing consumed), never on slow consumption. A transport that exposes no buffer size fails closed at the window. The request id in the warning log and the exception text passes through `_loggable_request_id` (`repr`, the shared `redact_text` scrub over the whole text, then the display cap — redact-before-bound; an id over the input cap is replaced by a length-only marker, never truncated, so a severed secret can never reach the redactor), because the id is backend-authored; every `id=`/`req=`/`method=` log line under `acp/` (client, runtime, session handle, dispatch) uses the same helper for every frame-fed slot on the statement (ids, session ids, tool-call ids, methods), and `test_deny_bounded_write.py` scans for any unlisted one. `_send_request` / `send_request` / `_send_and_await` (caller-sized payloads — a prompt may carry any number of 5 MiB image blocks) take the **same** no-progress bound under the lock (`write_request_frame_bounded`). A flow-control-paused kiro-cli — busy generating on one multiplexed lane and not reading stdin, as right after `spawn_run` fans several session prompts onto the one pipe — therefore cannot park a request write forever with the shared write lock held. The bound is on PROGRESS, not elapsed time, so a caller-sized frame stays legal. `write_request_frame_bounded` returns which phase stalled (`RequestWriteResult`) for the log; BOTH phases mark the transport dead and raise. The write path never signals the child: on the shared runtime that would bypass the ownership authorization (`authorize_runtime_kill`) and teardown barrier and terminate sibling sessions. The runtime records the death as a stdin stall (`stdin_stall_death`), and ambiguity is a property of that stalled pipe: the stalling write's own `ambiguous_delivery` (a drain-phase stall left its frame buffered; a lock-phase stall wrote no byte) and, for every co-tenant, a prompt written in a turn that was running when the stall killed the runtime (`AcpSessionHandle.prompt_outstanding_on_stall`, read by `_died` and `AcpSessionProvider._translate_dead` from the runtime's `turn_active_at_stall` snapshot, so it holds after the turn's own teardown). A steer is ambiguous only on its own buffered frame (`AcpSessionProvider.steer` translates with `own_write_only`; codex `_steer_via_steering_request` re-raises a drain-phase stall instead of reporting the steer unwritten, and raises an ambiguous death when the runtime dies of a stdin stall before answering a written steering frame). A stdin-stall death is never re-typed as `AcpRegistrationRateLimited`, an ambiguous `AcpProcessDied` is never transient, and `taskq.dependency.classify_exception` never reads one as a dependency wait, so no retry ladder replays it verbatim. `build_recovery_requeue` takes the restored-state continuation (`_CONN_RECOVER_MSG`, which also says to check current state before repeating any step, since work may have taken effect without appearing in the conversation), the task executor sets the step's `resume_hint`, and a steer whose RPC died ambiguously is requeued by the turn's teardown with a note, on the model input only, that it may already have been delivered. The owner kills the stalled child before a replacement starts, and starts none until the kill confirms it dead (otherwise the attempt fails and the next one retries the kill): the task-run runtime bootstrap reaps a dead runtime before spawning and, after a stdin-stall death, starts nothing while `stdin_reader_may_live()` (the root by identity, or any live member of its process group, where the pipe is inherited) still answers True, and the direct `AcpClient` marks itself stalled (neither responsive nor mid-turn) and kills its child in the next `ensure_ready`, which raises while that child is still running. What this guarantees is that the host never re-sends possibly-delivered work as fresh work; the child may still act on a frame it reads before that kill lands, which the continuation then inspects instead of repeating. `cancel_session` / `send_notification` take the best-effort path described above (bounded lock wait, unlocked append fallback, bounded drain) for the notification itself, and no `drain()` or stdin `write()` under `acp/` lives outside `transport_framing.py` (`test_deny_bounded_write.py` pins it); the `cancelled` answers `cancel_session` then writes for open permission requests are response frames and take the response-write bound, and `_cancelled` is set before the write so the cancel-grace kill still ends the turn if even that fails.
 - `AcpAuthRequired` — kiro-cli is not authenticated (`kiro-cli login` needed). Non-retryable: `ensure_ready()` skips the retry ladder and re-raises so callers surface the actionable message rather than reset-and-requeue.
+- A context-window overflow remains an ordinary `AcpError`. `_raise_acp_error`
+  constructs it through the same path as other protocol failures, obtains the
+  retry verdict from `_is_transient_raw_error`, then sets `transient=False`,
+  `structural_terminal=True`, and `context_overflow=True` together in the
+  data-field-only structural tag block. The JSON-RPC `message` field cannot set
+  those tags, and same-session transient retry never receives this failure.
 - `AcpPromptBusy` — a prompt is already in progress on the session, classified from kiro-cli's "already in progress" text via `_PROMPT_BUSY_RE` and raised at prompt-dispatch sites. `slack/handler.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
 
 ## Process Management
@@ -1850,8 +1856,17 @@ Subprocess lifecycle:
   reports its own `AcpAuthRequired` (see the governance of latched readiness in
   `modules/learn-cron-dashboard.md`), whereas a timer-driven spawn has no turn to
   carry that error. These sites authorize on a **freshly verified** probe
-  (`verified_ready`, 30s ceiling), never the bare latch — a stale `ready=True`
-  would green-light exactly the signed-out spawn the gate exists to prevent.
+  (`verified_ready`), never the bare latch — a stale `ready=True` would
+  green-light exactly the signed-out spawn the gate exists to prevent. The
+  freshness bound differs by site: `/api/models` keeps the tight 30s ceiling
+  (`_VERIFY_MAX_AGE_SECS`) because it is polled only while degraded and has no
+  server-side cooldown on its spawn, so a wide window would re-open the
+  browser-login storm; `/api/sessions/usage` reads on a 5-minute
+  `_POLL_GATE_MAX_AGE_SECS` because its spawn is already throttled to one fetch
+  per `_USAGE_REFRESH_SECS` (600s), so the wide window cannot storm it and only
+  spares the credit pill the inline probe. The widened worst case is one
+  stale-`ready=True` usage spawn up to five minutes after an external logout,
+  still caught sooner by the identity-change re-probe and by Refresh.
 - **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
   at gateway start and on explicit user action only, so a mid-session sign-out is
   discovered when the ACP attempt fails, not by a poll. `AcpRuntime`/`AcpClient`
@@ -1912,11 +1927,11 @@ re-exports every name.
 
 Every `AcpRuntime.spawn()` enters one gateway-wide, event-loop-affine admission
 coordinator before subprocess preparation and holds the permit through
-`initialize`. The default cap is 2, matching worker-pool `max_starting`; this is
+`initialize`. It orders spawns by start priority; see § Session-start gate. The default cap is 2, matching worker-pool `max_starting`; this is
 the common backstop for interactive, authoring, background, shared, and unpooled
 runtime callers, including callers that bypass `SessionManager` or a worker pool.
-The coordinator is keyed by event loop so embedded/test loops never share an
-`asyncio.Semaphore`; cancellation while queued or starting returns the permit,
+The coordinator is keyed by event loop because a waiter's future is created on
+the running loop, so embedded/test loops never share one `PrioritySemaphore`; cancellation while queued or starting returns the permit,
 and the existing spawn guard still kills a subprocess when initialization is
 cancelled or fails. It uses only asyncio/threading primitives and has no POSIX-only
 behavior. A spawn-level `OSError` gets exactly one retry after two seconds while
@@ -1942,19 +1957,139 @@ Cold-start admission bounds runtime spawn + `initialize`. The **session-start
 gate** bounds the other expensive start: `session/new` on an already-running
 runtime, which blocks while the backend initializes the session's MCP servers.
 `AcpRuntime.create_session` acquires the current loop's `SessionStartGate`
-(`agent.session_start_concurrency`, default 2, FIFO, sized once per loop from
-config; `restart=True`) BEFORE `session/new` goes on the wire and releases it
-as soon as the answer arrives. The gate is a FIXED semaphore: the adaptive
+(`agent.session_start_concurrency`, default 2, FIFO within a start priority,
+sized once per loop from config; `restart=True`) BEFORE `session/new` goes on
+the wire and releases it as soon as the answer arrives. The gate is a FIXED semaphore: the adaptive
 loop is the gatewayd spawn gate plus the execution-cap controller, and two
 adapting loops on one resource oscillate. It is one gate for every harness
 (kiro-cli, KAS, a later Claude host), because every backend's session start
 runs through `create_session` (harness-parity: no per-backend branch).
 
-`on_gate_acquired(queue_wait_ms)` fires at gate EXIT: the caller starts its
-own clocks there, so queue time behind the gate never counts against the
-session-start budget (`agent.session_start_timeout_secs`, 90s floor) or the
-subagent startup watchdog. Structured `acp_startup_stage ... outcome=collecting`
-logs carry the gate's active/queued counts.
+**Start priority: a start a person is waiting on is served ahead of background
+starts.** Three in-process queues bound a start, and all three are one primitive,
+`kiro_crew.start_priority.PrioritySemaphore`: `SessionManager._start_sem` (cold
+starts, held across the provider's own spawn and `session/new` waits), the
+cold-start admission (`_COLD_START_MAX_CONCURRENT` spawns) and this gate
+(`agent.session_start_concurrency`, collector headroom unchanged). The rule is
+owned by the `kiro_crew.start_priority` module docstring; this section lists who
+applies it.
+
+- **Everything is BACKGROUND unless its caller claims FOREGROUND.** Nothing is
+  derived from a session key: automation runs on interactive keys too (an
+  auto-nudge or monitor wake, a cron or sub-agent completion injection, an
+  agent's `session_send` into a slot), so a key says where a turn lands, not who
+  waits for it. `get_or_create`, `open_task_session`, `get_bg_session`,
+  `get_subagent_runtime`, `AcpRuntime.spawn` and `create_session` all default to
+  BACKGROUND; the session layer hands the resolved priority to the provider it
+  starts (`LLMProvider.start_priority`), which passes it to both of its runtime
+  queues, and a task run that falls back to the companion runtime hands it to
+  that runtime's `spawn`.
+- **The claimers.** The dashboard runner, for a turn a person sent
+  (`_turn_start_priority`: user-origin provenance and `_crew_log_actor ==
+  "user"`, not a restored queue entry — a typed turn, a Resume/Continue press,
+  the runner's requeue of a person's failed turn, a typed follow-up in a cron
+  tab). The eager respawn that turn arms takes its priority, and so does the
+  poisoned-conversation canary inside it. An eager spawn from the dashboard
+  owner's own slot create, agent switch or project switch; the focus resume
+  prefetch, a reload and any app-token request stay BACKGROUND. Every messaging
+  channel, for a message a person sent: each transport's `receive` sets
+  `person_origin` on the inbound it dispatches, a message the gateway built
+  itself (a nudge or monitor wake, built by `build_inbound`) does not, and the
+  dispatchers pass `person_priority(inbound.person_origin)`; a dispatcher that
+  REBUILDS an inbound for a person (a button press, a slash command) carries the
+  flag over, and a drained replay takes the flag its queued entries recorded at
+  enqueue time (messaging.md § `InboundMessage`), because a gateway wake can be
+  queued too. Slack's event and interaction
+  paths pass FOREGROUND unless a trusted bot posted. The CLI chat. **Every
+  dashboard claimer reads WHO ASKED**
+  (`dashboard/request_priority.owner_start_priority`, which reads
+  `is_owner_dashboard_request`): the composer optimizer, Side Chat, crewmate
+  reply threads, Task Runner Refine and Plan, workflow authoring, Issue Radar's
+  AI routes (`_run_oneshot_model`), and the eager spawn a slot action arms. An
+  app token on its own slot is BACKGROUND there, because the person-only
+  reserve is the one resource an app must not take from a person. STT
+  endpointing, and the poisoned-conversation canary inside a person's turn,
+  claim it through `run_bg_oneliner` -> `get_bg_session`, which passes it to its
+  own `session/new` on the shared `_bg` runtime, to that runtime's (re)spawn
+  admission when this call is the one that respawns it, and to the
+  provider-backed entry's cold start on a backend with no shared runtime. A
+  respawn runs under `_bg_runtime_lock` at the priority of the caller holding
+  the lock (see the residuals below).
+  Meeting translation is a per-line stream nobody waits on, so it claims nothing
+  and takes the BACKGROUND default; so does STT polish, which the browser does
+  not wait for.
+- **Ordering.** FIFO within a priority, FOREGROUND first; a BACKGROUND waiter is
+  passed by at most `_FOREGROUND_BYPASS_LIMIT` later FOREGROUND grants before it
+  is served. Strict priority plus a named bypass, not weighted round-robin,
+  because a person waiting must win outright whenever the bypass allows.
+- **The outer reserve.** Ordering alone cannot help a person when every
+  `_start_sem` permit belongs to a background start stuck behind a fan-out at an
+  inner queue, so `_start_sem` carries `FOREGROUND_COLD_START_RESERVE` permits on
+  top of `MAX_CONCURRENT_COLD_STARTS` that only a FOREGROUND start may hold
+  (`session_allocation.new_cold_start_semaphore`, which owns the rationale).
+  Background keeps its full width; the first concurrent person start always gets
+  an outer permit at once and then goes ahead at the inner queues; further
+  concurrent person starts are served ahead of background ones as permits free.
+  The inner queues keep no reserve: at their width it would halve background and
+  collide with `_COLLECTOR_PERMIT_HEADROOM`.
+- **The identity-sweep barrier** takes every `_start_sem` permit through
+  `PrioritySemaphore.drain()`, which outranks both priorities while it waits and
+  ignores the reserve, and hands back what it holds even when cancelled.
+- **The guarantee, precisely.** At each in-process queue a person's start waits
+  only for the permits held there and for at most `_FOREGROUND_BYPASS_LIMIT`
+  background grants per queued background start. One exception: while the
+  identity sweep runs (after an account change, after an incomplete sweep, or
+  on every turn while the identity store cannot be fingerprinted), the person's
+  turn waits at the drain for every holder, background ones included. A fourth
+  queue is not covered yet: with `mcp_gateway.stub_servers` configured, a stub's
+  `ensure_backend` waits in gatewayd's daemon-wide FIFO `SpawnGate` (#15830).
+  A warm-pool refill (`session.pool_size > 0`) waits for its BACKGROUND permit
+  with `_pool_fill_lock` released (#15857), so that lock's other waiters are not
+  held behind foreground load. Known residual: `get_bg_session`
+  (re)spawns the shared `_bg` runtime while holding `_bg_runtime_lock`, at the
+  lock holder's priority: a FOREGROUND caller that arrives while a BACKGROUND
+  caller's respawn is queued at the spawn admission waits on the lock for that
+  whole background spawn, and its priority reaches only its own `session/new`.
+  This needs the `_bg` runtime to be respawning (it died, or was recycled for
+  age or RSS) at the moment a person's call arrives.
+- **Clocks and telemetry.** A subagent's startup clock PAUSES while it is queued:
+  the dedicated path at all three queues, the shared path at this gate and, when
+  it needs a companion runtime, at that runtime's per-parent lock
+  (`START_QUEUE_COMPANION`) and its spawn's admission, never across the spawn's
+  own work. The
+  callbacks receive the queue's name, and each wait accumulates into
+  `_start_queue_wait_ms` -- measured on the WATCHDOG's own clock, between the
+  mark and the grant, not on the queue's monotonic reading, which stops while a
+  laptop is suspended and would charge that sleep as start time. The watchdog
+  measures `_exec_started` minus that total, and a re-stamped `_exec_started` (a
+  recovery respawn, a late adoption) clears it: the new attempt did not pay the
+  old one's waits. Because one clock spans the spawn handshake,
+  `session/new` and the collector wait, `_startup_deadline` includes the
+  `initialize` budget as well, once per handshake round of a retried start
+  (subagent.md § startup deadline). A paused total
+  past `_START_QUEUE_MAX_SECS` ends the run as "Never started: start queues
+  saturated". Connection warm-up's 90 s `wait_for(spawn())` includes queue time;
+  a timed-out warm-up degrades to a cold first use, so it is left as is.
+  `run_bg_oneliner`'s `timeout` bounds the DRIVE only: cancelling its
+  acquisition would kill the shared `_bg` (re)spawn that every later caller
+  reuses, and leak a backend session whose `session/new` had already gone out.
+  `acp_cold_start stage=queue_wait`, the collector line and
+  `session_cold_start stage=queue_wait` (logged only above
+  `START_QUEUE_LOG_MIN_MS`) carry the priority and `PrioritySemaphore.describe()`
+  (per-class depth and bypass count).
+
+Pinned by `test/test_start_priority.py` and
+`test_session_start_gate.py::test_a_chat_start_acquires_the_gate_ahead_of_queued_child_starts`.
+
+`on_gate_queued(queue)` fires before the wait and
+`on_gate_acquired(queue_wait_ms, queue)` at gate EXIT, both naming which queue
+fired them, so a caller can PAUSE its own clock for exactly the span spent
+queued: queue time never counts against the session-start budget
+(`agent.session_start_timeout_secs`, 90s floor) or the subagent startup
+watchdog, which accumulates the pauses rather than restarting its clock (see
+§ Start priority, and subagent.md § startup deadline). Structured
+`acp_startup_stage ... outcome=collecting` logs carry the gate's active/queued
+counts and its per-class depth.
 
 **Timeout never abandons the request.** On `session/new` timeout
 `_send_and_await` does NOT pop the request: it re-registers a fresh future

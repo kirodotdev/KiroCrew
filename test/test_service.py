@@ -54,6 +54,23 @@ def _clear_sudo_user(monkeypatch):
     monkeypatch.delenv("SUDO_USER", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_host_env_file(monkeypatch, tmp_path):
+    """Keep the system scope's overrides file off the host's ``/etc``.
+
+    Uninstall reads ``ENV_FILE_PATH`` directly to decide whether it still holds
+    our untouched seed, and issues ``rm``/``rmdir`` if so. On a host where a real
+    install left that seed in ``/etc/kirocrew``, every uninstall test here would
+    see a file it never wrote. Point both paths at an absent directory; a test
+    that needs the file writes its own and re-points them.
+    """
+    from kiro_crew.service import linux as svc_linux
+
+    env_dir = tmp_path / "absent-etc-kirocrew"
+    monkeypatch.setattr(svc_linux, "ENV_DIR", env_dir)
+    monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_dir / "kirocrew.env")
+
+
 class _FakeClock:
     """``time`` stand-in for ``linux.restart()``'s settle window.
 

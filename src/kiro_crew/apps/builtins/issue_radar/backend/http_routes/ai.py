@@ -20,6 +20,7 @@ from aiohttp import web
 from kiro_crew.apps.builtins.issue_radar.backend import provider, store
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import normalize_ui_language_tag, ui_language_tag
+from kiro_crew.dashboard.request_priority import owner_start_priority
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
 
@@ -225,7 +226,11 @@ async def _run_oneshot_model(request: web.Request, key: str, prompt: str) -> str
     if state is None:
         raise RuntimeError("session manager unavailable")
 
-    provider, _is_new, _resumed = await state.sessions.get_or_create(key, agent="kirocrew-lite")
+    # The owner's click is waiting on this answer; an app token or internal
+    # caller is not a person (kiro_crew.start_priority).
+    provider, _is_new, _resumed = await state.sessions.get_or_create(
+        key, agent="kirocrew-lite", start_priority=owner_start_priority(request)
+    )
     try:
         return await stream_and_collect(
             provider, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL

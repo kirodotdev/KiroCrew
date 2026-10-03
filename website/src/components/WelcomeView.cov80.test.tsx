@@ -1,14 +1,20 @@
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { screen, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import WelcomeView from './WelcomeView'
 import { MemoryModeChip } from './MemoryModeChip'
 import { api } from '../api/client'
 import { getThemeBranding } from '../themeBranding'
 import { i18nT } from '../i18n/t'
+import { attachReport, sendErrorToChat } from '../utils/errorReport'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
   return { ...mod, api: { ...mod.api, suggestions: vi.fn() } }
+})
+
+vi.mock('../utils/errorReport', async importOriginal => {
+  const mod = await importOriginal<typeof import('../utils/errorReport')>()
+  return { ...mod, sendErrorToChat: vi.fn(() => true) }
 })
 
 vi.mock('../themeBranding', async importOriginal => {
@@ -81,33 +87,40 @@ describe('WelcomeView', () => {
     expect(setInput).toHaveBeenCalledWith('zzq code')
   })
 
-  it('the refresh button forces a regeneration and swaps the pills', async () => {
-    suggestions.mockResolvedValue(payload(['zzq old']))
+  it('offers no refresh control: the suggestion list is fetched once and never forced', async () => {
+    suggestions.mockResolvedValue(payload(['zzq only']))
     renderWithProviders(<WelcomeView setInput={vi.fn()} />)
-    await screen.findByRole('button', { name: 'zzq old' })
+    await screen.findByRole('button', { name: 'zzq only' })
 
-    suggestions.mockResolvedValue(payload(['zzq fresh']))
-    fireEvent.click(
-      screen.getByRole('button', { name: i18nT('components.welcomeView.refresh_suggestions') }),
-    )
-
-    expect(await screen.findByRole('button', { name: 'zzq fresh' })).toBeInTheDocument()
-    expect(suggestions).toHaveBeenCalledWith(true)
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    expect(suggestions).toHaveBeenCalledTimes(1)
+    expect(suggestions).not.toHaveBeenCalledWith(true)
   })
 
-  it('a failed refresh stops spinning and keeps the current pills', async () => {
-    suggestions.mockResolvedValue(payload(['zzq kept']))
-    renderWithProviders(<WelcomeView setInput={vi.fn()} />)
-    await screen.findByRole('button', { name: 'zzq kept' })
-
-    suggestions.mockRejectedValueOnce(new Error('zzq refresh down'))
-    const refresh = screen.getByRole('button', {
-      name: i18nT('components.welcomeView.refresh_suggestions'),
+  it('a failed suggestions fetch renders an ErrorNotice with the hand-off and keeps the fallback cards', async () => {
+    // The transport pins its structured report to the rejection, as the api client does.
+    const err = attachReport(new Error('zzq suggestions down'), {
+      id: 'zzq-report', at: 1, source: 'api', message: 'zzq suggestions down',
+      status: 503, code: 'zzq_suggestions_unavailable',
     })
-    await act(async () => { fireEvent.click(refresh) })
+    suggestions.mockRejectedValue(err)
+    vi.mocked(sendErrorToChat).mockClear()
+    renderWithProviders(<WelcomeView setInput={vi.fn()} />)
 
-    await waitFor(() => expect(refresh).toBeEnabled())
-    expect(screen.getByRole('button', { name: 'zzq kept' })).toBeInTheDocument()
+    const notice = await screen.findByRole('alert')
+    // The localized line, never the transport error's own text.
+    expect(notice).toHaveTextContent(i18nT('components.welcomeView.suggestions_failed_to_load'))
+    expect(notice).not.toHaveTextContent('zzq suggestions down')
+    expect(
+      screen.getByRole('button', { name: i18nT('components.welcomeView.suggestion_search_code') }),
+    ).toBeInTheDocument()
+
+    // The hand-off still carries the structured report, not just the localized line.
+    fireEvent.click(within(notice).getByRole('button', { name: i18nT('components.askAgent.ask_the_agent') }))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+    const prompt = vi.mocked(sendErrorToChat).mock.calls[0][0]
+    expect(prompt).toContain('503')
+    expect(prompt).toContain('zzq_suggestions_unavailable')
   })
 
   it('renders the theme logo instead of the stock ghost when one is registered', () => {

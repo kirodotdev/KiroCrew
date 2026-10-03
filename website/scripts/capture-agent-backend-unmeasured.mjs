@@ -150,7 +150,9 @@ await page.addInitScript(() => {
   localStorage.setItem('mc-onboarded', '1')
 })
 
-const heading = () => page.getByText('Agent Backend', { exact: true }).first()
+// The card's own title, in Settings > Agent Harness (`settings.tabs.agent.label`);
+// the sidebar repeats the label, hence `.first()` for the page title.
+const heading = () => page.getByText('Agent Harness', { exact: true }).first()
 
 const shoot = async name => {
   await heading().waitFor({ timeout: 20000 })
@@ -158,12 +160,18 @@ const shoot = async name => {
   await page.screenshot({ path: `${OUT}/${name}` })
 }
 
-/** Put one harness's detail on screen. Highlighting is not selecting. */
+/**
+ * Put one harness's detail on screen. The rows are one radio group laid out like
+ * first-run setup's picker: checking a row opens its detail under itself, and
+ * the config changes only through the detail's own Use button — so checking is
+ * looking, not switching.
+ */
 const highlight = async name => {
-  await page.getByRole('tab', { name }).click()
+  await page.getByRole('radio', { name }).check()
+  await page.getByTestId('agent-harness-detail').waitFor({ timeout: 20000 })
 }
 
-await page.goto(`${base}/developer?tab=agent-backend`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/settings/agent`, { waitUntil: 'domcontentloaded' })
 
 // Every string the frame is EVIDENCE for is waited on individually, so the shutter
 // cannot fire on a half-rendered card or document an older draft of the copy.

@@ -11,6 +11,7 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, app_data_dir, install_app
 from kiro_crew.apps.routes import register_app_routes
@@ -33,7 +34,8 @@ def _setup_env(tmp_path, monkeypatch):
 def _make_app():
     app = web.Application()
     register_app_routes(app)
-    return app
+    # PUT is owner-gated for a dashboard subject; these rows act as the owner.
+    return as_owner(app)
 
 
 def _install(tmp_path, name="cfg-app"):

@@ -320,8 +320,16 @@ async def _handle_generate_tagging(request: web.Request) -> web.Response:
     backlog without re-paying for issues already covered. With ``numbers`` it
     (re)analyses exactly those issues — the per-issue "suggest again" path.
     Read-only w.r.t. GitHub (proposals only; applying is /labels/apply), so no
-    permission gate."""
+    forge permission gate; it is owner only, because it spends a model call and
+    writes the repo's suggestion cache."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Spends a model call and writes the shared suggestion cache: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.tagging_generate")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()

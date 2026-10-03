@@ -50,7 +50,8 @@ class TestPolicyDocument:
 
         Two more Denies cut the secret-bearing reads back out of ec2:Describe*:
         DenyForeignUserData (user data of instances Kiro Crew does not manage)
-        and DenySecretReads (launch-template and Spot user data, VPN keys).
+        and DenySecretReads (launch-template and Spot user data, VPN keys,
+        account-wide tag values).
         """
         denies = {st["Sid"] for st in iam.policy_document()["Statement"] if st["Effect"] == "Deny"}
         assert denies == {
@@ -771,6 +772,7 @@ EXPECTED_PERMISSION_DELTA_ADDED = {
     ),
     ("Deny", "ec2:DescribeLaunchTemplateVersions", "Resource", "*", "null"),
     ("Deny", "ec2:DescribeSpot*Requests", "Resource", "*", "null"),
+    ("Deny", "ec2:DescribeTags", "Resource", "*", "null"),
     ("Deny", "ec2:DescribeVpnConnections", "Resource", "*", "null"),
     ("Allow", "iam:CreateRole", "Resource", _PATH_ROLE, _BOUNDARY_COND),
     ("Allow", "iam:PutRolePolicy", "Resource", _PATH_ROLE, _TAG_COND),

@@ -221,7 +221,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew ledger-sweep` | List the session and conductor-work ledgers that look finished — kind, store directory, ledger key, phase or item counts, age and why each qualified. A DRY RUN: it deletes nothing. |
 | `kirocrew ledger-sweep --purge [--older-than-days N] [--purge-unreadable]` | Delete the ledgers the dry run listed. Irreversible, explicit, and never automatic — no gateway hook, no history-delete path and no MCP tool reaches it. Each delete is re-decided under the store's own lock and refused if the ledger came back to life. Default idle window 30 days, which must be a finite non-negative number (`nan` and `inf` are refused, because every comparison against `nan` is false and would admit every ledger). An unreadable record is listed but kept unless `--purge-unreadable` is given, and a store is never purged when its `slot_key` breadcrumb is absent or names a key that resolves to a different directory — a copied store is reported for a human instead of aiming the delete at the canonical ledger. The sweep infers nothing about sessions: an in-flight session ledger and a conductor holding no items are kept at any age. A ledger's age is its last write, not its terminal stamp alone, so a finished record that was written to recently is left alone too. Its own command rather than a `doctor` mode: `doctor` is read-only by contract, and a flag that belongs to this command is an argparse error under `doctor`, so `kirocrew doctor --purge` cannot look like a purge that found nothing. Rules and rationale: [session-work-ledger](session-work-ledger.md#cleanup). |
 | `kirocrew cron add/list/remove` | Manage cron jobs. `add` registers every job kind the store accepts — an agent prompt, `--script FILE.py:FUNC` (a zero-token Python function that must already live under `<config_dir>/crons/`; the CLI registers, it does not copy) or `--command SHELL` — on exactly one of `--every`, `--cron` (with `--timezone`) or one-shot `--at`, plus `--timeout`/`--timeout-secs`, `--model`, `--[no-]persistent-session`, `--[no-]minimal-context` and `--hide-in-chat`. Every field is forwarded into ONE locked `CronService.add_job` (no post-create mutation + second `_save()`), a script body or command is vetted at registration by the same `_vet_script_file`/`_vet_shell_command` gates `cron_add` uses, and any refusal prints on stderr and exits non-zero with nothing written (2 for an argparse flag-combination error, 1 for a validation, security or store refusal) — the headless contract an installer relies on. The `capabilities.cron` governance gate is applied at authoring (`_vet_cron_capability_governance`, keyed `cron:cli_add`) as `cron_add` does, so a job authored under a disabled capability is refused rather than stored unrunnable. Session-shape defaults are `CronService.add_job`'s own (`persistent_session=True`, `minimal_context=False`); pass `--no-persistent-session --minimal-context` for a script/command job. |
-| `kirocrew spawn run/list` | Manage background subagents |
+| `kirocrew spawn run/list` | Manage background subagents; `list` also shows accepted spawns that have not started (🕒, with why they wait) or wait to resume |
 | `kirocrew app install/list/enable/disable/uninstall` | Manage App Kit apps. Uninstall preserves `apps/<name>/data/` by default. |
 | `kirocrew app uninstall NAME --purge-data` | Explicitly uninstall an app and permanently delete its app data. |
 | `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]` | Toggle an installed app into/out of dev mode (no-store UI serving + live reload on file change). See [App Dev Mode](#app-dev-mode). |
@@ -1009,6 +1009,55 @@ runtime that still ships the API keeps the mitigation. Without that guard the
 Linux pidfd branch raised `AttributeError` and `kirocrew gateway` died before
 binding its port, while every other subcommand kept working.
 
+### Gateway stdout is line-buffered off a terminal
+
+`platform_compat.ensure_line_buffered_stdout()` runs once on the **`gateway`
+command path only**, as the first statement of the dispatch branch, before the
+first status line prints. The gateway's `👻` status lines (`Checking for
+updates…`, `Probing MCP servers…`, `Kiro Crew gateway starting…`, the
+update-check outcome, `Shutting down…`) are plain `print()` calls. CPython
+line-buffers `sys.stdout` only when it is a terminal; a pipe or a file gets a
+block buffer that drains when it fills or when the interpreter exits cleanly.
+Every service launcher hands the gateway that kind of stdout — the journal
+socket under `systemd`, the launchd `gateway.log` file, the Desktop
+supervisor's log descriptor, `_spawn_detached_gateway`'s own `gateway.log` —
+so without this seam a status line reaches the log when the process stops,
+stamped with the stop time, or never after a `SIGKILL` or an in-app
+`os.execv` (which flushes nothing), while `logging` records from the same
+process arrive on time.
+
+The contract:
+
+- When `sys.stdout.isatty()` is false, the stream is reconfigured with
+  `line_buffering=True`. Each `print()` reaches the launcher's log as it is
+  printed, so the log stamps it with the time it was printed, and a kill or an
+  exec loses nothing already printed. One `write(2)` per line; the gateway
+  prints a few dozen lines per lifetime.
+- A terminal is not touched. It is line-buffered already, and the seam skips
+  even the flush `reconfigure` would do.
+- `sys.stderr` needs nothing: CPython line-buffers it on every attachment, and
+  `ensure_utf8_console()`'s Windows fallback wrapper is built line-buffered.
+- A stream that cannot be reconfigured — absent under `pythonw`, closed, or not
+  a `TextIOWrapper` (a plain object a launcher left up a spawn chain, a test's
+  `StringIO`) — is left as it is. The gateway never fails to boot over its
+  console.
+- Independent of `ensure_utf8_console()`, which keeps the encoding job and
+  runs first, at the top of `main()`. Whichever shape it leaves stdout in on
+  Windows (reconfigured in place, or re-wrapped — the re-wrap is already
+  line-buffered), this seam reconfigures or finds nothing to do.
+- ONE seam, deliberately: `flush=True` on each `print()` is a rule every new
+  print has to remember; `PYTHONUNBUFFERED=1` in `service_environment()`
+  reaches newly generated Linux units only, while installed units, launchd, the
+  Desktop app and a detached gateway keep block buffering; and converting the
+  prints to `logging` changes what the log carries. What is printed, and where,
+  does not change.
+
+Pinned by `test_platform_compat.py::TestLineBufferedStdout` (a non-tty
+`TextIOWrapper` holds the bytes of one unflushed `print()`; a tty stream is
+not reconfigured; a stream without `reconfigure` does not raise) and
+`test_cli.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
+(the dispatch calls the seam once, before the gateway coroutine exists).
+
 ### Linux gateway heap reclamation
 
 The event-loop heartbeat offers a self-gating maintenance object a tick every
@@ -1620,7 +1669,21 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     unbounded on a unit without them). Every other refusal exits 1, which the
     unit's `Restart=always` relaunches, because a later attempt can find it
     cleared or because the evidence for standing down is missing: a lock file
-    replaced faster than it can be locked, a home that cannot be opened or
+    replaced faster than it can be locked, a `gateway.lock` that is not a
+    regular file (a symbolic link, including one a dotfile manager placed, a
+    junction, a directory, a FIFO or a socket; the lock never opens through a
+    link, so the refusal says to remove it, and `stop`/`restart` read the same
+    entry as indeterminate rather than as nothing running; a regular file with
+    another hard link is still locked, but its pid stamp is not written, and a
+    stamp is distrusted only while the file has another link: once that link is
+    removed the stamp left in it is trusted again, on every platform, until the
+    next acquire stamps over it, and a `chmod`, `chown`, xattr or ACL change
+    never revokes trust; on Windows a regular file carrying a
+    non-link reparse tag, such as a cloud-files placeholder, is locked as
+    usual), a lock file that cannot be opened or measured or a home that cannot
+    be created (a permission gap, a read-only or full filesystem;
+    `kirocrew app uninstall` reports this as a failed pointer clear, never as a
+    running gateway), a home that cannot be opened or
     measured for directory locks, an flock whose acquirer is gone (a wedged
     inheritor holds it until that process dies), a live acquirer that does not
     hold the port (a sibling still starting, or one shutting down that has
@@ -1895,13 +1958,52 @@ HTTPS CDN, the pinned source); anything else is updated by its own updater. The
 gateway's update loop branches on that answer, and `notify` never reaches
 `_prepare_auto_update_apply`, so admission is not paused for an update the install
 will not apply (a provider with no `apply_command`, a feature-branch checkout).
+`notify` is also what a source pin produces, and no badge then points at a
+`kirocrew update` the same pin refuses.
 Dynamic conditions stay with the update itself: the git route still requires
 `version_newer`, the installer route a newer build. The status frame carries the
-same answer as `update_auto_effect` (`unknown` until the loop's first
-derivation), re-derived off the loop at most once every five minutes; the
-update loop's first cycle arms that refresh. A policy provider the CHECK
-resolves after the derivation (a live policy refresh) downgrades the cycle to
-notify: a provider owns the update, so no built-in route applies it. `test_every_unattended_apply_consults_the_effect_first`
+same answer as `update_auto_effect`, re-derived off the loop at most once every
+five minutes once the update loop's first cycle has armed that refresh. A frame
+served BEFORE that derivation answers for itself wherever no git subprocess is
+needed — the packaged shapes from their baked stamp, a policy provider from the
+boot-frozen pins, the managed venv from its own layout — so only a checkout
+reads `unknown`, its branch and remote being what git alone can report. That
+matters because the update modal opens on the first boot after an app update,
+before any check has run. `GET /api/update/check` derives and records it too,
+and returns it: the user asked, so its git probes are warranted where a status
+frame could not afford them. A policy provider the CHECK resolves after the
+derivation (a live policy refresh) downgrades the cycle to notify: a provider
+owns the update, so no built-in route applies it.
+
+The frame also carries `update_bundled_by_app`, the baked packaging stamp's
+answer to "is this the backend the desktop app bundles and launches"
+(`bundled_by_desktop_app`). It is independent of `update_managed_by`, which reads
+`command` on that same bundle once a policy `updates` provider is configured,
+because the provider is resolved before the desktop deferral. On such a bundle
+`update_auto_effect` reports the provider's answer (`install`, `mandatory`, or
+`notify` without a runnable `apply_command`), since the provider is what the
+gateway's loop runs; on a bundle with no provider it reports `notify`, the app's
+own updater owning the update.
+
+**`auto_update` is validated on read and on write.** Validation and the loader
+run it through `fields._coerce_bool(..., False)`: a recognized spelling is
+honoured (`"false"`/`"off"`/`"0"` read OFF, `"true"`/`"on"`/`"1"` read ON) and
+anything else unreadable reads OFF rather than being repaired to the ON
+default; an absent key still defaults ON. And `POST /api/update/auto` refuses a non-boolean
+`enabled` with 400 `invalid_enabled` (and a non-object body with 400
+`invalid_json`) instead of storing it. That endpoint writes `config.json`, which
+`config.local.json` deep-merges OVER, so when the overlay sets `auto_update` it
+refuses with 409 `auto_update_overlay_owned` and writes nothing — the same
+refusal the trust-settings and MCP writers give an overlay-owned key — rather
+than a 200 the next load would undo. A successful response carries the
+EFFECTIVE value read back after the merge, the `requested` one beside it, and
+`overlay_override`, the flag (and the best-effort read,
+`config.loader.overlay_pins`) the telemetry switches share. `GET /api/update/check` and the
+channel switch carry `overlay_override` too, since those are where the UI reads
+`auto_update`, and the POST sends a `refresh` frame so a second open tab stops
+showing the old position. A check that fails unexpectedly carries `can_arm`
+the way the feed-failure paths do, so one transient raise cannot make a managed
+venv look notify-only. `test_every_unattended_apply_consults_the_effect_first`
 pins that every apply branch reads it before pausing admission.
 
 **`POST /api/update` refuses before it moves the tree, and fast-forwards to a

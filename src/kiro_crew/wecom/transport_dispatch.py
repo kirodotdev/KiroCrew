@@ -36,6 +36,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_TIMED_OUT_REPLY_ZH,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     note_user_stop,
@@ -70,6 +71,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
+from kiro_crew.start_priority import person_priority
 from kiro_crew.wecom.attachments import process_wecom_attachments
 from kiro_crew.wecom.commands import (
     ConversationState,
@@ -335,6 +337,7 @@ class WeComDispatcher:
             await self._bind_origin_mirror(session_key, inbound)
             await drive_turn(
                 ChannelTurn(
+                    start_priority=person_priority(inbound.person_origin),
                     channel_type="wecom",
                     session_key=session_key,
                     inbound_route=inbound_route,
@@ -544,8 +547,13 @@ class WeComDispatcher:
             self._conv.clear_awaiting(userid)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
-                await self._notice_bubble(inbound, "🗜️ 上下文接近上限，已自动压缩。")
+                # A failed or timed-out compaction is a RETURNED result, not an
+                # exception, so the notice is posted only for a completed one.
+                cr = await provider.wait_for_compaction()
+                if cr["type"] == "completed":
+                    await self._notice_bubble(inbound, "🗜️ 上下文接近上限，已自动压缩。")
+                else:
+                    logger.warning("WeCom hard-threshold compaction reported %s", cr["type"])
             except Exception:
                 logger.debug("WeCom hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(userid):
@@ -807,8 +815,15 @@ class WeComDispatcher:
                 )
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self.client.say(inbound, "🗜️ 已压缩上下文。")
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self.client.say(inbound, "🗜️ 已压缩上下文。")
+            elif cr["type"] == "failed":
+                await self.client.say(inbound, "⚠️ 压缩失败，请重试。")
+            else:
+                await self.client.say(inbound, COMPACT_TIMED_OUT_REPLY_ZH)
         except Exception:
             logger.exception("WeCom /compact failed for %s", session_key)
             await self.client.say(inbound, "⚠️ 压缩失败，请重试。")

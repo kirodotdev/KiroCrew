@@ -39,6 +39,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Tail a rotating log | `open_log_file_for_tail(path)` returns a binary read descriptor (caller closes); Windows permits read/write/delete sharing so the writer can rename during a read. Only for log readers, never security pinning. | plain `open` held while a Windows writer rolls over |
 | File lock | `file_lock(fd, exclusive=)` / `acquire_lock`+`release_lock` / `try_acquire_lock`. Windows takes a byte-range lock on byte 0 (`msvcrt.locking`), acquired by spinning on the non-blocking code because msvcrt's own blocking code gives up with `EDEADLOCK`; the spin is bounded so a stuck holder is reported rather than waited on forever, and both platforms fail CLOSED past the ceiling. That range lock is MANDATORY, unlike POSIX advisory `flock`: while it is held, byte 0 is unreadable and unwritable through every other descriptor, including another descriptor of the holding process. So a lock descriptor is never written through — not even to place a byte for the range to cover, which a sibling's acquire turns into `EACCES` on the writer. A byte-range lock covers byte 0 of a ZERO-LENGTH file and still excludes every other descriptor and process, so a lock sidecar stays empty | `fcntl.flock`; writing a byte through a lock descriptor to make its range "lockable" |
 | Create-or-open a lock sidecar race-safely | `open_create_or_existing(path, flags, mode, dir_fd=)` creates the name EXCLUSIVELY first and, when a sibling already made it, reopens WITHOUT `O_CREAT` so both hold the sibling's inode; never truncates; returns the raw fd the caller owns. `open_lock_file(path)` is the context-managed form for a plain lock file. A leaf that vanishes between the two opens is a genuine `ENOENT` left to the caller | nonexclusive `O_CREAT`, which can return `ENOENT` on Darwin when two callers race to create the same absent name |
+| Open a file you write AND lock, never through a link at the name | `open_create_no_reparse(path, mode)`: POSIX is `open_create_or_existing` with `O_RDWR \| O_NOFOLLOW` and no `O_NONBLOCK` (a lease break is waited out, as a plain open would); Windows is `win_open_no_reparse(path, directory=False, links_only=True)`, a `CreateFileW` read/write open-or-create with `FILE_FLAG_OPEN_REPARSE_POINT` and no `FILE_SHARE_DELETE`, refusing a link or junction with `ELOOP` (`win_fd_is_link` reads the name-surrogate bit of the opened handle's own reparse tag and fails closed), while a regular file carrying a non-link tag such as a cloud-files placeholder opens (the decision-log append shares the open without `links_only`, refusing every reparse point). `open_file_no_reparse(path, links_only=True)` is the read-only counterpart. Never truncates; the caller still `fstat`s the descriptor for `S_ISREG`, since a directory, FIFO or socket at the name can open. To name who holds a lock on that file, pass the descriptor's `fstat` to `flock_owner_pid` / `pids_holding_file`, which accept an `os.stat_result` | `os.open(path, O_RDWR \| O_CREAT)` (follows a link at the name, and creates a dangling link's target); an `lstat` check before the open (a check-to-open window); `flock_owner_pid(path)` after a no-follow open (re-resolves the name, so it can name the holder of something else) |
 | Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
 | Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
@@ -64,6 +65,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Re-exec the current Python module | `reexec_python_module(module, args)` | `os.execv(sys.executable, [sys.executable, ...])` (breaks when the Windows interpreter path contains spaces) |
 | Launch a Kiro Crew-owned Python child | `isolated_python_argv(*args, executable=...)`; it adds `-s` for the bundle and parents whose user site is already unavailable, unless the option prefix carries `-s` or stronger `-I` | a raw `[sys.executable, ...]`, or an ad hoc `PYTHONNOUSERSITE` env that another spawn path can omit |
 | Replace the current process with another program (a supervised service body) | spawn a child, record its pid + `process_start_time`, and `wait()` on it under `IS_WINDOWS` (see `pod.windows.supervise_gateway`) | `os.execve` (on Windows this SPAWNS and terminates the caller, so the pid changes and the service manager sees the unit exit while the real program keeps running orphaned) |
+| Make `print()` reach a non-terminal stdout as it is printed (the gateway's status lines under a service manager) | `ensure_line_buffered_stdout()` once at gateway start, before the first status print: a stdout that is not a tty is reconfigured to `line_buffering=True`; a tty is left untouched (already line-buffered), and a stream with no `reconfigure` (absent, closed, a `StringIO`, a plain object a launcher left behind) is left as it is. `sys.stderr` needs nothing: CPython line-buffers it on every attachment. Independent of `ensure_utf8_console()`, which keeps the encoding job and runs first. Contract: [cli](../modules/cli.md#gateway-stdout-is-line-buffered-off-a-terminal) | `flush=True` on each `print()` (every new print has to remember it); `PYTHONUNBUFFERED=1` in a generated unit (reaches that one launcher and no installed unit, launchd agent, Desktop supervisor or detached gateway); turning the prints into `logging` records (changes what the log carries) |
 | Open an exact Windows process object for later tree discovery/termination | `open_process_termination_handle(pid, expected_token)` validates the opened handle's creation identity before returning it (caller closes with `close_process_handle`); combine with `descendant_termination_handles` so the anchored root and each retained child receive a final post-exit snapshot | opening by PID and checking the token beforehand (PID reuse can occur between those operations) |
 | Race-free Job object assignment | `creationflags \|= CREATE_SUSPENDED`, then `apply_job_limits`, then `resume_process_main_thread` | assigning a job to an already-running child (descendants it already spawned escape) |
 | Fork-bomb / memory ceiling on a spawned tree | `sandbox.apply_windows_resource_ceiling(pid)` after the spawn, alongside `cgroup_scope_argv` | `cgroup_scope_argv` alone (a no-op on Windows, so no ceiling at all) |
@@ -93,6 +95,12 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Spawn the AWS CLI (`aws`) | `trusted_aws_bin()` — `trusted_system_bin` plus a `/usr/local/bin` fallback (the installers' default `--bin-dir`), accepted only when `_is_root_owned_path` finds every entry of `traversed_components` (see the row above: every directory the walk reads, including the directories on a symlinked component's target side, plus the final target) root-owned, not group/world-writable, and (via `os.access(..., effective_ids=True)`, the only form that reads a POSIX ACL) not writable by the non-root account through an ACL entry `st_mode` cannot express. Running AS root DECLINES: there `os.access` answers True for everything, so the ACL arm has no signal, and the entry it would catch grants a NON-root user write — the one case root must not execute. Only the `/usr/local/bin` fallback is lost under root; `trusted_system_bin` does not route through this. The fallback also refuses a `#!` SCRIPT (`_is_native_program`): a shebang names its interpreter in the file's CONTENT, which the path walk never validated, and `sudo pip install awscli` against a pyenv Python produces exactly that — AWS CLI v2 ships a native executable, so the case this exists for is unaffected. Both conditions live in ONE predicate, `_local_aws_bin_is_trusted`, because the resolver and `aws_bin_declined_on_ownership` both ask and must never contradict each other about one file. Debian policy has `/usr/local` subdirectories `root:staff` mode `2775`, so the fallback DECLINES by default on stock Debian/Ubuntu: intended, because a `staff` member can replace the binary. A diagnostic must then report the decline with `aws_bin_declined_on_ownership()` rather than as absence | adding `/usr/local/bin` to `_TRUSTED_SYSTEM_BIN_DIRS` (Intel macOS Homebrew owns that directory as the console user, so membership alone would let a same-uid process supply `ps`, `lsof` and every other pinned tool); or validating the path with `realpath` (collapses a chain, so a hop through writable space vanishes) or a lexical `dirname` walk (`os.stat` follows symlinks and `dirname` does not, so a symlinked component's target ancestors are never seen) |
 | Read a Windows system tool's ANSWER (`schtasks /Query`, `tasklist`, `sc query`) | the tool's **exit code**, or a fact the program under test recorded itself | parsing its stdout (column headers AND status words are translated by the UI language, so a match on `"Running"` reports every instance down on a non-English host — the fail-OPEN direction) |
 | strftime no-pad | `strftime(dt, "%-I")` | bare `dt.strftime("%-I")` (`ValueError` on Windows) |
+
+The shared POSIX process snapshot requests each column separately:
+`ps -A -o pid= -o ppid= -o lstart=`. Some `ps` implementations parse the commas
+after an empty header as part of that header, returning only PIDs. Separate
+output options preserve the parent and start-time fields that descendant
+discovery and PID-reuse checks need, even when the combined form exits successfully.
 
 **Its relationship to `pinned_fs`.** That module owns this discipline and says so —
 mechanism in one place, callers as thin consumers — and `PinnedDirectory` is the
@@ -265,6 +273,17 @@ than one because a slow open must not reach the lock with nothing left; the retr
 covers the open alone, so no partial write is ever replayed. No additional worker
 is spawned; a stalled filesystem syscall itself is not cancellable by either
 deadline.
+
+A DELETE meets the same transient hold. When `pod down` removes a pod's Task
+Scheduler `.cmd` wrapper, the pod's own processes are already drained, but a
+process the backend does not own (the Task Scheduler service finishing with the
+action file, an indexer or AV scanner) can still have it open, and the delete
+fails with `[WinError 32]`. `pod.windows._unlink_waiting_out_sharing` retries that
+one error under a bounded deadline and re-raises it unchanged once the deadline
+passes, so a real leak still fails closed; every other error raises at once. A
+teardown that deletes a file another process may have just used follows the same
+rule: retry `ERROR_SHARING_VIOLATION` only, with a deadline, never any
+`PermissionError`.
 
 On write failure, rollback removes only the bytes counted for that append when
 the file has exactly the expected size. Existing bytes or unrelated growth are
@@ -504,6 +523,20 @@ Unknown identity/ancestry, denied access or a non-draining tree is a failure, no
 an empty tree; ACP retains the original process and PID tracking when the owning
 call does not complete, while the transferred exact handles remain independently
 retryable after provider/client references are dropped.
+
+A pass that runs out of its bounded budget (`_WINDOWS_TREE_REAP_TIMEOUT_SECS`)
+before every member is confirmed raises `WindowsTreeDrainPending`. Members
+discovered too late in the pass to be signalled count as pending too. It is an
+`OSError`, so every caller that treats an unconfirmed drain as a failed kill keeps
+doing so. It names the root and the number of members still pending. The tree is
+not lost: its pins stay in the pending state, and the maintenance sweep resumes the
+drain from the members already confirmed. A slow host meets this routinely,
+because each member's pass costs two identity reads and two Toolhelp snapshots.
+`AcpRuntime` therefore logs it as one WARNING line, not a traceback, and still
+raises. A failed kiro session setup logs its original failure at WARNING before the
+cleanup kill, redacted and folded to one bounded printable line, because that text
+can come from the backend. Without that line, the cleanup's own output would be
+the only trace of a repeating setup failure.
 
 This does not reconstruct an intermediary that exited before any available
 handle observed it, and the completeness a successful drain asserts is therefore

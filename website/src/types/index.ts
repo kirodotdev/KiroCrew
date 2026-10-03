@@ -83,6 +83,15 @@ export interface StatusData {
    */
   update_auto_effect?: 'install' | 'notify' | 'mandatory' | 'unknown'
   /**
+   * Whether the desktop app bundles and launches this gateway, from the baked
+   * packaging stamp. Independent of `update_managed_by`, which reads `command`
+   * on that same bundle when a policy `updates` provider is configured. There,
+   * `update_auto_effect` reports the PROVIDER's answer, since the provider is
+   * what this gateway's loop runs; without one it reports `notify`, the app's
+   * own updater owning the update.
+   */
+  update_bundled_by_app?: boolean
+  /**
    * Commit distance from a git checkout's upstream, both directions. Diverged
    * (both > 0) reports `update_available: false` exactly like a current
    * checkout — the destructive apply paths must never be offered local

@@ -593,6 +593,48 @@ class TestUpdateRevalidate:
         assert resp.status == 403
         assert called == [], "a refused non-ASCII secret still reached the cache"
 
+    @pytest.mark.parametrize(
+        "header",
+        ["s3cret\udcff", "\udcff", "wröng\udc80"],
+        ids=["trailing-surrogate", "only-surrogate", "non-ascii-and-surrogate"],
+    )
+    def test_a_lone_surrogate_secret_is_refused_and_audited(self, _isolated_channel_home, header):
+        """aiohttp decodes a header value with ``surrogateescape``, so a non-UTF-8
+        byte in ``X-Local-Secret`` arrives as a lone surrogate. A strict encode
+        raises on it; the endpoint must answer its own audited 403 instead."""
+        called: list[str] = []
+        audited: list[dict[str, object]] = []
+
+        async def fake_audit(request: object, **kwargs: object) -> None:
+            audited.append(kwargs)
+
+        with (
+            patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")),
+            patch.object(updates, "_audit_update_event", fake_audit),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", header=header))
+            )
+        assert resp.status == 403
+        assert json.loads(resp.body.decode())["code"] == "invalid_secret"
+        assert audited == [
+            {"operation": "update.revalidate", "outcome": "denied", "resources": "invalid-secret"}
+        ]
+        assert called == [], "a refused surrogate secret still reached the cache"
+
+    def test_an_empty_secret_is_refused_and_audited(self, _isolated_channel_home):
+        audited: list[dict[str, object]] = []
+
+        async def fake_audit(request: object, **kwargs: object) -> None:
+            audited.append(kwargs)
+
+        with patch.object(updates, "_audit_update_event", fake_audit):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", header=""))
+            )
+        assert resp.status == 403
+        assert [a["resources"] for a in audited] == ["invalid-secret"]
+
 
 class TestRestartEndpoint:
     """``POST /api/restart``."""

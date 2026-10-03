@@ -171,6 +171,7 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_report_redaction",
         "_report_unredacted_upload",
         "_report_unresolved_payload",
+        "_warn_if_transcripts_left_behind",
         "prepare_redacted_copy",
         "restore_main",
         "snapshot_main",

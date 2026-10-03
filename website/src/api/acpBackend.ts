@@ -1,3 +1,7 @@
+import { i18nT } from '../i18n/t'
+import { ApiError } from './apiError'
+import type { AcpBackendProbe } from './client'
+
 /**
  * Which agent harness the gateway runs, read off `agent.acp_backend` in the
  * `/api/config/kirocrew` body (the `['kirocrewConfig']` query).
@@ -12,6 +16,10 @@
  *  back to kiro-cli when the key is absent, so an absent key names kiro too. */
 export const ACP_BACKEND_KIRO = ''
 
+/** The KAS backend's id (`ACP_BACKEND_KAS` on the gateway): kiro-cli's relay,
+ *  which completes first-run setup on kiro-cli ACP support, not a kiro-cli login. */
+export const ACP_BACKEND_KAS = 'kas'
+
 /** The slice of the config body this check reads. */
 export interface AcpBackendConfig {
   agent?: { acp_backend?: string }
@@ -25,4 +33,52 @@ export interface AcpBackendConfig {
 export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false
   return (cfg.agent?.acp_backend ?? ACP_BACKEND_KIRO) === ACP_BACKEND_KIRO
+}
+
+/** Shared translated harness labels; unknown harnesses keep the server's policy name. */
+export function acpBackendName(backend: { id: string; policy_id?: string }): string {
+  switch (backend.id) {
+    case ACP_BACKEND_KIRO: return i18nT('pages.developer.agentBackendTab.kiro_cli')
+    case 'claude': return i18nT('pages.developer.agentBackendTab.claude_code')
+    case ACP_BACKEND_KAS: return i18nT('pages.developer.agentBackendTab.kas_kiro_agent')
+    default: return backend.policy_id || backend.id
+  }
+}
+
+/**
+ * The parsed body of a 503 `setup_marker_write_failed`, or `null` for any other
+ * error. Both the first-run gate and Settings → Agent Harness read it, so it
+ * lives here rather than in either screen: the config PATCH and the backend
+ * re-check answer it, the agent choice committed either way, and only the
+ * durable first-run marker did not.
+ *
+ * `backend` rides along on a re-check: the re-probe succeeded and only the
+ * marker write failed, so the caller can splice the fresh row in exactly as it
+ * does the 200 body rather than dropping it back to the stale verdict.
+ */
+export function setupMarkerErrorBody(
+  error: unknown,
+): { code?: string; config_saved?: boolean; backend?: AcpBackendProbe } | null {
+  if (!(error instanceof ApiError)) return null
+  try {
+    const body = JSON.parse(error.body)
+    return body?.code === 'setup_marker_write_failed' ? body : null
+  } catch {
+    return null
+  }
+}
+
+/** The server's marker-write message for a `setup_marker_write_failed`, or `null`. */
+export function setupMarkerErrorMessage(error: unknown): string | null {
+  return setupMarkerErrorBody(error) ? (error as ApiError).message : null
+}
+
+/**
+ * Whether a failed config PATCH nonetheless committed the agent choice. The
+ * gateway answers 503 `setup_marker_write_failed` with `config_saved: true`
+ * when `agent.acp_backend` is on disk and only the first-run marker is not, so
+ * the config the caller reads has moved even though the request failed.
+ */
+export function agentChoiceSaved(error: unknown): boolean {
+  return setupMarkerErrorBody(error)?.config_saved === true
 }

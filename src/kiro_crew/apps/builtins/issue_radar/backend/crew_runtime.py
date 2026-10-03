@@ -49,7 +49,7 @@ from typing import Any
 from kiro_crew.apps import teardown
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.apps.teardown import register_slot_close_hook, register_slot_close_undo_hook
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -1562,10 +1562,7 @@ def read_signals(owner: str, repo: str, root: Path | None = None) -> dict[str, A
     path = signals_path(owner, repo, root)
     if not path.is_file():
         return {}
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    doc = read_json_or(path, None, logger=logger, what="issue signals")
     if not isinstance(doc, dict) or doc.get("schema") != SIGNALS_SCHEMA:
         # A schema mismatch is a cache miss here, exactly as it is for the issue
         # caches: the next sweep re-seeds and reports nothing, which loses at most

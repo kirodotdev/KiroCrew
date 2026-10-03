@@ -404,7 +404,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
               never shows a value that vanishes on reload. */}
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.show_banner_for_new_notifications')}
-            description={i18nT('pages.settings.notificationsPanel.show_banner_for_new_notifications_description')}
+            hint={i18nT('pages.settings.notificationsPanel.show_banner_for_new_notifications_description')}
             checked={bannerEnabled}
             onChange={v => { if (saveBannerEnabled(v)) setBannerEnabled(v) }}
           />
@@ -414,13 +414,13 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
               "Allow" row above. */}
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes')}
-            description={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
+            hint={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
             onChange={v => { setNotifyChatComplete(v); saveChatCompleteNotify(v) }}
           />
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}
-            description={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting_description')}
+            hint={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting_description')}
             checked={unreadOnAttention}
             onChange={v => { if (saveUnreadOnAttention(v)) setUnreadOnAttention(v) }}
           />
@@ -503,7 +503,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
                 <div className="flex-1 min-w-0">
                   <SettingsSelect
                     label={i18nT(CATEGORY_LABEL_KEY[cat])}
-                    description={i18nT(CATEGORY_DESCRIPTION_KEY[cat])}
+                    hint={i18nT(CATEGORY_DESCRIPTION_KEY[cat])}
                     value={selectValue}
                     options={opts}
                     optionLabels={optLabels}

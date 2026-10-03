@@ -16,6 +16,7 @@ from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.sel import sel
+from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_models import (
     SESSION_PREFIX,
     Project,
@@ -250,8 +251,13 @@ async def decompose(
     work_dir: str = "",
     task_id: str = "",
     agent: str = "",
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> list[Task]:
-    """Use LLM to break a spec into ordered implementation tasks."""
+    """Use LLM to break a spec into ordered implementation tasks.
+
+    ``start_priority`` orders the decompose session's start: FOREGROUND only when a
+    person is waiting on the plan (rule: ``kiro_crew.start_priority``).
+    """
     prompt = (
         "You are a task decomposition agent. Break this specification "
         "into concrete, ordered implementation steps. Each step should "
@@ -299,7 +305,11 @@ async def decompose(
     memory_store = await inherit_session_memory(ctx, parent_key, session_key)
     try:
         client, is_new, _resumed = await sessions.open_task_session(
-            parent_key, session_key, agent=agent or None, cwd=work_dir or None
+            parent_key,
+            session_key,
+            agent=agent or None,
+            cwd=work_dir or None,
+            start_priority=start_priority,
         )
         if ctx:
             # Off-loop: build_message embeds the episodic query (blocking urllib).

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.config import live
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -27,6 +28,7 @@ from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.session import FirstTurnState
+from kiro_crew.start_priority import StartPriority
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +69,20 @@ def _cfg(enabled: bool) -> MagicMock:
     cfg.session.eager_spawn = enabled
     cfg_loader = MagicMock(return_value=cfg)
     return cfg_loader
+
+
+def _native_resume_cfg() -> MagicMock:
+    """A config under which a dashboard resume stays a native ``session/load``.
+
+    ``agent.tool_search`` defaults on, and with it the kiro backend replaces the
+    load of a direct dashboard session with a fresh session plus replay -- a
+    prefetch that can only be refused, so ``_eager_spawn`` leaves it to the
+    first turn before anything spawns. The tests of the speculative LOAD itself
+    turn the toggle off so the path still reaches ``get_or_create``.
+    """
+    loader = _cfg(True)
+    loader.return_value.agent.tool_search = False
+    return loader
 
 
 def _prime(enabled: bool) -> None:
@@ -777,7 +793,9 @@ class TestProjectSetWiring:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/chat/slots/t1/agent", json={"agent": "kirocrew"})
                 assert resp.status == 200
-            sched.assert_called_once_with(state, slot)
+            # No owner identity on this request, so BACKGROUND (test_start_priority
+            # pins the owner case).
+            sched.assert_called_once_with(state, slot, start_priority=StartPriority.BACKGROUND)
 
     @pytest.mark.asyncio
     async def test_project_change_schedules_eager_spawn(self, tmp_path):
@@ -802,7 +820,9 @@ class TestProjectSetWiring:
                     "/api/chat/slots/t1/project", json={"project": str(tmp_path)}
                 )
                 assert resp.status == 200
-            sched.assert_called_once_with(state, slot)
+            # No owner identity on this request, so BACKGROUND (test_start_priority
+            # pins the owner case).
+            sched.assert_called_once_with(state, slot, start_priority=StartPriority.BACKGROUND)
 
     @pytest.mark.asyncio
     async def test_noop_project_set_does_not_schedule(self, tmp_path):
@@ -1072,7 +1092,7 @@ class TestResumePrefetchWiring:
     async def test_allow_resume_passes_speculative_resume(self):
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
         kwargs = state.sessions.get_or_create.await_args.kwargs
         assert kwargs["speculative"] is True
@@ -1091,7 +1111,7 @@ class TestResumePrefetchWiring:
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, True))
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
         ttl = getattr(slot, "_prefetch_ttl_task", None)
         assert ttl is not None and not ttl.done()
@@ -1105,7 +1125,7 @@ class TestResumePrefetchWiring:
         the idle sweep alone owns its lifetime."""
         slot = _ChatSlot("t1")
         state = _mock_state(slot)  # get_or_create returns resumed=False
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
         assert getattr(slot, "_prefetch_ttl_task", None) is None
 
@@ -1144,6 +1164,52 @@ class TestResumePrefetchWiring:
         state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
         await chat_runner._prefetch_ttl(state, slot, "slack:12345.678")
         state.sessions.remove_if_unclaimed.assert_awaited_once_with("slack:12345.678")
+
+
+class TestToolSearchReplayPrefetchGate:
+    """The resume prefetch asks the provider's replay predicate before it spawns.
+
+    With Tool Search on, the kiro backend answers a direct dashboard resume with
+    a fresh session plus conversation replay instead of ``session/load``, so the
+    speculative load comes back ``resumed=False`` and is refused -- after a
+    whole runtime was spawned and torn down. ``_eager_spawn`` reads the same
+    predicate the provider does and leaves such a slot to its first turn.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_debounce(self, monkeypatch):
+        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+
+    @pytest.mark.asyncio
+    async def test_replayed_resume_spawns_nothing(self, caplog):
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            caplog.at_level("INFO", logger=chat_runner.logger.name),
+        ):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        state.sessions.get_or_create.assert_not_awaited()
+        reasons = [r.getMessage() for r in caplog.records if "left to first turn" in r.getMessage()]
+        assert reasons == ["Eager spawn: dashboard:t1 left to first turn (tool-search replay)"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "native",
+        [
+            pytest.param({"tool_search": False}, id="tool-search-off"),
+            pytest.param({"acp_backend": ACP_BACKEND_KAS}, id="non-kiro-backend"),
+        ],
+    )
+    async def test_native_resume_still_prefetches(self, native):
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        loader = _cfg(True)
+        for name, value in native.items():
+            setattr(loader.return_value.agent, name, value)
+        with patch.object(chat_runner.KiroCrewConfig, "load", loader):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        assert state.sessions.get_or_create.await_args.kwargs["speculative_resume"] is True
 
 
 class TestArmedPrefetchCap:
@@ -1923,7 +1989,7 @@ class TestSlotFocusedFrame:
         state.sessions.get_or_create = AsyncMock(
             side_effect=chat_runner.SpeculativeResumeRefused("dashboard:t1")
         )
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
         state.sessions.remove_if_unclaimed.assert_not_awaited()
         state.sessions.remove.assert_not_awaited()

@@ -341,7 +341,7 @@ _LAUNCHER_DIGESTS: dict[str, str] = {
 
 _PROFILE_DIGESTS: dict[str, str] = {
     "cc": "ff0989ba3f35397dfe5e6c724ea13195e59a4d4f20e7358ecb9d88de3688d5d1",
-    "cc-private-windows": "2f5276fe50362cf2c8162b20a97b5439328b78b82f0a7fcfc1461e65c190be71",
+    "cc-private-windows": "b17f2c3c9a92af197cd21703742755c7b7c904a935c9e7ef68d61044568a5647",
     "standard": "7ff81e62faba059966ec6643c7bfdbb71985d2eacc03b03c07e46a110e250669",
     "standard-carveout": "2afae4a5c908df82ca0f8abc638bad8564b733d260baf08a750b12dcf427d6f2",
     "standard-hidden-and-visible": "532b032826e530f431ce4e0fc498b0ed2f489f22af97eb7c541a171d57b5a532",

@@ -300,7 +300,7 @@ export function useVirtualChat<T>(
   const sync = useGeometrySync({ itemsRef, eagerFirstMeasureRef, heightIndexRef, shift, follow, pinning, ops })
   const measurement = useRowMeasurement({
     itemsRef, getKeyRef, streamingIndexRef, eagerFirstMeasureRef, elIndexRef, resizeObserverRef,
-    trailingRef, heightIndexRef, canMeasure, windowRangeRef, scrollerRef, grace, sync,
+    trailingRef, heightIndexRef, canMeasure, windowRangeRef, scrollerRef, grace, sync, follow,
   })
 
   // Layout effects, pre-paint: the shift compensation's consumers, then

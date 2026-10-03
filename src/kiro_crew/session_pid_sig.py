@@ -336,7 +336,11 @@ def _compute_sig(key: bytes, pid: int | str, payload: str) -> str:
     written before either format change still verifies.
     """
     subkey = _derive_subkey(key)
-    return hmac.new(subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
+    # ``surrogatepass``: *pid* is ``int | str`` and a ``str`` can carry a lone
+    # surrogate, which a strict encode refuses by raising. It encodes every other
+    # string exactly as plain UTF-8, so every mapping signed before still verifies.
+    message = f"{pid}:{payload}".encode("utf-8", "surrogatepass")
+    return hmac.new(subkey, message, hashlib.sha256).hexdigest()
 
 
 def _parse_mapping_body(raw: str) -> tuple[str, str | None, tuple[str, ...], int] | None:
@@ -624,7 +628,10 @@ def _read_regular_nofollow(path: Path) -> str | None:
             if stat.S_ISLNK(pre.st_mode):
                 return None
         fd = os.open(path, os.O_RDONLY | nofollow)
-    except OSError:
+    except (OSError, ValueError):
+        # ``ValueError`` too: a ``str`` pid names the path, and one holding a NUL
+        # or a surrogate the filesystem encoding cannot carry is refused by the
+        # path conversion itself (``UnicodeEncodeError`` is a ``ValueError``).
         return None
     try:
         st = os.fstat(fd)
@@ -828,7 +835,7 @@ def verify_session_pid_mapping(pid: int | str, cfg: Path | None = None) -> PidMa
     Fails closed to an empty mapping on: missing ``.txt``, missing ``.sig``, a
     symlink or non-regular file at either path (see
     :func:`_read_regular_nofollow`), missing or short SEL key, or signature
-    mismatch. Never raises.
+    mismatch, which includes a sidecar whose text is not a hex MAC. Never raises.
     """
     if cfg is None:
         cfg = config_dir()
@@ -865,7 +872,16 @@ def verify_session_pid_mapping(pid: int | str, cfg: Path | None = None) -> PidMa
     # files (no token, no tenant section) produce the exact pre-change
     # message, so existing signed mappings keep verifying.
     expected = _compute_sig(key, pid, _canonical_body(session_key, token, tenants, count))
-    if not hmac.compare_digest(expected, sig):
+    # Bytes, not ``str``: ``compare_digest`` raises ``TypeError`` on a str holding
+    # a non-ASCII character, and the sidecar is a same-uid writable file, so its
+    # text can be any UTF-8. A sidecar that is not the hex MAC is then an ordinary
+    # mismatch. Neither operand can hold a surrogate today (``expected`` is a
+    # hexdigest and the reader decodes strictly); ``surrogatepass`` on both sides
+    # is defensive, so no arm of this function depends on what the file reader's
+    # decode admits.
+    if not hmac.compare_digest(
+        expected.encode("utf-8", "surrogatepass"), sig.encode("utf-8", "surrogatepass")
+    ):
         logger.warning(
             "session_pid_%s signature mismatch — refusing identity "
             "(possible forgery or stale sidecar)",

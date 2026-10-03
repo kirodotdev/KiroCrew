@@ -149,7 +149,7 @@ import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
@@ -517,6 +517,11 @@ def _epoch_delegates() -> str:
     return "yes" if spawn_delegates_masking() else "no"
 
 
+def _pending_record(pending: PendingGrant, source: str) -> str:
+    """The nonce file's bytes: every :class:`PendingGrant` field plus who armed it."""
+    return json.dumps({**asdict(pending), "source": source})
+
+
 def pending_grant_path():
     return data_home() / _PENDING_GRANT_DIRNAME / _PENDING_GRANT_FILENAME
 
@@ -525,10 +530,9 @@ def arm_grant(destination_class: str, *, source: str = "dashboard") -> PendingGr
     """Record a pending grant request; return it (nonce included, for the FILE).
 
     The caller serving the SPA must never forward the nonce -- hand the SPA
-    :func:`public_pending_view` instead. Written owner-only from birth
-    (O_CREAT|O_EXCL, mode 0600) so no world-readable moment exists, replacing any
-    previous request: arming grants nothing by itself, so last-writer-wins needs
-    no coordination.
+    :func:`public_pending_view` instead. Written owner-only from birth so no
+    world-readable moment exists, replacing any previous request: arming grants
+    nothing by itself, so last-writer-wins needs no coordination.
     """
     if destination_class not in GRANTABLE_CLASSES:
         raise ValueError(f"destination class {destination_class!r} can never be granted")
@@ -548,31 +552,9 @@ def arm_grant(destination_class: str, *, source: str = "dashboard") -> PendingGr
     # unlink.
     with _PENDING_LOCK:
         make_owner_only_dir(path.parent)
-        # Keyed on the fresh request id, not the pid: two concurrent arms run in the
-        # SAME process (executor threads), so a pid-keyed temp name is one shared file
-        # both writers interleave into.
-        tmp = path.with_name(f"{path.name}.{pending.request_id}.tmp")
         try:
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(
-                        {
-                            "request_id": pending.request_id,
-                            "nonce": pending.nonce,
-                            "destination_class": pending.destination_class,
-                            "created_at": pending.created_at,
-                            "safety_epoch": pending.safety_epoch,
-                            "source": source,
-                        }
-                    )
-                )
-            os.replace(tmp, path)
+            atomic_write(path, _pending_record(pending, source), restrict_to_owner=True)
         except OSError as exc:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
             raise StepUpError(f"could not record the pending grant request: {exc}") from exc
     logger.info(
         "Armed file-delivery consent request %s for %s (from %s)",
@@ -712,32 +694,14 @@ def restore_pending_grant(pending: PendingGrant) -> bool:
     """
     path = pending_grant_path()
     with _PENDING_LOCK:
+        # Every writer of this file holds _PENDING_LOCK in the one gateway process,
+        # so checking for a newer request and then writing cannot be raced.
+        if os.path.lexists(path):
+            return False
         try:
             make_owner_only_dir(path.parent)
-            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            return False
+            atomic_write(path, _pending_record(pending, "restored"), restrict_to_owner=True)
         except OSError:
-            return False
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(
-                        {
-                            "request_id": pending.request_id,
-                            "nonce": pending.nonce,
-                            "destination_class": pending.destination_class,
-                            "created_at": pending.created_at,
-                            "safety_epoch": pending.safety_epoch,
-                            "source": "restored",
-                        }
-                    )
-                )
-        except OSError:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             return False
     return True
 

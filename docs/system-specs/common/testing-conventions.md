@@ -279,6 +279,14 @@ silent until some assertion happens to expect a non-empty one.
 pins the import for every module that spawns the fake, because co-location alone does
 not stop a second consumer from hand-rolling the read.
 
+**Delete a file a background thread may have open the way the product deletes it.**
+Windows refuses to unlink a file while any handle holds it (`[WinError 32]`), and a
+test that removes crew-log segments with a bare `path.unlink()` races the eager folder,
+which reads the unit on its own thread after every entry. Retention removes them inside
+`crew_log.eager.paused()`, which holds the folder between batches; a test does the same
+after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
+(`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
+
 ### Host tool dialects
 
 A test double for a platform-specific CLI must not depend on another host's
@@ -1999,6 +2007,13 @@ about the code. Each is a hermeticity gap, and each has one fix:
   "a plain directory" classified as a project and "no launcher anywhere" found one. Confine
   the walk to `tmp_path` at the validator (`launchers_confined_to_tmp`,
   `cap_project_root_walk`) rather than assuming the host's temp root is bare.
+- **A fixed system path is the host's, not the test's.** `service.linux` reads
+  `/etc/kirocrew/kirocrew.env` to decide whether uninstall deletes it, so on a host where
+  a real install left the untouched seed there, a test that pinned only `UNIT_PATH` saw
+  `rm` and `rmdir` it never caused. `test/test_service.py` points `ENV_DIR` and
+  `ENV_FILE_PATH` at an absent `tmp_path` directory for every test; pin every module-level
+  `/etc` (or other absolute) path the code under test reads, not just the one the test is
+  about.
 - **"A port nothing listens on" is a property of the host.** Endpoint agents on managed
   machines intercept loopback connects and answer every port with HTTP 200 (a SOAP envelope
   from `127.0.0.1:1`), so a test that provoked `transfer_unreachable` by POSTing to port 1
@@ -2016,6 +2031,26 @@ about the code. Each is a hermeticity gap, and each has one fix:
   succeeds but encode fails" for a 2,000-deep JSON body met an interpreter that did both;
   assert the invariant across all three outcomes, and walk a deep structure iteratively
   in the assertion itself.
+- **A fixed loopback port is the host's, not the test's.** `SshTunnelManager.connect`
+  probes the port it allocated, for real, and gives up with "local port N was taken
+  while connecting" when it lost a race for it. `TestProxyRequest` handed the manager
+  `base_port=53500` and left the probe real, so on a busy macOS runner the remint test
+  read `False`: 53500 sits in the ephemeral range, and any outgoing connect on the box
+  can be using it. A test about what the manager does once connected pins the probe
+  with `_patch_port_probe`; a test about real port ownership binds port 0 and uses
+  the port the kernel picked. `test_every_manager_connect_test_pins_the_port_probe`
+  fails any test class that connects a manager, and any module-level helper that
+  builds one for a file that connects it, unless the probe is pinned outside a single
+  `test_` method or `_REAL_PORT_PROBE_CLASSES` names it with the reason the real probe
+  is the subject.
+- **`http.server` looks the host up between `bind()` and `listen()`.**
+  `HTTPServer.server_bind` calls `socket.getfqdn(host)`, a system-resolver call that
+  can stall on a macOS runner while the socket is bound but refuses every connect. A
+  parent that waits on a deadline for a spawned server to answer then reads a live
+  child that never comes up (`runtime stayed {'state': 'starting'}`). A server a test
+  spawns and waits for overrides `server_bind` to call `socketserver.TCPServer.server_bind`
+  and set `server_name` from the address it already has, as the stand-in in
+  `test_decisions_local_runtime_real_spawn.py` and `plumb_cpu.py` do.
 
 ### What a fifth five-run pass found (macOS, uv venv, ~106k tests per run)
 
@@ -3974,6 +4009,13 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+**`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
+cancelled before its first tool call takes the one-shot auto-continue branch: it returns
+normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`
+returns as if the run had finished and the next assertion reads state that was never
+written (`call_args` is `None`). Wait with `asyncio.wait({task}, timeout=...)`, which never
+cancels, then assert `info.done and not info._cancel_retry_used` with `_stop_reason(info)`.
+
 Two snapshots from different kernel accounting sources are this class too. Compare them
 with a bounded, measured slack, and keep allocation-growth observations in the failure
 message because a long-lived allocator may serve a probe from resident memory. Set the
@@ -3998,6 +4040,25 @@ timer: it races the waiter's own start (`test_posix_lock_ceiling` saw a 4e-05s
 "wait"). Release it when the waiter's own refused attempt on that lock file is seen,
 and release it inside the coroutine, because `asyncio.run` joins its executor before
 an outer `finally` runs and a waiter cannot finish while the lock is held.
+
+A **crew log** has two holders the test does not own: the writer thread that lands
+every append, and the eager folder that reads the unit on its own thread right after
+each entry. Any crew-log call made straight from an `async def` -- a write
+(`commit_work_progress`), an open or read (`open_session_log`, `iter_from`,
+`session_ledger.read_state`) -- is refused whenever one of them holds the unit lock.
+A refused write raises `CrewLedgerNotRecorded`, a refused read raises `OSError`, and a
+best-effort reader quietly answers the empty record (`assert '' == 'fold me'`). It
+reached unrelated PRs on Windows and Linux shards through sync helpers that cannot see
+their caller is async (`_item`, `_work`, `_seed_item` in the issue-radar tests) and
+through direct reads in `test_discord.py`, `test_session_ledger.py` and
+`test_work_ledger_projection.py`; 0 in 400 local runs, so only a held-lock probe
+reproduces it. Make the call the way product handlers do, off the loop:
+`off_loop(fn, ...)` from `test/off_loop_helpers.py` inside a helper both kinds of test
+call, or `await asyncio.to_thread(...)`. `test_crew_log_off_loop_pin.py` fails any
+`async def` that makes such a call directly or through a same-module sync helper, and
+`TestSeedingSurvivesABriefLogLock` proves the hop waits out a held lock while the
+on-loop call is refused. Do not fix it by patching `_on_event_loop`: that hides the
+on-loop hazard from the product code under test too.
 
 Two more shapes, both MEASURED in a 5x full-suite run on Windows:
 
@@ -4190,6 +4251,15 @@ pytest-timeout kills the worker first, which is
 [class 6](#6-a-hang-is-a-lost-run-not-a-failed-test). Derive the ceiling from that mark
 (20 s under a 30 s mark) and say so where it is defined.
 
+**A cleanup awaited through `asyncio.to_thread` can be withdrawn, not merely late.**
+Cancelling the awaiting task cancels the executor job too if no worker has started it, so
+a `finally: await asyncio.to_thread(remove, path)` skips the removal whenever the
+cancellation wins the race for a worker. `aiohttp`'s `TestServer` cancels a handler when its
+client disconnects, so a test that waits on the removal fails as "cleanup never ran" however
+long it waits. Shield the cleanup, and close any handle on the file in that same job before
+the delete, since Windows refuses to delete an open file. Reproduce by holding the job in a
+default executor that queues it unstarted (`test_session_export._HeldExecutor`).
+
 ### 3. Leaked async objects
 
 An `AsyncMock` standing in for a **synchronous** method (`StreamWriter.write`,
@@ -4222,6 +4292,16 @@ mark is the tool for a test that genuinely cannot share a worker.
 
 Mutate process globals through `monkeypatch`, which reverts on teardown even when the
 test fails. Raw assignment does not.
+
+**A process-wide verdict cache decides whether the code under test runs at all.**
+`cron_script._shell_is_posix_strict` caches its answer per shell for the life of the
+process. Any earlier test on the same worker that ran the real probe leaves `/bin/sh`
+decided, so the cancel test's probe never ran, the blip it patched in never fired, and
+the cancel had nowhere to land (`assert [] == [True]`, two macOS runs out of two). A
+test that patches a step behind such a cache rebinds the cache to a fresh dict with
+`monkeypatch.setattr` for its own duration, as `_probe_blip` in
+`test_sandbox_interpreter_enoent_retry.py` does. To prove the fix, pre-fill the cache
+in a plugin: the test must fail on the old code and pass on the new.
 
 **Sharding does not just scatter this class, it hides it — so a full-suite run is the wrong
 place to be finding it.** `ci.yml` assigns whole files to Linux/Windows shards

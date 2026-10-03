@@ -102,7 +102,7 @@ class FakeSessions:
         self.policies: dict[str, str] = {}
         self._session_map = None
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         self.keys_seen.append(key)
         was_new = self._is_new
         self._is_new = False

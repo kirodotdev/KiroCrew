@@ -50,7 +50,7 @@ import re
 import uuid
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.decisions.types import Answer, Answers, Question, is_model_id
+from kiro_crew.decisions.types import Answer, Answers, Choice, Noul, Question, Score, is_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,7 @@ def render_prompt(state: dict | str, questions: list[Question]) -> str:
         "no prose, no preamble, no commentary, no trailing notes. Its keys are "
         "EXACTLY the question ids, with no extra keys.",
         "",
-        "Each value is an object:",
+        "A choice question's value is an object:",
         '  {"choice": "<one option, spelled exactly as listed>", '
         '"probabilities": {"<option>": <number 0..1>, ...}}',
         "The probabilities must include your chosen option. If you give a number "
@@ -271,14 +271,46 @@ def render_prompt(state: dict | str, questions: list[Question]) -> str:
         "",
         "For a question that lists exactly two options you may instead answer with "
         "a bare number from 0 to 1: the probability of the FIRST option listed.",
-        "",
-        "QUESTIONS",
     ]
+    if any(isinstance(question, Noul) for question in questions):
+        lines.extend(
+            [
+                "",
+                "A yes/no question is answered with a bare number from 0 to 1: the "
+                "probability that the answer is yes.",
+            ]
+        )
+    if any(isinstance(question, Score) for question in questions):
+        lines.extend(
+            [
+                "",
+                "A score question is answered with an object carrying only "
+                '"probabilities": {"<level number>": <number 0..1>, ...}, with a number '
+                "for EVERY level, adding up to 1.",
+            ]
+        )
+    lines.extend(["", "QUESTIONS"])
     for question in questions:
-        options = [str(option) for option in getattr(question, "options", ()) or ()]
-        kind = "two-option (a bare number is allowed)" if len(options) == 2 else "choice"
         lines.append("")
         lines.append(f"id: {question.id}")
+        if isinstance(question, Noul):
+            lines.append("type: yes/no (a bare number is the answer)")
+            lines.append(f"question: {question.prompt or ''}")
+            if question.true_means:
+                lines.append(f"yes means: {question.true_means}")
+            if question.false_means:
+                lines.append(f"no means: {question.false_means}")
+            continue
+        if isinstance(question, Score):
+            lines.append("type: score")
+            lines.append(f"question: {question.prompt or ''}")
+            lines.append(
+                "levels: "
+                + ", ".join(f"{index}: {level}" for index, level in enumerate(question.levels))
+            )
+            continue
+        options = [str(option) for option in getattr(question, "options", ()) or ()]
+        kind = "two-option (a bare number is allowed)" if len(options) == 2 else "choice"
         lines.append(f"type: {kind}")
         lines.append(f"question: {getattr(question, 'prompt', '') or ''}")
         lines.append(f"options: {', '.join(options)}")
@@ -362,16 +394,20 @@ def parse_answers(text: str, questions: list[Question]) -> Answers:
       (and optionally ``confidence``) and no other key, or -- for a question with
       exactly two options -- a bare number in 0..1, read as the probability of the
       FIRST option;
-    * ``choice`` is one of that question's own options, spelled exactly. For a
-      score question the options ARE its levels, so this is what makes a level
-      valid;
+    * ``choice`` is one of that question's own options, spelled exactly;
+    * a ``Noul`` (yes/no) answer is a bare number in 0..1, the probability of
+      yes, and nothing else;
+    * a ``Score`` answer is ``{"probabilities": {...}}`` naming EVERY level index
+      exactly once and adding to 1 within :data:`_SUM_TOLERANCE`; its value is the
+      probability-weighted level, as the provider computes it;
     * every number is finite, in 0..1, and not a bool; a ``probabilities`` map may
       name only that question's options, must include the chosen one, and if it
       names every option must add to 1 within :data:`_SUM_TOLERANCE`.
 
-    The returned ``Answer.value`` is always a member of the question's option
-    list and ``Answer.p`` is the probability OF THAT option, which is what
-    ``gate._answers_are_valid`` re-checks before any caller sees it.
+    A ``Choice`` answer's ``Answer.value`` is always a member of the question's
+    option list and ``Answer.p`` is the probability OF THAT option; the other two
+    types carry the value and ``p`` that ``types.Answer`` documents. The gate's
+    ``_answers_are_valid`` re-checks each type's domain before any caller sees it.
     """
     parsed = _decode_object(text)
     by_id = {question.id: question for question in questions}
@@ -386,6 +422,12 @@ def parse_answers(text: str, questions: list[Question]) -> Answers:
 
 def _answer_from_value(question: Question, raw: Any) -> Answer:
     """One answer off its wire value, validated against *question*'s own domain."""
+    if isinstance(question, Noul):
+        return _noul_from_value(question, raw)
+    if isinstance(question, Score):
+        return _score_from_value(question, raw)
+    if not isinstance(question, Choice):
+        raise LlmProtocolError("unsupported question type")
     options = [str(option) for option in getattr(question, "options", ()) or ()]
     if not options:
         raise LlmProtocolError("question declares no options")
@@ -449,6 +491,43 @@ def _answer_from_object(question: Question, raw: dict, options: list[str]) -> An
         p=chosen_p,
         confidence=resolved,
     )
+
+
+def _noul_from_value(question: Noul, raw: Any) -> Answer:
+    """A bare number in 0..1, read as the probability of yes. Nothing else."""
+    value = _probability(raw)
+    if value is None:
+        raise LlmProtocolError("yes/no answer is not a probability")
+    return Answer(id=question.id, value=value, p=max(value, 1.0 - value))
+
+
+def _score_from_value(question: Score, raw: Any) -> Answer:
+    """``{"probabilities": {"<level>": p, ...}}``: a complete distribution over the levels.
+
+    The value is the probability-weighted level, as the provider computes it, so
+    a score from either lane means the same number. Every level must be given,
+    because a partial distribution has no weighted mean, and it must add to 1
+    within :data:`_SUM_TOLERANCE`, because rescaling would invent the mass the
+    model did not report.
+    """
+    if not isinstance(raw, dict) or set(raw) != {"probabilities"}:
+        raise LlmProtocolError("score answer is not a probabilities object")
+    probabilities = raw["probabilities"]
+    levels = [str(index) for index in range(len(question.levels))]
+    if not isinstance(probabilities, dict) or set(probabilities) != set(levels):
+        raise LlmProtocolError("score probabilities do not name every level exactly")
+    values: list[float] = []
+    for level in levels:
+        level_p = _probability(probabilities[level])
+        if level_p is None:
+            raise LlmProtocolError("a probability is not a finite number in 0..1")
+        values.append(level_p)
+    if abs(sum(values) - 1.0) > _SUM_TOLERANCE:
+        raise LlmProtocolError("a complete distribution does not add up to 1")
+    total = sum(values)
+    weighted = sum(index * level_p for index, level_p in enumerate(values)) / total
+    top = float(len(values) - 1)
+    return Answer(id=question.id, value=min(max(weighted, 0.0), top), p=max(values))
 
 
 class LlmOracle:

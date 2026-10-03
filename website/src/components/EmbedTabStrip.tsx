@@ -463,7 +463,7 @@ export default function EmbedTabStrip() {
                 onPointerDown={e => e.stopPropagation()}
                 onClick={e => { e.stopPropagation(); closeTab(i) }}
                 className={`transition-opacity ${
-                  active ? 'opacity-60 hover:opacity-100 hover:text-text' : 'opacity-0 group-hover/tab:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
+                  active ? 'opacity-60 hover:opacity-100 hover:text-text' : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
                 }`}
                 aria-label={i18nT('components.embedTabStrip.close_tab')}
               >

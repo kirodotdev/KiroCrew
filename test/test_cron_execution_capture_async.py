@@ -101,7 +101,11 @@ async def test_legacy_capture_reads_off_loop_and_freezes_selectors(monkeypatch, 
     assert call.kwargs["agent"] == ("first" if sequence else "original-template")
     execution = await asyncio.to_thread(read_session_execution, call.args[0], required=True)
     assert execution.store.legacy_name == store
-    assert execution.template_id == "original-template"
+    # A dispatching agent_sequence step binds its OWN step template (frozen from
+    # the snapshotted sequence, not the mutated job), so its spawn authorization
+    # resolves from the crew the step runs as; the single-agent capture keeps the
+    # job's template. The captured store/identity/mode stay frozen in both cases.
+    assert execution.template_id == ("first" if sequence else "original-template")
     assert execution.member_id is None
     assert execution.memory_mode == "persistent"
 

@@ -184,7 +184,7 @@ the frame classes, the section names what the `used` series shows.
 - the same comment's closing paragraph explains that both take the
   `COMPACT_ARM_UNCLASSIFIED` refusal. Narrow it to whichever harness still takes it.
 
-**4. The backend card's unmeasured cell.** The Developer > Agent Backend card renders
+**4. The backend card's unmeasured cell.** The Settings > Agent Harness card renders
 three marks per line — available, not available, and NOT MEASURED — and the third one is
 the only per-harness table in `src/kiro_crew/agent_sdk/backend_cards.py`:
 `DECLARED_UNMEASURED`. It holds one entry, pi's `manual_compact` cell, citing

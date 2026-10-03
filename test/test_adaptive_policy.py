@@ -442,6 +442,94 @@ class TestSlowRecovery:
         assert d.spawn_gate_capacity == 5
 
 
+# --- per-admission-point saturation and the cut floor --------------------------
+
+
+class TestPerAdmissionPointSaturation:
+    """The runner lane and the sub-agent manager are two admission points on
+    one effective cap. Demand sums across them for reporting, but the earn
+    gate's pressure test is a per-point question (``saturating_demand`` = the
+    busier point's running + queued), the progress probe's is per-point running
+    (``saturating``), and lane slots -- which carry no stall signal -- are never
+    the cut floor."""
+
+    def test_demand_split_below_cap_at_both_points_earns_nothing(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=4, increase_successes=1))
+        # running = 4 (two manager + two lane) satisfies the OLD summed test,
+        # but neither point carries cap-deep demand: saturating_demand =
+        # max(2, 2) = 2 < cap 4 with nothing queued at either point.
+        d = None
+        for i in range(8):
+            d = pol.observe(
+                _sample(
+                    float(i * 31),
+                    running=4,
+                    saturating=2,
+                    saturating_demand=2,
+                    queued=0,
+                    completions=i * 10,
+                )
+            )
+        assert d is not None and d.effective_exec_cap == 4  # no step without a saturated point
+
+    def test_a_single_point_cap_deep_demand_earns(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))  # baseline
+        # One point carries cap-deep demand on its own (two running + a queue):
+        # saturating_demand = 4 >= cap 4, so a completion earns the step up.
+        d = pol.observe(
+            _sample(
+                31.0,
+                running=2,
+                saturating=2,
+                saturating_demand=4,
+                queued=2,
+                completions=50,
+            )
+        )
+        assert d.effective_exec_cap == 5
+
+    def test_slow_start_earns_with_running_below_cap_and_a_deep_queue(self) -> None:
+        """A completion with the busy point's running BELOW the cap but a
+        cap-deep queue still earns -- the queue is that point's demand, so the
+        per-point demand test passes even though no slot is at the cap yet."""
+        pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        d = pol.observe(
+            _sample(
+                31.0,
+                running=3,
+                saturating=3,
+                saturating_demand=63,  # 3 running + a 60-deep queue at one point
+                queued=60,
+                completions=50,
+            )
+        )
+        assert d.effective_exec_cap == 5
+
+    def test_at_cap_demand_defaults_to_total_demand_when_not_measured(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        # A sample with no per-point measure (pre-lane shape) reads total
+        # ``demand`` -- running + queued -- for the earn gate.
+        d = pol.observe(_sample(31.0, running=4, queued=10, completions=50))
+        assert d.effective_exec_cap == 5
+
+    def test_lane_running_is_not_the_cut_floor(self) -> None:
+        """A corroborated cut with the lane at the cap HALVES: lane slots have
+        no stall detection, so they do not enter ``healthy_in_flight`` and
+        cannot prop the decrease target up to a one-slot trim."""
+        pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=10))
+        # 10 "running" are all on the lane (healthy_in_flight stays 0, as the
+        # controller leaves lane slots out of healthy), with corroborated
+        # pressure (severe loop lag is sufficient-alone).
+        d = pol.observe(
+            _sample(0.0, loop_lag_ms=600.0, running=10, saturating=10, healthy_in_flight=0)
+        )
+        assert d.action == ACTION_DECREASE
+        assert d.effective_exec_cap == 5  # halved, not 9
+
+
 # --- slow start and the host cap -----------------------------------------------
 
 

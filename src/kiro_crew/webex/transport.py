@@ -436,6 +436,8 @@ class WebexTransport(MessagingTransport):
         if not self.authorize(msg):
             return
         if self._dispatch is not None:
+            # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+            inbound.person_origin = True
             await self._dispatch(inbound)
 
     def room_permitted(self, inbound: WebexInbound) -> bool:

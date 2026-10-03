@@ -91,12 +91,12 @@ export function resolveLegacyHighlightId(id: string): string {
 export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
 
 /**
- * `data-setting-key` anchor of the Kiro sign-in card on Developer → Agent
- * Backend, the target of the chat error row's "Sign in to Kiro" link
+ * `data-setting-key` anchor of the Kiro sign-in card on Settings → Coding
+ * Agent, the target of the chat error row's "Sign in to Kiro" link
  * (`KIRO_SIGN_IN_PATH` in `pages/developer/kiroSignInLink.ts`). A pseudo key,
  * not a config path: nothing reads it as a setting. Declared HERE, beside the
  * other deep-link ids, because the hook has to know it: the card mounts LATE
- * (its pane renders it only after the Agent Backend tab's config read), so
+ * (its pane renders it only after the Agent Harness tab's config read), so
  * the probe waits for this anchor the way it waits for a declared UI identity
  * instead of stripping it as unknown on the first tick. Every other `key:`
  * value with no registry entry and no element is still stripped at once, so
@@ -114,9 +114,7 @@ const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([KIRO_SIGN_IN_HIGHLIGHT_
 
 
 /**
- * useSettingHighlight — deep-link + highlight hook for Settings, also mounted by
- * the Developer page so `/developer?tab=…&highlight=key:<anchor>` rings a card
- * there (the Kiro sign-in card under the Agent Backend switch).
+ * useSettingHighlight — deep-link + highlight hook for Settings.
  *
  * Reads `?highlight=<id>` from the URL, resolves the id to the label rendered
  * in the active locale via SETTINGS_REGISTRY, finds the element by
@@ -149,12 +147,12 @@ function settingAnchorSelector(
 /**
  * @param owns Whether the mounting page currently owns the URL's `highlight`.
  *   Default `true` (Settings, which is the only element under its route). A
- *   page that also REDIRECTS legacy links to another page passes a route check
- *   here: DeveloperPage replace-navigates `/developer?tab=feature-previews` onto
- *   `/settings/developer?highlight=key:…`, and while it is still the rendered
- *   element for that tick this hook would read the Settings-bound highlight,
- *   find no anchor, and strip it before SettingsPage ever mounts. With `owns`
- *   false the hook leaves the param untouched for the page that will own it.
+ *   page that also mounts this hook while REDIRECTING legacy links to Settings
+ *   passes a route check here, so it does not read the Settings-bound
+ *   highlight, find no anchor, and strip it before SettingsPage ever mounts.
+ *   (DeveloperPage mounts this hook for the default-crewmate deep link on its
+ *   Config tab, and gates it off so that its legacy `agent-backend` redirect
+ *   forwards `highlight` to Settings untouched.)
  */
 export function useSettingHighlight(owns: boolean = true): void {
   const [params, setParams] = useSearchParams()

@@ -1241,6 +1241,8 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
+    "Do not assume anyone's gender. When you have not been told a person's "
+    "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
@@ -2557,7 +2559,7 @@ class ContextBuilder:
                 member, member_is_id=bool(execution_context and execution_context.member_id)
             )[0]
         )
-        memory, member_vectors = _store_admission.session_memory_parts(
+        memory, member_vectors, activity_ranked = _store_admission.session_memory_parts(
             self,
             blocks,
             private=private,
@@ -2610,6 +2612,7 @@ class ContextBuilder:
             blocks,
             memory=memory,
             member_vectors=member_vectors,
+            activity_ranked=activity_ranked,
             effective_groups=effective_groups,
             workspace=workspace,
             memory_store=memory_store,

@@ -1111,6 +1111,63 @@ def write_result_chunk(agent_id: str, text: str) -> None:
         logger.debug("write_result_chunk failed for %s", agent_id, exc_info=True)
 
 
+#: The sentinel a finished run drops beside its ``result.txt`` at the moment that
+#: file holds the whole answer. It exists because completeness and the bytes it
+#: describes lived in two files written at two times: ``result.txt`` streams in
+#: chunk by chunk, and ``result_complete`` was recorded only later, in
+#: ``state.json``. A gateway restart landing between those two writes left a
+#: finished result on disk with no flag, and the orphan reconciler then read the
+#: whole answer as a fragment "cut off mid-turn". This marker is written in the
+#: same completion step that caps ``result.txt``, so the signal cannot lag the
+#: bytes across a crash. Its presence is the whole signal — it carries no body.
+_RESULT_COMPLETE_MARKER = "result.complete"
+
+
+def mark_result_complete(agent_id: str) -> None:
+    """Record that ``result.txt`` holds a run's whole, successful answer.
+
+    Written by the completion path the instant it has finalized ``result.txt``
+    (after ``cap_result_file``), and BEFORE the separate ``state.json`` flag
+    write, so a restart that lands in the gap still finds the completeness signal
+    on disk. Atomic (temp file + rename) so a torn write is never read as a
+    half-present marker, and never overwrites: a run only completes once.
+
+    A transient (incognito / temporary) run keeps its whole record in memory and
+    never touches disk — the same guard ``write_result_chunk`` applies — so it
+    writes no marker either. Its result is delivered in-process and never reaches
+    the orphan reconciler this marker exists for.
+    """
+    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
+        return
+    d = _agent_dir(agent_id)
+    marker = d / _RESULT_COMPLETE_MARKER
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            os.close(fd)
+            Path(tmp).replace(marker)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    except OSError:
+        logger.debug("mark_result_complete failed for %s", agent_id, exc_info=True)
+
+
+def result_marked_complete(agent_id: str) -> bool:
+    """Whether this run finalized a whole answer, read off the durable marker.
+
+    The crash-safe complement to ``state.json``'s ``result_complete`` flag: the
+    two are written in the same completion step but to different files, and a
+    restart can catch the marker present while the flag write never landed. A
+    reader treats either as proof the answer is whole.
+    """
+    try:
+        return (_agent_dir(agent_id) / _RESULT_COMPLETE_MARKER).exists()
+    except (OSError, ValueError):
+        return False
+
+
 # ── tombstone ────────────────────────────────────────────────────────
 
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import VoiceDictationPanel from '../components/VoiceDictationPanel'
 import { createAudioSample } from '../hooks/mic'
 
@@ -273,6 +273,34 @@ describe('transcript auto-scroll', () => {
       )
       expect(t.scrollTop).toBe(999)
     } finally {
+      restore()
+    }
+  })
+
+  it('stops following while the user has scrolled up, and resumes at the bottom', () => {
+    const restore = tallScroll()
+    Object.defineProperty(HTMLDivElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() { return 80 },
+    })
+    const panel = (v: string) => (
+      <VoiceDictationPanel sampleRef={sampleRef} value={v} partial={v} streaming />
+    )
+    try {
+      const { rerender } = render(panel('one'))
+      const t = screen.getByTestId('voice-dictation-transcript')
+      // Scrolled up to reread: new text must not yank the view back down.
+      t.scrollTop = 300
+      fireEvent.scroll(t)
+      rerender(panel('one two'))
+      expect(t.scrollTop).toBe(300)
+      // Back at the bottom (999 - 80): following resumes.
+      t.scrollTop = 919
+      fireEvent.scroll(t)
+      rerender(panel('one two three'))
+      expect(t.scrollTop).toBe(999)
+    } finally {
+      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).clientHeight
       restore()
     }
   })

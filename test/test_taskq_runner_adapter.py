@@ -134,6 +134,105 @@ def test_runner_lane_fixed_mode_pins_the_bound() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lane_settled_ok_counts_a_committed_done_not_a_grant(
+    store: TaskStore, clock: Clock
+) -> None:
+    """``settled_ok`` is the adaptive controller's completion signal: a grant
+    is not one, and only a committed ``done`` -- not a fail or a cancel --
+    advances it."""
+    adm, _ = _admission(store, clock, cap=4)
+    assert adm.lane.settled_ok == 0
+
+    done_row = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:r:agent1")
+    assert done_row is not None
+    done = await adm.admit(done_row.id, lane="sess")
+    assert adm.lane.stats()["granted"] == 1
+    assert adm.lane.settled_ok == 0  # a grant is not a completion
+    done.done()
+    assert adm.lane.settled_ok == 1
+
+    failed_row = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:r:agent2")
+    assert failed_row is not None
+    failed = await adm.admit(failed_row.id, lane="sess")
+    failed.fail("boom")
+    assert adm.lane.settled_ok == 1  # a failure does not count
+
+    cancel_row = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:r:agent3")
+    assert cancel_row is not None
+    cancelled = await adm.admit(cancel_row.id, lane="sess")
+    cancelled.cancel("stop")
+    assert adm.lane.settled_ok == 1  # a cancel does not count
+
+
+@pytest.mark.asyncio
+async def test_lane_settled_ok_ignores_a_claim_only_container_row(
+    store: TaskStore, clock: Clock
+) -> None:
+    """A TaskRunner run row is claimed WITHOUT a lane slot (``claim_only``): it
+    groups its steps but executes nothing itself, and the steps are what the
+    lane meters. Its committed ``done`` must NOT advance ``settled_ok`` -- else
+    every TaskRunner run would credit a completion no lane slot produced,
+    double-counting against the steps that already did (Opus finding)."""
+    adm, _ = _admission(store, clock, cap=4)
+
+    # A slot-backed step completes -> counts.
+    step_row = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:step1")
+    assert step_row is not None
+    step = await adm.admit(step_row.id, lane="sess")
+    assert step.slot_held is True
+    step.done()
+    assert adm.lane.settled_ok == 1
+
+    # The container run row holds no lane slot -> its done credits nothing.
+    container_row = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:container")
+    assert container_row is not None
+    container = adm.claim_only(container_row.id)
+    assert container is not None
+    assert container.slot_held is False  # no slot was ever metered
+    assert container.done() is True  # the row still reaches a committed done
+    assert adm.lane.settled_ok == 1  # unchanged: no slot, no completion
+
+
+@pytest.mark.asyncio
+async def test_lane_settled_ok_counts_a_committed_done_from_done_async(
+    store: TaskStore, clock: Clock
+) -> None:
+    """``done_async`` -- the event-loop settle path -- counts a committed
+    ``done`` the same as the sync ``done``."""
+    adm, _ = _admission(store, clock, cap=4)
+    row = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:r:async1")
+    assert row is not None
+    handle = await adm.admit(row.id, lane="sess")
+    assert adm.lane.settled_ok == 0  # a grant is not a completion
+    assert await handle.done_async() is True
+    assert adm.lane.settled_ok == 1
+
+
+@pytest.mark.asyncio
+async def test_lane_settled_ok_does_not_count_a_deferred_done(
+    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``done`` whose terminal write the store could not take is deferred to
+    the admission's durable retry and returns ``ok=False``: the slot is already
+    freed and the window long past, so crediting it late would mis-time it.
+    ``settled_ok`` stays put; a later replay through ``flush_pending_finish``
+    writes the row without re-entering the settle choke point, so it is never
+    counted."""
+    adm, _ = _admission(store, clock, cap=4)
+    row = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:r:deferred1")
+    assert row is not None
+    handle = await adm.admit(row.id, lane="sess")
+
+    def _unavailable(*_a: object, **_k: object) -> bool:
+        raise TaskStoreUnavailable("disk full")
+
+    monkeypatch.setattr(store, "finish", _unavailable)
+    assert handle.done() is False  # the write was deferred, not committed
+    assert adm.lane.settled_ok == 0  # a deferred done is not counted
+    assert row.id in adm._pending_finish  # it is queued for durable retry
+
+
+@pytest.mark.asyncio
 async def test_runner_lane_cancelled_waiter_leaves_the_queue() -> None:
     lane = r.RunnerLane(1)
     await lane.acquire("holder")

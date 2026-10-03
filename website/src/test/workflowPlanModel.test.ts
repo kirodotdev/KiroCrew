@@ -272,7 +272,77 @@ describe('buildGraph row order', () => {
       [started('Read', 0)],
       'cancelled',
     )
+    // ...and does not read as a success either: the run ended inside this phase.
+    expect(graph.phases[0].state).toBe('stopped')
+  })
+
+  it('a finished run completes its current phase', () => {
+    const graph = buildGraph(
+      plan([{ title: 'Read', certain: true, nodes: [] }]),
+      [started('Read', 0)],
+      'finished',
+    )
     expect(graph.phases[0].state).toBe('ok')
+  })
+})
+
+describe('buildGraph once the run is over with agents still in flight', () => {
+  // The runner records no `agent_finished` for work a cancel or a ceiling cuts
+  // off, so the node's only fact is the run status: over means stopped.
+  const EVENTS = [
+    started('Fan', 0),
+    agent('a0', 'one', 'Fan', 1),
+    agent('a1', 'two', 'Fan', 2),
+    finished('a0', true, 3, '2026-09-18T10:00:05.000Z'),
+  ]
+
+  it.each(['cancelled', 'failed'] as const)('reads an unfinished agent as stopped (%s)', status => {
+    const graph = buildGraph(null, EVENTS, status)
+    expect(graph.phases[0].nodes.map(n => [n.label, n.state])).toEqual([
+      ['one', 'ran_ok'],
+      ['two', 'stopped'],
+    ])
+  })
+
+  it('marks the interrupted phase stopped on a cancel and failed on a ceiling', () => {
+    expect(buildGraph(null, EVENTS, 'cancelled').phases[0].state).toBe('stopped')
+    expect(buildGraph(null, EVENTS, 'failed').phases[0].state).toBe('failed')
+  })
+
+  it('marks an earlier phase stopped too when the run ended with its agent in flight', () => {
+    // pipeline() has no barrier between stages: a later phase can start while an
+    // earlier one still has work, so a cancel can end the run inside both.
+    const graph = buildGraph(
+      null,
+      [
+        started('Review', 0),
+        agent('r1', 'one', 'Review', 1),
+        agent('r2', 'two', 'Review', 2),
+        finished('r1', true, 3, '2026-09-18T10:00:05.000Z'),
+        started('Verify', 4),
+        agent('v1', 'three', 'Verify', 5),
+      ],
+      'cancelled',
+    )
+    expect(graph.phases.map(p => [p.title, p.state])).toEqual([
+      ['Review', 'stopped'],
+      ['Verify', 'stopped'],
+    ])
+  })
+
+  it.each(['running', 'paused'] as const)('keeps an unfinished agent running while the run is active (%s)', status => {
+    const graph = buildGraph(null, EVENTS, status)
+    expect(graph.phases[0].nodes[1].state).toBe('running')
+    expect(graph.phases[0].state).toBe('running')
+  })
+
+  it('reads the same way past a fence', () => {
+    const graph = buildGraph(
+      plan([{ title: 'Fan', certain: true, nodes: [marker('for'), uncertainAgent('each')] }]),
+      EVENTS,
+      'cancelled',
+    )
+    expect(graph.phases[0].nodes.map(n => n.state)).toEqual(['unknown', 'ran_ok', 'stopped'])
   })
 })
 

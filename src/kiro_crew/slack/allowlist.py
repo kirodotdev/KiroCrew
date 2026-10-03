@@ -23,13 +23,14 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.origin import (
-    dashboard_origin,
+    dashboard_link_origin,
     devspaces_proxy_url,
     is_local_only,
     parse_dashboard_url,
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, generate_token
+from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
 from kiro_crew.sel import sel
 from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel
 from kiro_crew.tunnel import get_tunnel_url, publish_disabled
@@ -219,7 +220,7 @@ async def send_dashboard_link(
 
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
     # (default false until tunnel mechanism is scaled for general use).
-    tunnel_url = get_tunnel_url() if cfg.slack.use_tunnel_url else ""
+    tunnel_url = tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
     # Set when the link is knowingly loopback-only and cannot ever become
     # reachable, so the DM can say that rather than leaving it to the log.
     no_tunnel_notice = False
@@ -278,11 +279,13 @@ async def send_dashboard_link(
         # The edition can re-issue the link on a later message once connected.
         if state == "connected":
             tunnel_url = get_tunnel_url() or tunnel_url
-    if tunnel_url:
-        url = f"{tunnel_url}/?token={token}"
-    else:
-        origin = dashboard_origin(cfg.dashboard.url)
-        url = f"{origin}/?token={token}" if origin else f"http://{host}:{port}/?token={token}"
+    # tunnel-vs-dashboard origin lives in one shared helper (dashboard_link_origin)
+    # so this door and the send_message session-link button cannot drift on which
+    # origin a Slack->dashboard link points at. The host:port fall-back stays here
+    # because an explicit dashboard-link request prefers a local link over none,
+    # where the session-link button omits itself instead.
+    origin = dashboard_link_origin(cfg.dashboard.url, tunnel_url)
+    url = f"{origin}/?token={token}" if origin else f"http://{host}:{port}/?token={token}"
 
     # DevSpaces/AgentSpaces: also provide proxy URL
     proxy_line = ""

@@ -210,13 +210,15 @@ async def test_subagent_child_reject_emits_denied(recorded):
         sub_session_id="child-a",
     )
     with patch("kiro_crew.subagent.sel"):
-        await SubagentManager._reject_and_log(client, 9, "k", ev, error="child_escalation_limit")
+        await SubagentManager._reject_and_log(
+            client, 9, "k", ev, cause=None, error="child_escalation_limit"
+        )
     hits = [a for n, a in recorded if n == metric_events.CHILD_PERMISSION_DENIED]
     assert {"surface": "subagent", "reason": "child_escalation_limit"} in hits
     # Parent-origin rejections do NOT emit (child series only).
     ev2 = LLMEvent(kind=EVENT_PERMISSION_REQUEST, request_id=10, title="t")
     with patch("kiro_crew.subagent.sel"):
-        await SubagentManager._reject_and_log(client, 10, "k", ev2, error="hook_deny")
+        await SubagentManager._reject_and_log(client, 10, "k", ev2, cause=None, error="hook_deny")
     assert len([a for n, a in recorded if n == metric_events.CHILD_PERMISSION_DENIED]) == 1
 
 

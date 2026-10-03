@@ -15,7 +15,7 @@ class FakeWorker {
   terminated = false
   postError: Error | undefined
 
-  constructor(readonly url: URL, readonly options: WorkerOptions) {}
+  constructor(readonly url: string | URL, readonly options: WorkerOptions) {}
 
   addEventListener(type: string, listener: (event: unknown) => void) {
     const listeners = this.listeners.get(type) ?? new Set()
@@ -186,11 +186,16 @@ describe('Pierre highlight worker pool recovery', () => {
     })
   })
 
-  it('versions the worker URL so pre-WASM response headers cannot survive an upgrade', async () => {
+  it('keys the worker URL to the build identity so a header-only upgrade is a distinct cache entry', async () => {
     await startPool()
     expect(state.managers[0].workers.length).toBeGreaterThan(0)
     for (const worker of state.managers[0].workers) {
-      expect(worker.url.searchParams.get('csp')).toBe('wasm-v1')
+      // The URL carries the build-identity key (__APP_VERSION__), so a browser
+      // holding the previous build's worker under the year-long immutable policy
+      // requests a different URL and abandons the stranded entry rather than
+      // replaying its stale CSP.
+      const parsed = new URL(String(worker.url), 'https://host')
+      expect(parsed.searchParams.get('v')).toBe(__APP_VERSION__)
       expect(worker.options).toEqual({ type: 'module' })
     }
   })

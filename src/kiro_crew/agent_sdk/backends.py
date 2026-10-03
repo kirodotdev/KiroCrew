@@ -73,6 +73,9 @@ with no row here.
      - disposition
    * - ``ACP_BACKENDS_KNOWN``
      - pre-session registry query (membership gate on the ``acp_backend`` kwarg)
+   * - ``ACP_BACKENDS_INDEPENDENT_SETUP``
+     - pre-session registry query (which first-run harnesses can complete setup
+       without Kiro CLI before any session exists)
    * - ``ACP_BACKENDS_SELF_SERVED_ACP``
      - driver-internal (whether this harness's whole launch is a value
        :data:`ACP_BACKEND_LAUNCH` already holds, so the spawn path, the install
@@ -282,6 +285,21 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+    }
+)
+
+# First-run setup can complete without Kiro CLI only for harnesses explicitly
+# known to launch independently. New adapters opt in after their install and
+# sandbox path is verified; a KAS-like backend cannot inherit the bypass merely
+# because its id is neither Kiro nor KAS.
+ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
+    {
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,

@@ -355,6 +355,18 @@ class TestAcpProviderAdapter:
 # ── registry ──────────────────────────────────────────────────────────────────
 
 
+class TestAmbiguousDeliveryIsNeverADependency:
+    def test_an_ambiguous_death_with_throttle_text_is_not_a_rate_limit(self) -> None:
+        """A stdin-stall death whose attribution folds in a retained "HTTP 429"
+        stderr line would read as rate_limited, and the dependency retry would
+        replay a prompt the live child may already have run."""
+        from kiro_crew.acp.client import AcpProcessDied
+
+        text = "Runtime process died during prompt — stderr_tail: HTTP 429 Too Many Requests"
+        assert classify_exception(AcpProcessDied(text)) is not None
+        assert classify_exception(AcpProcessDied(text, ambiguous_delivery=True)) is None
+
+
 class TestRegistry:
     def test_builtin_adapters_in_order(self) -> None:
         names = registered_adapters()

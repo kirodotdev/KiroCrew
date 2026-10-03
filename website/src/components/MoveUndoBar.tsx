@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { CornerDownRight } from 'lucide-react'
 
@@ -48,7 +48,8 @@ type Props = {
   onUndo: () => void
   /** Reports whether the pointer is over the bar or focus is inside it, so the
    *  owner can suspend the expiry deadline rather than pull the button out from
-   *  under a hand that is already reaching for it. */
+   *  under a hand that is already reaching for it. Reported as ONE value, the
+   *  union of the two: the bar tracks the owners apart (see its body). */
   onHoldChange?: (held: boolean) => void
   /**
    * Time left on the offer, and whether that clock is currently suspended.
@@ -149,6 +150,15 @@ export default function MoveUndoBar({
   remainingMs = MOVE_UNDO_MS,
   paused = false,
 }: Props) {
+  // Pointer and focus are two owners of the hold, tracked apart and reported as
+  // their union -- the rule SessionTitleControl's Auto-title Undo runs on the
+  // same clock. One flag for both let the pointer passing over the bar release
+  // a hold keyboard focus on Undo still owned, and a blur release one the
+  // resting pointer still owned: either way the bar expired under its holder.
+  const hovered = useRef(false)
+  const focused = useRef(false)
+  const reportHold = () => onHoldChange?.(hovered.current || focused.current)
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== 'z' || e.shiftKey || e.altKey) return
@@ -172,10 +182,10 @@ export default function MoveUndoBar({
       transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
       className="shrink-0 overflow-hidden"
       data-testid="session-move-undo"
-      onMouseEnter={() => onHoldChange?.(true)}
-      onMouseLeave={() => onHoldChange?.(false)}
-      onFocusCapture={() => onHoldChange?.(true)}
-      onBlurCapture={() => onHoldChange?.(false)}
+      onMouseEnter={() => { hovered.current = true; reportHold() }}
+      onMouseLeave={() => { hovered.current = false; reportHold() }}
+      onFocusCapture={() => { focused.current = true; reportHold() }}
+      onBlurCapture={() => { focused.current = false; reportHold() }}
     >
       {/* role=status: the whole row is the announcement, so the destination and
           the undo affordance are read together without a duplicate sr-only copy. */}

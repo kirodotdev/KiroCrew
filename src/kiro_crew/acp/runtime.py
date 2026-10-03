@@ -118,14 +118,22 @@ from kiro_crew.acp.transport_errors import (
     is_sandbox_init_failure_output,
     registration_throttle_line,
 )
-from kiro_crew.acp.transport_framing import (
+
+# The block-wide noqa covers _RESPONSE_WRITE_MIN_PROGRESS_BYTES, which is bound
+# for re-export rather than used here: the refactor-facade tests pin runtime and
+# client to one shared copy of this floor (test_acp_refactor_transport_framing /
+# test_acp_refactor_facade), while _stall_window_phrase owns the floor's only read.
+from kiro_crew.acp.transport_framing import (  # noqa: F401
     _RESPONSE_WRITE_BOUND_SECS,
     _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
     OversizeLineUnrecoverable,
+    RequestWriteResult,
     _drain_oversize_line,
+    _stall_window_phrase,
     response_write_window_secs,
     settle_drain,
     write_notification_best_effort,
+    write_request_frame_bounded,
     write_response_frame_bounded,
 )
 from kiro_crew.acp.types import (
@@ -160,6 +168,7 @@ from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.constants import (
+    INITIALIZE_TIMEOUT_SECS,
     KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
@@ -221,6 +230,12 @@ from kiro_crew.session_pid import (
     unregister_protected_pid,
 )
 from kiro_crew.session_token_sig import publish_session_token
+from kiro_crew.start_priority import (
+    START_QUEUE_ADMISSION,
+    START_QUEUE_SESSION_NEW,
+    StartPriority,
+    notify_start_queue,
+)
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
@@ -454,7 +469,7 @@ _MCP_URL_NOT_OPENED = -32000
 # The budget therefore has to expire first, with room for the spawn that
 # precedes the handshake, so ``AcpRuntimeOverloaded`` is what the caller sees
 # rather than a reaper kill. ``test_agents_slice_admission`` pins the ordering.
-_INITIALIZE_TIMEOUT = 90.0
+_INITIALIZE_TIMEOUT = INITIALIZE_TIMEOUT_SECS
 
 
 class _PendingRequests(dict):
@@ -1255,6 +1270,15 @@ class AcpRuntime:
         # operator filtering on WARNING never sees the death without the
         # exit code that followed it.
         self._death_expected = False
+        # Set by ``_mark_dead(stdin_stalled=True)``: the runtime was condemned
+        # because the child stopped reading stdin, with the child still alive.
+        # Any prompt frame already in that pipe may yet be read, so every
+        # session with an unanswered prompt reports its death as an ambiguous
+        # delivery (``AcpSessionHandle.prompt_outstanding_on_stall``).
+        self._stdin_stall_death = False
+        # The sessions whose turn was active when that stall condemned the
+        # runtime, frozen at ``_mark_dead`` before any turn's teardown runs.
+        self._stall_turn_sessions: frozenset[str] = frozenset()
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
         # Latched auth-failure observation. ``_stderr_lines`` is a 20-line ring,
@@ -1478,6 +1502,38 @@ class AcpRuntime:
     def is_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._process is not None and self._process.returncode is None and not self._dead
+
+    @property
+    def stdin_stall_death(self) -> bool:
+        """Whether this runtime died of a stdin stall, its child left alive."""
+        return self._stdin_stall_death
+
+    def stdin_reader_may_live(self) -> bool:
+        """Whether a process that can still read this runtime's stdin may run.
+
+        Blocking (a process-group scan), so call it off the loop. The pipe is
+        inherited inside the root's process group -- the root may be a sandbox
+        launcher whose child reads it -- while stdio MCP servers lead their own
+        groups, so the answer is the root (proven by identity, which holds
+        whether or not this handle still references it) or any live member of
+        its group. Conservative on an unreadable group: True.
+        """
+        pid = self._pid  # pid-owner-ok: the runtime reads its own root
+        if pid is None:
+            return False
+        if self._root_identity() == "holds":
+            return True
+        if platform_compat.IS_WINDOWS:
+            return False
+        return _pgroup_has_member_besides(pid, pid)
+
+    def turn_active_at_stall(self, session_id: str) -> bool:
+        """Whether *session_id* had a turn running when a stdin stall killed this runtime.
+
+        Frozen at the death, so a reader that runs after the turn's own teardown
+        (the provider's exception translation) still gets the answer.
+        """
+        return session_id in self._stall_turn_sessions
 
     @property
     def process_tree_confirmed_dead(self) -> bool:
@@ -1809,24 +1865,42 @@ class AcpRuntime:
                 "and retry."
             ) from exc
 
-    async def spawn(self) -> None:
-        """Start the ACP runtime behind the gateway-wide cold-start admission gate."""
+    async def spawn(
+        self,
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+        on_gate_queued: Callable[..., None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
+    ) -> None:
+        """Start the ACP runtime behind the gateway-wide cold-start admission gate.
+
+        ``start_priority`` orders this spawn in the admission queue (rule:
+        ``kiro_crew.start_priority``). ``on_gate_queued(queue)`` /
+        ``on_gate_acquired(queue_wait_ms, queue)`` bracket the admission wait, with
+        ``queue`` = :data:`START_QUEUE_ADMISSION`, as they bracket the
+        ``session/new`` gate in :meth:`create_session`.
+        """
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
         self._process_tree_confirmed_dead = False
 
         admission = runtime_start._cold_start_admission()
-        wait_ms = await admission.acquire()
-        logger.info(
-            "acp_cold_start stage=queue_wait outcome=admitted wait_ms=%.1f "
-            "active_starts=%d queued_starts=%d",
-            wait_ms,
-            admission.active,
-            admission.queued,
-        )
+        notify_start_queue(logger, on_gate_queued, START_QUEUE_ADMISSION)
+        wait_ms = await admission.acquire(start_priority)
         started = time.monotonic()
         outcome = "error"
         try:
+            # Inside the try: the permit is released below whatever the callback does.
+            notify_start_queue(logger, on_gate_acquired, wait_ms, START_QUEUE_ADMISSION)
+            logger.info(
+                "acp_cold_start stage=queue_wait outcome=admitted priority=%s wait_ms=%.1f "
+                "active_starts=%d queued_starts=%d %s",
+                start_priority.value,
+                wait_ms,
+                admission.active,
+                admission.queued,
+                admission.semaphore.describe(),
+            )
             await self._spawn_admitted_rederiving_once()
             outcome = "ready"
         except asyncio.CancelledError:
@@ -1850,7 +1924,7 @@ class AcpRuntime:
                 admission.queued,
                 process_state,
             )
-            admission.release()
+            admission.release(start_priority)
 
     async def _spawn_admitted_rederiving_once(self) -> None:
         """``_spawn_admitted``, retried ONCE when the post-handshake bracket fires.
@@ -1992,6 +2066,7 @@ class AcpRuntime:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self._acp_backend
         )
+        spawned_kiro_bin = argv[0] if argv else None
         # The host's credential mask, resolved with its argv and applied here.
         # Empty for a host whose privileged tools ask by construction; for one this
         # core's tool gate ENFORCES it is the compensating control, so a spawn that
@@ -2114,7 +2189,7 @@ class AcpRuntime:
             # silently override the credential the operator signed in with.
             # Called here, before the scrub below, so a host can both add its own
             # variables and remove one this generic path would pass through.
-            self._harness.apply_spawn_env(env)
+            self._harness.apply_spawn_env(env, spawned_binary=spawned_kiro_bin)
 
         await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
         # Parent-side equivalent of the launcher scrub. This is required on
@@ -3082,6 +3157,19 @@ class AcpRuntime:
             pid = process.pid
             try:
                 await platform_compat.terminate_windows_asyncio_tree(process)
+            except platform_compat.WindowsTreeDrainPending as exc:
+                # Pending, not lost: every pin is in the pending registry and the
+                # cleanup sweep resumes this drain. One line, because a traceback
+                # here reads as the crash and buries the failure that asked for
+                # this kill. Still raised, so the caller retains.
+                logger.warning(
+                    "AcpRuntime Windows tree for PID %s did not finish one bounded drain "
+                    "pass (%d member(s) pending cleanup); its handles stay pinned and the "
+                    "cleanup sweep keeps reaping it",
+                    pid,
+                    exc.pending,
+                )
+                raise
             except (OSError, asyncio.TimeoutError):
                 logger.warning(
                     "AcpRuntime Windows tree cleanup incomplete for PID %s; retaining process",
@@ -3467,7 +3555,9 @@ class AcpRuntime:
         # Audit before condemning the runtime, so the record for this decision
         # cannot race the wait-resolution _mark_dead triggers.
         refusal = _deny()
-        self._mark_dead(f"{request_kind}-answer task cap reached (backend not reading)")
+        self._mark_dead(
+            f"{request_kind}-answer task cap reached (backend not reading)", stdin_stalled=True
+        )
         return refusal
 
     async def _spawn_answer_task(
@@ -3568,7 +3658,9 @@ class AcpRuntime:
             self._audit_denied_off_loop(
                 msg, session_id, f"{reason}:send_stalled_runtime_dead", title=title
             )
-            self._mark_dead("permission-answer write stalled (backend not reading)")
+            self._mark_dead(
+                "permission-answer write stalled (backend not reading)", stdin_stalled=True
+            )
             return
         except AcpRuntimeStdinStalled:
             # send_response's own no-progress bound fired ahead of the outer
@@ -4598,8 +4690,14 @@ class AcpRuntime:
         else:
             log("AcpRuntime reaped after an observed exit (PID %s): returncode=%s", self._pid, rc)
 
-    def _mark_dead(self, reason: str, *, expected: bool = False) -> None:
+    def _mark_dead(
+        self, reason: str, *, expected: bool = False, stdin_stalled: bool = False
+    ) -> None:
         """Mark runtime dead, fail all pending requests, poison all session queues.
+
+        ``stdin_stalled`` records that the death is a stdin stall with the child
+        still alive (see ``stdin_stall_death``), BEFORE the queues are poisoned,
+        so every session woken by the poison reads it.
 
         ``expected`` selects only the log severity: a deliberate teardown (a
         warm-pool TTL recycle, a session shutdown) logs at INFO, while every
@@ -4611,6 +4709,9 @@ class AcpRuntime:
         """
         if self._dead:
             return
+        self._stdin_stall_death = stdin_stalled
+        if stdin_stalled:
+            self._stall_turn_sessions = frozenset(self._turn_active_sessions)
         # Read co-tenancy BEFORE the flag flips. Both readings go through
         # liveness -- ``outstanding_leases`` excludes a dead runtime's leases by
         # design, and ``is_alive()`` consults ``_dead`` -- so a count taken after
@@ -4846,13 +4947,13 @@ class AcpRuntime:
         data = json.dumps(req.to_dict()) + "\n"
 
         try:
-            # Under the write lock so a response frame waiting behind this
-            # (caller-sized, deliberately unbounded) frame measures the
-            # reader's progress exactly; see await_under_no_progress_bound.
-            async with self._stdin_write_lock():
-                self._refuse_write_if_dead()
-                self._process.stdin.write(data.encode())
-                await self._process.stdin.drain()
+            # Bounded on the reader's PROGRESS, not held across a raw drain: on
+            # the shared stdin a request write that parks while kiro-cli is
+            # flow-control-paused must not hold the write lock and wedge every
+            # other session. On a stall _write_request_bounded marks the runtime
+            # dead and raises AcpRuntimeStdinStalled (an AcpRuntimeDead) -- caught
+            # below so the routing registration is dropped like any other death.
+            await self._write_request_bounded(data.encode(), req_id, method)
         except AcpRuntimeDead:
             self._routed_requests.pop(req_id, None)
             raise
@@ -5044,16 +5145,105 @@ class AcpRuntime:
         safe_id = _loggable_request_id(request_id)
         window = response_write_window_secs(self._process.stdin, _RESPONSE_WRITE_BOUND_SECS)
         logger.warning(
-            "ACP runtime stdin stalled: no write progress for %gs (floor %d bytes/window) "
+            "ACP runtime stdin stalled: %s "
             "while delivering response to req=%s; marking runtime dead",
-            window,
-            _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
+            _stall_window_phrase(self._process.stdin, window),
             safe_id,
         )
-        self._mark_dead("response write stalled (backend not reading stdin)")
+        self._mark_dead("response write stalled (backend not reading stdin)", stdin_stalled=True)
         raise AcpRuntimeStdinStalled(
             f"stdin stalled: no write progress for {window:g}s while "
             f"delivering response to req={safe_id}"
+        )
+
+    async def _write_request_bounded(self, data: bytes, request_id: int, method: str) -> None:
+        """Write a REQUEST frame under the write lock and the same no-progress bound.
+
+        The request twin of :meth:`_write_response_bounded`, for the same
+        shared-runtime hazard: one stdin serves every multiplexed session, so a
+        request write (``session/prompt``, ``session/new``, ``set_mode``,
+        ``_session/steering``) that holds the lock across an unbounded ``drain()``
+        parks forever WITH the lock held whenever kiro-cli is flow-control-paused
+        -- busy generating on one lane and not reading stdin, the state right
+        after ``spawn_run`` fans several session prompts onto the one pipe. Every
+        other session's stdin write then queues behind that lock at 0 CPU while
+        the busy lane keeps streaming stdout and looks healthy. The bound is on
+        PROGRESS, not elapsed time, so a caller-sized frame (a prompt may carry
+        any number of image blocks) stays legal: a reader still consuming keeps
+        the wait alive, and only a writer whose buffer has not shrunk for
+        ``_RESPONSE_WRITE_BOUND_SECS`` is the reader-gone stall.
+
+        Both phases mark the runtime dead and raise
+        :class:`AcpRuntimeStdinStalled`, which the session provider translates to
+        ``AcpProcessDied`` so the caller takes the ownership-authorized session-
+        reset recovery the broken-pipe case uses. This path does NOT kill the
+        child: a ``DRAIN_STALL`` can leave the frame buffered in a kiro-cli that
+        resumes, but killing cannot be guaranteed (a close/EOF keeps flushing the
+        buffered bytes and the wedged child is the one that will not exit in a kill
+        grace, so death is unconfirmed before the raise) and, on this shared
+        runtime, signalling the child from a write path bypasses the
+        ``authorize_runtime_kill`` ownership gate and teardown barrier the only
+        sanctioned teardown takes, terminating sibling sessions' work unauthorized.
+        Instead a ``DRAIN_STALL`` raises with ``ambiguous_delivery`` set, which
+        rides through ``_translate_dead`` into ``build_recovery_requeue`` and makes
+        the recovery resume from restored state rather than replay the prompt the
+        paused backend may have consumed; a ``LOCK_STALL`` wrote no byte, so it is
+        not ambiguous and its replay is safe. The method name and request id appear
+        only through ``_loggable_request_id``.
+        """
+        assert self._process is not None and self._process.stdin is not None
+        result = await write_request_frame_bounded(
+            self._process.stdin,
+            self._stdin_write_lock(),
+            data,
+            bound_secs=_RESPONSE_WRITE_BOUND_SECS,
+            before_write=self._refuse_write_if_dead,
+        )
+        if result is RequestWriteResult.OK:
+            return
+        safe_id = _loggable_request_id(request_id)
+        window = response_write_window_secs(self._process.stdin, _RESPONSE_WRITE_BOUND_SECS)
+        logger.warning(
+            "ACP runtime stdin stalled: %s while sending request method=%s req=%s; "
+            "marking runtime dead (%s)",
+            _stall_window_phrase(self._process.stdin, window),
+            _loggable_request_id(method),
+            safe_id,
+            # Which phase stalled, for the log only -- recovery is the same either
+            # way (see below).
+            (
+                "frame never written"
+                if result is RequestWriteResult.LOCK_STALL
+                else "frame already buffered"
+            ),
+        )
+        # Both phases mark the runtime dead and raise -- no direct child kill from
+        # here. On the shared runtime the child serves every multiplexed session,
+        # and signalling it from a write path bypasses the ownership
+        # authorization + teardown barrier (authorize_runtime_kill) that the only
+        # sanctioned teardown takes, so it would terminate sibling sessions' work
+        # unauthorized. Instead the two phases differ ONLY in the recovery hint
+        # they carry: a LOCK_STALL wrote no byte, so the recovery's prompt replay
+        # is the frame's first and only delivery (replay safe); a DRAIN_STALL left
+        # the frame in the transport, which a kiro-cli that merely paused reading
+        # could still consume -- so it is flagged ambiguous_delivery, and the
+        # recovery resumes from restored state rather than replaying the prompt
+        # verbatim (which would run its tools twice). The flag rides the stall
+        # through _translate_dead onto AcpProcessDied; the authorized teardown
+        # reaps the old child through the ownership path.
+        drain_stall = result is RequestWriteResult.DRAIN_STALL
+        self._mark_dead(
+            (
+                "request write stalled after the frame was buffered"
+                if drain_stall
+                else "request write stalled waiting for stdin lock"
+            ),
+            stdin_stalled=True,
+        )
+        raise AcpRuntimeStdinStalled(
+            f"stdin stalled: no write progress for {window:g}s while "
+            f"sending request req={safe_id}",
+            ambiguous_delivery=drain_stall,
         )
 
     async def send_request_for_answer(
@@ -5102,16 +5292,19 @@ class AcpRuntime:
         if on_registered is not None:
             on_registered(future)
         try:
-            # Through the transport's write lock like every other stdin writer:
-            # a response write measuring the buffer level for its no-progress bound
-            # must be the only writer in flight (see await_under_no_progress_bound).
-            async with self._stdin_write_lock():
-                self._refuse_write_if_dead()
-                self._process.stdin.write(data.encode())
-                await self._process.stdin.drain()
+            # Bounded like send_request: a raw drain here would hold the
+            # shared write lock against a flow-control-paused kiro-cli. A
+            # stall marks the runtime dead and raises AcpRuntimeStdinStalled (an
+            # AcpRuntimeDead), caught below so the pending future is retrieved or
+            # cancelled rather than left unretrieved.
+            await self._write_request_bounded(data.encode(), req_id, method)
         except AcpRuntimeDead:
-            # From _refuse_write_if_dead: _mark_dead already failed or dropped the
-            # future; retrieve or cancel it so asyncio logs nothing unhandled.
+            # Reached two ways, both of which have already resolved the future
+            # before the raise, so retrieve or cancel it here only to stop
+            # asyncio logging a handled error as unhandled: _refuse_write_if_dead
+            # (a sibling stall marked the runtime dead while this caller held the
+            # lock wait), or _write_request_bounded's own stall paths -- both of
+            # which call _mark_dead and fail this pending future first.
             self._pending_requests.pop(req_id, None)
             if future.done():
                 if not future.cancelled():
@@ -6521,9 +6714,10 @@ class AcpRuntime:
         session_key: str = "",
         channel_id: str = "",
         memory_mode: str = "persistent",
-        on_gate_acquired: Callable[[float], None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
-        on_gate_queued: Callable[[], None] | None = None,
+        on_gate_queued: Callable[..., None] | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -6549,11 +6743,13 @@ class AcpRuntime:
         element. Empty — and unread — for a host with no mirror.
 
         ``session/new`` runs under the loop's :class:`SessionStartGate`
-        (``agent.session_start_concurrency``). ``on_gate_queued()`` fires
+        (``agent.session_start_concurrency``). ``on_gate_queued(queue)`` fires
         immediately before the wait for a permit begins and
-        ``on_gate_acquired(queue_wait_ms)`` at gate EXIT, so the caller can
-        stop its own clocks for exactly the span spent queued and restart them
-        at acquisition: the queue wait is not start time. On a ``session/new`` timeout the request
+        ``on_gate_acquired(queue_wait_ms, queue)`` at gate EXIT, so the caller can
+        PAUSE its own clock for exactly the span spent queued and resume it at
+        acquisition: the queue wait is not start time. ``start_priority``
+        orders this start in the gate's queue (rule: ``kiro_crew.start_priority``);
+        the callbacks receive ``queue`` = :data:`START_QUEUE_SESSION_NEW`. On a ``session/new`` timeout the request
         is NOT abandoned: a :class:`StartCollector` keeps it for
         ``agent.start_collect_timeout_secs`` and either hands the late session
         to ``late_adopter`` (which returns True to keep it) or tears it down;
@@ -6761,17 +6957,15 @@ class AcpRuntime:
             # gate protects), on a timeout by the collector that now owns the
             # request, on any other failure here.
             gate = await runtime_start.session_start_gate()
-            if on_gate_queued is not None:
-                try:
-                    on_gate_queued()
-                except Exception:
-                    logger.debug("on_gate_queued callback raised", exc_info=True)
-            permit = await gate.acquire()
-            if on_gate_acquired is not None:
-                try:
-                    on_gate_acquired(permit.queue_wait_ms)
-                except Exception:
-                    logger.debug("on_gate_acquired callback raised", exc_info=True)
+            notify_start_queue(logger, on_gate_queued, START_QUEUE_SESSION_NEW)
+            permit = await gate.acquire(start_priority)
+            try:
+                notify_start_queue(
+                    logger, on_gate_acquired, permit.queue_wait_ms, START_QUEUE_SESSION_NEW
+                )
+            except BaseException:
+                permit.release()
+                raise
         except BaseException:
             self._finish_session_init("")
             raise
@@ -6966,10 +7160,12 @@ class AcpRuntime:
         self._start_collectors[int(req_id)] = collector
         logger.warning(
             "acp_startup_stage stage=session_new outcome=collecting req_id=%d "
-            "collect_budget_s=%g gate_active=%d gate_queued=%d",
+            "collect_budget_s=%g priority=%s gate_active=%d gate_queued=%d %s",
             int(req_id),
             timeout,
+            permit.priority.value,
             *session_start_gate_counts(),
+            permit.gate_state(),
         )
         return collector.start()
 
@@ -7906,15 +8102,20 @@ class AcpRuntime:
         self._pending_requests[req_id] = future
 
         try:
-            async with self._stdin_write_lock():
-                self._refuse_write_if_dead()
-                self._process.stdin.write(data.encode())
-                await self._process.stdin.drain()
+            # Bounded like send_request: the control-plane
+            # requests (initialize, session/new, set_mode) share the same
+            # drain under the shared write lock and must not park it against
+            # a flow-control-paused kiro-cli. A stall raises AcpRuntimeStdinStalled
+            # (an AcpRuntimeDead), caught below to retrieve/cancel the future.
+            await self._write_request_bounded(data.encode(), req_id, method)
         except AcpRuntimeDead:
-            # Reached only through _refuse_write_if_dead: _mark_dead has already
-            # failed this future and cleared the map, so retrieve its exception
-            # (or cancel a still-pending one) rather than drop the last reference
-            # unretrieved and have asyncio log a handled error as unhandled.
+            # Reached through _refuse_write_if_dead (a sibling stall marked the
+            # runtime dead while this caller held the lock wait) OR through
+            # _write_request_bounded's own stall paths -- both of which call
+            # _mark_dead. They all fail this future before the raise, so retrieve
+            # its exception (or cancel a still-pending one) rather than drop the
+            # last reference unretrieved and have asyncio log a handled error as
+            # unhandled.
             self._pending_requests.pop(req_id, None)
             if future.done():
                 if not future.cancelled():

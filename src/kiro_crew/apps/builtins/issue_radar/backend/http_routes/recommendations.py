@@ -192,10 +192,11 @@ async def _compute_label_recommendations(
 ) -> dict:
     """One-shot, tool-less, ephemeral-session model call proposing NEW labels.
 
-    Mirrors :func:`_compute_issue_ai` exactly (``kirocrew-lite`` background agent,
-    ``get_or_create`` -> ``stream_and_collect`` with ``REJECT_ALL`` -> release +
-    destroy). Output is validated: names that already exist are dropped (so every
-    proposal is genuinely new), ``category`` is constrained to the known set,
+    Runs through the same :func:`_run_oneshot_model` as :func:`_compute_issue_ai`
+    (``kirocrew-lite``, ``REJECT_ALL``, release + destroy), so the start priority
+    read from who asked lives in one place. Output is validated: names that
+    already exist are dropped (so every proposal is genuinely new), ``category``
+    is constrained to the known set,
     ``color`` is validated to 6-hex (else a per-category default), text fields are
     redacted + length-clamped, and ``examples`` are kept only if they are real
     issue numbers from the sample.
@@ -205,37 +206,17 @@ async def _compute_label_recommendations(
     prose surfaces already do) because it also has to stamp the cache with the
     same tag, and two independent reads could disagree if the language moved
     between them."""
-    from kiro_crew.llm_helpers import (
-        ToolApprovalPolicy,
-        parse_llm_json,
-        stream_and_collect,
-    )
+    from kiro_crew.llm_helpers import parse_llm_json
     from kiro_crew.security import redact
 
-    state = request.app.get("state")
-    if state is None:
-        raise RuntimeError("session manager unavailable")
-
-    kiro_agent = "kirocrew-lite"
     prompt = _build_reco_prompt(owner, repo, existing_labels, issues, ui_language=ui_language)
 
     import uuid
 
+    from .. import routes  # circular import: backend.routes imports this module
+
     key = f"issue-radar-reco:{owner}/{repo}:{uuid.uuid4().hex}"
-    provider, _is_new, _resumed = await state.sessions.get_or_create(key, agent=kiro_agent)
-    try:
-        text = await stream_and_collect(
-            provider, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
-        )
-    finally:
-        try:
-            state.sessions.release(key)
-        except Exception:
-            logger.debug("reco: session release failed for %s", key, exc_info=True)
-        try:
-            await state.sessions.destroy(key)
-        except Exception:
-            logger.debug("reco: session destroy failed for %s", key, exc_info=True)
+    text = await routes._run_oneshot_model(request, key, prompt)
 
     data = parse_llm_json(text) or {}
     existing_lc = {str(lab.get("name", "")).strip().lower() for lab in existing_labels}
@@ -325,8 +306,18 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
     """POST /recommendations {"owner","repo"} — generate (and cache) label
     recommendations via ONE model call over the repo's labels + a sample of its
     open issues. Read-only w.r.t. GitHub (proposes only; creating a label is
-    /labels/create), so no permission gate."""
+    /labels/create), so no forge permission gate; it is owner only, because it
+    spends a model call and writes the repo's recommendations cache."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Spends a model call and writes the shared recommendations cache: owner only.
+    owner_denied = await require_owner_dashboard_request(
+        request, "issue_radar.recommendations_generate"
+    )
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()

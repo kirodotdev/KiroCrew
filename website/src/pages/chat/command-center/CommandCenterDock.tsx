@@ -101,7 +101,10 @@ function CommandCenterDock({ slot, onOpen }: { slot: string | null; onOpen: () =
                 <span className="text-[11px] text-muted whitespace-nowrap">{t('commandCenter.title')}</span>
               </Btn>
             </Glass>
-            : <Glass radius={10} className="w-full min-w-0">
+            // `thick` like the other progress panes above the composer: the
+            // status tiles stay readable over the transcript (#16299). The dot
+            // pill above keeps the default: a glyph and a count need no body.
+            : <Glass thickness="thick" radius={10} className="w-full min-w-0">
               <div className="overflow-hidden rounded-[inherit] p-1.5 space-y-1.5">
               <StatusTiles data={data} selected={selected} idBase={idBase} onSelect={tile => setSelected(current => current === tile ? null : tile)}
                 controls={<div className="flex items-center gap-1">

@@ -239,7 +239,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
                 className={`bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${
                   active
                     ? 'opacity-60 hover:opacity-100 hover:text-text'
-                    : 'opacity-0 group-hover/tab:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
+                    : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
                 }`}
               >
                 <X size={11} />

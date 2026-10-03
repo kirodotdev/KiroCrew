@@ -92,17 +92,100 @@ class TestMergeBoundaries(unittest.TestCase):
 
 
 class TestMergePrimitive(unittest.TestCase):
-    def test_merge_uses_the_providers_own_merge_endpoint(self):
-        """Which is what enforces branch protection -- the reason this is safe."""
+    def test_merge_uses_the_providers_own_async_merge_endpoint(self):
+        """Which is what enforces branch protection -- the reason this is safe. Rules
+        are never bypassed from here, even for an account allowed to."""
         with mock.patch.object(
-            gh, "_run_gh_write", return_value={"merged": True, "sha": "abc", "message": "ok"}
+            gh, "_run_gh_write",
+            return_value={"status": "merged", "details": {"sha": "abc", "message": "ok"}},
         ) as m:
             out = gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
         self.assertEqual(m.call_args[0][0], "PUT")
-        self.assertEqual(m.call_args[0][1], "repos/o/r/pulls/7/merge")
-        self.assertEqual(m.call_args[0][2], {"merge_method": "squash", "sha": "abc1234"})
+        self.assertEqual(m.call_args[0][1], "repos/o/r/pulls/7/merge-async")
+        self.assertEqual(
+            m.call_args[0][2],
+            {"merge_method": "squash", "sha": "abc1234",
+             "merge_action": "direct_merge", "bypass_rules": False},
+        )
         self.assertTrue(out["merged"])
         self.assertEqual(out["sha"], "abc")
+
+    def test_an_accepted_merge_is_polled_until_it_lands(self):
+        replies = [
+            {"status": "pending", "details": {"uuid": "u-1"}},
+            {"status": "pending", "details": {"uuid": "u-1"}},
+            {"status": "merged", "details": {"sha": "m1"}},
+        ]
+        with mock.patch.object(gh, "_run_gh_write", side_effect=replies) as m, \
+                mock.patch.object(gh.time, "sleep") as sleep:
+            out = gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
+        self.assertTrue(out["merged"])
+        self.assertEqual(out["sha"], "m1")
+        self.assertEqual(m.call_args_list[1][0][:2], ("GET", "repos/o/r/pulls/7/merge-async/u-1"))
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_a_failed_background_merge_is_a_refusal_not_a_merge(self):
+        replies = [
+            {"status": "pending", "details": {"uuid": "u-1"}},
+            {"status": "failed", "details": {"message": "Required status check is failing"}},
+        ]
+        with mock.patch.object(gh, "_run_gh_write", side_effect=replies), \
+                mock.patch.object(gh.time, "sleep"):
+            with self.assertRaises(gh.GhMergeRefusedError) as ctx:
+                gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
+        self.assertIn("Required status check", str(ctx.exception))
+
+    def test_a_merge_still_running_after_the_wait_is_pending_not_merged(self):
+        pending = {"status": "pending", "details": {"uuid": "u-1"}}
+        clock = iter(range(0, 10_000, 30))
+        with mock.patch.object(gh, "_run_gh_write", return_value=pending) as m, \
+                mock.patch.object(gh.time, "sleep"), \
+                mock.patch.object(gh.time, "monotonic", side_effect=lambda: next(clock)):
+            out = gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
+        self.assertFalse(out["merged"])
+        self.assertTrue(out["pending"])
+        # The mocked clock passes the 60s deadline after one poll: the PUT plus
+        # one GET, not the whole poll schedule.
+        self.assertEqual(m.call_count, 2)
+
+    def test_an_already_pending_request_is_pending_not_a_stale_head(self):
+        """GitHub's async 409 means a merge request is already in flight (verified
+        live); a stale sha is a 400. So a 409 must not read as a stale head."""
+        with mock.patch.object(
+            gh, "_run_gh_write", side_effect=gh.GhCliError("gh api PUT x failed: (HTTP 409)")
+        ):
+            out = gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
+        self.assertTrue(out["pending"])
+        self.assertFalse(out["merged"])
+
+    def test_an_unknown_status_is_a_loud_error_not_a_silent_poll(self):
+        with mock.patch.object(
+            gh, "_run_gh_write", return_value={"status": "exploded", "details": {"uuid": "u"}}
+        ):
+            with self.assertRaises(gh.GhCliError) as ctx:
+                gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
+        self.assertIn("exploded", str(ctx.exception))
+        self.assertNotIsInstance(ctx.exception, gh.GhMergeRefusedError)
+
+    def test_a_400_at_submit_is_a_refusal(self):
+        with mock.patch.object(
+            gh, "_run_gh_write",
+            side_effect=gh.GhCliError("gh api PUT x failed: Pull request is a draft (HTTP 400)"),
+        ):
+            with self.assertRaises(gh.GhMergeRefusedError):
+                gh.merge_pull_request("o", "r", 7, "SQUASH", "abc1234")
+
+    def test_a_pending_merge_refreshes_detail_but_keeps_the_row_open(self):
+        key = provider.key_from_parts("o", "r")
+        client = mock.Mock()
+        client.merge_pull_request.return_value = {
+            "merged": False, "pending": True, "sha": None, "message": "still merging",
+        }
+        with mock.patch.object(provider, "client_for", return_value=client), \
+                mock.patch.object(routes, "_st", new=mock.AsyncMock()) as st:
+            out = _await(routes._run_pr_action(key, "merge", 7))
+        self.assertTrue(out["pending"])
+        self.assertEqual(st.await_args_list[0].args[1], store.drop_pr_detail_cache)
 
     def test_invalid_method_is_refused_before_any_call(self):
         with mock.patch.object(gh, "_run_gh_write") as m:

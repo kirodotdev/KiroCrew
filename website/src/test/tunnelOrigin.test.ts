@@ -5,7 +5,7 @@
  * (127.0.0.1 / localhost / *.localhost) on a known warm port are accepted.
  */
 import { describe, it, expect } from 'vitest'
-import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { parseLoopbackOriginPort, resolveTunnelOrigin, isEmbeddableLoopbackOrigin } from '../lib/tunnelOrigin'
 
 describe('parseLoopbackOriginPort', () => {
   it('accepts loopback http origins with valid ports', () => {
@@ -65,5 +65,41 @@ describe('resolveTunnelOrigin', () => {
   it('returns null for a non-loopback origin', () => {
     expect(resolveTunnelOrigin('https://127.0.0.1:7778', portToId)).toBeNull()
     expect(resolveTunnelOrigin('http://evil.com:7778', portToId)).toBeNull()
+  })
+})
+
+describe('isEmbeddableLoopbackOrigin', () => {
+  it('admits IPv4 loopback hosts under http AND https (matching the CSP)', () => {
+    for (const host of ['127.0.0.1', 'localhost', '0.0.0.0']) {
+      expect(isEmbeddableLoopbackOrigin('http:', host)).toBe(true)
+      expect(isEmbeddableLoopbackOrigin('https:', host)).toBe(true)
+    }
+  })
+
+  it('admits a *.localhost host under http ONLY (the CSP extra is http-only)', () => {
+    expect(isEmbeddableLoopbackOrigin('http:', 'kirocrew.localhost')).toBe(true)
+    expect(isEmbeddableLoopbackOrigin('https:', 'kirocrew.localhost')).toBe(false)
+  })
+
+  it('never admits IPv6 loopback ::1 (the CSP deliberately omits it)', () => {
+    expect(isEmbeddableLoopbackOrigin('http:', '::1')).toBe(false)
+    expect(isEmbeddableLoopbackOrigin('http:', '[::1]')).toBe(false)
+    expect(isEmbeddableLoopbackOrigin('https:', '::1')).toBe(false)
+  })
+
+  it('rejects a reverse-proxy / tunnel host on any scheme', () => {
+    for (const host of ['dash.example.com', 'localhost.evil.com', 'evil.localhost.com', '10.0.0.5', '192.168.1.4', 'example.com', '']) {
+      expect(isEmbeddableLoopbackOrigin('http:', host)).toBe(false)
+      expect(isEmbeddableLoopbackOrigin('https:', host)).toBe(false)
+    }
+  })
+
+  it('rejects a non-http(s) scheme and non-string input', () => {
+    expect(isEmbeddableLoopbackOrigin('file:', 'localhost')).toBe(false)
+    expect(isEmbeddableLoopbackOrigin('ftp:', '127.0.0.1')).toBe(false)
+    // @ts-expect-error intentional bad input
+    expect(isEmbeddableLoopbackOrigin(undefined, 'localhost')).toBe(false)
+    // @ts-expect-error intentional bad input
+    expect(isEmbeddableLoopbackOrigin('http:', undefined)).toBe(false)
   })
 })

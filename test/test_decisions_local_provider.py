@@ -753,26 +753,25 @@ class TestConsentCarry:
         assert consent.consented_endpoint(consent.load_state()) == DEFAULT_ENDPOINT
 
     @pytest.mark.asyncio
-    async def test_a_hosted_pin_still_lets_a_local_preset_take_over(
+    async def test_the_route_picks_the_row_for_the_side_it_switches_to(
         self, audit, config_file, keystone, monkeypatch
     ):
-        """A fleet that pins ``capabilities.decisions`` off still has a local preset,
-        governed by ``capabilities.decisions_local``, that switches, consent and all."""
+        """The route asks the probe about the side it switches TO, and the payload
+        reports both sides. Stubbed as a fleet that allows hosted Jev and withdraws
+        local models: the switch to a preset is refused, the switch to Jev is not."""
         from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
         from kiro_crew.decisions import capability
 
-        monkeypatch.setattr(
-            capability, "is_decisions_denied", lambda *a, local=False, **k: not local
-        )
-        self._consent(keystone, DEFAULT_ENDPOINT)
+        monkeypatch.setattr(capability, "is_decisions_denied", lambda *a, local=False, **k: local)
+        monkeypatch.setattr(capability, "denied_sides", lambda *a, **k: (False, True))
         resp = await api_decisions_provider_put(_request(body={"preset": "laya"}))
-        assert resp.status == 200
-        payload = json.loads(resp.text)
-        assert (payload["hosted_permitted"], payload["local_permitted"]) == (False, True)
-        assert consent.consented_endpoint(consent.load_state()) == local_models.endpoint_for(8104)
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "decisions_capability_denied"
+        assert config_file[1]() == {}
         back = await api_decisions_provider_put(_request(body={"preset": "jev"}))
-        assert back.status == 403
-        assert config_file[1]()["endpoint"] == local_models.endpoint_for(8104)
+        assert back.status == 200
+        payload = json.loads(back.text)
+        assert (payload["hosted_permitted"], payload["local_permitted"]) == (True, False)
 
 
 class TestNoModel:
@@ -832,7 +831,9 @@ class TestNoModel:
 
 class TestGateReadsTheRowOfTheConfiguredProvider:
     """The keystone read is the chokepoint every decision funnels through, so it is
-    where a hosted pin must stop applying to a local preset."""
+    where the row is chosen from the configured provider. The probe is stubbed per
+    row to test that choice; the policy-level answer (a hosted pin covers local
+    models) is pinned in ``test_decisions_consent``."""
 
     @staticmethod
     def _config(endpoint: str, model: str):
@@ -853,7 +854,7 @@ class TestGateReadsTheRowOfTheConfiguredProvider:
             (local_models.endpoint_for(8104), "english", False),
         ],
     )
-    def test_a_hosted_pin_withdraws_everything_but_the_preset_this_gateway_runs(
+    def test_only_the_preset_this_gateway_runs_selects_the_local_row(
         self, keystone, monkeypatch, runtime, endpoint, model, consented
     ):
         from kiro_crew.decisions import capability, gate
@@ -1000,3 +1001,24 @@ class TestDeleteAndSwitchAreSerialised:
         resp = await asyncio.wait_for(pending, timeout=5)
         assert resp.status == 409
         assert ("remove", "laya") not in runtime.calls
+
+
+class TestStartupResumeIsSerialisedWithSwitches:
+    @pytest.mark.asyncio
+    async def test_the_startup_resume_waits_for_a_switch_in_flight(self, monkeypatch):
+        """A resume that read the config before a switch landed would start the stale preset."""
+        import asyncio
+
+        import kiro_crew.dashboard.handlers.decisions as mod
+        from kiro_crew.decisions import local_runtime
+
+        calls: list = []
+        monkeypatch.setattr(
+            local_runtime, "resume_configured", lambda: calls.append("resume") or "laya"
+        )
+        async with mod._PROVIDER_SWITCH_LOCK:
+            pending = asyncio.ensure_future(mod.resume_local_decision_model())
+            await asyncio.sleep(0.05)
+            assert not pending.done() and calls == []
+        assert await asyncio.wait_for(pending, timeout=5) == "laya"
+        assert calls == ["resume"]

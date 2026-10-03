@@ -41,7 +41,11 @@ from __future__ import annotations
 
 import logging
 
-from kiro_crew.platform.governance_profiles import vet_and_audit
+from kiro_crew.platform.governance_profiles import (
+    governance_answer_generation,
+    poll_profiles_fresh,
+    vet_and_audit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +54,9 @@ DECISIONS_SCOPE = "capabilities.decisions"
 #: The ceiling for a LOCAL PRESET answering instead of hosted Jev. Separate from
 #: :data:`DECISIONS_SCOPE` because the two rows answer different questions: the
 #: hosted row is about message excerpts reaching a paid third party, and a local
-#: preset sends nothing off the machine. A fleet that pins the hosted row off for
-#: that reason can still allow -- or deny -- a local model with this row. Only a
+#: preset sends nothing off the machine. This row only NARROWS: a fleet that permits
+#: hosted Jev can still deny a local model with it, but a pinned hosted deny covers
+#: local models too (:func:`is_decisions_denied`). Only a
 #: route-built preset address counts as local (``local_models.active_id``); a
 #: hand-written loopback address may be a tunnel to hosted Jev and stays under the
 #: hosted row.
@@ -121,8 +126,8 @@ def is_local_preset(endpoint: object, model: object, *, serving: bool = True) ->
 def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY, *, local: bool = False) -> bool:
     """Return whether the ceiling withdraws the decision seam for *surface_key*.
 
-    *local* selects the row: :data:`DECISIONS_LOCAL_SCOPE` when a local preset
-    answers, :data:`DECISIONS_SCOPE` otherwise. Callers derive it from the
+    *local* adds :data:`DECISIONS_LOCAL_SCOPE` on top of :data:`DECISIONS_SCOPE`
+    when a local preset answers; without it only the hosted row is read. Callers derive it from the
     configured provider with :func:`is_local_preset` -- the runtime's attestation --
     never from request input or the configured address alone.
 
@@ -149,10 +154,76 @@ def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY, *, local: bool
     Blocking (profile resolution may read from disk). Every caller already runs off
     the event loop: the handlers use ``asyncio.to_thread``, and the gate calls it
     inside the one keystone-read hop it already makes.
+
+    **The local row only narrows.** With *local* a denial on the hosted row denies
+    the local path too; :data:`DECISIONS_LOCAL_SCOPE` can
+    then withdraw a local model the hosted row permits, never permit one the hosted
+    row denies. ``capabilities.decisions`` permits while it is absent or named
+    without ``enabled``, so a denial on it is an admin's (or a config's) explicit
+    pin, or the fail-closed degrade: before ``capabilities.decisions_local`` existed
+    that pin withdrew the whole seam, local models included, and an upgrade must not
+    widen it. Both rows are evaluated, never short-circuited: each writes its own
+    ``governance_decision`` row, and which rows appear must not depend on the
+    other row's answer.
     """
+    if local:
+        return any(denied_sides(surface_key))
+    return _row_denied(surface_key, DECISIONS_SCOPE)
+
+
+def denied_sides(surface_key: str = DASHBOARD_SURFACE_KEY) -> tuple[bool, bool]:
+    """``(hosted_denied, local_denied)``, each row evaluated and audited exactly once.
+
+    The local side holds the hosted row's deny (see :func:`is_decisions_denied`).
+    For a reader that reports both sides without auditing the hosted row twice.
+
+    The two rows are separate evaluations, so a central-policy install or a profile
+    reload landing between them could pair the OLD hosted permit with the NEW local
+    permit and let a local model run past a freshly installed parent deny. So the
+    profile store is primed first (:func:`poll_profiles_fresh`, the same refresh the
+    hosted row would otherwise do on first touch, which publishes a snapshot and
+    bumps the generation), then the governance answer generation is read BEFORE the
+    hosted row and again AFTER the local row. Priming first is what lets the bracket
+    cover the whole pair without counting the first touch as a swap. If the
+    generation moved, the local side fails closed for this one call (audited as
+    unevaluable). A wrong-deny falls back to the shipped skill rule and the next call
+    re-evaluates both rows, so this never widens access. Blocking, like the rows
+    themselves: every caller already runs off the event loop.
+    """
+    _prime_profiles()
+    before = _answer_generation()
+    hosted = _row_denied(surface_key, DECISIONS_SCOPE)
+    local = _row_denied(surface_key, DECISIONS_LOCAL_SCOPE)
+    if not (hosted or local) and (before is None or _answer_generation() != before):
+        logger.debug("decisions governance answer moved mid-evaluation; denying local")
+        _audit_unevaluable(surface_key, DECISIONS_LOCAL_SCOPE)
+        local = True
+    return hosted, hosted or local
+
+
+def _prime_profiles() -> None:
+    """Publish any pending profile snapshot before the generation is read. Best-effort."""
+    try:
+        poll_profiles_fresh()
+    except Exception:
+        # poll_profiles_fresh already swallows its own errors; a failure here leaves
+        # the generation where it was, so the bracket still compares like with like.
+        logger.debug("decisions profile prime failed", exc_info=True)
+
+
+def _answer_generation() -> int | None:
+    """The governance answer token, or ``None`` when it cannot be read (fails closed)."""
+    try:
+        return governance_answer_generation()
+    except Exception:
+        return None
+
+
+def _row_denied(surface_key: str, scope: str) -> bool:
+    """Evaluate and audit ONE capability row. Fail-closed; see :func:`is_decisions_denied`."""
     try:
         decision = vet_and_audit(
-            DECISIONS_LOCAL_SCOPE if local else DECISIONS_SCOPE,
+            scope,
             "",
             session_key=surface_key,
             tool_name=AUDIT_TOOL,
@@ -165,7 +236,7 @@ def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY, *, local: bool
         # itself failed — the ceiling is unevaluable, which is the same condition
         # as a degrade. Fail closed, and record the denial the seam could not.
         logger.debug("decisions governance probe failed; denying", exc_info=True)
-        _audit_unevaluable(surface_key, DECISIONS_LOCAL_SCOPE if local else DECISIONS_SCOPE)
+        _audit_unevaluable(surface_key, scope)
         return True
     return not getattr(decision, "permitted", False)
 

@@ -459,6 +459,33 @@ class TestAConfigReadThatFailedIsNotAConfigChange:
         monkeypatch.setattr(loader_mod, "config_dir", _boom)
         assert repository._load_dev_fleet_cfg_checked() == ({}, False)
 
+    async def test_a_non_absent_stat_failure_is_a_partial_read(self, monkeypatch, tmp_path) -> None:
+        """A config whose ``is_file()`` probe raises a non-absent error stays a partial read.
+
+        The function is documented never to raise, and feeds a startup hook with no
+        enclosing ``except``; an access fault on the stat (EACCES after a mode change,
+        or an unreachable network-backed home) must fold into ``whole=False`` rather
+        than propagate.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "config_dir", lambda: tmp_path)
+        (tmp_path / "config.json").write_text(
+            '{"dev_fleet": {"repo_path": "/opt/kc"}}', encoding="utf-8"
+        )
+
+        real_is_file = type(tmp_path).is_file
+
+        def _stat_fault(self: object) -> bool:
+            if getattr(self, "name", "") == "config.json":
+                raise PermissionError("stat refused")
+            return real_is_file(self)
+
+        monkeypatch.setattr(type(tmp_path), "is_file", _stat_fault)
+        section, whole = repository._load_dev_fleet_cfg_checked()
+        assert section == {}
+        assert whole is False
+
 
 class TestAPartialReadAtDiscoveryLatchesNothing:
     """The second read is the dangerous one, because its latch can be FINAL.

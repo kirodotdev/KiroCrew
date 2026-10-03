@@ -74,6 +74,30 @@ def test_requeue_before_output_preserves_original_request(cause: ResetCause) -> 
     ) == (original, RecoveryPayload.ORIGINAL)
 
 
+@pytest.mark.parametrize("cause", list(ResetCause))
+def test_ambiguous_delivery_continues_without_replaying_even_before_output(
+    cause: ResetCause,
+) -> None:
+    """A request-frame drain stall may have delivered the buffered prompt to a
+    kiro-cli that resumed reading, with no host-visible output -- so ``turn_emitted``
+    is False yet replaying the prompt verbatim would run its tools a second time.
+    ``ambiguous_delivery`` must force the same continuation an emitted turn takes."""
+    original = "Build and deploy the service"
+
+    requeued, payload = build_recovery_requeue(
+        original,
+        turn_emitted=False,
+        cause=cause,
+        message_is_synthetic=False,
+        ambiguous_delivery=True,
+    )
+
+    assert payload is RecoveryPayload.CONTINUATION
+    expected = _CONN_RECOVER_MSG if cause is ResetCause.CONNECTION_LOST else _BUSY_RECOVER_MSG
+    assert requeued == expected
+    assert original not in requeued
+
+
 def test_connection_recovery_uses_structural_system_injection_provenance() -> None:
     item = {
         "content": _CONN_RECOVER_MSG,

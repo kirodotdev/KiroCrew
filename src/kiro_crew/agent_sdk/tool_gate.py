@@ -510,7 +510,7 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
         raise ToolGateUnroutable(
             "{} cannot run on native Windows because Kiro Crew has no supported OS "
             "sandbox backend here to protect credential files; changing agent.sandbox "
-            "cannot enable it. Select Kiro CLI in Settings → Agent Backend and start "
+            "cannot enable it. Select Kiro CLI in Settings → Agent Harness and start "
             "a new session.".format(label_for(backend))
         )
     raise ToolGateUnroutable(

@@ -48,7 +48,7 @@ import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, chainRows, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
-import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { isEmbeddableLoopbackOrigin, parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import {
   CURSOR_AWAY_CANCEL_TYPE,
   CURSOR_AWAY_RESULT_TYPE,
@@ -797,6 +797,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const activeWarmPort = activeWarmConn?.port
   const activeReady = activeId ? !!ready[activeId] : true
   const activeSeq = activeId ? reloadSeq[activeId] || 0 : 0
+  // The dashboard's own origin cannot embed a loopback pane: the server's CSP
+  // `frame-src` permits only a specific loopback (protocol, host) set, so a
+  // dashboard served on an HTTPS reverse proxy, a tunnel origin, an [::1]
+  // address, or an https `*.localhost` host (none of which the CSP admits) has
+  // the browser refuse the frame before any gateway check runs. Detected up
+  // front from the parent's own protocol+hostname so the watchdog never arms
+  // and the render shows an honest card instead of mounting a doomed iframe and
+  // waiting out the 15s timeout only to assert "the tunnel looks connected" —
+  // which no gateway check contradicts.
+  const nonLoopbackOrigin = !isEmbeddableLoopbackOrigin(window.location.protocol, window.location.hostname)
   // The watchdog's countdown is anchored to the identity of the LOAD — (id, port,
   // reloadSeq) — and NOT to the iframe src. A token re-mint also changes the src,
   // but the token is deliberately ABSENT from the deps below, so a re-mint neither
@@ -813,6 +823,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // `!activeReady`.
   useEffect(() => {
     if (!activeId || activeWarmPort === undefined || activeReady) return
+    // A non-loopback dashboard origin can never embed the pane (CSP frame-src),
+    // and no iframe is mounted for it, so there is nothing to time out: arming
+    // the watchdog would only journal a load-timeout for a frame that does not
+    // exist. The honest card is shown instead.
+    if (nonLoopbackOrigin) return
     const id = activeId
     const port = activeWarmPort
     // The countdown STARTING is journaled too, not only its expiry. A pane that
@@ -835,7 +850,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       })
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
-  }, [activeId, activeWarmPort, activeSeq, activeReady])
+  }, [activeId, activeWarmPort, activeSeq, activeReady, nonLoopbackOrigin])
 
   // See iframeRefCallbacks: the callback is created once per id and reused
   // across renders, so React invokes it only on a real attach/detach. It reads
@@ -1016,11 +1031,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const srcFor = useCallback(
     (id: string) => {
       const w = warm[id]
-      // Use the parent dashboard's OWN hostname (not a hardcoded 127.0.0.1) so the iframe
-      // is ALWAYS same-site with the parent. Otherwise SameSite=Lax auth cookies are
-      // withheld on the iframe's subrequests (e.g. parent on localhost + iframe on
-      // 127.0.0.1 = cross-site -> 403 storm). The hostname resolves to the same loopback
-      // the SSH forward binds (127.0.0.1), since the dashboard itself is reached via it.
+      // Use the parent dashboard's OWN hostname (not a hardcoded 127.0.0.1) so
+      // the iframe is same-site with the parent, so SameSite=Lax auth cookies
+      // ride the iframe's subrequests. The scheme stays http: the gateway binds
+      // plain http on the SSH-forwarded loopback port, and http://127.0.0.1 /
+      // http://localhost are trustworthy origins the browser exempts from
+      // mixed-content blocking even under an https parent — minting the parent's
+      // https here would instead fail the TLS handshake against the plain-http
+      // forwarded port and never load. Non-loopback origins never reach here:
+      // the pane is not mounted for them (see nonLoopbackOrigin).
       return w ? `http://${window.location.hostname}:${w.port}/?token=${encodeURIComponent(w.token)}` : ''
     },
     [warm],
@@ -1143,6 +1162,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Watchdog verdict for the active pane: only meaningful while it has still
   // not announced readiness (a late `mc-embedded-ready` clears the alarm).
   const activeTimedOut = activeId !== null && !!timedOut[activeId] && !activeReady
+  // A non-loopback origin with a remote tab active takes the dedicated card
+  // (below) rather than the loading/error panel, and suppresses the iframe
+  // mount entirely so the watchdog never arms. `nonLoopbackOrigin` is computed
+  // once above (near the watchdog effect).
+  const showNonLoopbackCard = nonLoopbackOrigin && activeId !== null
+  // `showPanel`/`showLoading` keep the plain derivation the gates below read —
+  // the empty-warm early return and the `showLoading` overlay both depend on
+  // `showPanel`, so the card must not zero it. The card instead wins at render
+  // time: its JSX branch fires on `showNonLoopbackCard`, and the two overlay
+  // branches carry `&& !showNonLoopbackCard` so neither paints over it.
   const showPanel = activeId !== null && (!warm[activeId] || !activeLive || activeTimedOut)
   // Loading overlay: the active pane is warm and the backend says connected,
   // but the embedded SPA hasn't announced readiness yet. Without this the
@@ -1185,7 +1214,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         : '',
     }))
   }, [showPanel, activeId, activeTimedOut, instancesQuery.data])
-  if (embedded || (warmIds.length === 0 && !showPanel)) return null
+  if (embedded || (warmIds.length === 0 && !showPanel && !showNonLoopbackCard)) return null
 
   const nameFor = (id: string) =>
     instancesQuery.data?.instances.find(i => i.id === id)?.name || id
@@ -1234,7 +1263,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       className="absolute inset-0 bg-bg"
       style={{ display: activeId === null ? 'none' : 'block', zIndex: 1 }}
     >
-      {warmIds.map(id => (
+      {/* On a non-loopback origin the browser refuses the pane frame, so mount
+          no iframe at all: a doomed frame would only arm the 15s watchdog and
+          end at a "tunnel looks connected" error. The honest card below says
+          what to do instead. */}
+      {!nonLoopbackOrigin && warmIds.map(id => (
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle hook: it posts the model handshake once the pane's document exists. Not a user interaction, and nothing here needs a keyboard path — the pane's own SPA owns focus once loaded.
         <iframe
           // reloadSeq in the key forces a remount (= reload) on Retry even when
@@ -1333,7 +1366,31 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           if (width < 1) return null
           return <div key={`drag-${i}`} aria-hidden className="host-drag-strip" style={{ left, width }} />
         })}
-      {showLoading && activeId && (
+      {showNonLoopbackCard && activeId && (
+        <div className="absolute inset-0 flex flex-col bg-bg">
+          {overlayDragStrip}
+          {/* Escape hatch, same as the panels below: while a remote tab is
+              active the local header is display:none, so this strip is the only
+              way back to Local or another instance. */}
+          <InstanceTabBar
+            variant="strip"
+            style={stripInsetStyle}
+          />
+          <div className="flex-1 flex items-center justify-center p-6">
+            <div className="max-w-md w-full flex flex-col items-center gap-3 text-center">
+              <AlertTriangle size={28} className="text-[var(--danger)]" />
+              <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
+              <div className="text-xs text-muted">
+                {i18nT('components.instancesViewport.pane_needs_loopback_origin')}
+              </div>
+              <div className="text-xs text-muted">
+                {i18nT('components.instancesViewport.pane_needs_loopback_origin_how')}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {showLoading && !showNonLoopbackCard && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
           {overlayDragStrip}
           {/* Same escape hatch as the error panel: while this overlay is up the
@@ -1352,7 +1409,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           </div>
         </div>
       )}
-      {showPanel && activeId && (
+      {showPanel && !showNonLoopbackCard && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
           {overlayDragStrip}
           {/* Escape hatch. While a remote

@@ -19,7 +19,9 @@ def _sessions_with(provider: MagicMock) -> MagicMock:
     sessions = MagicMock()
     sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
 
-    async def _open_task_session(_pk, session_key, *, agent=None, cwd=None, approval_policy=""):
+    async def _open_task_session(
+        _pk, session_key, *, agent=None, cwd=None, approval_policy="", start_priority=None
+    ):
         return await sessions.get_or_create(session_key, agent=agent, cwd=cwd)
 
     sessions.open_task_session = _open_task_session

@@ -15,6 +15,7 @@ failed write triggers.
 from __future__ import annotations
 
 import asyncio
+import enum
 from typing import Any, Awaitable, Callable
 
 # Subprocess stdout buffer — kiro-cli can send large JSON-RPC lines (tool outputs)
@@ -227,9 +228,24 @@ async def await_under_no_progress_bound(
     transport's write lock. Without it, concurrent appends interleave with the
     reader's consumption and a level that merely looks flat could hide both.
     """
-    task = asyncio.ensure_future(aw)
     last = _pending_write_bytes(stdin)
-    window = _RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS if last is None else bound_secs
+    if last is None:
+        # Progress is not observable (a proactor transport, or a test double):
+        # there is nothing to poll, so a single elapsed-window wait is the whole
+        # bound. Await it DIRECTLY rather than through ensure_future + a shielded
+        # re-entrant poll -- the extra tasks the polling form schedules defer this
+        # write's completion by loop iterations that reorder it relative to
+        # callers awaiting it (the codex steering path's prompt-then-steer
+        # sequencing), a difference the Windows proactor loop surfaces. ``wait_for``
+        # cancels ``aw`` on timeout, so a dead reader is still bounded at the
+        # platform window; a completed ``aw`` returns at once.
+        try:
+            await asyncio.wait_for(aw, timeout=_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS)
+        except asyncio.TimeoutError:
+            return False
+        return True
+    task = asyncio.ensure_future(aw)
+    window = bound_secs
     try:
         while True:
             try:
@@ -249,6 +265,41 @@ async def await_under_no_progress_bound(
     finally:
         if not task.done():
             task.cancel()
+
+
+async def _acquire_lock_bounded(
+    lock: asyncio.Lock, stdin: asyncio.StreamWriter, *, bound_secs: float
+) -> bool:
+    """Acquire ``lock`` under the no-progress bound, but take it inline when it
+    is free.
+
+    An uncontended lock is the overwhelmingly common case -- one writer in flight
+    at a time is the normal state -- and the old write path took it with a bare
+    ``await lock.acquire()``, which completes in the same loop step with no extra
+    task. Wrapping that free acquire in ``ensure_future`` + a shielded
+    ``wait_for`` instead schedules two extra tasks and defers the write by at
+    least two loop iterations every time, which reorders a write relative to
+    callers awaiting its completion (the cancel-before-prompt ordering the codex
+    steering path depends on) -- a difference the Windows proactor loop surfaces.
+    So fast-path the free lock inline, exactly as before, and pay the bounded
+    wait only when the lock is actually held by another writer -- the one case
+    the bound exists for: a flow-control-paused holder that must not wedge this
+    caller forever. Returns ``True`` when the lock is held on return, ``False``
+    on a no-progress stall while waiting for it (nothing is left half-acquired).
+    """
+    if not lock.locked():
+        # Free: take it inline, no extra task, no deferred loop step.
+        await lock.acquire()
+        return True
+    acquire: asyncio.Future[bool] = asyncio.ensure_future(lock.acquire())
+    try:
+        acquired = await await_under_no_progress_bound(acquire, stdin, bound_secs=bound_secs)
+    except BaseException:
+        _release_if_acquired(lock, acquire)
+        raise
+    if not acquired:
+        _release_if_acquired(lock, acquire)
+    return acquired
 
 
 def _release_if_acquired(lock: asyncio.Lock, acquire: "asyncio.Future[bool]") -> None:
@@ -297,21 +348,94 @@ async def write_response_frame_bounded(
     process-death exception. Pipe errors from ``drain()`` propagate. The lock
     is never left held: a stall verdict or a cancellation that lands after the
     shielded acquire completed releases it (``_release_if_acquired``).
+
+    The write body is :func:`write_request_frame_bounded`'s -- a response frame
+    and a request frame are written identically (lock -> ``before_write`` ->
+    write -> bounded drain); only the RETURN differs, a request reporting WHICH
+    phase stalled so the caller can set its recovery hint while a response needs
+    only did-it-drain. So this delegates and collapses the phase result to a
+    bool, keeping the two from drifting into two copies of the sequence.
     """
-    acquire: asyncio.Future[bool] = asyncio.ensure_future(lock.acquire())
-    try:
-        acquired = await await_under_no_progress_bound(acquire, stdin, bound_secs=bound_secs)
-    except BaseException:
-        _release_if_acquired(lock, acquire)
-        raise
-    if not acquired:
-        _release_if_acquired(lock, acquire)
-        return False
+    result = await write_request_frame_bounded(
+        stdin, lock, data, bound_secs=bound_secs, before_write=before_write
+    )
+    return result is RequestWriteResult.OK
+
+
+class RequestWriteResult(enum.Enum):
+    """How a bounded REQUEST-frame write ended, so the caller recovers safely.
+
+    A request frame (``session/prompt``, ``session/new``, ``set_mode``,
+    ``_session/steering``) is written under the same shared-stdin discipline as a
+    response -- one writer in flight, the lock wait and the drain both bounded by
+    the reader's PROGRESS not by elapsed time, so a caller-sized frame stays legal
+    while a reader that has stopped consuming is a dead runtime. The bound matters
+    most on the shared runtime: one stdin serves every multiplexed session, so a
+    flow-control-paused kiro-cli (busy on one lane, not reading stdin) that held
+    the write lock across an unbounded drain would wedge every other session's
+    stdin write behind the lock at 0 CPU while the busy lane kept streaming stdout.
+
+    A request stall is reported with the phase it hit. The caller does NOT kill
+    the child on a ``DRAIN_STALL`` to make a buffered frame undeliverable: that
+    cannot be guaranteed (a close/EOF keeps flushing the buffered bytes, and the
+    wedged child is exactly the one that will not exit within a kill grace, so
+    death is not confirmed before the raise), and on the shared runtime signalling
+    the child from a write path bypasses the ownership authorization + teardown
+    barrier and would terminate sibling sessions. Instead the phase sets a RECOVERY
+    HINT: a ``DRAIN_STALL`` raises its death flagged ``ambiguous_delivery`` (a
+    kiro-cli that merely paused reading could still consume the buffered frame),
+    which rides through ``AcpSessionProvider._translate_dead`` into
+    ``build_recovery_requeue`` and makes the recovery resume from restored state
+    instead of replaying the prompt verbatim -- so a frame that may have been
+    delivered never runs its tools twice, even though it produced no host-visible
+    output for the ``turn_emitted`` guard to see. A ``LOCK_STALL`` wrote no byte,
+    so it is NOT ambiguous and the replay (its first and only delivery) is safe:
+
+    * ``OK`` -- the frame drained; nothing to recover.
+    * ``LOCK_STALL`` -- the stall landed while waiting for the write lock, BEFORE
+      ``before_write`` and the ``stdin.write``: no byte of this frame reached the
+      transport.
+    * ``DRAIN_STALL`` -- the frame was handed to the transport and the DRAIN made
+      no progress: the bytes may sit buffered in a kiro-cli that could resume. The
+      caller marks dead and raises with ``ambiguous_delivery`` set (see above), so
+      the recovery continues from restored state instead of replaying the prompt.
+    """
+
+    OK = "ok"
+    LOCK_STALL = "lock_stall"
+    DRAIN_STALL = "drain_stall"
+
+
+async def write_request_frame_bounded(
+    stdin: asyncio.StreamWriter,
+    lock: asyncio.Lock,
+    data: bytes,
+    *,
+    bound_secs: float,
+    before_write: Callable[[], None] | None = None,
+) -> RequestWriteResult:
+    """Write one REQUEST frame under the write lock and the same no-progress bound
+    as :func:`write_response_frame_bounded`, but report WHICH phase stalled.
+
+    The write body mirrors the response writer -- bounded lock wait, bounded drain,
+    ``before_write`` under the lock, lock never left held (``_release_if_acquired``)
+    -- so the two share their progress semantics without a second copy drifting.
+    The one difference is the return: it reports WHICH phase stalled -- a pre-write
+    ``LOCK_STALL`` (no byte written) or a post-write ``DRAIN_STALL`` (frame
+    buffered). The caller marks dead and raises either way; it kills no child. The
+    phase is a RECOVERY HINT (see :class:`RequestWriteResult`): a ``DRAIN_STALL``
+    flags the death ``ambiguous_delivery`` so the recovery continues from restored
+    state rather than replaying a prompt the backend may already have consumed.
+    Pipe errors from ``drain()`` propagate unchanged.
+    """
+    if not await _acquire_lock_bounded(lock, stdin, bound_secs=bound_secs):
+        return RequestWriteResult.LOCK_STALL
     try:
         if before_write is not None:
             before_write()
         stdin.write(data)
-        return await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
+        drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
+        return RequestWriteResult.OK if drained else RequestWriteResult.DRAIN_STALL
     finally:
         lock.release()
 
@@ -326,6 +450,21 @@ def response_write_window_secs(stdin: asyncio.StreamWriter, bound_secs: float) -
         if _pending_write_bytes(stdin) is not None
         else _RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS
     )
+
+
+def _stall_window_phrase(stdin: asyncio.StreamWriter, window: float) -> str:
+    """The ``no write progress for ...`` clause of a stall log line.
+
+    The byte floor is only meaningful when this writer's buffer level is a
+    progress signal: when ``_pending_write_bytes`` is ``None`` (a proactor loop
+    or a transport without ``get_write_buffer_size``) the no-progress bound never
+    evaluated the floor and the window is the platform-limited elapsed one, so
+    naming a ``floor N bytes/window`` there would describe a measurement that did
+    not happen. State the floor only when it was in force.
+    """
+    if _pending_write_bytes(stdin) is not None:
+        return f"no write progress for {window:g}s (floor {_RESPONSE_WRITE_MIN_PROGRESS_BYTES} bytes/window)"
+    return f"no write progress for {window:g}s (elapsed window, progress unobservable)"
 
 
 async def write_notification_best_effort(

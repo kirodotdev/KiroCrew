@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import functools as _functools
 import logging as _logging
 import time as _time
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Mapping
+
+from kiro_crew.subagent_wait_reasons import (
+    QUEUED_REASON_ADAPTIVE_CAP_ZERO,
+    RESUMING_AFTER_RESTART,
+    RESUMING_RETRY,
+    adaptive_pause_text,
+)
 
 from .._component import ManagerComponent
-from .types import DeferPoint, FairnessSettings, tombstone_terminal_state
+from .types import (
+    MIN_RECHECK_DELAY_SECS,
+    DeferPoint,
+    FairnessSettings,
+    QueuedReadUnavailable,
+    QueuedRun,
+    QueuedRunListing,
+    tombstone_terminal_state,
+)
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
@@ -24,12 +40,114 @@ _STATE_READ_BACKOFF_SECS = 0.2
 #: (``dashboard.chat_utils.subagents_attached``), the cron reset-deferral guards
 #: (``has_pending_work_for``), the Slack pending probe -- and 0 is the one answer
 #: that lets them strand an accepted child's completion on a cold-started
-#: replacement session. The queue-depth chip is the only reader for which this is
-#: a number rather than a predicate, and one advisory unit during an outage the
-#: log already names is the whole price.
+#: replacement session. The queue-depth chip does not read this answer: its
+#: reader, :meth:`_TaskqBridgeMixin.taskq_chip_overflow_async`, publishes nothing at
+#: all while the store cannot be read.
 UNKNOWN_PENDING = 1
 
+#: How far past its wake a deferred row may be before an empty refill pass is
+#: reported as stuck (a row that came due during the pass is ordinary), and how
+#: often that report may repeat.
+_OVERDUE_WAKE_GRACE_SECS = 1.0
+_OVERDUE_WAKE_WARN_EVERY_SECS = 60.0
+
+#: Most store rows one queued listing returns. A listing is a page for a reader,
+#: not an inventory a caller acts on, so the oldest this many are enough; the
+#: Stop-all cascade has its own unbounded read (``taskq_pending_ids_for``). A
+#: listing that stopped here says so (``QueuedRunListing.partial``), since a
+#: cut-off tail otherwise reads as spawns that were never accepted.
+QUEUED_LISTING_CAP = 100
+
+#: The events that close a deferral: a claim or a state change after the
+#: ``deferred`` event means the sentence does not describe the row's current wait.
+_DEFER_CLOSERS = ("claimed", "transition")
+
+
+def _defer_details(store: "_taskq.TaskStore", recs: "list[_taskq.TaskRecord]") -> dict[str, str]:
+    """Each still-parked row's deferral sentence, from ONE batched event read.
+
+    A row's sentence is reported only while the deferral is in force
+    (``next_run_at`` in the future) AND its ``deferred`` event is newer than
+    the row's last claim or transition: a ``recovering`` backoff or a
+    dependency park also sets ``next_run_at``, and an older memory-gate
+    sentence does not describe either wait.
+    """
+    now = store.now()
+    parked = [r.id for r in recs if r.next_run_at is not None and r.next_run_at > now]
+    latest = store.latest_events(parked, ("deferred", *_DEFER_CLOSERS))
+    out: dict[str, str] = {}
+    for rid in parked:
+        deferred = latest.get((rid, "deferred"))
+        if deferred is None:
+            continue
+        closed_at = max(
+            (latest[(rid, k)].seq for k in _DEFER_CLOSERS if (rid, k) in latest), default=-1
+        )
+        if deferred.seq > closed_at:
+            out[rid] = str(deferred.data.get("reason") or "")
+    return out
+
+
+def _read_queued_row(
+    store: "_taskq.TaskStore", agent_id: str
+) -> "tuple[_taskq.TaskRecord, str] | None":
+    """Store read for the by-id lookup: the row when it is accepted, not started."""
+    # Lazy, as everywhere in this module: the bridge loads taskq on first use.
+    from kiro_crew import taskq as _taskq
+
+    try:
+        rec = store.get(agent_id)
+    except ValueError as exc:
+        # A row this build cannot model (a state, kind or class written by a
+        # newer one): unreadable, the outage answer, never an escaped 500.
+        _glue_logger.warning("taskq: row %s is unreadable by this build: %s", agent_id, exc)
+        raise _taskq.TaskStoreUnavailable(f"row {agent_id} unreadable") from exc
+    if rec is None or rec.kind != _taskq.KIND_SUBAGENT:
+        return None
+    if rec.state not in _taskq.CLAIMABLE | {_taskq.ADMITTED}:
+        return None
+    return rec, _defer_details(store, [rec]).get(rec.id, "")
+
+
+def _read_queued_rows(
+    store: "_taskq.TaskStore",
+    *,
+    session_key: str | None,
+    app: str | None,
+    exclude_ids: list[str],
+    registered_ids: tuple[str, ...] = (),
+) -> "tuple[list[tuple[_taskq.TaskRecord, str]], bool]":
+    """Store read for :meth:`_TaskqBridgeMixin.taskq_queued_runs_async`.
+
+    Runs on the writer thread. Returns the rows and whether the listing stopped
+    at :data:`QUEUED_LISTING_CAP` with more rows left: one row past the cap is
+    read to tell the two apart. *app* narrows the read in SQL, before the cap,
+    so an app's page is its own rows and the flag says nothing about others'.
+    """
+    # Lazy, as everywhere in this module: the bridge loads taskq on first use.
+    from kiro_crew import taskq as _taskq
+
+    try:
+        recs = store.list_pending(
+            _taskq.KIND_SUBAGENT,
+            session_key=session_key,
+            exclude_ids=exclude_ids,
+            limit=QUEUED_LISTING_CAP + 1,
+            include_admitted=True,
+            exclude_admitted_ids=registered_ids,
+            app=app,
+        )
+    except ValueError as exc:
+        _glue_logger.warning("taskq: a queued row is unreadable by this build: %s", exc)
+        raise _taskq.TaskStoreUnavailable("queued rows unreadable") from exc
+    truncated = len(recs) > QUEUED_LISTING_CAP
+    recs = recs[:QUEUED_LISTING_CAP]
+    details = _defer_details(store, recs)
+    return [(rec, details.get(rec.id, "")) for rec in recs], truncated
+
+
 if TYPE_CHECKING:
+    # Lazy, as everywhere in this module: the bridge loads taskq on first use.
     from kiro_crew import taskq as _taskq
     from kiro_crew.taskq import lanes as _lanes
 
@@ -100,32 +218,40 @@ class _TaskqBridgeMixin(ManagerComponent):
             if p.get("_preassigned_id")
         ]
 
-    def taskq_excluded_ids(self) -> list[str]:
+    def taskq_excluded_ids(self, *, counted: Collection[str] = ()) -> list[str]:
         """Rows the refill must never claim: those already in the window AND
         those with a LIVE run in this process. A live run's row can be
         claimable for a moment (a wake lands in ``retry_wait`` until the pump
         grants the slot back); claiming it here would start a second copy of a
-        run that is still resident."""
-        live = [aid for aid, info in self._manager._agents.items() if not info.done]
+        run that is still resident.
+
+        *counted* names admitting rows a COUNT should still see (the chip's,
+        :meth:`taskq_chip_excluded_ids`); every other part stays excluded."""
+        live = self._live_run_ids()
         # Rows whose accept path is still in flight (``spawn_async``: written,
         # not yet claimed or windowed) belong to that caller, not to the pump.
-        admitting = list(getattr(self._manager, "_admitting_ids", ()) or ())
+        # Copy before filtering: the refill runs this on the store's writer
+        # thread while ``spawn_async`` adds and discards ids on the loop, and
+        # iterating the live set raises if it changes size mid-pass.
+        admitting_now = list(getattr(self._manager, "_admitting_ids", ()) or ())
+        admitting = [aid for aid in admitting_now if aid not in counted]
         return self.taskq_window_ids() + live + admitting
 
-    def taskq_dispatch_excluded_ids(self) -> list[str]:
+    def taskq_dispatch_excluded_ids(self, *, counted: Collection[str] = ()) -> list[str]:
         """:meth:`taskq_excluded_ids` plus the rows the pump has popped from the
         window and not yet claimed (``_dispatching_ids``).
 
-        For the pump's own reads only: the refill that tops the window up and
-        the depth the chip shows. A popped row's durable state is still QUEUED
-        until its claim lands, so without this the refill re-hydrates a row that
-        is being started and the depth counts it as waiting. Cancellation and
-        pending-work reads keep :meth:`taskq_excluded_ids`: a parent's Stop must
-        reach a row in exactly this popped-unclaimed state, or it starts after
-        the stop has reported done.
+        For the pump's own reads: the refill that tops the window up, its wake,
+        and (through :meth:`taskq_chip_excluded_ids`) the depth the chip shows.
+        A popped row's durable state is still QUEUED until its claim lands, so
+        without this the refill re-hydrates a row that is being started and the
+        depth counts it as waiting. Cancellation and pending-work reads keep
+        :meth:`taskq_excluded_ids`: a parent's Stop must reach a row in exactly
+        this popped-unclaimed state, or it starts after the stop has reported
+        done.
         """
         dispatching = list(getattr(self._manager, "_dispatching_ids", ()) or ())
-        return self.taskq_excluded_ids() + dispatching
+        return self.taskq_excluded_ids(counted=counted) + dispatching
 
     def taskq_open(self, cfg: Any, *, home: Any) -> "_taskq.TaskStore | None":
         """Open the store for this manager per ``cfg.agent``.
@@ -578,11 +704,14 @@ class _TaskqBridgeMixin(ManagerComponent):
         """Run a best-effort store write whose result nothing waits for.
 
         On a running loop (with the off-loop pump on) the write is POSTED to
-        the store's single writer thread (``TaskStore.run``): the loop never
-        holds the SQLite lock, and because that executor has one worker the
-        writes land in submission order -- ``admitted -> starting`` posted
-        here lands before the run's own ``running`` write posted later.
-        Without a loop the write runs inline.
+        the store's single writer thread (``TaskStore.post``) by this call,
+        not by a task that runs later: the loop never holds the SQLite lock,
+        and because that executor has one worker the writes land in the order
+        their callers ran -- ``admitted -> starting`` posted here lands before
+        the run's own ``running`` write posted later, and before any read
+        queued after this call (the queue-depth chip's re-read relies on it).
+        The returned task only waits for the result. Without a loop the write
+        runs inline.
         """
         from kiro_crew import taskq as _taskq
 
@@ -596,10 +725,18 @@ class _TaskqBridgeMixin(ManagerComponent):
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: %s write failed", what, exc_info=True)
             return None
+        try:
+            posted = store.post(fn, *args, **kw)
+        except Exception:
+            _glue_logger.warning("taskq: %s write could not be posted", what, exc_info=True)
+            return None
+        # Retrieved here too, so a waiter cancelled before its first step (the
+        # shutdown drain) does not leave the outcome reported as never read.
+        posted.add_done_callback(lambda done: done.cancelled() or done.exception())
 
         async def _write() -> None:
             try:
-                await store.run(fn, *args, **kw)
+                await posted
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: %s write failed", what, exc_info=True)
             except Exception:
@@ -888,33 +1025,46 @@ class _TaskqBridgeMixin(ManagerComponent):
             current or "gone",
         )
 
-    def taskq_overflow(
-        self, parent_session_key: str | None = None, *, for_dispatch: bool = False
-    ) -> int:
-        """Queued rows that live only in the store (outside the in-memory window).
+    def _overflow_query(
+        self, parent_session_key: str | None, exclude_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """The ``count_pending`` arguments every overflow entry takes (the
+        "accepted, no run yet" definition), snapshotted from manager state on the
+        caller's thread (the loop, for the async ones). *exclude_ids* defaults to
+        :meth:`taskq_excluded_ids`; the chip passes its own set."""
+        return {
+            "exclude_ids": self.taskq_excluded_ids() if exclude_ids is None else exclude_ids,
+            "session_key": parent_session_key,
+            "include_admitted": True,
+            "exclude_admitted_ids": list(self._manager._agents),
+        }
+
+    def taskq_overflow(self, parent_session_key: str | None = None) -> int:
+        """Accepted rows with no run that live only in the store (outside the window).
+
+        Claimable rows and ``admitted`` ones nothing registered: a claim the
+        pump awaits, or one retained across a store outage
+        (``_retained_claims``), is this parent's accepted work exactly like a
+        queued row, and no other probe would count it.
 
         A store that cannot be read answers :data:`UNKNOWN_PENDING`, not 0: no
         store at all is a queue with no rows in it, while a locked or full one is
         a queue whose rows nobody can see, and only the first of those is
         evidence that this parent has nothing waiting.
 
-        *for_dispatch* selects :meth:`taskq_dispatch_excluded_ids`, which also
-        leaves out a row the pump has popped and not yet claimed. Only the depth
-        the chip shows asks for that: a pending-work read (the guard that holds
-        a parent's reset while its children wait) must keep counting such a row,
-        because it is still this parent's accepted work.
+        A row the pump has popped and not yet claimed is counted: it is still
+        this parent's accepted work, which is what the guard that holds a
+        parent's reset while its children wait asks about. The chip's reading
+        leaves it out (:meth:`taskq_chip_overflow_async`).
         """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None:
             return 0
-        exclude = self.taskq_dispatch_excluded_ids() if for_dispatch else self.taskq_excluded_ids()
         try:
             return store.count_pending(
-                _taskq.KIND_SUBAGENT,
-                exclude_ids=exclude,
-                session_key=parent_session_key,
+                _taskq.KIND_SUBAGENT, **self._overflow_query(parent_session_key)
             )
         except _taskq.TaskStoreUnavailable:
             _glue_logger.warning(
@@ -924,9 +1074,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             )
             return UNKNOWN_PENDING
 
-    async def taskq_overflow_async(
-        self, parent_session_key: str | None = None, *, for_dispatch: bool = False
-    ) -> int:
+    async def taskq_overflow_async(self, parent_session_key: str | None = None) -> int:
         """:meth:`taskq_overflow` with its store count on the writer thread.
 
         The exclusion set is in-memory manager state, so it is snapshotted HERE
@@ -934,19 +1082,29 @@ class _TaskqBridgeMixin(ManagerComponent):
         same split :meth:`taskq_child_registered_async` makes. The outage answer
         is the sync entry's.
         """
+        count = await self.taskq_overflow_or_none_async(parent_session_key)
+        return UNKNOWN_PENDING if count is None else count
+
+    async def taskq_overflow_or_none_async(
+        self, parent_session_key: str | None = None
+    ) -> int | None:
+        """:meth:`taskq_overflow_async`, answering None for a store nobody could read.
+
+        For the one reader that must tell "children are waiting" from "nobody
+        could look" -- the synthesis fire gate, which re-checks on an outage
+        rather than waiting for a completion that may never come.
+        """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None:
             return 0
-        exclude = self.taskq_dispatch_excluded_ids() if for_dispatch else self.taskq_excluded_ids()
         try:
             return int(
                 await store.run(
                     store.count_pending,
                     _taskq.KIND_SUBAGENT,
-                    exclude_ids=exclude,
-                    session_key=parent_session_key,
+                    **self._overflow_query(parent_session_key),
                 )
             )
         except _taskq.TaskStoreUnavailable:
@@ -955,7 +1113,57 @@ class _TaskqBridgeMixin(ManagerComponent):
                 parent_session_key or "<any parent>",
                 exc_info=True,
             )
-            return UNKNOWN_PENDING
+            return None
+
+    def taskq_chip_excluded_ids(self) -> list[str]:
+        """The rows the queue-depth chip leaves out of its store count.
+
+        The refill's never-claim set (:meth:`taskq_dispatch_excluded_ids`) with
+        one difference: a row a ``spawn_async`` caller is still admitting is
+        left out only until the gate has queued it (``_admitting_waiting``).
+        The refill must never claim such a row, but once it is deferred or
+        behind the cap it IS waiting, and the gate's own labelled request for
+        it must count it -- leaving it out would publish 0 for a wave whose
+        rows all wait, and drop the label with it.
+        """
+        return self.taskq_dispatch_excluded_ids(counted=self._manager._admitting_waiting)
+
+    async def taskq_chip_overflow_async(self, parent_session_key: str) -> int | None:
+        """The store half of the queue-depth chip's count, or ``None`` when the
+        store cannot say.
+
+        The chip's one reader, excluding :meth:`taskq_chip_excluded_ids`. Like
+        :meth:`taskq_overflow` it counts ``admitted`` rows no run is registered
+        for (a claim retained across an outage is still waiting work). The
+        exclusion sets are snapshotted here, on the loop, before the read; on the
+        inline pump (``pump_off_loop`` off) the read itself runs here too.
+
+        An unreadable store answers ``None``, not :data:`UNKNOWN_PENDING`: the
+        chip then publishes nothing, because any number it sent would be a
+        guess. ``TaskStoreUnavailable`` is the outage and is logged at DEBUG
+        (the caller retries); anything else is a defect and is logged as one.
+        """
+        from kiro_crew import taskq as _taskq
+
+        store = self.taskq_store()
+        if store is None:
+            return 0
+        try:
+            count = _functools.partial(
+                store.count_pending,
+                _taskq.KIND_SUBAGENT,
+                **self._overflow_query(parent_session_key, self.taskq_chip_excluded_ids()),
+            )
+            return int(await store.run(count) if type(self).pump_off_loop else count())
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug(
+                "taskq: queue depth for %s unreadable", parent_session_key, exc_info=True
+            )
+        except Exception:
+            _glue_logger.warning(
+                "taskq: queue depth for %s failed", parent_session_key, exc_info=True
+            )
+        return None
 
     def taskq_pending_ids_for(self, parent_session_key: str) -> list[str]:
         """Ids of this parent's waiting rows that are NOT in the in-memory window."""
@@ -992,6 +1200,170 @@ class _TaskqBridgeMixin(ManagerComponent):
         except _taskq.TaskStoreUnavailable:
             return []
         return [r.id for r in rows]
+
+    def _live_run_ids(self) -> list[str]:
+        """Ids with a live run in this process: the registry answers for them.
+
+        The ONE spelling of "a run exists", shared by the refill's exclusions
+        and the queued reads, so "accepted, no run yet" means one thing.
+        """
+        # Copy before filtering: the refill runs this on the store's writer
+        # thread while the loop registers and retires runs.
+        return [aid for aid, info in list(self._manager._agents.items()) if not info.done]
+
+    async def taskq_queued_run_async(self, agent_id: str) -> QueuedRun | None:
+        """The accepted spawn *agent_id* when no run exists for it yet, else None.
+
+        The store row may be claimable or ``admitted``: a claim the pump is
+        awaiting (or a retained one) has left ``queued`` but is not registered,
+        and answering "not found" for it is the gap this read closes. A
+        registered id is never answered here; the registry answers it. An
+        unreadable store answers from the window, and when the window has no
+        such entry raises :class:`QueuedReadUnavailable`: "not
+        queued" is not knowable then, and a caller must not read it as gone.
+        """
+        from kiro_crew import taskq as _taskq
+
+        manager = self._manager
+        if agent_id in manager._agents:
+            return None
+        store = self.taskq_store()
+        outage: Exception | None = None
+        if store is not None:
+            try:
+                found = await store.run(_read_queued_row, store, agent_id)
+            except _taskq.TaskStoreUnavailable as exc:
+                _glue_logger.warning(
+                    "taskq: queued row %s unreadable; answering from the window",
+                    agent_id,
+                    exc_info=True,
+                )
+                found, outage = None, exc
+            if found is not None and agent_id not in manager._agents:
+                rec, detail = found
+                return self._queued_run_from_row(rec, detail)
+        for params in list(manager._queue):
+            if str(params.get("_preassigned_id") or "") == agent_id and not params.get(
+                "_resume_id"
+            ):
+                return self._queued_run(
+                    agent_id, params, str(params.get("parent_session_key") or ""), 0.0, ""
+                )
+        if outage is not None and agent_id not in manager._agents:
+            raise QueuedReadUnavailable(str(outage)) from outage
+        return None
+
+    async def taskq_queued_runs_async(
+        self, parent_session_key: str | None = None, *, app: str | None = None
+    ) -> QueuedRunListing:
+        """Accepted spawns no run exists for yet, oldest first.
+
+        Both halves of the queue are read: the dispatch window (``_queue``) and
+        the store's rows, which include every gate-deferred row, every row
+        waiting outside the window and every claimed, unregistered one.
+        *parent_session_key* ``None`` means every parent; *app* narrows to one
+        owning app inside the store read.
+
+        The listing is ``partial`` when it stopped at :data:`QUEUED_LISTING_CAP`
+        or the store could not be read: an outage leaves the window half, and a
+        listing cannot answer it with invented rows, but it must not read as
+        complete either. The transition into a partial listing is logged once.
+        """
+        from kiro_crew import taskq as _taskq
+
+        manager = self._manager
+        rows: list[tuple[_taskq.TaskRecord, str]] = []
+        truncated = unreadable = False
+        store = self.taskq_store()
+        if store is not None:
+            try:
+                rows, truncated = await store.run(
+                    _read_queued_rows,
+                    store,
+                    session_key=parent_session_key,
+                    app=app,
+                    exclude_ids=self._live_run_ids(),
+                    registered_ids=tuple(manager._agents),
+                )
+            except _taskq.TaskStoreUnavailable:
+                unreadable = True
+        partial = truncated or unreadable
+        if partial != manager._queued_listing_partial:
+            manager._queued_listing_partial = partial
+            if partial:
+                _glue_logger.warning(
+                    "taskq: queued listing is partial (more than %d store rows, or the "
+                    "store is unreadable)",
+                    QUEUED_LISTING_CAP,
+                )
+        out: list[QueuedRun] = []
+        seen: set[str] = set()
+        live = set(self._live_run_ids())  # re-read: a run may have registered meanwhile
+        for rec, detail in rows:
+            if rec.id in live or (rec.state == _taskq.ADMITTED and rec.id in manager._agents):
+                continue
+            out.append(self._queued_run_from_row(rec, detail))
+            seen.add(rec.id)
+        # Window entries the store did not return: legacy in-memory and
+        # restricted work, which has no row, and every entry while the store is
+        # unreadable. A ``_resume_id`` entry belongs to a resident run, not to an
+        # unstarted one. A page cut at the cap may simply not have reached an
+        # entry's row, so a truncated store half adds none.
+        for params in [] if truncated else list(manager._queue):
+            aid = str(params.get("_preassigned_id") or "")
+            if not aid or params.get("_resume_id") or aid in seen or aid in manager._agents:
+                continue
+            parent = str(params.get("parent_session_key") or "")
+            if parent_session_key is not None and parent != parent_session_key:
+                continue
+            if app is not None and str(params.get("app") or "") != app:
+                continue
+            out.append(self._queued_run(aid, params, parent, 0.0, ""))
+        return QueuedRunListing(tuple(out), partial)
+
+    def _queued_run_from_row(self, rec: "_taskq.TaskRecord", detail: str) -> QueuedRun:
+        from kiro_crew import taskq as _taskq
+
+        params = dict(rec.params)
+        parent = rec.session_key or str(params.get("parent_session_key") or "")
+        resuming = ""
+        if rec.state == _taskq.RECOVERING:
+            resuming = RESUMING_AFTER_RESTART
+        elif rec.state == _taskq.RETRY_WAIT and rec.attempts > 0:
+            resuming = RESUMING_RETRY
+        return self._queued_run(
+            rec.id, params, parent, rec.created_at, "" if resuming else detail, resuming
+        )
+
+    def _queued_run(
+        self,
+        agent_id: str,
+        params: Mapping[str, Any],
+        parent: str,
+        accepted_at: float,
+        detail: str,
+        resuming: str = "",
+    ) -> QueuedRun:
+        manager = self._manager
+        label = manager._queue_wait.get(parent) or {}
+        reason = "" if resuming else str(label.get("reason") or "")
+        if not resuming and not detail and manager._max_concurrent <= 0:
+            # A paused cap holds every unstarted row, whatever the parent's last
+            # label says, and the row has no ``deferred`` event to say so: the
+            # pause is read live, and clears with it.
+            reason = QUEUED_REASON_ADAPTIVE_CAP_ZERO
+            detail = adaptive_pause_text(manager._user_max_concurrent)
+        return QueuedRun(
+            id=agent_id,
+            task=str(params.get("task") or ""),
+            parent_session_key=parent,
+            agent=str(params.get("agent") or params.get("crew") or ""),
+            app=str(params.get("app") or ""),
+            accepted_at=float(accepted_at or 0.0),
+            reason=reason,
+            reason_detail=detail,
+            resuming=resuming,
+        )
 
     def taskq_cancel_boundary_store(
         self,
@@ -1118,8 +1490,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         weighted round-robin the drain picks with, so one lane's backlog never
         fills the window while another lane's single row waits on disk.
         ``children_only`` admits nested rows only (the child reserve). Rows
-        deferred past now are skipped, and when the window is otherwise empty
-        the pump schedules its own wake-up at the earliest ``next_run_at``.
+        deferred or leased past now are skipped, and when the window is
+        otherwise empty the pump schedules its own wake-up at the earliest
+        time a row this pass may claim becomes claimable: the later of its
+        ``next_run_at`` and ``lease_expires_at`` (:meth:`TaskStore.next_eligible_at`).
 
         Inline variant (sync callers): the store steps run on the calling
         thread. :meth:`taskq_refill_window_async` runs the same steps with
@@ -1141,7 +1515,9 @@ class _TaskqBridgeMixin(ManagerComponent):
             rows = self._reconcile_refill_boundaries_sync(store, rows)
             self._refill_apply(rows)
             wake_at = (
-                self._refill_idle_wake_at(store) if not rows and not self._manager._queue else None
+                self._refill_idle_wake_read(store, children_only)()
+                if not rows and not self._manager._queue
+                else None
             )
         except _taskq.TaskStoreUnavailable:
             return len(rows)
@@ -1165,7 +1541,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             rows = await self._reconcile_refill_boundaries_async(rows)
             self._refill_apply(rows)
             wake_at = (
-                await store.run(self._refill_idle_wake_at, store)
+                await store.run(self._refill_idle_wake_read(store, children_only))
                 if not rows and not self._manager._queue
                 else None
             )
@@ -1365,17 +1741,41 @@ class _TaskqBridgeMixin(ManagerComponent):
             if rec.id not in present:
                 self._manager._queue.append(entry)
 
-    @staticmethod
-    def _refill_idle_wake_at(store: "_taskq.TaskStore") -> float | None:
-        """Store read: the earliest ``next_run_at`` of a deferred row."""
+    def _refill_idle_wake_read(
+        self, store: "_taskq.TaskStore", children_only: bool
+    ) -> "_functools.partial[float | None]":
+        """The store read for when the earliest row this pass may claim, and
+        could not, becomes claimable -- over the same rows the pass read. Its
+        exclusions are taken here, by the caller (on the loop)."""
         from kiro_crew import taskq as _taskq
 
-        return store.next_eligible_at(_taskq.KIND_SUBAGENT)
+        return _functools.partial(
+            store.next_eligible_at,
+            _taskq.KIND_SUBAGENT,
+            exclude_ids=self.taskq_dispatch_excluded_ids(),
+            children_only=children_only,
+        )
 
     def _refill_schedule_wake(self, store: "_taskq.TaskStore", wake_at: float | None) -> None:
         if wake_at is None:
             return
-        delay = max(0.0, min(wake_at - store.now(), self.taskq_admit_wait_secs()))
+        due_in = wake_at - store.now()
+        if due_in < -_OVERDUE_WAKE_GRACE_SECS:
+            # The wake is read over the rows this pass may claim, so a row well
+            # past it that the pass still did not take is held by something the
+            # read cannot see. A wake re-armed at 0 would re-run this same
+            # empty pass on every loop turn for as long as that lasts; the
+            # floor below bounds it, and this says so.
+            now = _time.monotonic()
+            if now - self._manager._overdue_wake_warned_at >= _OVERDUE_WAKE_WARN_EVERY_SECS:
+                self._manager._overdue_wake_warned_at = now
+                _glue_logger.warning(
+                    "taskq: a waiting subagent row is %.0fs past its wake and none is "
+                    "claimable; re-checking every %.2fs",
+                    -due_in,
+                    MIN_RECHECK_DELAY_SECS,
+                )
+        delay = max(MIN_RECHECK_DELAY_SECS, min(due_in, self.taskq_admit_wait_secs()))
         try:
             _asyncio.get_event_loop().call_later(delay, self._manager._drain_queue)
         except RuntimeError:

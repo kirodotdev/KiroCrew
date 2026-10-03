@@ -10,14 +10,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
+import hashlib
 import io
+import json
 import logging
 import os
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from kiro_crew import platform_compat
 
@@ -567,6 +570,121 @@ def _read_bytes(target: Path, max_bytes: int | None) -> bytes:
         return target.read_bytes()
     with target.open("rb") as handle:
         return handle.read(max_bytes)
+
+
+#: Emit the read-degrade warning at most once per (logger, path) in a process.
+#: A read that keeps losing to a concurrent writer would otherwise repeat the
+#: line every poll cycle; one line names the degrade.
+#:
+#: Two properties the dedup store must hold, because the key is caller-derived:
+#: it keeps a FIXED-SIZE digest of (logger name, path), never the path string
+#: itself, and it is BOUNDED -- a flood of distinct contended paths evicts the
+#: oldest digests rather than growing the set without limit. A full path kept
+#: forever is unbounded caller-controlled RSS; a 16-byte digest under a hard cap
+#: is neither.
+_READ_DEGRADE_SEEN_CAP = 4096
+_READ_DEGRADE_SEEN: "OrderedDict[bytes, None]" = OrderedDict()
+_READ_DEGRADE_SEEN_LOCK = threading.Lock()
+
+
+def read_json_or(
+    path: Path | str,
+    default: Any,
+    *,
+    logger: logging.Logger,
+    what: str | None = None,
+) -> Any:
+    """``json.loads`` a small file, returning ``default`` and SIGNALLING a degrade.
+
+    The read-side companion to the many hand-written
+    ``try: json.loads(path.read_text()) except (OSError, ...): return <fallback>``
+    guards in the tree. Those fold three distinct outcomes into one silent
+    fallback, so a genuinely absent file and a momentary read failure look
+    identical in ``kirocrew logs``. This helper keeps the tolerance and adds one
+    signal for the case that was mute:
+
+    * **Absent** (``FileNotFoundError``) -- return ``default`` silently. The
+      ordinary "no file yet" case; nothing has degraded.
+    * **Malformed / undecodable** (``json.JSONDecodeError``, a decode error, or
+      any other ``ValueError``) -- return ``default`` silently. Preserves the
+      deliberate decode-tolerance the callers already have: a damaged or
+      wrong-encoding file must not crash the reader, and sleeping cannot mend it.
+    * **A non-absent ``OSError`` / ``PermissionError``** -- emit exactly one
+      ``logger.warning`` and return ``default``. On Windows a read of a whole,
+      correct file raises ``PermissionError`` (``WinError 32``) while another
+      handle holds it open for a tmp-file-plus-``os.replace`` write, the read
+      twin of the window :func:`replace_with_retry` survives. POSIX permits the
+      read, so this leg fires only on a real fault there. This is the outcome the
+      hand-written guards were silent about.
+
+    The bytes are read through :func:`read_bytes_with_retry`, so the Windows
+    sharing-violation window is retried first (off the event loop) and only a
+    degrade that OUTLASTS the retry budget reaches the warning -- retry and
+    signal compose, they do not duplicate.
+
+    The warning carries only an exception-class name, a fixed outcome word, and
+    the caller's optional *what* label. It NEVER carries the path, the file
+    bytes, a slug, a URL, a secret, or any subject key -- a log line about a
+    degraded read must not become a channel for the content that failed to read.
+
+    *logger* is the caller's own module logger, so the line is attributed to the
+    site that degraded. *what* is a short, non-sensitive noun for the document
+    ("dev_fleet config", "issue signals") when the module logger name alone is
+    not enough to place it. The warning is bounded to one line per (logger, path)
+    per process.
+    """
+    target = Path(path)
+    try:
+        raw = read_bytes_with_retry(target)
+    except FileNotFoundError:
+        # Genuinely absent -- the ordinary "no file yet" case. Silent, as before.
+        return default
+    except OSError as exc:
+        # A file that EXISTS but could not be read: the Windows sharing-violation
+        # window that outlasted the retry, or a real access fault. This is the
+        # leg the hand-written guards folded into the absent case with no signal.
+        _warn_read_degrade(logger, target, exc, what)
+        return default
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        # Malformed JSON or undecodable bytes -- damaged or wrong-encoding file.
+        # Silent and tolerant exactly as before; a retry cannot repair content.
+        # ``json.JSONDecodeError`` is a ``ValueError``, so both are caught here.
+        return default
+
+
+def _warn_read_degrade(
+    logger: logging.Logger,
+    path: Path,
+    exc: OSError,
+    what: str | None,
+) -> None:
+    """Emit the single read-degrade WARNING, deduped by (logger, path).
+
+    The dedup store never holds the path. The key is a 16-byte BLAKE2b digest of
+    ``(logger name, path)``, so a caller-controlled path contributes a
+    fixed-size value, and the store is a bounded LRU: once it reaches
+    ``_READ_DEGRADE_SEEN_CAP`` the oldest digest is evicted. A flood of distinct
+    contended paths therefore costs a bounded amount of memory and can at worst
+    re-warn a long-idle path once more, never grow without limit.
+    """
+    digest = hashlib.blake2b(
+        f"{logger.name}\x00{path}".encode("utf-8", "surrogatepass"), digest_size=16
+    ).digest()
+    with _READ_DEGRADE_SEEN_LOCK:
+        if digest in _READ_DEGRADE_SEEN:
+            _READ_DEGRADE_SEEN.move_to_end(digest)
+            return
+        _READ_DEGRADE_SEEN[digest] = None
+        if len(_READ_DEGRADE_SEEN) > _READ_DEGRADE_SEEN_CAP:
+            _READ_DEGRADE_SEEN.popitem(last=False)
+    suffix = f" what={what}" if what else ""
+    logger.warning(
+        "read degraded; returning default (error_type=%s outcome=default_returned%s)",
+        type(exc).__name__,
+        suffix,
+    )
 
 
 def _resolved_or_none(path: Path) -> Path | None:

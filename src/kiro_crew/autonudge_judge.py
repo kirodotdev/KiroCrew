@@ -69,6 +69,14 @@ SESSION_TARGET_IN_TEXT_RE = re.compile(r"\bchat-[A-Za-z0-9][A-Za-z0-9-]{0,127}\b
 #: whole-transcript scan.
 MAX_ROWS_PER_TARGET = 12
 
+#: How many pages of :data:`MAX_ROWS_PER_TARGET` rows one target may be read in
+#: during a single tick, while its cursor is still behind the transcript's end.
+#: Derived from the point's own item walk (``MAX_EVIDENCE_ITEMS``): more pages than
+#: that would read rows the point cannot even consider. A target still behind after
+#: the last page is counted as unread, so the tick fires instead of judging a
+#: partial reading quiet.
+MAX_PAGES_PER_TARGET = max(1, point.MAX_EVIDENCE_ITEMS // MAX_ROWS_PER_TARGET)
+
 #: How many targets one loop may name. Bounds the number of authorizations and
 #: reads a single tick performs. Spelled once, in ``validation``, where the arming
 #: surface refuses an oversized brief: a copy here would be a second number to keep
@@ -784,7 +792,7 @@ async def collect_evidence(
     targets: Sequence[str],
     *,
     read_session: (
-        Callable[[str, int], Awaitable[tuple[Sequence[Mapping[str, Any]], int]]] | None
+        Callable[[str, int], Awaitable[tuple[Sequence[Mapping[str, Any]], int, int | None]]] | None
     ) = None,
     read_pr: Callable[[str], Awaitable[Mapping[str, Any] | None]] | None = None,
     cursors: dict[str, int] | None = None,
@@ -793,7 +801,8 @@ async def collect_evidence(
     """Evidence for one tick, and how many targets were dropped. Never raises.
 
     *read_session* is given a target and its cursor and returns ``(rows,
-    next_cursor)``; *read_pr* is given a target and returns the probe observation.
+    next_cursor, total)``, where ``total`` is the transcript's end position or
+    ``None`` when the reader cannot say; *read_pr* is given a target and returns the probe observation.
     Either may be ``None``, which simply means that collector is unavailable on
     this build or this loop -- not an error, because a judge watching only
     sessions needs no pull-request reader.
@@ -807,6 +816,14 @@ async def collect_evidence(
     sees only what arrived in between. It is only advanced on a SUCCESSFUL read: a
     target that refused or raised keeps its old cursor, so a transient failure
     cannot silently skip the rows it would have returned.
+
+    A session target whose cursor is still short of ``total`` after one page is
+    read again from the new cursor, up to :data:`MAX_PAGES_PER_TARGET` pages. A
+    worker that writes more rows per interval than one page holds would otherwise
+    leave the cursor further behind on every tick, and its newest line -- the
+    ``DONE:`` or ``BLOCKED:`` the owner's criterion names -- would never be read.
+    A target still behind after the last page counts as dropped: a quiet drawn
+    from the rows that were read would be a quiet about the wrong rows.
     """
     clock = point.now() if now_ts is None else now_ts
     evidence: list[dict[str, Any]] = []
@@ -825,10 +842,30 @@ async def collect_evidence(
                 if read_session is None:
                     dropped += 1
                     continue
-                rows, next_cursor = await read_session(target, int((cursors or {}).get(target, 0)))
-                evidence.extend(session_evidence(rows, target, now_ts=clock))
-                if cursors is not None and isinstance(next_cursor, int) and next_cursor >= 0:
-                    cursors[target] = next_cursor
+                cursor = int((cursors or {}).get(target, 0))
+                behind = False
+                skipped = False
+                for page in range(MAX_PAGES_PER_TARGET):
+                    rows, next_cursor, total = await read_session(target, cursor)
+                    evidence.extend(session_evidence(rows, target, now_ts=clock))
+                    if not isinstance(next_cursor, int) or next_cursor < 0:
+                        break
+                    # With no stored cursor the reader serves the TAIL, so the rows
+                    # before its first row are skipped, not read. They count as a drop:
+                    # the cursor moves past them and no later tick offers them again.
+                    if page == 0 and cursor == 0 and next_cursor - len(rows) > 0:
+                        skipped = True
+                    # Stored after EACH page, so a later page that refuses keeps the
+                    # rows the earlier pages already read instead of replaying them.
+                    if cursors is not None:
+                        cursors[target] = next_cursor
+                    advanced = next_cursor > cursor
+                    cursor = next_cursor
+                    behind = isinstance(total, int) and total > cursor
+                    if not behind or not advanced:
+                        break
+                if behind or skipped:
+                    dropped += 1
             else:
                 if read_pr is None:
                     dropped += 1

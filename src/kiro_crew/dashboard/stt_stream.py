@@ -32,6 +32,7 @@ from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.start_priority import StartPriority
 from kiro_crew.stt.engine import pcm_from_int16
 from kiro_crew.stt.limits import DECODE_ABORT_GRACE_SECS
 from kiro_crew.stt.vad import Endpointer as AudioEndpointer
@@ -403,6 +404,8 @@ class _Endpointer:
                 model=self._model,
                 sel_source="stt_endpointing",
                 timeout=self._timeout,
+                # The person is mid-dictation; the verdict drives auto-submit.
+                start_priority=StartPriority.FOREGROUND,
             )
         except Exception:
             logger.debug("stt endpointing classification failed", exc_info=True)

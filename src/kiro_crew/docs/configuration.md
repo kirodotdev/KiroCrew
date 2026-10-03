@@ -38,6 +38,14 @@ subagent timeout and the chat-turn ceiling) and the subagent memory floor
 an old shipped default is removed so the current default applies, in that same run. It happens once per key: set one back afterwards and it stays yours.
 Affirming a value with `--keep` before that first start also keeps it.
 
+One more key is fixed once, for installs upgrading straight from 0.6.x or earlier:
+those releases stored `skills.lazy_load: false`, which then meant the full skills
+listing. Today `false` selects the short entry that names only eight skills, so on
+the first start after such an upgrade the stored `false` is removed and the default
+skill index applies. An install that has already run any 0.7 build or later,
+insider builds included, keeps its value.
+To choose the short entry afterwards: `kirocrew config set skills.lazy_load false`.
+
 Everything else is reported, not changed, because a stored value can be a real
 choice: `stt.streaming: false` is how you turn live dictation text off, and on disk
 that is identical to the old default. On startup Kiro Crew prints one line naming any
@@ -52,9 +60,10 @@ kirocrew config defaults --keep        # affirm your values, stop the notice
 ```
 
 Both accept specific keys — `kirocrew config defaults --keep session.autocompact_pct`
-if you chose 90 on purpose and want the rest adopted. `--adopt` removes the keys so
-the current defaults apply from the next start; `--keep` records the exact values
-you affirmed, so changing one later brings the notice back. `kirocrew doctor` lists
+if you chose 90 on purpose and want the rest adopted. `--adopt` removes the keys,
+and a running gateway picks up the current defaults live; the command asks for a
+restart only for a key that needs one, and names it. `--keep` records the exact
+values you affirmed, so changing one later brings the notice back. `kirocrew doctor` lists
 everything, affirmed values included.
 
 The same command also clears a stored value Kiro Crew has to replace — a retired
@@ -490,7 +499,7 @@ member-memory sandbox is required.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `skills.max_triggered` | Maximum skills loaded per message (>=0) | `0` |
-| `skills.lazy_load` | Inject a usage-ranked top-K of on-demand skills at session start, plus one line naming the families it leaves out, and leave the tail discoverable via search, so a large skills set cannot crowd out memory and lessons. Set false for the shorter entry that names only the eight hottest skills | `true` |
+| `skills.lazy_load` | Inject a usage-ranked top-K of on-demand skills at session start, plus one line naming the families it leaves out, and leave the tail discoverable via search, so a large skills set cannot crowd out memory and lessons. Set false for the shorter entry that names eight skills. In both, the user's own skills take up to six of the first eight places and the highest-ranked remaining skills of either kind take the rest, so a new install names the skills its user wrote while a shipped skill with real usage keeps its name | `true` |
 
 ### MCP Gateway
 
@@ -601,8 +610,14 @@ by hand. Other branches,
 `release/*` included, never auto-apply. `main` is always one minor version ahead
 of the release line, so a `main` checkout moves onto nightly code each time a
 release branch is cut. Below a policy minimum version, a primary-branch checkout
-skips the version test and resets to every new upstream commit, released or
-not.
+applies on the same newer-`__version__` test and only when the checkout can take
+the update cleanly, so a floor moves it toward a build that satisfies the minimum
+rather than resetting to every intermediate commit. When the floor is pinned
+above the newest available build, or the checkout has diverged (local commits a
+reset would discard), the gateway refreshes the update badge instead of applying.
+A mandated apply that finds the required code already on disk leaves a restart
+pending and refreshes the badge rather than reporting a restart that does not
+happen.
 
 ### Turning it off and updating by hand
 
@@ -630,7 +645,9 @@ the version the running gateway serves.
 - **A policy minimum version.** An administrator can set `min_version` in the
   `updates` block of `security_policy.json`. On an install whose gateway updates
   itself, a gateway below that version applies the update even with
-  `auto_update` off. The scope per install is in the
+  `auto_update` off — but only toward a build carrying a newer `__version__`, so
+  a floor advances the host instead of churning on commit distance alone. The
+  scope per install is in the
   [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
 - **The desktop app's own updater.** On a desktop install, the app's update
   switch on the About page is the one that stops automatic updates. It updates

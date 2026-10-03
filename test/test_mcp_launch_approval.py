@@ -758,7 +758,7 @@ def test_refusal_display_argv_is_bounded_and_not_approvable(tmp_path):
     mod = _approval_module()
     assert mod is not None
     max_args = getattr(mod, "_MAX_DISPLAY_ARGS")
-    max_chars = getattr(mod, "_MAX_DISPLAY_ARG_CHARS")
+    budget = getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS")
     huge_arg = "x" * 10_000
     args = [huge_arg] * 10_000
     env_hash = mod.env_fingerprint({})
@@ -779,7 +779,7 @@ def test_refusal_display_argv_is_bounded_and_not_approvable(tmp_path):
     refusal = document["refused"]["SRV"]
 
     assert len(refusal["commands"][0]) <= max_args
-    assert all(len(arg) <= max_chars for arg in refusal["commands"][0])
+    assert sum(len(arg) for arg in refusal["commands"][0]) <= budget
     assert "partial" in refusal["commands"][0][-1]
     assert refusal["envs"] == [[]]
     assert refusal["complete"] is False
@@ -800,6 +800,90 @@ def test_refusal_display_argv_is_bounded_and_not_approvable(tmp_path):
     )
     stored = mod.load_approvals(store)
     assert stored.admits_launch("SRV", rewriter.hash_command(_ATTACK_CMD, args), env_hash)
+
+
+#: One ``--skill-paths`` value: a comma-joined list of per-package skill
+#: directories, held in a single argv entry, with further entries around it.
+#: A server that passes its skill directories this way puts thousands of
+#: characters in one entry while its whole argv stays small.
+_LONG_SKILL_PATHS = ",".join(
+    f"/home/u/pkgs/pkg{index:02d}-1.0/build-{index}/skills" for index in range(40)
+)
+_LONG_ARGV = [
+    "--include-tools",
+    "ToolA,ToolB,ToolC,ToolD",
+    "--skill-paths",
+    _LONG_SKILL_PATHS,
+    "--skill-name-filter",
+    "some-skill",
+    "--agent-sop-filter",
+    "*",
+]
+
+
+def test_a_long_argv_entry_within_the_total_budget_is_shown_whole_and_approvable(tmp_path):
+    """One argv entry longer than a per-entry cap is still fully displayable.
+
+    A server that passes every skill directory in one ``--skill-paths`` value
+    meets a per-entry character cap that cuts the display of a launch whose
+    whole argv is far smaller than the display budget. A cut display cannot be
+    approved, so such a server stays unapprovable and every session starts its
+    own copy.
+    """
+    mod = _approval_module()
+    assert mod is not None
+    budget = getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS")
+    assert len(_LONG_SKILL_PATHS) > 512, "the fixture must exceed a per-entry cap"
+    assert sum(len(part) for part in (_ATTACK_CMD, *_LONG_ARGV)) < budget
+    env_hash = mod.env_fingerprint({})
+    fingerprint = mod.launch_fingerprint(_ATTACK_CMD, _LONG_ARGV, {})
+    approvals = mod.LaunchApprovals()
+
+    assert not approvals.admit(
+        "srv",
+        fingerprint,
+        launch=(_ATTACK_CMD, _LONG_ARGV),
+        env={},
+        derived_env_hash=env_hash,
+    )
+    assert approvals.incomplete_identities == {}
+    assert approvals.refused_identities("SRV")
+    approvals.full_pass = True
+    store = tmp_path / "approvals.json"
+    assert mod.save_pass(approvals, path=store)
+
+    refusal = mod.refused_servers(store)["srv"]
+    assert refusal["commands"][0] == [_ATTACK_CMD, *_LONG_ARGV]
+    assert refusal.get("complete") is not False
+    assert refusal["expected_launch"]
+
+
+def test_an_argv_over_the_total_budget_stays_unapprovable(tmp_path):
+    """A launch too large to show in full fails closed, with the cut marked."""
+    mod = _approval_module()
+    assert mod is not None
+    budget = getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS")
+    args = ["y" * (budget // 2) for _ in range(4)]
+    env_hash = mod.env_fingerprint({})
+    approvals = mod.LaunchApprovals()
+
+    assert not approvals.admit(
+        "srv",
+        mod.launch_fingerprint(_ATTACK_CMD, args, {}),
+        launch=(_ATTACK_CMD, args),
+        env={},
+        derived_env_hash=env_hash,
+    )
+    assert approvals.refused_identities("SRV") is None
+    approvals.full_pass = True
+    store = tmp_path / "approvals.json"
+    assert mod.save_pass(approvals, path=store)
+
+    refusal = mod.refused_servers(store)["srv"]
+    assert sum(len(arg) for arg in refusal["commands"][0]) <= budget
+    assert "partial" in refusal["commands"][0][-1]
+    assert refusal["complete"] is False
+    assert "expected_launch" not in refusal
 
 
 def test_store_refuses_a_new_stem_at_the_server_record_cap(tmp_path, caplog):
@@ -864,9 +948,9 @@ def test_oversized_store_display_fields_are_bounded_on_read(tmp_path):
     mod = _approval_module()
     assert mod is not None
     max_args = getattr(mod, "_MAX_DISPLAY_ARGS")
-    max_chars = getattr(mod, "_MAX_DISPLAY_ARG_CHARS")
+    budget = getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS")
     max_name_chars = getattr(mod, "_MAX_NAME_CHARS")
-    oversized = "z" * (max_chars * 2)
+    oversized = "z" * budget
     command = [oversized] * (max_args * 2)
     store = tmp_path / "approvals.json"
     store.write_text(
@@ -892,7 +976,7 @@ def test_oversized_store_display_fields_are_bounded_on_read(tmp_path):
 
     assert len(name) <= max_name_chars
     assert len(record["commands"][0]) <= max_args
-    assert all(len(arg) <= max_chars for arg in record["commands"][0])
+    assert sum(len(arg) for arg in record["commands"][0]) <= budget
     assert "partial" in record["commands"][0][-1]
     assert record["envs"] == [[]]
 
@@ -1160,9 +1244,9 @@ def test_refusal_envs_are_bounded_and_redacted(tmp_path):
     mod = _approval_module()
     assert mod is not None
     max_args = getattr(mod, "_MAX_DISPLAY_ARGS")
-    max_chars = getattr(mod, "_MAX_DISPLAY_ARG_CHARS")
+    budget = getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS")
     secret = "sk-proj-" + "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"
-    env = {f"KEY_{index:03d}": "x" * (max_chars * 2) for index in range(max_args + 4)}
+    env = {f"KEY_{index:03d}": "x" * budget for index in range(max_args + 4)}
     env["API_TOKEN"] = secret
     env_hash = mod.env_fingerprint(env)
     approvals = mod.LaunchApprovals()
@@ -1180,7 +1264,7 @@ def test_refusal_envs_are_bounded_and_redacted(tmp_path):
     refusal = mod.refused_servers(store)["srv"]
     displayed = refusal["envs"][0]
     assert len(displayed) <= max_args
-    assert all(len(pair) <= max_chars for pair in displayed)
+    assert sum(len(pair) for pair in displayed) <= budget
     assert secret not in json.dumps(refusal)
     assert any("<hidden sha256:" in pair for pair in displayed)
     assert "partial" in displayed[-1]
@@ -1281,7 +1365,7 @@ def test_a_stored_approved_display_is_bounded_on_read(tmp_path):
     mod = _approval_module()
     assert mod is not None
     max_args = getattr(mod, "_MAX_DISPLAY_ARGS")
-    max_chars = getattr(mod, "_MAX_DISPLAY_ARG_CHARS")
+    budget = getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS")
     pair = mod.launch_pair(rewriter.hash_command(_APPROVED_CMD, []), mod.env_fingerprint({}))
     store = tmp_path / "approvals.json"
     store.write_text(
@@ -1294,7 +1378,7 @@ def test_a_stored_approved_display_is_bounded_on_read(tmp_path):
                         "fingerprints": [mod.launch_fingerprint(_APPROVED_CMD, [], {})],
                         "pairs": [pair],
                         "displays": {
-                            pair: {"command": ["z" * (max_chars * 2)] * (max_args * 2), "env": []},
+                            pair: {"command": ["z" * budget] * (max_args * 2), "env": []},
                             "not-an-approved-pair": {"command": [_ATTACK_CMD], "env": []},
                         },
                     }
@@ -1310,7 +1394,7 @@ def test_a_stored_approved_display_is_bounded_on_read(tmp_path):
 
     assert list(stored.approved_displays["SRV"]) == [pair]
     assert len(command) <= max_args
-    assert all(len(arg) <= max_chars for arg in command)
+    assert sum(len(arg) for arg in command) <= budget
     assert env == []
 
 

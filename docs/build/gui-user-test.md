@@ -89,7 +89,7 @@ image block inside `tool_result`. Both shapes drive the same `x11.perform`, so t
 logs and the scenarios are identical either way. `--tool-mode native|custom` pins one.
 
 The model id is a workflow parameter (`inputs.model`, default
-`us.anthropic.claude-opus-5`), never a default in code. The workflow also passes
+`us.anthropic.claude-opus-5-5`), never a default in code. The workflow also passes
 `--price-in 15 --price-out 75` (Opus list prices per million tokens) so the run's
 cost figure and the budget gate count real dollars; the harness's own defaults are
 Sonnet prices, for a `-f model=` override to a Sonnet-class model.
@@ -371,7 +371,7 @@ export GUI_OUT="$(mktemp -d)"
 bash scripts/gui-user-test/boot.sh                       # Xvfb :99, gateway, Chromium
 . "$GUI_OUT/target.env"
 python test/gui_user/harness.py --out "$GUI_OUT/results" --base-url "$GUI_BASE_URL" \
-  --model us.anthropic.claude-opus-5 --tier smoke --budget-usd 10 --price-in 15 --price-out 75
+  --model us.anthropic.claude-opus-5-5 --tier smoke --budget-usd 10 --price-in 15 --price-out 75
 bash scripts/gui-user-test/teardown.sh
 ```
 

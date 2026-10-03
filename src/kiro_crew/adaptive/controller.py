@@ -123,6 +123,10 @@ class ExecActuator(Protocol):
 
 GateSetter = Callable[[int], Awaitable[Optional[int]]]
 StatsReader = Callable[[], Awaitable[dict[str, Any]]]
+#: Reads the runner lane's ``stats()`` frame (running / waiting / settled_ok),
+#: or ``None`` when no runner admission is wired. Synchronous and non-blocking:
+#: the lane keeps those counts in memory, so no thread hop is needed.
+LaneReader = Callable[[], Optional[dict[str, Any]]]
 
 # The ``process`` attribute every sample this controller publishes carries. One
 # spelling for all three series (loop lag, resident set, CPU share): a dashboard
@@ -239,6 +243,7 @@ class AdaptiveController:
         cfg: object,
         set_gate_capacity: Optional[GateSetter] = None,
         read_gate_stats: Optional[StatsReader] = None,
+        read_runner_lane: Optional[LaneReader] = None,
         host_probe: Optional[Callable[[], HostSample]] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -250,6 +255,7 @@ class AdaptiveController:
         self._manager = manager
         self._set_gate_capacity = set_gate_capacity
         self._read_gate_stats = read_gate_stats
+        self._read_runner_lane = read_runner_lane
         self._host_probe = host_probe
         self._clock = clock
         self._sleep = sleep
@@ -269,6 +275,18 @@ class AdaptiveController:
         self._evidence = _Evidence()
         self._seen_done: dict[str, bool] = {}
         self._seen_activity: dict[str, float] = {}
+        #: The runner lane's cumulative ``settled_ok`` as of the previous tick.
+        #: Lane completions are the delta against this; ``-1`` means no lane has
+        #: been read yet, so the first reading seeds the base without crediting
+        #: a run that finished before the controller was watching. A counter
+        #: that went DOWN is a fresh admission (a re-wire built a new lane): the
+        #: base is reset to it, never read as a negative delta.
+        self._lane_completions_base: int = -1
+        #: Lane completions the controller has credited so far. Added to the
+        #: manager's own ``completions_total`` for the one ``Sample.completions``
+        #: the policy diffs, so workflow and sub-agent completions earn under
+        #: the same rule and neither population is counted in the other's.
+        self._lane_completions_total: int = 0
         self._samples: deque[Sample] = deque(maxlen=SAMPLE_RING)
         self._task: Optional[asyncio.Task[None]] = None
         self._applied_exec: Optional[int] = None
@@ -561,9 +579,37 @@ class AdaptiveController:
                 failures=ev.gate_outcomes["failure"],
                 neutral=ev.gate_outcomes["neutral"],
             )
-        running = int(getattr(self._manager, "running_count", 0) or 0)
-        queued = len(getattr(self._manager, "_queue", ()) or ())
-        healthy = max(0, running - self._stalled_running())
+        mgr_running = int(getattr(self._manager, "running_count", 0) or 0)
+        mgr_queued = len(getattr(self._manager, "_queue", ()) or ())
+        healthy = max(0, mgr_running - self._stalled_running())
+
+        # The runner lane is a second admission point on the same effective
+        # cap: its occupancy is demand and its committed completions earn an
+        # increase under the exec track's own rules. Lane completions this tick
+        # mark the lane's running slots as progressing -- fresh work finishing
+        # is the "stream activity" signal a lane with no per-row stream exposes.
+        lane_running, lane_waiting, lane_done = self._ingest_runner_lane()
+        running = mgr_running + lane_running
+        queued = mgr_queued + lane_waiting
+        # ``healthy_in_flight`` is the cut floor: a decrease never targets below
+        # it. The lane exposes no stall signal, so a stuck lane slot must not
+        # count as healthy -- that would prop the floor up and turn a
+        # corroborated halving into a one-slot trim. Only stall-detected manager
+        # runs are healthy here; lane occupancy still reaches demand above.
+        #
+        # The at-cap tests are PER admission point, never the sum: each point is
+        # bounded by the same effective cap on its own. ``saturating`` is the
+        # busiest point's running (the progress probe needs a point whose own
+        # slots fill the cap); ``saturating_demand`` is the busiest point's
+        # demand (the earn gate's pressure test). Reading the max of the two,
+        # not the sum, keeps two manager plus two lane runs at cap 4 from
+        # earning -- neither point is saturated -- while a deep queue at one
+        # point still carries that point's demand, so a slow-start increase
+        # earned by a completion with running below the cap holds.
+        saturating = max(mgr_running, lane_running)
+        saturating_demand = max(mgr_running + mgr_queued, lane_running + lane_waiting)
+        if lane_done > 0:
+            progressing += min(lane_running, lane_done) if lane_running else lane_done
 
         sample = Sample(
             t=now,
@@ -579,7 +625,7 @@ class AdaptiveController:
             attributable_timeout_rate=timeout_rate,
             completion_rate=completion_rate,
             admitted_in_window=admitted,
-            completions=ev.completions_total,
+            completions=ev.completions_total + self._lane_completions_total,
             slow_or_failing_keys=len(slow_keys),
             per_provider_429=throttles,
             spawn_gate=gate,
@@ -587,6 +633,8 @@ class AdaptiveController:
             queued=queued,
             healthy_in_flight=healthy,
             progressing=progressing,
+            saturating=saturating,
+            saturating_demand=saturating_demand,
         )
         self._samples.append(sample)
         return sample
@@ -746,6 +794,45 @@ class AdaptiveController:
             if not getattr(info, "done", False) and getattr(info, "stalled", False)
         )
 
+    def _ingest_runner_lane(self) -> tuple[int, int, int]:
+        """Fold the runner lane (workflow ``ctx.agent()`` / TaskRunner steps)
+        into the exec track's evidence.
+
+        Returns ``(running, waiting, completions_delta)``: lane occupancy as
+        demand and the lane completions since the previous tick. The lane is a
+        SEPARATE admission point from the sub-agent manager -- a workflow agent
+        holds a lane slot, a sub-agent holds a manager slot, never both -- so
+        this evidence adds to the manager's rather than overlapping it, and the
+        issue's "nothing counted twice" holds by construction.
+
+        A lane completion is a committed ``done`` (``RunnerLane.settled_ok``),
+        never a grant; attributable lane failures reach the controller through
+        ``record_start`` already, so this never feeds the timeout signal.
+        """
+        if self._read_runner_lane is None:
+            return (0, 0, 0)
+        try:
+            stats = self._read_runner_lane()
+        except Exception:
+            logger.debug("adaptive: runner lane read failed", exc_info=True)
+            return (0, 0, 0)
+        if not isinstance(stats, dict):
+            return (0, 0, 0)
+        running = max(0, _as_int(stats.get("running"), 0))
+        waiting = max(0, _as_int(stats.get("waiting"), 0))
+        settled_ok = max(0, _as_int(stats.get("settled_ok"), 0))
+        base = self._lane_completions_base
+        if base < 0 or settled_ok < base:
+            # First reading, or a fresh lane after a re-wire: seed the base and
+            # credit nothing this tick -- a completion from before the
+            # controller watched is not evidence about the present.
+            self._lane_completions_base = settled_ok
+            return (running, waiting, 0)
+        delta = settled_ok - base
+        self._lane_completions_base = settled_ok
+        self._lane_completions_total += delta
+        return (running, waiting, delta)
+
     # -- observability -------------------------------------------------------
 
     @property
@@ -847,6 +934,7 @@ __all__ = [
     "AdaptiveController",
     "ExecActuator",
     "HostSample",
+    "LaneReader",
     "classify_run_outcome",
     "current",
     "current_state",

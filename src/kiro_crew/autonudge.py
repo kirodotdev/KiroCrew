@@ -97,9 +97,11 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     _TERMINAL_BOUND_REASONS,
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
+    CYCLE_CAP_REASON,
     MANUAL_STOP_REASON,
     MONITOR_TERMINAL_REASON,
     NUDGE_RENEW_DUE_SHARE,
+    RUNTIME_BUDGET_REASON,
     SENTINEL_DROPPED_REASON,
     SESSION_START_FAILURE_REASON,
     STRUCTURAL_TERMINAL_REASON,
@@ -1295,6 +1297,25 @@ class AutoNudgeService:
                 loop.consecutive_start_failures = int(streak_num)
                 if streak_repaired:
                     self._store_dirty = True
+                # The two counters the timer reads on every wake, for the same
+                # reason: ``cycle_count`` meets ``>=`` against the cap and
+                # ``created_ts`` is subtracted from the clock, so a persisted
+                # string or ``null`` in either raises inside ``_timer`` and
+                # dead-ends the loop the same way. Repaired to 0 -- a count of
+                # nothing run, and the anchor every budget reader already treats
+                # as "nothing to measure from" -- rather than a guess that could
+                # stop a healthy loop. The user's resume preserves the
+                # breakpoint, so this boundary is the one place they are
+                # repaired. The BOUNDS are deliberately left as stored: a
+                # malformed cap or budget repaired to 0 would quietly remove a
+                # cost limit the user typed, and persist that.
+                count_num, count_repaired = _repair_number(loop.cycle_count, lo=0.0, fallback=0.0)
+                loop.cycle_count = int(count_num)
+                loop.created_ts, created_repaired = _repair_number(
+                    loop.created_ts, lo=0.0, fallback=0.0
+                )
+                if count_repaired or created_repaired:
+                    self._store_dirty = True
                 if (
                     loop.monitor is not None
                     and loop.monitor.version == MONITOR_STATE_VERSION
@@ -1602,6 +1623,16 @@ class AutoNudgeService:
                         self._arm_from_deadline(loop)
             global _INSTANCE
             _INSTANCE = self
+        # The crew-log bus subscriptions that pull a work-ledger loop forward when its
+        # board's ``work`` fold advances: one keyed subscription per watched board,
+        # following this service's loop table. Installed HERE because this service owns
+        # the loops it fires -- the bus's rule is that a consumer subscribes where its
+        # state exists. Function-local import to keep ``conductor_wake`` off this
+        # module's import graph: it imports ``autonudge`` back (for ``get_instance``),
+        # and a module-level import here would close that cycle.
+        from kiro_crew import conductor_wake
+
+        conductor_wake.install(self)
         # The reconciler is the timer-driven backstop for a loop stranded
         # active-but-unarmed (see _reconcile_forever). Spawned outside the
         # maintenance lock: it takes no locks of its own and its first pass is
@@ -1642,6 +1673,12 @@ class AutoNudgeService:
         global _INSTANCE
         if _INSTANCE is self:
             _INSTANCE = None
+            # The crew-log subscriptions and the boards they filled are bounded by this
+            # service's loop table; with the table gone they have nothing to fire, so
+            # they are disposed with it. A later start() joins them again.
+            from kiro_crew import conductor_wake
+
+            conductor_wake.dispose_all()
 
     async def _persist_locked(self) -> None:
         """Snapshot under the service lock and write on a worker thread.

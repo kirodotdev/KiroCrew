@@ -198,9 +198,11 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
           panel. Keeping the collapsed state inline stops it reading as another
           full-width bar competing with the composer below it. Both states are
           the dock's glass (components/Glass.tsx) on the accent tint step; the
-          pill takes the follow-up chips' radius, the panel the bars' radius. */}
+          pill takes the follow-up chips' radius, the panel the bars' radius;
+          `thick` so the progress rows stay readable over the transcript (#16299). */}
       <Glass
         variant="chip"
+        thickness="thick"
         radius={expanded ? 8 : 16}
         className={`mb-1 animate-slide-up glass-accent ${
           expanded ? '' : 'inline-flex max-w-full'

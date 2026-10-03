@@ -499,10 +499,10 @@ class AdaptivePolicy:
             return self._emit(ACTION_PAUSE, reason, report)
         base = self._probe_base if self._probe_base is not None else sample.completions
         probe_done = sample.completions > base and not report.any
-        # A probe that never reports -- nothing ran, or it ran on the runner
-        # lane, whose completions this track does not count -- would hold the
-        # cap at 1 for the life of the process. Idle and clear for the idle
-        # window is the same verdict a clean probe completion gives.
+        # ``sample.completions`` carries both manager and runner-lane
+        # completions, so a probe satisfied by lane work resumes here. The idle
+        # path below only backstops a probe where nothing ran at all -- idle and
+        # clear for the idle window is the same verdict a clean completion gives.
         idle_done = not probe_done and self._idle_recovery_due(sample, report)
         if probe_done or idle_done:
             old_exec, old_gate = self._exec_cap, self._gate_cap
@@ -573,7 +573,7 @@ class AdaptivePolicy:
         progress_probe = (
             sample.progressing > 0
             and sample.queued > 0
-            and sample.running >= self._exec_cap
+            and sample.at_cap_running >= self._exec_cap
             and sample.free_mem_mb >= max(0.0, p.thresholds.mem_pressure_mb)
             and not report.throttled_providers
         )
@@ -581,7 +581,7 @@ class AdaptivePolicy:
         if (
             self._exec_cap < exec_target
             and (completion_earned or progress_probe)
-            and sample.demand >= self._exec_cap
+            and sample.at_cap_demand >= self._exec_cap
         ):
             probed = not completion_earned
             self._exec_cap = (

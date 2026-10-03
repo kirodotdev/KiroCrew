@@ -54,12 +54,34 @@ _SEED_ROWS = 20
 
 
 def _point_home_at(monkeypatch: pytest.MonkeyPatch, data_home: Path) -> None:
-    """Make *data_home* the data home, with the default store and one silo declared."""
-    (data_home / "config.json").write_text(json.dumps(_CONFIG), encoding="utf-8")
-    monkeypatch.setenv("KIROCREW_HOME", str(data_home))
+    """Make *data_home* the data home, with the default store and one silo declared.
+
+    The config is written to the SAME path the loader resolves ``KIROCREW_HOME`` to
+    (``Path.resolve()``), not to the raw ``data_home`` the fixture was handed. On
+    Windows the two can differ -- short-name (8.3) components, drive-letter casing,
+    or a long parametrized temp path -- so writing to the raw path leaves the loader
+    reading a home with no ``config.json``, degrading the load to the default store
+    alone; the declared ``fin`` silo is then unknown.
+
+    The three resolution memos are dropped alongside the home switch so a stale entry
+    keyed on an earlier case's home cannot answer for this one. ``config_dir()`` keys
+    on ``_resolved_home`` identity, ``_declared_stores`` memoizes on the config
+    fingerprint, and the loaded config is cached on that same fingerprint; a coarse
+    filesystem clock can leave two different homes sharing a fingerprint, so each is
+    reset explicitly rather than relied on to invalidate itself.
+    """
     import kiro_crew.config.paths as paths
+    from kiro_crew import memory_stores
+    from kiro_crew.config.loader import _invalidate_config_cache
+
+    resolved_home = data_home.resolve()
+    (resolved_home / "config.json").write_text(json.dumps(_CONFIG), encoding="utf-8")
+    monkeypatch.setenv("KIROCREW_HOME", str(resolved_home))
 
     monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+    monkeypatch.setattr(paths, "_config_dir_memo", None, raising=False)
+    monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None, raising=False)
+    _invalidate_config_cache()
 
 
 def _write_seed_rows(store: VectorMemoryStore) -> None:
@@ -70,9 +92,14 @@ def _write_seed_rows(store: VectorMemoryStore) -> None:
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A data home declaring the default store and one silo."""
+    """A data home declaring the default store and one silo.
+
+    Returns the RESOLVED home -- the spelling the loader uses -- so paths the test
+    composes from it (candidate databases, superseded-sibling globs) sit beside the
+    stores the loader resolves rather than on a divergent Windows spelling.
+    """
     _point_home_at(monkeypatch, tmp_path)
-    return tmp_path
+    return tmp_path.resolve()
 
 
 @pytest.fixture(scope="module")

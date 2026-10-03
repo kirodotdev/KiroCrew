@@ -519,8 +519,8 @@ def test_the_gpt_pin_is_the_reviewers_not_its_adjudicators():
     make every local brief report drift and claim the GPT lane runs on Opus."""
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
-    assert "--model us.anthropic.claude-opus-5" in text
-    assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-5.6-sol"
+    assert "--model us.anthropic.claude-opus-5-5" in text
+    assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-6.1-sol"
 
 
 def test_model_drift_is_reported_not_swallowed():

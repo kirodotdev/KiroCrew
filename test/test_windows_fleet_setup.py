@@ -96,13 +96,16 @@ def _native_powershell(name):
 
 def test_setup_node_uses_repo_pin_and_version_without_changing_hosted():
     steps = _steps()
-    assert len(steps) == 2
+    assert len(steps) == 3
     assert all(
         step["if"] == "runner.os == 'Windows' && runner.environment == 'self-hosted'"
         for step in steps
     )
     assert steps[0]["shell"] == "powershell"
-    node = steps[1]
+    # The seed runs between the inventory and setup-node so setup-node finds
+    # Node in RUNNER_TOOL_CACHE and skips its GitHub API manifest call.
+    assert steps[1]["uses"] == "./.github/actions/seed-node-tool-cache"
+    node = steps[2]
     assert re.fullmatch(r"actions/setup-node@[0-9a-f]{40}", node["uses"])
     ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     assert any(

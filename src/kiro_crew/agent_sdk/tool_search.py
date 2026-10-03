@@ -26,28 +26,17 @@ mirrored as the defaults of ``AgentConfig.tool_search_min_pct`` /
 ``tool_search_min_tokens``; a test pins the two spellings together. KAS accepts the same two
 keys on the wire; whether it honours them as a floor is its own business, and
 they are forwarded verbatim either way so one setting means one thing.
-
-Deferral is per-server exemptible, and that is what :data:`MANDATORY_MCPS_ENV`
-carries. A server named there keeps every one of its specs in the model's tool
-list even while deferral is active, so its tools are never loaded mid-turn. The
-exemption exists because loading a tool REWRITES the request's ``tools`` array,
-and an extended-thinking model's signed thinking blocks are bound to the array
-they were minted under -- the provider rejects the whole request with "The
-``tools`` list differs from the one this block was created with" and every later
-turn on that conversation fails the same way. Crew's own servers are the ones
-worth exempting: they are infrastructure the agent reaches for every session,
-so deferring them buys little and churns the array constantly.
 """
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
 __all__ = [
-    "MANDATORY_MCPS_ENV",
     "TOOL_SEARCH_DEFAULT_MIN_PCT",
     "TOOL_SEARCH_DEFAULT_MIN_TOKENS",
     "TOOL_SEARCH_LOADER_TOOL",
@@ -55,7 +44,7 @@ __all__ = [
     "clamp_min_pct",
     "clamp_min_tokens",
     "kas_client_meta_settings",
-    "mandatory_mcps_env_value",
+    "resume_takes_tool_search_replay",
     "spec_grants_tool_search",
     "with_client_meta_settings",
 ]
@@ -67,32 +56,6 @@ TOOL_SEARCH_DEFAULT_MIN_TOKENS = 50_000
 #: The built-in that loads a deferred spec. Its spelling is the same in an agent
 #: spec's ``tools`` list on both kiro engines.
 TOOL_SEARCH_LOADER_TOOL = "tool_search"
-
-#: The env var kiro-cli's Rust engine reads the never-defer server list from.
-#: A THIRD channel, next to the cli.json overlay and the initialize handshake:
-#: the engine takes it from the process environment at ACP session-manager
-#: construction, so it is set on the spawn env and cannot be changed after.
-MANDATORY_MCPS_ENV = "ASBX_KIRO_MANDATORY_MCPS"
-
-
-def mandatory_mcps_env_value(server_names: Iterable[str]) -> str:
-    """The :data:`MANDATORY_MCPS_ENV` value naming *server_names*.
-
-    Comma-separated and sorted, so the same set renders the same string on every
-    spawn -- a resume must not look like a different tool surface.
-
-    Returns ``""`` for an empty set, which the caller treats as "set no variable
-    at all". Writing an empty value instead would be read by the engine as an
-    explicit empty list -- same behaviour today, but it puts a variable on the
-    child that says nothing, and the engine's own ``filter(|s| !s.is_empty())``
-    already spells that as absent.
-
-    Takes the server names as they come from :func:`agent.crew_owned_mcp_servers`
-    -- a set of non-empty ``str`` keys from a module constant and an edition
-    adapter. It does not re-validate them: a blank or non-string name would be a
-    defect in that map, and swallowing it here would hide it rather than fix it.
-    """
-    return ",".join(sorted(server_names))
 
 
 def clamp_min_pct(value: object) -> int:
@@ -162,6 +125,48 @@ def spec_grants_tool_search(spec: dict[str, Any] | None) -> bool:
         return False
     entries = {t for t in raw if isinstance(t, str)}
     return bool(entries & {"*", "@builtin", TOOL_SEARCH_LOADER_TOOL})
+
+
+def resume_takes_tool_search_replay(
+    *,
+    tool_search: bool | None,
+    backend: str,
+    channel_id: str | None,
+    session_key: object,
+) -> bool:
+    """Whether a resume of this session is a fresh session plus conversation replay.
+
+    A direct dashboard kiro-cli session with Tool Search on cannot restore its
+    transcript through native ``session/load``: the loaded transcript comes back
+    without Tool Search's activated schemas, so the next inference cannot invoke
+    a tool the loader reports as loaded. The provider rebuilds that registry in a
+    fresh native session and preserves the Kiro Crew conversation with a replay
+    instead (``providers.acp._start_kiro_runtime_impl``). A linked channel
+    identity (``channel_id``) and every non-dashboard key keep native resume.
+
+    This is the ONE definition of that decision, and it is pure on purpose: the
+    resume prefetch (``chat_runner._eager_spawn``) asks it before any runtime
+    exists, because a speculative load the provider replaces with a replay can
+    only come back ``resumed=False`` and be refused after a full spawn. It lives
+    here, below both callers, because the dashboard may not import the ACP layer
+    (``scripts/check_agent_sdk_boundary.py``) and the provider must not copy the
+    rule. Whether a resume is attempted at all (a persisted sid, persistent
+    memory) is the caller's precondition; this answers only which shape the
+    resume takes.
+    """
+    # Function-level on purpose: ``kiro_crew.messaging`` imports its driver, which
+    # imports ``kiro_crew.acp``, whose runtime imports THIS module -- a top-level
+    # import here fails with a partially initialized module whenever this module
+    # is the first of the three to load.
+    from kiro_crew.messaging.link import telemetry_channel_of
+
+    return (
+        tool_search is True
+        and backend == ACP_BACKEND_KIRO
+        and not channel_id
+        and telemetry_channel_of(session_key if isinstance(session_key, str) else None)
+        == "dashboard"
+    )
 
 
 def kas_client_meta_settings(

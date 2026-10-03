@@ -281,6 +281,16 @@ def normalize_member_source(raw: object) -> str:
     return _SOURCE_PACKAGE
 
 
+def _member_is_created(member_id: object) -> bool:
+    """Whether a crew record is a created crewmate: it carries a member id.
+
+    ``member_id`` is assigned when a member's memory is allocated and is never
+    coerced by the loader, so only a non-blank string counts; a hand-edited
+    non-string or a blank reads as not created.
+    """
+    return isinstance(member_id, str) and bool(member_id.strip())
+
+
 def _slot_flush_generation(slot: object) -> tuple[int, int, int] | None:
     """The three counters a live slot's persistence state is made of.
 
@@ -424,6 +434,16 @@ async def api_members(request: web.Request) -> web.Response:
                 # bool (the user's own favourite mark, PUT /api/agents/{name}).
                 "source": normalize_member_source(agent_cfg.source),
                 "starred": bool(agent_cfg.starred),
+                # Whether this record was CREATED ON THE DASHBOARD: the crew
+                # manager's own origin (`source == "kirocrew"`) AND a member id,
+                # which is assigned when its member memory is allocated. With
+                # `has_dm_message` below it decides whether the Crewmates page
+                # lists the row unasked; anything else (an app's own stamp, a
+                # sync-generated row, a legacy kirocrew row) is listed only once
+                # its DM thread holds a message, and is otherwise reached
+                # through the search box. A boolean, never the id itself.
+                "dashboard_created": agent_cfg.source == _SOURCE_KIROCREW
+                and _member_is_created(agent_cfg.member_id),
                 # A crew's IDENTITY: who it is, and the phrasings that should
                 # reach it. Both are operator-authored prose already stored on the
                 # crew, and both are needed off-config — a roster that shows a
@@ -472,6 +492,10 @@ async def api_members(request: web.Request) -> web.Response:
     # transcript's mtime is the one durable signal that survives restarts and
     # covers live and dormant threads alike. File stats are IO — one thread
     # hop for the whole roster, mirroring the binding reads above.
+    # Slot keys whose DM thread holds at least one message (filled by the tail
+    # read below; see `has_dm_message`).
+    has_message: set[str] = set()
+
     def _read_transcript_tails() -> dict[str, tuple[float, str, bool, bool]]:
         if state is None or state.conversation_log is None:
             return {}
@@ -490,6 +514,20 @@ async def api_members(request: web.Request) -> web.Response:
             binding = bindings.get(row["slug"])
             generation = binding.get("memory_store", "") if binding is not None else ""
             log_key = members_mod.member_thread_session_alias(row["slug"], generation)
+            # Whether the thread holds a message at all, for the roster's
+            # listing rule. `has_messages` stops at the first non-metadata row
+            # (two lines in practice), so this stays one short read per bound
+            # row -- the same evidence the crewmate prune uses: a metadata-only
+            # transcript (a thread opened, nothing sent) is not a message. A
+            # file that cannot be read counts as holding one, so an unreadable
+            # thread never hides the row. It runs BEFORE the mtime gate below:
+            # a transcript that cannot be stat'd is unreadable, not absent
+            # (`has_messages` answers an absent file as empty).
+            try:
+                if state.conversation_log.has_messages(log_key):
+                    has_message.add(row["slot_key"])
+            except OSError:
+                has_message.add(row["slot_key"])
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
                 continue
@@ -573,6 +611,13 @@ async def api_members(request: web.Request) -> web.Response:
         # crew log is the recency authority, and this value is its floor.
         row["last_active_ts"] = mt
         row["last_message"] = preview
+        # A live slot's rows count before they reach the disk: a greeting that
+        # has just been appended is a message whether or not it has flushed.
+        live = state._slots.get(row["slot_key"]) if (state and row["slot_key"]) else None
+        live_rows = getattr(live, "messages", None) if live is not None else None
+        row["has_dm_message"] = row["slot_key"] in has_message or (
+            isinstance(live_rows, (list, tuple)) and len(live_rows) > 0
+        )
         if not (preview or exhaustive) or row["slot_key"] in unflushed_slot_keys:
             continue
         # Re-ask AFTER the awaits: a slot that was clean at the pre-await sample

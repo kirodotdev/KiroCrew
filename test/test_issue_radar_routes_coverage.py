@@ -1438,6 +1438,33 @@ class TestPullMerge(unittest.IsolatedAsyncioTestCase):
             res = await self._call(self._base())
         self.assertEqual(res.status, 403)
 
+    async def test_an_async_refusal_keeps_githubs_reason(self):
+        with _connected(), _writable(), \
+                mock.patch.object(
+                    gh, "get_pr_detail",
+                    return_value={"mergeable_state": "clean", "head_sha": SHA},
+                ), mock.patch.object(
+                    gh, "merge_pull_request",
+                    side_effect=gh.GhMergeRefusedError("Required status check is failing"),
+                ):
+            res = await self._call(self._base())
+        self.assertEqual(res.status, 409)
+        self.assertEqual(_body(res)["code"], "merge_not_allowed")
+        self.assertIn("Required status check", _body(res)["error"])
+
+    async def test_a_merge_still_running_is_409_pending_not_success(self):
+        with _connected(), _writable(), \
+                mock.patch.object(
+                    gh, "get_pr_detail",
+                    return_value={"mergeable_state": "clean", "head_sha": SHA},
+                ), mock.patch.object(
+                    gh, "merge_pull_request",
+                    return_value={"merged": False, "pending": True, "message": "still merging"},
+                ):
+            res = await self._call(self._base())
+        self.assertEqual(res.status, 409)
+        self.assertEqual(_body(res)["code"], "merge_pending")
+
     async def test_any_other_failure_keeps_the_shared_502(self):
         with _connected(), _writable(), \
                 mock.patch.object(

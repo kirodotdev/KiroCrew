@@ -4280,6 +4280,58 @@ class TestHistorySaveOnClose:
         )
 
     @pytest.mark.asyncio
+    async def test_resume_restores_model_and_reasoning_effort(self, tmp_path, monkeypatch):
+        """Resuming from History must bring back the model and effort the user picked.
+
+        The restart loaders restore both; resume did not, so a reopened session
+        ran on the default model, and its next save wrote ``model: ""`` over the
+        pick on disk.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:modeled1", "user", "hello")
+        log.update_metadata(
+            "dashboard:modeled1", {"model": "test-model-x", "reasoning_effort": "high"}
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/modeled1/resume", json={"key": "dashboard:modeled1"}
+            )
+            assert resp.status == 200
+
+        slot = state._slots["modeled1"]
+        assert slot.model == "test-model-x"
+        assert slot.reasoning_effort == "high"
+
+        slot.append("user", "next turn")
+        slot.drain()
+        _save_slot_to_history(state, slot)
+        meta = log._read_metadata("dashboard:modeled1")
+        assert meta.get("model") == "test-model-x", "save after resume erased the model"
+        assert meta.get("reasoning_effort") == "high"
+
+    @pytest.mark.asyncio
+    async def test_resume_ignores_a_non_string_model(self, tmp_path, monkeypatch):
+        """A non-string ``model`` in transcript metadata must not crash resume."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:badmodel1", "user", "hello")
+        log.update_metadata("dashboard:badmodel1", {"model": {"x": 1}})
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/badmodel1/resume", json={"key": "dashboard:badmodel1"}
+            )
+            assert resp.status == 200
+
+        assert state._slots["badmodel1"].model != {"x": 1}
+
+    @pytest.mark.asyncio
     async def test_no_save_for_unchanged_resumed_session(self, tmp_path, monkeypatch):
         """Resumed session closed without new messages should not re-save."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -17783,6 +17835,64 @@ class TestAcpProcessDiedRecovery:
             and "retrying" in c.args[1].get("content", "")
         ]
         assert dup_broadcasts == [], "retry card must not be double-emitted via broadcast_ws"
+
+    @pytest.mark.parametrize("ambiguous", [False, True])
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_death_requeues_written_steers_as_possibly_delivered(
+        self, tmp_path: Path, ambiguous: bool
+    ) -> None:
+        """A steer written into a turn sits in the same pipe as its prompt, so
+        when the turn's death is ambiguous the teardown requeues it with the
+        possibly-delivered mark; a plain death requeues it plainly."""
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.dashboard.chat_utils import STEER_POSSIBLY_DELIVERED_META
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _steered_then_died(msg):
+            slot._pending_steers.append("also tag it")  # written mid-turn
+            raise AcpProcessDied("stdin stalled", ambiguous_delivery=ambiguous)
+            yield  # noqa: E501
+
+        client.stream = _steered_then_died
+        client.stream_command = _steered_then_died
+        from kiro_crew.dashboard import chat_runner
+
+        requeued: list[dict] = []
+        _real = chat_runner._requeue_unconsumed_steers
+
+        def _spy(state_, slot_):
+            _real(state_, slot_)
+            requeued.extend(e for e in slot_._queue if e.get("content") == "also tag it")
+
+        with patch.object(chat_runner, "_requeue_unconsumed_steers", _spy):
+            await _run_chat(state, slot, "test message")
+
+        assert len(requeued) == 1
+        assert bool((requeued[0].get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)) is ambiguous
+
+    @pytest.mark.asyncio
+    async def test_a_possibly_delivered_steer_note_leads_only_the_model_input(
+        self, tmp_path: Path
+    ) -> None:
+        """The note reaches the model; slash-command dispatch and the mirror still
+        read the user's own text."""
+        from kiro_crew.dashboard.chat_utils import STEER_POSSIBLY_DELIVERED_NOTE
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        sent: list[str] = []
+
+        async def _capture(msg):
+            sent.append(msg)
+            return
+            yield  # noqa: E501
+
+        client.stream = _capture
+        await _run_chat(state, slot, "also tag it", _steer_possibly_delivered=True)
+
+        assert sent, "the turn must reach the model"
+        assert STEER_POSSIBLY_DELIVERED_NOTE.strip() in sent[0]
+        assert sent[0].rstrip().endswith("also tag it")
 
     @pytest.mark.asyncio
     async def test_budget_exhaustion_shows_stuck(self, tmp_path: Path) -> None:

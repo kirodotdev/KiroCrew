@@ -26,13 +26,14 @@ import {
   HelpCircle,
   Loader2,
   Repeat,
+  Square,
   XCircle,
 } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { fmtElapsed } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
-import { buildGraph, type GraphNode, type RunPlan, type RunStatus } from './planModel'
+import { buildGraph, type GraphNode, type GraphPhaseState, type RunPlan, type RunStatus } from './planModel'
 import type { WfEvent } from './runModel'
 
 export interface WorkflowRunGraphProps {
@@ -45,11 +46,25 @@ export interface WorkflowRunGraphProps {
 const MAX_TITLE = 80
 const MAX_LABEL = 100
 
+/** The stop mark the tree draws for the same state, with the same accessible name. */
+function StoppedIcon({ size }: { size: number }) {
+  return (
+    <Square
+      size={size}
+      fill="currentColor"
+      className="text-muted shrink-0"
+      role="img"
+      aria-label={i18nT('pages.chat.stopEventCard.stopped')}
+    />
+  )
+}
+
 /** Phase icon. Mirrors the tree's vocabulary so one run cannot read two ways. */
-function PhaseIcon({ state }: { state: 'running' | 'ok' | 'failed' | 'planned' }) {
+function PhaseIcon({ state }: { state: GraphPhaseState }) {
   if (state === 'running') return <Loader2 size={12} className="text-accent animate-spin shrink-0" />
   if (state === 'ok') return <CheckCircle2 size={12} className="text-ok shrink-0" />
   if (state === 'failed') return <XCircle size={12} className="text-danger shrink-0" />
+  if (state === 'stopped') return <StoppedIcon size={12} />
   return <Circle size={12} className="text-muted shrink-0" />
 }
 
@@ -57,6 +72,7 @@ function NodeIcon({ state, resolved }: { state: GraphNode['state']; resolved?: b
   if (state === 'running') return <Loader2 size={11} className="text-accent animate-spin shrink-0" />
   if (state === 'ran_ok') return <CheckCircle2 size={11} className="text-ok shrink-0" />
   if (state === 'ran_failed') return <XCircle size={11} className="text-danger shrink-0" />
+  if (state === 'stopped') return <StoppedIcon size={11} />
   if (state === 'unknown') {
     // A question mark beside real boxes reads as "still waiting". Once the region has
     // produced work the marker is answered, so it stops asking.
@@ -70,12 +86,14 @@ function NodeIcon({ state, resolved }: { state: GraphNode['state']; resolved?: b
 }
 
 /** Chip border. A node nothing has run yet is DASHED — the one visual difference that
- *  carries the whole planned/actual distinction, so it must not be subtle. */
+ *  carries the whole planned/actual distinction, so it must not be subtle. A stopped
+ *  node DID run, so its border is solid, in the neutral tone of its stop mark. */
 function chipClass(node: GraphNode): string {
   const base = 'flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] max-w-[220px]'
   if (node.state === 'ran_failed') return `${base} border-danger/50 bg-card`
   if (node.state === 'running') return `${base} border-accent bg-card`
   if (node.state === 'ran_ok') return `${base} border-ok/40 bg-card`
+  if (node.state === 'stopped') return `${base} border-border bg-card`
   if (node.state === 'unknown') {
     return node.resolvedCount === undefined
       ? `${base} border-dashed border-warn/60 bg-transparent`

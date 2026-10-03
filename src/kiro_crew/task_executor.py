@@ -68,6 +68,7 @@ from kiro_crew.sel import sel
 from kiro_crew.task_models import (
     MAX_RECOVERIES,
     MAX_RETRIES,
+    RESUME_HINT,
     SESSION_PREFIX,
     TEST_TIMEOUT,
     Project,
@@ -551,6 +552,10 @@ async def execute_task(
         # turn consumed the one-shot flag, and whether it landed (recorded success).
         _needs_reinjection = False
         _turn_landed = False
+        # Whether this attempt's stream produced output or a tool call: a death
+        # after either may have left work done, so its retry resumes rather than
+        # restates the step (the chat runner's ``turn_emitted``).
+        _attempt_emitted = False
         # The provider THIS attempt ran on, for the death handler's attribution
         # question. Reset per attempt and set only once the session is open, so a
         # death before the open asks about nothing (and is charged, as before)
@@ -634,6 +639,7 @@ async def execute_task(
             _turn_t0 = _time.monotonic()
             async for event in client.stream(full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
+                    _attempt_emitted = True
                     result_text += event.text
                     _chunk_count += 1
                     if _chunk_count % 50 == 0:
@@ -875,6 +881,7 @@ async def execute_task(
                     _spec = await turn_spec_hooks(client, event.text or "")
                     await refuse_stale_switch(client, event.text or "")
                 elif event.kind == EVENT_TOOL_CALL:
+                    _attempt_emitted = True
                     # Fire PreToolUse hooks for auto-approved tools (informational only).
                     # On a gated turn this frame precedes the call's permission request,
                     # so nothing has approved it yet.
@@ -929,6 +936,9 @@ async def execute_task(
             # completion, never gets here: the raises above hand those to the
             # retry ladder, and the finally re-arms.
             _turn_landed = True
+            # The ONE place the resume hint is cleared: an attempt completed
+            # normally, so nothing it steered is left undone. See Task.resume_hint.
+            task.resume_hint = ""
             # A landed turn proves recovery worked, so the next shared death
             # starts its own count instead of inheriting one -- the same reason
             # the chat runner clears it on a landed turn.
@@ -968,7 +978,7 @@ async def execute_task(
             except Exception:
                 logger.debug("usage row (taskrunner) persist failed", exc_info=True)
 
-        except AcpProcessDied:
+        except AcpProcessDied as _died_exc:
             # Whose failure was this? A task runs its sub-agents on its own
             # runtime, so a death here can be a process event several accounts
             # witnessed rather than this task's fault -- and MAX_RECOVERIES then
@@ -1005,6 +1015,19 @@ async def execute_task(
                 MAX_RECOVERIES,
                 partial,
             )
+            if getattr(_died_exc, "ambiguous_delivery", False) or _attempt_emitted:
+                # The step's prompt may already have run: the death followed a
+                # stdin stall the live child may still read past
+                # (``ambiguous_delivery``), or the attempt had produced output or
+                # a tool call. Re-stating the task verbatim would re-run its
+                # (possibly non-idempotent) tools, so every later attempt --
+                # including a Resume or retry of a run that gives up below --
+                # opens by inspecting current state. Carried in resume_hint, not
+                # task.error, because a death keeps the attempt number and
+                # task.error renders only at attempt > 1. Set before the reset's
+                # await, so a cancel landing there cannot drop it. See
+                # Task.resume_hint.
+                task.resume_hint = RESUME_HINT
             await sessions.reset(session_key)
 
             if _death_attempts > MAX_RECOVERIES:
@@ -1031,6 +1054,11 @@ async def execute_task(
             continue
 
         except _ContextOverflow as cof:
+            if _attempt_emitted:
+                # The compaction can end in a session reset, after which the step
+                # prompt is restated on a fresh session: the same hazard as a
+                # death after output or a tool call.
+                task.resume_hint = RESUME_HINT
             compactions += 1
             pct = cof.args[0] if cof.args else 0
             logger.warning("Task %d: context at %.0f%%, compacting mid-stream", task.index, pct)
@@ -1389,6 +1417,12 @@ async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Pa
             f"\n## Previous Attempt Failed (attempt {attempt - 1})\n"
             f"Error: {task.error}\n\nFix the error and try again.\n"
         )
+
+    # Rendered regardless of attempt count: a process death keeps the attempt
+    # number, so this cannot ride on the attempt > 1 guard above. Never cleared
+    # here; see Task.resume_hint for the one rule.
+    if task.resume_hint:
+        parts.append(f"\n## Resume (do not restart)\n{task.resume_hint}\n")
 
     wd = run.work_dir or str(work_dir)
     if run.branch_name:

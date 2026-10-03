@@ -70,10 +70,7 @@ def _turn(handle: CrewLog, turn: int) -> int:
 def _events() -> list:
     """Subscribe a sink to the bus and return it: every SESSION event, in order."""
     seen: list = []
-    bus.subscribe(
-        bus.FOLD_ADVANCED,
-        lambda event: seen.append(event) if event.scope == bus.SCOPE_SESSION else None,
-    )
+    bus.subscribe(bus.FOLD_ADVANCED, seen.append, scope=bus.SCOPE_SESSION)
     return seen
 
 

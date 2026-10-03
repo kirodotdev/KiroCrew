@@ -23,12 +23,15 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib
 import importlib.util
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from stale_package_attribute import package_attribute_replaced
 
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
@@ -633,17 +636,24 @@ def test_no_src_module_binds_a_facade_at_module_level() -> None:
     assert bound == [], bound
 
 
-def test_the_premise_create_true_through_the_facade_unbinds_the_owner() -> None:
-    """Why the scan exists: the one ``create=True`` patch it allows, run for real."""
-    from kiro_crew.acp import runtime_process_tree
+@pytest.mark.parametrize("split", [False, True], ids=["as-imported", "package-attribute-stale"])
+def test_the_premise_create_true_through_the_facade_unbinds_the_owner(split: bool) -> None:
+    """Why the scan exists: the one ``create=True`` patch it allows, run for real.
 
-    original = vars(runtime_process_tree)["_is_our_child"]
-    try:
-        with mock.patch.object(acp_client, "_is_our_child", create=True):
-            pass
-        assert "_is_our_child" not in vars(runtime_process_tree)
-    finally:
-        runtime_process_tree._is_our_child = original
+    The owner is read from ``sys.modules``, where the facade writes. Its package
+    attribute can name another copy once an earlier test in the worker imports it
+    fresh, so reading the attribute would make this check depend on test order.
+    """
+    owner = "kiro_crew.acp.runtime_process_tree"
+    with package_attribute_replaced(owner) if split else nullcontext():
+        runtime_process_tree = importlib.import_module(owner)
+        original = vars(runtime_process_tree)["_is_our_child"]
+        try:
+            with mock.patch.object(acp_client, "_is_our_child", create=True):
+                pass
+            assert "_is_our_child" not in vars(runtime_process_tree)
+        finally:
+            vars(runtime_process_tree)["_is_our_child"] = original
 
 
 def test_every_must_flag_case_passes_the_prefilter() -> None:

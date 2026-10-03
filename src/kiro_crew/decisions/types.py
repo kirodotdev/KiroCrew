@@ -1,13 +1,18 @@
-"""Typed Jev questions and answers for ``skills.select``.
+"""Typed Jev questions and answers.
 
-The gate checks answer identifiers and domains before a response is consumed.
-Probability metadata is not a guarantee of correctness or a selection threshold.
+Three question types, matching the provider's three: ``Choice`` picks one of the
+declared options, ``Noul`` asks a yes/no question and gets back the probability
+of yes, and ``Score`` rates the state along an ordered list of levels and gets
+back a probability-weighted level. The gate checks every answer's identifier and
+its type's own domain before a response is consumed. Probability metadata is not
+a guarantee of correctness or a selection threshold.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Union
 
 #: The one shape a provider model id may take on the wire. ``provider.model``
 #: lives in the agent-writable ``config.json`` and ``_to_wire`` sends it verbatim,
@@ -32,12 +37,70 @@ class Choice:
     options: list[str] = field(default_factory=list)
 
 
-Question = Choice
+#: The fewest and most levels one ``Score`` may declare. The provider refuses
+#: anything outside this range, so a question outside it is refused here before
+#: a request is spent on it.
+SCORE_MIN_LEVELS = 2
+SCORE_MAX_LEVELS = 10
+
+
+@dataclass
+class Noul:
+    """A yes/no question. The answer's ``value`` is the probability of yes.
+
+    ``true_means`` and ``false_means`` are the optional rubric for each side,
+    sent as the provider's ``criteria``; either may be left unset.
+    """
+
+    id: str
+    prompt: str
+    true_means: str | None = None
+    false_means: str | None = None
+
+
+@dataclass
+class Score:
+    """Rate the state along ``levels``, lowest first.
+
+    The answer's ``value`` is the probability-weighted level index: a number
+    from 0 to ``len(levels) - 1`` that can land between two levels.
+    """
+
+    id: str
+    prompt: str
+    levels: list[str] = field(default_factory=list)
+
+
+Question = Union[Choice, Noul, Score]
+
+
+def question_texts(question: object) -> list[str]:
+    """Every string *question* puts on the wire besides its id.
+
+    The scrub scans these beside the state, because the rubric leaves the
+    machine in the same request. One function for all three types, so a new
+    field on one of them cannot be sent without also being scanned.
+    """
+    texts = [str(getattr(question, "prompt", "") or "")]
+    if isinstance(question, Choice):
+        texts.extend(str(option) for option in question.options)
+    elif isinstance(question, Noul):
+        texts.extend(str(t) for t in (question.true_means, question.false_means) if t)
+    elif isinstance(question, Score):
+        texts.extend(str(level) for level in question.levels)
+    return texts
 
 
 @dataclass
 class Answer:
-    """A chosen option, its probability and optional provider confidence."""
+    """One answer, its probability and optional provider confidence.
+
+    ``value`` depends on the question's type: the chosen option for a
+    ``Choice``, the probability of yes for a ``Noul``, and the weighted level
+    index for a ``Score``. ``p`` is always a probability in 0..1: the chosen
+    option's for a ``Choice``, the more likely side's (``max(value, 1 - value)``)
+    for a ``Noul``, and the most likely level's for a ``Score``.
+    """
 
     id: str
     value: object

@@ -17,9 +17,12 @@ call it as an attribute of that module, so the patch reaches every caller.
 from __future__ import annotations
 
 import asyncio
+import base64
+import csv
 import difflib
 import functools
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -28,6 +31,7 @@ import shutil
 import stat
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import copy_context
@@ -51,6 +55,8 @@ from kiro_crew.atomic_write import (  # noqa: F401
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
+from kiro_crew.dep_sync import normalize as normalize_distribution_name
+from kiro_crew.deploy import _SKILLS_DIR as _DEPLOY_SKILLS_DIR
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import (  # noqa: F401
     FileTooLargeError,
@@ -69,6 +75,7 @@ from kiro_crew.platform_compat import (  # noqa: F401
     rmtree_force,
 )
 from kiro_crew.project_scope import project_scope_satisfied
+from kiro_crew.release_channel import _DISTRIBUTION_NAME
 from kiro_crew.security import (
     is_sensitive_path,
     is_sensitive_resolved_path,
@@ -97,6 +104,7 @@ from kiro_crew.skill_runtime.catalog import (  # noqa: F401
     _literal_split,
     _matches_any,
     _project_prefix,
+    _StoredCatalog,
     _with_canonical_globs,
 )
 from kiro_crew.skill_runtime.delivery import _family_line, _namespace_groups  # noqa: F401
@@ -210,6 +218,13 @@ _SHORT_DESC_CHARS = 300
 # ranking so a freshly-added, never-used skill still surfaces instead of being
 # starved by the rich-get-richer usage ordering.
 _NEW_SKILL_BOOST_WINDOW_SECS = 7 * 24 * 60 * 60
+# The startup pointer names this many skills; the ranked index's head is the
+# same width so both variants agree on which rows are "the front".
+_INDEX_HEAD_SLOTS = 8
+# Of those slots, how many the user's own skills may claim on provenance alone.
+# Fewer than all of them, so a shipped skill with real usage keeps a name even
+# under a large user tree — the mirror of the empty-ledger case this guards.
+_INDEX_USER_SLOTS = 6
 
 # ── $skill inline trigger ──
 # A ``$skillname`` token anywhere in a user message explicitly loads that skill,
@@ -233,7 +248,10 @@ _MAX_DOLLAR_SKILLS = 5
 # _request_catalog_refresh). So the deadline bounds how out-of-date an OUT OF BAND
 # change (an AIM sync, a manual cp) may be, and nothing else — the app's own
 # create/update/delete/refresh all call _invalidate_iter_cache(), so a skill
-# written through the app is visible immediately regardless of this value.
+# written through the app is visible at once to the loader that wrote it. The
+# fence is per loader: another loader, in this process or another one, that
+# already HOLDS a list keeps serving it until this deadline, and only a loader
+# that reads the stored snapshot afterwards sees the drop.
 #
 # The value is sized against the walk it amortizes, not picked for tidiness: a walk
 # of a real skills tree (645 files across 21 roots on a dev desktop, incl.
@@ -258,6 +276,11 @@ _ITER_CACHE_TTL_SECS = 60.0
 # 5,000-skill tree from turning that guarantee into a minute of silence — such a
 # tree is served from its snapshot on every run but the first.
 _COLD_CATALOG_WAIT_SECS = 2.0
+#: Paths a check admitted for an unconfined read are remembered up to this many,
+#: the oldest admission first out. The rows are agent-influenced (the stored
+#: snapshot), so the set must not grow with them; an evicted path only costs
+#: another check.
+_VETTED_READS_MAX = 4096
 
 # A snapshot read off disk is revalidated only when it is older than this, so a
 # process that starts, answers one call and exits does not queue a walk of a tree
@@ -566,6 +589,16 @@ _AUTO_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 # Bundled fallback — inside the kiro_crew package
 _BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin_skills"
 
+#: The installed ``kiro_crew`` package tree: a trusted provider root for skill
+#: symlinks, and the only tree whose hardlinked ``SKILL.md`` can be admitted (see
+#: :func:`_installed_package_bytes_match`). A module binding so a test can stand
+#: up a fake site dir.
+_INSTALLED_PACKAGE_DIR = Path(__file__).parent
+
+#: RECORD hash names accepted as an admission witness: the wheel spec requires
+#: sha256 or stronger, and a weaker one could be matched on purpose.
+_RECORD_HASHES = frozenset({"sha256", "sha384", "sha512"})
+
 
 @dataclass(frozen=True)
 class AutoSkillProvenance:
@@ -680,12 +713,168 @@ def _trusted_skill_roots() -> tuple[str, ...]:
     A symlink resolving anywhere else stays rejected: an arbitrary target would
     admit unvetted ``SKILL.md`` prose into the agent's context.
     """
-    roots: list[str] = [os.path.realpath(Path(__file__).parent)]
+    roots: list[str] = [os.path.realpath(_INSTALLED_PACKAGE_DIR)]
     try:
         roots.append(os.path.realpath(config_dir() / "apps"))
     except Exception:  # noqa: BLE001 — an unresolvable data home must not stop scanning
         pass
     return tuple(roots)
+
+
+_package_record_lock = threading.Lock()
+#: package dir -> (cache key, recorded ``SKILL.md`` digests). The key is the site
+#: dir's own stamp plus each candidate RECORD's, so a dist-info added or removed
+#: (the site dir changes) or a RECORD rewritten (its stamp changes) re-reads.
+_package_record_cache: dict[str, tuple[tuple, dict[str, frozenset[tuple[str, str]]]]] = {}
+
+
+def _record_stamp(record: str) -> tuple[int, int, int] | None:
+    try:
+        st = os.stat(record)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _package_record_paths(package_dir: str) -> list[str]:
+    """Every RECORD the installer left for this package, found by name alone.
+
+    One listing of the site dir, which reads no other distribution's metadata:
+    the cost is that directory's entry count, never their RECORD sizes. More
+    than one survives an upgrade that leaves the previous ``dist-info`` behind;
+    each is a candidate, and a stale one can only vouch for bytes the previous
+    release shipped. An editable install
+    keeps its ``dist-info`` in site-packages, not beside the source tree, so it
+    finds none and admits nothing.
+    """
+    wanted = normalize_distribution_name(_DISTRIBUTION_NAME)
+    records: list[str] = []
+    try:
+        with os.scandir(os.path.dirname(package_dir)) as entries:
+            for entry in entries:
+                stem, dot, suffix = entry.name.rpartition(".")
+                if (
+                    dot
+                    and suffix == "dist-info"
+                    and normalize_distribution_name(stem.split("-", 1)[0]) == wanted
+                ):
+                    records.append(os.path.join(entry.path, "RECORD"))
+    except OSError:
+        return []
+    return sorted(records)
+
+
+def _read_package_record(
+    record: str, package_dir: str
+) -> tuple[tuple[int, int, int], dict[str, tuple[str, str]]] | None:
+    """*record*'s identity and its ``SKILL.md`` digests, or ``None``.
+
+    A RECORD that does not list the package's own ``__init__.py`` vouches for
+    nothing, so it answers no digests. ``None`` means it could not be read or
+    changed while it was read: the identity is taken before and after the parse,
+    so digests are never filed under a stamp that belongs to a different RECORD.
+    """
+    before = _record_stamp(record)
+    if before is None:
+        return None
+    site_dir = os.path.dirname(package_dir)
+    package = os.path.basename(package_dir)
+    owned = f"{package}/__init__.py"
+    skill_row = f"/{_SKILL_FILE}"
+    owns = False
+    digests: dict[str, tuple[str, str]] = {}
+    try:
+        with open(record, encoding="utf-8", newline="") as fh:
+            # A substring test first: only two kinds of row matter, and running
+            # every one of a few thousand rows through the CSV parser is what
+            # made this the slow part.
+            wanted = (line for line in fh if line.startswith(owned) or skill_row in line)
+            for row in csv.reader(wanted):
+                if not row:
+                    continue
+                if row[0] == owned:
+                    owns = True
+                    continue
+                parts = PurePosixPath(row[0]).parts
+                if (
+                    len(row) < 2
+                    or parts[-1:] != (_SKILL_FILE,)
+                    or parts[:1] != (package,)
+                    or ".." in parts
+                ):
+                    continue
+                name, sep, value = row[1].partition("=")
+                if sep:
+                    absolute = os.path.normpath(os.path.join(site_dir, *parts))
+                    digests[os.path.normcase(absolute)] = (name.lower(), value)
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+    if _record_stamp(record) != before:
+        return None
+    return before, digests if owns else {}
+
+
+def _recorded_skill_digests() -> dict[str, frozenset[tuple[str, str]]]:
+    """The installed package's recorded ``SKILL.md`` digests, re-read on reinstall.
+
+    Cached per process under the site dir's stamp and every candidate RECORD's,
+    so the steady state costs a few ``stat`` calls and a reinstall, a dist-info
+    appearing mid-upgrade, or a RECORD replaced mid-read is re-read on the next
+    call rather than judged against a previous answer. A RECORD that changed
+    while it was parsed is left out and its stamp is not recorded, so the next
+    call reads it again.
+    """
+    package_dir = os.path.realpath(_INSTALLED_PACKAGE_DIR)
+    site_stamp = _record_stamp(os.path.dirname(package_dir))
+    with _package_record_lock:
+        cached = _package_record_cache.get(package_dir)
+    if cached is not None and cached[0][0] == site_stamp:
+        if all(_record_stamp(record) == stamp for record, stamp in cached[0][1]):
+            return cached[1]
+    stamps: list[tuple[str, tuple[int, int, int] | None]] = []
+    merged: dict[str, set[tuple[str, str]]] = {}
+    for record in _package_record_paths(package_dir):
+        found = _read_package_record(record, package_dir)
+        if found is None:
+            # Unreadable or mid-rewrite: a ``None`` stamp never matches a file
+            # that exists, so the next call reads it again.
+            stamps.append((record, None))
+            continue
+        stamps.append((record, found[0]))
+        for path, digest in found[1].items():
+            merged.setdefault(path, set()).add(digest)
+    digests = {path: frozenset(found) for path, found in merged.items()}
+    key = (site_stamp, tuple(stamps))
+    with _package_record_lock:
+        _package_record_cache[package_dir] = (key, digests)
+    return digests
+
+
+def _installed_package_bytes_match(path: str, data: bytes) -> bool:
+    """Admit a hardlinked ``SKILL.md`` only when it IS the installed package's file.
+
+    Installers such as uv hardlink package files out of their cache, so a
+    built-in app skill can legitimately carry ``st_nlink > 1``. The no-link
+    reader refuses that shape everywhere else; here it is admitted on content:
+    *path* must be a ``SKILL.md`` the distribution's RECORD lists inside the
+    installed package tree, and *data* (the bytes actually read) must hash to the
+    digest recorded for it. Any other hardlinked file, including one in the
+    skills dir, an app under the data home, an extra path or a project, has no
+    RECORD entry and stays refused. Rewriting RECORD needs write access to the
+    same tree as the package code, which already decides what the gateway runs.
+    """
+    try:
+        recorded = _recorded_skill_digests().get(os.path.normcase(os.path.normpath(path)), ())
+        for algorithm, value in recorded:
+            if algorithm not in _RECORD_HASHES:
+                continue
+            digest = hashlib.new(algorithm, data).digest()
+            actual = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+            if hmac.compare_digest(actual, value):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — an admission that cannot be decided refuses
+        return False
 
 
 def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
@@ -698,6 +887,24 @@ def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
         except (OSError, ValueError):
             continue
     return False
+
+
+@functools.lru_cache(maxsize=1)
+def _packaged_skill_names() -> frozenset[str]:
+    """Keys of the skills this package ships, walked once per process.
+
+    Two packaged trees install into the skills dir: ``builtin_skills/`` (the
+    builtin sync) and the deploy layer's own ``deploy/skills/`` copies. Both are
+    immutable while the process runs, so the one walk is the whole cost; the
+    startup index asks this per row to tell a shipped skill from one the user
+    wrote.
+    """
+    return frozenset(
+        name
+        for root in (_BUILTIN_SKILLS_DIR, _DEPLOY_SKILLS_DIR)
+        if root.is_dir()
+        for name, _ in _iter_skill_files(root)
+    )
 
 
 #: Basename every skill's body lives under. Used as a cheap pre-filter before
@@ -2317,7 +2524,8 @@ class PendingApprovalRefused(Exception):
     target is gone), ``stale_base`` (an update merged against an older live
     version), ``invalid_layout`` (symlink / unexpected candidate entry),
     ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
-    a read or write — after all checks passed). Raised by the ``*_checked`` approve variants so
+    a read or write, a refused read of the live skill's metadata included).
+    Raised by the ``*_checked`` approve variants so
     the dashboard can tell the user WHY the click did nothing; the legacy
     ``approve_pending_skill`` / ``approve_pending_update`` wrappers keep the
     ``None``-on-failure contract for existing callers.
@@ -2390,12 +2598,19 @@ class SkillsLoader:
         # search, a list or a directory build can say "still discovering" instead
         # of reporting a truncated answer as the whole truth.
         self._catalog_incomplete: set[str] = set()
-        # Unconfined paths adopted from the STORED snapshot that this process has not
-        # itself admitted. The index is an agent-writable crew-home leaf, so a stored
-        # row is not evidence anything vetted the path it names;
-        # `_read_enumerated_skill_bytes` re-runs `validate_file_path` on a path in
-        # here before its first read. A walk that republishes a scope clears it.
-        self._snapshot_unadmitted: set[str] = set()
+        # Unconfined paths this process has VETTED, the only ones
+        # `_read_enumerated_skill_bytes` reads without first checking them
+        # (`_vet_unconfined_path`). Fail-closed: any other path, such as a row
+        # adopted from the agent-writable stored snapshot, is checked before its
+        # first read. `_walk_vetted` holds exactly the paths the newest published
+        # walk returned, replaced whole by the next; `_read_vetted` holds the
+        # paths a check admitted, bounded to `_VETTED_READS_MAX` and emptied by
+        # every invalidation and every published walk.
+        self._walk_vetted: frozenset[str] = frozenset()
+        self._read_vetted: OrderedDict[str, None] = OrderedDict()
+        # `_snapshot_admitted_roots`, keyed by (generation, skills dir, extra
+        # paths), so a vet resolves the roots once per root set, not per read.
+        self._admitted_roots_memo: tuple[tuple[object, ...], tuple[str, ...]] | None = None
         # Single-flight background builds: scope key → the event its build sets on
         # completion. Concurrent sessions sharing this loader join one walk rather
         # than each walking the same tree.
@@ -2419,6 +2634,17 @@ class SkillsLoader:
         # result is dropped rather than allowed to overwrite the newer state. The
         # index's own epoch covers the same race BETWEEN processes.
         self._catalog_generation = 0
+        # The newest generation a committed `drop_catalog` covers. The stored
+        # snapshot is served only while it equals `_catalog_generation`: an
+        # invalidation moves the generation before it drops, so the tier is off
+        # while that drop runs, and a drop that FAILS (a neighbour held the write
+        # lock past the busy timeout) leaves it behind until a later one lands.
+        self._snapshot_clean_generation = 0
+        # Held across an invalidation's drop and across a build's store, so the
+        # two never interleave: a drop always lands after a store a mutation
+        # overtook, and a drop one of them landed is not repeated by the other.
+        # Ordered before the index's own lock, never inside it.
+        self._catalog_drop_lock = threading.Lock()
         self._closed = False
         self._disabled_apps_cache: tuple[float, frozenset[str]] | None = None
         # (canonical key, allowed) pairs already audited, so the enforcement
@@ -2717,15 +2943,13 @@ class SkillsLoader:
         """Roots an unconfined row read off disk may legitimately name."""
         return _catalog._snapshot_admitted_roots(self)
 
-    def _load_catalog_snapshot(
-        self, project_key: str
-    ) -> tuple[list[tuple[str, Path, str | None]], float] | None:
+    def _load_catalog_snapshot(self, project_key: str) -> _StoredCatalog | None:
         """Read this scope's stored enumeration, or ``None`` when there is none."""
         return _catalog._load_catalog_snapshot(self, project_key)
 
-    def _admit_snapshot_path(self, path: Path) -> bool:
-        """Re-run the walk's admission on an unconfined path read off disk."""
-        return _catalog._admit_snapshot_path(self, path)
+    def _vet_unconfined_path(self, path: Path) -> bool:
+        """May *path* be read unconfined? Checks it once unless a walk returned it."""
+        return _catalog._vet_unconfined_path(self, path)
 
     @staticmethod
     def _key_denotes_path(
@@ -2734,15 +2958,11 @@ class SkillsLoader:
         """Does *key* name the skill that *absolute* holds?"""
         return _catalog._key_denotes_path(key, absolute, own_roots, provider_roots)
 
-    def _adopt_catalog(
-        self,
-        project_key: str,
-        rows: list[tuple[str, Path, str | None]],
-        fingerprints: dict[str, str],
-        *,
-        complete: bool,
-    ) -> None:
-        return _catalog._adopt_catalog(self, project_key, rows, fingerprints, complete=complete)
+    def _adopt_snapshot(
+        self, project_key: str, snapshot: _StoredCatalog, *, generation: int
+    ) -> list[tuple[str, Path, str | None]] | None:
+        """Serve a stored enumeration for *project_key*, or ``None`` when it is fenced."""
+        return _catalog._adopt_snapshot(self, project_key, snapshot, generation=generation)
 
     def _request_catalog_refresh(self, project_key: str) -> threading.Event | None:
         """Queue one background walk of *project_key*'s roots; join any in flight."""
@@ -2858,17 +3078,15 @@ class SkillsLoader:
         after an ancestor swap. Their bodies retain the global read budget.
         """
         if within is None and canonical_root is None:
-            # A path this process never walked carries no admission: the index it
-            # came from is an agent-writable crew-home leaf, and the direct read
-            # below applies no sensitive-path or UNC screen of its own, so a row
-            # naming a link into a credential home would be read as a skill body.
-            # The walk's own admission (`validate_file_path`) is therefore re-run
-            # once per snapshot-derived path, at the single point every enumerated
-            # read goes through. The set is checked for emptiness first, which is
-            # the normal case and keeps the lock off this hot path: a scope's
-            # markers are written before its rows are published, so a caller that
-            # holds rows has already observed them.
-            if self._snapshot_unadmitted and not self._admit_snapshot_path(path):
+            # A path this process never walked carries no admission: a row from the
+            # stored snapshot came out of an agent-writable crew-home leaf, and the
+            # direct read below applies no sensitive-path or UNC screen of its own,
+            # so a row naming a link into a credential home would be read as a skill
+            # body. The walk's own admission is therefore run on every path that is
+            # not already vetted (`_vet_unconfined_path`), at the single point every
+            # enumerated read goes through. Fail-closed: a path missing from the
+            # vetted sets costs one check, never an unchecked read.
+            if not self._vet_unconfined_path(path):
                 if refusal_reasons is not None:
                     refusal_reasons.append("snapshot_path_refused")
                 return None
@@ -2919,6 +3137,7 @@ class SkillsLoader:
         *,
         within: str | None,
         canonical_root: str | None = None,
+        for_write: bool = False,
     ) -> dict[str, str]:
         """Parse frontmatter with mtime-based caching.
 
@@ -2931,6 +3150,11 @@ class SkillsLoader:
         call, and statting that link can initiate a Windows UNC connection.
         Those rows are read through the descriptor-pinned reader first and use
         a digest of the admitted bytes as their cache token.
+
+        *for_write* is set by a caller that rewrites the file from what it reads
+        here. A refused unconfined read then raises ``PermissionError`` instead of
+        answering "no metadata", which would have it rewrite the skill without its
+        ``version``, ``pinned``, ``inject_on_trigger`` and ``created_at``.
         """
         if within is not None:
             return self._confined_frontmatter_and_size(path, within)[0]
@@ -2957,6 +3181,8 @@ class SkillsLoader:
         # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
         raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
         if raw is None:
+            if for_write:
+                raise PermissionError(f"refusing to read skill metadata for a rewrite: {path}")
             logger.warning("Refusing metadata for a skill outside its vetted root: %s", path)
             return {}
         # A confined path is read-only project/provider metadata: malformed bytes
@@ -3218,7 +3444,10 @@ class SkillsLoader:
         UTF-8, preserving the global listing path's decode behavior. Every body
         read uses the shared validated reader without project confinement:
         sensitive paths, hardlinks and identity changes are refused on the
-        descriptor supplying the bytes.
+        descriptor supplying the bytes. The one hardlink admitted is an installed
+        package ``SKILL.md`` whose bytes match the installer's RECORD digest
+        (:func:`_installed_package_bytes_match`), which is how a hardlinking
+        installer lays out the built-in app skills this method serves.
 
         With a bound, refuse rather than truncate. A caller that asked for at
         most N bytes is deciding whether the body FITS, and half a skill is not
@@ -3241,6 +3470,7 @@ class SkillsLoader:
                 max_bytes=max_bytes,
                 within_root=canonical_root,
                 within_root_is_canonical=canonical_root is not None,
+                admit_hardlinked=_installed_package_bytes_match,
             )
         except FileTooLargeError:
             if max_bytes is None:
@@ -4485,7 +4715,8 @@ class SkillsLoader:
         whose ``name`` / ``created_at`` / ``version`` lines are rewritten anyway.
 
         Returns ``None`` when the slug is unsafe, the candidate is missing or is
-        not an update, or its target is not a live auto-skill. Read-only:
+        not an update, or its target is not a live auto-skill whose metadata
+        can be read (a refused rewrite read included). Read-only:
         never mutates the candidate or the live skill.
         """
         if not self._is_pending_slug_safe(slug):
@@ -4517,8 +4748,11 @@ class SkillsLoader:
             cand_body = cand_file.read_text(encoding="utf-8")
         except OSError:
             return None
-        current_version = self.get_auto_skill_version(target_name)
-        _live_fm = self._cached_frontmatter(live_file, within=None)
+        try:
+            current_version = self.get_auto_skill_version(target_name)
+            _live_fm = self._cached_frontmatter(live_file, within=None, for_write=True)
+        except OSError:
+            return None
         proposed_body = self._rewrite_update_frontmatter(
             cand_body,
             target_name=target_name,
@@ -4640,6 +4874,19 @@ class SkillsLoader:
                     "script_validation_failed",
                     report=self._redact_validation_report(_fold_report),
                 )
+        # Read the live version and frontmatter BEFORE the candidate is redacted
+        # in place. These are rewrite reads, so a live path that does not vet
+        # raises rather than answering "no metadata", and that refusal must leave
+        # the candidate byte-identical to what was staged.
+        try:
+            current_version = self.get_auto_skill_version(target_name)
+            live_fm = self._cached_frontmatter(live_skill, within=None, for_write=True)
+        except OSError:
+            logger.warning(
+                "Refusing to approve update %s: could not read the live skill's metadata",
+                target_name,
+            )
+            raise PendingApprovalRefused("promotion_failed")
         # Re-validate + redact the candidate in place (restores originals on
         # fail, raising PendingApprovalRefused with the reason).
         redact_backup = self._validate_and_redact_candidate(src, target_name)
@@ -4658,7 +4905,6 @@ class SkillsLoader:
         except OSError:
             _restore_redacted()
             raise PendingApprovalRefused("promotion_failed")
-        current_version = self.get_auto_skill_version(target_name)
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
         versions_dir = self._versions_root(target_slug)
@@ -4703,22 +4949,15 @@ class SkillsLoader:
                 },
             )
             raise PendingApprovalRefused("stale_base")
-        live_created_at = self._cached_frontmatter(live_skill, within=None).get("created_at", "")
+        live_created_at = live_fm.get("created_at", "")
         # Carry the live skill's pin forward: a pinned skill is exempt from the
         # lifecycle's inactivity / max-N archival, and silently dropping the flag
         # here would expose a user-pinned skill to being archived.
-        live_pinned = str(
-            self._cached_frontmatter(live_skill, within=None).get("pinned", "")
-        ).strip().lower() in ("true", "1", "yes")
+        live_pinned = str(live_fm.get("pinned", "")).strip().lower() in ("true", "1", "yes")
         # Same for the injection opt-out: the candidate never carries it, so
         # writing it over live without this would silently turn full-body
         # injection back on for a skill the user had made pointer-only.
-        live_pointer_only = (
-            str(self._cached_frontmatter(live_skill, within=None).get("inject_on_trigger", ""))
-            .strip()
-            .lower()
-            == "false"
-        )
+        live_pointer_only = str(live_fm.get("inject_on_trigger", "")).strip().lower() == "false"
         new_live_content = self._rewrite_update_frontmatter(
             candidate_body,
             target_name=target_name,
@@ -5261,7 +5500,9 @@ class SkillsLoader:
     ) -> str:
         """Build a bounded directory over the agent's resolved available set.
 
-        Raises ``SkillContextCapacityError`` rather than trimming a required body.
+        Raises ``SkillContextCapacityError`` rather than trimming an operator's
+        required body; a project's ``always: true`` body that cannot be delivered
+        is skipped with a warning and an in-prompt notice instead.
         Contract and rationale: ``skill_runtime.delivery.get_context``.
         """
         return _delivery.get_context(
@@ -5292,10 +5533,14 @@ class SkillsLoader:
         project_skills: list[dict],
         project_dir: str | Path | None,
         budget: int | None,
-    ) -> None:
-        """Append confined bodies without reading beyond the section budget."""
+        pinned: set[str] | None = None,
+    ) -> _delivery.SkippedProjectSkills:
+        """Append confined bodies within the section budget; return what was skipped.
+
+        Each skipped key is also discarded from *pinned*, when given, in place.
+        """
         return _delivery._append_project_skill_bodies(
-            self, parts, project_skills, project_dir, budget
+            self, parts, project_skills, project_dir, budget, pinned
         )
 
     def _record_use(self, key: str) -> None:
@@ -5309,6 +5554,61 @@ class SkillsLoader:
     def _rank_key(self, s: dict) -> tuple[float, float]:
         """Sort key for on-demand skills: (usage_hits, effective_recency). Higher sorts first. Falls back to recency-only if the ledger is absent."""
         return _delivery._rank_key(self, s)
+
+    def _is_user_authored(self, s: dict) -> bool:
+        """Whether *s* is a skill the user wrote rather than one Kiro Crew shipped.
+
+        Shipped means a packaged built-in (by key, or by the provenance marker
+        the builtin sync writes into every copy it installs — which also covers
+        a retired built-in still on disk), a skill an app registered (its file
+        resolves into a provider root), or an edition-contributed root. Anything
+        else — a skill the user created in the skills dir, a ``skills.extra_paths``
+        root, a trusted project's ``.kiro/skills``, an agent's ``skill://``
+        mapping — is the user's.
+
+        A confined project row answers before any filesystem call: resolving its
+        path would reintroduce the link probe the confined walker exists to
+        prevent, and a project skill is never shipped anyway.
+        """
+        if s.get("confine_root"):
+            return True
+        if str(s["key"]) in _packaged_skill_names():
+            return False
+        path = Path(str(s["path"]))
+        if any(path.is_relative_to(root) for root in self._edition_extra_paths):
+            return False
+        if os.path.lexists(path.parent / _PROVENANCE_MARKER):
+            return False
+        return not _within_any(os.path.realpath(path), _trusted_skill_roots())
+
+    def _user_first(self, ranked: list[dict]) -> list[dict]:
+        """Reorder *ranked* so the user's own skills lead without owning the head.
+
+        The first ``_INDEX_HEAD_SLOTS`` positions hold up to ``_INDEX_USER_SLOTS``
+        user-authored rows — the highest-ranked ones — and whatever positions
+        those leave are filled from the rank order of everything else, shipped or
+        overflow user rows alike. After the head, user rows precede shipped rows,
+        each group in rank order.
+
+        A new install has no usage history, so rank alone would let the ~60
+        shipped skills take every slot and a skill the user just wrote is never
+        named; reserving the whole head for the user instead lets a large user
+        tree evict a shipped skill the user genuinely relies on. The quota fixes
+        the first without causing the second. Order within each group is the
+        caller's rank order, so the existing key tie-break still decides ties.
+        """
+        user_ids = {id(s) for s in ranked if self._is_user_authored(s)}
+        head = [s for s in ranked if id(s) in user_ids][:_INDEX_USER_SLOTS]
+        head_ids = {id(s) for s in head}
+        rest = [s for s in ranked if id(s) not in head_ids]
+        fill = _INDEX_HEAD_SLOTS - len(head)
+        head += rest[:fill]
+        tail = rest[fill:]
+        return (
+            head
+            + [s for s in tail if id(s) in user_ids]
+            + [s for s in tail if id(s) not in user_ids]
+        )
 
     @staticmethod
     def _short_desc(desc: str, suffix: str = "...") -> str:

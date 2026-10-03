@@ -197,8 +197,11 @@ export function TokenDailyChart({
                 <div className="w-full" style={{ height: `${outputPct}%`, background: 'var(--warn)' }} />
                 <div className="w-full rounded-b-sm bg-accent" style={{ height: `${inputPct}%` }} />
               </div>
-              {/* Tooltip -- positioned below top to avoid overflow clipping */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden group-hover:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
+              {/* Tooltip -- positioned below top to avoid overflow clipping. It keeps an
+                *  UNGATED `:hover` so a tap on a touch screen still shows the
+                *  day's figures: the bar has no click action for iOS to drop,
+                *  and this tooltip is the only place those numbers appear. */}
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden [.group:hover_&]:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
                 <div className="font-medium">{d.date}</div>
                 <div>{i18nT('pages.overview.tokenDailyChart.in')} {fmtNum(d.input)} {i18nT('pages.overview.tokenDailyChart.out')} {fmtNum(d.output)}</div>
                 {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtNum(d.cacheRead)}</div>}

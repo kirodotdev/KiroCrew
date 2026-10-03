@@ -62,19 +62,18 @@ describe('KiroSignInCard', () => {
     kasLoginBeginDevice.mockClear()
   })
 
-  it('deep-links to the Developer page on the Agent Backend tab, ringing the card, and is not a Settings search entry', () => {
+  it('deep-links to Settings > Agent Harness, ringing the card, and is not a Settings search entry', () => {
     // The chat error row navigates to KIRO_SIGN_IN_PATH; the route must open the
-    // Developer page on the tab that renders the card (pinned end to end in
-    // DeveloperPage.kiroSignIn.test.tsx) and carry the card's own anchor, so the
+    // Settings tab that renders the card (pinned end to end in
+    // SettingsPage.agentHarness.test.tsx) and carry the card's own anchor, so the
     // reader lands ON the card below the long switch card rather than hunting.
     expect(KIRO_SIGN_IN_HIGHLIGHT_ANCHOR).toBe('kiro-sign-in')
     // The colon is percent-encoded so the route constant carries no prose-shaped
     // quasi; URLSearchParams decodes it back to `key:kiro-sign-in` on read.
-    expect(KIRO_SIGN_IN_PATH).toBe('/developer?tab=agent-backend&highlight=key%3Akiro-sign-in')
+    expect(KIRO_SIGN_IN_PATH).toBe('/settings/agent?highlight=key%3Akiro-sign-in')
     expect(new URL(KIRO_SIGN_IN_PATH, 'http://x').searchParams.get('highlight')).toBe(`key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`)
-    // KAS is a Developer Mode preview; indexing its sign-in into Settings search
-    // would advertise it as an ordinary preference and route to a Settings tab
-    // that no longer renders it.
+    // The card only applies to the KAS backend; indexing its sign-in into
+    // Settings search would advertise it as a step every user needs.
     expect(SETTINGS_MANUAL.some(e => e.labelKey === 'pages.developer.kiroSignInCard.title')).toBe(false)
     expect(SETTINGS_MANUAL.some(e => e.id === 'overview.kiro-sign-in')).toBe(false)
   })

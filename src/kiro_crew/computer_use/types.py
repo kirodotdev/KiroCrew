@@ -673,9 +673,9 @@ ERR_UNKNOWN_CLICK_METHOD = "unknown click_method '{method}'."
 # recover without the operator having to widen anything.
 ERR_POINT_NOT_OWNED = (
     "refusing a real-pointer action at ({x}, {y}): that point is not inside the "
-    "'{app}' window, and a pointer-moving click lands on whatever application is "
-    "there. Use click_method 'app_post' (or 'accessibility' with an element_index), "
-    "which deliver to '{app}' directly."
+    "'{app}' window{winner}, and a pointer-moving click lands on whatever "
+    "application is there. Use click_method 'app_post' (or 'accessibility' with "
+    "an element_index), which deliver to '{app}' directly."
 )
 ERR_UNKNOWN_MOUSE_BUTTON = "unknown mouse_button '{button}'."
 #: An unknown drag ``path``. Refused rather than defaulted to straight, for the same

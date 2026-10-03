@@ -533,6 +533,32 @@ def test_refine_preserves_the_injection_opt_out(loader):
     assert loader.split_triggered(["auto/refine-quiet"])[1] == ["auto/refine-quiet"]
 
 
+def test_refine_refuses_a_live_file_that_does_not_vet(loader, monkeypatch):
+    """A refused rewrite read is a refusal, not an exception.
+
+    ``update_auto_skill`` documents a bool, and its consolidation caller audits a
+    ``False`` as ``rejected``/``update_failed``. Raising instead would skip that
+    audit; answering "no metadata" would rewrite the skill without its version.
+    """
+    live_skill = _write_live(loader, "refine-refused", version=3, body="OLD") / "SKILL.md"
+    before = live_skill.read_bytes()
+    real_vet = loader._vet_unconfined_path
+    monkeypatch.setattr(
+        loader, "_vet_unconfined_path", lambda path: path != live_skill and real_vet(path)
+    )
+    loader._fm_cache.clear()
+
+    refined = loader.update_auto_skill(
+        "auto/refine-refused",
+        description="refined desc",
+        triggers="t",
+        procedure_md="## Steps\n\nrefined",
+        provenance=_prov(),
+    )
+    assert refined is False
+    assert live_skill.read_bytes() == before
+
+
 def test_refine_does_not_invent_an_opt_out(loader):
     _write_live(loader, "refine-loud", body="OLD")
     assert loader.update_auto_skill(
@@ -775,3 +801,40 @@ def test_stale_rejection_leaves_the_candidate_unredacted(loader):
     # Still pending, and byte-identical to what was staged.
     assert candidate.exists()
     assert candidate.read_bytes() == before
+
+
+def test_a_refused_live_read_refuses_the_approval_with_the_candidate_unredacted(
+    loader, monkeypatch
+):
+    """A live skill whose rewrite read is refused refuses the approval cleanly.
+
+    The live version and frontmatter are rewrite reads, so a live path that does
+    not vet raises instead of answering "no metadata". That must surface as
+    ``PendingApprovalRefused`` (not a bare ``PermissionError`` the dashboard turns
+    into a 500), and the candidate must stay byte-identical, which it can only do
+    if those reads run before the in-place redaction. The preview keeps its
+    ``None`` contract on the same refusal.
+    """
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    live = _write_live(loader, "refused", version=1, body="ORIGINAL")
+    _stage_update(
+        loader, "refused-a", target="auto/refused", body=f"## Steps\n\nuse key {secret} here"
+    )
+    candidate = loader._pending_root() / "refused-a" / "SKILL.md"
+    before = candidate.read_bytes()
+    assert secret.encode() in before
+    live_skill = live / "SKILL.md"
+    live_before = live_skill.read_bytes()
+
+    real_vet = loader._vet_unconfined_path
+    monkeypatch.setattr(
+        loader, "_vet_unconfined_path", lambda path: path != live_skill and real_vet(path)
+    )
+    loader._fm_cache.clear()
+
+    assert loader.preview_pending_update("refused-a") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("refused-a")
+    assert refused.value.reason == "promotion_failed"
+    assert candidate.read_bytes() == before
+    assert live_skill.read_bytes() == live_before

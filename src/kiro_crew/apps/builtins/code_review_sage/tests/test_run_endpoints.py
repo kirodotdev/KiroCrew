@@ -32,6 +32,8 @@ from pathlib import Path
 
 from aiohttp import web
 
+from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import OwnerRequest
+
 _APP_ROOT = Path(__file__).resolve().parent.parent
 _ROUTES = _APP_ROOT / "backend" / "routes.py"
 if str(_APP_ROOT) not in sys.path:
@@ -48,7 +50,7 @@ def _load_routes_module():
     return mod
 
 
-class _Req:
+class _Req(OwnerRequest):
     """Minimal stand-in for an aiohttp request.
 
     ``run_id`` -> ``match_info``; ``query`` -> query string params; ``method`` +
@@ -57,6 +59,7 @@ class _Req:
     ``except`` fallbacks."""
 
     def __init__(self, *, run_id=None, query=None, method="GET", body=None):
+        super().__init__()
         self.match_info = {} if run_id is None else {"run_id": run_id}
         self.query = query or {}
         self.method = method

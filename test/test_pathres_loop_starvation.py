@@ -18,7 +18,9 @@ These tests pin the two halves of the fix:
   its own thread, so it submits nothing to the pool on either half while the
   fence's decision -- same targets, same cache -- is unchanged;
 - the named-agent model resolver reads the ``parsed_agent_specs`` snapshot, so a
-  warm call on the loop re-parses (and re-resolves) nothing.
+  warm call on the loop re-parses (and re-resolves) nothing and a cold call
+  touches no file at all; the one caller that reaches it cold, the background
+  session's creation, warms the snapshot off the loop first.
 """
 
 from __future__ import annotations
@@ -28,9 +30,9 @@ import json
 import logging
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -179,7 +181,11 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # on the dashboard's path-probe pool worker, never the event loop -- resolving
     # the candidate there is what this endpoint must not do at all, since on Windows
     # it would follow a junction aimed at a share.
-    "kiro_crew/dashboard/handlers/files.py": 3,
+    # ``_project_tree_entries``: every dot-name and every entry under a
+    # dot-directory in the non-git project-tree walk, each handed the
+    # ``os.path.realpath`` computed on the line itself. The walk runs inside
+    # ``api_project_tree``'s ``asyncio.to_thread`` worker, never the event loop.
+    "kiro_crew/dashboard/handlers/files.py": 4,
     # ``_validate_spec_path``: ``validate_file_path`` has already rejected the
     # candidate without following a UNC/link-laundered target.  This call only
     # recovers the 403 classification for a lexically named sensitive path; an
@@ -342,6 +348,37 @@ class _ReadCounter:
         monkeypatch.setattr(agent_discovery, "_read_agent_spec", counting)
 
 
+# Placeholder ids: the assertions compare strings, so no real model id is needed.
+_PIN = "pinned-background-model"
+_GLOBAL = "global-chat-model"
+
+
+def _lite_spec(agents_dir: Path, model: str = _PIN) -> Path:
+    spec = agents_dir / "kirocrew-lite.json"
+    spec.write_text(json.dumps({"name": "kirocrew-lite", "model": model}))
+    return spec
+
+
+class _SpecReadLog:
+    """Every hardened spec read as ``(thread, path, labels)``: WHO read WHAT, labelled HOW."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.reads: list[tuple[threading.Thread, Path, dict]] = []
+        real = agent_discovery._read_agent_spec
+
+        def recording(path, **kwargs):
+            self.reads.append((threading.current_thread(), Path(path), kwargs))
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(agent_discovery, "_read_agent_spec", recording)
+
+    def on(self, thread: threading.Thread) -> list[Path]:
+        return [path for reader, path, _ in self.reads if reader is thread]
+
+    def labels_off(self, thread: threading.Thread) -> list[dict]:
+        return [labels for reader, _, labels in self.reads if reader is not thread]
+
+
 @pytest.mark.usefixtures("_fresh_parsed_specs")
 class TestNamedAgentModelReadsTheSnapshot:
     """``_resolve_named_agent_model`` costs one ``scandir`` when warm."""
@@ -390,30 +427,23 @@ class TestNamedAgentModelReadsTheSnapshot:
             clear_list_agents_cache()
 
         loop_thread = threading.current_thread()
-        reads = []
-        real_read = agent_discovery._read_agent_spec
-
-        def recording_read(path, **kwargs):
-            reads.append((threading.current_thread(), kwargs))
-            assert threading.current_thread() is not loop_thread
-            return real_read(path, **kwargs)
-
-        monkeypatch.setattr(agent_discovery, "_read_agent_spec", recording_read)
+        log = _SpecReadLog(monkeypatch)
 
         async def resolve():
             return KiroCrewConfig._resolve_named_agent_model("bot", agents_dir=tmp_path)
 
+        # Stale rows are served as they stand; an empty snapshot is "no pin". Neither
+        # answer costs a read on the loop thread.
         assert asyncio.run(resolve()) == ("old" if state == "stale" else "")
         _, futures = _discovery_pool
         assert len(futures) == 1
         futures[0].result(timeout=5)
-        assert len(reads) == 1
-        assert reads[0][0] is not loop_thread
-        assert reads[0][1] == {"operation": "load_config", "source": "unknown"}
+        assert log.labels_off(loop_thread) == [{"operation": "load_config", "source": "unknown"}]
+        assert log.on(loop_thread) == []
         assert asyncio.run(resolve()) == "new"
         assert len(futures) == 2
         futures[1].result(timeout=5)
-        assert len(reads) == 1, "a warm revalidation parsed"
+        assert len(log.labels_off(loop_thread)) == 1, "a warm revalidation parsed"
         assert str(tmp_path) not in agent_discovery._PARSED_SPECS_REFRESHING
 
     def test_on_loop_call_touches_no_filesystem(
@@ -422,22 +452,15 @@ class TestNamedAgentModelReadsTheSnapshot:
         (tmp_path / "bot.json").write_text(json.dumps({"name": "bot", "model": "m"}))
         loop_thread = threading.current_thread()
         signatures = []
-        reads = []
         real_signature = agent_discovery._dir_signature
-        real_read = agent_discovery._read_agent_spec
 
         def recording_signature(directory):
             signatures.append(threading.current_thread())
             assert threading.current_thread() is not loop_thread
             return real_signature(directory)
 
-        def recording_read(path, **kwargs):
-            reads.append(threading.current_thread())
-            assert threading.current_thread() is not loop_thread
-            return real_read(path, **kwargs)
-
         monkeypatch.setattr(agent_discovery, "_dir_signature", recording_signature)
-        monkeypatch.setattr(agent_discovery, "_read_agent_spec", recording_read)
+        log = _SpecReadLog(monkeypatch)
 
         async def resolve():
             return KiroCrewConfig._resolve_named_agent_model("bot", agents_dir=tmp_path)
@@ -452,8 +475,11 @@ class TestNamedAgentModelReadsTheSnapshot:
         assert cold == ""
         assert warm == "m"
         assert signatures, "no directory signature was revalidated"
-        assert len(reads) == 1, "a warm revalidation parsed"
-        assert all(thread is not loop_thread for thread in signatures + reads)
+        # The loop thread read nothing; the directory parse ran once, on the
+        # worker, and the warm revalidation parsed nothing.
+        assert log.on(loop_thread) == []
+        assert len(log.labels_off(loop_thread)) == 1, "a warm revalidation parsed"
+        assert all(thread is not loop_thread for thread in signatures)
         assert str(tmp_path) not in agent_discovery._PARSED_SPECS_REFRESHING
 
     def test_on_loop_cold_calls_deduplicate_the_refresh(
@@ -473,7 +499,7 @@ class TestNamedAgentModelReadsTheSnapshot:
         try:
             asyncio.run(resolve_twice())
             assert queued.submit.call_count == 1
-            assert counter.n == 0
+            assert counter.n == 0, "a cold call read a spec on the loop"
         finally:
             # Drain even if an assertion fails; never leave an in-flight mark.
             pool, _ = _discovery_pool
@@ -538,3 +564,134 @@ class TestNamedAgentModelReadsTheSnapshot:
 
         monkeypatch.setattr(agent_discovery, "parsed_agent_specs", boom)
         assert KiroCrewConfig._resolve_named_agent_model("bot", agents_dir=tmp_path) == ""
+
+
+def _recording_provider_class(constructed: list[dict]) -> type:
+    """A stand-in for the ``AcpProvider`` CLASS: records constructor kwargs, yields a mock.
+
+    A class, not a factory function, because shutdown asks ``isinstance`` against
+    the module attribute; the instances are plain mocks, so that check is false
+    for them and shutdown treats them as it treats every other test double.
+    """
+
+    class _RecordingProvider:
+        def __new__(cls, **kwargs):
+            constructed.append(kwargs)
+            provider = AsyncMock()
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            # Synchronous on the real provider; an auto-generated coroutine would
+            # read as "alive" by truthiness and leak an un-awaited coroutine.
+            provider.is_process_alive = lambda: True
+            provider.disown_work_dir = MagicMock()
+            provider.context_usage_pct = lambda: 0.0
+            provider.context_window_tokens = lambda: 0
+            provider.has_active_turn = lambda: False
+            provider.runtime_abort_target = lambda: None
+            return provider
+
+    return _RecordingProvider
+
+
+@pytest.mark.usefixtures("_fresh_parsed_specs")
+class TestBackgroundSessionWarmsTheSnapshotFirst:
+    """``_ensure_background`` warms the spec snapshot off the loop before the factory runs.
+
+    The background session is created right after gateway start, before the
+    first ``mc-discovery`` refresh lands. The model lookup the provider factory
+    makes on the loop reads the snapshot only -- never the filesystem, as the
+    tests above pin -- so a cold snapshot answers "no pin" and the persistent
+    session would run on the chat model for the gateway's lifetime. The one
+    caller that reaches the lookup cold is async: it awaits
+    ``warm_agent_specs`` first, and the unchanged lookup then finds warm rows.
+    """
+
+    def _create_background(self, tmp_path, monkeypatch, _discovery_pool):
+        import kiro_crew.providers.acp as acp_mod
+        from kiro_crew.config import loader
+        from kiro_crew.config import paths as config_paths
+        from kiro_crew.session import BACKGROUND_KEY, SessionManager
+
+        # Both agents-dir hooks at ONE directory, as the suite's isolation floor
+        # pins them: the lookup resolves ``kiro_agents_dir()`` and the snapshot
+        # resolves the discovery module's own override.
+        monkeypatch.setattr(config_paths, "_agents_dir_override", lambda: tmp_path)
+        monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", tmp_path)
+        constructed: list[dict] = []
+        monkeypatch.setattr(acp_mod, "AcpProvider", _recording_provider_class(constructed))
+        cfg = KiroCrewConfig(agent=loader.AgentConfig(model=_GLOBAL))
+        mgr = SessionManager(cfg, provider_factory=cfg.create_provider_factory())
+
+        async def create():
+            await mgr._ensure_background()
+            try:
+                async with mgr._lock:
+                    return BACKGROUND_KEY in mgr._sessions
+            finally:
+                await mgr.close_all()
+
+        _, futures = _discovery_pool
+        try:
+            registered = asyncio.run(create())
+        finally:
+            # Drain without re-raising: a warm-up that failed carries its error
+            # on this future by design (the awaiting side swallowed it).
+            _, pending = wait(futures, timeout=5)
+            assert not pending, "a discovery-pool job did not finish"
+        assert registered, "the background session was not registered"
+        return constructed
+
+    @pytest.mark.parametrize(
+        ("pinned", "expected"),
+        [pytest.param(True, _PIN, id="pinned"), pytest.param(False, _GLOBAL, id="unpinned")],
+    )
+    def test_bg_is_created_on_its_pin_with_no_filesystem_access_on_the_loop(
+        self, tmp_path, monkeypatch, _discovery_pool, pinned, expected
+    ) -> None:
+        if pinned:
+            _lite_spec(tmp_path)
+        loop_thread = threading.current_thread()
+        signatures: list[threading.Thread] = []
+        real_signature = agent_discovery._dir_signature
+
+        def recording_signature(directory):
+            signatures.append(threading.current_thread())
+            return real_signature(directory)
+
+        monkeypatch.setattr(agent_discovery, "_dir_signature", recording_signature)
+        log = _SpecReadLog(monkeypatch)
+
+        constructed = self._create_background(tmp_path, monkeypatch, _discovery_pool)
+
+        # The factory built ``_bg`` on the agent's own pin, not the chat model.
+        assert [(kwargs["agent"], kwargs["model"]) for kwargs in constructed] == [
+            ("kirocrew-lite", expected)
+        ]
+        _, futures = _discovery_pool
+        assert futures and all(future.exception() is None for future in futures)
+        # The loop thread touched the filesystem nowhere: the directory was
+        # signed and parsed on the worker, under the warm-up's own labels, and
+        # the lookup's revalidation parsed nothing.
+        assert signatures, "no directory signature was taken"
+        assert all(thread is not loop_thread for thread in signatures)
+        assert log.on(loop_thread) == []
+        assert log.labels_off(loop_thread) == (
+            [{"operation": "ensure_background", "source": "unknown"}] if pinned else []
+        )
+
+    def test_a_failed_warm_up_still_creates_the_session(
+        self, tmp_path, monkeypatch, _discovery_pool, caplog
+    ) -> None:
+        _lite_spec(tmp_path)
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("snapshot unavailable")
+
+        monkeypatch.setattr(agent_discovery, "parsed_agent_specs", fail)
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.agent_discovery"):
+            constructed = self._create_background(tmp_path, monkeypatch, _discovery_pool)
+        # Best-effort: the warm-up swallows the failure and the session is still
+        # created, on the cold answer.
+        assert [kwargs["model"] for kwargs in constructed] == [_GLOBAL]
+        assert "Failed to warm the agent spec snapshot" in caplog.text
+        assert "snapshot unavailable" in caplog.text

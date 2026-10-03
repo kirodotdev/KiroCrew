@@ -1064,6 +1064,14 @@ class MemoryStore:
             return ""
         return self._vector_store.get_episodic_context(query_text=query, cap=cap) or ""
 
+    def ranks_activity_against(self, query: str) -> bool:
+        """Whether :meth:`get_activity_context` ranks facts and episodes against *query*.
+
+        Ranking embeds the request only when an embedder is bound. When that embed
+        returns a vector, a caller that reads True may reuse it from the shared cache.
+        """
+        return self._vector_store is not None and bool(query)
+
     def get_activity_context(
         self,
         *,
@@ -1093,8 +1101,10 @@ class MemoryStore:
         # Facts and episodes are relevance-ranked against the request. Without a
         # request (the eval runner, a bare session open) there is nothing to rank
         # against, and a recency dump is exactly the noise this block must not be.
-        if self._vector_store and query:
-            semantic_ctx = self._vector_store.get_semantic_context(
+        if self.ranks_activity_against(query):
+            vector_store = self._vector_store
+            assert vector_store is not None
+            semantic_ctx = vector_store.get_semantic_context(
                 query_text=query, cap=semantic_cap, facts_only=True
             )
             if semantic_ctx:

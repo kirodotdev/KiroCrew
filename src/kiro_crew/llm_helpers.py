@@ -68,6 +68,7 @@ from kiro_crew.security import (
     sensitive_path_refusal,
 )
 from kiro_crew.sel import sel as _sel
+from kiro_crew.start_priority import StartPriority
 
 _PROMPT_BUSY_RETRIES = 2
 _PROMPT_BUSY_DELAY = 1.5  # seconds between retries
@@ -259,6 +260,22 @@ def acp_error_is_transient(exc: BaseException) -> bool:
     if isinstance(flag, bool):
         return flag
     return is_transient_backend_error(str(exc))
+
+
+def acp_error_is_session_not_found(exc: BaseException) -> bool:
+    """True when a live backend says it holds no session under the id it was sent.
+
+    The process answered, so nothing marks it dead and the dead-provider
+    eviction never fires; the binding keeps naming a session the backend has
+    dropped, and every later prompt draws the same answer. The backend
+    session's transcript is usually intact, so the remedy is a fresh process
+    that re-loads the SAME id -- not a retry on this one.
+
+    Scoped to ``AcpError``: the phrase is the adapter's own answer to a prompt,
+    and an unrelated exception that mentions a missing session elsewhere (an
+    HTTP 404 body, a dashboard lookup) must never reset a chat.
+    """
+    return isinstance(exc, AcpError) and "session not found" in str(exc).lower()
 
 
 def transient_retry_delay(attempt: int) -> float:
@@ -1569,9 +1586,14 @@ async def run_bg_oneliner(
     crew_log_session_key: str = "",
     max_output_bytes: int | None = None,
     retry_rejected_model: bool = True,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
+
+    ``start_priority`` orders the session's start; FOREGROUND only for a caller a
+    person is waiting on (rule: ``kiro_crew.start_priority``). ``timeout`` bounds
+    the DRIVE only -- see the acquisition below for why it must not be cancelled.
 
     ``strict_model=True`` makes the requested ``model`` a hard requirement
     rather than a preference: a failed ``set_model`` override raises instead
@@ -1617,7 +1639,15 @@ async def run_bg_oneliner(
     # background runtime lock and start a runtime -- so resolving after it is
     # already late enough to name the successor.
     _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
-    session = await sessions.get_bg_session()
+    # NOT under ``timeout``: the acquisition can be the shared ``_bg`` runtime's own
+    # (re)spawn, run inline under its lock, and a cancelled one is killed with
+    # nothing assigned -- so a short-budget caller would destroy the runtime every
+    # later caller reuses, repeatedly. Cancelling it after ``session/new`` went out
+    # also leaks that session: the gate's late-answer collector belongs to the
+    # runtime's own timeout, not to a caller's. ``start_priority`` is what keeps a
+    # person's wait here short; the queue waits are bounded by the gate's own
+    # budgets.
+    session = await sessions.get_bg_session(start_priority=start_priority)
     # The stats object as it stands BEFORE this turn. The runner replaces it when
     # a turn actually begins, so comparing identity at teardown separates a turn
     # that ran from one whose dispatch failed while the previous turn's already

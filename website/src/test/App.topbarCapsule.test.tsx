@@ -12,6 +12,7 @@ import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { safeSetItem } from '../utils/safeStorage'
 import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
+import { MAC_FULLSCREEN_TOP_RESERVE_PX } from '../lib/electron'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -160,11 +161,39 @@ describe('App shell — macOS fullscreen class', () => {
     expect(root).toBeTruthy()
     expect(root.classList.contains('mac-fullscreen')).toBe(false)
 
+    // The frame around local and remote panes clears the fullscreen menu-bar
+    // strip only while fullscreen, so the header's crew switcher stays clickable.
+    const frame = screen.getByTestId('app-frame')
+    expect(frame.style.paddingTop).toBe('')
+
     act(() => fsCallback?.(true))
     expect(root.classList.contains('mac-fullscreen')).toBe(true)
+    expect(frame.style.paddingTop).toBe(`${MAC_FULLSCREEN_TOP_RESERVE_PX}px`)
 
     act(() => fsCallback?.(false))
     expect(root.classList.contains('mac-fullscreen')).toBe(false)
+    expect(frame.style.paddingTop).toBe('')
+    delete (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
+  })
+
+  it('scales the fullscreen reserve by native zoom so it still covers the strip', async () => {
+    // The strip is in screen points; at zoom 0.5 a CSS px is half a point, so
+    // the reserve doubles in CSS px to stay the same height on screen.
+    let fsCallback: ((fs: boolean) => void) | undefined
+    ;(window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI = {
+      onFullScreenChanged: (cb: (fs: boolean) => void) => { fsCallback = cb; return () => { fsCallback = undefined } },
+    }
+    window.zoomAPI = { get: vi.fn(async () => 0.5), set: vi.fn(async (f: number) => f), step: vi.fn(async () => 1) }
+    renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByTestId('chat-page')
+    const frame = screen.getByTestId('app-frame')
+
+    await act(async () => { fsCallback?.(true) })
+    expect(frame.style.paddingTop).toBe(`${MAC_FULLSCREEN_TOP_RESERVE_PX * 2}px`)
+
+    act(() => fsCallback?.(false))
+    expect(frame.style.paddingTop).toBe('')
+    delete window.zoomAPI
     delete (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
   })
 })

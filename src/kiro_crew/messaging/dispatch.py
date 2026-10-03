@@ -89,6 +89,7 @@ from kiro_crew.sel import sel
 # package's import graph, and session_allocation imports nothing from messaging,
 # so this direction cannot cycle.
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +451,10 @@ class ChannelTurn:
     user_display_name: Optional[str] = None
     """Human name of the sender, injected as ``[CURRENT USER]`` so the agent
     knows who it is talking to. ``None`` omits the block (byte-identical to before)."""
+
+    start_priority: StartPriority = StartPriority.BACKGROUND
+    """The cold start's place in the start queues: FOREGROUND only for a message a
+    person sent (``person_origin`` on the inbound; rule ``kiro_crew.start_priority``)."""
 
 
 #: Every spelling a channel accepts for "abort the running turn". The union of
@@ -1518,7 +1523,11 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             # provider start. The same identity is then used for this turn's prompt.
             memory_store = await session_store_for_turn(ctx_builder, session_key)
             provider, is_new, resumed = await sessions.get_or_create(
-                session_key, agent=session_agent, channel_id=turn.conversation_id, **extra
+                session_key,
+                agent=session_agent,
+                channel_id=turn.conversation_id,
+                start_priority=turn.start_priority,
+                **extra,
             )
             _acquired = True
             # Hold the provider this attempt obtained, for the failure handler's

@@ -443,7 +443,7 @@ export default function SessionTitleControl({
           <Btn
             aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')}
             title={i18nT('pages.chatPage.regenerate_title_with_llm')}
-            className="shrink-0 flex items-center gap-1 text-muted opacity-0 group-hover/header:opacity-70 focus-visible:opacity-100 focus-visible:text-accent hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0"
+            className="shrink-0 flex items-center gap-1 text-muted opacity-0 group-hover/header:opacity-70 [@media(hover:none)]:opacity-70 focus-visible:opacity-100 focus-visible:text-accent hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0"
             onClick={(e) => { e.stopPropagation(); regenerate() }}
           >
             <Sparkles size={compact ? 14 : 16} />

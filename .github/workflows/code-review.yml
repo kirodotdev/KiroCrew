@@ -51,7 +51,7 @@ jobs:
       # Deterministic replication of the blocking rules from
       # website/AUTOSDE.yaml. These catch the unambiguous cases; the semantic
       # half (aria-label on icon-only buttons, no-emoji, template-literal HTML)
-      # is covered by the auto-running Opus 5 review in claude-review.yml.
+      # is covered by the auto-running Opus 5.5 review in claude-review.yml.
       - name: Check frontend blocking rules
         if: contains(steps.changed.outputs.files, 'website/src/')
         working-directory: website
@@ -103,7 +103,7 @@ jobs:
 
           echo "::group::frontend-security (advisory) — dangerouslySetInnerHTML without sanitize/md/DOMPurify"
           if git diff "$BASE".."$HEAD" -- 'src/**/*.tsx' 'src/**/*.ts' | grep -nP '^\+.*dangerouslySetInnerHTML' | grep -vP 'sanitize\(|\bmd\(|DOMPurify'; then
-            echo "::warning::dangerouslySetInnerHTML must go through sanitize()/md() (DOMPurify). The Opus 5 review will block if unsanitized."
+            echo "::warning::dangerouslySetInnerHTML must go through sanitize()/md() (DOMPurify). The Opus 5.5 review will block if unsanitized."
           fi
           echo "::endgroup::"
 
@@ -499,3 +499,37 @@ jobs:
             exit 1
           fi
           echo "Pattern harvest section present."
+
+      # ── Reader list on take-away diffs ──────────────────────────────
+      # A diff that hides, deletes, tightens or migrates something must list
+      # every reader of it under "## Backwards compatibility" as `Reader:`
+      # lines (#13273 and #12798 both passed CI and broke readers nobody
+      # listed). Detection and format live in the script; presence/format
+      # only, the content is the reviewers' job. See
+      # docs/system-specs/common/take-away-changes.md.
+      - name: Resolve diff base (merge-base)
+        id: diffbase
+        env:
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          # base.sha is the base branch tip when the PR event fired, not the
+          # branch-off point, so diffing it directly pulls in sibling commits.
+          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
+            err "Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            exit 1
+          fi
+          echo "Diff base: $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Require a reader list on take-away diffs
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        env:
+          MERGE_BASE: ${{ steps.diffbase.outputs.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          diff_file="$(mktemp)"
+          git diff "$MERGE_BASE" "$HEAD_SHA" > "$diff_file"
+          python3 .github/scripts/take_away_check.py "$diff_file"

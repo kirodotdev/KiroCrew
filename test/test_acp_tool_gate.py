@@ -896,7 +896,7 @@ def _assert_windows_sandbox_refusal(exc: BaseException, backend: str) -> None:
     assert "native Windows" in msg
     assert "no supported OS sandbox backend" in msg
     assert "Kiro CLI" in msg
-    assert "Settings → Agent Backend" in msg
+    assert "Settings → Agent Harness" in msg
     assert "new session" in msg
     assert _GENERIC_SANDBOX_REMEDY not in msg
     assert "sandbox_allow_unsandboxed_exec" not in msg
@@ -1004,7 +1004,7 @@ def test_sandbox_preflight_retains_the_windows_remedy(
     assert "OpenCode" in msg
     assert "native Windows" in msg
     assert "Kiro CLI" in msg
-    assert "Settings → Agent Backend" in msg
+    assert "Settings → Agent Harness" in msg
     assert _GENERIC_SANDBOX_REMEDY not in msg
     assert "sandbox_allow_unsandboxed_exec" not in msg
 

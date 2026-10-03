@@ -11,12 +11,15 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import logging
 import os
 import stat
 import uuid
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import IO
+
+from kiro_crew.atomic_write import read_json_or
 
 from . import destination as _destination
 from . import hashing as _hashing
@@ -346,15 +349,17 @@ def _refuse_unless_this_build_wrote_it(d: Path, flag: str, crew_name: str) -> No
         # be treated as this build's staging tree and the directory deleted recursively. The
         # plan records which crew it is for, so the crew it names must also match the crew
         # being built; only then is it a plan this tool wrote for this build.
-        try:
-            body = json.loads((d / PLAN_FILENAME).read_text(encoding="utf-8"))
-            recognised = (
-                isinstance(body, dict)
-                and body.get("plan_version") == PLAN_VERSION
-                and body.get("crew") == crew_name
-            )
-        except (OSError, ValueError):
-            recognised = False
+        body = read_json_or(
+            d / PLAN_FILENAME,
+            None,
+            logger=logging.getLogger(__name__),
+            what="curation plan",
+        )
+        recognised = (
+            isinstance(body, dict)
+            and body.get("plan_version") == PLAN_VERSION
+            and body.get("crew") == crew_name
+        )
         if not recognised:
             raise ExportRefused(
                 f"{flag} {d} holds a single {PLAN_FILENAME} that this tool did not write for "

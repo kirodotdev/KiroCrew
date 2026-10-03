@@ -75,6 +75,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
+from kiro_crew.start_priority import StartPriority
 
 # ── Harness ──
 
@@ -1226,7 +1227,7 @@ async def test_answer_cap_timeout_marks_runtime_dead_without_growth():
         else:
             second_started.set()
 
-    def mark_dead(reason: str) -> None:
+    def mark_dead(reason: str, **_kw: object) -> None:
         dead_reasons.append(reason)
         rt._dead = True
         marked_dead.set()
@@ -1984,13 +1985,13 @@ def test_cold_start_admission_registry_releases_contended_closed_loop(monkeypatc
     async def contend_and_drain():
         admission = runtime_mod._cold_start_admission()
         assert runtime_mod._cold_start_admission() is admission
-        await admission.acquire()
-        queued = asyncio.create_task(admission.acquire())
+        await admission.acquire(StartPriority.BACKGROUND)
+        queued = asyncio.create_task(admission.acquire(StartPriority.BACKGROUND))
         await _wait_for_queued(admission, 1)
         admission_ref = weakref.ref(admission)
         queued.cancel()
         await asyncio.gather(queued, return_exceptions=True)
-        admission.release()
+        admission.release(StartPriority.BACKGROUND)
         assert admission.active == 0
         assert admission.queued == 0
         return admission_ref
@@ -2710,6 +2711,50 @@ async def test_the_windows_branch_amends_the_summary_too(caplog, monkeypatch):
     assert "returncode=None" not in summary
     reaped = _reap_records(caplog)
     assert [r.levelname for r in reaped] == ["INFO"]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_windows_drain_is_one_warning_and_keeps_the_process(caplog, monkeypatch):
+    """A tree that outlives one bounded drain pass is pending cleanup, not lost.
+
+    The kill still raises -- its callers retain the runtime on a raise, and the
+    drain kept every pin for the cleanup sweep -- but the log says exactly that
+    in one line, without a traceback. A traceback here reads in the field as the
+    crash, and hides the failure that asked for the kill.
+    """
+    import logging
+
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", True)
+    pending = rt_mod.platform_compat.WindowsTreeDrainPending(root_pid=4242, pending=3)
+
+    async def _drain_is_slow(process):
+        raise pending
+
+    monkeypatch.setattr(rt_mod.platform_compat, "terminate_windows_asyncio_tree", _drain_is_slow)
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        with pytest.raises(rt_mod.platform_compat.WindowsTreeDrainPending):
+            await rt.kill(reason="failed session setup cleanup")
+
+    assert rt._process is proc, "a tree still draining dropped its process"
+    assert rt._process_tree_confirmed_dead is False
+    records = [
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.acp.runtime" and "cleanup sweep" in r.getMessage()
+    ]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is None
+    assert "4242" in records[0].getMessage()
+    assert "3 member" in records[0].getMessage()
+    assert not [
+        r for r in caplog.records if r.name == "kiro_crew.acp.runtime" and r.exc_info
+    ], "a slow drain still logged a traceback"
 
 
 @pytest.mark.asyncio
@@ -4400,6 +4445,81 @@ async def test_wait_for_compaction_drain_path_resets_context_stats():
     assert stats.context_used_tokens == 0
     assert stats.context_tokens_from_usage is False
     assert stats.context_window_tokens == 200_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summary", ["", None])
+async def test_wait_for_compaction_drain_failed_with_empty_summary_carries_the_reason(summary):
+    """kiro-cli's ``summary`` is empty on failure, so the drain path carries the
+    reason the payload names -- read by the same extractor the dispatch loop
+    uses -- and a manual /compact names its cause the way auto-compaction does."""
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "sessionId": "sA",
+                "status": {"type": "failed", "error": "context window exceeded"},
+                "summary": summary,
+            },
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result == {"type": "failed", "summary": "context window exceeded"}
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_drain_failed_without_a_reason_reports_the_fallback():
+    """No summary and no reason-bearing key: the drain result carries the
+    extractor's own generic text, the same line the streaming notice shows."""
+    from kiro_crew.acp.transport_errors import compaction_failure_detail
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    params = {"sessionId": "sA", "status": {"type": "failed"}, "summary": ""}
+    q["sA"].put_nowait(JsonRpcMessage(method=METHOD_COMPACTION_STATUS, params=params))
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "failed"
+    assert result["summary"] == compaction_failure_detail(params)
+    assert result["summary"].startswith("no reason reported by the agent")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary_is_redacted():
+    """A backend-echoed failure summary is LLM-influenced text, so the drain
+    result carries it scrubbed -- the same ``redact_text`` the client wait path
+    applies -- before the dashboard or a channel mirror shows it."""
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "sessionId": "sA",
+                "status": {"type": "failed"},
+                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+            },
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "failed"
+    assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+    assert "[REDACTED: credential]" in result["summary"]
 
 
 @pytest.mark.asyncio
@@ -12808,7 +12928,7 @@ async def test_answer_task_cap_marks_dead_instead_of_growing_unbounded():
     )
     dead: list[str] = []
 
-    def _fake_mark_dead(reason):
+    def _fake_mark_dead(reason, **_kw):
         dead.append(reason)
         rt._dead = True  # mirror the real _mark_dead contract
 
@@ -12912,7 +13032,7 @@ async def test_sel_audit_tasks_do_not_count_toward_answer_cap():
         _t.add_done_callback(rt._audit_tasks.discard)
 
     dead: list[str] = []
-    rt._mark_dead = lambda reason: dead.append(reason)  # type: ignore[method-assign]
+    rt._mark_dead = lambda reason, **_kw: dead.append(reason)  # type: ignore[method-assign]
 
     answered: list[object] = []
 
@@ -12951,7 +13071,7 @@ async def test_buffered_burst_with_responsive_backend_does_not_trip_cap():
     _register(rt, "sA")
     rt._max_answer_tasks = 4
     dead: list[str] = []
-    rt._mark_dead = lambda reason: dead.append(reason)  # type: ignore[method-assign]
+    rt._mark_dead = lambda reason, **_kw: dead.append(reason)  # type: ignore[method-assign]
 
     # Buffer MORE frames than the cap before the reader runs at all.
     for i in range(10):

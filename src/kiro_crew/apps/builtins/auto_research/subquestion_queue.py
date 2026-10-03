@@ -25,12 +25,16 @@ state model only. Ranking/relevance and budget come from the caller (Stage 5/6).
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
 
+from kiro_crew.atomic_write import read_json_or
+
 QUEUE_FILENAME = "subquestion_queue.json"
 _WS_RE = re.compile(r"\s+")
+logger = logging.getLogger(__name__)
 
 
 def new_queue() -> dict:
@@ -173,13 +177,10 @@ def load_queue(campaign_dir: Path) -> dict:
     p = Path(campaign_dir) / QUEUE_FILENAME
     if not p.exists():
         return new_queue()
-    try:
-        # The queue file lives in the agent-writable campaign dir, so a worker
-        # can rewrite it as UTF-8 (json.dumps below is ASCII-only, but that is
-        # not a guarantee about who wrote the file last).
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return new_queue()
+    # The queue file lives in the agent-writable campaign dir, so a worker
+    # can rewrite it as UTF-8 (json.dumps below is ASCII-only, but that is
+    # not a guarantee about who wrote the file last).
+    data = read_json_or(p, None, logger=logger, what="subquestion queue")
     if not isinstance(data, dict):
         return new_queue()
     data.setdefault("pending", [])

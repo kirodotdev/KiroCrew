@@ -1,6 +1,6 @@
-name: Fork GPT 5.6 Review
+name: Fork GPT 6.1 Review
 
-# STAGE 2 (privileged) of the fork AI-review pipeline — the GPT 5.6 reviewer.
+# STAGE 2 (privileged) of the fork AI-review pipeline — the GPT 6.1 reviewer.
 # Triggered by the completion of "Fork AI Review (collect)" (Stage 1). Runs from
 # the DEFAULT branch with secrets + OIDC. It NEVER checks out or executes the
 # fork's code.
@@ -23,7 +23,7 @@ name: Fork GPT 5.6 Review
 # Mirrors codex-review.yml's contract (model, [GPT-REVIEWED]/[BLOCK-MERGE]
 # markers, fail-closed gate) and its two-pass design (discovery + falsification).
 # codex-review.yml is UNCHANGED and owns same-repo PRs. The fork check-run is
-# named exactly "GPT 5.6 Review" so branch protection is satisfied on either
+# named exactly "GPT 6.1 Review" so branch protection is satisfied on either
 # path. The prompt blocks shared with codex-review.yml live in
 # .github/review-prompts/gpt-*.md so the two lanes cannot drift apart; this
 # lane reads them from the checked-out tree, which is the trusted BASE.
@@ -59,7 +59,7 @@ concurrency:
 
 jobs:
   fork-gpt-review:
-    name: Fork GPT 5.6 Review
+    name: Fork GPT 6.1 Review
     runs-on: ubuntu-latest
     # Must stay above the sum of the two PASS_WALLs plus setup, or this wall --
     # not the named pass timeout -- kills pass 2 and the job ends with no
@@ -250,7 +250,7 @@ jobs:
         run: |
           set -uo pipefail
           id="$(gh api --method POST "repos/$REPO/check-runs" \
-            -f name="GPT 5.6 Review" -f head_sha="$HEAD" -f status="in_progress" \
+            -f name="GPT 6.1 Review" -f head_sha="$HEAD" -f status="in_progress" \
             -f external_id="gpt-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
             -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --jq '.id')"
@@ -425,7 +425,7 @@ jobs:
           mkdir -p "$HOME/.codex"
           cat > "$HOME/.codex/config.toml" <<'EOF'
           model_provider = "amazon-bedrock"
-          model = "openai.gpt-5.6-sol"
+          model = "openai.gpt-6.1-sol"
           model_reasoning_effort = "medium"
 
           # Pin the sandbox mode HERE rather than on the `codex exec` command
@@ -499,7 +499,7 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: GPT 5.6 review (discovery pass)
+      - name: GPT 6.1 review (discovery pass)
         id: review
         env:
           AWS_REGION: us-east-1
@@ -729,7 +729,7 @@ jobs:
             --output-last-message "codex-pass-1.md" \
             "$PROMPT" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-1.md ]; then
-            echo "::warning::GPT 5.6 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            echo "::warning::GPT 6.1 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
             printf ' 1' >> codex-failed-passes
           fi
 
@@ -761,7 +761,7 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: GPT 5.6 review (falsification pass)
+      - name: GPT 6.1 review (falsification pass)
         id: gpt_pass2
         env:
           AWS_REGION: us-east-1
@@ -819,7 +819,7 @@ jobs:
             --output-last-message "codex-pass-2.md" \
             "$PROMPT" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
-            echo "::warning::GPT 5.6 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            echo "::warning::GPT 6.1 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
             failed_passes="${failed_passes} 2"
           fi
 
@@ -1055,8 +1055,9 @@ jobs:
           # Bump alongside any adjudicator model bump, with the
           # @anthropic-ai/claude-code pin in .github/review-cli/package.json
           # raised to satisfy it. The floor must cover both the primary and the
-          # overload fallback model; 2.1.255 is the Opus 4.8 fallback's minimum.
-          ADJ_CLAUDE_CODE_FLOOR: "2.1.255"
+          # overload fallback model; Opus 5.5 needs 2.1.280 and the Sonnet 5.5
+          # fallback 2.1.284.
+          ADJ_CLAUDE_CODE_FLOOR: "2.1.284"
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/review-cli/node_modules/.bin/claude"
@@ -1098,12 +1099,12 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Opus 5 adjudication (blocking findings only)
+      - name: Opus 5.5 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
           || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -1124,8 +1125,8 @@ jobs:
           # is posted by the SAME comment step that surfaces an unstamped
           # review. Deny the read path, as the fork Opus lane's model steps do.
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
@@ -1208,7 +1209,7 @@ jobs:
             # (#9216). Sits ABOVE the fenced wording so a stage that produced
             # no ruling is never reported in words that read like one.
             note="Adjudication produced no [GPT-ADJUDICATED] marker for $HEAD: the adjudication stage FAILED TO RUN (its raw output is in the Adjudication details block -- typically an API or setup error), so no proportionality review took place and GPT's blocking verdict stands unreviewed."
-            echo "::error::the Opus 5 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 5 adjudication' step output; GPT's blocking verdict stands unreviewed."
+            echo "::error::the Opus 5.5 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 5.5 adjudication' step output; GPT's blocking verdict stands unreviewed."
           elif [ "$fenced" -gt 0 ]; then
             note="$fenced of $count blocking finding(s) are security-class and were withheld from adjudication, so the blocking verdict stands."
           elif [ "$adjudicable" -eq 0 ]; then
@@ -1309,7 +1310,7 @@ jobs:
               # never from the adjudication prose.
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"; verdict="✅ no blocking findings (all downgraded on adjudication)"
-                note="Opus 5 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                note="Opus 5.5 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"; verdict="🔴 changes requested (blocking)"
                 note="${ADJ_NOTE:-}"
@@ -1320,7 +1321,7 @@ jobs:
           fi
           {
             echo "$MARKER"
-            echo "## GPT 5.6 Review (fork) — $verdict"
+            echo "## GPT 6.1 Review (fork) — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` via the fork AI-review pipeline; updated in place on each push._"
             echo
@@ -1342,7 +1343,7 @@ jobs:
               echo
               echo "</details>"
             else
-              echo "_No completed GPT verdict for this commit; see the Fork GPT 5.6 Review job logs._"
+              echo "_No completed GPT verdict for this commit; see the Fork GPT 6.1 Review job logs._"
               # REPORTING ONLY. Without this, a review that ran to completion but
               # whose `[GPT-REVIEWED] <sha>` stamp is absent or SHA-corrupted put
               # its entire body in the job logs and posted only the line above --
@@ -1397,7 +1398,7 @@ jobs:
                 # session token has no distinctive prefix.
                 if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' codex-review-output.md; then
                   echo
-                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork GPT 5.6 Review job logs._"
+                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork GPT 6.1 Review job logs._"
                 else
                   echo
                   echo "<details>"
@@ -1415,7 +1416,7 @@ jobs:
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 5) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Opus 5.5) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo
@@ -2066,9 +2067,9 @@ jobs:
               fi
             fi
           }
-          guarded_comment_upsert "$MARKER" "[GPT-REVIEWED]" "Fork GPT 5.6 Review" "${RUNNER_TEMP:-/tmp}/fork-codex-comment.md"
+          guarded_comment_upsert "$MARKER" "[GPT-REVIEWED]" "Fork GPT 6.1 Review" "${RUNNER_TEMP:-/tmp}/fork-codex-comment.md"
 
-      # Fail-CLOSED finalize of the required "GPT 5.6 Review" check-run, keyed to
+      # Fail-CLOSED finalize of the required "GPT 6.1 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.
       # Where a withheld verdict goes, so that it outlives the job that computed
       # it. The step above reports a withheld verdict in an annotation, and an
@@ -2153,7 +2154,7 @@ jobs:
             for attempt in 1 2; do
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
-                -f "output[title]=GPT 5.6 Review — $3" \
+                -f "output[title]=GPT 6.1 Review — $3" \
                 -f "output[summary]=$summary" >/dev/null; then
                 return 0
               fi
@@ -2178,10 +2179,10 @@ jobs:
               ext_args=(-f external_id="gpt-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")
             fi
             gh api --method POST "repos/$REPO/check-runs" \
-              -f name="GPT 5.6 Review" -f head_sha="$HEAD" \
+              -f name="GPT 6.1 Review" -f head_sha="$HEAD" \
               -f status="completed" -f conclusion="failure" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
-              -f "output[title]=GPT 5.6 Review — could not run" \
+              -f "output[title]=GPT 6.1 Review — could not run" \
               -f "output[summary]=The fork GPT review job failed before producing a verdict; re-run it." >/dev/null || true
           fi
           # Sweep any still-incomplete run of this name that THIS pull request
@@ -2213,7 +2214,7 @@ jobs:
           # later trigger and is left alone; rows from this run or an older one
           # are still swept, so stranded-run cleanup is unchanged.
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
-            enc="$(jq -rn '"GPT 5.6 Review" | @uri')"
+            enc="$(jq -rn '"GPT 6.1 Review" | @uri')"
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]

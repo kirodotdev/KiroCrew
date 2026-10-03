@@ -462,4 +462,6 @@ class WeixinTransport(MessagingTransport):
             await asyncio.to_thread(self._ctx.set, self._account_id, from_user, ctx_token)
 
         if self._dispatch is not None:
+            # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+            msg.person_origin = True
             await self._dispatch(msg)

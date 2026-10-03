@@ -633,7 +633,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Kiro Crew's OWN servers are exempt and always send full specs, whatever this is set to: loading one mid-turn would change the tools list a thinking block's signature is bound to and the provider would reject the conversation. No effect on an alternate ACP backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any other executable, an older or unknown version keeps them resident. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on an alternate ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -919,7 +919,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Start Concurrency",
-      "help": "How many ACP session/new requests may be outstanding at once per gateway event loop (the SessionStartGate). session/new blocks while the backend initializes the session's MCP servers, so a burst of subagent starts on one shared runtime slows every start until the budget is hit; queued starts wait in FIFO order and their queue time is not counted against the start budget or the startup watchdog. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn gate and the execution-cap controller. Clamped to 1..64.",
+      "help": "How many ACP session/new requests may be outstanding at once per gateway event loop (the SessionStartGate). session/new blocks while the backend initializes the session's MCP servers, so a burst of subagent starts on one shared runtime slows every start until the budget is hit; queued starts a person is waiting on are served first, except that a waiting background start is let through after a bounded run of them so it is never starved, and FIFO within each class. Queue time is not charged to the start budget or the startup deadline, but a subagent start that stays queued past the start-queue cap ends as never started, unless its subagent timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn gate and the execution-cap controller. Clamped to 1..64.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2,
@@ -2677,7 +2677,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Lazy Skill Injection",
-      "help": "When true (the default), show a bounded usage-ranked index of on-demand skills, each with its path, plus a line naming the families the index leaves out. Set to false for the shorter entry that names only the eight hottest skills and points at skill_search for the rest. Both modes use the same Crew background budget, independent of model window size, and neither applies to an agent with its own skill:// mapping, which gets a bounded directory of mapped skills with complete search, paginated listing and exact reads on demand. Required pinned instructions share an explicit startup capacity; explicit loading and trigger gates are preserved.",
+      "help": "When true (the default), show a bounded usage-ranked index of on-demand skills, each with its path, plus a line naming the families the index leaves out. Set to false for the shorter entry that names eight skills and points at skill_search for the rest. Both order their rows the same way: the user's own skills (user-created, extra_paths, trusted project, mapped) take up to six of the first eight places, the rest of those eight go to the highest-ranked remaining skills of either kind, so a shipped skill with real usage keeps its name. Both modes use the same Crew background budget, independent of model window size, and neither applies to an agent with its own skill:// mapping, which gets a bounded directory of mapped skills with complete search, paginated listing and exact reads on demand. Required pinned instructions share an explicit startup capacity; explicit loading and trigger gates are preserved.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -7426,7 +7426,8 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
-      "nullable": true
+      "nullable": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.chat_entry_cache_max_entries",

@@ -32,6 +32,7 @@ import {
   SCROLL_SETTLE_MS,
   SELF_SCROLL_EPSILON,
   bottomTarget,
+  distanceFromBottom,
   evaluateAutoPin,
   isSelfScroll,
   pinSuppressedNow,
@@ -78,13 +79,21 @@ export interface FollowState {
   lastScrollEventAtRef: Ref<number>
   lastScrollClientHRef: Ref<number>
   lastObservedTopRef: Ref<number>
+  viewportGrowthAccumRef: Ref<number>
+  readerTravelAccumRef: Ref<number>
+  readerIntentAccumRef: Ref<number>
+  gestureStartGapRef: Ref<number>
+  lastReaderScrollAtRef: Ref<number>
   pinCascadeUntilRef: Ref<number>
   detachSmoothAbort: () => void
   releaseFollowBaseline: () => void
   writeScrollTop: WriteScrollTop
   getFollow: () => boolean
-  /** Hardware scroll intent (wheel / touch / scrollbar grab / scrolling key). */
-  noteHardInput: (dir?: ScrollIntentDirection) => void
+  /** Hardware scroll intent (wheel / touch / scrollbar grab / scrolling key).
+   *  `px` is the input's own size when it has one (a pixel wheel delta, a
+   *  finger's path); `el` is the scroller, for the re-engage a reader asks for
+   *  at the bottom edge where no scroll event can answer them. */
+  noteHardInput: (dir?: ScrollIntentDirection, px?: number, el?: HTMLElement | null) => void
 }
 
 export function useFollowState(followOutput: boolean): FollowState {
@@ -185,6 +194,77 @@ export function useFollowState(followOutput: boolean): FollowState {
   // growth would already be folded away by the time the clamp's scroll event
   // asked about it.
   const lastScrollClientHRef = useRef(0)
+  // Viewport growth accumulated across the scroll events of ONE gesture -- the
+  // value `resolveUserScrollStick` is told about as `viewportGrowth`.
+  //
+  // A single event's delta is not enough: Safari animates the toolbar collapse
+  // over several frames, and each frame's scroll event carries only that
+  // frame's growth. Judged per event, a reader nudging down across the
+  // animation was credited only the LAST frame's growth while the earlier
+  // frames' growth had already carried the band onto them, so follow re-armed
+  // on the final frame of every real collapse. The credit therefore runs for as
+  // long as the READER's scroll events keep arriving within SCROLL_SETTLE_MS of
+  // each other (a gesture in flight, see lastReaderScrollAtRef) and resets once
+  // the reader has rested for a settle window, so growth from a collapse they
+  // merely sat through is not credited to a later, separate nudge. Only the
+  // reader's events contribute: a pin of ours and the glide of a smooth pin
+  // are not their gesture, so the box's change across such an event is dropped
+  // rather than carried into the next gesture they make. Signed: a shrink
+  // inside the same window (the bar re-showing mid-drag) pays growth back, so
+  // the total is how much taller the box is than the one the gesture began in.
+  // The resolver clamps a net shrink to zero.
+  const viewportGrowthAccumRef = useRef(0)
+  // The reader's own DOWNWARD travel across the same gesture -- the value
+  // `resolveUserScrollStick` is told about as `readerTravel`, and the other
+  // half of its rule-3 split: an arrival inside the re-engage band is the
+  // reader's when this is at least the growth above. Only user scroll events
+  // count (a pin of ours, the glide of a smooth pin and the engine's clamp are
+  // not their hand), only positive deltas count (an upward move releases
+  // follow on its own and contributes nothing to a later approach), and it
+  // lapses and restarts on the same settle window as the growth, so the two
+  // totals always describe the same gesture.
+  const readerTravelAccumRef = useRef(0)
+  // The reader's own downward INPUT across the same gesture, in px, summed
+  // from the intent listeners (a pixel wheel delta, a finger's path) rather
+  // than from scroll events. It is the travel the reader ASKED for, where
+  // `readerTravelAccumRef` is the travel the engine ANSWERED with -- and the
+  // answer is clamped at the scroller's maximum. A viewport growth G lowers
+  // that maximum by G, so a reader parked D0 above the bottom can be answered
+  // at most D0 - G no matter how far they drag: measured on the answer, a
+  // deliberate drag to the end from anywhere under 2G away reads as a nudge
+  // (D0 - G < G) and is refused the re-engage, and once flush a further drag
+  // raises no scroll event at all, so nothing ever re-asks. The input stream
+  // has neither limit. It lapses on the same settle window as its siblings,
+  // judged in `noteHardInput` against the reader's last scroll OR input, since
+  // an input is what OPENS a gesture and arrives before its scroll event. Only
+  // a downward input with a size counts: a key or a grab names no distance,
+  // and an UPWARD input zeroes the total -- a reversal is no longer a return.
+  const readerIntentAccumRef = useRef(0)
+  // How far above the bottom the reader was when the current gesture began
+  // (Infinity until a gesture has a first observation). The second half of the
+  // re-engage test: a drag whose own input would have reached the bottom with
+  // NO growth at all (`intent >= D0`) is the reader returning, whatever the
+  // box did meanwhile -- the keyboard closing (~300px) during a 250px drag from
+  // 200px up would otherwise refuse them on `250 < 300`, a return main had
+  // allowed. Seeded on the first event of a gesture from that event's live
+  // distance plus the motion the event itself carried.
+  const gestureStartGapRef = useRef(Number.POSITIVE_INFINITY)
+  // When the READER's last scroll event landed: the clock the two accumulators
+  // above lapse on, and the one the viewport observer (measurement.ts)
+  // consults before it re-baselines the scroll-event height. "A gesture in
+  // flight" has to mean the reader's hand. A streaming turn pins on every
+  // tail-row resize, and each pin fires a scroll event of our own well inside
+  // the settle window -- keyed on any scroll event, the window never closed
+  // for the whole turn, so a box growth mid-turn (the keyboard closing, a
+  // banner leaving) stayed in the growth total and the observer never
+  // re-baselined it: a reader who then flicked up and came straight back was
+  // refused their own arrival because the stale growth outweighed their
+  // travel, and the output streamed past them. Stamped where
+  // `lastUserScrollAtRef` is stamped for a scroll event -- a user scroll that
+  // is not the engine's layout clamp, and the grab that interrupts a smooth
+  // glide -- so our pins, glide frames and clamps extend no gesture. Starts at
+  // -Infinity like its siblings: "no gesture yet" must read as lapsed.
+  const lastReaderScrollAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // scrollTop as of the last observed scroll event (self or user). Gives the
   // user-scroll stick decision its direction: a genuine upward move releases
   // follow even inside the 100px at-bottom band. `-1` = no observation yet.
@@ -201,18 +281,82 @@ export function useFollowState(followOutput: boolean): FollowState {
   // Hardware-intent stamps, fed by the scroller's persistent intent listeners
   // (see the scroll listener in observers.ts). They only stamp time -- the stick
   // decision itself stays with the scroll handler.
-  const noteHardInput = useCallback((dir?: ScrollIntentDirection) => {
-    lastUserScrollAtRef.current = performance.now()
-    lastHardInputAtRef.current = performance.now()
+  const noteHardInput = useCallback((dir?: ScrollIntentDirection, px?: number, el?: HTMLElement | null) => {
+    const now = performance.now()
+    // Does this input continue the gesture in flight, or open a new one? An
+    // input arrives BEFORE the scroll event it causes, so the first input of a
+    // gesture finds the reader's scroll clock lapsed; the input clock is what
+    // keeps a run of inputs together, and the scroll clock what keeps a drag's
+    // momentum (scroll events with no further input) attached to it.
+    const gestureOpen =
+      now - lastReaderScrollAtRef.current <= SCROLL_SETTLE_MS ||
+      now - lastHardInputAtRef.current <= SCROLL_SETTLE_MS
+    const intent = dir === 'down' && typeof px === 'number' && px > 0 ? px : 0
+    // An UPWARD input ends the return: whatever downward intent the gesture
+    // had banked is no longer a drag toward the bottom, so the total goes to
+    // zero rather than merely standing still. Left standing, a single
+    // downward jitter frame inside an upward flick (a phone reports per-frame
+    // direction) kept `intent > 0` alive for the whole settle window, and the
+    // resolver reads that as "moved down" -- which disables the very clamp
+    // guard the upward stamp below arms, so a mid-stream content shrink that
+    // clamped the reader flush kept follow armed and the next pin snapped
+    // them to the end.
+    readerIntentAccumRef.current = dir === 'up' ? 0 : gestureOpen ? readerIntentAccumRef.current + intent : intent
+    // A fresh gesture measures its approach from where the reader is now; the
+    // first scroll event refines this with the motion it carries. Its growth
+    // and travel start from zero too: these accumulators are otherwise only
+    // reset by the scroll handler's lapse check, which never runs for a
+    // gesture that raises no scroll event (an input at the wall), so without
+    // this a wheel notch after a long rest would be judged against the LAST
+    // gesture's growth and travel and re-arm follow with no growth in flight.
+    if (!gestureOpen) {
+      gestureStartGapRef.current = el ? distanceFromBottom(el) : Number.POSITIVE_INFINITY
+      viewportGrowthAccumRef.current = 0
+      readerTravelAccumRef.current = 0
+    }
+    lastUserScrollAtRef.current = now
+    lastHardInputAtRef.current = now
     // Only a confirmed upward input arms the clamp-release stamp — a
     // directionless grab or a downward input must not disable the clamp
     // guard (see lastUpwardInputAtRef).
-    if (dir === 'up') lastUpwardInputAtRef.current = performance.now()
-    if (dir === 'up' || dir === 'down') lastDirectionalInputAtRef.current = performance.now()
+    if (dir === 'up') lastUpwardInputAtRef.current = now
+    if (dir === 'up' || dir === 'down') lastDirectionalInputAtRef.current = now
     // A scrollbar grab arms its own hold (see lastGrabInputAtRef); it is still
     // directionless for the clamp guard above.
-    if (dir === 'grab') lastGrabInputAtRef.current = performance.now()
-  }, [])
+    if (dir === 'grab') lastGrabInputAtRef.current = now
+    // THE RE-ENGAGE THE SCROLL HANDLER CANNOT SEE. A released reader the
+    // growth clamped flush is at the scroller's maximum: dragging on raises no
+    // scroll event, so `onFollowScroll` never runs again for this gesture and
+    // follow stays off until they jump to latest or scroll up and back down.
+    // The input keeps arriving, though, and it is the same evidence the
+    // handler's bottom branch judges, so ask the same resolver with the same
+    // accumulators rather than spell the arrival rule a second time. With no
+    // scroll event the position is neutral (`prevScrollTop === scrollTop`);
+    // the resolver's bottom branch takes the live downward intent as the move
+    // and applies its own arrival test, and away from the bottom its band
+    // branch returns `stick` (off) for a neutral position. Re-arm with the
+    // baseline the handler would have set for a reader who follows from here.
+    if (intent > 0 && el && followOutput && !stickRef.current) {
+      const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+      const reengage = resolveUserScrollStick({
+        stick: false,
+        followOutput,
+        scrollTop: el.scrollTop,
+        prevScrollTop: el.scrollTop,
+        geom,
+        viewportGrowth: viewportGrowthAccumRef.current,
+        readerTravel: readerTravelAccumRef.current,
+        readerIntent: readerIntentAccumRef.current,
+        gestureStartGap: gestureStartGapRef.current,
+        upwardInputWithinSettle: now - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
+      })
+      if (reengage) {
+        stickRef.current = true
+        lastWriteTopRef.current = el.scrollTop
+        lastWriteClientHRef.current = el.clientHeight
+      }
+    }
+  }, [followOutput])
 
   // ---- The single chokepoint for programmatic scroll writes ----
   //
@@ -326,6 +470,11 @@ export function useFollowState(followOutput: boolean): FollowState {
     lastScrollEventAtRef,
     lastScrollClientHRef,
     lastObservedTopRef,
+    viewportGrowthAccumRef,
+    readerTravelAccumRef,
+    readerIntentAccumRef,
+    gestureStartGapRef,
+    lastReaderScrollAtRef,
     pinCascadeUntilRef,
     detachSmoothAbort,
     releaseFollowBaseline,
@@ -377,6 +526,11 @@ export function usePinning<T>(ctx: {
     lastScrollEventAtRef,
     lastScrollClientHRef,
     lastObservedTopRef,
+    viewportGrowthAccumRef,
+    readerTravelAccumRef,
+    readerIntentAccumRef,
+    gestureStartGapRef,
+    lastReaderScrollAtRef,
     pinCascadeUntilRef,
     detachSmoothAbort,
     releaseFollowBaseline,
@@ -584,6 +738,60 @@ export function usePinning<T>(ctx: {
     // intent (see lastScrollEventAtRef): from here on the position IS the
     // reader's answer, and the decisions below read it.
     lastScrollEventAtRef.current = performance.now()
+    // Self-scroll pin writes and the frames of a smooth glide are excluded
+    // from every reader-activity signal below: our own writes are not the
+    // reader's travel, and the box's change across one of our events is not
+    // part of any gesture of theirs -- only the READER's activity counts
+    // toward the re-engage split and keeps a gesture in flight.
+    const readerMove = !smoothPinActiveRef.current && !isSelfScroll(geom.scrollTop, lastWriteTopRef.current)
+    // A gap longer than the settle window since the READER's last scroll
+    // event means they rested, and a fresh gesture starts from zero. Measured
+    // from their events alone (see lastReaderScrollAtRef): a streaming turn's
+    // pins arrive every few frames and must not keep a gesture open.
+    const scrollNow = performance.now()
+    const gestureLapsed = scrollNow - lastReaderScrollAtRef.current > SCROLL_SETTLE_MS
+    // Fold this event's viewport delta into the gesture's running growth
+    // (see viewportGrowthAccumRef). Measured against the height as of the
+    // previous SCROLL event, not the ResizeObserver's, because the resize
+    // and the clamp it causes are separate events and the observer may run
+    // first. Growth that landed WHILE the reader rested is not in that delta:
+    // the ResizeObserver's viewport branch (measurement.ts) re-baselines
+    // lastScrollClientHRef when the box changes with no reader scroll event
+    // in the window, so what is left here is the growth of this gesture's own
+    // frames. Only a reader event contributes; across one of our own events
+    // the delta is dropped (the baseline still moves below), never carried
+    // forward.
+    const growthDelta =
+      readerMove && lastScrollClientHRef.current > 0 ? geom.clientHeight - lastScrollClientHRef.current : 0
+    // A rest longer than the settle window ends the previous gesture, so the
+    // total restarts from THIS event's delta rather than adding to a stale
+    // one.
+    viewportGrowthAccumRef.current = gestureLapsed ? growthDelta : viewportGrowthAccumRef.current + growthDelta
+    // The reader's downward travel this gesture (see readerTravelAccumRef).
+    // A first event on a fresh scroller has no direction reference, and an
+    // engine clamp or an upward move only ever lowers scrollTop, so each of
+    // those adds nothing.
+    const travelDelta =
+      readerMove && lastObservedTopRef.current >= 0 ? Math.max(0, geom.scrollTop - lastObservedTopRef.current) : 0
+    readerTravelAccumRef.current = gestureLapsed ? travelDelta : readerTravelAccumRef.current + travelDelta
+    if (gestureLapsed) {
+      // A gesture the reader's hand opened has its first input stamped within
+      // the window (the intent listeners fire before this event) and
+      // `noteHardInput` has already started the intent total and the gap for
+      // it. Anything else starting a gesture here -- the engine's clamp, iOS
+      // momentum outliving the window -- carries no input of theirs, so an
+      // intent total left over from an earlier gesture must not be read as
+      // this one's.
+      if (scrollNow - lastHardInputAtRef.current > SCROLL_SETTLE_MS) {
+        readerIntentAccumRef.current = 0
+        gestureStartGapRef.current = Number.POSITIVE_INFINITY
+      }
+      // The gap the gesture set out to close: this event's live distance plus
+      // the approach the event itself already made (the reader's travel and
+      // the box's growth both shorten it). Overwrites the input-time seed,
+      // which could not see this event's motion.
+      if (readerMove) gestureStartGapRef.current = distanceFromBottom(geom) + travelDelta + Math.max(0, growthDelta)
+    }
     // Only a genuine USER scroll updates stick. Our own programmatic pins
     // fire scroll events too; isSelfScroll filters them out so they never
     // flip stick. (Releasing on user scroll-up also happens synchronously
@@ -623,6 +831,8 @@ export function usePinning<T>(ctx: {
         smoothPinActiveRef.current = false
         lastUserScrollAtRef.current = performance.now()
         lastHardInputAtRef.current = lastUserScrollAtRef.current
+        // The grab is the reader's hand on the scroller: it opens a gesture.
+        lastReaderScrollAtRef.current = lastUserScrollAtRef.current
         // scrollTop moving backward against the animation IS a confirmed
         // upward gesture, so it also arms the clamp-release stamp.
         lastUpwardInputAtRef.current = lastUserScrollAtRef.current
@@ -650,15 +860,26 @@ export function usePinning<T>(ctx: {
         scrollTop: el.scrollTop,
         prevScrollTop: lastObservedTopRef.current,
         geom,
-        // How much viewport came BACK since the previous scroll event. A
+        // How much viewport came BACK across this gesture's scroll events. A
         // deletion shrinks the composer, this grows, the maximum scrollTop
         // drops, and the engine clamps a near-bottom reader to the end with no
         // write to see. Without this the clamp reads as the reader returning to
         // the bottom and re-arms follow for someone who never touched it.
-        viewportGrowth:
-          lastScrollClientHRef.current > 0
-            ? geom.clientHeight - lastScrollClientHRef.current
-            : 0,
+        // Accumulated rather than per event so a collapse animated over
+        // several frames is credited in full (see viewportGrowthAccumRef).
+        viewportGrowth: viewportGrowthAccumRef.current,
+        // The reader's own downward travel over the same gesture, so an
+        // arrival inside the re-engage band is credited to whichever of the
+        // two -- the reader or the box's growth -- closed more of the gap
+        // (see readerTravelAccumRef).
+        readerTravel: readerTravelAccumRef.current,
+        // The same travel as the reader ASKED for it, before the engine clamped
+        // the answer at the scroller's maximum, and the gap the gesture set out
+        // to close (see readerIntentAccumRef / gestureStartGapRef): a drag the
+        // growth stopped short is still the reader's when its own size covers
+        // the growth or the whole gap.
+        readerIntent: readerIntentAccumRef.current,
+        gestureStartGap: gestureStartGapRef.current,
         // An UPWARD hardware input stamped within the settle window is proof
         // the reader scrolled up. The intent listeners stamp its direction
         // BEFORE this scroll event dispatches, so a landing at the bottom
@@ -693,6 +914,19 @@ export function usePinning<T>(ctx: {
       // to stamp here. `stick` and `lastWriteTop` already treat the clamp as
       // ours; the gate now agrees with them.
       if (!layoutClamp) lastUserScrollAtRef.current = performance.now()
+      // The gesture clock the growth and travel totals lapse on answers a
+      // different question -- is the reader's HAND on the scroller? -- and is
+      // gated on their input, not on `stick`. `layoutClamp` requires follow to
+      // be armed, so a RELEASED reader's own engine clamp (the growth dropping
+      // the maximum under someone parked near the bottom, no finger near the
+      // screen) fell through it and was stamped as a gesture: the clamp's
+      // growth was then charged to their next flick down inside the window,
+      // and refused it. A landing flush at the bottom is the reader's only when
+      // an input of theirs is in the window; any other flush landing is the
+      // engine's whatever `stick` says. Landings anywhere else are theirs as
+      // before -- a clamp only ever lands flush.
+      const engineClamp = clampedAtBottom && performance.now() - lastHardInputAtRef.current > SCROLL_SETTLE_MS
+      if (!engineClamp) lastReaderScrollAtRef.current = performance.now()
       // Re-baseline the self-scroll reference to where this event left a reader
       // whose follow is still armed.
       //
@@ -725,6 +959,7 @@ export function usePinning<T>(ctx: {
     followOutput, pinAuto, detachSmoothAbort, releaseFollowBaseline,
     smoothPinActiveRef, lastWriteTopRef, prevSmoothTopRef, lastUserScrollAtRef, lastHardInputAtRef,
     lastUpwardInputAtRef, lastScrollEventAtRef, stickRef, lastObservedTopRef, lastScrollClientHRef, lastWriteClientHRef,
+    viewportGrowthAccumRef, readerTravelAccumRef, readerIntentAccumRef, gestureStartGapRef, lastReaderScrollAtRef,
   ])
 
   const followResizeBatch = useCallback((batch: ResizeBatch) => {

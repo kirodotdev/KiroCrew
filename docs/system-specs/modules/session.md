@@ -313,7 +313,13 @@ persistence alone cannot claim application.
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight
 background work. It is:
 
-- **Created on startup** by `start_pool()` alongside the warm pool
+- **Created on startup** by `start_pool()` alongside the warm pool. Before the
+  provider factory runs, `_ensure_background` awaits
+  `agent_discovery.warm_agent_specs()` (one `parsed_agent_specs` parse on
+  `mc-discovery`, never raises) so the factory's synchronous, on-loop model lookup
+  finds a warm snapshot and `_bg` is created on its agent's own pin rather than on
+  `agent.model`; the lookup itself touches no file on the loop (see
+  `_resolve_named_agent_model` in `config.md`)
 - **Never expired** by idle cleanup (`_expire_idle` skips it)
 - **Serialized** by the per-session semaphore (one background task at a time)
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
@@ -1372,7 +1378,7 @@ against sweep completeness, and are torn down at `close_all`.
 | Method | Purpose |
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm + background sessions. `blocking=False` for non-blocking mode. |
-| `get_or_create(key, agent=None, approval_policy="", speculative=False, speculative_resume=False)` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
+| `get_or_create(key, agent=None, approval_policy="", speculative=False, speculative_resume=False, start_priority=BACKGROUND)` | Returns `(LLMProvider, is_new, resumed)`. `start_priority` orders a cold start in the start queues; only a caller a person is waiting on passes FOREGROUND ([acp-client](acp-client.md) § Session-start gate). Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. A load the provider would replace with a fresh session plus replay (Tool Search on, kiro backend, direct dashboard key — `resume_takes_tool_search_replay`, providers.md → Native-resume compatibility) never reaches this call speculatively: `chat_runner._eager_spawn` reads that predicate first and leaves the slot to its first turn, because such a load can only come back `resumed=False` and be refused after a full spawn. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
 | `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"compact_unsupported"` (the provider names a backend outside `ACP_BACKENDS_COMPACT`, so no `/compact` is dispatched and no semaphore is taken — checked AFTER the threshold so a declined backend keeps its per-turn usage log, #7812), `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
@@ -1679,8 +1685,9 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
   write. It matters more here than elsewhere: a periodic save is a full metadata
   rebuild and does not request the `rows_only` deferral that keeps another
   holder's folder, title and tag.
-  That in-lock refusal keeps the write OWED (`_keep_owed_after_refusal`), for the
-  reason its own docstring gives: `flush_slot_now` clears `_dirty` on any return
+  That in-lock refusal keeps the write OWED (`_keep_owed_after_refusal`, kept with
+  the save's other refusal rules in `dashboard/slot_persistence/write_guards.py`),
+  for the reason its own docstring gives: `flush_slot_now` clears `_dirty` on any return
   that did not raise, so a guard refusing without re-arming erases the only
   in-memory witness of an edit it never wrote. An in-place edit has no
   substitute witness — the popped slot is outside the registry the periodic pass
@@ -2441,7 +2448,8 @@ flow) diverged from their sanitized filename: after a gateway restart,
 producing duplicate sidebar sessions backed by one transcript.
 `restore_open_slots()` and `_rehydrate_slot_from_history()` apply the same
 fold on read so pre-fix snapshots carrying both key forms self-heal (the
-second form hits the dedup guard). When normalization changes the name, the
+second form hits the dedup guard); the open-tab read screens and folds each key
+through `_sanitize_open_slot_key` (`dashboard/slot_persistence/restore_inputs.py`). When normalization changes the name, the
 original pretty form is preserved as the slot's initial title
 (redaction-scrubbed, non-pinned so auto-title can still override).
 
@@ -2735,7 +2743,10 @@ so absence clears it.
   separately, the two halves could commit a file showing neither the entry nor
   its row. A crash between the drain and the save loses the row as well, so a
   replayed entry is a prompt the transcript never recorded — never a second copy
-  of one it did.
+  of one it did. The pairing and the in-lock committed-witness refusal are the
+  save's guards in `dashboard/slot_persistence/write_guards.py`
+  (`paired_window_snapshot`, `_queue_snapshot_is_stale`); the value rides the line
+  that `metadata_line.build_full_line` folds.
 - **Restored entries are handed back as queue CARDS, not dispatched.** Nothing
   drains an idle slot on boot, so the user sends, edits or deletes them. This is
   the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
@@ -3644,9 +3655,13 @@ a trust root on its own; publication therefore also writes a
 - **Consumers**: STRICT identity resolvers accept the direct
   `KIROCREW_HOST_PID` → mapping lookup only via
   `session_pid_sig.verify_session_pid`, which fails closed to `""` on a
-  missing/short key, missing files, or MAC mismatch. Their remaining callers
-  are the computer-use MCP tools (`mcp_computer.py`, for audit attribution)
-  and the dashboard messaging-identity path (`dashboard/handlers/messaging.py`).
+  missing/short key, missing files, or MAC mismatch, and never raises: the MAC
+  is compared as bytes, so a sidecar whose text is not a hex MAC (non-ASCII
+  included) is a mismatch. A `str` pid the path conversion refuses (a NUL, an
+  unencodable surrogate) is a missing file; any other malformed pid reaches the
+  MAC and is a mismatch. Their remaining callers are the computer-use MCP tools
+  (`mcp_computer.py`, for audit attribution) and the dashboard
+  messaging-identity path (`dashboard/handlers/messaging.py`).
   The former state-mutating session-bound tools that resolved identity here —
   `monitor_start`, `monitor_update`, `autonudge_stop`, `set_project` (plus
   `suggest_followup` and `ask_question`) — became STATELESS directive-return
@@ -4389,7 +4404,13 @@ handshakes, matching worker-pool `max_starting=min(workers, 2)`. Authoring,
 interactive, background, shared-runtime, and unpooled callers therefore share the
 same expensive-start bound even when they bypass this manager or a worker pool.
 Queued cancellation returns the permit, and runtime startup retains its existing
-subprocess cleanup on cancellation or failure.
+subprocess cleanup on cancellation or failure. Both queues are ordered by start
+priority: `get_or_create(..., start_priority=)` names it and defaults to
+BACKGROUND (rule: `kiro_crew.start_priority`). `_start_sem`
+(`session_allocation.new_cold_start_semaphore`) carries a reserve on top of the
+background width that only a FOREGROUND start may hold, and the identity sweep's
+barrier is `_start_sem.drain()`. The claimers, the guarantee and its bounds:
+[acp-client](acp-client.md) § Session-start gate.
 
 **Parallel step throttling**: TaskRunner limits concurrent step sessions
 to `max_parallel_steps` (default 2) via `asyncio.Semaphore`. Cold starts

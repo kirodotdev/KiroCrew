@@ -613,6 +613,8 @@ class WeComTransport(MessagingTransport):
         self.note_warm_chat(inbound.userid)
         if self._dispatch is not None:
             try:
+                # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+                inbound.person_origin = True
                 await self._dispatch(inbound)
             except BaseException:
                 # The window records "delivered", and a turn that never completed was

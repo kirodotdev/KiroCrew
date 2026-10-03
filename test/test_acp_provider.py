@@ -846,6 +846,36 @@ class TestStartKiroRuntimeResume:
         assert loaded_sid == "abc-123"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("session_key", "resolved", "expected"),
+        [
+            # No key is foreground by itself: a provider started with no priority set
+            # (outside SessionManager) is BACKGROUND, whatever key it serves.
+            ("dashboard:chat-1-1785445181", None, "BACKGROUND"),
+            ("subagent:abc123", None, "BACKGROUND"),
+            # The session layer's priority reaches both queues.
+            ("dashboard:chat-1-1785445181", "FOREGROUND", "FOREGROUND"),
+            ("cron:job-1", "FOREGROUND", "FOREGROUND"),
+            ("dashboard:chat-1-1785445181", "BACKGROUND", "BACKGROUND"),
+        ],
+    )
+    async def test_the_start_priority_reaches_both_start_queues(
+        self, session_key, resolved, expected
+    ):
+        """The spawn admission and the session/new gate are told one priority: the
+        one the session layer set on the provider for this start."""
+        from kiro_crew.start_priority import StartPriority
+
+        provider = self._kiro_provider()
+        provider._client._session_key = session_key
+        if resolved is not None:
+            provider.start_priority = StartPriority[resolved]
+        _handle, runtime = await self._run_start(provider, "", file_exists=True)
+        want = StartPriority[expected]
+        assert runtime.spawn.await_args.kwargs["start_priority"] is want
+        assert runtime.create_session.await_args.kwargs["start_priority"] is want
+
+    @pytest.mark.asyncio
     async def test_resume_skipped_when_transcript_missing(self):
         provider = self._kiro_provider()
         _handle, runtime = await self._run_start(provider, "stale-sid", file_exists=False)
@@ -922,6 +952,62 @@ class TestStartKiroRuntimeResume:
 
         # The orphaned runtime was killed exactly once before the raise propagated.
         mock_runtime.kill.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_slow_cleanup_drain_neither_masks_nor_replaces_the_setup_failure(self, caplog):
+        # The field log for a Windows host that kept failing session setup
+        # carried only the cleanup kill's drain traceback, never the failure
+        # that asked for the kill. The original failure is what the caller
+        # gets, and it is in the log at WARNING; a cleanup drain that is still
+        # running is neither raised nor allowed to bury it.
+        import logging
+
+        from test_update_provider import _UNALLOCATABLE_PID
+
+        from kiro_crew import platform_compat
+
+        provider = self._kiro_provider(model="auto")
+        provider._client._resume_session_id = ""
+
+        mock_runtime = MagicMock()
+        mock_runtime.pid = _UNALLOCATABLE_PID
+        mock_runtime.spawn = AsyncMock()
+        mock_runtime.kill = AsyncMock(
+            side_effect=platform_compat.WindowsTreeDrainPending(
+                root_pid=_UNALLOCATABLE_PID, pending=2
+            )
+        )
+        mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
+        mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        mock_runtime.settle_stderr = AsyncMock()
+        # Backend-authored text can carry a line break and a terminal escape;
+        # neither may reach the log line, which must stay one line.
+        mock_runtime.create_session = AsyncMock(
+            side_effect=RuntimeError(
+                "session limit reached\n21:00:00 ERROR forged line \x1b[31mred"
+            )
+        )
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.providers.acp.AcpSessionProvider"),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.providers.acp"),
+        ):
+            with pytest.raises(RuntimeError, match="session limit reached"):
+                await provider._start_kiro_runtime()
+
+        mock_runtime.kill.assert_awaited_once()
+        setup = [
+            r
+            for r in caplog.records
+            if r.name == "kiro_crew.providers.acp" and "session limit reached" in r.getMessage()
+        ]
+        assert len(setup) == 1, [r.getMessage() for r in caplog.records]
+        assert setup[0].levelname == "WARNING"
+        assert str(_UNALLOCATABLE_PID) in setup[0].getMessage()
+        assert "RuntimeError" in setup[0].getMessage()
+        assert "\n" not in setup[0].getMessage()
+        assert "\x1b" not in setup[0].getMessage()
 
     @pytest.mark.asyncio
     async def test_a_cancel_during_the_startup_settle_reaches_the_caller(self):
@@ -1106,10 +1192,23 @@ class TestFixBDeadRuntimeRespawn:
         return provider
 
     @pytest.mark.asyncio
-    async def test_dead_runtime_respawned_and_create_session_on_new(self):
+    @pytest.mark.parametrize(
+        ("session_key", "expected"),
+        [
+            ("dashboard:chat-1-1785445181", "FOREGROUND"),
+            ("slack:C1:1700000000.000100", "FOREGROUND"),
+            ("subagent:abc123", "BACKGROUND"),
+        ],
+    )
+    async def test_dead_runtime_respawned_and_create_session_on_new(self, session_key, expected):
         """When runtime.is_alive() returns False after failed resume,
-        a new runtime is spawned and create_session is called on it."""
+        a new runtime is spawned and create_session is called on it -- and the
+        respawn takes the same start priority as the first spawn."""
+        from kiro_crew.start_priority import StartPriority
+
         provider = self._kiro_provider()
+        provider._client._session_key = session_key
+        provider.start_priority = StartPriority[expected]
 
         # First runtime: spawns OK but dies during resume
         dead_runtime = MagicMock()
@@ -1160,6 +1259,10 @@ class TestFixBDeadRuntimeRespawn:
         # create_session called on the NEW runtime (not the dead one)
         new_runtime.create_session.assert_awaited_once()
         dead_runtime.create_session.assert_not_called()
+        want = StartPriority[expected]
+        assert dead_runtime.spawn.await_args.kwargs["start_priority"] is want
+        assert new_runtime.spawn.await_args.kwargs["start_priority"] is want
+        assert new_runtime.create_session.await_args.kwargs["start_priority"] is want
 
 
 class TestLoadSessionWithRetry:

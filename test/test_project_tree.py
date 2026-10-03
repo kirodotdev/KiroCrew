@@ -292,12 +292,18 @@ class TestProjectTree:
         assert ls_argv.index("-c") < ls_argv.index("ls-files")
 
     @pytest.mark.asyncio
-    async def test_non_repo_walk_skips_heavy_and_hidden_dirs(self, plain_project, mock_sel):
+    async def test_non_repo_walk_skips_heavy_dirs_and_lists_dot_dirs(self, plain_project, mock_sel):
+        # Dot-directories (``.worktrees``) are walked; the skip set
+        # (``.git``, ``.kiro``, ``node_modules``, ...) is not.
         plain = plain_project
         (plain / "node_modules" / "dep").mkdir(parents=True)
         (plain / "node_modules" / "dep" / "index.js").write_text("x")
-        (plain / ".hidden").mkdir()
-        (plain / ".hidden" / "secret.txt").write_text("x")
+        (plain / ".git").mkdir()
+        (plain / ".git" / "HEAD").write_text("x")
+        (plain / ".kiro").mkdir()
+        (plain / ".kiro" / "agent.json").write_text("{}")
+        (plain / ".worktrees" / "x").mkdir(parents=True)
+        (plain / ".worktrees" / "x" / "a.txt").write_text("x")
         (plain / "docs").mkdir()
         (plain / "docs" / "readme.md").write_text("x")
         (plain / "top.txt").write_text("x")
@@ -305,7 +311,97 @@ class TestProjectTree:
             resp = await client.get(f"/api/project/tree?path={plain}")
             data = await resp.json()
         assert data["repo"] is False
-        assert sorted(data["paths"]) == ["docs/readme.md", "top.txt"]
+        assert sorted(data["paths"]) == [".worktrees/x/a.txt", "docs/readme.md", "top.txt"]
+        assert ".worktrees/x" in data["directories"]
+        assert ".git" not in data["directories"]
+        assert ".kiro" not in data["directories"]
+
+    @pytest.mark.asyncio
+    async def test_non_repo_walk_drops_sensitive_entries_at_any_depth_under_a_dot_dir(
+        self, plain_project, mock_sel
+    ):
+        # A fenced store can sit one level below a benign dot-directory
+        # (``.config/gcloud``, ``.docker/config.json``): every entry under a
+        # dot-directory is checked, not only the top-level name.
+        plain = plain_project
+        (plain / ".creds").mkdir(parents=True)
+        (plain / ".creds" / "token").write_text("x")
+        (plain / ".config" / "gcloud").mkdir(parents=True)
+        (plain / ".config" / "gcloud" / "key").write_text("x")
+        (plain / ".config" / "app.toml").write_text("x")
+        (plain / ".docker").mkdir()
+        (plain / ".docker" / "config.json").write_text("x")
+        (plain / "top.txt").write_text("x")
+        fenced = {
+            os.path.normcase(os.path.realpath(plain / rel))
+            for rel in (".creds", ".config/gcloud", ".docker/config.json")
+        }
+
+        def is_sens(p: str) -> bool:
+            return os.path.normcase(p) in fenced
+
+        with patch(
+            "kiro_crew.dashboard.handlers.files.is_sensitive_resolved_path", side_effect=is_sens
+        ):
+            async with TestClient(TestServer(_make_app(str(plain)))) as client:
+                resp = await client.get(f"/api/project/tree?path={plain}")
+                data = await resp.json()
+        assert sorted(data["paths"]) == [".config/app.toml", "top.txt"]
+        assert data["directories"] == [".config", ".docker"]
+        # ``.docker`` holds only a fenced file, so it is hidden-only, not empty.
+        assert data["hiddenOnlyDirectories"] == [".docker"]
+
+    @pytest.mark.asyncio
+    async def test_non_repo_walk_fences_a_project_rooted_inside_a_dot_dir(
+        self, plain_project, mock_sel
+    ):
+        # A project whose root is itself under a dot-directory (``~/.config``)
+        # has no dot in its relative paths; the fence reads the real path.
+        project = plain_project.parent / ".cfg"
+        (project / "gcloud").mkdir(parents=True)
+        (project / "gcloud" / "key").write_text("x")
+        (project / "app.toml").write_text("x")
+        fenced = {os.path.normcase(os.path.realpath(project / "gcloud"))}
+
+        def is_sens(p: str) -> bool:
+            return os.path.normcase(p) in fenced
+
+        with patch(
+            "kiro_crew.dashboard.handlers.files.is_sensitive_resolved_path", side_effect=is_sens
+        ):
+            async with TestClient(TestServer(_make_app(str(project)))) as client:
+                resp = await client.get(f"/api/project/tree?path={project}")
+                data = await resp.json()
+        assert data["repo"] is False
+        assert data["paths"] == ["app.toml"]
+        assert data["directories"] == []
+
+    @pytest.mark.asyncio
+    async def test_non_repo_walk_lists_a_junction_as_a_link_and_never_walks_it(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        # A Windows junction is no symlink to ``os.walk``, which would descend
+        # it; the walk asks ``is_link_or_junction`` and prunes it instead.
+        from kiro_crew import platform_compat
+
+        plain = plain_project
+        junction = plain / ".worktrees" / "j"
+        junction.mkdir(parents=True)
+        (junction / "outside.txt").write_text("x")
+        (plain / "top.txt").write_text("x")
+        target = os.path.realpath(junction)
+        real = platform_compat.is_link_or_junction
+
+        def is_link(path) -> bool:
+            return os.path.realpath(os.fspath(path)) == target or real(path)
+
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", is_link)
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+        assert data["paths"] == ["top.txt"]
+        assert data["linkedDirectories"] == [".worktrees/j"]
+        assert data["hiddenOnlyDirectories"] == []
 
     @pytest.mark.asyncio
     async def test_redaction_collision_paths_stay_distinct(self, repo, mock_sel):
@@ -478,22 +574,22 @@ class TestProjectTree:
     async def test_walk_reports_directories_left_childless_by_its_own_filter(
         self, plain_project, mock_sel
     ):
-        """A folder holding ONLY entries the walk drops (dot-directories, tooling
+        """A folder holding ONLY entries the walk drops (``.git``, tooling
         caches) comes back as a directory row with nothing beneath it, exactly
         like a folder that is empty on disk. The tree draws a state row under a
         childless folder, and that row may only call the folder empty when it
         is: ``hiddenOnlyDirectories`` names the ones that are not.
         """
         plain = plain_project
-        (plain / "_bg" / ".kiro").mkdir(parents=True)
-        (plain / "_bg" / ".kiro" / "agent.json").write_text("{}")
+        (plain / "_bg" / ".git").mkdir(parents=True)
+        (plain / "_bg" / ".git" / "HEAD").write_text("x")
         (plain / "caches" / "node_modules").mkdir(parents=True)
         (plain / "empty").mkdir()
         # A hidden entry beside a listed file or a kept subfolder is not the
         # reported case: that folder has rows beneath it.
-        (plain / "mixed" / ".hidden").mkdir(parents=True)
+        (plain / "mixed" / ".git").mkdir(parents=True)
         (plain / "mixed" / "kept.txt").write_text("x")
-        (plain / "nested" / ".hidden").mkdir(parents=True)
+        (plain / "nested" / ".git").mkdir(parents=True)
         (plain / "nested" / "sub").mkdir()
 
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
@@ -654,7 +750,7 @@ class TestProjectTree:
     ):
         """The hidden-only rule must judge the project root by the same test as
         every folder beneath it. A project directory whose top level holds only
-        entries the walk drops (here ``.kiro/`` and a ``node_modules/`` cache)
+        entries the walk drops (here ``.git/`` and a ``node_modules/`` cache)
         yields no file and no kept subdirectory, so the payload is
         ``paths == [] and directories == []`` -- the empty-workspace shape --
         and the dashboard would paint "No files in this workspace yet" over a
@@ -664,8 +760,8 @@ class TestProjectTree:
         as an unreadable root is named in ``unreadableDirectories``.
         """
         plain = plain_project
-        (plain / ".kiro").mkdir(parents=True)
-        (plain / ".kiro" / "agent.json").write_text("{}")
+        (plain / ".git").mkdir(parents=True)
+        (plain / ".git" / "HEAD").write_text("x")
         (plain / "node_modules" / "dep").mkdir(parents=True)
 
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
@@ -710,7 +806,7 @@ class TestProjectTree:
         longer matches its own redacted row, so the folder would be called empty.
         """
         plain = plain_project
-        (plain / "AKIAIOSFODNN7EXAMPLE" / ".kiro").mkdir(parents=True)
+        (plain / "AKIAIOSFODNN7EXAMPLE" / ".git").mkdir(parents=True)
 
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
             resp = await client.get(f"/api/project/tree?path={plain}")

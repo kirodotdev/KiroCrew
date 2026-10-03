@@ -850,10 +850,21 @@ def _consolidate_cmd(args) -> None:
                     print(f"  {key}: no unconsolidated messages, skipping")
                     continue
                 print(f"  {key}: consolidating {count} messages...")
-                if await consolidator.consolidate_now(key):
-                    print(f"  {key}: done ✓")
-                else:
+                if not await consolidator.consolidate_now(key):
                     print(f"  {key}: skipped (consolidation retry backoff)")
+                    continue
+                # consolidate_now drains the tail over as many bounded passes as
+                # it takes, but it can stop short — a backoff armed part-way
+                # through, or a span it could not advance over. Report what the
+                # transcript says rather than the call's success flag: this
+                # process exits here, with no idle sweep behind it to finish a
+                # remainder, so a bare "done" would be the last word on messages
+                # nothing has read.
+                left = conv_log.unconsolidated_count(key)
+                if left:
+                    print(f"  {key}: partially consolidated, {left} message(s) remain")
+                else:
+                    print(f"  {key}: done ✓")
             except Exception:
                 logger.debug("consolidate (or SEL) failed for %s", key, exc_info=True)
 
@@ -3287,6 +3298,15 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     if args.command == "chat":
         _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
+        # The gateway's status lines are plain print() calls. Off a terminal
+        # (systemd journal, launchd file, the Desktop supervisor's log fd, a
+        # detached gateway's own gateway.log) CPython block-buffers stdout, so
+        # they surface at exit, stamped with the stop time, or never after a
+        # kill or an in-app os.execv. One reconfigure here, before the first
+        # status print, covers every launcher; a terminal is already
+        # line-buffered and is left alone. Gateway-only: no other subcommand
+        # is long-lived under a service manager.
+        platform_compat.ensure_line_buffered_stdout()
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
         # every subcommand incl. the mcp-core/mcp-cron stdio servers, where an

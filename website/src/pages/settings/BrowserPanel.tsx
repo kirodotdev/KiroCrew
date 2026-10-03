@@ -283,7 +283,7 @@ export function BrowserPanel() {
           <SettingsToggle
             label={i18nT('pages.settings.browserPanel.use_builtin_label')}
             configKey="dashboard.use_builtin_browser"
-            description={isElectron ? i18nT('pages.settings.browserPanel.use_builtin_desc') : undefined}
+            hint={isElectron ? i18nT('pages.settings.browserPanel.use_builtin_desc') : undefined}
             describedBy={isElectron ? undefined : webReasonId}
             checked={isElectron ? (dashQ.data?.use_builtin_browser ?? true) : false}
             onChange={setUseBuiltin}

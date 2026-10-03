@@ -1369,6 +1369,44 @@ def cached_agent_specs(
     return rows
 
 
+async def warm_agent_specs(
+    agents_dir: Path | None = None,
+    *,
+    operation: str = "warm_agent_specs",
+    source: str = "unknown",
+) -> None:
+    """Publish the :func:`parsed_agent_specs` snapshot of *agents_dir* from the discovery pool.
+
+    The counterpart to :func:`cached_agent_specs`, as :func:`warm_project_agent_names`
+    is to :func:`cached_project_agent_names`: an async caller awaits this once, and
+    the synchronous, on-loop lookup that follows (``_resolve_named_agent_model``
+    through the provider factory) is a snapshot HIT instead of the cold "no rows
+    yet" answer. Only the scan is offloaded: every ``scandir``, stat and parse runs
+    on ``mc-discovery`` and nothing touches the filesystem on the caller's thread,
+    while the lookup itself stays inline, for the reason
+    :func:`warm_project_agent_names` gives.
+
+    One parse, awaited; no polling and no retry. A snapshot that is already warm
+    costs one ``scandir`` here and no parses. A :func:`clear_list_agents_cache`
+    landing during the parse keeps its rows unpublished (the generation guard), so
+    the lookup then degrades to the cold answer exactly as a concurrent agent write
+    does today; the worker refresh that lookup schedules repairs it.
+
+    *operation*/*source* label the SEL denial trail as :func:`_read_agent_spec`
+    documents; the defaults name this hop truthfully. Best-effort and never raises:
+    failing to warm costs the caller the cold answer and must not break what it is
+    starting.
+    """
+    d = agents_dir or _kiro_agents_dir()
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(),
+            functools.partial(parsed_agent_specs, d, operation=operation, source=source),
+        )
+    except Exception:  # noqa: BLE001 — a warm failure only costs the cold answer
+        logger.debug("Failed to warm the agent spec snapshot for %s", d, exc_info=True)
+
+
 class SkillScopeResolutionError(ValueError):
     """The bound agent has an unavailable skill scope."""
 

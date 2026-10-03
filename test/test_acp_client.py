@@ -5655,6 +5655,66 @@ class TestWaitForCompaction:
         assert result == {"type": "failed", "summary": "error"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("summary", ["", None])
+    async def test_failed_with_empty_summary_carries_the_payload_reason(self, tmp_path, summary):
+        """kiro-cli's ``summary`` is empty on failure, so the wait result carries
+        the reason the payload names -- read by the same extractor the dispatch
+        loop uses -- and a manual /compact names its cause like auto-compaction."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "status": {"type": "failed", "error": "context window exceeded"},
+                "summary": summary,
+            },
+        )
+        client._read_message = AsyncMock(return_value=msg)
+
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result == {"type": "failed", "summary": "context window exceeded"}
+
+    @pytest.mark.asyncio
+    async def test_failed_without_a_reason_reports_the_extractor_fallback(self, tmp_path):
+        """No summary and no reason-bearing key: the result carries the
+        extractor's own generic text, the same line the streaming notice shows."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.client import compaction_failure_detail
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        params = {"status": {"type": "failed"}, "summary": ""}
+        msg = JsonRpcMessage(method=METHOD_COMPACTION_STATUS, params=params)
+        client._read_message = AsyncMock(return_value=msg)
+
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result["type"] == "failed"
+        assert result["summary"] == compaction_failure_detail(params)
+        assert result["summary"].startswith("no reason reported by the agent")
+
+    @pytest.mark.asyncio
+    async def test_failed_with_a_credential_shaped_summary_is_redacted(self, tmp_path):
+        """A backend-echoed failure summary is LLM-influenced text, so the wait
+        result carries it scrubbed -- the same ``redact_text`` the session
+        handle applies -- before the dashboard or a channel mirror shows it."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "status": {"type": "failed"},
+                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+            },
+        )
+        client._read_message = AsyncMock(return_value=msg)
+
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result["type"] == "failed"
+        assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+        assert "[REDACTED: credential]" in result["summary"]
+
+    @pytest.mark.asyncio
     async def test_timeout_returns_timeout_dict(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
         client._read_message = AsyncMock(return_value=None)
@@ -9574,6 +9634,83 @@ class TestIsTransientRawError:
         auth_exc = auth_ei.value
         assert auth_exc.transient is False
         assert "authentication failed" in str(auth_exc).lower()
+
+    def test_context_window_overflow_is_structural_and_non_transient(self):
+        import pytest
+
+        import kiro_crew.acp as acp_package
+        from kiro_crew.acp import transport_errors
+        from kiro_crew.acp.client import AcpError, _raise_acp_error
+
+        error = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": (
+                "The context window overflowed "
+                "(request_id: 3844b25f-d540-4972-9b0b-03ddb5d177c6)"
+            ),
+        }
+        with patch.object(
+            transport_errors,
+            "_is_transient_raw_error",
+            wraps=transport_errors._is_transient_raw_error,
+        ) as classify:
+            with pytest.raises(AcpError) as raised:
+                _raise_acp_error(error)
+
+        exc = raised.value
+        classify.assert_called_once_with(error, None)
+        assert type(exc) is AcpError
+        assert exc.transient is False
+        assert exc.structural_terminal is True
+        assert exc.context_overflow is True
+        assert "Retrying on the same model session will not help" in str(exc)
+        assert "3844b25f-d540-4972-9b0b-03ddb5d177c6" in str(exc)
+        assert not hasattr(acp_client, "AcpContextOverflow")
+        assert not hasattr(acp_package, "AcpContextOverflow")
+
+    def test_context_window_overflow_tag_is_data_field_only(self):
+        from kiro_crew.acp.client import AcpError, _raise_acp_error
+
+        error = {
+            "code": -32603,
+            "message": "The context window overflowed",
+            "data": "opaque error detail",
+        }
+        with pytest.raises(AcpError) as raised:
+            _raise_acp_error(error)
+
+        exc = raised.value
+        assert type(exc) is AcpError
+        assert exc.transient is False
+        assert exc.structural_terminal is False
+        assert exc.context_overflow is False
+
+    def test_context_window_overflow_wording_is_surface_neutral(self):
+        # The formatter cannot tell a first turn from a later one, and
+        # ``subagent_manager/run.py`` appends this text after its own
+        # post-activity reason, so a startup-only claim would contradict the
+        # caller. Both causes and both remedies must be named.
+        from kiro_crew.acp.client import AcpError, _raise_acp_error
+
+        error = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "The context window overflowed (request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0)",
+        }
+        with pytest.raises(AcpError) as raised:
+            _raise_acp_error(error)
+
+        text = str(raised.value)
+        assert "before the turn could run" not in text
+        assert "established conversation" in text
+        assert "accumulated history" in text
+        assert "fresh session" in text
+        assert "always-loaded" in text
+        assert "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0" in text
+        assert raised.value.transient is False
+        assert raised.value.structural_terminal is True
+        assert raised.value.context_overflow is True
 
     def test_acp_error_default_transient_is_none(self):
         from kiro_crew.acp.client import AcpError

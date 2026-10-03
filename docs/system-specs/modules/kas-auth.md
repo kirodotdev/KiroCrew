@@ -355,29 +355,34 @@ access token.
   gap to close but a behaviour deliberately not built (see #9772); the
   pre-existing "expired access token with no refresh token" case, which the probe
   already treats as no usable identity, is left as it is and not extended.
-- The product entry point for the flow is the **Kiro sign-in card** on Developer >
-  Agent Backend (`website/src/pages/developer/KiroSignInCard.tsx`), rendered by
-  `AgentBackendTab` under the backend switch and only while KAS is a backend that
-  switch offers -- the stored identity is consumed by the KAS relay alone, so a
-  build or policy that cannot select KAS has nothing to sign in for. The card
-  embeds the same views `KasLoginGate` renders (`KasLoginEmbedded`, card chrome
-  instead of the scrim + aside door) and adds a signed-in summary (provider,
+- The product entry point for the flow is the **Kiro sign-in** section on Settings >
+  Agent Harness (`website/src/pages/developer/KiroSignInCard.tsx`, `compact`
+  form), rendered by `AgentBackendTab` INSIDE the KAS row's detail and only while
+  KAS is a backend that switch offers -- the stored identity is consumed by the
+  KAS relay alone, so a build or policy that cannot select KAS has nothing to
+  sign in for, and a row that is not KAS has no use for it. The section embeds
+  the same views `KasLoginGate` renders (`KasLoginEmbedded`, card chrome instead
+  of the scrim + aside door; in that chrome the four provider choices are
+  outlined and sit in a two-column grid, none accent-filled, because the detail's
+  own primary button is "Use this agent") and adds a signed-in summary (provider,
   expiry, renewability -- never a token) with sign-out and sign-in-again. It is
   reachable from the chat error row an `AcpAuthRequired` turn produces
   (`chat_utils.AUTH_REQUIRED_KIND` → "Sign in to Kiro", navigating to
-  `KIRO_SIGN_IN_PATH` = `/developer?tab=agent-backend&highlight=key:kiro-sign-in`
+  `KIRO_SIGN_IN_PATH` = `/settings/agent?highlight=key:kiro-sign-in`
   with the colon percent-encoded, from `pages/developer/kiroSignInLink.ts`,
-  whose `highlight` rings the card through `useSettingHighlight`, which the
-  Developer page mounts for exactly this link) and from the KAS remedy
+  whose `highlight` rings the card through the `useSettingHighlight` hook
+  SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
+  is forwarded there by DeveloperPage with the `highlight` kept) and from the KAS remedy
   strings in `agent_sdk/host_auth.py`. Its intro sentence names the backend
   ("Used only by the KAS (kiro-agent) backend") and says Kiro CLI keeps its own
   kiro-cli login, because the card sits under a switch that also lists Kiro
   CLI. It is deliberately NOT on Settings > Overview and not indexed into
-  Settings search: KAS is a Developer Mode preview, and a provider chooser on
-  the landing page read as a required step to every user, first-run installs
-  included. Overview carries only a one-line signpost to the card
-  (`KiroSignInMovedPointer`), rendered while `agent.acp_backend` is `kas`, for
-  the users who read token expiry there. The `/developer` route is always mounted;
-  only its sidebar entry is behind Developer Mode, which a user running KAS
-  turned on to select it. `KasLoginGate` itself is still not mounted at the app
+  Settings search: a provider chooser on the landing page read as a required
+  step to every user, first-run installs included. Overview carries only a
+  one-line signpost to the card (`KiroSignInMovedPointer`), rendered while
+  `agent.acp_backend` is `kas`, for the users who read token expiry there. The
+  switch and card moved from the Developer page (whose sidebar entry is behind
+  Developer Mode) to Settings once first-run setup began offering agents other
+  than Kiro CLI, so a user who set up with one of those can switch agents later
+  without turning on Developer Mode. `KasLoginGate` itself is still not mounted at the app
   root; the full-screen form stays available for that.

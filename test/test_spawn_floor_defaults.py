@@ -463,8 +463,9 @@ async def test_below_the_floor_it_waits_then_starts_and_says_so(monkeypatch, tmp
         await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
         outcomes = [c.kwargs["outcome"] for c in audit.return_value.log_tool_invocation.mock_calls]
         assert outcomes == ["dedicated_start_below_floor"]
-        # The start clock restarted after the wait instead of charging it.
-        assert info._gate_wait_started is None and info._exec_started > 1.0
+        # The start clock was paused for the wait instead of charging it.
+        assert info._gate_wait_started is None and info._exec_started == 1.0
+        assert info._start_queue_wait_ms > 0
     finally:
         await _teardown(mgr)
 

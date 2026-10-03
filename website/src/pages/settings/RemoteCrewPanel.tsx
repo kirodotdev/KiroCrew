@@ -2247,7 +2247,7 @@ export function RemoteCrewPanel() {
           <Card>
             <SettingsToggle
               label={i18nT('pages.settings.remoteCrewPanel.auto_connect')}
-              description={i18nT('pages.settings.remoteCrewPanel.auto_connect_desc')}
+              hint={i18nT('pages.settings.remoteCrewPanel.auto_connect_desc')}
               checked={autoConnect}
               onChange={setAutoConnect}
             />

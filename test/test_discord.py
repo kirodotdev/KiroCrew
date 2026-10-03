@@ -20,6 +20,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from off_loop_helpers import off_loop
 
 import kiro_crew.discord.transport_dispatch as td_mod
 from conftest import CREDENTIAL_STRADDLE_SHAPES, assert_rejected_without_backtracking
@@ -440,6 +441,7 @@ class FakeSessions:
         channel_id: Any = None,
         model: Any = None,
         wait_if_busy: bool = True,
+        start_priority=None,
     ) -> Any:
         self.last_agent = agent
         self.last_model = model
@@ -2814,6 +2816,20 @@ class TestApprovalDecider:
 # ── transport_dispatch.py ────────────────────────────────────────────────
 
 
+def _read_session_log(unit: str) -> list[Any]:
+    """Every entry of *unit*'s session crew log, oldest first.
+
+    Takes the unit's append lock, so a coroutine calls it through ``off_loop``:
+    the eager folder reads the unit on its own thread after each entry, and an
+    acquire on the event-loop thread makes one attempt that such a read refuses.
+    """
+    from kiro_crew.crew_log import projection
+
+    handle = projection.open_session_log(unit)
+    assert handle is not None, f"no crew log for {unit!r}"
+    return list(handle.iter_from(1, known=projection.KNOWN_TYPES))
+
+
 class TestDispatcher:
     def _msg(self, text: str, user: str = "u1", chan: str = "c1") -> InboundMessage:
         return InboundMessage(channel_type="discord", user_id=user, conversation_id=chan, text=text)
@@ -4015,7 +4031,7 @@ class TestDispatcher:
         from aiohttp import web
         from aiohttp.test_utils import make_mocked_request
 
-        from kiro_crew.crew_log import emit, projection
+        from kiro_crew.crew_log import emit
         from kiro_crew.crew_log.resolve import unit_for_session_key
         from kiro_crew.dashboard.handlers import work_ledger as ledger_routes
 
@@ -4059,9 +4075,7 @@ class TestDispatcher:
             body = json.loads(resp.text)
             assert (resp.status, body.get("code")) == (200, None), body
 
-            handle = projection.open_session_log(unit)
-            assert handle is not None
-            entries = list(handle.iter_from(1, known=projection.KNOWN_TYPES))
+            entries = off_loop(_read_session_log, unit)
             opened = [e for e in entries if e.type == "session/opened"]
             assert len(opened) == 1
             assert (opened[0].data["slot"], opened[0].data["agent"]) == (
@@ -4097,7 +4111,7 @@ class TestDispatcher:
         """
         from types import SimpleNamespace
 
-        from kiro_crew.crew_log import emit, projection
+        from kiro_crew.crew_log import emit
         from kiro_crew.dashboard.channel_slots import channel_slot_name
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
@@ -4125,9 +4139,7 @@ class TestDispatcher:
             )
             await d.handle_message(self._msg("hello again"))
             assert emit.flush()
-            handle = projection.open_session_log("acp-tabbed-dm")
-            assert handle is not None
-            entries = list(handle.iter_from(1, known=projection.KNOWN_TYPES))
+            entries = off_loop(_read_session_log, "acp-tabbed-dm")
             assert [e.type for e in entries if e.type == "session/class"] == []
             opened = [e for e in entries if e.type == "session/opened"]
             assert len(opened) == 1
@@ -4203,7 +4215,7 @@ class TestDispatcher:
         Real emitter and writer. The recycle is modelled at its observable seam: the
         mapping still names the predecessor while the provider hands out a new id.
         """
-        from kiro_crew.crew_log import emit, projection
+        from kiro_crew.crew_log import emit
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
@@ -4224,9 +4236,7 @@ class TestDispatcher:
             await d.handle_message(self._msg("and again"))
             assert emit.flush(timeout=5.0)
 
-            handle = projection.open_session_log("acp-gen-2")
-            assert handle is not None
-            entries = list(handle.iter_from(1, known=projection.KNOWN_TYPES))
+            entries = off_loop(_read_session_log, "acp-gen-2")
             opened = [e for e in entries if e.type == "session/opened"]
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-1"}
@@ -4235,7 +4245,7 @@ class TestDispatcher:
             sess.mapped_sid = lambda key: "acp-gen-2"
             await d.handle_message(self._msg("still here"))
             assert emit.flush(timeout=5.0)
-            entries = list(handle.iter_from(1, known=projection.KNOWN_TYPES))
+            entries = off_loop(_read_session_log, "acp-gen-2")
             assert [e.type for e in entries].count("session/opened") == 1
         finally:
             emit.drain_for_shutdown(timeout=2.0)
@@ -4258,7 +4268,7 @@ class TestDispatcher:
         (the permit wait), the concurrent recycle lands during that suspension, and
         the double captures the predecessor as the real boundary does -- at the
         registration, not before the call."""
-        from kiro_crew.crew_log import emit, projection
+        from kiro_crew.crew_log import emit
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
@@ -4292,12 +4302,8 @@ class TestDispatcher:
             await d.handle_message(self._msg("and again"))
             assert emit.flush(timeout=5.0)
 
-            handle = projection.open_session_log("acp-gen-2")
-            assert handle is not None
             opened = [
-                e
-                for e in handle.iter_from(1, known=projection.KNOWN_TYPES)
-                if e.type == "session/opened"
+                e for e in off_loop(_read_session_log, "acp-gen-2") if e.type == "session/opened"
             ]
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-1"}
@@ -4318,7 +4324,7 @@ class TestDispatcher:
         renderer setup, attachment I/O or any other await."""
         import contextlib
 
-        from kiro_crew.crew_log import emit, projection
+        from kiro_crew.crew_log import emit
         from kiro_crew.discord import transport_dispatch as td
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
@@ -4357,12 +4363,8 @@ class TestDispatcher:
             await d.handle_message(self._msg("and again"))
             assert emit.flush(timeout=5.0)
 
-            handle = projection.open_session_log("acp-gen-1")
-            assert handle is not None
             opened = [
-                e
-                for e in handle.iter_from(1, known=projection.KNOWN_TYPES)
-                if e.type == "session/opened"
+                e for e in off_loop(_read_session_log, "acp-gen-1") if e.type == "session/opened"
             ]
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-0"}
@@ -5929,6 +5931,7 @@ class TestDrainSenderIdentity:
                 msg.conversation_id,
                 msg.text,
                 origin=_dc_origin(msg.user_id, msg.conversation_id, thread=msg.thread_id or ""),
+                person_origin=msg.person_origin,
             ), "the fake session must accept a mid-turn enqueue"
         sess._busy = False  # the turn they queued behind has finished
 
@@ -5947,6 +5950,27 @@ class TestDrainSenderIdentity:
         finally:
             d.handle_message = original
         return seen
+
+    @pytest.mark.asyncio
+    async def test_a_drained_turn_carries_its_queued_entries_own_person_flag(self) -> None:
+        """A gateway-built wake (``person_origin=False``) can reach the busy-queue path
+        too, so the drain reads each entry's recorded flag instead of assuming a person:
+        the wake replays without it, a person's message with it, and a collapsed turn
+        holding a person's message is theirs."""
+        from dataclasses import replace
+
+        d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        person = replace(_inbound("mine", user_id="u1", conversation_id="c1"), person_origin=True)
+        wake = _inbound("nudge", user_id="u2", conversation_id="c2")
+        follow_up = replace(person, text="and mine")
+        await self._queue(d, sess, wake, person, follow_up)
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert [(m.text, m.person_origin) for m in seen] == [
+            ("nudge", False),
+            ("mine\n\nand mine", True),
+        ]
 
     @pytest.mark.asyncio
     async def test_the_receipt_counts_only_the_answered_senders_own_deferrals(self) -> None:

@@ -26,6 +26,8 @@ from aiohttp import web
 from backend import routes
 from sage_lib import learning, store
 
+from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import OwnerRequest
+
 
 def _pattern(title: str) -> dict:
     return {"title": title, "scope": "common", "impact": "high",
@@ -49,10 +51,11 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-class _FakeRequest:
+class _FakeRequest(OwnerRequest):
     """Minimal stand-in: the handler reads only the JSON body."""
 
     def __init__(self, body: dict | None = None, bad: bool = False):
+        super().__init__()
         self._body = body or {}
         self._bad = bad
 

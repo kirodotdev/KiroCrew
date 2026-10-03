@@ -133,7 +133,9 @@ class _Sessions:
         self._p = provider
         self.released: list[str] = []
 
-    async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
+    async def get_or_create(
+        self, key: str, *, agent: Any = None, channel_id: Any = None, start_priority=None
+    ) -> Any:
         # is_new=False deliberately: it keeps the turn off the dashboard-surfacing
         # and set_channel paths, neither of which this suite is about.
         return self._p, False, False

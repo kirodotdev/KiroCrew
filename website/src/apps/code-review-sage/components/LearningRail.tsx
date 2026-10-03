@@ -148,7 +148,7 @@ export default function LearningRail() {
                     type="button"
                     onClick={() => setConfirmDelete(ns.name)}
                     aria-label={i18nT('apps.codeReviewSage.components.learningRail.delete_namespace', { name: ns.name })}
-                    className="flex-shrink-0 p-0.5 bg-transparent text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-danger cursor-pointer"
+                    className="flex-shrink-0 p-0.5 bg-transparent text-muted opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 hover:text-danger cursor-pointer"
                   >
                     <Trash2 size={12} />
                   </button>

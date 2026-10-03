@@ -299,4 +299,6 @@ class IMessageTransport(MessagingTransport):
         if self._client.is_own_echo(inbound):
             return
         if self._dispatch is not None:
+            # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+            inbound.person_origin = True
             await self._dispatch(inbound)

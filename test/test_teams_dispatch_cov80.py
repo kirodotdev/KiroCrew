@@ -136,7 +136,7 @@ class _Sessions:
         self.cleared.append(key)
         self.queues.pop(key, None)
 
-    async def get_or_create(self, key, *, agent, channel_id):
+    async def get_or_create(self, key, *, agent, channel_id, start_priority=None):
         return self._p, True, False
 
     def begin_turn(self, key):

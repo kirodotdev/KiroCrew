@@ -42,10 +42,13 @@ WRITE-PERMISSION DECISION (the one this module had to make). Two tiers:
     same button.
 
   * Every LOCAL crew route (crews, crew, work, pause, settings) requires the repo
-    to be CONNECTED but **not** writable. Three reasons, in the order they
-    mattered:
+    to be CONNECTED but **not** writable. Its dashboard caller must also be the
+    dashboard OWNER (``_body_preamble``): a live crew runs under the owner's
+    auto-approve grant, so only the owner may create or steer one. Three reasons
+    for connected-not-writable, in the order they mattered:
       1. Precedent: ``_handle_put_investigation`` is the same shape — per-repo
-         local state, nothing reaches the forge — and is gated on connected only.
+         local state, nothing reaches the forge — and checks owner and connected,
+         never the forge permission.
       2. ``_repo_can_write`` FAILS CLOSED, and these writes are how a crew records
          work it has ALREADY done. Gating them on a remote permission read means a
          network blip leaves a crew holding a dirty worktree with no way to persist
@@ -55,9 +58,9 @@ WRITE-PERMISSION DECISION (the one this module had to make). Two tiers:
          suggest-only there, and a crew that investigates and records what it found
          without pushing is a legitimate configuration. Permissions can also be
          granted later without recreating the crew.
-    The exposure this accepts is bounded and local: a user who can reach the
-    dashboard can create crew records on a repo they cannot write to. Those records
-    cannot mutate the repo — the first forge write refuses.
+    The exposure this accepts is bounded and local: the owner can create crew
+    records on a repo they cannot write to. Those records cannot mutate the repo —
+    the first forge write refuses.
 
 ``crew_store.CrewStoreError`` maps to **409**, never 500: every raise is a
 user-visible condition (a duplicate crew name, a second item trying to enter an

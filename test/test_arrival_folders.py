@@ -790,7 +790,7 @@ async def test_a_refused_placement_records_nothing(tmp_path, monkeypatch):
     assert folder_ids_filed_into(state) == set(), "a refused placement claims no row"
 
 
-async def _refuse_unhide(state, folder_id):
+async def _refuse_unhide(state, folder_id, *, claim_for_person=False):
     """Stand in for a folder deleted between the unlocked check and the locked one."""
     return False
 

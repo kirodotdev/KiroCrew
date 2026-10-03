@@ -25,8 +25,8 @@ on:
       - Fast Gate
       - Build
       - Code Review
-      - Opus 5 Review
-      - GPT 5.6 Review
+      - Opus 5.5 Review
+      - GPT 6.1 Review
       - Design Review
       - UX Review
       - First Principles Review
@@ -881,7 +881,7 @@ jobs:
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
             # on forks: the privileged Stage-2 fork-*-review.yml pipeline fires
             # on CI completion from the default branch and posts a check-run
-            # named exactly like the same-repo lane ("Opus 5 Review", etc.).
+            # named exactly like the same-repo lane ("Opus 5.5 Review", etc.).
             # Read those results from the head SHA's check-runs (checkrun:
             # specs) so a fully-reviewed green fork can reach "passed" instead
             # of being forced to a maintainer-review verdict.
@@ -907,8 +907,8 @@ jobs:
               # triggers the lane -- its newest run + attempt is what "current"
               # means here.
               "checkrun:Internal Content Scan|Internal Content Scan|internal-content-scan-pr-|fast-gate.yml"
-              "checkrun:Opus 5 Review|Opus 5 Review|opus-pr-|fast-gate.yml"
-              "checkrun:GPT 5.6 Review|GPT 5.6 Review|gpt-pr-|fast-gate.yml"
+              "checkrun:Opus 5.5 Review|Opus 5.5 Review|opus-pr-|fast-gate.yml"
+              "checkrun:GPT 6.1 Review|GPT 6.1 Review|gpt-pr-|fast-gate.yml"
               "checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"
               "checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"
               "checkrun:First Principles Review|First Principles Review|first-principles-pr-|fast-gate.yml"
@@ -927,8 +927,8 @@ jobs:
               workflow_specs+=("internal-content-scan-gate.yml|Internal Content Scan")
             fi
             workflow_specs+=(
-              "claude-review.yml|Opus 5 Review"
-              "codex-review.yml|GPT 5.6 Review"
+              "claude-review.yml|Opus 5.5 Review"
+              "codex-review.yml|GPT 6.1 Review"
               "design-review.yml|Design Review"
               "ux-review.yml|UX Review"
               "first-principles-review.yml|First Principles Review"
@@ -1988,8 +1988,8 @@ jobs:
                 "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
                 | jq -rs --arg pr "$PR" --arg fg "$fast_gate" '
                   {"Internal Content Scan": "internal-content-scan-pr-",
-                   "Opus 5 Review": "opus-pr-",
-                   "GPT 5.6 Review": "gpt-pr-",
+                   "Opus 5.5 Review": "opus-pr-",
+                   "GPT 6.1 Review": "gpt-pr-",
                    "Design Review": "design-pr-",
                    "UX Review": "ux-pr-",
                    "First Principles Review": "first-principles-pr-",

@@ -44,7 +44,7 @@ class _FakeBgSession:
 
 
 def _make_app(log: ConversationLog, reply: str, created: list) -> web.Application:
-    async def _get_bg_session():
+    async def _get_bg_session(start_priority=None):
         s = _FakeBgSession(reply)
         created.append(s)
         return s

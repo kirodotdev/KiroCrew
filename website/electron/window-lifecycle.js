@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
-const { createRendererRecovery } = require("./renderer-recovery");
+const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
@@ -657,17 +657,22 @@ function createWindowLifecycle(options) {
     });
 
     // A 403 means the gateway secret may have rotated. Re-enter through the
-    // same local-then-remote token order used at boot.
+    // same local-then-remote token order used at boot. A recovery reload keeps
+    // its `safe=1` through the retry: a bare URL here reopens the remembered
+    // chat, and the crash that chat caused repeats.
+    let retrySafe = false;
     const onNavigate = createTokenRetryHandler(async () => {
       let tokenValue = await mintLocalToken(backendUrl);
       if (!tokenValue) {
         ({ token: tokenValue } = await fetchRemoteToken(port));
       }
       if (tokenValue && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.loadURL(`${backendUrl}?token=${tokenValue}`);
+        const target = `${backendUrl}?token=${tokenValue}`;
+        mainWindow.webContents.loadURL(retrySafe ? withSafeReload(target) : target);
       }
     });
-    mainWindow.webContents.on("did-navigate", (_event, _url, httpCode) => {
+    mainWindow.webContents.on("did-navigate", (_event, url, httpCode) => {
+      retrySafe = hasSafeReload(url);
       onNavigate(httpCode).catch((error) => {
         console.error("Token retry failed:", error);
       });
@@ -728,9 +733,10 @@ function createWindowLifecycle(options) {
             ({ token: tokenValue } = await fetchRemoteToken(port));
           }
           if (mainWindow.isDestroyed()) return;
-          mainWindow.webContents.loadURL(
+          // `safe=1`: do not reopen the chat that may have caused the crash.
+          mainWindow.webContents.loadURL(withSafeReload(
             tokenValue ? `${backendUrl}?token=${tokenValue}` : backendUrl,
-          );
+          ));
         })().catch((error) => {
           glog(`renderer recovery reload failed: ${error && error.message}`);
         });

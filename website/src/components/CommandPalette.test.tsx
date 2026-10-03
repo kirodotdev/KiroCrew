@@ -1138,3 +1138,72 @@ describe('CommandPalette — sub-threshold min-query empty state (issue #1830)',
     expect(screen.queryByText(KEEP_TYPING)).toBeNull()
   })
 })
+
+/**
+ * Dismissing the palette gives focus back to whatever held it when
+ * the palette opened (falling back to the chat composer when that element is
+ * gone). Choosing a row does NOT restore: the chosen action owns focus.
+ */
+describe('CommandPalette — focus restore on close', () => {
+  function outside(tag: 'button' | 'textarea', attrs: Record<string, string> = {}) {
+    const el = document.createElement(tag)
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
+    document.body.appendChild(el)
+    return el
+  }
+  afterEach(() => {
+    document.body.querySelectorAll('[data-test-outside]').forEach(el => el.remove())
+  })
+
+  it('refocuses the element that was focused before the palette opened', async () => {
+    const prev = outside('button', { 'data-test-outside': '' })
+    prev.focus()
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    // The palette's input takes focus on the next frame.
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector('input')))
+
+    rerender(<CommandPalette open={false} onClose={vi.fn()} />)
+
+    expect(document.activeElement).toBe(prev)
+  })
+
+  it('falls back to the chat composer when the previous element is gone', async () => {
+    const composer = outside('textarea', { 'data-test-outside': '', 'data-composer-input': '' })
+    const prev = outside('button', { 'data-test-outside': '' })
+    prev.focus()
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    prev.remove()
+
+    rerender(<CommandPalette open={false} onClose={vi.fn()} />)
+
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('leaves focus alone when nothing was focused before opening', async () => {
+    const composer = outside('textarea', { 'data-test-outside': '', 'data-composer-input': '' })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    rerender(<CommandPalette open={false} onClose={vi.fn()} />)
+
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('does not restore after a row is chosen (its action owns focus)', async () => {
+    const prev = outside('button', { 'data-test-outside': '' })
+    prev.focus()
+    const onClose = vi.fn()
+    const { rerender } = render(<CommandPalette open onClose={onClose} />, { wrapper })
+    await screen.findByText('Recent Session')
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector('input')))
+
+    act(() => H.nav.current?.onChoose?.(0, false))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    rerender(<CommandPalette open={false} onClose={onClose} />)
+
+    expect(document.activeElement).not.toBe(prev)
+  })
+})

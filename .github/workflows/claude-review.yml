@@ -1,4 +1,4 @@
-name: Opus 5 Review
+name: Opus 5.5 Review
 
 # Semantic AI review layer. Checks AUTOSDE rules that cannot be expressed as
 # a grep, PLUS correctness, resource/lifecycle, and other semantic defects
@@ -50,13 +50,13 @@ concurrency:
 jobs:
   claude-review:
     # Model-NAMED check on purpose: this repo names reviewers by their model
-    # ("Opus 5 Review", "GPT 5.6 Review") rather than by vendor/harness. Branch
+    # ("Opus 5.5 Review", "GPT 6.1 Review") rather than by vendor/harness. Branch
     # protection keys its required status check on this job name, so if the
     # --model below is bumped and this name changes with it, the required-check
     # list AND the `workflow_run.workflows:` array in pr-readiness.yml must be
     # updated in the same change.
     # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
-    # publish the protected check name "Opus 5 Review": this same-repo lane and the
+    # publish the protected check name "Opus 5.5 Review": this same-repo lane and the
     # privileged Stage-2 fork-opus-review.yml. GitHub resolves a required status
     # check to the NEWEST check-run carrying that name, so on a fork PR -- where
     # this lane reviews nothing -- any `pull_request` event firing AFTER the fork
@@ -77,7 +77,7 @@ jobs:
     # reports the intended name instead. `test_ai_review_workflows.py` asserts
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
-    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Opus 5 Review' || 'Opus 5 Review (same-repo lane, not applicable to forks)' }}"
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Opus 5.5 Review' || 'Opus 5.5 Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: a healthy review
     # self-terminates at --max-turns 180 per stage (two stages; see below)
@@ -254,14 +254,14 @@ jobs:
       # stage 1 and live in stage 2, applied to candidates that already exist.
       # This mirrors Anthropic's own code-review plugin (parallel discovery
       # agents, then a per-candidate validation agent with a confidence floor).
-      - name: Opus 5 discovery
+      - name: Opus 5.5 discovery
         id: discover
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
           github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
           )
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -270,8 +270,8 @@ jobs:
           # comment threads are attacker-controllable on a public repo and must
           # never enter an agentic reviewer's context.
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 180
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -437,20 +437,20 @@ jobs:
       # itself, keeps only those it scores >= 80, and applies the closed blocking
       # list to the survivors. Keeps `id: review` so the existing capture, post
       # and fail-closed gate steps below are unchanged.
-      - name: Opus 5 validation
+      - name: Opus 5.5 validation
         id: review
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
           github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
           )
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 180
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -494,7 +494,7 @@ jobs:
       # [OPUS-REVIEWED] marker parsed for THIS head — an errored or partial
       # transcript posts NOTHING (see the incomplete early-out below), so no raw
       # model/error text can leak.
-      - name: Post Opus 5 review summary
+      - name: Post Opus 5.5 review summary
         id: post
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -561,13 +561,13 @@ jobs:
           MARKER="<!-- claude-ai-review -->"
           {
             echo "$MARKER"
-            echo "## Opus 5 Review — $verdict"
+            echo "## Opus 5.5 Review — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
             echo
             case "$kind" in
               override)
-                echo "Human judgment by @$OVERRIDE_ACTOR overrides the Opus 5 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
+                echo "Human judgment by @$OVERRIDE_ACTOR overrides the Opus 5.5 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
                 echo
                 # What makes this body findable as an override for this head. No
                 # reader keys on it -- the freshness readers want the review
@@ -1045,13 +1045,13 @@ jobs:
               existing="$(printf '%s\n' "$matches" | awk 'NR == 1')"
               break
             fi
-            echo "Reading this PR's comments to find the Opus 5 comment failed on attempt $attempt."
+            echo "Reading this PR's comments to find the Opus 5.5 comment failed on attempt $attempt."
             if [ "$attempt" -lt 6 ]; then
               sleep "$(( attempt * 5 ))"
             fi
           done
           if [ "$verdict_read_rc" -ne 0 ]; then
-            note_read_failure "$verdict_read_rc" "reading this PR's comments to find the Opus 5 comment" "$READ_ERR_FILE"
+            note_read_failure "$verdict_read_rc" "reading this PR's comments to find the Opus 5.5 comment" "$READ_ERR_FILE"
           fi
           # This lane is FAIL-CLOSED, and its gate reads the captured review
           # text rather than the PR, so an outcome that leaves this head's
@@ -1072,13 +1072,13 @@ jobs:
               "repos/$REPO/issues/comments/$existing" \
               --field body="$(cat /tmp/claude-summary.md)" || write_rc=$?
             if [ "$write_rc" -eq 0 ]; then
-              echo "Updated existing Opus 5 summary comment #$existing"
+              echo "Updated existing Opus 5.5 summary comment #$existing"
             elif [ "$write_rc" -eq 4 ]; then
-              echo "Opus 5 Review stopped publishing its $HEAD verdict to comment #$existing because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
+              echo "Opus 5.5 Review stopped publishing its $HEAD verdict to comment #$existing because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
             elif [ "$write_rc" -eq 5 ]; then
-              echo "Opus 5 Review left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
+              echo "Opus 5.5 Review left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
             else
-              echo "::error::Opus 5 Review produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+              echo "::error::Opus 5.5 Review produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             fi
           else
@@ -1086,17 +1086,17 @@ jobs:
             retry_comment_write "$MARKER" "$head_needle" /tmp/claude-summary.md "" \
               gh pr comment "$PR" --body-file /tmp/claude-summary.md || write_rc=$?
             if [ "$write_rc" -eq 0 ]; then
-              echo "Published Opus 5 summary comment for $HEAD"
+              echo "Published Opus 5.5 summary comment for $HEAD"
             elif [ "$write_rc" -eq 3 ]; then
-              echo "::error::Opus 5 Review produced a verdict for $HEAD, but this lane's slot already holds one for $HEAD from an earlier run, so this run's verdict was not published and the PR presents that earlier sample instead -- including whatever it says about blocking. Re-run this lane to publish this run's verdict."
+              echo "::error::Opus 5.5 Review produced a verdict for $HEAD, but this lane's slot already holds one for $HEAD from an earlier run, so this run's verdict was not published and the PR presents that earlier sample instead -- including whatever it says about blocking. Re-run this lane to publish this run's verdict."
               exit 1
             elif [ "$write_rc" -eq 4 ]; then
-              echo "Opus 5 Review stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
+              echo "Opus 5.5 Review stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
             elif [ "$write_rc" -eq 2 ]; then
-              echo "::error::Opus 5 produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+              echo "::error::Opus 5.5 produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             else
-              echo "::error::Opus 5 Review produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+              echo "::error::Opus 5.5 Review produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             fi
           fi
@@ -1154,7 +1154,7 @@ jobs:
           # pull request is still open restores exactly the ambiguity it was
           # added to remove -- and leaves the republisher nothing to read.
           retention-days: 90
-      - name: Gate on Opus 5 review
+      - name: Gate on Opus 5.5 review
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
@@ -1168,37 +1168,37 @@ jobs:
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
-            echo "Human judgment by $OVERRIDE_ACTOR overrides Opus 5 for $HEAD. Passing gate."
+            echo "Human judgment by $OVERRIDE_ACTOR overrides Opus 5.5 for $HEAD. Passing gate."
             exit 0
           fi
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR ($ACTOR): Opus 5 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
+            echo "Dependabot PR ($ACTOR): Opus 5.5 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
             exit 0
           fi
           if [ "$REVIEW_OUTCOME" != "success" ]; then
-            echo "::error::Opus 5 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
+            echo "::error::Opus 5.5 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
           fi
           if [ ! -s claude-review-output.md ]; then
-            echo "::error::Opus 5 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 5 review step logs."
+            echo "::error::Opus 5.5 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 5.5 review step logs."
             exit 1
           fi
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
-            echo "::error::Opus 5 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 5 review step logs."
+            echo "::error::Opus 5.5 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 5.5 review step logs."
             echo "--- review output ---"
             cat claude-review-output.md
             exit 1
           fi
           # Block ONLY on the contract-gated marker.
           if grep -Fq "[BLOCK-MERGE] $HEAD" claude-review-output.md; then
-            echo "::error::Opus 5 review flagged a blocking issue on $HEAD — see the posted review summary."
+            echo "::error::Opus 5.5 review flagged a blocking issue on $HEAD — see the posted review summary."
             exit 1
           fi
           # Advisory coherence signal (never fails the build): a BLOCKING-labelled
           # finding without the marker means the model's label and its verdict
           # disagree. Worth tuning the prompt over; not worth blocking a merge.
           if grep -qE '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING\b' claude-review-output.md; then
-            echo "::warning::Opus 5 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
+            echo "::warning::Opus 5.5 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
           fi
-          echo "Opus 5 review completed for $HEAD with no blocking findings."
+          echo "Opus 5.5 review completed for $HEAD with no blocking findings."

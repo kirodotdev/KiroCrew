@@ -443,7 +443,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       </Clickable>
                       <Clickable
                         aria-label={i18nT('components.notifications.notificationFeed.dismiss_notification')}
-                        className="opacity-0 group-hover:opacity-40 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
+                        className="opacity-0 group-hover:opacity-40 [@media(hover:none)]:opacity-60 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
                         onClick={dismissRow}
                       ><X className="lucide-inline" /></Clickable>
                       </div>

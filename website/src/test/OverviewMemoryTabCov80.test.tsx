@@ -141,7 +141,9 @@ describe('MemoryTab — settings', () => {
     expect(await screen.findByText(/^Memory Settings$/i)).toBeInTheDocument()
 
     const ordered = [
-      screen.getByRole('heading', { name: /^Memory Settings \?$/i }),
+      // The InfoTip beside the title is an icon-only button named by its own
+      // aria-label, so it adds nothing to the heading's accessible name.
+      screen.getByRole('heading', { name: /^Memory Settings\s*$/i }),
       screen.getByTestId('vector-card'),
       screen.getByTestId('embed-card'),
       screen.getByText(/^Edit saved memories$/i),

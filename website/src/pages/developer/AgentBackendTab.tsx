@@ -1,28 +1,23 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import {
-  Bot,
-  Boxes,
-  Check,
-  Circle,
-  CircleCheck,
-  CircleDot,
-  CircleHelp,
-  Download,
-  Minus,
-  RotateCw,
-  Sparkles,
-  Terminal,
-  X,
-} from 'lucide-react'
+import { Bot, Boxes, Check, CircleHelp, Sparkles, Terminal, X } from 'lucide-react'
 
+import { acpBackendName, agentChoiceSaved, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Badge } from '../../components/ui'
+import {
+  AgentDetailActions,
+  AgentInstallDetail,
+  AgentPickerRow,
+  AgentStatusBadge,
+} from '../../components/agentHarness'
 import { SettingsCard } from '../../components/settings'
-import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
+import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
@@ -61,28 +56,22 @@ const NAMED = [KIRO, CLAUDE, KAS]
 const APPROVAL_UNVERIFIED = 'unverified'
 
 /**
- * DOM id of the detail PANEL — the whole right-hand pane.
- *
- * ONE id rather than one per backend, because exactly one detail is ever rendered.
- * This is what the rows point `aria-controls` at, which is the tabs pattern's own
- * requirement: a tab names the panel it shows, not a fragment inside it.
- *
- * Deliberately NOT what the Use button describes itself with — see `STRIP_ID`. A
- * button whose `aria-describedby` named this element would have the entire card read
- * out as its description, including the button itself.
- */
-const PANEL_ID = 'agent-backend-panel'
-
-/**
  * DOM id of the status strip alone.
  *
  * The Use button's `aria-describedby`, so the reason a rendered button is dead is
- * what a screen reader gets — one sentence, not the whole pane it happens to sit in.
+ * what a screen reader gets — the state block alone, not the whole detail it sits in.
  */
 const STRIP_ID = 'agent-backend-status'
 
-/** DOM id of a row, so the panel it controls can name it and vice versa. */
-const rowId = (value: string) => `agent-backend-row-${value || 'kiro'}`
+/**
+ * DOM id of the one open detail. ONE id rather than one per backend, because
+ * exactly one detail is ever rendered; the checked radio names it through
+ * `aria-controls`.
+ */
+const DETAIL_ID = 'agent-backend-detail'
+
+/** The radio group's `name`: one group, one tab stop, arrows move within it. */
+const GROUP_NAME = 'agent-harness'
 
 /**
  * DOM id of the sentence a row's glyph summarises.
@@ -107,7 +96,9 @@ const rowStatusId = (value: string) => `agent-backend-row-status-${value || 'kir
 const PROBE_REFRESH_MS = 30_000
 
 /**
- * Developer > Agent Backend — pick which agent runs a session.
+ * Settings > Agent Harness — pick which agent runs a session. (It was the
+ * Developer page's Agent Backend tab until first-run setup started offering
+ * agents other than Kiro CLI; the component keeps its old name and directory.)
  *
  * ## Why this exists again
  *
@@ -124,15 +115,30 @@ const PROBE_REFRESH_MS = 30_000
  * is the right amount of information and the wrong amount at once: eight harnesses
  * times fifteen capability lines is a wall, and the reader's question is about one
  * harness at a time. So the harnesses are a LIST and the card belongs to whichever
- * row is highlighted. Exactly one card is ever rendered, which is also what let the
+ * row is checked. Exactly one card is ever rendered, which is also what let the
  * capability list come OUT of the disclosure it used to need: it was collapsed
  * because eight open cards buried the control, and with one card there is nothing to
  * bury.
  *
- * Each row carries TWO marks, not one: a leading dot for the backend in USE, and a
- * trailing glyph for READINESS. They are two independent facts and an operator needs
- * both at once — a harness that is the one running AND missing its binary has to read
- * as both, and one mark with a precedence between them can only ever show the winner.
+ * ## Why it looks like first-run setup
+ *
+ * The same person meets two agent pickers: the "Use other coding agents" section of
+ * first-run setup, and this tab. An earlier revision of this tab was a tablist in a
+ * grey strip with a detail pane beside it — truncated names, tiny status words, a
+ * "Kiro sign-in" card the full width of the page under it whatever agent was in use.
+ * It is now built from the SAME pieces as the setup picker
+ * (`components/agentHarness/`): radio rows with the harness's full name and a
+ * status badge, the checked row's detail opening directly under it, and one
+ * accent "Use <agent>" button in that detail. Radios rather than tabs because
+ * that is what the control is — pick one of several — and because the browser
+ * then supplies the keyboard (one tab stop, arrows move check and focus together)
+ * that the tablist had to reimplement.
+ *
+ * Each row states TWO facts, not one: an "In use" word for the backend that is
+ * running, and a badge for READINESS. They are independent and an operator needs
+ * both at once — a harness that is the one running AND missing its binary has to
+ * read as both, and one mark with a precedence between them can only ever show the
+ * winner.
  *
  * This layout does give something up, and the trade is worth stating rather than
  * leaving to be discovered. Every card on the page at once meant two harnesses'
@@ -144,18 +150,27 @@ const PROBE_REFRESH_MS = 30_000
  * open this panel to do. A real side-by-side would be a comparison table, which is a
  * different control.
  *
- * ## Highlight is not selection, and that is the load-bearing part
+ * ## Checking a row is not selecting an agent, and that is the load-bearing part
  *
- * Clicking a row changes the detail pane and nothing else. The active backend
- * changes in exactly one place — the **Use** button at the foot of the detail — so
- * reading about a harness can never switch to it. That separation is why a harness
- * this machine cannot run still gets a row: under the old control an unselectable
- * harness had no chip, so the harnesses an operator most needed to read about were
- * the ones the page had least room for. A row is free; a switch is not.
+ * Checking a row opens its detail and nothing else. The active backend changes in
+ * exactly one place — the **Use** button in the detail — so reading about a
+ * harness can never switch to it. That separation is why a harness this machine
+ * cannot run still gets a row: under the old control an unselectable harness had
+ * no chip, so the harnesses an operator most needed to read about were the ones
+ * the page had least room for. A row is free; a switch is not.
  *
- * The two states are carried by different ARIA, deliberately: `aria-selected` is
- * which row you are LOOKING at, `aria-current` is which backend is RUNNING. A
- * screen reader gets the same two facts the glyphs carry.
+ * The two states are carried by different ARIA, deliberately: the radio's
+ * `checked` is which row you are LOOKING at, `aria-current` is which backend is
+ * RUNNING. A screen reader gets the same two facts the row shows.
+ *
+ * ## Where the Kiro sign-in lives
+ *
+ * Inside the KAS row's detail, and nowhere else. The identity it stores is
+ * consumed by the KAS relay alone, so a sign-in card under the whole list read as
+ * a step every user had to take — including one running Claude Code, for whom it
+ * does nothing. The chat's "Sign in to Kiro" link still lands on it:
+ * `SignInDeepLink` reads the same `?highlight=` the Settings highlight hook does
+ * and checks the KAS row, so the anchor mounts and rings.
  *
  * ## Why the choices come from the server
  *
@@ -314,16 +329,8 @@ export function AgentBackendTab() {
    * and the error it earned is still there.
    */
   const [stripError, setStripError] = useState<{ backend: string; message: string } | null>(null)
-  /**
-   * The row elements, so keyboard navigation can move real focus.
-   *
-   * A tablist with automatic activation has to carry FOCUS to the row it activated:
-   * moving only `aria-selected` and the roving `tabIndex` leaves a screen reader
-   * announcing the row the user has left, and leaves Tab continuing from an element
-   * that is now `tabIndex={-1}`.
-   */
-  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const schema = useConfigSchema()
+  const inRouter = useInRouterContext()
 
   const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: ['kirocrewConfig'],
@@ -353,36 +360,81 @@ export function AgentBackendTab() {
     refetchInterval: PROBE_REFRESH_MS,
   })
 
+  /**
+   * The cache work a successful switch does, factored out because a 503
+   * `setup_marker_write_failed` that DID commit the choice (`config_saved:
+   * true`) has to run exactly the same steps -- the agent on disk moved, so a
+   * cache still holding the old one keeps badging the wrong harness and offers
+   * the old backend's models.
+   *
+   * `resetQueries`, not `invalidateQueries`: invalidate keeps the OLD backend's
+   * rows on screen until the refetch lands, and a cold `--list-models` spawn can
+   * take the gateway's full 10s. A pick in that window writes an id the new
+   * backend rejects. Reset drops the data to `undefined` first, so every picker
+   * shows the auto-only placeholder for those seconds, then refetches. Drop the
+   * last-good localStorage list FIRST for the same reason: a failing first fetch
+   * must degrade to auto-only, not to the old backend's ids.
+   */
+  const applyBackendSwitchSideEffects = () => {
+    qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    // The model list is the NEW backend's now. `/api/models` re-reads
+    // `agent.acp_backend` on every call, so the server side needs no restart;
+    // only the frontend cache did, because `['available-models']` is refetched
+    // in exactly one other place — a spawned session (`useWebSocket`'s
+    // `activity_event`) — and the global `staleTime: Infinity` plus the
+    // self-heal poll stopping after one live success mean nothing else ever
+    // re-asks. That is why the picker looked like it needed a gateway restart:
+    // the restart was just the next session spawn.
+    clearCachedModels()
+    qc.resetQueries({ queryKey: ['available-models'] })
+  }
+
   const patchMut = useMutation({
     mutationFn: (value: string) => api.patchConfig(CONFIG_KEY, value),
     onSuccess: () => {
       setActionError('')
-      qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
-      // The model list is the NEW backend's now. `/api/models` re-reads
-      // `agent.acp_backend` on every call, so the server side needs no restart;
-      // only the frontend cache did, because `['available-models']` is refetched
-      // in exactly one other place — a spawned session (`useWebSocket`'s
-      // `activity_event`) — and the global `staleTime: Infinity` plus the
-      // self-heal poll stopping after one live success mean nothing else ever
-      // re-asks. That is why the picker looked like it needed a gateway restart:
-      // the restart was just the next session spawn.
-      //
-      // `resetQueries`, not `invalidateQueries`: invalidate keeps the OLD
-      // backend's rows on screen until the refetch lands, and a cold
-      // `--list-models` spawn can take the gateway's full 10s. A pick in that
-      // window writes an id the new backend rejects. Reset drops the data to
-      // `undefined` first, so every picker shows the auto-only placeholder for
-      // those seconds, then refetches. Drop the last-good localStorage list
-      // FIRST for the same reason: a failing first fetch must degrade to
-      // auto-only, not to the old backend's ids.
-      clearCachedModels()
-      qc.resetQueries({ queryKey: ['available-models'] })
+      applyBackendSwitchSideEffects()
     },
     // No optimistic write and no local mirror of the value: the list reads
     // straight from the query, so a rejected PATCH needs no revert — the cache was
     // never moved off the server's answer.
-    onError: () => setActionError(i18nT('pages.developer.agentBackendTab.could_not_save_the_agent_backend')),
+    //
+    // A 503 `setup_marker_write_failed` carrying `config_saved: true` is NOT a
+    // failed save: `agent.acp_backend` is on disk and only the first-run marker
+    // is not. So the switch's side effects run just as on success, and the
+    // server's marker-write message is shown in place of the generic save
+    // failure -- badging the new agent, not the old one.
+    onError: (error: unknown) => {
+      if (agentChoiceSaved(error)) {
+        applyBackendSwitchSideEffects()
+        setActionError(
+          setupMarkerErrorMessage(error)
+            ?? i18nT('pages.developer.agentBackendTab.could_not_save_the_agent_backend'),
+        )
+        return
+      }
+      setActionError(i18nT('pages.developer.agentBackendTab.could_not_save_the_agent_backend'))
+    },
   })
+
+  /**
+   * Replace ONE backend's row in the list query, or append it when the list has
+   * no row for it yet. Shared by the re-check's success and its
+   * `setup_marker_write_failed` 503 (which carries the same fresh row): the
+   * server sends the re-checked row in the shape the list holds, so replacing the
+   * one row is both cheaper than a refetch and the only way the fresh verdict
+   * survives inside the poll's TTL window.
+   */
+  const spliceProbeRow = (row: AcpBackendProbe) =>
+    qc.setQueryData<{ backends: AcpBackendProbe[] }>(['acpBackends'], prev =>
+      prev
+        ? {
+            backends: prev.backends.some(b => b.id === row.id)
+              ? prev.backends.map(b => (b.id === row.id ? row : b))
+              : [...prev.backends, row],
+          }
+        : { backends: [row] },
+    )
 
   /**
    * Re-take ONE backend's verdict, with this gateway's cached absence dropped first.
@@ -413,15 +465,7 @@ export function AgentBackendTab() {
       // Only this harness's failure is answered by this harness's success. Another
       // row's unread error is not this request's to discard.
       setStripError(prev => (prev && prev.backend === backend.id ? null : prev))
-      qc.setQueryData<{ backends: AcpBackendProbe[] }>(['acpBackends'], prev =>
-        prev
-          ? {
-              backends: prev.backends.some(b => b.id === backend.id)
-                ? prev.backends.map(b => (b.id === backend.id ? backend : b))
-                : [...prev.backends, backend],
-            }
-          : { backends: [backend] },
-      )
+      spliceProbeRow(backend)
     },
     // Surfaced, unlike a failed probe GET. A failed poll is absent information the
     // user did not ask for; a failed re-check is a button they pressed, and silence
@@ -429,11 +473,24 @@ export function AgentBackendTab() {
     // The failing backend comes from the mutation's own variables, not from `shown`:
     // `shown` is whatever row is highlighted when the rejection arrives, which is the
     // bug this keying exists for.
-    onError: (_error, backend) =>
+    //
+    // A 503 `setup_marker_write_failed` carries the fresh probe row: the re-probe
+    // succeeded and only the marker write did not, so the row is spliced in exactly
+    // as on success and the server's marker-write message is shown in place of the
+    // generic install-check-failed text.
+    onError: (error: unknown, backend) => {
+      const row = setupMarkerErrorBody(error)?.backend
+      const markerMessage = setupMarkerErrorMessage(error)
+      if (row && markerMessage) {
+        spliceProbeRow(row)
+        setStripError({ backend, message: markerMessage })
+        return
+      }
       setStripError({
         backend,
         message: i18nT('pages.developer.agentBackendTab.install_check_failed'),
-      }),
+      })
+    },
   })
 
   if (cfgQ.isLoading) {
@@ -709,18 +766,6 @@ export function AgentBackendTab() {
     return lines
   }
 
-  /**
-   * Translated display names for the agents this frontend knows by name.
-   *
-   * Deliberately NOT the list of agents the panel renders — see `candidates`. An id
-   * absent here still gets a row; `nameOf` falls back to the server's `policy_id`.
-   */
-  const NAME: Record<string, string> = {
-    [KIRO]: i18nT('pages.developer.agentBackendTab.kiro_cli'),
-    [CLAUDE]: i18nT('pages.developer.agentBackendTab.claude_code'),
-    [KAS]: i18nT('pages.developer.agentBackendTab.kas_kiro_agent'),
-  }
-
   const ICON: Record<string, React.ReactNode> = {
     [KIRO]: <Terminal size={14} />,
     [CLAUDE]: <Sparkles size={14} />,
@@ -894,15 +939,15 @@ export function AgentBackendTab() {
    * human-readable wire name (`acp_backends.POLICY_ID_BY_BACKEND`) — it is what a
    * governance rule spells, so it is already a word rather than an internal token.
    * Untranslated, and that is the deliberate trade: a registered agent rendering
-   * under its policy name is legible, whereas `NAME[value]` returning `undefined`
+   * under its policy name is legible, whereas a missing display name
    * renders a row with no text at all. A core agent that ships selectable gets a
-   * real translated entry above; this keeps a plugin-registered one usable until
+   * real translated entry in the shared helper; this keeps a plugin-registered one usable until
    * then.
    *
    * KIRO is the empty string, so the `||` chain must not treat it as absent — it is
-   * always in NAME, which is why the lookup comes first.
+   * always named by the shared helper, before the policy-id fallback.
    */
-  const nameOf = (value: string): string => NAME[value] || probe(value)?.policy_id || value
+  const nameOf = (value: string): string => acpBackendName({ id: value, policy_id: probe(value)?.policy_id })
 
   /** Generic mark for an agent this frontend has no icon for. */
   const iconOf = (value: string): React.ReactNode => ICON[value] ?? <Boxes size={14} />
@@ -1003,54 +1048,16 @@ export function AgentBackendTab() {
     // AFTER the missing/unknown lines and BEFORE the descriptor lines: this row
     // has a positive install verdict, so it would otherwise fall through to
     // `Experimental` and say nothing about why the switch is dead.
-    // Names the cheap remedy, which is the button directly beside this line, rather
-    // than the gateway restart. A reader who does not know what the gateway is cannot
-    // act on "restart it", and now does not have to.
+    // Names the cheap remedy, which is the button directly beside this line, before
+    // the gateway restart. The SAME sentence first-run setup shows for this state:
+    // the two screens are built from one picker, and two remedies for one state
+    // ("Settings > About" here, "that host" there) read as two different problems.
     if (row?.restart_required)
-      return i18nT('pages.developer.agentBackendTab.installed_check_again_to_use')
+      return i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
+        name: nameOf(value),
+      })
     if (value === KIRO) return i18nT('pages.developer.agentBackendTab.default_all_features_supported')
     return i18nT('pages.developer.agentBackendTab.experimental')
-  }
-
-  /**
-   * The trailing mark: is this harness READY, and nothing else.
-   *
-   * Deliberately says nothing about which backend is in use. Those are two
-   * independent facts and an operator needs both at once — a harness that is active
-   * AND missing its binary is a real state (the component was removed under a saved
-   * value) and it has to read as "the one in use, and it is broken". One mark with a
-   * precedence can only ever show the winner, so the two get separate columns: the
-   * leading dot below is in-use, this is readiness.
-   *
-   * Every icon is `aria-hidden`; the row's accessible description is `status(value)`
-   * in full, so the glyph summarises a sentence that is also present rather than
-   * being the only place the state is stated.
-   */
-  const readinessGlyph = (value: string): React.ReactNode => {
-    if (buildExcluded(value)) return <Minus size={13} aria-hidden className="text-muted" />
-    if (notInstalled(value)) return <Download size={13} aria-hidden className="text-warn" />
-    if (needsRestart(value)) return <RotateCw size={13} aria-hidden className="text-warn" />
-    // No verdict is not a verdict: a probe that did not answer gets an outline
-    // rather than the tick, so the panel never claims an install it did not measure.
-    if (!probe(value) || probe(value)?.installed === 'unknown')
-      return <Circle size={13} aria-hidden className="text-muted" />
-    // `CircleCheck` and not `Check`: the card below marks each CAPABILITY with a bare
-    // tick, and the same glyph meaning "this harness is ready" in the list and "this
-    // feature is available" in the detail is one alphabet doing two jobs in one view.
-    return <CircleCheck size={13} aria-hidden className="text-ok" />
-  }
-
-  /**
-   * Highlight *value* and put the keyboard on it.
-   *
-   * One helper for every keyboard route so focus cannot be moved by some of them and
-   * not others. Focusing straight after the state write is safe because the row
-   * already exists — only its `tabIndex` changes on the re-render — and focusing an
-   * element that is still `tabIndex={-1}` works programmatically.
-   */
-  const focusRow = (value: string) => {
-    highlightRow(value)
-    rowRefs.current[value]?.focus()
   }
 
   /**
@@ -1066,44 +1073,295 @@ export function AgentBackendTab() {
   }
 
   /**
-   * The readiness word that accompanies the glyph, in the glyph's own precedence.
-   *
-   * A glyph with only a `title` is a glyph a touch device never explains and a
-   * first-time reader has to guess at. One short word costs the row very little and
-   * removes the guessing. Derived from the same branches as `readinessGlyph` rather
-   * than passed alongside it, so the mark and the word cannot drift apart.
+   * The probe row for the harness on screen, and the two flags the action row
+   * reads. `busy` covers BOTH mutations: a switch in flight disables Check again
+   * and a re-check in flight disables Use, because either one changes what the
+   * other would act on.
    */
-  const readinessWord = (value: string): string => {
-    if (buildExcluded(value)) return i18nT('pages.developer.agentBackendTab.word_not_offered')
-    if (notInstalled(value)) return i18nT('pages.developer.agentBackendTab.word_missing')
-    if (needsRestart(value)) return i18nT('pages.developer.agentBackendTab.word_recheck')
-    if (!probe(value) || probe(value)?.installed === 'unknown')
-      return i18nT('pages.developer.agentBackendTab.word_not_checked')
-    return i18nT('pages.developer.agentBackendTab.word_ready')
-  }
-
-  /** Move the highlight by *delta* rows, clamped rather than wrapped. */
-  const moveHighlight = (delta: number) => {
-    const at = rows.indexOf(shown)
-    const next = rows[Math.min(rows.length - 1, Math.max(0, at + delta))]
-    if (next !== undefined) focusRow(next)
-  }
-
-  /**
-   * Whether the one mutating control is pressable, computed once.
-   *
-   * Read by both the `disabled` attribute and the styling, so the two cannot disagree
-   * -- a button that looks live and is not is the defect this replaced.
-   */
-  const useDisabled = shown === current || cannotUse(shown) || patchMut.isPending
-
-  const install = probe(shown)?.install_command ?? ''
+  const shownProbe = probe(shown)
+  const busy = patchMut.isPending || recheckMut.isPending
   // Every state the re-check can help with, and only those. A build-excluded harness
   // is not one: nothing this machine holds is why it is not on offer, so a button
   // that re-measured the machine would answer a question nobody asked.
   const canRecheck =
     !buildExcluded(shown) &&
-    (notInstalled(shown) || needsRestart(shown) || probe(shown)?.installed === 'unknown')
+    (notInstalled(shown) || needsRestart(shown) || shownProbe?.installed === 'unknown')
+
+  /**
+   * The detail's lead: what state this harness is in, in the words first-run
+   * setup uses where the two screens share a state, and in this panel's own
+   * where they do not.
+   *
+   * The order is strict, because the reasons are not equally actionable. A
+   * build-excluded agent comes first: nothing about installing or re-checking is
+   * worth telling someone about an option this build will never offer, and the
+   * tool-approval line below already says why. `missing` comes next because it
+   * is the block that tells the user what to DO — the install command, copyable,
+   * and what to press afterwards. `unknown` follows and must never read as
+   * missing; it reports a failed check, and says the switch stays live, because
+   * a bright Use button under a bare "could not check" line reads as a mistake.
+   * `restart_required` names the cheap remedy, the Check again button beside it,
+   * before the gateway restart — in first-run setup's own sentence, so the two
+   * screens built from one picker give one remedy for one state. Only then do
+   * the descriptor lines apply:
+   * KIRO is the all-supported default; anything else installed is ready to use
+   * and marked Experimental rather than given a claim.
+   *
+   * With no probe answer at all (a 404, a 403, a query in flight) the block says
+   * only what it can: the default line for Kiro CLI, Experimental for the rest —
+   * never "installed and ready", which nobody measured.
+   */
+  const lead = (value: string) => {
+    const row = probe(value)
+    const name = nameOf(value)
+    if (buildExcluded(value))
+      return (
+        <p className="text-[13px] leading-relaxed text-text">
+          {i18nT('pages.developer.agentBackendTab.not_offered_by_this_build')}
+        </p>
+      )
+    if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} />
+    if (row?.installed === 'unknown')
+      return (
+        <p className="text-[13px] leading-relaxed text-text">
+          {i18nT('pages.developer.agentBackendTab.install_check_failed')}{' '}
+          {i18nT('pages.developer.agentBackendTab.can_still_switch')}
+        </p>
+      )
+    if (row?.restart_required)
+      return (
+        <p className="text-[13px] leading-relaxed text-text">
+          {i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', { name })}
+        </p>
+      )
+    if (value === KIRO)
+      return (
+        <p className="text-[13px] leading-relaxed text-text">
+          {i18nT('pages.developer.agentBackendTab.default_all_features_supported')}
+        </p>
+      )
+    if (row?.installed === 'installed')
+      return (
+        // One line, with Experimental as a tag on the sentence it qualifies: as a
+        // paragraph of its own it read as an orphaned second status.
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-relaxed text-text">
+          <span>{i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}</span>
+          <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.experimental')}</Badge>
+        </p>
+      )
+    return (
+      <p className="text-[13px] leading-relaxed text-text">
+        {i18nT('pages.developer.agentBackendTab.experimental')}
+      </p>
+    )
+  }
+
+  /**
+   * The standing facts about the harness on screen, under the actions: how it is
+   * made to ask, the gating caveat, the security notes, the capability card, the
+   * MCP half and the one where-it-lives note. Reference material, so it sits
+   * below the state and the button rather than between them — the reader who
+   * came to switch finds the switch where first-run setup put it, and the reader
+   * comparing agents scrolls one row.
+   *
+   * Tool approval stays first among the standing lines. It is the one
+   * security-relevant line on the card and the reason a build-excluded agent
+   * cannot be picked -- and on the one agent that also carries a gating caveat,
+   * "how it is made to ask" has to precede "and here is the hole in that", or the
+   * two read as two answers to one question.
+   */
+  const facts = (value: string) => {
+    const hasCard =
+      approvalLine(value) ||
+      caveats(value).length > 0 ||
+      securityNotes(value).length > 0 ||
+      capabilityLines(value).length > 0 ||
+      mcpDenyRule(value) ||
+      mcpIneffective(value).length > 0 ||
+      noteLines(value).length > 0
+    if (!hasCard) return null
+    return (
+      <div className="border-t border-border pt-3">
+        {approvalLine(value) && (
+          <p className="mb-0 text-[12px] leading-relaxed text-muted">{approvalLine(value)}</p>
+        )}
+        {caveats(value).map(line => (
+          <p key={line} className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
+            {line}
+          </p>
+        ))}
+        {/* Security notes sit beside the approval line for the reason it is not
+            behind a disclosure either. Two of them describe a boundary MOVING --
+            Crew's own sandbox standing down for this child, and Crew handing over
+            its own credential -- and the sandbox one fails open by design. WHICH
+            notes these are is the server's classification, sent as its own list.
+            Emphasis as WEIGHT rather than as alarm: these are permanent
+            properties of the agent, not problems awaiting a fix. */}
+        {securityNotes(value).map(id => (
+          <p key={id} className="mt-1 mb-0 text-[12px] leading-relaxed text-text-strong">
+            {NOTE_LABEL[id]}
+          </p>
+        ))}
+        {capabilityLines(value).length > 0 && (
+          /* Open, not collapsed. It was a `<details>` because up to fifteen lines
+             times eight harnesses buried the control the panel exists for; with
+             one harness on screen there is nothing to bury, and the capability
+             set is the thing the reader came for. */
+          /* Muted for a harness this build does not offer: a full-strength
+             capability list directly under "This build does not offer this agent"
+             reads as a mixed message. The facts are still true and still shown --
+             an operator asking "why can I not pick that?" needs them -- they just
+             stop competing with the line that answers the question. */
+          <div className={`mt-3 ${buildExcluded(value) ? 'opacity-60' : ''}`}>
+            <div className="text-[12px] font-semibold text-muted">
+              {i18nT('pages.developer.agentBackendTab.card_supports_n_of_m', {
+                name: nameOf(value),
+                available: capabilityLines(value).filter(line => line.available).length,
+                // CHECKED lines, not every line. An unchecked cell inside the
+                // denominator and named as uncounted in the same breath is a
+                // sentence that contradicts itself, and a reader has no way to
+                // tell which half is true. Out of the fraction, it is counted as
+                // neither BY the arithmetic, and the clause beside it says how
+                // many sit outside. Identical to the old number on any harness
+                // with nothing unchecked, which is every harness but two.
+                total: capabilityLines(value).filter(line => line.measured !== false).length,
+              })}
+              {capabilityLines(value).filter(line => line.measured === false).length > 0 && (
+                /* The count above is supported of TOTAL, and an unmeasured line sits
+                   in the total without being in the supported half -- so the numbers
+                   alone read as "unsupported" by subtraction. Naming the remainder is
+                   what stops the count from making the claim the third state exists
+                   to withdraw. */
+                <span className="font-normal text-[11px] opacity-80">
+                  {' '}
+                  {i18nT('pages.developer.agentBackendTab.card_n_not_measured', {
+                    unmeasured: capabilityLines(value).filter(line => line.measured === false)
+                      .length,
+                  })}
+                </span>
+              )}
+            </div>
+            <ul className="mt-1 mb-0 list-none pl-0 space-y-0.5 text-[12px] leading-relaxed">
+              {capabilityLines(value).map(line => (
+                <li key={line.id} className="flex items-start gap-1.5">
+                  {/* The icon is decorative and the STATE is text: a mark that
+                      only differs by shape and colour is unreadable to a screen
+                      reader and to anyone who cannot tell the two colours apart. */}
+                  {/* Three answers, three glyphs, and the unmeasured one borrows
+                      neither of the others: a tick would promise what nobody has
+                      driven, and the cross a real absence wears is what hides the
+                      cell a measurement would pay for. Tested `=== false` rather
+                      than for falsiness, so a gateway that sends no flag reads as
+                      measured and the card it serves is the card it served. */}
+                  {line.measured === false ? (
+                    /* 11 and not 12: a ring encloses its ink where a tick and a
+                       cross are two strokes, so the same nominal size renders a
+                       heavier mark and the third state reads as a badge among ten
+                       line glyphs. */
+                    <CircleHelp
+                      size={11}
+                      strokeWidth={1.75}
+                      aria-hidden
+                      className="mt-1 shrink-0 text-warn"
+                    />
+                  ) : line.available ? (
+                    <Check size={12} aria-hidden className="mt-1 shrink-0 text-ok" />
+                  ) : (
+                    <X size={12} aria-hidden className="mt-1 shrink-0 text-muted" />
+                  )}
+                  <span className={line.available ? 'text-text-strong' : 'text-muted'}>
+                    <span className="sr-only">
+                      {line.measured === false
+                        ? i18nT('pages.developer.agentBackendTab.card_not_measured')
+                        : line.available
+                          ? i18nT('pages.developer.agentBackendTab.card_available')
+                          : i18nT('pages.developer.agentBackendTab.card_not_available')}
+                    </span>
+                    {CAPABILITY_LABEL[line.id]}
+                    {line.measured === false && unmeasuredReason(line.unmeasured_reason) && (
+                      /* Its OWN line, dimmer and smaller, indented to the label
+                         column by sitting inside the label's span. Inline it fused
+                         with the label instead -- two blind readers of the rendered
+                         card both read "The /compact command works No live run has
+                         measured this yet" as one clause, which states the opposite
+                         of what the row means. A block also gives the longest text
+                         on the card somewhere to wrap to that is not the glyph
+                         column. */
+                      <span className="mb-0.5 block max-w-[44ch] text-[11px] leading-snug opacity-80">
+                        {unmeasuredReason(line.unmeasured_reason)}
+                      </span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* The MCP half, and the rule for what is on it: a line reaches the reader
+            only where switching to this agent costs them a feature, adds a risk, or
+            makes one of their own agent-file settings ineffective. Two things pass
+            that test, and the route Crew takes to the agent is not one of them.
+
+            First the RISK, as a rule with its exception directly under it. Switching
+            one tool off is an ordinary action that says nothing about servers, so a
+            reader meets this by accident -- and the exception is labelled as one,
+            because two sentences that qualify each other without saying so read as a
+            contradiction.
+
+            Weight, not colour: a permanent property of the agent, not a problem
+            awaiting a fix, and legible to a reader who cannot tell two colours
+            apart. */}
+        {mcpDenyRule(value) && (
+          <p className="mt-3 mb-0 text-[12px] leading-relaxed text-text-strong">
+            {mcpDenyRule(value)}
+          </p>
+        )}
+        {mcpDenyException(value) && (
+          <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
+            {mcpDenyException(value)}
+          </p>
+        )}
+
+        {/* Then the settings the reader wrote that will not take effect here. ONE
+            group however the core ruled them: a withhold is a settled decision and a
+            no-channel is an open gap, which is the mirror maintainer's distinction --
+            the reader's question is whether the thing they wrote happens, and each
+            line answers it. Open rather than behind a disclosure: with the route
+            lines gone there is nothing left to bury, and this is the half a reader
+            comparing two agents came for. */}
+        {mcpIneffective(value).length > 0 && (
+          <>
+            <div className="mt-3 text-[12px] font-semibold leading-relaxed text-muted">
+              {i18nT('pages.developer.agentBackendTab.card_mcp_ineffective', {
+                name: nameOf(value),
+              })}
+            </div>
+            <ul className="mt-0.5 mb-0 list-disc pl-4 space-y-0.5 text-[12px] leading-relaxed text-muted">
+              {mcpIneffective(value).map(id => (
+                <li key={id}>{mcpSettingLine(value, id)}</li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {/* The one where-it-lives fact left on the card, and it is here because it
+            is also the reader's: whose secret store this agent signs in against is a
+            risk they take on. The three that named a route Crew takes -- whose disk
+            holds the transcript, which registry fills the model picker, which channel
+            carries a slash command -- are recorded off the card in
+            `agent_sdk/backend_cards.py` and stated in `kirocrew doctor`.
+
+            A plain line rather than a disclosure: one line needs no toggle, and the
+            toggle's label was a heading for a list that no longer exists. */}
+        {noteLines(value).map(id => (
+          <p key={id} className="mt-2 mb-0 text-[12px] leading-relaxed text-muted">
+            {NOTE_LABEL[id]}
+          </p>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <>
@@ -1121,493 +1379,177 @@ export function AgentBackendTab() {
         askAgent
         onDismiss={() => setActionError('')}
       />
+      {/* The chat's "Sign in to Kiro" link lands here with the sign-in anchor as
+          its highlight. The anchor lives inside the KAS row's detail, so the
+          detail has to be open for the anchor to mount and ring; this opens it.
+          Rendered only under a router: the panel is also rendered bare, in tests
+          and captures, where there is no URL to read. */}
+      {inRouter && <SignInDeepLink onSignIn={() => highlightRow(KIRO_SIGN_IN_BACKEND)} />}
       <SettingsCard>
-        <div className="text-[13px] font-semibold text-text-strong">
-          {i18nT('pages.developer.agentBackendTab.agent_backend')}
-        </div>
-        <p className="mt-0.5 mb-2 text-[12px] leading-relaxed text-muted">
+        <p className="mb-0 text-[13px] leading-relaxed text-muted">
           {i18nT('pages.developer.agentBackendTab.new_sessions_use_this_agent_a_session_that_is_al')}
         </p>
-        {/* List and detail. On a narrow viewport the grid collapses to one column and
-            the row list becomes a horizontal strip above the detail -- the same
-            elements and the same ARIA, laid out along the other axis, so there is no
-            second implementation to keep honest. `min-w-0` on both tracks because a
-            long install command in the detail would otherwise force the grid wider
-            than its container and push the list off screen. */}
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(8rem,13rem)_minmax(0,1fr)]">
-          <div
-            role="tablist"
-            // Vertical is the wide layout's axis, and BOTH axes are handled below --
-            // the orientation flips with a CSS breakpoint that this component never
-            // reads, so refusing one axis would break the keyboard in whichever
-            // layout the reader happens to be in.
-            aria-orientation="vertical"
-            aria-label={i18nT('pages.developer.agentBackendTab.agent_backend')}
-            className="flex min-w-0 flex-row gap-0.5 overflow-x-auto rounded-lg border border-border bg-bg-accent p-[3px] md:flex-col md:overflow-x-visible"
-          >
-            {rows.map(value => (
-              <button
+        {/* One radio group, laid out like first-run setup's picker: each harness is a
+            row, the checked row opens its detail directly under itself, and the
+            browser supplies the keyboard (one tab stop, arrows move check and focus
+            together). Checking a row is looking at it; the config changes only
+            through the detail's own Use button. */}
+        <fieldset className="mx-0 space-y-2 border-none p-0">
+          <legend className="sr-only">
+            {i18nT('components.kiroPrerequisiteGate.other_agents_list_label')}
+          </legend>
+          {rows.map(value => {
+            const row = probe(value)
+            const selected = value === shown
+            const isCurrent = value === current
+            return (
+              <AgentPickerRow
                 key={value}
-                id={rowId(value)}
-                ref={el => {
-                  rowRefs.current[value] = el
-                }}
-                type="button"
-                role="tab"
-                // Which row you are LOOKING at. `aria-current` below is which backend
-                // is RUNNING. Two facts, two attributes -- the whole point of the
-                // layout is that they are not the same thing.
-                aria-selected={value === shown}
-                aria-current={value === current ? 'true' : undefined}
-                aria-controls={PANEL_ID}
-                aria-describedby={rowStatusId(value)}
-                // Roving tabindex: one stop for the whole list, and the arrow keys
-                // move within it. Every row being tabbable would put eight stops
-                // between the panel's heading and its only button.
-                tabIndex={value === shown ? 0 : -1}
-                // `w-full` only from `md`, where the strip is a COLUMN and a row
-                // should fill it. On narrow the strip is a horizontal scroller, and a
-                // full-width row there means exactly one row on screen and seven
-                // unreachable ones -- which reads as a dropdown that does nothing when
-                // tapped.
-                //
-                // `max-w` on narrow for the same reachability reason: content sizing
-                // alone lets a long name plus its readiness word fill the viewport, so
-                // the cap makes the NAME truncate and keeps several harnesses visible.
-                // A truncated name is still recognisable and carries its full text as
-                // the row's accessible name; a hidden row carries nothing.
-                className={`flex max-w-[11rem] shrink-0 items-center gap-1.5 rounded-md border px-2 py-[5px] text-left text-[13px] cursor-pointer transition-colors md:max-w-none md:w-full ${
-                  value === shown
-                    ? 'border-border-strong bg-bg-elevated text-text-strong font-semibold shadow-sm'
-                    : 'border-transparent bg-transparent text-muted font-medium hover:text-text-strong'
-                }`}
-                onClick={() => highlightRow(value)}
-                onKeyDown={e => {
-                  if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-                    e.preventDefault()
-                    moveHighlight(1)
-                  } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-                    e.preventDefault()
-                    moveHighlight(-1)
-                  } else if (e.key === 'Home') {
-                    e.preventDefault()
-                    focusRow(rows[0] ?? shown)
-                  } else if (e.key === 'End') {
-                    e.preventDefault()
-                    focusRow(rows[rows.length - 1] ?? shown)
-                  } else if (e.key === 'Enter' || e.key === ' ') {
-                    // Highlight, never select. The browser would fire `click` for
-                    // both of these on a <button> anyway; naming them is what makes
-                    // "Enter does not switch the backend" a property of this file
-                    // rather than an accident of which handler happens to be wired.
-                    e.preventDefault()
-                    highlightRow(value)
-                  }
-                }}
-              >
-                {/* Leading, radio-style: which backend is IN USE. Its own column
-                    rather than a value of the readiness mark, so `● … ⬇` — the one in
-                    use, and it is broken — is a state the row can actually show.
-                    Reserved even when empty so the names stay on one left edge and
-                    the column reads as a column. */}
-                <span className="flex w-3.5 shrink-0 items-center justify-center">
-                  {value === current && (
-                    /* `title` on the wrapper, not on the reserved column: an empty
-                       column must not offer a tooltip for a mark it is not showing.
-                       Short form of the same word the trailing cluster prints, so the
-                       hover text and the visible text are one string. */
-                    <span
-                      className="flex items-center"
-                      title={i18nT('pages.developer.agentBackendTab.use_button_in_use')}
-                    >
-                      <CircleDot size={12} aria-hidden className="text-accent" />
-                    </span>
-                  )}
-                </span>
-                <span className="truncate">{nameOf(value)}</span>
-                {/* Trailing: readiness. The name yields before either mark does — on a
-                    narrow strip the name truncates and the state does not, because the
-                    state is what the row is scanned for. */}
-                {/* `title` so the glyph has a word a sighted reader can reach without
-                    opening the row. The same sentence the row's description carries, so
-                    the hover text and the announced text cannot drift -- and the glyph
-                    stays a summary of something stated in full elsewhere rather than
-                    the only place the state exists. */}
-                <span
-                  className="ml-auto flex shrink-0 items-center gap-1"
-                  title={status(value)}
-                >
-                  {/* The leading dot's word, printed where words live. Without it
-                      the only visible word on the running harness is its readiness one,
-                      so "Ready" stands for two facts at once: able to run, and the one
-                      running. `aria-hidden` for the same reason the readiness word is
-                      -- the row's description states both in full. */}
-                  {value === current && (
-                    <span aria-hidden className="text-[10px] font-medium text-accent">
-                      {i18nT('pages.developer.agentBackendTab.use_button_in_use')}
-                    </span>
-                  )}
-                  {readinessGlyph(value)}
-                  {/* The word the glyph stands for. `aria-hidden` because the row's
-                      description already states the state in full, and announcing a
-                      one-word summary on top of that sentence would say it twice. */}
-                  <span aria-hidden className="text-[10px] font-medium">
-                    {readinessWord(value)}
+                id={value}
+                group={GROUP_NAME}
+                label={nameOf(value)}
+                selected={selected}
+                onSelect={() => highlightRow(value)}
+                icon={
+                  <span className="flex shrink-0 items-center text-muted" aria-hidden="true">
+                    {iconOf(value)}
                   </span>
-                </span>
-              </button>
-            ))}
-          </div>
-
-          {/* Every row's state as a WORD, for a reader who gets no glyph at all.
-              Hidden, outside the rows, and one per row rather than one for the shown
-              row: a reader arrowing down the list is told each harness's state as
-              they reach it, which is the only way the list is scannable without
-              sight. Same sentence the strip carries, so there is one source for it. */}
-          <div className="sr-only">
-            {rows.map(value => (
-              <span key={value} id={rowStatusId(value)}>
-                {/* Both marks in words, in the order they are read visually. The
-                    in-use word is here as well as in `aria-current` because a
-                    description is what a reader gets on the row they are ON, while
-                    `aria-current` is announced inconsistently across screen readers —
-                    and "this is the one running" is not a fact to leave to chance. */}
-                {value === current
-                  ? `${i18nT('pages.developer.agentBackendTab.in_use')} ${status(value)}`
-                  : status(value)}
-              </span>
-            ))}
-          </div>
-
-          <div
-            role="tabpanel"
-            id={PANEL_ID}
-            aria-labelledby={rowId(shown)}
-            // Keyed on the shown row so React remounts the pane per harness: a
-            // <details> left open on one harness must not decide the next one's, and
-            // the disclosure state is exactly what would otherwise survive.
-            key={shown}
-            className="min-w-0"
-          >
-            <div className="flex items-center gap-1.5 text-[13px] font-semibold text-text-strong">
-              {iconOf(shown)}
-              {nameOf(shown)}
-            </div>
-
-            {/* The status strip. One state at a time, and every string on it comes
-                from the payload or from a label above -- there is no per-harness
-                sentence here to go stale. */}
-            <div
-              id={STRIP_ID}
-              className={`mt-1.5 rounded-md border px-2.5 py-2 text-[11px] leading-relaxed ${
-                cannotUse(shown) ? 'border-warn/40 text-warn' : 'border-border text-muted'
-              }`}
-            >
-              {/* Said out loud, not only to a screen reader. Two dim Use buttons
-                  otherwise look alike for different reasons -- one because the harness
-                  is already running, one because its binary is missing -- and the
-                  reader cannot tell which. Same key as the row description, so the
-                  visible and the announced text cannot drift. */}
-              {shown === current && (
-                <span className="font-semibold text-text-strong">
-                  {i18nT('pages.developer.agentBackendTab.in_use')}{' '}
-                </span>
-              )}
-              {status(shown)}
-              {install && notInstalled(shown) && (
-                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  {/* Named for a screen reader and not on screen: the command sits
-                      directly under "Missing on this machine: X" with a Copy command
-                      button beside it, so a sighted reader already knows what the
-                      monospace block is, while a screen reader would otherwise be
-                      read a bare shell string with no idea what it is for. */}
-                  <span className="sr-only">
-                    {i18nT('pages.developer.agentBackendTab.install_command')}
-                  </span>
-                  {/* Selectable text as well as copyable: an operator on a machine
-                      whose clipboard the browser will not touch still has the string. */}
-                  <code className="min-w-0 break-all rounded bg-bg-accent px-1.5 py-0.5 text-text-strong">
-                    {install}
-                  </code>
-                  {/* The SHARED copy control, not a hand-rolled one. A bare
-                      `navigator.clipboard.writeText` silently no-ops wherever the async
-                      Clipboard API is missing -- it needs a secure context, and a
-                      plain-HTTP LAN or remote gateway is not one, which is a large share
-                      of this product's real deployments. `CopyCommandButton` goes through
-                      `copyCode`, which falls back to `execCommand`, and it shows its tick
-                      only once the text actually reached the clipboard. A tick over an
-                      unchanged clipboard is worse than no affordance: the reader walks
-                      away believing they hold the command. */}
-                  <CopyCommandButton text={install} />
-                </div>
-              )}
-              {canRecheck && (
-                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    disabled={recheckMut.isPending}
-                    className="rounded-md border border-border bg-bg-elevated px-2 py-[3px] text-text-strong cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    onClick={() => recheckMut.mutate(shown)}
-                  >
-                    {recheckMut.isPending
-                      ? i18nT('pages.developer.agentBackendTab.checking')
-                      : i18nT('pages.developer.agentBackendTab.check_again')}
-                  </button>
-                </div>
-              )}
-              {/* Inline, inside the strip, because that is where the control that
-                  failed is. `askAgent` for the same reason as the notice at the top:
-                  nothing here is an unsaved draft, and a failed probe or a refused
-                  clipboard is exactly the kind of thing the agent can read the
-                  structured context for. */}
-              {stripError?.backend === shown && (
-                <div className="mt-1.5">
-                  <ErrorNotice
-                    message={stripError.message}
-                    variant="inline"
-                    askAgent
-                    onDismiss={() => setStripError(null)}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Tool approval stays first among the standing lines. It is the one
-                security-relevant line on the card and the reason a build-excluded
-                agent cannot be picked -- and on the one agent that also carries a
-                gating caveat, "how it is made to ask" has to precede "and here is the
-                hole in that", or the two read as two answers to one question. */}
-            {approvalLine(shown) && (
-              <p className="mt-2 mb-0 text-[11px] leading-relaxed text-muted">{approvalLine(shown)}</p>
-            )}
-            {caveats(shown).map(line => (
-              <p key={line} className="mt-1 mb-0 text-[11px] leading-relaxed text-muted">
-                {line}
-              </p>
-            ))}
-            {/* Security notes sit beside the approval line for the reason it is not
-                behind a disclosure either. Two of them describe a boundary MOVING --
-                Crew's own sandbox standing down for this child, and Crew handing over
-                its own credential -- and the sandbox one fails open by design. WHICH
-                notes these are is the server's classification, sent as its own list.
-                Emphasis as WEIGHT rather than as alarm: these are permanent
-                properties of the agent, not problems awaiting a fix. */}
-            {securityNotes(shown).map(id => (
-              <p key={id} className="mt-1 mb-0 text-[11px] leading-relaxed text-text-strong">
-                {NOTE_LABEL[id]}
-              </p>
-            ))}
-            {/* The MCP half renders BEFORE the tool-off cost below it, and the
-                order is the point: the cost line is the first place a reader meets
-                the word "MCP", and the summary is where it is explained. A gloss a
-                reader reaches only after the sentence that needed it arrived too
-                late. */}
-            {capabilityLines(shown).length > 0 && (
-              /* Open, not collapsed. It was a `<details>` because up to fifteen lines
-                 times eight harnesses buried the control the panel exists for; with
-                 one harness on screen there is nothing to bury, and the capability
-                 set is the thing the reader came for. */
-              /* Muted for a harness this build does not offer: a full-strength
-                 capability list directly under "This build does not offer this agent"
-                 reads as a mixed message. The facts are still true and still shown --
-                 an operator asking "why can I not pick that?" needs them -- they just
-                 stop competing with the line that answers the question. */
-              <div className={`mt-2 ${buildExcluded(shown) ? 'opacity-60' : ''}`}>
-                <div className="text-[11px] font-semibold text-muted">
-                  {i18nT('pages.developer.agentBackendTab.card_supports_n_of_m', {
-                    name: nameOf(shown),
-                    available: capabilityLines(shown).filter(line => line.available).length,
-                    // CHECKED lines, not every line. An unchecked cell inside the
-                    // denominator and named as uncounted in the same breath is a
-                    // sentence that contradicts itself, and a reader has no way to
-                    // tell which half is true. Out of the fraction, it is counted as
-                    // neither BY the arithmetic, and the clause beside it says how
-                    // many sit outside. Identical to the old number on any harness
-                    // with nothing unchecked, which is every harness but two.
-                    total: capabilityLines(shown).filter(line => line.measured !== false).length,
-                  })}
-                  {capabilityLines(shown).filter(line => line.measured === false).length > 0 && (
-                    /* The count above is supported of TOTAL, and an unmeasured line sits
-                       in the total without being in the supported half -- so the numbers
-                       alone read as "unsupported" by subtraction. Naming the remainder is
-                       what stops the count from making the claim the third state exists
-                       to withdraw. */
-                    <span className="font-normal text-[10px] opacity-80">
-                      {' '}
-                      {i18nT('pages.developer.agentBackendTab.card_n_not_measured', {
-                        unmeasured: capabilityLines(shown).filter(
-                          line => line.measured === false,
-                        ).length,
-                      })}
-                    </span>
-                  )}
-                </div>
-                <ul className="mt-1 mb-0 list-none pl-0 space-y-0.5 text-[11px] leading-relaxed">
-                  {capabilityLines(shown).map(line => (
-                    <li key={line.id} className="flex items-start gap-1.5">
-                      {/* The icon is decorative and the STATE is text: a mark that
-                          only differs by shape and colour is unreadable to a screen
-                          reader and to anyone who cannot tell the two colours apart. */}
-                      {/* Three answers, three glyphs, and the unmeasured one borrows
-                          neither of the others: a tick would promise what nobody has
-                          driven, and the cross a real absence wears is what hides the
-                          cell a measurement would pay for. Tested `=== false` rather
-                          than for falsiness, so a gateway that sends no flag reads as
-                          measured and the card it serves is the card it served. */}
-                      {line.measured === false ? (
-                        /* 11 and not 12: a ring encloses its ink where a tick and a
-                           cross are two strokes, so the same nominal size renders a
-                           heavier mark and the third state reads as a badge among ten
-                           line glyphs. */
-                        <CircleHelp
-                          size={11}
-                          strokeWidth={1.75}
-                          aria-hidden
-                          className="mt-0.5 shrink-0 text-warn"
-                        />
-                      ) : line.available ? (
-                        <Check size={12} aria-hidden className="mt-0.5 shrink-0 text-ok" />
-                      ) : (
-                        <X size={12} aria-hidden className="mt-0.5 shrink-0 text-muted" />
-                      )}
-                      <span className={line.available ? 'text-text-strong' : 'text-muted'}>
-                        <span className="sr-only">
-                          {line.measured === false
-                            ? i18nT('pages.developer.agentBackendTab.card_not_measured')
-                            : line.available
-                              ? i18nT('pages.developer.agentBackendTab.card_available')
-                              : i18nT('pages.developer.agentBackendTab.card_not_available')}
-                        </span>
-                        {CAPABILITY_LABEL[line.id]}
-                        {line.measured === false && unmeasuredReason(line.unmeasured_reason) && (
-                          /* Its OWN line, dimmer and smaller, indented to the label
-                             column by sitting inside the label's span. Inline it fused
-                             with the label instead -- two blind readers of the rendered
-                             card both read "The /compact command works No live run has
-                             measured this yet" as one clause, which states the opposite
-                             of what the row means. A block also gives the longest text
-                             on the card somewhere to wrap to that is not the glyph
-                             column. */
-                          <span className="mb-0.5 block max-w-[44ch] text-[10px] leading-snug opacity-80">
-                            {unmeasuredReason(line.unmeasured_reason)}
-                          </span>
-                        )}
+                }
+                current={isCurrent}
+                describedBy={rowStatusId(value)}
+                status={
+                  <span className="flex shrink-0 items-center gap-2">
+                    {/* Which backend is IN USE, as a word and not a mark: with the
+                        badge beside it, "Installed" would otherwise stand for two
+                        facts at once -- able to run, and the one running. Only on
+                        the configured row, so the column reads as a column. */}
+                    {isCurrent && (
+                      <span
+                        className="text-[11px] font-medium text-accent"
+                        title={i18nT('pages.developer.agentBackendTab.use_button_in_use')}
+                      >
+                        {i18nT('pages.developer.agentBackendTab.use_button_in_use')}
                       </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+                    )}
+                    {/* No verdict is not a verdict: a probe that did not answer gets
+                        no badge rather than a claim, so the row never says an
+                        install it did not measure. */}
+                    {row && (
+                      <AgentStatusBadge
+                        probe={row}
+                        blocked={false}
+                        notOffered={buildExcluded(value)}
+                      />
+                    )}
+                  </span>
+                }
+                detailId={DETAIL_ID}
+                detailTestId="agent-harness-detail"
+              >
+                {selected && (
+                  <>
+                    {/* The state, first. `STRIP_ID` is what the Use button describes
+                        itself with, so the reason a dead button is dead is the one
+                        block a screen reader gets -- not the whole detail, this
+                        button included. */}
+                    <div id={STRIP_ID} className="space-y-3">
+                      {lead(value)}
+                    </div>
+                    {/* What Use DOES, on the one row where the question arises. A
+                        checked row is the one being READ, `aria-current` is the one
+                        RUNNING, and the two coincide by default — so a reader who
+                        checked another row has a radio that says "chosen" and a
+                        button that says "Use", with nothing stating that neither has
+                        switched anything yet. One sentence, directly above the
+                        button, names the from and the to. Absent on the running row
+                        (there is no button) and on a harness this build never
+                        offers (same). */}
+                    {!buildExcluded(value) && !isCurrent && (
+                      <p className="mb-0 text-[12px] leading-relaxed text-muted">
+                        {i18nT('pages.developer.agentBackendTab.use_switches_new_sessions', {
+                          current: nameOf(current),
+                          name: nameOf(value),
+                        })}
+                      </p>
+                    )}
+                    {/* The only control that switches anything. ABSENT rather than
+                        dead for the harness already in use (the row says so) and for
+                        a harness this build never offers: a PATCH the wire refuses is
+                        not a button. Check again only where a re-check can change the
+                        verdict. */}
+                    <AgentDetailActions
+                      name={nameOf(value)}
+                      onUse={
+                        !buildExcluded(value) && !isCurrent
+                          ? () => {
+                              // A PATCH writing the value already stored still
+                              // resolves, which would run `onSuccess` and reset the
+                              // model list. The button is absent on the active
+                              // harness; this is the second guard, because an
+                              // absence is a render away from being wrong.
+                              if (value !== current) patchMut.mutate(value)
+                            }
+                          : undefined
+                      }
+                      useDisabled={cannotUse(value)}
+                      useDescribedBy={STRIP_ID}
+                      busy={busy}
+                      switching={patchMut.isPending && patchMut.variables === value}
+                      onRecheck={canRecheck ? () => recheckMut.mutate(value) : undefined}
+                      rechecking={recheckMut.isPending}
+                    />
+                    {/* Inline, inside the detail, because that is where the control
+                        that failed is. `askAgent` for the same reason as the notice at
+                        the top: nothing here is an unsaved draft, and a failed probe
+                        is exactly the kind of thing the agent can read the structured
+                        context for. Keyed by backend (see `stripError`), so a late
+                        rejection paints under the harness it belongs to. */}
+                    {stripError?.backend === value && (
+                      <ErrorNotice
+                        message={stripError.message}
+                        variant="inline"
+                        askAgent
+                        onDismiss={() => setStripError(null)}
+                      />
+                    )}
+                    {/* Kiro sign-in, inside the one row whose harness uses it. The
+                        identity the card stores is consumed by the KAS relay alone
+                        (`ACP_BACKENDS_HOST_AUTH_CALLBACK`), so it is offered exactly
+                        where KAS is: on a build that lists KAS without offering it
+                        there is nothing to sign in for, and a chooser there would be
+                        a sign-in to nothing. Isolated so a throwing card cannot take
+                        the switch down with it. */}
+                    {value === KIRO_SIGN_IN_BACKEND && offered.includes(KIRO_SIGN_IN_BACKEND) && (
+                      <ErrorBoundary scope="developer-kiro-sign-in" fallback={null}>
+                        <KiroSignInCard compact />
+                      </ErrorBoundary>
+                    )}
+                    {facts(value)}
+                  </>
+                )}
+              </AgentPickerRow>
+            )
+          })}
+        </fieldset>
 
-
-            {/* The MCP half, and the rule for what is on it: a line reaches the reader
-                only where switching to this agent costs them a feature, adds a risk, or
-                makes one of their own agent-file settings ineffective. Two things pass
-                that test, and the route Crew takes to the agent is not one of them.
-
-                First the RISK, as a rule with its exception directly under it. Switching
-                one tool off is an ordinary action that says nothing about servers, so a
-                reader meets this by accident -- and the exception is labelled as one,
-                because two sentences that qualify each other without saying so read as a
-                contradiction.
-
-                Weight, not colour: a permanent property of the agent, not a problem
-                awaiting a fix, and legible to a reader who cannot tell two colours
-                apart. */}
-            {mcpDenyRule(shown) && (
-              <p className="mt-2 mb-0 text-[11px] leading-relaxed text-text-strong">
-                {mcpDenyRule(shown)}
-              </p>
-            )}
-            {mcpDenyException(shown) && (
-              <p className="mt-1 mb-0 text-[11px] leading-relaxed text-muted">
-                {mcpDenyException(shown)}
-              </p>
-            )}
-
-            {/* Then the settings the reader wrote that will not take effect here. ONE
-                group however the core ruled them: a withhold is a settled decision and a
-                no-channel is an open gap, which is the mirror maintainer's distinction --
-                the reader's question is whether the thing they wrote happens, and each
-                line answers it. Open rather than behind a disclosure: with the route
-                lines gone there is nothing left to bury, and this is the half a reader
-                comparing two agents came for. */}
-            {mcpIneffective(shown).length > 0 && (
-              <>
-                <div className="mt-2 text-[11px] font-semibold leading-relaxed text-muted">
-                  {i18nT('pages.developer.agentBackendTab.card_mcp_ineffective', {
-                    name: nameOf(shown),
-                  })}
-                </div>
-                <ul className="mt-0.5 mb-0 list-disc pl-4 space-y-0.5 text-[11px] leading-relaxed text-muted">
-                  {mcpIneffective(shown).map(id => (
-                    <li key={id}>{mcpSettingLine(shown, id)}</li>
-                  ))}
-                </ul>
-              </>
-            )}
-
-            {/* The one where-it-lives fact left on the card, and it is here because it
-                is also the reader's: whose secret store this agent signs in against is a
-                risk they take on. The three that named a route Crew takes -- whose disk
-                holds the transcript, which registry fills the model picker, which channel
-                carries a slash command -- are recorded off the card in
-                `agent_sdk/backend_cards.py` and stated in `kirocrew doctor`.
-
-                A plain line rather than a disclosure: one line needs no toggle, and the
-                toggle's label was a heading for a list that no longer exists. */}
-            {noteLines(shown).map(id => (
-              <p key={id} className="mt-1 mb-0 text-[11px] leading-relaxed text-muted">
-                {NOTE_LABEL[id]}
-              </p>
-            ))}
-
-            {/* The only control that switches anything, alone at the foot of the
-                detail. Absent rather than dead for a harness this build never offers:
-                a PATCH the wire refuses is not a button. `aria-describedby` names the
-                STRIP and not the panel, so the reason a dead button is dead is the one
-                sentence a screen reader gets — naming the panel would read the whole
-                card out, this button included. */}
-            {!buildExcluded(shown) && (
-              <div className="mt-3 flex justify-end">
-                {/* Raised and bordered only while it can actually be pressed. A dead
-                    click on the panel's ONE mutating control is answered by silence, so
-                    the dead state drops every affordance at once: the border, the fill
-                    and the elevation all go, and the label fades on top of that. Any
-                    one of them left in place reads as pressable on its own. */}
-                <button
-                  type="button"
-                  disabled={useDisabled}
-                  aria-describedby={STRIP_ID}
-                  className={`rounded-md border px-3 py-[5px] text-[13px] font-semibold transition-colors ${
-                    useDisabled
-                      ? 'border-transparent bg-transparent text-muted opacity-40 cursor-not-allowed'
-                      : 'border-border-strong bg-bg-elevated text-text-strong shadow-sm cursor-pointer hover:bg-bg-hover'
-                  }`}
-                  onClick={() => {
-                    // A PATCH writing the value already stored still resolves
-                    // successfully, which would run `onSuccess` and reset the model
-                    // list -- blanking every picker and spawning `--list-models` for a
-                    // backend that did not change. The button is disabled on the
-                    // active harness; this is the second guard, because a disabled
-                    // attribute is a render away from being wrong.
-                    if (shown !== current) patchMut.mutate(shown)
-                  }}
-                >
-                  {/* The reason IS the label on the active harness. Two dead buttons
-                      otherwise look identical for different reasons -- already running
-                      versus binary absent -- and the strip was the only thing telling
-                      them apart. */}
-                  {shown === current
-                    ? i18nT('pages.developer.agentBackendTab.use_button_in_use')
-                    : i18nT('pages.developer.agentBackendTab.use_harness', {
-                        name: nameOf(shown),
-                      })}
-                </button>
-              </div>
-            )}
-          </div>
+        {/* Every row's state as a WORD, for a reader who gets no badge at all.
+            Hidden, outside the rows, and one per row rather than one for the shown
+            row: a reader arrowing down the list is told each harness's state as
+            they reach it, which is the only way the list is scannable without
+            sight. The in-use word is here as well as in `aria-current` because a
+            description is what a reader gets on the row they are ON, while
+            `aria-current` is announced inconsistently across screen readers -- and
+            "this is the one running" is not a fact to leave to chance. */}
+        <div className="sr-only">
+          {rows.map(value => (
+            <span key={value} id={rowStatusId(value)}>
+              {value === current
+                ? `${i18nT('pages.developer.agentBackendTab.in_use')} ${status(value)}`
+                : status(value)}
+            </span>
+          ))}
         </div>
+
         {/* The one thing the per-row lines cannot say. A managed fleet can bound
             this set through the `agent_backend` governance policy, and that policy
             is read once when the gateway starts — so an operator who edits it and
@@ -1615,26 +1557,32 @@ export function AgentBackendTab() {
             detect a not-yet-applied policy edit (that would mean reading the
             trust-root policy on a request path, which the harness-parity rules
             forbid), so stating the semantics is the honest substitute. */}
-        <p className="mt-3 text-[11px] leading-relaxed text-muted">
+        <p className="mb-0 text-[12px] leading-relaxed text-muted">
           {i18nT('pages.developer.agentBackendTab.set_is_fixed_at_gateway_start')}
         </p>
       </SettingsCard>
-      {/* Kiro sign-in, under the switch that gives it a purpose. The identity the
-          card stores is consumed by the KAS relay alone
-          (`ACP_BACKENDS_HOST_AUTH_CALLBACK`), so the card is offered exactly when
-          KAS is: on a build or policy that hides that option there is nothing to
-          sign in for, and a chooser there would be a sign-in to nothing. Keyed on
-          `offered` — the set the switch can move TO, not the wider set it lists, so
-          a harness that is only listed never draws a sign-in for an option nobody
-          can pick. Gated on KAS being OFFERED rather than SELECTED, so the user can
-          sign in first and switch second instead of paying one "not signed in" turn
-          to find the card. Isolated so a throwing card cannot take the switch
-          down with it. */}
-      {offered.includes(KIRO_SIGN_IN_BACKEND) && (
-        <ErrorBoundary scope="developer-kiro-sign-in" fallback={null}>
-          <KiroSignInCard />
-        </ErrorBoundary>
-      )}
     </>
   )
+}
+
+/**
+ * Opens the KAS detail when the URL carries the sign-in anchor as its highlight.
+ *
+ * `useSettingHighlight` (mounted by SettingsPage) waits for the anchor element
+ * and rings it, but it cannot mount the anchor: that lives inside the KAS row's
+ * detail, which opens only when KAS is the checked row. So this watches the same
+ * parameter and checks that row. The callback is held in a ref so the effect
+ * runs once per appearance of the parameter, not once per render — a reader who
+ * then clicks another row must not be dragged back while the highlight is still
+ * being consumed.
+ */
+function SignInDeepLink({ onSignIn }: { onSignIn: () => void }) {
+  const [params] = useSearchParams()
+  const wanted = params.get('highlight') === `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`
+  const callback = useRef(onSignIn)
+  callback.current = onSignIn
+  useEffect(() => {
+    if (wanted) callback.current()
+  }, [wanted])
+  return null
 }

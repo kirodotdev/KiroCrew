@@ -259,3 +259,92 @@ def test_stop_releases_retained_handles_when_end_raises(model, monkeypatch, exce
     assert state.events.count("close_identity") == 2
     assert state.events.count("close_job") == 1
     assert runs.read(cfg, "demo")["state"] == "ready"
+
+
+class _SharingViolation(PermissionError):
+    """A ``PermissionError`` carrying Windows' ``ERROR_SHARING_VIOLATION``."""
+
+    winerror = 32
+
+
+class _FakeClock:
+    """A clock the retry loop advances only by sleeping, so no test waits for real."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, secs: float) -> None:
+        self.sleeps.append(secs)
+        self.now += secs
+
+
+def _held(monkeypatch, path, holds: int, error=_SharingViolation) -> list[int]:
+    """Make *path*'s first *holds* unlinks fail with *error*; count every attempt."""
+    attempts = [0]
+    real = type(path).unlink
+
+    def unlink(self, missing_ok=False):
+        if self == path:
+            attempts[0] += 1
+            if attempts[0] <= holds:
+                raise error(13, "The process cannot access the file")
+        return real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(type(path), "unlink", unlink)
+    return attempts
+
+
+def test_a_wrapper_held_briefly_by_another_process_is_still_deleted(tmp_path, monkeypatch):
+    """The canary's ``[WinError 32]`` on the ``.cmd``: a short hold is waited out."""
+    script = tmp_path / "kcboot.mypod.cmd"
+    script.write_text("@echo off\n", encoding="utf-8")
+    attempts = _held(monkeypatch, script, holds=3)
+    clock = _FakeClock()
+
+    win._unlink_waiting_out_sharing(script, timeout=5.0, sleep=clock.sleep, clock=clock)
+
+    assert not script.exists()
+    assert attempts[0] == 4
+    assert len(clock.sleeps) == 3
+
+
+def test_a_hold_past_the_ceiling_still_fails_closed(tmp_path, monkeypatch):
+    script = tmp_path / "kcboot.mypod.cmd"
+    script.write_text("@echo off\n", encoding="utf-8")
+    _held(monkeypatch, script, holds=10_000)
+    clock = _FakeClock()
+
+    with pytest.raises(PermissionError):
+        win._unlink_waiting_out_sharing(
+            script, timeout=1.0, interval=0.1, sleep=clock.sleep, clock=clock
+        )
+
+    assert script.exists()
+    assert 1.0 <= clock.now < 1.2
+
+
+def test_only_a_sharing_violation_is_retried(tmp_path, monkeypatch):
+    """An access denial is not a transient hold; it fails at once, as before."""
+    script = tmp_path / "kcboot.mypod.cmd"
+    script.write_text("@echo off\n", encoding="utf-8")
+    attempts = _held(monkeypatch, script, holds=1, error=PermissionError)
+    clock = _FakeClock()
+
+    with pytest.raises(PermissionError):
+        win._unlink_waiting_out_sharing(script, timeout=5.0, sleep=clock.sleep, clock=clock)
+
+    assert attempts[0] == 1
+    assert clock.sleeps == []
+
+
+def test_stop_deletes_the_wrapper_through_the_waiting_unlink():
+    """``stop`` reaches the wrapper only through the retrying delete."""
+    import inspect
+
+    source = inspect.getsource(win.stop)
+    assert "_unlink_waiting_out_sharing(task_script_path(cfg, name))" in source
+    assert "task_script_path(cfg, name).unlink(" not in source

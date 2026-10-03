@@ -166,6 +166,83 @@ class TestRosterExposesFilterKeys:
         assert rows["pkg"]["source"] == "package"
 
     @pytest.mark.asyncio
+    async def test_roster_rows_carry_the_listing_facts(self, tmp_path):
+        """`dashboard_created` (source kirocrew AND a member id) and
+        `has_dm_message` (the DM thread holds a non-metadata row) are the two
+        booleans the page lists rows on. The member id itself never joins the
+        allowlist; a created member's slug is its id already."""
+        from kiro_crew import members as members_mod
+
+        member_id = "m-0123456789abcdef"
+        fake = SimpleNamespace(
+            agents={
+                "made": KiroCrewAgentConfig(kiro_agent="made", member_id=member_id),
+                "legacy": KiroCrewAgentConfig(kiro_agent="legacy"),
+                "stamped": KiroCrewAgentConfig(
+                    kiro_agent="stamped", source="radar-app", member_id="m-feedfacefeedface"
+                ),
+                "chatted": KiroCrewAgentConfig(kiro_agent="chatted", source="radar-app"),
+                "opened": KiroCrewAgentConfig(kiro_agent="opened", source="package"),
+            },
+            default_agent="legacy",
+            memory_stores={},
+            degraded_sections=frozenset(),
+        )
+        state = _make_state(tmp_path)
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
+            # `chatted` has a real message; `opened` has only a metadata line
+            # (its thread was opened, nothing was said).
+            for name in ("chatted", "opened"):
+                slug = members_mod.member_slug(name, fake)
+                members_mod.write_dm_binding(slug, member=name, slot_key=f"member-{slug}")
+            chat_key = members_mod.member_thread_session_alias(
+                members_mod.member_slug("chatted", fake)
+            )
+            state.conversation_log.append(chat_key, "user", "hello")
+            open_key = members_mod.member_thread_session_alias(
+                members_mod.member_slug("opened", fake)
+            )
+            state.conversation_log.set_title(open_key, "Opened")
+            async with TestClient(TestServer(_members_app(state))) as client:
+                body = await (await client.get("/api/members")).json()
+        rows = {r["name"]: r for r in body["members"]}
+        assert rows["made"]["dashboard_created"] is True
+        assert rows["made"]["slug"] == member_id
+        assert rows["legacy"]["dashboard_created"] is False
+        # An app's own source stamp is not a dashboard create, id or not.
+        assert rows["stamped"]["dashboard_created"] is False
+        assert rows["chatted"]["has_dm_message"] is True
+        assert rows["opened"]["has_dm_message"] is False
+        assert rows["made"]["has_dm_message"] is False
+        assert all("member_id" not in r and "created" not in r for r in rows.values())
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_that_cannot_be_stat_d_still_lists_its_row(self, tmp_path):
+        """The message probe runs before the mtime gate: a bound thread whose
+        file cannot be stat'd is unreadable, and an unreadable thread must
+        never hide its row."""
+        from kiro_crew import members as members_mod
+
+        fake = SimpleNamespace(
+            agents={"chatted": KiroCrewAgentConfig(kiro_agent="chatted", source="radar-app")},
+            default_agent="",
+            memory_stores={},
+            degraded_sections=frozenset(),
+        )
+        state = _make_state(tmp_path)
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
+            slug = members_mod.member_slug("chatted", fake)
+            members_mod.write_dm_binding(slug, member="chatted", slot_key=f"member-{slug}")
+            state.conversation_log.append(
+                members_mod.member_thread_session_alias(slug), "user", "hello"
+            )
+            with patch.object(state.conversation_log, "session_mtime", return_value=None):
+                async with TestClient(TestServer(_members_app(state))) as client:
+                    body = await (await client.get("/api/members")).json()
+        rows = {r["name"]: r for r in body["members"]}
+        assert rows["chatted"]["has_dm_message"] is True
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "raw",
         ["aim", "", "Package", "AKIAIOSFODNN7EXAMPLE", "kirocrew ", "https://evil.example/x?k=v"],

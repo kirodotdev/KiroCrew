@@ -60,7 +60,10 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     internal_memory_scope,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    _POLL_GATE_MAX_AGE_SECS,
+    reject_if_kiro_unverified,
+)
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
@@ -1304,7 +1307,14 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     # `kiro-cli chat --no-interactive ... /usage`, which auto-opens a browser
     # login while signed out. This endpoint is polled every 30s by the top-bar
     # credit pill, so an unauthenticated gateway spawned a browser every 30s.
-    blocked = await reject_if_kiro_unverified(request)
+    #
+    # Read on the poll-gate max-age, not the tight destructive bound: a 30s bound
+    # matches this endpoint's own 30s poll, so the latch expires at nearly every
+    # tick and the request runs a whoami probe inline — the documented-cached
+    # read then waits seconds on the probe. The wider window authorizes many
+    # polls between probes while still containing the only risk (a browser login
+    # spawned on a stale ready=True).
+    blocked = await reject_if_kiro_unverified(request, max_age_secs=_POLL_GATE_MAX_AGE_SECS)
     if blocked is not None:
         return blocked
     now = time.time()
@@ -1488,6 +1498,10 @@ async def api_sessions(request: web.Request) -> web.Response:
         Older-sessions pane asks, because it is the surface that presents these
         rows as a LIST OF CONVERSATIONS — and a machine transcript carries no
         title, so it renders its own storage key as the row label there.
+        The same flag drops a NEVER-USED session: no title and no row besides
+        its metadata line. That is a tab opened and closed without a message
+        (for example the blank tab the chat page opens when no tab is left).
+        It has nothing to resume, and it too would show its storage key.
 
     Returns ``{sessions, total, has_more}`` for pagination.
     """
@@ -1525,7 +1539,30 @@ async def api_sessions(request: web.Request) -> web.Response:
             if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
         ]
     if user_only:
-        all_sessions = [s for s in all_sessions if not _is_machine_only_session(s.get("key", ""))]
+        log = state.conversation_log
+
+        def _has_content(row: dict) -> bool:
+            # ``list_sessions`` titles a session from its metadata or its first
+            # user message, and falls back to the key itself. A titled row is kept
+            # without a read, even when it has no messages: a title is a user
+            # signal. Only a row whose title IS its key pays for a file read.
+            key = row.get("key", "")
+            if row.get("title", key) != key:
+                return True
+            try:
+                return log.has_messages(key)
+            except OSError:
+                # Unreadable is not empty: never hide what could not be read.
+                return True
+
+        def _user_rows(sessions: list[dict]) -> list[dict]:
+            return [
+                s
+                for s in sessions
+                if not _is_machine_only_session(s.get("key", "")) and _has_content(s)
+            ]
+
+        all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
     # one list. The client advances its offset by the number of rows it received,
     # so filtering on its side instead would skip or repeat rows across pages.
@@ -3282,7 +3319,8 @@ def _remove_session_crew_logs(
 
     try:
         for slot_key, units in taken.items():
-            recorded = session_ledger.exclude_units(slot_key, tuple(units))
+            # The transcript is already unlinked, so nothing is left to refuse.
+            recorded = session_ledger.exclude_units(slot_key, tuple(units), refusable=False)
             added[slot_key] = set(getattr(recorded, "added", ()) or ())
     except session_ledger.LedgerExclusionError:
         logger.error(

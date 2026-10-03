@@ -40,13 +40,15 @@ interface SettingsToggleProps {
    *  acts, instead of leaving a side effect discoverable only by exploring. */
   describedBy?: string
   /**
-   * A "?" tip beside the label, for a sentence that explains what the control IS.
+   * An info tip beside the label, for prose that explains what the control IS.
    *
    * The counterpart to `description`, which keeps its text permanently on the row.
    * Use `description` only when the sentence is needed to MAKE the choice (a
-   * consequence, a cost, where data goes); anything a reader would want once and
-   * never again belongs here, because a row that always shows two lines of prose
-   * spends attention whether or not it is being read.
+   * consequence, a cost, where data goes, a status); anything a reader would want
+   * once and never again belongs here, because a row that always shows two lines
+   * of prose spends attention whether or not it is being read. The tip shows on
+   * hover and focus, pins on click or tap, and is the control's accessible
+   * description (`InfoTip`). One catalog string per tip.
    */
   hint?: string
 }
@@ -70,7 +72,7 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
           <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
           {/* Marked, not handled: `fromHint` above reads this attribute off the
               event target, so the tip needs no handler of its own. */}
-          {hint && <span data-settings-hint><InfoTip text={hint} /></span>}
+          {hint && <span data-settings-hint><InfoTip text={hint} placement="top" /></span>}
         </div>
         {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
       </div>
@@ -103,7 +105,7 @@ export function SettingsField({ label, description, hint, configKey, settingId, 
         {controlId
           ? <label htmlFor={controlId} className="text-[13px] font-semibold text-text">{label}</label>
           : <span className="text-[13px] font-semibold text-text">{label}</span>}
-        {hint && <InfoTip text={hint} />}
+        {hint && <InfoTip text={hint} placement="top" />}
       </div>
       {description && <div className="text-[12px] text-muted">{description}</div>}
       {children}
@@ -157,6 +159,7 @@ export function SettingsSelect({ label, description, hint, value, options, optio
 interface SettingsComboboxProps {
   label: string
   description?: string
+  hint?: string
   value: string
   options: SearchableSelectOption[]
   onChange: (value: string) => void
@@ -178,10 +181,10 @@ interface SettingsComboboxProps {
  * scan, or one that carries a per-option sublabel. Reach for `SettingsSelect` at
  * a dozen-ish fixed options and this past that.
  */
-export function SettingsCombobox({ label, description, value, options, onChange, triggerFallback, searchPlaceholder, customValueOption, action, actionStatus, configKey }: SettingsComboboxProps) {
+export function SettingsCombobox({ label, description, hint, value, options, onChange, triggerFallback, searchPlaceholder, customValueOption, action, actionStatus, configKey }: SettingsComboboxProps) {
   const controlId = React.useId()
   return (
-    <SettingsField label={label} description={description} configKey={configKey} controlId={controlId}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} controlId={controlId}>
       <SearchableSelect
         id={controlId}
         options={options}

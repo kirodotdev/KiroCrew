@@ -115,10 +115,37 @@ export function useComposerVoice(host: ComposerVoiceHost) {
    * transcript, so tidying it is correct rather than corrupting.
    */
   const composerEpochRef = useRef(0)
+  /**
+   * A cleanup failure the user can see and dismiss.
+   *
+   * Kept SEPARATE from `useVoiceInput`'s own `error` and merged only at the
+   * boundary, so a feature-local failure does not need a setter on a hook several
+   * composers share. Both travel the same dismissible channel, which is what makes
+   * this safe to surface: the transcript is already in the composer, so the notice
+   * reports a correction that did not happen rather than words that were lost.
+   *
+   * Sharing that channel means sharing its LIFETIME, which is why this is declared
+   * beside the epoch rather than beside the request that raises it. `useVoiceInput`
+   * clears its own error at the top of every `start()`, so the composer's error has
+   * only ever described the capture on screen -- and `ChatInput` relies on exactly
+   * that: its `showDictation` gate blanks the live dictation panel whenever
+   * `voiceError` is set, on the premise that an error there means the microphone.
+   * A notice about a cleanup that did not run says nothing about the microphone, so
+   * it is cleared at each of the four moments the delivery it describes stops being
+   * the one in front of the user: a new capture, a new delivery, a send, and a slot
+   * change -- the epoch's own list, plus the capture start the engine already uses.
+   */
+  const [polishError, setPolishError] = useState<string | null>(null)
   const sessionIdRef = useRef(sessionId)
   // A slot change is also the end of a delivery's life. Bumped here rather than in an
   // effect so it lands BEFORE any reply can be applied in the new slot's render.
-  if (sessionIdRef.current !== sessionId) composerEpochRef.current += 1
+  if (sessionIdRef.current !== sessionId) {
+    composerEpochRef.current += 1
+    // Setting state during the render that observed the prop change is React's own
+    // pattern for it, and is what keeps the notice from arriving in a slot that
+    // never dictated. Re-entrant only once: the ref below falsifies the condition.
+    setPolishError(null)
+  }
   sessionIdRef.current = sessionId
   const isComposerForRef = useRef(host.isComposerFor); isComposerForRef.current = host.isComposerFor
   const deliverOffScreenRef = useRef(host.deliverOffScreen); deliverOffScreenRef.current = host.deliverOffScreen
@@ -299,17 +326,6 @@ export function useComposerVoice(host: ComposerVoiceHost) {
    * this is a correction to a finished transcript, not a new dictation, and the
    * live-region bookkeeping belongs to the capture that produced it.
    */
-  /**
-   * A cleanup failure the user can see and dismiss.
-   *
-   * Kept SEPARATE from `useVoiceInput`'s own `error` and merged only at the
-   * boundary, so a feature-local failure does not need a setter on a hook several
-   * composers share. Both travel the same dismissible channel, which is what makes
-   * this safe to surface: the transcript is already in the composer, so the notice
-   * reports a correction that did not happen rather than words that were lost.
-   */
-  const [polishError, setPolishError] = useState<string | null>(null)
-
   const polishDictation = useCallback((raw: string, written: string, end: number) => {
     const start = end - raw.length
     // The span invariant, checked rather than assumed: `spliceDictationText` owns
@@ -324,6 +340,13 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // to be checked as identity.
     const owner = sessionIdRef.current
     const epoch = composerEpochRef.current
+    // The capture generation too. `startVoice()` clears `polishError` and bumps
+    // `startGenRef` for the NEXT recording but does NOT bump `composerEpochRef`,
+    // so the owner/epoch pair alone cannot tell a reply for the finished capture
+    // from one the new capture would own. A late rejection (the server allows up
+    // to `_POLISH_TIMEOUT_SECS`, and a transport drop or gateway restart rejects
+    // after the clear ran) must not re-blank the waveform of a working mic.
+    const capture = startGenRef.current
     void api.sttPolish(raw)
       .then(res => {
         if (!res?.changed || !res.text || res.text === raw) return
@@ -345,6 +368,14 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       // worked. A dismissible notice is the honest signal, and because the words are
       // already delivered it costs them nothing to ignore.
       .catch(() => {
+        // Same guards the `.then` applies, for the same reason: a rejection that
+        // settles after a new capture, a send, or a slot change describes a
+        // delivery no longer in front of the user. Without this, that late
+        // failure re-shows the notice -- and in the new-capture case blanks the
+        // waveform of a microphone that is working, the exact bug this fix is for.
+        if (sessionIdRef.current !== owner) return
+        if (composerEpochRef.current !== epoch) return
+        if (startGenRef.current !== capture) return
         setPolishError(i18nT('hooks.useVoiceInput.polish_failed'))
       })
   }, [inputRef, setInput, voicePendingCaretRef])
@@ -420,6 +451,9 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // A NEW delivery ends the previous one's lifetime, so two dictations in flight
     // cannot have the later one's reply land on the earlier one's span.
     composerEpochRef.current += 1
+    // And with it the notice describing that delivery's cleanup: this delivery is
+    // about to get its own answer, and a stale failure would sit on top of it.
+    setPolishError(null)
     if (sttPolishRef.current) polishDictation(text, spliced.value, spliced.caret)
   }, [isComposerFor, spliceDictation, rebaseFrozenCaret, inputRef, setInput, voicePendingCaretRef, polishDictation])
   // Capture can end from a manual release or from the readiness-buffer ceiling.
@@ -667,6 +701,10 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     postStopEditedRef.current = false
     frozenCaretRef.current = null
     tapThisSessionRef.current = !opts?.silent
+    // Paired with `voice.start()`'s own `setError(null)` below: the two halves of the
+    // composer's error reach the user as one value, so a capture that clears one and
+    // not the other leaves the dictation panel blanked for a microphone that works.
+    setPolishError(null)
     setMicOwner(instanceId, sessionIdRef.current)
     startingRef.current = true
     const gen = ++startGenRef.current
@@ -933,6 +971,9 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // delivery already in the composer, including one whose capture finished long ago
     // and whose polish is still in flight.
     composerEpochRef.current += 1
+    // The composer is empty after this, so a notice about what used to be in it has
+    // nothing left to point at.
+    setPolishError(null)
     if (voiceRef.current.recording && streamEnabledRef.current) {
       sttDisarmedRef.current = true
       frozenInputRef.current = null

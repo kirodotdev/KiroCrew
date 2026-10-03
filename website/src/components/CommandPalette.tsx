@@ -28,6 +28,7 @@ import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { useVisualViewport } from '../hooks/useVisualViewport'
+import { focusComposerNow } from '../pages/chat/composerFocus'
 /**
  * Search Everywhere command palette.
  *
@@ -204,6 +205,9 @@ export default function CommandPalette({
   const resultsRef = useRef<Result[]>([])
 
   const inputRef = useRef<HTMLInputElement | null>(null)
+  // What held focus before the palette opened, refocused when it is dismissed.
+  // Cleared when a row is chosen: the chosen action owns focus.
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
   const q = query.trim()
   const providerById = useMemo(
     () => Object.fromEntries(tabs.map((t) => [t.id, t])),
@@ -253,6 +257,7 @@ export default function CommandPalette({
    */
   const dispatchEnter = useCallback(
     (result: Result, withModifier: boolean) => {
+      restoreFocusRef.current = null
       // Skills are a navigation target in the palette: Enter opens the skills
       // catalog (to view/edit them) rather than inserting a $skill token —
       // there's no per-skill deep link yet, so all skill rows go to the catalog.
@@ -430,8 +435,18 @@ export default function CommandPalette({
     setQuery('')
     setScope(null)
     setDebouncedQuery('')
+    const prev = document.activeElement
+    restoreFocusRef.current = prev instanceof HTMLElement && prev !== document.body ? prev : null
     const id = requestAnimationFrame(() => inputRef.current?.focus())
-    return () => cancelAnimationFrame(id)
+    return () => {
+      cancelAnimationFrame(id)
+      const back = restoreFocusRef.current
+      restoreFocusRef.current = null
+      if (!back) return // a row was chosen, or nothing was focused
+      // Gone: fall back to the chat composer, under the quick-search surfaces' rules.
+      if (back.isConnected) back.focus()
+      else focusComposerNow()
+    }
   }, [open])
 
   // Window-capture listener for the two keys the shared hook doesn't own the

@@ -38,6 +38,7 @@ ALL_EVENTS = (
     "walk_start",
     "walk_done",
     "error",
+    "delivery_uncertain",
     "connect",
     "disconnect",
     "timeout",
@@ -57,6 +58,7 @@ TRANSITIONS: dict[str, dict[str, str]] = {
         "task_complete": "idle",
         "voice_end": "idle",
         "error": "error",
+        "delivery_uncertain": "idle",
         "disconnect": "offline",
     },
     "working": {
@@ -65,6 +67,7 @@ TRANSITIONS: dict[str, dict[str, str]] = {
         "approval_granted": "working",
         "approval_rejected": "idle",
         "error": "error",
+        "delivery_uncertain": "idle",
         "disconnect": "offline",
     },
     "walking": {

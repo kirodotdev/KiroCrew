@@ -233,7 +233,7 @@ class TestOneMisencodedSkillDropsOnlyItsOwnRow:
         scope = first._catalog_scope_id("")
         stored = index.catalog_snapshot(scope)
         assert stored is not None
-        rows, _built_at = stored
+        rows = stored.rows
         # The branch name keeps the two variants' keys apart: the warning bound
         # is process-wide and a failed stat has no fingerprint, so an identical
         # path would be "already warned about" by the time the second runs.

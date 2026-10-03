@@ -159,31 +159,41 @@ decrease:
   parked, stalled and unstarted records do not supply progress evidence. An
   unchanged activity timestamp never buys another probe.
 
-### Idle recovery: a cut the exec track cannot earn back
+### Idle recovery: a cut the exec track earns back only under real load
 
 Every increase rule above is earned on the exec track's own evidence -- demand
-at the cap and completions diffed from `SubagentManager._agents`. A cut is
-evidence about the load that was running when it fired, and two kinds of
-process never produce the evidence that retires it: an idle one, and one whose
-load runs on the runner lane (workflow `ctx.agent()` calls, TaskRunner steps).
-The lane is bounded by the effective cap ([taskq.md](taskq.md) § Runner
-adapters), and its session starts feed `record_start`, so that load can CUT the
-cap -- but its occupancy and completions are not the manager's, so it can never
-earn a step back, and a probe it takes never reports. Overlapping long workflows
-that timed out therefore left the cap at 1 (a probe waiting for a completion
-that was never going to be counted) or 2 (`floor + 1` after one sub-agent
-finished) for the life of the process, however long the host then sat clear.
+at the cap and completions. That evidence comes from two admission points on
+the same effective cap: the `SubagentManager._agents` run table, and the runner
+lane (workflow `ctx.agent()` calls, TaskRunner steps; the lane is bounded by the
+effective cap, [taskq.md](taskq.md) § Runner adapters). A workflow agent holds a
+lane slot and a sub-agent holds a manager slot, never both, so the two
+populations are disjoint and nothing is counted twice. The lane folds its
+occupancy into demand, its committed `done` settles (`RunnerLane.settled_ok`,
+counted at the one settle choke point -- never a grant, fail, cancel, or a
+claim-only container row that holds no slot) into completions, and a fresh
+settle into progress; its session starts already feed `record_start`. So a
+process whose load runs only on the lane can both CUT the cap and earn a step
+back, under the same rules the manager's load obeys. The per-point at-cap tests
+read the busier admission point, never the sum, so two manager plus two lane
+runs at cap 4 earn nothing (neither point is saturated) while a point that is
+genuinely at its cap still earns.
+
+A cut is still evidence only about the load that was running when it fired, and
+an idle process produces none of the evidence that retires it. Overlapping long
+workflows that timed out while the lane sat otherwise quiet could leave the cap
+low until fresh lane or manager load earned it back.
 
 Idle recovery retires that stale evidence without trusting the host with more
-than a restart would: after `DEFAULT_IDLE_RECOVERY_SECS` with no exec demand
-and no signal, the cap climbs `+1` per clean window back to the fresh-start
-value, and an unreported probe resumes at `floor + 1`, never above the fresh-start
-value even when `adaptive_floor >= adaptive_initial`. Above the fresh-start
-value every step is still earned; the next corroborated pressure cuts as
-before, and one signal of any kind restarts the idle clock. Runner-lane load
-still counts as idle to this track, which is why the bound is the fresh-start
-value and not the user's ceiling. A lowered-then-raised `max_subagents` that
-left the cap below the fresh-start value recovers the same way.
+than a restart would: after `DEFAULT_IDLE_RECOVERY_SECS` with no exec demand on
+EITHER admission point and no signal, the cap climbs `+1` per clean window back
+to the fresh-start value, and an unreported probe resumes at `floor + 1`, never
+above the fresh-start value even when `adaptive_floor >= adaptive_initial`.
+Above the fresh-start value every step is still earned; the next corroborated
+pressure cuts as before, and one signal of any kind restarts the idle clock.
+Idle means neither point has demand -- live runner-lane load keeps the track
+out of idle recovery, so the bound there is the fresh-start value and not the
+user's ceiling. A lowered-then-raised `max_subagents` that left the cap below
+the fresh-start value recovers the same way.
 
 ### Accepted scope: one-way slow-start retirement
 

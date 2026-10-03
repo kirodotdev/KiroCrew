@@ -1173,3 +1173,45 @@ async def test_no_request_goes_out_before_the_prompt_is_written():
     handle._prompt_written = False
     assert await handle.steer("too early") is False
     assert rt.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_a_stalled_steering_write_raises_only_when_its_frame_was_buffered(buffered):
+    """A lock-phase stall wrote nothing, so the steer is plainly undelivered. A
+    drain-phase stall left the frame in a pipe the live child may still read:
+    it raises, so the caller requeues the steer as possibly delivered instead
+    of re-sending it as fresh text."""
+    from kiro_crew.acp.runtime import AcpRuntimeStdinStalled
+
+    rt = _Runtime()
+
+    async def _stall(method, params, on_registered=None):
+        if on_registered is not None:
+            on_registered(rt.answer)
+        raise AcpRuntimeStdinStalled("stdin stalled", ambiguous_delivery=buffered)
+
+    rt.send_request_for_answer = _stall  # type: ignore[method-assign]
+    handle = _handle(rt)
+    if buffered:
+        with pytest.raises(AcpRuntimeStdinStalled):
+            await handle.steer("hello")
+    else:
+        assert await handle.steer("hello") is False
+    assert rt.forgotten == [rt.answer], "the registration is dropped either way"
+
+
+@pytest.mark.asyncio
+async def test_a_written_steer_whose_runtime_then_stalls_is_ambiguous():
+    """A sibling's stall kills the runtime after this steer's frame drained: the
+    unanswered steer may still be read and injected, so it raises an ambiguous
+    death instead of reporting itself undelivered."""
+    from kiro_crew.acp.session_handle import AcpRuntimeDead
+
+    rt = _Runtime()
+    rt.stdin_stall_death = True
+    rt.answer.set_exception(AcpRuntimeDead("runtime is dead"))
+    handle = _handle(rt)
+    with pytest.raises(AcpRuntimeDead) as ei:
+        await handle.steer("hello")
+    assert ei.value.ambiguous_delivery is True

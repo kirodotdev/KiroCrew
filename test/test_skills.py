@@ -8,7 +8,7 @@ import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
 from kiro_crew.skill_usage import SkillUsageLedger
-from kiro_crew.skills import _SHORT_DESC_CHARS, SkillsLoader
+from kiro_crew.skills import _NEW_SKILL_BOOST_WINDOW_SECS, _SHORT_DESC_CHARS, SkillsLoader
 
 
 @pytest.fixture(autouse=True)
@@ -2134,6 +2134,140 @@ class TestLazyLoadContext:
         # budget shows all skills AND exercises the usage ordering.
         ctx = loader.get_context(budget=100_000)
         assert ctx.index("**od3**") < ctx.index("**od0**")
+
+    @staticmethod
+    def _shipped_and_user(tmp_path, n_shipped=12, n_user=1, hot=None, shipped_hits=1):
+        """A skills dir of *n_shipped* shipped skills plus *n_user* cold user skills.
+
+        Shipped is marked the way the builtin sync marks every copy it installs.
+        User skills are aged past the new-skill boost window and never used, so
+        rank alone puts every one of them last; each shipped skill carries
+        *shipped_hits* hits, and *hot* (a shipped index) carries several more.
+        """
+        import os
+        import time
+
+        skills_dir = tmp_path / "skills"
+        stale = time.time() - 2 * _NEW_SKILL_BOOST_WINDOW_SECS
+        for i in range(n_user):
+            _create_skill(
+                skills_dir,
+                f"zz-mine{i:02}",
+                f"---\nname: zz-mine{i:02}\ndescription: my own procedure {i}\n---\n# Mine\n",
+            )
+            os.utime(skills_dir / f"zz-mine{i:02}" / "SKILL.md", (stale, stale))
+        for i in range(n_shipped):
+            _create_skill(
+                skills_dir,
+                f"shipped{i:02}",
+                f"---\nname: shipped{i:02}\ndescription: shipped {i}\n---\n# S\n",
+            )
+            (skills_dir / f"shipped{i:02}" / ".builtin-skill-provenance").write_text("2:x")
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        for i in range(n_shipped):
+            for _ in range(shipped_hits):
+                loader._usage.record(f"shipped{i:02}")
+        for _ in range(5 if hot is not None else 0):
+            loader._usage.record(f"shipped{hot:02}")
+        return loader
+
+    @staticmethod
+    def _pointer_names(loader) -> list[str]:
+        text = loader.get_context(budget=100_000, discovery_only=True)
+        return [line[2:].split(":", 1)[0] for line in text.splitlines() if line.startswith("- ")]
+
+    def test_pointer_names_a_cold_user_skill_ahead_of_hot_shipped_ones(self, tmp_path):
+        # A new user has no usage history, so the eight pointer names went to
+        # shipped skills and the skill they wrote was never named at all.
+        loader = self._shipped_and_user(tmp_path)
+        names = self._pointer_names(loader)
+        assert names[0] == "zz-mine00"
+        # The cap is still eight names in total.
+        assert len(names) == 8
+
+    def test_pointer_names_every_user_skill_on_a_zero_usage_install(self, tmp_path):
+        # Three user skills, sixty-odd shipped ones, an empty ledger: all three
+        # user skills are named, and shipped skills fill the remaining slots.
+        loader = self._shipped_and_user(tmp_path, n_shipped=60, n_user=3, shipped_hits=0)
+        names = self._pointer_names(loader)
+        assert names[:3] == ["zz-mine00", "zz-mine01", "zz-mine02"]
+        assert len(names) == 8
+        assert all(n.startswith("shipped") for n in names[3:])
+
+    def test_pointer_keeps_a_hot_shipped_skill_under_a_large_user_tree(self, tmp_path):
+        # The mirror case: ten user skills must not evict a shipped skill the
+        # user actually relies on. At most six of the eight names are the user's
+        # on provenance alone; the rest go to rank, which the hot skill wins.
+        loader = self._shipped_and_user(tmp_path, n_shipped=12, n_user=10, hot=5)
+        names = self._pointer_names(loader)
+        assert len(names) == 8
+        assert "shipped05" in names
+        assert sum(n.startswith("zz-mine") for n in names) == 6
+
+    def test_user_first_order_is_quota_then_rank_then_user_tail(self, tmp_path):
+        loader = self._make(tmp_path, n_on_demand=0)
+        loader._is_user_authored = lambda s: s["user"]  # type: ignore[method-assign]
+
+        def row(name, user):
+            return {"key": name, "user": user}
+
+        # Rank order in: shipped and user rows interleaved, nine user rows.
+        ranked = [
+            row("s0", False),
+            row("u0", True),
+            row("u1", True),
+            row("s1", False),
+            *(row(f"u{i}", True) for i in range(2, 8)),
+            row("s2", False),
+            row("s3", False),
+            row("u8", True),
+        ]
+        out = [r["key"] for r in loader._user_first(ranked)]
+        # Six user rows lead; the two remaining head slots go to the best-ranked
+        # of what is left (s0, s1 outrank the overflow user rows u6, u7); after
+        # the head, the overflow user rows precede the shipped tail.
+        assert out == ["u0", "u1", "u2", "u3", "u4", "u5", "s0", "s1", "u6", "u7", "u8", "s2", "s3"]
+
+    def test_index_admits_a_cold_user_skill_before_hot_shipped_ones(self, tmp_path):
+        loader = self._shipped_and_user(tmp_path)
+        full = loader.get_context(budget=100_000)
+        assert full.index("**zz-mine00**") < full.index("**shipped00**")
+        # A budget with room for only a few rows still spends it on the user's
+        # skill first; the shipped tail goes to the omission footer.
+        tight = loader.get_context(budget=1200)
+        assert "**zz-mine00**" in tight
+        assert "more skill(s) not shown" in tight
+
+    def test_user_authored_classification(self, tmp_path, monkeypatch):
+        import kiro_crew.skills as skills_mod
+
+        skills_dir = tmp_path / "skills"
+        provider = tmp_path / "provider" / "app-skill"
+        provider.mkdir(parents=True)
+        (provider / "SKILL.md").write_text("---\nname: app-skill\ndescription: d\n---\n")
+        from conftest import make_dir_link
+
+        skills_dir.mkdir()
+        make_dir_link(skills_dir / "app-skill", provider)
+        _create_skill(skills_dir, "marked", "---\nname: marked\ndescription: d\n---\n")
+        (skills_dir / "marked" / ".builtin-skill-provenance").write_text("2:x")
+        _create_skill(skills_dir, "packaged", "---\nname: packaged\ndescription: d\n---\n")
+        _create_skill(skills_dir, "team/mine", "---\nname: mine\ndescription: d\n---\n")
+        monkeypatch.setattr(
+            skills_mod, "_trusted_skill_roots", lambda: (str((tmp_path / "provider").resolve()),)
+        )
+        monkeypatch.setattr(skills_mod, "_packaged_skill_names", lambda: frozenset({"packaged"}))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        verdict = {str(r["key"]): loader._is_user_authored(r) for r in loader.scoped_skills()}
+        assert verdict == {
+            "app-skill": False,
+            "marked": False,
+            "packaged": False,
+            # A nested key is not an app namespace: the user's own tree.
+            "team/mine": True,
+        }
+        # A confined project row is the user's without touching its path.
+        assert loader._is_user_authored({"key": "x", "path": "/nonexistent", "confine_root": "/p"})
 
     def test_short_desc_truncated(self, tmp_path):
         loader = self._make(tmp_path, n_on_demand=1)

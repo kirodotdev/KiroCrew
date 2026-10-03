@@ -55,6 +55,9 @@ from .types import (
     DeferPoint,
     FairnessSettings,
     PreparedSpawn,
+    QueuedReadUnavailable,
+    QueuedRun,
+    QueuedRunListing,
 )
 from .waits import _WaitsMixin
 
@@ -106,5 +109,8 @@ __all__ = [
     "DeferPoint",
     "FairnessSettings",
     "PreparedSpawn",
+    "QueuedReadUnavailable",
+    "QueuedRun",
+    "QueuedRunListing",
     "SpawnAdmissionCoordinator",
 ]

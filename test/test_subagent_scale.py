@@ -23,6 +23,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from overload_fakes import settle_depth_emits, settle_store_writes
 
 from kiro_crew import subagent as subagent_module
 from kiro_crew.subagent import (
@@ -2844,10 +2845,11 @@ class TestQueuedDepthReachesZero:
         assert all(d == 0 for d in depths[first_zero:]), depths
 
     def test_dispatching_rows_are_excluded_from_dispatch_reads_only(self):
-        """Two exclusion sets, on purpose. The pump's refill and the depth the
-        chip shows leave a popped row out (it is being started); a parent's
-        Stop and every other pending-work read keep seeing it, because a row in
-        exactly that popped-unclaimed state is the one a Stop must still reach."""
+        """Two exclusion sets, on purpose. The pump's refill (and, through its
+        own set, the depth the chip shows) leaves a popped row out (it is being
+        started); a parent's Stop and every other pending-work read keep seeing
+        it, because a row in exactly that popped-unclaimed state is the one a
+        Stop must still reach."""
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
         mgr._dispatching_ids.add("popped-row")
         assert "popped-row" in mgr._admission.taskq_dispatch_excluded_ids()
@@ -2897,6 +2899,9 @@ class TestQueuedDepthReachesZero:
             mgr._claim_finalize(first)
             assert mgr._release_slot(first)
             mgr._running_count -= 1
+            await settle_store_writes(mgr._taskq, rounds=4)
+            await settle_depth_emits(mgr)
+            popped_at = len(depths)
             mgr._drain_queue()
             await asyncio.wait_for(hold.wait(), 5)
             assert second.id in mgr._dispatching_ids and not mgr._queue
@@ -2904,13 +2909,17 @@ class TestQueuedDepthReachesZero:
             assert await mgr.has_pending_work_for_async("dashboard:s1") is True
             assert mgr.queued_count_for("dashboard:s1") == 1
             assert await mgr.queued_count_for_async("dashboard:s1") == 1
-            # The chip's reading: the row is being started, not waiting.
-            assert mgr._queued_depth("dashboard:s1", for_dispatch=True) == 0
+            # The chip's reading, as published: the row is being started.
+            await settle_store_writes(mgr._taskq, rounds=4)
+            await settle_depth_emits(mgr)
+            assert depths[popped_at:] == [0], depths
             released.set()
-            for _ in range(25):
-                await asyncio.sleep(0.02)
+            await settle_store_writes(mgr._taskq, rounds=4)
+            await settle_depth_emits(mgr)
+        assert second.id in mgr._agents
         assert mgr._dispatching_ids == set()
-        assert depths and depths[-1] == 0, depths
+        # Nothing published after the pop shows the started row as waiting.
+        assert depths[popped_at:] and all(d == 0 for d in depths[popped_at:]), depths
 
     @pytest.mark.asyncio
     async def test_stop_all_reaches_a_popped_but_unclaimed_row(self):

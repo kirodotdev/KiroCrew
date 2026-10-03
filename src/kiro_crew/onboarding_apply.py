@@ -44,6 +44,7 @@ from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.onboarding_plan import _SAFE_NAME_RE, _merge_missing
 from kiro_crew.onboarding_scan import _Item
 from kiro_crew.security import is_sensitive_path
+from kiro_crew.user_json import loads_user_json
 
 # The facade's logger, not ``__name__``: operators and tests filter import
 # warnings on ``kiro_crew.onboarding_import``, whichever owner emits them.
@@ -109,7 +110,7 @@ class _WriteOutcome:
 
 def _load_json_dict(path: Path, *, fail_closed: bool = False) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_user_json(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except OSError:

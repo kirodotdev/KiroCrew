@@ -2325,14 +2325,14 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # taken from the loop, not from a supplied key) and is read-only. This is
         # the single new store seam this PR adds.
         "probes/work_ledger.py",
-        # The crew-log wake's ONE lookup: worker slot -> conductor's armed loop ->
-        # fire_now. It reads exactly one thing, ``read_binding``, and resolves no
-        # external caller's identity: the key it is handed is the slot that just WROTE
-        # the entry (or whose session closed, or whose turn ended), observed by the
+        # The conductor wake's loop-side lookup: worker slot -> conductor's armed
+        # loop -> fire_now, for the close and turn-end triggers (the report trigger is
+        # a crew-log bus subscription and reads no store). It reads exactly one thing,
+        # ``read_binding``, and resolves no external caller's identity: the key it is
+        # handed is the slot whose session closed or whose turn ended, observed by the
         # gateway, never supplied by a request. It is read-only and carries no payload
         # anywhere -- the push moves a deadline, and the conductor's own probe then reads
-        # the store under the conductor's identity, exactly as on a scheduled tick. The
-        # alternative is three copies of this lookup in three triggers.
+        # the store under the conductor's identity, exactly as on a scheduled tick.
         "conductor_wake.py",
     }
 )

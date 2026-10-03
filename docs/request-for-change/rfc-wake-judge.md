@@ -110,7 +110,12 @@ them, so shedding them would delete the evidence the question is asked against,
 and because they are bounded and small -- one `pr_checks` item renders a 90-lane
 board in 42 characters -- so they are never the pressure on the budget. Oldest
 prose because a comment body is as old as its comment, while a summary is observed
-on the tick that sends it:
+on the tick that sends it. Within prose, an item already SEEN on an earlier tick
+goes before any fresh one, and the 40-item cap applies the same order: a seen item
+is context the judge already answered about, while a session row past the read
+cursor is never offered again. A fresh item either bound still has to shed fires
+the tick (`shed_fresh`), exactly as a fresh scrub hit does, so nothing new is lost
+and judged quiet:
 
 - `loop`: the owner's instruction, truncated to 1 500 chars, and the
   `wake_when` / `quiet_when` text of the brief in force — the built-in one, or
@@ -330,7 +335,9 @@ the part deliberately pushed off that loop, because a `gh` spawn would block it.
 - `session`: for each `chat-*` key in `judge.targets`, the transcript rows
   appended since the last tick, assistant and tool rows only, last status line
   first. Creator-only: the same check `session_read_message` applies. A target
-  the owner may not read is dropped and noted, never fetched.
+  the owner may not read is dropped and noted, never fetched. A target is read
+  in pages of 12 rows, up to 3 per tick, until its cursor reaches the end; one
+  still behind after the last page counts as unread, which fires.
 - `work-ledger`: when the owning session is a conductor with a work ledger,
   the new events per open item (typed; they also feed the Phase 3 probe).
 - `self`: the owning session's own ledger `next`, so the judge knows what the

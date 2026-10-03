@@ -1116,11 +1116,11 @@ class AgentConfig:
             "when many MCP servers are configured. kiro-cli backend only. "
             "Deferral only starts once the specs cross tool_search_min_pct or "
             "tool_search_min_tokens; disabling reverts to sending full tool "
-            "specs. Kiro Crew's OWN servers are exempt and always send full "
-            "specs, whatever this is set to: loading one mid-turn would change "
-            "the tools list a thinking block's signature is bound to and the "
-            "provider would reject the conversation. No effect on an alternate "
-            "ACP backend.",
+            "specs. Crew's servers defer only when the spawn runs the pinned "
+            "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any "
+            "other executable, an older or unknown version keeps them resident. To override the never-defer list, set "
+            "ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the "
+            "gateway's environment. No effect on an alternate ACP backend.",
         ),
     )
     tool_search_min_pct: int = field(
@@ -1337,9 +1337,13 @@ class AgentConfig:
             "gateway event loop (the SessionStartGate). session/new blocks while "
             "the backend initializes the session's MCP servers, so a burst of "
             "subagent starts on one shared runtime slows every start until the "
-            "budget is hit; queued starts wait in FIFO order and their queue time "
-            "is not counted against the start budget or the startup watchdog. A "
-            "fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
+            "budget is hit; queued starts a person is waiting on are served first, "
+            "except that a waiting background start is let through after a bounded "
+            "run of them so it is never starved, and FIFO within each class. Queue "
+            "time is not charged to the start budget "
+            "or the startup deadline, but a subagent start that stays queued past "
+            "the start-queue cap ends as never started, unless its subagent "
+            "timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
             "gate and the execution-cap controller. Clamped to 1..64.",
             restart=True,
         ),
@@ -2566,6 +2570,7 @@ class DashboardConfig:
             "liveness probe kills at roughly 20s independently, so a value "
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
+            restart=True,
         ),
     )
     chat_entry_cache_max_entries: int = field(
@@ -3798,8 +3803,8 @@ def _validated_stt_provider(value: object) -> str:
         logger.warning(
             "STT provider %r is retired; using %r instead. It needed a separate "
             "out-of-band install, which the bundled local engine removes while "
-            "recognising the same speech. Run 'kirocrew config defaults --adopt' "
-            "to drop the stored value and this notice.",
+            "recognising the same speech. Run 'kirocrew config defaults --adopt "
+            "stt.provider' to drop the stored value and this notice.",
             value,
             resolved,
         )
@@ -3808,7 +3813,7 @@ def _validated_stt_provider(value: object) -> str:
             "Unknown STT provider %r; using %r instead, so no recogniser runs until "
             "the value is fixed. Selectable providers: %s. Run "
             "'kirocrew config set stt.provider <provider>' to choose one, or "
-            "'kirocrew config defaults --adopt' to drop the stored value.",
+            "'kirocrew config defaults --adopt stt.provider' to drop the stored value.",
             value,
             resolved,
             ", ".join(_VALID_STT_PROVIDERS),

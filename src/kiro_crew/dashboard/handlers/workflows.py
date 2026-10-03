@@ -30,6 +30,7 @@ from typing import Any, Optional
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import internal_memory_scope, read_bounded_json
+from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.workflows.preview import plan_from_source
@@ -451,7 +452,12 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     out = await svc.author(
-        intent, author=author, expected_store=request.get("workflow_expected_store")
+        intent,
+        author=author,
+        expected_store=request.get("workflow_expected_store"),
+        # The dashboard owner waits on the Create-draft spinner; an app token or an
+        # agent's internal call does not (kiro_crew.start_priority).
+        start_priority=owner_start_priority(request),
     )
     return web.json_response(_redact_obj(out))
 

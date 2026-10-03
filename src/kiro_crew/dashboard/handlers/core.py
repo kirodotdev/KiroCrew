@@ -654,6 +654,7 @@ async def api_theme_config(request: web.Request) -> web.Response:
     body = await request.json()
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
+    from kiro_crew.config.loader import ConfigReadError  # noqa: F811
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
     async with _get_config_lock():
@@ -715,7 +716,16 @@ async def api_theme_config(request: web.Request) -> web.Response:
                 changed = True
 
         if changed:
-            await asyncio.to_thread(cfg.save)
+            try:
+                await asyncio.to_thread(cfg.save)
+            except ConfigReadError:
+                # The load above fell back to defaults for this file, so saving
+                # would have replaced the user's whole config with them.
+                logger.warning("Theme config PUT: config.json is unparseable", exc_info=True)
+                return web.json_response(
+                    {"error": "failed to read config file", "code": "config_unreadable"},
+                    status=500,
+                )
 
     return web.json_response(_theme_payload(cfg))
 
@@ -3286,6 +3296,26 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     applied = live.snapshot()
     if applied is None:
         applied = await asyncio.to_thread(KiroCrewConfig.load)
+    if path_key == "agent.acp_backend":
+        from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+        prerequisite = request.app.get("kiro_prerequisite_service")
+        if (
+            isinstance(prerequisite, KiroPrerequisiteService)
+            and not prerequisite.initial_setup_complete
+        ):
+            try:
+                await prerequisite.record_independent_backend_setup(applied.agent.acp_backend)
+            except Exception:
+                logger.warning("Could not record independent backend setup", exc_info=True)
+                return web.json_response(
+                    {
+                        "error": "Agent selection was saved, but setup completion could not be recorded. Try again.",
+                        "code": "setup_marker_write_failed",
+                        "config_saved": True,
+                    },
+                    status=503,
+                )
     return web.json_response(_masked_config_dict(applied))
 
 

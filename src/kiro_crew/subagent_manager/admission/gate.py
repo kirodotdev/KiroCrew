@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ...execution_context import ExecutionContext
     from ...subagent import (
         AGENT_NOT_AVAILABLE_CODE,
+        MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
         QUEUED_REASON_ADAPTIVE_CAP_ZERO,
         QUEUED_REASON_CONCURRENCY_LIMIT,
         QUEUED_REASON_LOW_MEMORY,
@@ -29,12 +30,14 @@ if TYPE_CHECKING:
         _validate_app_agent_ownership,
         _vet_parent_available_agents,
         _vet_spawn_governance,
+        adaptive_pause_text,
         asyncio,
         cached_admission_check,
         check_memory_available,
         logger,
         parent_spawn_policy,
         platform_compat,
+        pop_memory_check_cause,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -71,7 +74,7 @@ class _GateMixin(ManagerComponent):
         """Resolve routing on-loop; async admission supplies its off-loop record read."""
         from dataclasses import replace
 
-        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.loader import KiroCrewConfig, member_template_id
         from kiro_crew.execution_context import (
             ExecutionContext,
             derive_execution,
@@ -106,7 +109,7 @@ class _GateMixin(ManagerComponent):
                         raise ValueError("selected member is unavailable")
                 execution = replace(
                     execution,
-                    template_id=selected.kiro_agent or "kirocrew",
+                    template_id=member_template_id(selected),
                     selection_name=alias,
                 )
         else:
@@ -143,7 +146,7 @@ class _GateMixin(ManagerComponent):
                             execution,
                             selection_kind="member",
                             selection_name=inherited[1],
-                            template_id=selected.kiro_agent or "kirocrew",
+                            template_id=member_template_id(selected),
                         )
                     elif (
                         execution.store.store_id != "default"
@@ -356,9 +359,15 @@ class _GateMixin(ManagerComponent):
             """A policy refusal of a spawn whose row ALREADY exists (a drained
             row the pump re-checks) marks that row failed in the same step,
             so the refusal the caller sees is also the store's verdict and
-            the pump can never dispatch work that was refused."""
+            the pump can never dispatch work that was refused.
+
+            The refused run is registered as a terminal record too: the
+            caller was told it was accepted, and its next ``GET
+            /api/spawn/{id}`` must read this failure, not a 404 for an id
+            that is neither queued nor started any more."""
             if _from_queue and info.error:
                 self._manager._admission.taskq_fail(agent_id, info.error)
+                self._manager._agents.setdefault(info.id, info)
             return self._manager._announce_rejection(info)
 
         # The mutable policy gates (memory identity, cwd allowlist,
@@ -703,11 +712,10 @@ class _GateMixin(ManagerComponent):
             # ``wait`` is the same verdict as a label: it rides on the returned
             # record and on the ``subagent_queued`` event, so the UI and
             # ``POST /api/spawn`` can say a MEMORY deferral is one instead of
-            # rendering it as the capacity queue. It is published only by the
-            # emit that FOLLOWS a successful defer write (each branch below
-            # carries it to its own emit), so a row the store turned out not to
-            # hold -- refused, not queued -- leaves no label behind for the
-            # parent's other rows to wear.
+            # rendering it as the capacity queue. It is recorded only by the
+            # depth request that FOLLOWS the defer (each branch below carries it
+            # to its own request), so a row the store refused -- not queued --
+            # leaves no label behind for the parent's other rows to wear.
             queued = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
@@ -815,14 +823,23 @@ class _GateMixin(ManagerComponent):
                 settled_gb=settled,
                 claim_prices=[price for price, _ in self._manager._claim_prices.values()],
             )
+        pop_memory_check_cause()  # drop a cause left by any earlier reading
         mem_ok, avail_gb = (True, -1.0) if _dispatch_now else check_memory_available(min_gb=min_mem)
+        memory_cause = pop_memory_check_cause()
         if not mem_ok:
+            # An unreadable cgroup usage file still defers; only the words change.
+            unknown_usage = memory_cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+            unknown_note = (
+                "memory headroom unknown: a finite cgroup memory limit is set but its "
+                "usage is unreadable; restore read access to memory.current / "
+                "memory.usage_in_bytes"
+            )
             logger.warning(
-                "Subagent spawn %s: only %.2f GB available, need %.2f GB (this start "
+                "Subagent spawn %s: %s, need %.2f GB (this start "
                 "priced at %.2f GB, plus the starts still warming, with "
                 "agent.spawn_min_memory_gb left over).",
                 "deferred" if _durable else "refused",
-                avail_gb,
+                unknown_note if unknown_usage else f"only {avail_gb:.2f} GB available",
                 min_mem,
                 candidate_price or 0.0,
             )
@@ -836,6 +853,7 @@ class _GateMixin(ManagerComponent):
                     "min_gb": min_mem,
                     "startup_cost_gb": start_cost,
                     "start_price_gb": candidate_price,
+                    **({"cause": memory_cause} if memory_cause else {}),
                     **_task_audit,
                 },
             )
@@ -849,7 +867,9 @@ class _GateMixin(ManagerComponent):
                 parent_session_key=parent_session_key,
                 done=True,
                 error=(
-                    f"spawn refused: only {avail_gb:.1f} GB memory available (need "
+                    f"spawn refused: {unknown_note} (need {min_mem:.1f} GB)"
+                    if unknown_usage
+                    else f"spawn refused: only {avail_gb:.1f} GB memory available (need "
                     f"{min_mem:.1f} GB; {candidate_price or 0.0:.2f} GB for this start)"
                 ),
                 batch_id=batch_id,
@@ -857,8 +877,12 @@ class _GateMixin(ManagerComponent):
             )
             deferred = (
                 _deferred(
-                    f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
-                    f"({candidate_price or 0.0:.2f} GB for this start)",
+                    (
+                        f"{unknown_note}; need {min_mem:.1f} GB"
+                        if unknown_usage
+                        else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
+                        f"({candidate_price or 0.0:.2f} GB for this start)"
+                    ),
                     info,
                     wait={
                         "reason": QUEUED_REASON_LOW_MEMORY,
@@ -1043,13 +1067,7 @@ class _GateMixin(ManagerComponent):
                 )
             }
             capacity_detail = (
-                (
-                    "dispatch paused: the host is low on memory or overloaded, so no new "
-                    "subagent starts until it recovers (configured cap "
-                    f"{self._manager._user_max_concurrent}, effective cap 0)"
-                )
-                if adaptive_paused
-                else ""
+                adaptive_pause_text(self._manager._user_max_concurrent) if adaptive_paused else ""
             )
             # Advisory UI signal: tell the chip how many agents are now waiting
             # to start for this parent so it can appear immediately and show a
@@ -1186,8 +1204,9 @@ class _GateMixin(ManagerComponent):
                 agent_id,
                 "retained admitted generation" if retained else "left queued for the pump",
             )
-            # The row is still QUEUED (or ADMITTED and retained), so the depth
-            # published here must count it. A pump that popped it marked it
+            # The row is still QUEUED (or ADMITTED and retained), and the depth
+            # published here counts both: ``taskq_overflow`` includes admitted
+            # rows no run is registered for. A pump that popped it marked it
             # dispatching; that mark describes an attempt that just ended.
             self._manager._dispatching_ids.discard(agent_id)
             self._manager._emit_queue_depth(parent_session_key, batch_id)

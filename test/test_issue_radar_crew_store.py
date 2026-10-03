@@ -3090,6 +3090,7 @@ def test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed(tm
     log's seq was still below the cached one, and the stale checkpoint would never be
     offered to the comparison this pins.
     """
+    from kiro_crew.crew_log import eager
     from kiro_crew.crew_log.store import segment_paths
 
     crew, sid = _live_crew(tmp_path)
@@ -3100,8 +3101,15 @@ def test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed(tm
     retired_seq = cs._unit_last_seq(sid)
 
     crew_log_emit.reset_caches()
-    for path in segment_paths(KIND_SESSION, sid):
-        path.unlink()
+    # Removed the way retention removes a unit: with the eager folder held between
+    # batches, so none of its folds has a segment open. Windows refuses to unlink a
+    # file any handle holds, and the folder reads this unit on its own thread after
+    # every entry.
+    assert eager.drain(timeout=10.0), "the eager folder never settled"
+    with eager.paused() as held:
+        assert held, "the eager folder could not be held between batches"
+        for path in segment_paths(KIND_SESSION, sid):
+            path.unlink()
     _tick()
     _unit(cid, session_id=sid)
     for number in (11, 13, 15, 17):

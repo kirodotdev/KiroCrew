@@ -218,7 +218,7 @@ function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEd
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); clearPriorActive(); if (!closing) onClose() }}
                 disabled={closing}
-                className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active || closing ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+                className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active || closing ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 [@media(hover:none)]:opacity-70'}`}
                 title={closing ? t('components.bottomTerminalPanel.closing_terminal') : t('components.bottomTerminalPanel.close_terminal')}
                 aria-label={closing ? t('components.bottomTerminalPanel.closing_terminal') : t('components.bottomTerminalPanel.close_terminal')}
               >

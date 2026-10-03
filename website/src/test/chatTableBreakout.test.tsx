@@ -28,6 +28,9 @@ describe('transcript table breakout contract', () => {
 
   it('contains offscreen copy announcements in the table scroll wrapper', () => {
     const { container } = render(<ChatMessageList messages={[{ role: 'assistant', content: TABLE }]} running={false} />)
+    // The scroller is the table root's direct child and owns `overflow-x-auto`;
+    // the overflow fade is a `mask-image` on the scroller itself, so no wrapper
+    // node sits between the root and the scroller.
     const scroll = container.querySelector(`${TABLE_SELECTOR} > .overflow-x-auto`)
     // Absolute sr-only status spans must have a containing block inside the
     // local scroller, or unclipping the bubble lets them widen the transcript.

@@ -26,12 +26,15 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib
 import importlib.util
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from stale_package_attribute import package_attribute_replaced
 
 from kiro_crew import platform_compat, sandbox
 
@@ -629,17 +632,24 @@ def test_a_facade_reached_as_a_module_attribute_is_the_facade() -> None:
     assert _facade_spelling("kiro_crew.sandbox_mount_sweep") == "kiro_crew.sandbox_mount_sweep"
 
 
-def test_the_premise_create_true_through_the_facade_unbinds_the_owner() -> None:
-    """Why the scan exists: the one ``create=True`` patch it allows, run for real."""
-    from kiro_crew import sandbox_mount_sweep
+@pytest.mark.parametrize("split", [False, True], ids=["as-imported", "package-attribute-stale"])
+def test_the_premise_create_true_through_the_facade_unbinds_the_owner(split: bool) -> None:
+    """Why the scan exists: the one ``create=True`` patch it allows, run for real.
 
-    original = vars(sandbox_mount_sweep)["_overflow_uid"]
-    try:
-        with mock.patch.object(sandbox, "_overflow_uid", create=True):
-            pass
-        assert "_overflow_uid" not in vars(sandbox_mount_sweep)
-    finally:
-        sandbox_mount_sweep._overflow_uid = original
+    The owner is read from ``sys.modules``, where the facade writes. Its package
+    attribute can name another copy once an earlier test in the worker imports it
+    fresh, so reading the attribute would make this check depend on test order.
+    """
+    owner = "kiro_crew.sandbox_mount_sweep"
+    with package_attribute_replaced(owner) if split else nullcontext():
+        sandbox_mount_sweep = importlib.import_module(owner)
+        original = vars(sandbox_mount_sweep)["_overflow_uid"]
+        try:
+            with mock.patch.object(sandbox, "_overflow_uid", create=True):
+                pass
+            assert "_overflow_uid" not in vars(sandbox_mount_sweep)
+        finally:
+            vars(sandbox_mount_sweep)["_overflow_uid"] = original
 
 
 def test_every_must_flag_case_passes_the_prefilter() -> None:

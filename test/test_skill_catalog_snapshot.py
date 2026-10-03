@@ -27,9 +27,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew import skill_search_index as skill_search_index_module
 from kiro_crew import skill_trust
 from kiro_crew import skills as skills_module
+from kiro_crew.skill_runtime import catalog as catalog_module
 from kiro_crew.skill_search_index import SKILL_SEARCH_INDEX_FILENAME, SkillSearchIndex
 from kiro_crew.skills import SkillsLoader, _trusted_skill_roots
 
@@ -70,6 +72,61 @@ class _Walk:
         assert self._started.acquire(timeout=_WAIT), "the background walk never started"
 
 
+class _DropAfterScopeRead:
+    """A connection stand-in that commits another connection's drop mid-read."""
+
+    def __init__(self, conn, other: SkillSearchIndex) -> None:
+        self._conn = conn
+        self._other = other
+        self.fired = False
+
+    def execute(self, sql: str, *args):
+        cursor = self._conn.execute(sql, *args)
+        if "FROM skill_catalog_scope" in sql and not self.fired:
+            self.fired = True
+            assert self._other.drop_catalog(), "the other connection could not drop"
+        return cursor
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
+class _CountingLock:
+    """A lock that counts the threads waiting on it, so a test can await one queuing."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._guard = threading.Lock()
+        self.waiting = 0
+
+    def __enter__(self) -> _CountingLock:
+        with self._guard:
+            self.waiting += 1
+        assert self._lock.acquire(timeout=_WAIT), "the lock was never released"
+        with self._guard:
+            self.waiting -= 1
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._lock.release()
+
+
+class _BusyTimeoutAtBegin:
+    """A connection stand-in recording the busy timeout each ``BEGIN IMMEDIATE`` runs under."""
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+        self.seen: list[int] = []
+
+    def execute(self, sql: str, *args):
+        if sql == "BEGIN IMMEDIATE":
+            self.seen.append(self._conn.execute("PRAGMA busy_timeout").fetchone()[0])
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
 class _Harness:
     """Loaders that share one home, plus the gates holding their walks open."""
 
@@ -101,6 +158,44 @@ class _Harness:
         walk = _Walk(rows, gate=self.gate() if blocked else None)
         monkeypatch.setattr(loader, "_iter_uncached", walk)
         return walk
+
+    def stale_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch, *, blocked: bool = False
+    ) -> tuple[SkillsLoader, Path, Path, _Walk]:
+        """A stored snapshot naming ``alpha`` and ``gone``, and a fresh loader over it.
+
+        The fresh loader's walk finds only ``alpha``, which is what the tree looks
+        like once ``gone`` is deleted: a list naming ``gone`` is the stale answer.
+        """
+        alpha = _skill(self.root, "alpha")
+        gone = _skill(self.root, "gone")
+        first = self.loader()
+        # A real cold build, so it runs under a patient budget whatever the test
+        # set: on a loaded runner it outlasts `instant_budget`'s 50 ms.
+        with monkeypatch.context() as patient:
+            patient.setattr(skills_module, "_COLD_CATALOG_WAIT_SECS", _WAIT)
+            assert sorted(_keys(first._iter())) == ["alpha", "gone"]
+        _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+        second = self.loader()
+        walk = self.stub_walk(second, monkeypatch, rows=[("alpha", alpha, None)], blocked=blocked)
+        return second, alpha, gone, walk
+
+    def fail_drops(self, loader: SkillsLoader, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Fail *loader*'s drops, as a neighbour holding the write lock would.
+
+        Returns the names of the threads that attempted one, so a test can tell
+        the invalidation's own attempt from a retry.
+        """
+        index = loader._search_index
+        assert index is not None
+        attempts: list[str] = []
+
+        def failing() -> bool:
+            attempts.append(threading.current_thread().name)
+            return False
+
+        monkeypatch.setattr(index, "drop_catalog", failing)
+        return attempts
 
     def expire(self, loader: SkillsLoader, scope: str = "") -> None:
         """Push *scope*'s in-memory deadline into the past, as the TTL would."""
@@ -136,6 +231,37 @@ def instant_budget(monkeypatch: pytest.MonkeyPatch):
 
 def _keys(rows: list[tuple[str, Path, str | None]]) -> list[str]:
     return [name for name, _path, _within in rows]
+
+
+@pytest.fixture
+def patient_budget(monkeypatch: pytest.MonkeyPatch):
+    """A cold budget that only a broken fence can exhaust.
+
+    The stub walk is instant, so this only has to outlast a slow runner; a broken
+    fence fails by name long before it is spent.
+    """
+    monkeypatch.setattr(skills_module, "_COLD_CATALOG_WAIT_SECS", _WAIT)
+
+
+def _on_thread(target, what: str):
+    """Run *target* on its own thread and return its result, bounded by ``_WAIT``.
+
+    A test that re-enters the loader from inside a patched seam does it here, so
+    a later refactor that holds a lock across that seam fails by name instead of
+    deadlocking the worker.
+    """
+    result: list = []
+    thread = threading.Thread(target=lambda: result.append(target()), daemon=True)
+    thread.start()
+    thread.join(timeout=_WAIT)
+    assert not thread.is_alive(), f"{what} never returned"
+    assert result, f"{what} raised"
+    return result[0]
+
+
+def _trusted(loader: SkillsLoader) -> bool:
+    with loader._catalog_lock:
+        return catalog_module._snapshot_trusted_locked(loader)
 
 
 def _await(condition, what: str) -> None:
@@ -352,6 +478,447 @@ class TestInvalidation:
         _await(lambda: walk.calls >= 2, "a replacement build after the fenced one")
         _await(lambda: _keys(loader._iter()) == ["alpha"], "the replacement to publish")
 
+    @pytest.mark.parametrize("mutator", ["this loader, its drop failing", "a sibling loader"])
+    def test_a_snapshot_read_that_races_a_mutation_is_not_served(
+        self, harness, monkeypatch, instant_budget, mutator
+    ):
+        """A mutation between the stored read and the adoption fences the rows.
+
+        The walk is held past the budget, so nothing papers over a fence that let
+        the rows through: the turn must say "building", never name ``gone``. A
+        sibling's drop is visible only through the index epoch; this loader's own
+        drop that FAILED leaves the epoch unmoved and is caught by its generation.
+        """
+        second, _alpha, _gone, walk = harness.stale_snapshot(monkeypatch, blocked=True)
+        if mutator == "a sibling loader":
+            mutate = harness.loader()._invalidate_iter_cache
+        else:
+            harness.fail_drops(second, monkeypatch)
+            mutate = second._invalidate_iter_cache
+        real_load = second._load_catalog_snapshot
+
+        def read_then_mutate(project_key):
+            stored = real_load(project_key)
+            _on_thread(mutate, "the mutation")
+            return stored
+
+        monkeypatch.setattr(second, "_load_catalog_snapshot", read_then_mutate)
+        assert second._iter() == [], "a fenced snapshot was served"
+        assert second.catalog_status() == "building"
+
+        monkeypatch.setattr(second, "_load_catalog_snapshot", real_load)
+        assert walk.gate is not None
+        walk.gate.set()
+        _await(lambda: _keys(second._iter()) == ["alpha"], "the walk to publish")
+        assert second.catalog_status() == "complete"
+
+    def test_the_snapshot_tier_is_off_while_a_drop_is_running(
+        self, harness, monkeypatch, instant_budget
+    ):
+        """The generation moves before the drop, and the tier stays off until it lands.
+
+        A read in that window finds the pre-mutation rows still stored, under an
+        epoch the drop has not moved yet, so only the watermark can refuse them.
+        """
+        second, _alpha, _gone, _walk = harness.stale_snapshot(monkeypatch, blocked=True)
+        index = second._search_index
+        assert index is not None
+        real_drop = index.drop_catalog
+        raced: list[list[str]] = []
+
+        def read_then_drop() -> bool:
+            raced.append(_keys(_on_thread(second._iter, "the racing read")))
+            return real_drop()
+
+        monkeypatch.setattr(index, "drop_catalog", read_then_drop)
+        second._invalidate_iter_cache()
+        assert raced == [[]], "a read during the drop adopted the stale rows"
+        assert _trusted(second)
+
+    def test_a_failed_drop_is_landed_by_the_next_build_s_own_store(
+        self, harness, monkeypatch, patient_budget
+    ):
+        """One walk lands the drop and stores its own rows, and nothing drops them after.
+
+        The drop goes into the store's transaction. As a write of its own before
+        the store it would refuse the walk's rows, since it moves the epoch; after
+        the store it would delete them; and either one blocks the serial worker.
+        """
+        second, _alpha, _gone, walk = harness.stale_snapshot(monkeypatch)
+        attempts = harness.fail_drops(second, monkeypatch)
+
+        second._invalidate_iter_cache()
+        assert len(attempts) == 1
+        assert not _trusted(second)
+        stored = second._load_catalog_snapshot("")
+        assert stored is not None and "gone" in _keys(stored.rows), "the stale rows are stored"
+        assert _keys(second._iter()) == ["alpha"], "an untrusted snapshot was served"
+
+        _await(lambda: _trusted(second), "the build to land the drop")
+        stored = second._load_catalog_snapshot("")
+        assert stored is not None and _keys(stored.rows) == ["alpha"], "the walk's store was lost"
+        assert walk.calls == 1
+        assert len(attempts) == 1, "the build retried the drop as a write of its own"
+
+    def test_a_build_s_drop_covers_only_the_generation_it_checked(self, harness, monkeypatch):
+        """A mutation that overtakes the build's check is not vouched for by its drop."""
+        second, _alpha, _gone, _walk = harness.stale_snapshot(monkeypatch)
+        harness.fail_drops(second, monkeypatch)
+        second._invalidate_iter_cache()
+        lock = _CountingLock()
+        monkeypatch.setattr(second, "_catalog_drop_lock", lock)
+        index = second._search_index
+        assert index is not None
+        real_store = index.store_catalog
+        overtaking: list[threading.Thread] = []
+
+        def overtaken_store(*args, **kwargs):
+            assert kwargs["drop_first"], "the build did not carry the pending drop"
+            thread = threading.Thread(target=second._invalidate_iter_cache, daemon=True)
+            thread.start()
+            overtaking.append(thread)
+            _await(lambda: lock.waiting >= 1, "the overtaking mutation to queue its drop")
+            return real_store(*args, **kwargs)
+
+        monkeypatch.setattr(index, "store_catalog", overtaken_store)
+        done = second._request_catalog_refresh("")
+        assert done is not None and done.wait(timeout=_WAIT), "the build never finished"
+        for thread in overtaking:
+            thread.join(timeout=_WAIT)
+            assert not thread.is_alive(), "the overtaking mutation never returned"
+        with second._catalog_lock:
+            assert second._snapshot_clean_generation == 1
+            assert second._catalog_generation == 2
+        assert not _trusted(second), "the build's drop vouched for a later failed one"
+
+    @pytest.mark.parametrize("mutations", [1, 2])
+    def test_a_store_a_mutation_overtakes_is_dropped_after_it(
+        self, harness, monkeypatch, mutations
+    ):
+        """A drop never runs inside a build's store, and runs once for those queued behind it.
+
+        A mutation that moves the generation after the build's check cannot stop
+        the store. Dropping first, a drop that failed would let the pre-mutation
+        rows land on top under a fresh build time, for every other loader to
+        adopt; dropping once per queued mutation would delete rows stored since
+        and refuse other processes' walks for nothing.
+        """
+        _skill(harness.root, "alpha")
+        loader = harness.loader()
+        lock = _CountingLock()
+        monkeypatch.setattr(loader, "_catalog_drop_lock", lock)
+        index = loader._search_index
+        assert index is not None
+        real_store, real_drop = index.store_catalog, index.drop_catalog
+        storing = threading.Event()
+        overlapped: list[bool] = []
+        overtaking: list[threading.Thread] = []
+
+        def overtaken_store(*args, **kwargs):
+            storing.set()
+            try:
+                for _ in range(mutations):
+                    thread = threading.Thread(target=loader._invalidate_iter_cache, daemon=True)
+                    thread.start()
+                    overtaking.append(thread)
+                _await(lambda: lock.waiting >= mutations, "the mutations to queue their drops")
+                return real_store(*args, **kwargs)
+            finally:
+                storing.clear()
+
+        def recorded_drop() -> bool:
+            overlapped.append(storing.is_set())
+            return real_drop()
+
+        monkeypatch.setattr(index, "store_catalog", overtaken_store)
+        monkeypatch.setattr(index, "drop_catalog", recorded_drop)
+        done = loader._request_catalog_refresh("")
+        assert done is not None and done.wait(timeout=_WAIT), "the build never finished"
+        for thread in overtaking:
+            thread.join(timeout=_WAIT)
+            assert not thread.is_alive(), "an overtaking mutation never returned"
+        assert overlapped == [False], f"drops (inside a store?): {overlapped}"
+        assert index.catalog_snapshot(loader._catalog_scope_id("")) is None, "stale rows survived"
+        assert _trusted(loader)
+
+    def test_the_caches_a_mutation_changes_are_emptied_before_its_drop(self, harness, monkeypatch):
+        """Only the list keeps being served while the drop waits on the database.
+
+        The frontmatter cache is keyed by mtime, and an edit inside one timestamp
+        tick keeps it, so it must not outlive the mutation by the drop's wait.
+        """
+        path = _skill(harness.root, "alpha")
+        loader = harness.loader()
+        assert _keys(loader._iter()) == ["alpha"]
+        assert loader._cached_frontmatter(path, within=None)
+        assert loader._vet_unconfined_path(harness.root / "unwalked" / "SKILL.md")
+        index = loader._search_index
+        assert index is not None
+        real_drop = index.drop_catalog
+        during: list[tuple[int, int, bool]] = []
+
+        def observed_drop() -> bool:
+            with loader._catalog_lock:
+                listed = "" in loader._iter_cache
+            during.append((len(loader._fm_cache), len(loader._read_vetted), listed))
+            return real_drop()
+
+        monkeypatch.setattr(index, "drop_catalog", observed_drop)
+        loader._invalidate_iter_cache()
+        assert during == [(0, 0, True)], "a cache outlived the mutation into its drop"
+
+    def test_a_drop_that_raises_still_clears_the_list(self, harness, monkeypatch):
+        _skill(harness.root, "alpha")
+        loader = harness.loader()
+        assert _keys(loader._iter()) == ["alpha"]
+        index = loader._search_index
+        assert index is not None
+
+        def raising() -> bool:
+            raise OverflowError("an index value that does not convert")
+
+        monkeypatch.setattr(index, "drop_catalog", raising)
+        with pytest.raises(OverflowError):
+            loader._invalidate_iter_cache()
+        with loader._catalog_lock:
+            assert loader._iter_cache == {}, "the pre-mutation list kept being served"
+
+    def test_a_cold_read_during_a_drop_keeps_its_building_mark(
+        self, harness, monkeypatch, instant_budget
+    ):
+        """A partial answer served while the drop waits stays reported as partial.
+
+        It describes the post-mutation tree, so clearing it once the drop returns
+        would turn "still discovering" into "no skills" while the walk still runs,
+        and charge the next turn the cold budget again.
+        """
+        loader = harness.loader()
+        walk = harness.stub_walk(loader, monkeypatch, rows=[])
+        dropping, release = threading.Event(), harness.gate()
+
+        def held_drop(_loader, _generation) -> None:
+            dropping.set()
+            assert release.wait(timeout=_WAIT), "the drop was never released"
+
+        monkeypatch.setattr(catalog_module, "_land_invalidation_drop", held_drop)
+        mutation = threading.Thread(target=loader._invalidate_iter_cache, daemon=True)
+        mutation.start()
+        assert dropping.wait(timeout=_WAIT), "the drop never started"
+        assert loader._iter() == []
+        assert loader.catalog_status() == "building"
+        release.set()
+        mutation.join(timeout=_WAIT)
+        assert not mutation.is_alive(), "the invalidation never returned"
+        assert walk.gate is not None and not walk.gate.is_set()
+        assert loader.catalog_status() == "building", "the drop wiped a post-mutation mark"
+
+    def test_a_list_a_walk_published_during_the_drop_is_kept(self, harness, monkeypatch):
+        """Only the lists cached before the drop are cleared after it."""
+        alpha = _skill(harness.root, "alpha")
+        beta = _skill(harness.root, "beta")
+        loader = harness.loader()
+        assert _keys(loader._iter()) == ["alpha", "beta"]
+        harness.stub_walk(
+            loader, monkeypatch, rows=[("alpha", alpha, None), ("beta", beta, None)], blocked=False
+        )
+        dropping, release = threading.Event(), harness.gate()
+
+        def held_drop(_loader, _generation) -> None:
+            dropping.set()
+            assert release.wait(timeout=_WAIT), "the drop was never released"
+
+        monkeypatch.setattr(catalog_module, "_land_invalidation_drop", held_drop)
+        with loader._catalog_lock:
+            before = loader._iter_cache[""]
+        mutation = threading.Thread(target=loader._invalidate_iter_cache, daemon=True)
+        mutation.start()
+        assert dropping.wait(timeout=_WAIT), "the drop never started"
+        done = loader._request_catalog_refresh("")
+        assert done is not None and done.wait(timeout=_WAIT), "the walk never finished"
+        with loader._catalog_lock:
+            published = loader._iter_cache[""]
+        assert published is not before, "the post-mutation walk did not publish"
+        release.set()
+        mutation.join(timeout=_WAIT)
+        assert not mutation.is_alive(), "the invalidation never returned"
+        with loader._catalog_lock:
+            assert loader._iter_cache.get("") is published, "a post-mutation list was wiped"
+
+    def test_a_mutation_s_drop_waits_no_longer_than_the_index_s_own_timeout(
+        self, harness, monkeypatch, opened
+    ):
+        """The drop holds the handle's lock while it waits, so every reader waits as long.
+
+        Read off the connection rather than timed: the busy timeout in force when
+        the drop's ``BEGIN IMMEDIATE`` runs is the base one, so no per-drop wait is
+        longer. With a zero base the held write lock refuses the drop at once.
+        """
+        monkeypatch.setattr(skill_search_index_module, "_BUSY_TIMEOUT_SECS", 0)
+        _skill(harness.root, "alpha")
+        loader = harness.loader()
+        assert _keys(loader._iter()) == ["alpha"]
+        _await(lambda: loader._load_catalog_snapshot("") is not None, "the snapshot")
+        index = loader._search_index
+        assert index is not None
+        conn = index._db()
+        assert conn is not None
+        spy = _BusyTimeoutAtBegin(conn)
+        monkeypatch.setattr(index, "_db", lambda: spy)
+        holder = opened(SkillSearchIndex(index._path))
+        held = holder._db()
+        assert held is not None
+        held.execute("BEGIN IMMEDIATE")
+        try:
+            loader._invalidate_iter_cache()
+        finally:
+            held.rollback()
+        assert spy.seen == [0], f"the drop waited with busy_timeout={spy.seen}"
+        assert not _trusted(loader), "a drop refused by the held lock was trusted"
+
+    def test_a_later_successful_drop_restores_trust(self, harness, monkeypatch):
+        second, _alpha, _gone, _walk = harness.stale_snapshot(monkeypatch)
+        index = second._search_index
+        assert index is not None
+        real_drop = index.drop_catalog
+        harness.fail_drops(second, monkeypatch)
+        second._invalidate_iter_cache()
+        assert not _trusted(second)
+
+        monkeypatch.setattr(index, "drop_catalog", real_drop)
+        second._invalidate_iter_cache()
+        assert _trusted(second), "a drop that landed did not restore the snapshot tier"
+
+    def test_a_walk_fenced_by_a_failed_drop_does_not_store(self, harness, monkeypatch):
+        """With the epoch unmoved, only the generation stops a pre-mutation store."""
+        second, alpha, gone, walk = harness.stale_snapshot(monkeypatch, blocked=True)
+        index = second._search_index
+        assert index is not None
+        before = second._load_catalog_snapshot("")
+        assert before is not None
+        done = second._request_catalog_refresh("")
+        assert done is not None
+        walk.await_start()
+        harness.fail_drops(second, monkeypatch)
+        second._invalidate_iter_cache()
+        assert walk.gate is not None
+        walk.gate.set()
+        assert done.wait(timeout=_WAIT), "the fenced walk never finished"
+        after = index.catalog_snapshot(second._catalog_scope_id(""))
+        assert after is not None and after.built_at == before.built_at, "a fenced walk stored"
+
+    def test_a_snapshot_never_replaces_a_fresher_walk(self, harness, monkeypatch):
+        """The snapshot tier fills only a miss, and checks for one before the fence.
+
+        A walk that publishes while a stored read is in flight is the fresher
+        answer, even when a mutation moved the generation meanwhile: the read
+        returns it rather than refusing, waiting and walking again.
+        """
+        second, _alpha, _gone, walk = harness.stale_snapshot(monkeypatch)
+        read_done = threading.Event()
+        release = threading.Event()
+        real_load = second._load_catalog_snapshot
+
+        def held_read(project_key):
+            stored = real_load(project_key)
+            read_done.set()
+            assert release.wait(timeout=_WAIT), "the held read was never released"
+            return stored
+
+        monkeypatch.setattr(second, "_load_catalog_snapshot", held_read)
+        served: list[list[str]] = []
+        reader = threading.Thread(target=lambda: served.append(_keys(second._iter())), daemon=True)
+        reader.start()
+        try:
+            assert read_done.wait(timeout=_WAIT), "the stored read never ran"
+            second._invalidate_iter_cache()
+            done = second._request_catalog_refresh("")
+            assert done is not None and done.wait(timeout=_WAIT), "the walk never published"
+        finally:
+            release.set()
+            reader.join(timeout=_WAIT)
+        assert not reader.is_alive()
+        assert served == [["alpha"]], "the stored read replaced the walk's list"
+        assert walk.calls == 1, "a fresher cached list was ignored and walked again"
+
+    def test_a_close_during_a_build_stops_the_adoption(self, harness, monkeypatch):
+        """A build in flight keeps the index open, so only ``_closed`` can refuse."""
+        second, _alpha, _gone, walk = harness.stale_snapshot(monkeypatch, blocked=True)
+        assert second._request_catalog_refresh("") is not None
+        walk.await_start()
+        real_load = second._load_catalog_snapshot
+
+        def read_then_close(project_key):
+            stored = real_load(project_key)
+            _on_thread(second.close, "the close")
+            assert second._catalog_building, "the index was closed under the read"
+            return stored
+
+        monkeypatch.setattr(second, "_load_catalog_snapshot", read_then_close)
+        assert second._iter() == []
+        with second._catalog_lock:
+            assert "" not in second._iter_cache, "a closed loader adopted the snapshot"
+
+    def test_a_drop_landing_as_the_rows_are_published_retracts_them(
+        self, harness, monkeypatch, instant_budget
+    ):
+        """The epoch is re-read AFTER publishing, so no gap is left for a drop.
+
+        Re-read first, a sibling's drop committing between the re-read and the
+        publish would leave the pre-mutation rows served for a whole TTL.
+        """
+        second, _alpha, _gone, _walk = harness.stale_snapshot(monkeypatch, blocked=True)
+        sibling = harness.loader()
+        real_publish = catalog_module._publish_locked
+        fired: list[bool] = []
+
+        def publish_then_drop(loader, project_key, rows):
+            real_publish(loader, project_key, rows)
+            if loader is second and not fired:
+                fired.append(True)
+                _on_thread(sibling._invalidate_iter_cache, "the sibling's mutation")
+
+        monkeypatch.setattr(catalog_module, "_publish_locked", publish_then_drop)
+        assert second._iter() == [], "rows a drop overtook stayed served"
+        assert fired == [True]
+        with second._catalog_lock:
+            assert "" not in second._iter_cache, "the overtaken rows stayed cached"
+
+    # NULL (and NaN, which SQLite stores as NULL) is refused by the NOT NULL column.
+    # A REAL past the 64-bit range is what an INTEGER column keeps it as.
+    @pytest.mark.parametrize("value", [9e999, 1e300, float(2**63), 1.5, "abc", b"\x00"])
+    @pytest.mark.parametrize("table", ["skill_catalog_epoch", "skill_catalog_scope"])
+    def test_an_unusable_epoch_walks_once_and_never_raises(
+        self, harness, monkeypatch, patient_budget, value, table
+    ):
+        """The index is agent-writable, so its epoch can be any SQLite value."""
+        _skill(harness.root, "alpha")
+        first = harness.loader()
+        assert _keys(first._iter()) == ["alpha"]
+        _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+        index = first._search_index
+        assert index is not None
+        conn = index._db()
+        assert conn is not None
+        conn.execute(f"UPDATE {table} SET epoch = ?", (value,))
+        conn.commit()
+
+        second = harness.loader()
+        real_walk = second._iter_uncached
+        walks: list[str | None] = []
+
+        def counted(project_key=None):
+            walks.append(project_key)
+            return real_walk(project_key)
+
+        monkeypatch.setattr(second, "_iter_uncached", counted)
+        assert [row["key"] for row in second.list_skills()] == ["alpha"]
+        assert "alpha" in second.get_context(budget=4000)
+        assert [row["key"] for row in second.list_skills()] == ["alpha"]
+        assert len(walks) <= 1, f"{len(walks)} walks over an unusable epoch"
+
+        assert first._search_index is not None and first._search_index.drop_catalog()
+        assert isinstance(first._search_index.catalog_epoch(), int), "a drop did not heal it"
+
     def test_an_oversized_catalog_is_rejected_whole(self, tmp_path, monkeypatch):
         """The index is agent-writable, so its row count is adversary-controlled.
 
@@ -415,6 +982,152 @@ class TestInvalidation:
             assert index.store_catalog("scope", [("k", "/p", "")], epoch=None) == "unavailable"
             assert index.catalog_snapshot("scope") is None
         finally:
+            index.close()
+
+    def test_a_snapshot_read_does_not_tear_against_a_drop(self, tmp_path, monkeypatch, opened):
+        """The scope row and its rows come from one transaction.
+
+        As two statements, a drop committed by another connection between them
+        would answer the scope's build time with no rows: a complete, empty catalog
+        that serves a turn no skills at all.
+        """
+        path = tmp_path / SKILL_SEARCH_INDEX_FILENAME
+        index = opened(SkillSearchIndex(path))
+        other = opened(SkillSearchIndex(path))
+        rows = [("alpha", "/p/alpha", ""), ("beta", "/p/beta", "")]
+        assert index.store_catalog("scope", rows, epoch=index.catalog_epoch()) == "stored"
+        conn = index._db()
+        assert conn is not None
+        proxy = _DropAfterScopeRead(conn, other)
+        monkeypatch.setattr(index, "_conn", proxy)
+        stored = index.catalog_snapshot("scope")
+        assert proxy.fired, "the drop never ran between the reads"
+        assert stored is not None and stored.rows == rows, "a torn read was served"
+        assert other.catalog_epoch() != stored.epoch, "the drop is not visible to a fence"
+
+    def test_a_drop_reports_a_held_write_lock(self, tmp_path, monkeypatch, opened):
+        """``False`` is what keeps the loader from trusting the stored rows."""
+        monkeypatch.setattr(skill_search_index_module, "_BUSY_TIMEOUT_SECS", 0.05)
+        path = tmp_path / SKILL_SEARCH_INDEX_FILENAME
+        index = opened(SkillSearchIndex(path))
+        holder = opened(SkillSearchIndex(path))
+        assert index.store_catalog("scope", [], epoch=index.catalog_epoch()) == "stored"
+        conn = holder._db()
+        assert conn is not None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            assert index.drop_catalog() is False
+        finally:
+            conn.rollback()
+        assert index.catalog_snapshot("scope") is not None, "a failed drop dropped rows"
+        assert index.drop_catalog() is True
+        assert index.catalog_snapshot("scope") is None
+
+    def test_a_leaked_transaction_does_not_wedge_the_catalog(self, tmp_path, opened):
+        """A transaction an earlier failure left open is ended, not built upon."""
+        index = opened(SkillSearchIndex(tmp_path / SKILL_SEARCH_INDEX_FILENAME))
+        rows = [("alpha", "/p/alpha", "")]
+        assert index.store_catalog("scope", rows, epoch=index.catalog_epoch()) == "stored"
+        conn = index._db()
+        assert conn is not None
+        conn.execute("BEGIN")
+        conn.execute("SELECT 1 FROM skill_catalog").fetchall()
+        stored = index.catalog_snapshot("scope")
+        assert stored is not None and stored.rows == rows
+        conn.execute("BEGIN")
+        assert index.drop_catalog() is True
+        assert index.catalog_snapshot("scope") is None
+
+    def test_the_top_of_the_epoch_range_never_becomes_a_real(self, tmp_path, opened):
+        """``+ 1`` past the 64-bit range would store a REAL, which no read accepts."""
+        index = opened(SkillSearchIndex(tmp_path / SKILL_SEARCH_INDEX_FILENAME))
+        conn = index._db()
+        assert conn is not None
+        top = 2**63 - 1
+        rows = [("k", "/p", "")]
+        for land in ("drop", "store"):
+            conn.execute("UPDATE skill_catalog_epoch SET epoch = ?", (top,))
+            conn.commit()
+            assert index.catalog_epoch() == top
+            assert index.store_catalog("scope", rows, epoch=top) == "stored"
+            if land == "drop":
+                assert index.drop_catalog() is True
+            else:
+                assert index.store_catalog("scope", rows, epoch=top, drop_first=True) == "stored"
+            kind = conn.execute("SELECT typeof(epoch) FROM skill_catalog_epoch").fetchone()[0]
+            assert kind == "integer", f"the {land} stored a {kind} epoch"
+            epoch = index.catalog_epoch()
+            assert epoch is not None and epoch != top
+            assert index.store_catalog("scope", rows, epoch=epoch) == "stored"
+
+    def test_a_drop_at_the_top_never_rewrites_the_epoch_it_replaces(self, tmp_path, opened):
+        """A hand-written neighbour one below the top must not steer the reset back onto it."""
+        index = opened(SkillSearchIndex(tmp_path / SKILL_SEARCH_INDEX_FILENAME))
+        conn = index._db()
+        assert conn is not None
+        top = 2**63 - 1
+        conn.execute("UPDATE skill_catalog_epoch SET epoch = ?", (top,))
+        conn.commit()
+        assert index.store_catalog("scope", [("k", "/p", "")], epoch=top) == "stored"
+        conn.execute(
+            "INSERT INTO skill_catalog_scope (scope, built_at, epoch) VALUES ('other', 0, ?)",
+            (top - 1,),
+        )
+        conn.commit()
+        assert index.drop_catalog() is True
+        epoch = index.catalog_epoch()
+        assert epoch is not None and epoch != top, "the reset landed on the epoch it replaced"
+        assert index.store_catalog("scope", [("k", "/p", "")], epoch=top) == "stale"
+
+    def test_a_value_that_does_not_bind_rolls_the_store_back(self, tmp_path, opened):
+        """A store that fails mid-transaction must not keep holding the write lock."""
+        index = opened(SkillSearchIndex(tmp_path / SKILL_SEARCH_INDEX_FILENAME))
+        epoch = index.catalog_epoch()
+        assert epoch is not None
+        assert index.store_catalog("scope", [("k", "/p", 2**70)], epoch=epoch) == "unavailable"
+        assert index._conn is not None and not index._conn.in_transaction
+        assert index.store_catalog("scope", [("k", "/p", "")], epoch=epoch) == "stored"
+
+    def test_a_store_can_land_a_pending_drop_in_its_own_transaction(self, tmp_path, opened):
+        index = opened(SkillSearchIndex(tmp_path / SKILL_SEARCH_INDEX_FILENAME))
+        epoch = index.catalog_epoch()
+        assert epoch is not None
+        assert index.store_catalog("other", [("old", "/p/old", "")], epoch=epoch) == "stored"
+        rows = [("k", "/p/k", "")]
+        assert index.store_catalog("scope", rows, epoch=epoch, drop_first=True) == "stored"
+        assert index.catalog_snapshot("other") is None, "the drop left another scope's rows"
+        stored = index.catalog_snapshot("scope")
+        assert stored is not None and stored.rows == rows
+        assert stored.epoch == index.catalog_epoch() != epoch, "the rows predate the drop"
+
+    @pytest.mark.parametrize("version", [9e999, 1e300, 1.5, "abc"])
+    def test_a_schema_version_that_is_not_an_integer_rebuilds_the_index(
+        self, tmp_path, opened, version
+    ):
+        """Agent-writable too: an infinite REAL raises OverflowError out of a plain ``int()``.
+
+        Such a version is a mismatch like any other, so the index is rebuilt and
+        stays usable in every later process rather than being disabled for good.
+        """
+        path = tmp_path / SKILL_SEARCH_INDEX_FILENAME
+        writer = SkillSearchIndex(path)
+        try:
+            conn = writer._db()
+            assert conn is not None
+            conn.execute("UPDATE skill_index_schema SET version = ?", (version,))
+            conn.commit()
+        finally:
+            writer.close()
+        for _process in range(2):
+            index = opened(SkillSearchIndex(path))
+            epoch = index.catalog_epoch()
+            assert epoch is not None, "a non-integer schema version disabled the index"
+            assert index.store_catalog("scope", [("k", "/p/k", "")], epoch=epoch) == "stored"
+            assert index.drop_catalog() is True
+            conn = index._db()
+            assert conn is not None
+            row = conn.execute("SELECT version FROM skill_index_schema").fetchone()
+            assert row == (skill_search_index_module._SCHEMA_VERSION,)
             index.close()
 
     def test_a_refused_write_leaves_the_index_usable(self, tmp_path):
@@ -668,8 +1381,15 @@ class TestAStoredRowIsNotAnAdmission:
         # Falling back to the walk is what keeps the answer complete.
         assert _keys(second._iter()) == ["alpha"]
 
-    def test_a_row_swapped_to_a_sensitive_target_is_refused_at_the_read(self, harness, monkeypatch):
-        """Containment is lexical, so the READ is where a changed file is caught."""
+    @pytest.mark.parametrize("invalidate", [False, True])
+    def test_a_row_swapped_to_a_sensitive_target_is_refused_at_the_read(
+        self, harness, monkeypatch, invalidate
+    ):
+        """Containment is lexical, so the READ is where a changed file is caught.
+
+        With *invalidate*, a mutation lands while the caller still holds the
+        adopted list: the cache is emptied, and the held row is still checked.
+        """
         path = _skill(harness.root, "alpha", body="the real body")
         first = harness.loader()
         assert _keys(first._iter()) == ["alpha"]
@@ -677,29 +1397,68 @@ class TestAStoredRowIsNotAnAdmission:
 
         second = harness.loader()
         harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
-        assert _keys(second._iter()) == ["alpha"]
-        assert str(path) in second._snapshot_unadmitted
+        held = second._iter()
+        assert _keys(held) == ["alpha"]
+        if invalidate:
+            second._invalidate_iter_cache()
 
         refused: list[str] = []
-        monkeypatch.setattr(
-            skills_module, "validate_file_path", lambda candidate: refused.append(candidate) or None
-        )
-        assert second._read_enumerated_skill_bytes(path, None) is None
+        monkeypatch.setattr(skills_module, "validate_file_path", refused.append)
+        _key, held_path, within = held[0]
+        assert second._read_enumerated_skill_bytes(held_path, within) is None
         assert refused == [str(path)], "the read did not re-run admission"
 
     def test_a_path_this_process_walked_is_admitted_without_a_recheck(self, harness, monkeypatch):
         path = _skill(harness.root, "alpha", body="the real body")
         loader = harness.loader()
         assert _keys(loader._iter()) == ["alpha"]
-        assert loader._snapshot_unadmitted == set()
+        assert str(path) in loader._walk_vetted
 
         calls: list[str] = []
-        monkeypatch.setattr(
-            skills_module, "validate_file_path", lambda candidate: calls.append(candidate) or None
-        )
+        monkeypatch.setattr(skills_module, "validate_file_path", calls.append)
         raw = loader._read_enumerated_skill_bytes(path, None)
         assert raw is not None and b"the real body" in raw
         assert calls == [], "a walked path paid an admission re-check"
+
+    def test_an_unvetted_path_is_checked_before_it_is_read(self, harness, monkeypatch):
+        """Fail-closed: a path no walk returned, from anywhere, is checked first."""
+        loader = harness.loader()
+        stray = _skill(harness.home / "elsewhere", "stray", body="not a walked skill")
+        calls: list[str] = []
+        monkeypatch.setattr(skills_module, "validate_file_path", calls.append)
+        assert loader._read_enumerated_skill_bytes(stray, None) is None
+        assert calls == [str(stray)], "an unvetted path was read unchecked"
+
+    def test_the_paths_a_check_admitted_stay_bounded(self, harness, monkeypatch):
+        """The stored rows are agent-influenced, so what they vet must not grow with them."""
+        monkeypatch.setattr(skills_module, "_VETTED_READS_MAX", 50)
+        loader = harness.loader()
+        for cycle in range(10):
+            for i in range(100):
+                assert loader._vet_unconfined_path(harness.root / f"f{cycle}-{i}" / "SKILL.md")
+            assert len(loader._read_vetted) <= 50
+        assert str(harness.root / "f9-99" / "SKILL.md") in loader._read_vetted
+        loader._invalidate_iter_cache()
+        assert not loader._read_vetted, "an invalidation kept paths a check admitted"
+
+    def test_the_admitted_roots_are_resolved_once_per_root_set(self, harness, monkeypatch):
+        """A vet per unvetted row must not re-resolve every root per row."""
+        loader = harness.loader()
+        resolved: list[None] = []
+        real = skills_module._trusted_skill_roots
+        monkeypatch.setattr(
+            skills_module, "_trusted_skill_roots", lambda: resolved.append(None) or real()
+        )
+        for i in range(5):
+            assert loader._vet_unconfined_path(harness.root / f"row-{i}" / "SKILL.md")
+        assert len(resolved) == 1, f"the roots were resolved {len(resolved)} times"
+
+        extra = harness.home / "extra"
+        outside = _skill(extra, "ext")
+        assert not loader._vet_unconfined_path(outside)
+        loader._adopt_extra_paths([extra.resolve()])
+        assert loader._vet_unconfined_path(outside), "a root-set change kept the old roots"
+        assert len(resolved) == 2
 
     def test_admission_is_paid_once_per_path(self, harness, monkeypatch):
         path = _skill(harness.root, "alpha", body="the real body")
@@ -722,22 +1481,105 @@ class TestAStoredRowIsNotAnAdmission:
         assert second._read_enumerated_skill_bytes(path, None) is not None
         assert len(calls) == 1, f"admission ran {len(calls)} times"
 
-    def test_a_walk_retires_the_whole_unadmitted_set(self, harness, monkeypatch):
+    def test_a_walk_vets_exactly_the_paths_it_returned(self, harness, monkeypatch):
+        """A walk's set REPLACES the previous one.
+
+        A row the walk rejected, or a skill deleted since, falls out of it, so a
+        reader still holding an older list has that row checked again.
+        """
+        second, alpha, gone, walk = harness.stale_snapshot(monkeypatch, blocked=True)
+        assert sorted(_keys(second._iter())) == ["alpha", "gone"]
+        assert not second._walk_vetted, "a stored row was vetted without a check"
+
+        harness.expire(second)
+        assert second._iter()
+        assert walk.gate is not None
+        walk.gate.set()
+        _await(lambda: bool(second._walk_vetted), "the walk to publish")
+        assert second._walk_vetted == frozenset({str(alpha)})
+
+        calls: list[str] = []
+        real = skills_module.validate_file_path
+        monkeypatch.setattr(
+            skills_module, "validate_file_path", lambda c: calls.append(c) or real(c)
+        )
+        assert second._read_enumerated_skill_bytes(alpha, None) is not None
+        second._read_enumerated_skill_bytes(gone, None)
+        assert calls == [str(gone)], "only the row the walk did not return is checked"
+
+    def test_only_the_newest_walk_vouches_for_a_path(self, harness, monkeypatch):
+        """Whatever scope published last: an older walk of another one vouches for nothing.
+
+        Every scope enumerates the same unconfined roots, so the newest walk is
+        the freshest view of them. A path it dropped (deleted, or rejected) is
+        checked again, and so is one a check admitted before it.
+        """
         alpha = _skill(harness.root, "alpha")
+        gone = _skill(harness.root, "gone")
+        loader = harness.loader()
+        assert sorted(_keys(loader._iter())) == ["alpha", "gone"]
+        assert str(gone) in loader._walk_vetted
+        unwalked = harness.root / "unwalked" / "SKILL.md"
+        assert loader._vet_unconfined_path(unwalked)
+        assert str(unwalked) in loader._read_vetted
+
+        harness.stub_walk(loader, monkeypatch, rows=[("alpha", alpha, None)], blocked=False)
+        with loader._catalog_lock:
+            generation = loader._catalog_generation
+        loader._run_catalog_build("another-scope", generation)
+        assert loader._walk_vetted == frozenset({str(alpha)})
+        assert not loader._read_vetted, "a check admitted before the walk outlived it"
+
+        calls: list[str] = []
+        real = skills_module.validate_file_path
+        monkeypatch.setattr(
+            skills_module, "validate_file_path", lambda c: calls.append(c) or real(c)
+        )
+        loader._read_enumerated_skill_bytes(gone, None)
+        loader._read_enumerated_skill_bytes(alpha, None)
+        assert calls == [str(gone)], "an older walk still vouched for a dropped path"
+
+    def test_a_check_that_straddles_an_invalidation_is_not_remembered(self, harness, monkeypatch):
+        """The check ran against the tree before the mutation, so it vouches for nothing after."""
+        loader = harness.loader()
+        path = harness.root / "unwalked" / "SKILL.md"
+        real = skills_module.validate_file_path
+
+        def check_then_mutate(candidate):
+            result = real(candidate)
+            _on_thread(loader._invalidate_iter_cache, "the mutation")
+            return result
+
+        monkeypatch.setattr(skills_module, "validate_file_path", check_then_mutate)
+        assert loader._vet_unconfined_path(path)
+        assert str(path) not in loader._read_vetted, "a pre-mutation check was remembered"
+
+    def test_a_row_resolving_outside_every_root_is_refused_at_the_read(self, harness, monkeypatch):
+        """The read applies the walk's containment, not just its sensitive-path screen.
+
+        The target here is an ordinary file, so only containment refuses it: the
+        walk would not list it, and a stored row naming it must not be read either.
+        """
+        path = _skill(harness.root, "alpha")
         first = harness.loader()
         assert _keys(first._iter()) == ["alpha"]
         _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+        outside = _skill(harness.home / "outside", "foreign", description="OUTSIDE-FILE")
+        # The skill directory, not the file, becomes the link: a directory
+        # junction needs no privilege on Windows, so this runs on every host.
+        path.unlink()
+        path.parent.rmdir()
+        make_dir_link(path.parent, outside.parent)
+        assert Path(os.path.realpath(path)) == Path(os.path.realpath(outside))
+        assert skills_module.validate_file_path(str(path)) is not None
 
         second = harness.loader()
-        walk = harness.stub_walk(second, monkeypatch, rows=[("alpha", alpha, None)])
-        assert _keys(second._iter()) == ["alpha"]
-        assert second._snapshot_unadmitted
-
-        harness.expire(second)
-        assert _keys(second._iter()) == ["alpha"]
-        assert walk.gate is not None
-        walk.gate.set()
-        _await(lambda: not second._snapshot_unadmitted, "the walk to retire the set")
+        harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
+        held = second._iter()
+        assert _keys(held) == ["alpha"]
+        refusals: list[str] = []
+        assert second._read_enumerated_skill_bytes(path, None, refusal_reasons=refusals) is None
+        assert refusals == ["snapshot_path_refused"]
 
 
 class TestARootSetChangeInvalidatesTheCatalog:
@@ -902,33 +1744,6 @@ class TestARootSetChangeInvalidatesTheCatalog:
             (loader._dir,),
             (provider,),
         )
-
-    def test_a_rejected_row_keeps_its_marker_when_a_walk_publishes(self, harness, monkeypatch):
-        """A walk retires only the paths IT returned.
-
-        Clearing the whole set would hand a reader still holding the old list an
-        unadmitted path the walk had just rejected.
-        """
-        alpha = _skill(harness.root, "alpha")
-        stale = harness.root / "gone" / "SKILL.md"
-        stale.parent.mkdir(parents=True, exist_ok=True)
-        stale.write_text("---\nname: gone\ndescription: d\n---\nbody\n", encoding="utf-8")
-        first = harness.loader()
-        assert sorted(_keys(first._iter())) == ["alpha", "gone"]
-        _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
-
-        second = harness.loader()
-        # The walk finds only alpha, so `gone` must keep its unadmitted marker.
-        walk = harness.stub_walk(second, monkeypatch, rows=[("alpha", alpha, None)])
-        assert sorted(_keys(second._iter())) == ["alpha", "gone"]
-        assert {str(alpha), str(stale)} <= second._snapshot_unadmitted
-
-        harness.expire(second)
-        assert second._iter()
-        assert walk.gate is not None
-        walk.gate.set()
-        _await(lambda: str(alpha) not in second._snapshot_unadmitted, "the walk to retire alpha")
-        assert str(stale) in second._snapshot_unadmitted, "a rejected row lost its marker"
 
 
 class TestPersistBeforePublish:

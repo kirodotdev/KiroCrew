@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from kiro_crew.taskq.adapters import runner as _runner_adapter
 
 from kiro_crew.learn import Lesson
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -1079,6 +1080,7 @@ class TaskRunner:
         workflow_source: str = "",
         session_key: str = "",
         execution_context: ExecutionContext | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> Project:
         execution = await capture_admission_execution(
             self._ctx,
@@ -1174,7 +1176,9 @@ class TaskRunner:
             else:
                 try:
                     run.tasks = await asyncio.wait_for(
-                        self._decompose(decompose_input, run.work_dir, task_id),
+                        self._decompose(
+                            decompose_input, run.work_dir, task_id, start_priority=start_priority
+                        ),
                         timeout=180,
                     )
                 except asyncio.TimeoutError:
@@ -1972,13 +1976,22 @@ class TaskRunner:
         if not memory_ctx:
             memory_ctx = run.memory.summary()
         err_detail = failed_task.error[:300]
+        # A failed step whose prompt may already have run (Task.resume_hint) must
+        # not come back as fresh work: the new plan starts by inspecting state.
+        may_have_run = (
+            "\n  The failed task's last attempt may already have run part of its "
+            "work: plan a first step that inspects the current state, and do not "
+            "restate that work as new.\n"
+            if failed_task.resume_hint
+            else ""
+        )
         replan_spec = (
             "You are a planning agent. A task in the pipeline failed.\n"
             "Re-plan ONLY the remaining work. Do not repeat completed tasks.\n"
             "Address the failure cause in your new plan.\n\n"
             f"## Original Specification\n\n{run.spec_content}\n\n"
             f"## Completed Tasks\n{completed_summary}\n\n"
-            f"## Failed Task\n- \u274c {failed_task.title}: {err_detail}\n\n"
+            f"## Failed Task\n- \u274c {failed_task.title}: {err_detail}\n{may_have_run}\n"
             f"{memory_ctx}\n\nRe-plan the REMAINING work."
         )
         new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id)
@@ -2538,6 +2551,8 @@ class TaskRunner:
         spec: str,
         work_dir: str = "",
         task_id: str = "",
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> list[Task]:
         return await decompose(
             spec,
@@ -2546,6 +2561,7 @@ class TaskRunner:
             work_dir=work_dir or str(self._work_dir),
             task_id=task_id,
             agent=self._agent,
+            start_priority=start_priority,
         )
 
     # ── Notifications ──
@@ -2919,6 +2935,12 @@ class TaskRunner:
                                 "error": t.error or "",
                                 "result": (t.result or "")[:2000],
                                 "attempts": t.attempts,
+                                # Durable so an ambiguous-delivery resume hint set
+                                # on a crash-recovery retry survives a gateway
+                                # restart; without it a restart in that window
+                                # would restore the task to a verbatim replay of a
+                                # possibly-executed step.
+                                "resume_hint": t.resume_hint or "",
                             }
                             for t in run.tasks
                         ],
@@ -3087,6 +3109,7 @@ class TaskRunner:
                         status=TaskStatus(t["status"]),
                         error=t.get("error", ""),
                         result=t.get("result", ""),
+                        resume_hint=t.get("resume_hint", ""),
                         attempts=t.get("attempts", 1),
                         depends_on=t.get("depends_on", []),
                         requires_approval=t.get("requires_approval", False),

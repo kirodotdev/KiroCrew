@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -302,11 +303,11 @@ class TestAdoptingACoercedProviderKeepsWhatRuns:
     incident's user is the engine that was crashing."""
 
     @staticmethod
-    def _adopt(config_dir: Path) -> str:
+    def _adopt(config_dir: Path, keys: list[str] | None = None) -> str:
         from kiro_crew.cli_config import _config_cmd
 
         args = argparse.Namespace(
-            config_action="defaults", adopt=True, keep=False, keys=None, file=None, local=False
+            config_action="defaults", adopt=True, keep=False, keys=keys, file=None, local=False
         )
         with (
             patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
@@ -319,6 +320,28 @@ class TestAdoptingACoercedProviderKeepsWhatRuns:
         ):
             _config_cmd(args)
         return (config_dir / "config.json").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(("provider", "adopted"), [("whisper", None), ("whispercpp", "off")])
+    def test_the_notice_remedy_drops_only_the_provider(
+        self, tmp_path: Path, caplog, provider: str, adopted: str | None
+    ) -> None:
+        """The degrade notice names one key, so following it must not also sweep up
+        every other stored superseded default, each possibly a deliberate choice."""
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        others = {"session": {"watchdog_rss_max_mb": 0}, "decisions": {"history_budget_chars": 0}}
+        stored = {"stt": {"provider": provider, "language_code": "en-US"}, **others}
+        (config_dir / "config.json").write_text(json.dumps(stored))
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            _validated_stt_provider(provider)
+        commands = re.findall(r"'kirocrew config defaults --adopt([^']*)'", caplog.text)
+        assert commands == [" stt.provider"]
+
+        saved = json.loads(self._adopt(config_dir, keys=commands[0].split()))
+        assert saved["stt"]["language_code"] == "en-US"
+        assert saved["stt"].get("provider") == adopted
+        for section, values in others.items():
+            assert saved[section] == values
 
     def test_an_unknown_provider_is_adopted_as_off(self, tmp_path: Path, capsys) -> None:
         config_dir = tmp_path / ".kirocrew"

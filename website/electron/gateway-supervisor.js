@@ -25,6 +25,7 @@ const {
   currentAttemptLog,
   SPAWN_MARKER,
 } = require("./bundle-integrity");
+const { isPathFallback } = require("./find-bin");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const {
   shouldRetryLocalTokenMint,
@@ -1245,6 +1246,31 @@ function createGatewaySupervisor({
     catch (error) { execState = `NOT-EXECUTABLE(${error.code})`; }
     glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState} staleRetries=${reresolveAttempts}`);
 
+    // A packaged Windows app with no backend at any probed path does not hand
+    // the launch to whatever `kirocrew.exe` comes first on PATH. That is the
+    // state an install manager leaves when it prunes the running version's
+    // directory: the shell's own executable and app.asar are mapped, so they
+    // survive, and the backend tree under them is gone. What PATH names then
+    // is not this app's backend -- typically the manager's own command shim --
+    // and a child that starts, serves nothing and exits 0 reads as a clean
+    // stop, so spawning it only buys a silent respawn loop behind a loading
+    // screen that never clears. Refusing here
+    // routes it to the "installation still finishing" dialog instead, whose
+    // probe re-runs this same resolution and starts the backend the moment one
+    // is back at a probed path. Unpackaged (source checkout) launches keep the
+    // PATH fallback, which is how a developer's own install is found.
+    if (IS_WIN && app.isPackaged && isPathFallback(bin)) {
+      userError(`spawn REFUSED: no bundled backend under ${processObj.resourcesPath || "(no resourcesPath)"} — a packaged app does not fall back to ${bin} on PATH`);
+      gatewayStartFailure = {
+        error: describeIncompleteBundle([], { autoRetry: true }),
+        incompleteBundle: true,
+        bundled: true,
+      };
+      sendStatus(INSTALLING_STATUS);
+      resolve(false);
+      return;
+    }
+
     // The Windows installer writes backend-dist incrementally. Refusing an
     // incomplete interpreter is preventive but cannot see package siblings that
     // have not landed yet; the current-attempt traceback classifier below is the
@@ -1355,6 +1381,7 @@ function createGatewaySupervisor({
       const relaunchTargetExists = canRelaunchThisApp();
       const verdict = shouldReresolveBackend({
         isMac: IS_MAC,
+        isWindows: IS_WIN,
         bundled,
         exitCode,
         spawnErrorCode,
@@ -1365,7 +1392,7 @@ function createGatewaySupervisor({
       });
       const cause = exitCode === null ? `spawn ${spawnErrorCode}` : `exit ${exitCode}`;
       if (verdict === "none") {
-        // reresolveAttempts only ever rises on macOS, so a spent budget plus a
+        // reresolveAttempts only ever rises on macOS and Windows, so a spent budget plus a
         // stale signal plus a missing executable is exactly the pruned case.
         if (
           reresolveAttempts >= 1 && !relaunchTargetExists
@@ -1459,6 +1486,11 @@ function createGatewaySupervisor({
       // shutdown deadline. The tree sweep is awaited because taskkill can emit
       // the parent's exit while descendants are still being reaped.
       killTreeFn: killGatewayTreeOnWindowsBounded,
+      // POSIX: the child may be a launcher shim that forked the gateway. These
+      // let the stop find and stop that gateway once the shim is gone.
+      listDescendantsFn: posixDescendantPids,
+      getCommandFn: psCommand,
+      signalPidFn: (pid, signal) => processObj.kill(pid, signal),
     });
     gatewayProcess = null;
     spawnedExecutablePaths = [];

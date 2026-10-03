@@ -7,6 +7,7 @@ gateway already downloaded and verified, so nothing here reaches the network.
 
 import argparse
 import os
+import socketserver
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -52,4 +53,16 @@ class AttestedHandler(Handler):  # type: ignore[misc,valid-type]
         super().do_GET()
 
 
-ThreadingHTTPServer(("127.0.0.1", args.port), AttestedHandler).serve_forever()
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # http.server resolves socket.getfqdn(host) on bind, a system-resolver
+        # lookup that can stall for a long time on some macOS hosts while the
+        # socket sits bound but not listening. The gateway attests this server
+        # by its secret, never by a name, so the lookup buys nothing here.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
+LoopbackServer(("127.0.0.1", args.port), AttestedHandler).serve_forever()

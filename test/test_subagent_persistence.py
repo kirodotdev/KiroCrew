@@ -16,6 +16,7 @@ from kiro_crew.subagent_persistence import (
     delete_agent_folder,
     list_orphans,
     mark_delivered,
+    mark_result_complete,
     prune_stale_tombstones,
     read_run_agent_selection,
     read_run_app,
@@ -23,6 +24,7 @@ from kiro_crew.subagent_persistence import (
     read_tombstone,
     record_slow_command,
     remember_live_cleanup_identity,
+    result_marked_complete,
     update_state,
     write_result_chunk,
     write_run_agent,
@@ -232,6 +234,60 @@ class TestWriteResultChunk:
         write_result_chunk("w1", "world")
         content = (agent_root / "w1" / "result.txt").read_text(encoding="utf-8")
         assert content == "hello world"
+
+
+# ── mark_result_complete / result_marked_complete ────────────────────
+
+
+class TestResultCompleteMarker:
+    def test_marker_write_then_read_round_trips(self, agent_root):
+        create_agent_folder("m1", task="t")
+        assert result_marked_complete("m1") is False
+        mark_result_complete("m1")
+        assert (agent_root / "m1" / _marker_name()).exists()
+        assert result_marked_complete("m1") is True
+
+    def test_a_transient_run_writes_no_marker(self, agent_root, monkeypatch):
+        """A live incognito/temporary run keeps its record in memory and never
+        touches disk, so it drops no marker — the same guard write_result_chunk
+        applies, and its result never reaches the orphan reconciler."""
+        import kiro_crew.subagent_persistence as sp
+
+        key = sp._live_run_key("transient")
+        monkeypatch.setitem(sp._LIVE_RUN_STATES, key, {"id": "transient"})
+        mark_result_complete("transient")
+        assert not (agent_root / "transient" / _marker_name()).exists()
+        assert result_marked_complete("transient") is False
+
+    def test_a_failed_rename_is_swallowed_and_leaves_no_temp_file(self, agent_root, monkeypatch):
+        """An OSError from the atomic rename is swallowed (the marker is a best-
+        effort durability signal, not a hard write), and the temp file it created
+        is cleaned up rather than left as litter beside result.txt."""
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("m2", task="t")
+
+        def _boom(self, _target):
+            raise OSError("rename refused")
+
+        monkeypatch.setattr(sp.Path, "replace", _boom)
+        mark_result_complete("m2")  # must not raise
+
+        assert not (agent_root / "m2" / _marker_name()).exists()
+        leftover = [p for p in (agent_root / "m2").iterdir() if p.suffix == ".tmp"]
+        assert leftover == [], f"the temp file must be removed on failure; found {leftover}"
+
+    def test_the_reader_is_false_for_an_unusable_agent_id(self, agent_root):
+        """``_agent_dir`` raises ValueError on a traversal-shaped id; the reader
+        answers False rather than propagating, so a bad id reads as 'not
+        complete' and never as a crash."""
+        assert result_marked_complete("../escape") is False
+
+
+def _marker_name() -> str:
+    import kiro_crew.subagent_persistence as sp
+
+    return sp._RESULT_COMPLETE_MARKER
 
 
 # ── write_tombstone ──────────────────────────────────────────────────

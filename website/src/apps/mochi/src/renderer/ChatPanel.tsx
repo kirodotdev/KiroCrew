@@ -33,6 +33,7 @@ import {
   X,
 } from 'lucide-react'
 import Clickable from '../../../../components/Clickable'
+import ErrorNotice from '../../../../components/ErrorNotice'
 import { familyGrantIsDistinct, trustBasePattern, truncateCommandLabel } from '../shared/trustPatterns'
 import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
@@ -59,7 +60,7 @@ import {
 } from '../../panel/composerDrop'
 import { PendingAttachments } from '../../panel/PendingAttachments'
 import { MochiCodeBlock } from '../../panel/MochiCodeBlock'
-import { reportStat } from '../../panel/panelBridge'
+import { reportStat, SendRefusedError, slotRefusalReason, isDefiniteRefusal } from '../../panel/panelBridge'
 import { i18nT } from '../../../../i18n/t'
 import { useLanguageGeneration } from '../../../../i18n/useLanguageGeneration'
 import { i18next } from '../../../../i18n'
@@ -428,6 +429,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
   // against the original.
   const [dropActive, setDropActive] = useState(false)
   const [dropError, setDropError] = useState('')
+  // A FAILED send is kept apart from `dropError`: a dropped-file refusal is a
+  // client-side validation hint, but a send failure is an error (a gateway
+  // refusal or a dead connection), so it renders through `ErrorNotice` — the one
+  // surface that recovers the request's structured context — rather than the
+  // hand-written drop-hint line. See the `errors-use-error-notice` rule.
+  const [sendError, setSendError] = useState('')
   // Queued attachments live HERE, not in the composer text: the reference
   // markdown is composed only at send time so the box the user types in is
   // never filled with plumbing.
@@ -780,6 +787,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
 
     // Complete messages (user + assistant)
     const offMsg = api?.onChatMessage?.((msg) => {
+      // A retraction frame: the bridge is undoing an optimistic echo it added
+      // (a send the gateway definitely refused). Remove that row by id from both
+      // arrays — it carries no renderable role, so it falls through the normal
+      // append path below.
+      const retractId = (msg as { _retract?: unknown })._retract
+      if (typeof retractId === 'string') {
+        setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== retractId))
+        setAllHistory((prev: ChatMessage[]) => prev.filter(m => m.id !== retractId))
+        return
+      }
       if (msg.role) {
         // The frame IS a chat message; the bridge types it as an untyped record, so
         // the shape is claimed once here instead of at each read below.
@@ -794,8 +811,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
         // Message counters for the Memories view. Counted HERE because this is
         // the one place both directions land; `backfill` marks history replay,
         // which must not re-count messages already counted when they happened.
+        // The OPTIMISTIC echo (`_optimistic`) is NOT counted here — it is
+        // rendered before the gateway's receipt is known, and `sendMessage`
+        // counts the send itself once the receipt is non-refused, so a refused
+        // send never inflates the durable counter. The received direction still
+        // counts here: an assistant frame only arrives when the turn ran.
+        const optimistic = (msg as { _optimistic?: unknown })._optimistic === true
         if (!msg.backfill) {
-          if (msg.role === 'user') reportStat('message_sent')
+          if (msg.role === 'user') { if (!optimistic) reportStat('message_sent') }
           else if (msg.role === 'assistant') reportStat('message_received')
         }
         if (msg.role === 'user' && !msg.backfill) {
@@ -950,20 +973,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     if (!text && !screenshotRef.current) return
     setIsWaiting(true)
     setTurnActive(true)
+    setSendError('')
     try {
       await api?.sendMessage?.(text, screenshotRef.current || undefined)
       setScreenshot(null)
-    } catch {
-      // Send failed. handleSend already cleared the composer before awaiting, so
-      // without this the typed text is lost, no error shows, and the spinner
-      // sticks forever. Restore the text (composer is empty on this path), clear
-      // the stuck waiting state, and surface the failure via the existing
-      // error banner — the dashboard AddWatchForm "your input is still here,
-      // try again" recovery.
+    } catch (err) {
+      // The send did not go through. handleSend already cleared the composer
+      // before awaiting, so without this the typed text is lost, no error shows,
+      // and the spinner sticks forever. Restore the text (composer is empty on
+      // this path), clear the stuck waiting state, and surface the failure.
       setIsWaiting(false)
       setTurnActive(false)
       setInput((prev) => (prev ? prev : text))
-      setDropError(i18nT('apps.mochi.chat.send_failed'))
+      // A REFUSAL carries the gateway's own reason (a busy-slot or agent-mismatch
+      // 409, or ensureSlot's binding refusal): show that reason the way the
+      // dashboard does, so the user looks at the slot and not at their
+      // connection. A rejected fetch (offline, DNS) carries no gateway reason, so
+      // it keeps the connection copy — which is what that failure actually is.
+      setSendError(sendFailureMessage(err))
     }
   }, [])
 
@@ -1018,6 +1045,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
   const handleSend = async () => {
     const typed = input.trim()
     if (!typed && !screenshot && attachments.length === 0) return
+    // Clear any prior refusal banner on EVERY send attempt, not just the plain
+    // `sendText` path: the edit-resend and slash-command branches below return
+    // without touching it, so a red ErrorNotice from an earlier refused send
+    // otherwise stayed pinned above the composer while the new turn streamed in.
+    setSendError('')
     // Attachment references are appended HERE, not kept in the composer.
     const text = composeMessage(input, attachments)
     setInput('')
@@ -1032,7 +1064,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       const editTsStr = editingTs
       setEditingTs(null)
       setIsWaiting(true)
-      // Remove messages from the edited point onward in local state
+      // Remove messages from the edited point onward in local state. This is
+      // display-only until the next mount re-reads the gateway, which rebuilds
+      // the authoritative transcript either way — so a refusal does NOT restore
+      // the slice: a fallback send that was actually delivered (an `unknown`
+      // transport outcome) must keep its post-send state, and re-adding the
+      // edited-from rows there would duplicate a turn the gateway already ran
+      // (GPT F3). The composer draft, which the gateway never saw on a definite
+      // refusal, is the only thing worth handing back.
       const editTsNum = parseInt(editTsStr)
       setMessages(prev => {
         const idx = prev.findIndex(m => m.role === 'user' && m.timestamp === editTsNum)
@@ -1048,10 +1087,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       wasNearBottomRef.current = true
       const result = await api?.editResend?.(text, editTsStr)
       if (!result?.ok) {
-        // Fallback: send as normal message — don't add user msg locally,
-        // sendMessage will trigger chat:message event which adds it
+        // Fallback: send as a normal message. `sendMessage` echoes the turn
+        // itself (and retracts that echo on a definite refusal), so nothing is
+        // added locally here. A definite refusal REJECTS this call (a
+        // rebound/busy slot, a 403); the composer was already cleared above, so
+        // without a catch the typed text is lost and the spinner sticks. Mirror
+        // `sendText`'s recovery: hand the draft back and show the gateway reason.
+        // A transport failure (fetch rejected) also lands here, but there the
+        // draft is deliberately NOT restored (see the catch) — the send may have
+        // run, and re-filling the composer would invite a double-executed turn.
         setIsWaiting(true)
-        await api?.sendMessage?.(text, screenshot || undefined)
+        try {
+          await api?.sendMessage?.(text, screenshot || undefined)
+        } catch (err) {
+          setIsWaiting(false)
+          setTurnActive(false)
+          // Restore the draft ONLY for a DEFINITE refusal (nothing was sent):
+          // `isDefiniteRefusal` is true for ANY `SendRefusedError`/tagged slot
+          // refusal — including a non-2xx whose body is not JSON (an aiohttp 500
+          // or proxy 502 page), where the reason is `undefined`. The earlier
+          // `slotRefusalReason(err) !== undefined` test wrongly dropped the
+          // draft on exactly that ordinary failure (a reason-less definite
+          // refusal) because it cannot tell a reason-less refusal from a
+          // transport error. A transport rejection is NOT a definite refusal:
+          // it keeps its optimistic echo (the text stays visible in the
+          // transcript), so re-filling the composer would invite a re-send that
+          // executes an already-run, side-effecting turn a SECOND time — leave
+          // it cleared there.
+          if (isDefiniteRefusal(err)) {
+            setInput((prev) => (prev ? prev : text))
+          }
+          setSendError(sendFailureMessage(err))
+        }
       }
       return
     }
@@ -1446,9 +1513,53 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           120px. Measuring the stack is what makes the gap real in every state
           (upstream's fixed 52 was tuned for its own single layout). */}
       <div ref={composerRef}>
+      {/* A FAILED send renders through the shared ErrorNotice. This cross-origin
+          panel receives ONLY custom-property CSS (installCoreThemeVars strips
+          every Tailwind utility, and the panel entry never imports index.css),
+          so the component's `block` variant — whose banner box is pure Tailwind
+          (`rounded-lg border bg-danger/10 px-3 py-2`) — renders as unstyled
+          debris here (a lone triangle, a text line, a raw browser-chrome ✕).
+          Follow the SettingsPanel pattern instead: use `variant="inline"` (whose
+          layout is text-only, nothing to lose when utilities drop) inside an
+          inline-styled wrapper that supplies the alert's banner surface —
+          danger color, tinted background, border, padding, size — via
+          `var(--*)` so it does not depend on Tailwind at all. The inline
+          variant's dismiss ✕ carries `bg-transparent border-none p-0`, also
+          stripped here, so a scoped inline `<style>` resets it to a flat icon
+          button rather than the UA's grey-chrome box. No agent hand-off
+          (`askAgent={false}`): the hand-off unmounts this tree and would destroy
+          the restored draft the user is about to retry. */}
+      {sendError !== '' && (
+        <div
+          className="mochi-send-error-banner"
+          role="presentation"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            margin: '6px 10px',
+            padding: '6px 10px',
+            borderRadius: 8,
+            border: '1px solid var(--danger, #e5484d)',
+            background: 'color-mix(in srgb, var(--danger, #e5484d) 12%, transparent)',
+            color: 'var(--danger, #e5484d)',
+            fontSize: 13,
+          }}
+        >
+          <style>{`.mochi-send-error-banner button{background:transparent;border:none;padding:0;cursor:pointer;color:inherit;display:inline-flex;align-items:center;}`}</style>
+          <ErrorNotice
+            variant="inline"
+            message={sendError}
+            askAgent={false}
+            onDismiss={() => setSendError('')}
+          />
+        </div>
+      )}
       {/* ADDED (not upstream): why a dropped file was refused. Reporting it is
           the point — the fork discarded such files silently, which reads as the
-          app being broken rather than the file being unsupported. */}
+          app being broken rather than the file being unsupported. A refused drop
+          is a client-side validation hint, not a failure, so it is NOT an
+          `ErrorNotice` (see the `errors-use-error-notice` rule's own carve-out
+          for validation hints). */}
       {dropError !== '' && (
         <div style={{
           padding: '4px 10px', borderTop: '1px solid var(--border)',
@@ -2017,6 +2128,49 @@ export function externalApprovalApproved(data?: Record<string, unknown>): boolea
   return (data as { approved?: unknown } | undefined)?.approved === true
 }
 
+/**
+ * The composer error line for a send that did not go through.
+ *
+ * A gateway REFUSAL (a `SendRefusedError` on a non-2xx, or `ensureSlot`'s tagged
+ * binding refusal) names the real reason the gateway returned — a busy slot, a
+ * slot/agent mismatch — and the panel shows it with `pages.chatPage.send_failed_with_error`, the same
+ * core-owned framed string the dashboard uses, so the user looks at the slot and
+ * not at their connection. A refusal that carries no reason falls back to the
+ * unframed `pages.chatPage.send_failed`.
+ *
+ * A rejected fetch (offline, DNS) throws a plain `TypeError` with no gateway
+ * reason, so it keeps `apps.mochi.chat.send_failed` — the connection copy, which
+ * is what that failure is.
+ *
+ * The `i18nT` keys are literals here, not built from the branch, because
+ * `check-i18n-keys.mjs` resolves only file-scope literals and a computed key is
+ * one it cannot verify.
+ */
+function sendFailureMessage(err: unknown): string {
+  const reason = refusalReason(err)
+  if (reason === undefined) return i18nT('apps.mochi.chat.send_failed')
+  return reason === ''
+    ? i18nT('pages.chatPage.send_failed')
+    : i18nT('pages.chatPage.send_failed_with_error', { error: reason })
+}
+
+/**
+ * The gateway's explanation for a refused send, or `undefined` when the failure
+ * is not a refusal and should read as a connection problem.
+ *
+ * `slotRefusalReason` recognizes exactly two shapes: a `SendRefusedError` (the
+ * gateway's own `error` body on a non-2xx) and a tagged slot-binding refusal
+ * from `ensureSlot`. For a `SendRefusedError` that named no reason it returns the
+ * empty string — the panel then shows the unframed `pages.chatPage.send_failed`.
+ * Any OTHER throw — a rejected fetch, or an unexpected internal error — returns
+ * `undefined` so the panel keeps the localized connection copy rather than
+ * promoting a raw, unlocalized `Error.message` into UI text for every language.
+ */
+function refusalReason(err: unknown): string | undefined {
+  if (err instanceof SendRefusedError) return err.reason ?? ''
+  return slotRefusalReason(err)
+}
+
 /** Shared look for the scoped-trust rows (full-width, quieter than the verbs). */
 const trustScopeBtnStyle: React.CSSProperties = {
   background: 'var(--bg-input)',
@@ -2147,6 +2301,14 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                       `grep "a b" f` while granting the two-space string. The
                       budget clamp above is a layout decision for this narrow
                       column; collapsing whitespace earns nothing anywhere. */}
+                  {/* The 256-char clamp on this label is deliberate, and it is
+                      where the pet differs from the dashboard, which renders the
+                      exact-command label whole. This column is a narrow
+                      frameless window whose width the app sets, so a multi-KB
+                      command would wrap to over a hundred lines with no way to
+                      widen it. This is a pointer surface and the button's
+                      title carries the whole command, so hovering reads the
+                      middle the clamp elides. */}
                   <span style={{ minWidth: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
                     {i18nT('apps.mochi.approval.trust_this_command', { cmd: truncateCommandLabel(req.fullCommand) })}
                   </span></button>

@@ -37,6 +37,7 @@ from kiro_crew.feishu.transport import (
 )
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.commands import (
+    COMPACT_TIMED_OUT_REPLY_ZH,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
 )
@@ -61,6 +62,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
+from kiro_crew.start_priority import person_priority
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -243,6 +245,7 @@ class FeishuDispatcher:
 
         await drive_turn(
             ChannelTurn(
+                start_priority=person_priority(inbound.person_origin),
                 channel_type="feishu",
                 session_key=session_key,
                 inbound_route=inbound_route,
@@ -356,8 +359,15 @@ class FeishuDispatcher:
                 )
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self.client.send_reply(inbound.message_id, "🗜️ 已压缩上下文。")
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self.client.send_reply(inbound.message_id, "🗜️ 已压缩上下文。")
+            elif cr["type"] == "failed":
+                await self.client.send_reply(inbound.message_id, "⚠️ 压缩失败，请重试。")
+            else:
+                await self.client.send_reply(inbound.message_id, COMPACT_TIMED_OUT_REPLY_ZH)
         except Exception:
             logger.exception("Feishu /compact failed for %s", session_key)
             await self.client.send_reply(inbound.message_id, "⚠️ 压缩失败，请重试。")
@@ -463,8 +473,15 @@ class FeishuDispatcher:
             self._conv.clear_awaiting(route)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
-                await self.client.send_reply(inbound.message_id, "🗜️ 上下文接近上限，已自动压缩。")
+                # A failed or timed-out compaction is a RETURNED result, not an
+                # exception, so the notice is posted only for a completed one.
+                cr = await provider.wait_for_compaction()
+                if cr["type"] == "completed":
+                    await self.client.send_reply(
+                        inbound.message_id, "🗜️ 上下文接近上限，已自动压缩。"
+                    )
+                else:
+                    logger.warning("Feishu hard-threshold compaction reported %s", cr["type"])
             except Exception:
                 logger.debug("Feishu hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(route):

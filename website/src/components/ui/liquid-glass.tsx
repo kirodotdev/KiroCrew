@@ -41,7 +41,10 @@
  * under prefers-reduced-transparency / prefers-contrast / no backdrop-filter;
  * `glass-accent` / `glass-warn` / `glass-hover` (index.css) swap `--glass-tint`
  * on the host for a hue-mixed step, so a picked chip or a pending approval
- * stays the same material.
+ * stays the same material. Which tint and which `frost` a pane gets is the
+ * thickness ladder in components/Glass.tsx (`glass-<step>` on the host picks the
+ * tint, `frost` carries the matching blur); this primitive only paints what it
+ * is handed.
  */
 
 import {

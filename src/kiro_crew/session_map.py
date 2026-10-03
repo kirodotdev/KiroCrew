@@ -1344,6 +1344,25 @@ class SessionMap:
         return entry.get("discarded_sid", "")
 
     @_guarded
+    def delete_if_sid(self, key: str, expected_sid: str) -> tuple[bool, str | None]:
+        """Delete *key* only when its current SID equals *expected_sid*.
+
+        The comparison and removal share one :data:`_MAP_LOCK` critical section,
+        so a successor mapping cannot land between them. The return is
+        ``(removed, current_sid)``: ``current_sid`` is ``None`` when no entry
+        exists, and otherwise reports the mismatched value without changing it.
+        """
+        key = canonical_key(key)
+        entry = self._data.get(key)
+        if entry is None:
+            return False, None
+        current_sid = entry.get("sid")
+        if current_sid != expected_sid:
+            return False, current_sid if isinstance(current_sid, str) else ""
+        self._remove_entry(key, reason=UNBIND_REASON_ENTRY_DELETED)
+        return True, expected_sid
+
+    @_guarded
     def delete(self, key: str, *, reason: str = UNBIND_REASON_ENTRY_DELETED) -> None:
         """Remove mapping and persist.
 

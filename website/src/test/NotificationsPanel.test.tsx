@@ -104,9 +104,10 @@ describe('NotificationsPanel', () => {
   it('describes the turn sound as a conversation handoff, not an every-turn chime', () => {
     const { container } = render(<NotificationsPanel />, 'percategory')
     // The chime fires when a conversation hands control back (finished, or
-    // paused for input), so the row must not promise audio on every turn.
+    // paused for input), so the row must not promise audio on every turn. The
+    // sentence is the row's info tip (its `title` while closed).
     expect(screen.getByText('Conversation handoffs')).toBeTruthy()
-    expect(screen.getByText('When a conversation finishes or pauses for your input')).toBeTruthy()
+    expect(screen.getByTitle('When a conversation finishes or pauses for your input')).toBeTruthy()
     expect(container.textContent).not.toContain('Agent replies')
     expect(container.textContent).not.toContain('finishes a turn in any chat')
   })
@@ -116,7 +117,7 @@ describe('NotificationsPanel', () => {
     // A question card plays the same attention sound as a tool approval, so
     // the row names both instead of reading as tool-approval-only.
     expect(screen.getByText('Approvals and questions')).toBeTruthy()
-    expect(screen.getByText('When the agent needs a tool approval or an answer')).toBeTruthy()
+    expect(screen.getByTitle('When the agent needs a tool approval or an answer')).toBeTruthy()
     expect(container.textContent).not.toContain('Tool approval requests')
   })
 

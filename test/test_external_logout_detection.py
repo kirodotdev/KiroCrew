@@ -20,7 +20,10 @@ import pytest
 from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew import kiro_prerequisite as kp
-from kiro_crew.session import _MAX_CONCURRENT_COLD_STARTS as _MAX_COLD_STARTS_FOR_TEST
+from kiro_crew.session_allocation import (
+    FOREGROUND_COLD_START_RESERVE as _COLD_START_RESERVE_FOR_TEST,
+)
+from kiro_crew.session_allocation import MAX_CONCURRENT_COLD_STARTS as _MAX_COLD_STARTS_FOR_TEST
 
 
 @pytest.fixture(autouse=True)
@@ -2267,45 +2270,38 @@ class TestRetirementCoverage:
 
     @pytest.mark.asyncio
     async def test_two_concurrent_sweeps_do_not_deadlock(self) -> None:
-        """The hold-and-wait deadlock two unserialized sweeps would reach.
+        """Two sweeps at once are serialized, and both complete.
 
-        Each sweep drains all four cold-start permits one at a time. With a third
-        party holding one (a warm-pool fill or eager spawn at boot -- routine),
-        sweep A can hold 3 waiting for its 4th while sweep B holds 1 waiting for
-        its 2nd: four taken, none free, and neither releases until it reaches four.
-        The releases live in a `finally` that never runs, and the wait is un-timed,
-        so both turns hang forever AND every later cold start blocks on a drained
-        semaphore.
-
-        Two concurrent sweeps are the common boot case, not an exotic one: with
-        `_session_identity` unset, every in-flight turn sees a change at once.
+        Each sweep takes every cold-start permit through ``PrioritySemaphore.drain``,
+        which is not re-entrant: a second drain started while one is pending raises.
+        ``_identity_sweep_lock`` is what lets the second sweep wait for the first
+        instead. Two concurrent sweeps are the common boot case, not an exotic one:
+        with ``_session_identity`` unset, every in-flight turn sees a change at once.
         """
+        from kiro_crew.start_priority import StartPriority
 
         smap = self._manager()
-        # Hold ALL permits first, so both sweeps are queued as waiters before any
-        # permit is free. This is what makes them interleave: `acquire()` has a
-        # non-yielding fast path, so a lone sweep would otherwise grab every free
-        # permit atomically and never give a peer the chance to take one.
-        for _ in range(_MAX_COLD_STARTS_FOR_TEST):
-            await smap._start_sem.acquire()
+        # Every permit held -- background its full width, a person the reserve -- so
+        # both sweeps are waiting before any permit is free.
+        holds = [StartPriority.BACKGROUND] * _MAX_COLD_STARTS_FOR_TEST + [
+            StartPriority.FOREGROUND
+        ] * _COLD_START_RESERVE_FOR_TEST
+        for priority in holds:
+            await asyncio.wait_for(smap._start_sem.acquire(priority), timeout=5.0)
 
         first = asyncio.create_task(smap.retire_kiro_identity_sessions())
         second = asyncio.create_task(smap.retire_kiro_identity_sessions())
         await asyncio.sleep(0.05)
         assert not first.done() and not second.done()
 
-        # Hand the permits back one at a time. Unserialized, the two sweeps
-        # alternate as FIFO waiters -- each takes one and re-queues behind the
-        # other -- until all four are split between them with none free and neither
-        # at its required four. Their `finally` releases never run, so both hang.
-        for _ in range(_MAX_COLD_STARTS_FOR_TEST):
-            smap._start_sem.release()
+        for priority in holds:
+            smap._start_sem.release(priority)
             await asyncio.sleep(0)
 
         results = await asyncio.wait_for(asyncio.gather(first, second), timeout=5.0)
         assert all(complete for _, complete in results)
         # Every permit returned, so later cold starts are unaffected.
-        assert smap._start_sem._value == _MAX_COLD_STARTS_FOR_TEST
+        assert smap._start_sem._value == smap._start_sem._limit
 
     @pytest.mark.asyncio
     async def test_the_barrier_waits_for_an_in_flight_cold_start(self) -> None:
@@ -2316,14 +2312,16 @@ class TestRetirementCoverage:
         previous account would still win registration and serve it.
         """
 
+        from kiro_crew.start_priority import StartPriority
+
         smap = self._manager()
-        await smap._start_sem.acquire()
+        await asyncio.wait_for(smap._start_sem.acquire(StartPriority.BACKGROUND), timeout=5.0)
 
         task = asyncio.create_task(smap.retire_kiro_identity_sessions())
         await asyncio.sleep(0.05)
         assert not task.done(), "the sweep scanned while a cold start was in flight"
 
-        smap._start_sem.release()
+        smap._start_sem.release(StartPriority.BACKGROUND)
         retired, complete = await asyncio.wait_for(task, timeout=2.0)
         assert complete is True
         assert retired == []
@@ -4001,7 +3999,7 @@ class TestSpawnIdentityStamp:
             def __init__(self, agent: str | None = None, **kwargs: object) -> None:
                 self.agent = agent
 
-            async def spawn(self) -> None:
+            async def spawn(self, start_priority=None) -> None:
                 return None
 
             def is_alive(self) -> bool:
@@ -4031,8 +4029,6 @@ class TestSpawnIdentityStamp:
         Registration must therefore happen while the permit is still held.
         """
 
-        import asyncio as _asyncio
-
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import BACKGROUND_KEY, SessionManager
 
@@ -4049,7 +4045,9 @@ class TestSpawnIdentityStamp:
             KiroCrewConfig(), provider_factory=lambda key, agent=None, cwd=None: _Prov()
         )
         # One permit total, so ``locked()`` is True exactly while it is held.
-        smap._start_sem = _asyncio.Semaphore(1)
+        from kiro_crew.start_priority import PrioritySemaphore
+
+        smap._start_sem = PrioritySemaphore(1)
 
         held_at_registration: list[bool] = []
         original = smap._advance_session_generation
@@ -4108,7 +4106,7 @@ class TestSpawnIdentityStamp:
             def __init__(self, agent: str | None = None, **kwargs: object) -> None:
                 self.agent = agent
 
-            async def spawn(self) -> None:
+            async def spawn(self, start_priority=None) -> None:
                 return None
 
             def is_alive(self) -> bool:
@@ -4256,7 +4254,7 @@ class TestSpawnIdentityStamp:
             def __init__(self, agent: str | None = None, **kwargs: object) -> None:
                 self.agent = agent
 
-            async def spawn(self) -> None:
+            async def spawn(self, start_priority=None) -> None:
                 return None
 
             def is_alive(self) -> bool:

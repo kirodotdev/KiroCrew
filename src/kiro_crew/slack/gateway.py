@@ -134,10 +134,12 @@ from kiro_crew.dashboard.chat_runner import (
     _resolve_channel_target,
     _run_chat,
     _slot_is_trusted,
+    turn_stats_meta,
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
+    _queued_depth_off_loop,
     dashboard_slot_key,
     mint_options_token,
     remember_slack_options,
@@ -161,6 +163,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
+    read_turn_model,
 )
 from kiro_crew.dashboard.listener_guard import listener_guard_exit_code
 from kiro_crew.dashboard.origin import (
@@ -320,6 +323,7 @@ from kiro_crew.platform.update_capability import (
     AUTO_EFFECT_MANDATORY,
     AUTO_EFFECT_NOTIFY,
     AUTO_ROUTE_GIT,
+    AUTO_ROUTE_PROVIDER,
     AUTO_ROUTE_WHEEL,
     CHECK_SUCCEEDED,
     CHECK_UNCHECKED,
@@ -592,12 +596,7 @@ async def _subagent_work_pending(manager: Any, parent_session_key: str) -> bool:
 async def _subagent_queued_count(manager: Any, parent_session_key: str) -> int:
     """This parent's QUEUED spawn count, read off-loop like
     :func:`_subagent_work_pending` (which also counts the running ones)."""
-    import inspect
-
-    entry = getattr(manager, "queued_count_for_async", None)
-    if inspect.iscoroutinefunction(entry):
-        return int(await entry(parent_session_key))
-    return int(manager.queued_count_for(parent_session_key))
+    return await _queued_depth_off_loop(manager, parent_session_key)
 
 
 async def _subagent_batch_pending(manager: Any, batch_id: str) -> bool:
@@ -3204,7 +3203,11 @@ class GatewayOrchestrator:
             session_key, msg = build_cron_session_context(job)
 
             from kiro_crew.cron import resolve_cron_memory
-            from kiro_crew.execution_context import execution_for_store, execution_from_record
+            from kiro_crew.execution_context import (
+                ExecutionContext,
+                execution_for_store,
+                execution_from_record,
+            )
 
             # Snapshot the job before yielding; reloading a cron cannot rebind it.
             cron_agents = list(job.agent_sequence)
@@ -3442,6 +3445,7 @@ class GatewayOrchestrator:
                 alias: str | None,
                 *,
                 template_namespace: bool = False,
+                sequence_step: bool = False,
             ) -> "tuple[str | None, str | None, str | None]":
                 """Resolve a cron agent alias to (kiro_agent, cwd, crew_alias).
 
@@ -3468,6 +3472,17 @@ class GatewayOrchestrator:
                 silently skipped. Returns (None, None, None) on any miss so the
                 caller falls back to the raw value unchanged (behavior-preserving
                 for a job whose agent is already a real mode or is unset).
+
+                ``sequence_step`` marks a declared ``agent_sequence`` dispatch,
+                where ``alias`` is the step's OWN crew, not the schedule's
+                captured member. The captured-member pin below is then skipped so
+                each step resolves its own crew's kiro_agent, workspace, pinned
+                model and capability gates; the captured memory store is shared
+                by every step regardless (it is bound per session key by the
+                caller), so the run keeps one memory identity while the steps run
+                as the crews the sequence names. Without this, every step
+                resolved to the captured member and the other crews named in the
+                sequence never actually ran.
                 """
                 if not alias:
                     return None, None, None
@@ -3524,8 +3539,17 @@ class GatewayOrchestrator:
                     # member_id, so the alias whose bindings we read is the same
                     # member the store belongs to; a mismatch (recreated/renamed)
                     # raises and we fall back to the raw value unchanged.
+                    #
+                    # Skipped for a declared agent_sequence step: there the
+                    # captured member is the run's shared memory identity, not
+                    # the agent each step runs as, and ``alias`` already names
+                    # the step's OWN crew. Pinning here would collapse every step
+                    # onto the captured member, so the sequence step falls
+                    # through to the by-alias path below instead.
                     resolved_alias = alias
-                    captured_member = getattr(cron_execution, "member_id", None)
+                    captured_member = (
+                        None if sequence_step else getattr(cron_execution, "member_id", None)
+                    )
                     if captured_member:
                         try:
                             from kiro_crew.execution_context import member_config_for_id
@@ -4476,6 +4500,9 @@ class GatewayOrchestrator:
                 agent_id: str | None,
                 cwd: str | None = None,
                 crew_agent: str | None = None,
+                *,
+                execution: ExecutionContext | None = None,
+                replace_execution: bool = False,
             ) -> "tuple[LLMProvider, bool, bool, bool]":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
@@ -4486,13 +4513,31 @@ class GatewayOrchestrator:
                 is that agent's workspace so the session runs in the right tree,
                 and ``crew_agent`` is the original alias so prepare_runtime
                 resolves the member identity (its capability gates, model /
-                reasoning-effort pins, and watchdog windows).
+                reasoning-effort pins, and watchdog windows). ``execution``
+                overrides only the record published under the session key; its
+                store and member identity must remain the captured run's.
+                ``replace_execution`` admits a sequence step's template switch
+                only while the durable record still matches the fresh read.
                 """
 
                 assert self.sessions is not None
-                from kiro_crew.execution_context import bind_session_execution
+                from kiro_crew.execution_context import (
+                    bind_session_execution,
+                    read_session_execution,
+                )
 
-                await asyncio.to_thread(bind_session_execution, key, cron_execution)
+                bound_execution = execution if execution is not None else cron_execution
+                if replace_execution:
+                    expected_execution = await asyncio.to_thread(read_session_execution, key)
+                    await asyncio.to_thread(
+                        bind_session_execution,
+                        key,
+                        bound_execution,
+                        replace_existing=True,
+                        expected=expected_execution,
+                    )
+                else:
+                    await asyncio.to_thread(bind_session_execution, key, bound_execution)
                 modes = getattr(self.ctx_builder, "_session_memory_modes", None)
                 if isinstance(modes, dict):
                     # A separately scheduled run is durable work, not a child
@@ -4502,12 +4547,34 @@ class GatewayOrchestrator:
                     from kiro_crew.workflows.registry import _await_owned
 
                     publication = asyncio.create_task(
-                        asyncio.to_thread(bind_session_memory_mode, key, cron_execution.memory_mode)
+                        asyncio.to_thread(
+                            bind_session_memory_mode, key, bound_execution.memory_mode
+                        )
                     )
                     admitted_mode = await _await_owned(publication)
                     modes[key] = (
                         strictest((admitted_mode, modes.get(key, "persistent"))) or "persistent"
                     )
+
+                async def _rebind_prepared_execution(client: LLMProvider) -> None:
+                    if not replace_execution:
+                        return
+                    prepared_template = getattr(client, "loaded_capability_template", None)
+                    if (
+                        not isinstance(prepared_template, str)
+                        or not prepared_template
+                        or prepared_template == bound_execution.template_id
+                    ):
+                        return
+                    rebound = bound_execution.with_template(prepared_template, crew_agent or "")
+                    await asyncio.to_thread(
+                        bind_session_execution,
+                        key,
+                        rebound,
+                        replace_existing=True,
+                        expected=bound_execution,
+                    )
+
                 try:
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
@@ -4519,6 +4586,7 @@ class GatewayOrchestrator:
                         extra_env=_cron_extra_env(),
                         cwd=cwd,
                     )
+                    await _rebind_prepared_execution(client)
                     # A config-option backend refuses a pin without raising and
                     # stays on its default: the same downgrade as the except
                     # below, so report it the same way.
@@ -4553,7 +4621,24 @@ class GatewayOrchestrator:
                         extra_env=_cron_extra_env(),
                         cwd=cwd,
                     )
+                    await _rebind_prepared_execution(client)
                     return client, is_new, resumed, True
+
+            def _retained_session_agent_mismatch(key: str, agent: str | None) -> str | None:
+                """Return the retained agent only on positive mismatch evidence."""
+                live_agent = None
+                try:
+                    reader = getattr(self.sessions, "_get_session_agent", None)
+                    if callable(reader):
+                        live_agent = reader(key)
+                except Exception:
+                    logger.debug(
+                        "cron '%s': live session agent unreadable", job.name, exc_info=True
+                    )
+                    live_agent = None
+                if isinstance(live_agent, str) and live_agent and live_agent != (agent or ""):
+                    return live_agent
+                return None
 
             def _annotate_model_downgrade(text: str) -> str:
                 # job.model is LLM-controllable via MCP; redact before it
@@ -4568,13 +4653,81 @@ class GatewayOrchestrator:
             if agent_sequence_dispatches(agents):
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
+
+                @dataclass(frozen=True)
+                class _SequenceStep:
+                    alias: str
+                    kiro_agent: str | None
+                    cwd: str | None
+                    crew: str | None
+                    dispatch_agent: str
+                    session_key: str
+
+                # Resolve once per fire so the pre-loop comparison and dispatch
+                # use one runtime identity. Keep a list parallel to ``agents``:
+                # duplicate aliases are separate steps sharing one stable key.
+                steps: list[_SequenceStep] = []
+                for agent in agents:
+                    _seq_kagent, _seq_cwd, _seq_crew = _resolve_cron_agent(
+                        agent, sequence_step=True
+                    )
+                    steps.append(
+                        _SequenceStep(
+                            alias=agent,
+                            kiro_agent=_seq_kagent,
+                            cwd=_seq_cwd,
+                            crew=_seq_crew,
+                            dispatch_agent=_seq_kagent or agent,
+                            session_key=f"cron:{job.id}:{agent}",
+                        )
+                    )
+
+                # Sweep every stable per-step key before dispatching anything.
+                # Deferring mid-loop would replay completed steps on the next
+                # fire, so one mismatch defers the whole sequence instead.
+                for step in steps:
+                    if not step.alias:
+                        logger.error(
+                            "Cron '%s': empty agent_sequence step cannot resolve a crew; "
+                            "refusing to dispatch",
+                            job.name,
+                        )
+                        _defer_cron_before_dispatch(
+                            job,
+                            f"cron '{job.name}': empty agent_sequence step cannot resolve a crew; "
+                            "refusing to dispatch",
+                        )
+                        return None
+                    _live_agent = _retained_session_agent_mismatch(
+                        step.session_key, step.dispatch_agent
+                    )
+                    if _live_agent is not None:
+                        logger.info(
+                            "Cron '%s': sequence step %r session retained under agent %r "
+                            "but this fire resolves it to %r; deferring the whole sequence "
+                            "rather than reusing its runtime",
+                            job.name,
+                            step.alias,
+                            _live_agent,
+                            step.dispatch_agent,
+                        )
+                        _defer_cron_before_dispatch(
+                            job,
+                            f"sequence step {step.alias!r} session retained under agent "
+                            f"{_live_agent!r} with work pending; this fire resolves the "
+                            f"step to {step.dispatch_agent!r} and will not run a partial "
+                            "sequence",
+                        )
+                        return None
+
                 result_text = "_No response._"
                 _seq_downgraded = False
                 # Run-scoped: a sequence where one agent got a tool through has
                 # done work, even if a later agent was blocked outright.
                 _gate = _GateTally()
-                for agent in agents:
-                    agent_session_key = f"cron:{job.id}:{agent}"
+                for step in steps:
+                    agent = step.alias
+                    agent_session_key = step.session_key
                     if self.cron_svc is not None:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
@@ -4595,12 +4748,16 @@ class GatewayOrchestrator:
                         _box["reason"] = str(getattr(ev, "stop_reason", "") or "")
 
                     try:
-                        # Collapse an alias (e.g. a channel-bound agent) to its
-                        # real kiro mode + workspace; keep the session key on the
-                        # ORIGINAL alias so per-agent keys stay stable.
-                        _seq_kagent, _seq_cwd, _seq_crew = _resolve_cron_agent(agent)
+                        _seq_execution = cron_execution.with_template(
+                            step.dispatch_agent, step.crew or step.alias
+                        )
                         client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, _seq_kagent or agent, _seq_cwd, _seq_crew
+                            step.session_key,
+                            step.dispatch_agent,
+                            step.cwd,
+                            step.crew,
+                            execution=_seq_execution,
+                            replace_execution=True,
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
@@ -4825,10 +4982,10 @@ class GatewayOrchestrator:
                 # default's runtime. Every other reason for declining the
                 # substitution below reaches the same hole. Keying on the
                 # mismatch itself costs nothing elsewhere: a job pinning its own
-                # agent_id dispatches one name forever, and a dispatching
-                # sequence runs on per-agent keys (f"cron:{job.id}:{agent}") that
-                # already separate the sessions -- both are excluded by this
-                # predicate, so no fire this change does not touch is deferred.
+                # agent_id dispatches one name forever and is excluded by this
+                # predicate. A dispatching sequence is handled separately by the
+                # pre-loop sweep above, because each stable per-agent key must be
+                # compared with that step's freshly resolved dispatch agent.
                 #
                 # DEFER, never reset: a retained session implies pending
                 # sub-agent work -- the no-pending case already reset in the
@@ -4859,21 +5016,8 @@ class GatewayOrchestrator:
                 # `agent` kwarg verbatim (`agent=agent or ""`), so the two sides
                 # of this comparison are the same spelling by construction.
                 if _agentless_job:
-                    _live_agent = None
-                    try:
-                        _reader = getattr(self.sessions, "_get_session_agent", None)
-                        if callable(_reader):
-                            _live_agent = _reader(session_key)
-                    except Exception:
-                        logger.debug(
-                            "cron '%s': live session agent unreadable", job.name, exc_info=True
-                        )
-                        _live_agent = None
-                    if (
-                        isinstance(_live_agent, str)
-                        and _live_agent
-                        and _live_agent != (_dispatch_agent or "")
-                    ):
+                    _live_agent = _retained_session_agent_mismatch(session_key, _dispatch_agent)
+                    if _live_agent is not None:
                         logger.info(
                             "Cron '%s': session retained under agent %r but this fire "
                             "dispatches %r; deferring rather than reusing its runtime",
@@ -4975,6 +5119,8 @@ class GatewayOrchestrator:
 
                 # ── Per-turn usage row: attribute background spend. ──
                 # Best-effort; must never fail the cron turn.
+                # The same usage feeds the result row's footer (meta.turn_stats).
+                _turn_stats: dict[str, Any] | None = None
                 try:
 
                     _used, _window = read_context_tokens(client)
@@ -4984,6 +5130,12 @@ class GatewayOrchestrator:
                         # prompt's snapshotted credits alongside the
                         # continuation's on a resumed turn.
                         _turn_usage.credits += _carried_credits
+                    _turn_stats = turn_stats_meta(
+                        int(_turn_usage.duration_ms or (time.monotonic() - _turn_t0) * 1000),
+                        float(_turn_usage.credits or 0.0),
+                        float(_turn_usage.cost_usd or 0.0),
+                        read_turn_model(client),
+                    )
                     await persist_token_record_async(
                         session_key,
                         # Blank on a downgrade or an active fallback — see the
@@ -5073,6 +5225,7 @@ class GatewayOrchestrator:
                                 result_text,
                                 history=await prefetch_cron_history(self.dashboard_state, job.id),
                                 context_reading=_ctx_reading,
+                                turn_stats=_turn_stats,
                             )
                         return result_text
 
@@ -5098,6 +5251,7 @@ class GatewayOrchestrator:
                             result_text,
                             history=await prefetch_cron_history(self.dashboard_state, job.id),
                             context_reading=_ctx_reading,
+                            turn_stats=_turn_stats,
                         )
                     return result_text
 
@@ -5130,6 +5284,7 @@ class GatewayOrchestrator:
                             result_text,
                             history=history,
                             context_reading=_ctx_reading,
+                            turn_stats=_turn_stats,
                         )
                     redacted_for_dash, _ = redact_exfiltration_urls(result_text)
                     redacted_for_dash, _ = redact_credentials(redacted_for_dash)
@@ -7467,7 +7622,7 @@ class GatewayOrchestrator:
                 # no dashboard state nothing was read, so nothing advanced.
                 return [], 0, {}
 
-            async def _read_session(target: str, since: int) -> tuple[list[dict], int]:
+            async def _read_session(target: str, since: int) -> tuple[list[dict], int, int | None]:
                 # Off the loop: this authorizes, may write a SEL row, and reads slot
                 # state. Raises on refusal, which the collector counts as a drop.
                 #
@@ -7477,7 +7632,9 @@ class GatewayOrchestrator:
                 # cursor across rows that are then discarded and never read again: a
                 # 20-row burst loses its oldest 8, which is where an actionable line
                 # sits when a worker posted several since the last tick. Reading
-                # exactly what is retained turns that loss into a later tick.
+                # exactly what is retained turns that loss into a later page: the
+                # collector reads again from ``next_since`` while it is short of
+                # ``total``, which is why ``total`` is returned too.
                 payload = await asyncio.to_thread(
                     _sc.read_messages,
                     state,
@@ -7488,7 +7645,12 @@ class GatewayOrchestrator:
                 )
                 rows = payload.get("messages") or []
                 cursor = payload.get("next_since")
-                return list(rows), int(cursor) if isinstance(cursor, int) else since
+                total = payload.get("total")
+                return (
+                    list(rows),
+                    int(cursor) if isinstance(cursor, int) else since,
+                    int(total) if isinstance(total, int) else None,
+                )
 
             async def _read_pr(target: str) -> dict | None:
                 # The reading the fetcher ALREADY made this tick, never a fresh fetch:
@@ -9046,21 +9208,34 @@ class GatewayOrchestrator:
                 if _injection_slot:
 
                     # ── Fix 2 (B1): arm a one-shot post-fan-out synthesis turn ──
-                    # When this is the LAST outstanding sub-agent for the parent
-                    # (chat mode only), flag the slot so that once every completion
-                    # has been processed and the queue drains, _run_chat fires ONE
+                    # When this is the LAST outstanding sub-agent for the parent,
+                    # flag the slot so that once every completion has been
+                    # processed and the queue drains, _run_chat fires ONE
                     # dedicated synthesis turn (see chat_runner drain/idle branch).
                     # Ordering guarantees running_agents_for == [] here on the last
                     # agent (info.done set + _running_count decremented first).
+                    # IN MEMORY ONLY, cheapest first, and with no await: the arm
+                    # sits on the delivery path, so a store read here would queue
+                    # every completion behind the writer, and an await would let
+                    # the tab close or a sibling register under it. The store
+                    # half (a sibling the gate still holds) is the fire gate's
+                    # (chat_utils.synthesis_fire_verdict), which refuses while
+                    # anything is queued; the other completions re-arm.
                     try:
-                        _still_running = (
-                            self.subagent_mgr.running_agents_for(parent_key)
-                            if self.subagent_mgr
-                            else None
+                        _mgr = self.subagent_mgr
+                        _arm_synthesis = (
+                            _mgr is not None
+                            and not _injection_slot._pending_synthesis
+                            and not _flush_only
+                            and info.id not in _injection_slot._subagents_inline_collected
+                            and _mgr.running_agents_for(parent_key) == []
+                            and not _mgr.has_in_memory_pending_work_for(
+                                parent_key, exclude_id=info.id
+                            )
                         )
                     except Exception:
-                        _still_running = None  # error → don't arm (fail safe)
-                    if _still_running == []:
+                        _arm_synthesis = False  # error → don't arm (fail safe)
+                    if _arm_synthesis:
                         _injection_slot._pending_synthesis = True
 
                     # ── Skip injection for blocking-tool-collected results ──
@@ -10511,6 +10686,8 @@ class GatewayOrchestrator:
         update this install will not apply.
         """
         effect = await asyncio.to_thread(auto_update_effect, provider=provider)
+        # git_probes defaults True, so the derivation always answers here.
+        assert effect is not None
         record_auto_update_effect(effect)
         return effect
 
@@ -10559,6 +10736,12 @@ class GatewayOrchestrator:
         # dashboard need not run its own check to learn it.
         _update_info["managed_by"] = MANAGED_BY_COMMAND
         effect = await self._auto_update_effect(provider)
+        # ``can_apply`` read off that one derivation rather than asked of the
+        # provider again: it is the PROVIDER's answer, not the install shape's
+        # (a reader told "cannot apply" because the shape is a wheel would be
+        # wrong on every policy-managed host), and the apply paths below never
+        # reach ``_publish_provider_update_state`` where a verdict is published.
+        _update_info["can_apply"] = effect.route == AUTO_ROUTE_PROVIDER
         result = await provider.check()
 
         # The mandatory floor is an enterprise ceiling and is evaluated FIRST,
@@ -10818,6 +11001,7 @@ class GatewayOrchestrator:
                     None,
                     "a policy update command now owns this install",
                 )
+                record_auto_update_effect(effect)
             from kiro_crew.platform.update_governance import min_version, update_required
 
             mandatory_target_key = (
@@ -10851,6 +11035,56 @@ class GatewayOrchestrator:
                 #     backend must not drive a git reset on a non-git tree nor show
                 #     an inapplicable CLI-update badge.
                 if effect.effect == AUTO_EFFECT_MANDATORY and effect.route == AUTO_ROUTE_GIT:
+                    # Apply only when a newer build is available AND the checkout
+                    # can take it cleanly — not on commit distance alone, and not
+                    # over local divergence. `_auto_apply_update` resets hard onto
+                    # the upstream tip, so the gate is two signals the successful
+                    # check already computed:
+                    #   * `version_newer` — the target's `__version__` outranks the
+                    #     one this process imported. The same signal the voluntary
+                    #     git branch below reads. Without it a primary-branch
+                    #     checkout below the floor is reset to every intermediate
+                    #     commit on every cycle and at every boot until `__version__`
+                    #     meets the floor, which never advances the imported version
+                    #     one commit at a time.
+                    #   * `update_available` — `can_fast_forward or restart_pending`
+                    #     (behind-only, or already pulled and awaiting a restart). A
+                    #     DIVERGED checkout (ahead and behind) reads `version_newer`
+                    #     true but `update_available` false, and resetting it would
+                    #     discard the local commits. The destructive step has its
+                    #     own ahead-count refusal, but gating here keeps a diverged
+                    #     host on the clean notify path instead of a fetch-then-bail.
+                    # A floor above the newest build, or a diverged checkout, then
+                    # notifies rather than churning — the wheel branch's
+                    # no-newer-build guard is the same stop.
+                    if not (info.get("version_newer") and info.get("update_available")):
+                        # Keep a FAILED/unparseable check distinct from a healthy
+                        # "nothing newer / diverged" verdict: a non-answer must not
+                        # read as a compliance decision in the log. Either way, do
+                        # NOT write `update_available` into the shared check cache —
+                        # the wheel branch this mirrors only refreshes the badge, and
+                        # a write here would overwrite the real verdict (a failed or
+                        # diverged check) with a fabricated "update available".
+                        if info.get("check_status") != CHECK_SUCCEEDED:
+                            logger.warning(
+                                "Version compliance: running %s is below the policy minimum "
+                                "%s, but the update check did not succeed (status %s) — "
+                                "notifying, not resetting",
+                                _running_version,
+                                min_version(),
+                                info.get("check_status") or CHECK_UNCHECKED,
+                            )
+                        else:
+                            logger.warning(
+                                "Version compliance: running %s is below the policy minimum "
+                                "%s, but no newer build is cleanly applicable — notifying, "
+                                "not resetting to every upstream commit",
+                                _running_version,
+                                min_version(),
+                            )
+                        if self.dashboard_state:
+                            self.dashboard_state.push_refresh("update_available")
+                        return
                     if not await self._prepare_auto_update_apply(
                         mandatory=True,
                         mandatory_key=mandatory_target_key,
@@ -10863,7 +11097,7 @@ class GatewayOrchestrator:
                             _running_version,
                             min_version(),
                         )
-                        await self._auto_apply_update()
+                        await self._auto_apply_update(mandatory=True)
                     finally:
                         await self._finish_auto_update_apply()
                     return
@@ -11041,12 +11275,19 @@ class GatewayOrchestrator:
         except Exception:
             logger.debug("Update check failed", exc_info=True)
 
-    async def _auto_apply_update(self) -> None:
+    async def _auto_apply_update(self, *, mandatory: bool = False) -> None:
         """Auto-apply: fetch, reset to remote, rebuild frontend, pip install, restart.
 
         Uses ``git fetch`` + ``git reset --hard`` instead of ``git pull``
         so local tracked-file edits never cause merge conflicts.
         Untracked files (task specs, notes) are untouched by reset.
+
+        ``mandatory`` says a policy ``min_version`` floor drove this apply rather
+        than the voluntary auto-update path. It changes nothing about the git
+        work; it only makes a no-op outcome VISIBLE to the operator. A voluntary
+        apply that finds no diff can settle silently, but a floor-mandated apply
+        that finds nothing to do means the host is below the floor AND cannot move
+        — the operator needs to see that, not a cleared progress bar.
 
         The public OSS flow is the same one used by ``kirocrew update`` and the
         dashboard update endpoint: git reset to origin → build + stage the
@@ -11288,9 +11529,29 @@ class GatewayOrchestrator:
                 await _kill_and_reap(diff_proc)
                 raise
             if diff_proc.returncode == 0:
-                # No diff — already up to date
+                # No diff — the working tree already matches the fetched tip. A
+                # MANDATED apply reaches this only once the gate upstream has
+                # confirmed a newer ``__version__`` is available, so an identical
+                # tree means the code is already in place and this process is
+                # still running the build from before it; a restart is what
+                # remains. The ``restarting`` step is reserved for the moment the
+                # gateway is about to exec itself: it arms the SPA's reload latch
+                # (``bundleReload.ts``), which the next reconnect consumes to
+                # reload the tab. No exec happens here, so pushing it would arm a
+                # latch that reloads over an unrelated later reconnect and leave
+                # the progress bar stuck mid-"restarting". Clear the bar and
+                # refresh the update badge instead — the badge is the same signal
+                # the no-newer-build notify path raises, and it surfaces the
+                # pending mandatory update without faking a restart.
                 if self.dashboard_state:
                     self.dashboard_state.clear_update_progress()
+                    if mandatory:
+                        self.dashboard_state.push_refresh("update_available")
+                if mandatory:
+                    logger.warning(
+                        "Version compliance: a mandatory update found the fetched tip "
+                        "already checked out — a restart is pending to run it"
+                    )
                 return
 
             # LAST-MOMENT REVALIDATION, after the fetch and immediately before the

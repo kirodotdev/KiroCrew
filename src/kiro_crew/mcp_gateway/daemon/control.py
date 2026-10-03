@@ -192,14 +192,17 @@ async def _apply_claim(
     _bind_token(session_token, updated_caller, pid, claim_token)
     conns = _CONN_INDEX.get(pid, set())
     if not conns:
-        # A claim naming a pid with NO indexed connection is the exact silent
-        # failure that produced orphan subagents (host-pid claim vs
-        # namespace-pid index). It can also mean the
-        # runtime's stubs disconnected — either way it deserves a loud trail,
-        # not a silent {"updated": 0}.
-        logger.warning(
-            "claim matched ZERO connections: pid=%d session_key=%s — "
-            "stub identity will stay stale (possible pid-index mismatch)",
+        # Usually the normal ordering: a session's claim is pushed before its
+        # stubs launch, and the binding recorded above is what the register that
+        # follows resolves through. It was a WARNING saying "stub identity will
+        # stay stale", which fired on every healthy session and sent operators
+        # chasing it as the cause of unrelated identity_unattested refusals. It
+        # can still mean a pid-index mismatch (host-pid claim vs namespace-pid
+        # index), so it stays in the log and the audit trail at INFO.
+        logger.info(
+            "claim matched no connections yet: pid=%d session_key=%s; the session "
+            "token binding is kept for the stubs that register next (a pid-index "
+            "mismatch shows up the same way if they never do)",
             pid,
             updated_caller.session_key,
         )

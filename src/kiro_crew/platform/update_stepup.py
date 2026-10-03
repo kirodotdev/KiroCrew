@@ -33,13 +33,13 @@ from __future__ import annotations
 import hmac
 import json
 import logging
-import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import make_owner_only_dir
 
@@ -61,9 +61,9 @@ _PENDING_FILENAME = "pending-update-approval.json"
 
 #: Serializes every read-validate-remove of the nonce file against arm's
 #: atomic swap. Arm and approve run as concurrent executor threads in ONE
-#: gateway process (see arm's temp-name comment), so without this an approve
-#: that validated request A could unlink a request B that arm swapped in
-#: between the read and the unlink — accepting A while silently destroying B.
+#: gateway process, so without this an approve that validated request A
+#: could unlink a request B that arm swapped in between the read and the
+#: unlink — accepting A while silently destroying B.
 #: The approval/consumption write plane lives entirely in the gateway, so an
 #: in-process lock closes it. One reader lives elsewhere: `kirocrew update
 #: approve` calls read_pending() from its own CLI process, outside this lock.
@@ -103,8 +103,8 @@ def arm(version: str, channel: str, *, source: str = "dashboard") -> PendingUpda
     """Record a pending update request; return it (nonce included, for the FILE).
 
     The caller serving the SPA must never forward the nonce — hand the SPA
-    :func:`public_view` instead. Written atomically (temp + ``os.replace``)
-    with owner-only permissions, replacing any previous request: arming grants
+    :func:`public_view` instead. Written atomically and owner-only from birth,
+    so no readable moment exists, replacing any previous request: arming grants
     nothing by itself, so last-writer-wins needs no coordination.
     """
     pending = PendingUpdate(
@@ -115,38 +115,13 @@ def arm(version: str, channel: str, *, source: str = "dashboard") -> PendingUpda
         created_at=time.time(),
     )
     path = pending_path()
-    # Owner-only from BIRTH, not chmod-after-write: under umask 022 a plain
-    # write_text creates the temp 0644, and the instant before a tighten is
-    # exactly when another local account could read the nonce. The directory
-    # is created owner-only too, and the file is opened O_CREAT|O_EXCL with
-    # mode 0600 so no readable moment ever exists.
     make_owner_only_dir(path.parent)
-    # The request id, not the pid: two concurrent arms run in the SAME process
-    # (executor threads), so a pid-keyed temp name is one shared file both
-    # writers interleave into. The request id is fresh entropy per arm.
-    tmp = path.with_name(f"{path.name}.{pending.request_id}.tmp")
     try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "request_id": pending.request_id,
-                        "nonce": pending.nonce,
-                        "version": pending.version,
-                        "channel": pending.channel,
-                        "created_at": pending.created_at,
-                        "source": source,
-                    }
-                )
-            )
         with _PENDING_MUTEX:
-            os.replace(tmp, path)
+            atomic_write(
+                path, json.dumps({**asdict(pending), "source": source}), restrict_to_owner=True
+            )
     except OSError as exc:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise StepUpError(f"could not record the pending update request: {exc}") from exc
     logger.info(
         "Armed update request %s (v%s, %s channel, from %s)",

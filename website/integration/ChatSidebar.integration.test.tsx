@@ -710,7 +710,7 @@ describe('ChatSidebar Cleanup', () => {
     expect(sessionRow.getAttribute('data-state')).toBe('open')
   })
 
-  it('clicking Duplicate button calls fork endpoint and switches slot', async () => {
+  it('clicking Fork chat button calls fork endpoint and switches slot', async () => {
     server.use(
       http.post('/api/chat/slots/:slot/fork', ({ params }) => {
         return HttpResponse.json({ ok: true, key: `${params.slot}-fork` })
@@ -718,7 +718,7 @@ describe('ChatSidebar Cleanup', () => {
     )
     const { store } = renderWithProviders(<ChatSidebar {...defaultProps} />)
     await screen.findByText('Pipeline debug')
-    const dupBtn = screen.getAllByLabelText('Duplicate')[0]
+    const dupBtn = screen.getAllByLabelText('Fork chat')[0]
     fireEvent.click(dupBtn)
     await waitFor(() => {
       expect(store.getState().chat.activeSlot).toBe('slot-1-fork')
@@ -731,7 +731,7 @@ describe('ChatSidebar Cleanup', () => {
     )
     renderWithProviders(<ChatSidebar {...defaultProps} />)
     await screen.findByText('Pipeline debug')
-    const dupBtn = screen.getAllByLabelText('Duplicate')[0]
+    const dupBtn = screen.getAllByLabelText('Fork chat')[0]
     fireEvent.click(dupBtn)
     // UI remains intact — sessions still rendered
     await waitFor(() => {

@@ -22,6 +22,7 @@ import time
 
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew import preview_text, voice_reply
 from kiro_crew.constants import md_link_destination
 from kiro_crew.dashboard.handlers import artifacts as artifact_handlers
@@ -1539,15 +1540,10 @@ class TestAnAngleBracketedDestinationCollapsesToItsLabel:
         """Every ``[l](<`` opener scans only to the next ``<``: linear on a text
         built from openers alone."""
 
-        def elapsed(repeats: int) -> float:
-            text = "[l](<" * repeats
-            started = time.perf_counter()
+        def reject(text: str) -> None:
             assert display_safety._balanced_link_reading(text) == text
-            return time.perf_counter() - started
 
-        small, large = elapsed(5_000), elapsed(20_000)
-        assert large < 0.5, large
-        assert large <= max(8 * small, 0.05), (small, large)
+        assert_rejected_without_backtracking(reject, lambda n: "[l](<" * n)
 
 
 class TestAKeyJoinedByALinkTheCanonicalGrammarRefuses:

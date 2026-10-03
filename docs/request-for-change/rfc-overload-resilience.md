@@ -1,7 +1,7 @@
 ---
 title: Overload resilience — durable task queue, admission before allocation, adaptive concurrency, layered recovery
 status: partial
-revision: v5
+revision: v6
 author: bolichen
 created: 2026-09-12
 last-audited: 2026-09-12
@@ -816,7 +816,8 @@ Question text is kept as asked; the decision below it is final for this PR.
   `agent.spawn_min_memory_gb=4.0` restores the previous bar; `0` disables the
   floor and the cold-start reserve together (unchanged). Not decided here: a
   platform-aware floor (scaling to total RAM, or gating on the kernel's
-  pressure level on macOS) stays open under #15244. **Superseded by Q9:** the
+  pressure level on macOS) stays open under #15244. **Partly decided by Q10
+  (2026-10-01):** the macOS pressure-level gate. **Superseded by Q9:** the
   3.0 default never shipped (the code stayed at 4.0), and on 2026-10-01 the
   owner set a different direction: the only capacity guarantee is that at least
   2 GB stays free, with no count cap holding work back, and a stored 4.0 is
@@ -865,7 +866,47 @@ Question text is kept as asked; the decision below it is final for this PR.
   disables the floor and the reserve together (unchanged). Not decided here: the
   macOS kernel-pressure veto (Q8 measured `kern.memorystatus_vm_pressure_level`
   2 with two dedicated workers at a 2.5 floor), which lands separately under
-  #15244.
+  #15244. **Decided by Q10 (2026-10-01).**
+- **Q10 (2026-10-01, accepted).** Q8 and Q9 left the macOS kernel-pressure
+  veto open under #15244. The floor's macOS figure, the reclaimable-page sum,
+  does not see compressor pressure, so starts that clear the floor can still
+  drive a 16 GB Mac into WARN (Q8's two dedicated workers at a 2.5 floor).
+  Does the kernel's pressure level gate a start, and as what?
+  **Decision (owner direction, 2026-10-01):** on macOS,
+  `kern.memorystatus_vm_pressure_level` at WARN or above vetoes a subagent
+  start. The veto is part of the 2.0 GB floor rule (Q9), not a second rule:
+  the floor's macOS reading takes the level as a second input, read through a
+  `platform_compat` helper. A vetoed start waits in the queue, and that wait
+  is finite under the owner's same-day max-wait direction, which covers every
+  start queued for memory, a vetoed one included: default 1800 s, set by a
+  live-reloadable key `agent.subagent_queue_max_wait_secs` that is not on main
+  yet; on expiry the start gets a delivered terminal "never started: waiting
+  for memory" and leaves its parent's queued count. The text that still
+  describes that wait as unbounded or deadline-only (Q7, Q9's floor rule, §8's
+  queue-wait row, §14.1 W1 and §14.9), and the max wait's own reversal, are
+  updated by the change that adds the key. Grounds: the level is the
+  kernel's own verdict and it lags, so it is a backstop beside the figure,
+  not a replacement for it.
+  **Implementation:** [#15876](https://github.com/kirodotdev/KiroCrew/pull/15876),
+  whose spec calls the veto the *kernel memory-pressure hold*
+  ([subagent.md § Memory guard](../system-specs/modules/subagent.md#memory-guard-what-must-remain-after-the-start)).
+  Its design choices, which are not owner direction and shape where the veto
+  applies (the spec holds the full set):
+  - Nested children are exempt. A child's parent is a live runtime that may
+    be waiting on it, so holding the child could hold the parent on an
+    episode only the child can end.
+  - The veto applies only while a dedicated subagent runtime of this gateway
+    is running or warming. With none, foreign pressure alone never delays a
+    start.
+  - A vetoed start waits as a capacity-style in-memory wait (reason
+    `memory_pressure`), not a store deferral, and no speculative pre-warm is
+    admitted while the hold applies.
+
+  At its head `50050c28fc` #15876 bounds the hold with its own fixed
+  constant and carries neither the key nor the terminal above; that half is
+  to match the owner direction before it merges. Reversal:
+  `agent.spawn_min_memory_gb=0` disables the floor, the reserve and the veto
+  together.
 
 ## 14. Waits, yielding and nested recovery (owner addendum, 2026-09-12 15:12)
 

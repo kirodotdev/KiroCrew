@@ -32,6 +32,7 @@ from kiro_crew.apps.builtins.auto_research.workflow_template import (
     RESEARCH_WORKFLOW_SOURCE,
     build_workflow_args,
 )
+from kiro_crew.atomic_write import read_json_or
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -57,9 +58,12 @@ def _read_workflow_cycle_offset(campaign_id: str) -> int:
     p = (d / _WORKFLOW_RUN_FILE) if d else None
     if not p or not p.exists():
         return 0
+    doc = read_json_or(p, None, logger=logger, what="workflow run file")
+    if not isinstance(doc, dict):
+        return 0
     try:
-        return int(json.loads(p.read_text(encoding="utf-8")).get("cycle_offset", 0) or 0)
-    except (OSError, ValueError, TypeError):
+        return int(doc.get("cycle_offset", 0) or 0)
+    except (ValueError, TypeError):
         return 0
 
 
@@ -68,9 +72,12 @@ def _read_workflow_run_id(campaign_id: str) -> str | None:
     p = (d / _WORKFLOW_RUN_FILE) if d else None
     if not p or not p.exists():
         return None
+    doc = read_json_or(p, None, logger=logger, what="workflow run file")
+    if not isinstance(doc, dict):
+        return None
     try:
-        return str(json.loads(p.read_text(encoding="utf-8")).get("run_id") or "") or None
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return str(doc.get("run_id") or "") or None
+    except (ValueError, TypeError):
         return None
 
 

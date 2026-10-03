@@ -736,3 +736,106 @@ class TestMultiWindowHostPrefersTheDeniedTitle:
     def test_a_browser_with_no_dashboard_window_is_untouched(self, monkeypatch):
         app = self._resolved(monkeypatch, ("Hacker News", "GitHub"))
         assert policy.check_app(app, PolicyConfig()) is None
+
+
+# ── the Dock full-screen backstop: fail closed (pid_owns_point) ──
+
+
+class TestPidOwnsPointDockBackstop:
+    """``pid_owns_point`` must FAIL CLOSED over the Dock's full-screen window.
+
+    Reconstructed from the reporter's on-screen window list. The Dock
+    keeps a window at layer 20 whose bounds are the whole display, above every
+    layer-0 app window; "first rectangle that contains the point" returns ON it,
+    so a confined ``global`` click over any app is refused. Looking past it would
+    rest on two macOS-runtime premises nothing off a real Mac can verify — that
+    this window is genuinely click-through, and that no INTERACTIVE Dock-owned
+    surface (Launchpad, Mission Control) shares its level and geometry — so the
+    guard deliberately stays closed over it rather than widen the real-cursor
+    boundary on an unproven premise. These cases pin that fail-closed decision and
+    the diagnosability that makes the resulting refusal readable.
+    """
+
+    _TARGET_PID = 9590  # 微信 (WeChat), the authorized app
+    _DOCK_PID = 2071
+    _DISPLAY_W = 3440.0
+    _DISPLAY_H = 1440.0
+
+    def _dock_backstop(self) -> macos_ffi.WindowInfo:
+        # z=1 layer=20, x=0 y=0 3440x1440, alpha 1.0, full display.
+        return macos_ffi.WindowInfo(
+            window_id=1,
+            pid=self._DOCK_PID,
+            owner_name="Dock",
+            title="Dock",
+            layer=20,
+            bounds=(0.0, 0.0, self._DISPLAY_W, self._DISPLAY_H),
+        )
+
+    def _target_window(self) -> macos_ffi.WindowInfo:
+        # z=3 layer=0, x=1772 y=329 1222x920, the authorized app's window.
+        return macos_ffi.WindowInfo(
+            window_id=3,
+            pid=self._TARGET_PID,
+            owner_name="微信",
+            title="微信",
+            layer=macos_ffi.CG_WINDOW_LAYER_NORMAL,
+            bounds=(1772.0, 329.0, 1222.0, 920.0),
+        )
+
+    def test_a_point_under_the_dock_backstop_fails_closed(self, monkeypatch):
+        # (1953, 1107): inside WeChat, but the layer-20 Dock window is first in
+        # z-order and wins the rectangle hit test. The guard must refuse rather
+        # than look past it — the live-Mac premises that would justify looking
+        # past are unverifiable, so the safe default holds.
+        _stub_windows(monkeypatch, [self._dock_backstop(), self._target_window()])
+        assert apps_macos.pid_owns_point(self._TARGET_PID, 1953.0, 1107.0) is False
+
+    def test_a_point_with_no_dock_window_is_owned(self, monkeypatch):
+        # Same point, no Dock backstop present: the authorized layer-0 window is
+        # first and owns the point. The guard is not over-refusing in general — it
+        # only refuses when some window really is reported above the app.
+        _stub_windows(monkeypatch, [self._target_window()])
+        assert apps_macos.pid_owns_point(self._TARGET_PID, 1953.0, 1107.0) is True
+
+    def test_a_point_over_no_app_is_unowned(self, monkeypatch):
+        # Over only the backstop, no layer-0 window beneath: nobody owns it.
+        _stub_windows(monkeypatch, [self._dock_backstop(), self._target_window()])
+        assert apps_macos.pid_owns_point(self._TARGET_PID, 100.0, 100.0) is False
+
+    def test_an_overlay_above_the_app_is_not_owned(self, monkeypatch):
+        # A non-Dock window above the app at the point: a physical click lands on
+        # it, so the app underneath must not grant permission for it.
+        other = macos_ffi.WindowInfo(
+            window_id=9,
+            pid=24040,
+            owner_name="iTerm2",
+            title="iTerm2",
+            layer=macos_ffi.CG_WINDOW_LAYER_NORMAL,
+            bounds=(1900.0, 1000.0, 400.0, 300.0),
+        )
+        _stub_windows(monkeypatch, [other, self._target_window()])
+        assert apps_macos.pid_owns_point(self._TARGET_PID, 2000.0, 1100.0) is False
+
+    def test_topmost_window_label_names_the_dock_backstop(self, monkeypatch):
+        # Diagnosability: the refusal must be able to name the
+        # window that won the hit test, so a false refusal over the Dock backstop
+        # is readable from the tool result instead of by reimplementing the walk.
+        _stub_windows(monkeypatch, [self._dock_backstop(), self._target_window()])
+        label = apps_macos.topmost_window_label(1953.0, 1107.0)
+        assert label == "'Dock' (layer 20, 3440x1440)"
+
+    def test_topmost_window_label_is_empty_over_nothing(self, monkeypatch):
+        # No window contains the point: the label is "" so the message collapses
+        # the winner clause rather than asserting a window that is not there.
+        _stub_windows(monkeypatch, [self._target_window()])
+        assert apps_macos.topmost_window_label(5.0, 5.0) == ""
+
+    def test_topmost_window_label_fails_soft_on_error(self, monkeypatch):
+        # A window-list failure must not raise into the refusal path; the label is
+        # purely diagnostic, so it degrades to "".
+        def _boom():
+            raise RuntimeError("window_list down")
+
+        monkeypatch.setattr(macos_ffi, "window_list", _boom)
+        assert apps_macos.topmost_window_label(1953.0, 1107.0) == ""

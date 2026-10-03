@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import make_request
-from test_subagent_continuable import _manager, _mock_sessions
+from test_subagent_continuable import _manager, _mock_sessions, _stop_reason
 
 from kiro_crew import context, member_memory_auth, platform_compat, subagent_persistence
 from kiro_crew.context import ContextBuilder
@@ -19,6 +19,27 @@ from kiro_crew.dashboard.token_auth import token_auth_middleware
 
 env = _member_env
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
+# Deadlock backstop for ``_run_settled``: a healthy run ends long before it. Two
+# waits share one test, so the sum stays under CI's ``--timeout=120`` and a lost
+# run reads as this assertion rather than a pytest-timeout kill.
+_RUN_BACKSTOP_SECS = 30.0
+
+
+async def _run_settled(manager, info) -> None:
+    """Wait for *info*'s run to finish without ever cancelling it.
+
+    ``asyncio.wait_for`` cancels a run that misses its deadline, and a run
+    cancelled before its first tool call takes the auto-continue branch: it
+    swallows the cancel and returns, so the wait returns normally while the
+    run has neither finished nor claimed its session. ``asyncio.wait`` leaves
+    the task alone, and the run's own ``done`` flag is the completion signal.
+    """
+    task = manager._tasks[info.id]
+    finished, _ = await asyncio.wait({task}, timeout=_RUN_BACKSTOP_SECS)
+    assert finished, f"run still going after {_RUN_BACKSTOP_SECS}s: {_stop_reason(info)}"
+    task.result()
+    assert info.done and not info._cancel_retry_used, _stop_reason(info)
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +88,7 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
             "initial task", agent="example-app--worker", app="example-app", keep=True
         )
         assert original is not None and not original.error
-        await asyncio.wait_for(manager._tasks[original.id], timeout=10)
+        await _run_settled(manager, original)
         assert not original.error
         assert original.memory_mode == "incognito"
         publisher.assert_awaited_once_with(sessions, f"subagent:{original.id}")
@@ -99,7 +120,7 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
             publisher.reset_mock()
             followup = manager.continue_conversation(owner_id, "continue the task")
             assert followup is not None and not followup.error
-            await asyncio.wait_for(manager._tasks[followup.id], timeout=10)
+            await _run_settled(manager, followup)
             assert not followup.error
             publisher.assert_awaited_once_with(sessions, followup.conversation_key)
             assert followup.app == "example-app"
@@ -173,7 +194,7 @@ async def test_native_chained_continuations_record_the_project(
             else:
                 run = manager.continue_conversation(previous.id, "audit again", cwd=cwd)
             assert run is not None and not run.error
-            await asyncio.wait_for(manager._tasks[run.id], timeout=10)
+            await _run_settled(manager, run)
             assert not run.error
             if previous is not None or initial_override:
                 assert sessions.get_or_create.call_args.kwargs["cwd"] == str(project)
@@ -213,7 +234,7 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
             keep=True,
         )
         assert original is not None and not original.error
-        await asyncio.wait_for(first._tasks[original.id], timeout=10)
+        await _run_settled(first, original)
     assert not original.error
     key = f"subagent:{original.id}"
     assert await asyncio.to_thread(subagent_persistence.read_run_memory_store, original.id) == store
@@ -301,7 +322,7 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
             original.id, "verify the audit after restart", parent_session_key="dashboard:owner"
         )
         assert followup is not None and not followup.error
-        await asyncio.wait_for(restored._tasks[followup.id], timeout=10)
+        await _run_settled(restored, followup)
     assert not followup.error
     assert not live_keys
     assert original.id not in restored._agents

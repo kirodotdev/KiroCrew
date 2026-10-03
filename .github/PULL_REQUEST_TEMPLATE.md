@@ -61,7 +61,21 @@
        Breaking: <what stops working>. Writer sweep on origin/main @ <sha>:
        <every writer/caller found and how each is handled>.
      A Breaking change tightens one contract; the writers it breaks may live in
-     other open PRs, so re-run the sweep on fresh main before the last push. -->
+     other open PRs, so re-run the sweep on fresh main before the last push.
+
+     Then, if the diff TAKES SOMETHING AWAY (hides a path, deletes records or
+     rows, tightens a validator, migrates or prunes data, removes or renames a
+     key or a public function), list every reader of that thing, one line each:
+       Reader: <path>:<symbol> -- <entry: chat|cron|subagent|app|crew page|release> -- <why it still works | test name>
+     Find readers by grepping origin/main across every entry point (crew page,
+     chat, subagent, cron, app bundles, release branch), not by reasoning about
+     the Goal; "No documented capability is removed" is not a reader list.
+     If nothing is taken away, write exactly one line instead (reviewers read
+     it; CI does not check it):
+       Removes nothing: <why>
+     PR Hygiene requires at least one Reader: line when the diff has a
+     take-away shape; Removes nothing: does not satisfy it. See
+     docs/system-specs/common/take-away-changes.md. -->
 
 ## Tests
 

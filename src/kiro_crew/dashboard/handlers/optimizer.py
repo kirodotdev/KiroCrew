@@ -11,6 +11,7 @@ from collections import Counter
 from aiohttp import web
 
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
+from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
@@ -300,7 +301,10 @@ async def handle_optimize(request: web.Request) -> web.Response:
             """Acquire session, stream, release — all under one timeout."""
             logger.debug("Optimizer: acquiring dedicated session")
             client, _is_new, _resumed = await state.sessions.get_or_create(
-                optimizer_session_key, agent="kirocrew-lite"
+                optimizer_session_key,
+                agent="kirocrew-lite",
+                # The owner is waiting on the composer (kiro_crew.start_priority).
+                start_priority=owner_start_priority(request),
             )
             logger.debug("Optimizer: session acquired, streaming")
             try:

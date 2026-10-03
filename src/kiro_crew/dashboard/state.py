@@ -2793,6 +2793,8 @@ class _ChatSlot:
         "_pending_subagent_failures",
         "_pending_synthesis",
         "_synthesis_inflight",
+        "_synthesis_recheck",
+        "_synthesis_rechecks",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -2838,6 +2840,11 @@ class _ChatSlot:
         "_last_turn_structural_terminal_loop_gen",
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
+        "_session_not_found_retry_used",
+        "_session_not_found_queue_id",
+        "_session_not_found_stop_gen",
+        "_session_not_found_session_stop_gen",
+        "_session_not_found_session_key",
         "_empty_response_retries",
         "_empty_episode_productive",
         "_carried_ttft_clock",
@@ -2911,6 +2918,8 @@ class _ChatSlot:
         "_turn_channel_narrowed",
         "_steer_admissions",
         "_steer_decision_strips",
+        "_steer_possibly_delivered",
+        "_steer_rpc_in_flight",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
         "_steer_attachment_meta",
@@ -3507,6 +3516,10 @@ class _ChatSlot:
         # Kept separate from _pending_synthesis so readiness loss does not
         # consume the one-shot request or permit duplicate waiters.
         self._synthesis_inflight: bool = False
+        # The fire gate's outage re-check (chat_runner._arm_synthesis_recheck):
+        # its pending timer, cancelled by begin_close, and how many it ran.
+        self._synthesis_recheck: asyncio.TimerHandle | None = None
+        self._synthesis_rechecks: int = 0
         # Fix 2 (B1) race guard: number of sub-agent completion deliveries
         # currently in flight for this slot (incremented in gateway._subagent_done
         # from entry until the completion is queued/launched). The synthesis
@@ -3738,6 +3751,19 @@ class _ChatSlot:
         # outage gets at most one fresh-conversation attempt, never a
         # discard loop.
         self._poisoned_reset_used: bool = False
+        # One-shot guard for the lost-backend-session recovery: a live backend
+        # answering 'Session not found' gets ONE fresh process that re-loads the
+        # mapped id and one retry of the turn. Re-armed only by a LANDED turn,
+        # so a backend that keeps losing the session ends on a clear error.
+        self._session_not_found_retry_used: bool = False
+        # The queued replay of that recovery, and the Stop counters and session
+        # binding it was enqueued under. The reset between enqueue and dispatch
+        # is awaited, so a soft Stop can land there with the queue preserved;
+        # the drain and the consume seam compare these to veto the replay.
+        self._session_not_found_queue_id: str = ""
+        self._session_not_found_stop_gen: int = 0
+        self._session_not_found_session_stop_gen: int = 0
+        self._session_not_found_session_key: str = ""
         self._empty_response_retries: int = 0
         # True once any turn of the CURRENT empty-turn episode was productive.
         self._empty_episode_productive: bool = False
@@ -4096,6 +4122,16 @@ class _ChatSlot:
         # outcome a decision did choose lands as a queue entry with no receipt.
         # Absent for a manual steer, which has none to carry.
         self._steer_decision_strips: dict[str, dict] = {}
+        # Steers whose RPC died ambiguously (``AcpProcessDied.ambiguous_delivery``):
+        # the frame may already have reached the turn. Left pending, so the
+        # turn's teardown requeues them, and that requeue says they may already
+        # have been delivered instead of re-sending the text as fresh.
+        self._steer_possibly_delivered: set[str] = set()
+        # Steers whose ``client.steer()`` RPC has not returned yet. A turn that
+        # ends meanwhile requeues them as possibly delivered: the frame may
+        # already be in the pipe, and the RPC's own verdict arrives too late to
+        # mark an entry the drain may already have run.
+        self._steer_rpc_in_flight: set[str] = set()
         # Admission snapshots of the peer steers that influenced THIS turn, keyed by
         # an opaque token. The turn consults them before publishing its CROSS-SURFACE
         # reply leg and withholds it when a constraint newly holds:
@@ -4218,6 +4254,9 @@ class _ChatSlot:
         the fence stays up until the last retraction lets go.
         """
         self._closing += 1
+        if self._synthesis_recheck is not None:
+            self._synthesis_recheck.cancel()
+            self._synthesis_recheck = None
 
     def cancel_close(self) -> None:
         """Release THIS holder's admission fence when teardown leaves the slot live.
@@ -6842,6 +6881,7 @@ class DashboardState:
         update_min_version: str = "",
         update_can_arm: bool = False,
         update_auto_effect: str = "unknown",
+        update_bundled_by_app: bool = False,
         version_display: str = "",
         bundle_id: str = "",
     ) -> dict[str, Any]:
@@ -6936,6 +6976,9 @@ class DashboardState:
             # What an available update leads to on this install; see
             # ``update_capability.auto_update_effect``.
             "update_auto_effect": update_auto_effect,
+            # Whether the desktop app bundles this gateway; see
+            # ``update_capability.bundled_by_desktop_app``.
+            "update_bundled_by_app": update_bundled_by_app,
             "update_last_checked_at": update_last_checked_at,
             "update_check_interval_secs": update_check_interval_secs,
             # Mandatory-update verdict (enterprise governance pin OR the release
@@ -9205,6 +9248,9 @@ class DashboardState:
         # suspenders on ``__new__``-built states that never ran __init__:
         # treat a missing set as empty rather than AttributeError-ing this hot
         # path.
+        # circular import: chat_utils imports this module at load time.
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
         under_construction = getattr(self, "_slots_under_construction", None) or ()
         for s in self._slots.values():
             if s.key in under_construction:
@@ -9215,7 +9261,9 @@ class DashboardState:
                 include_check_status=include_check_status,
                 dashboard_user=dashboard_user,
             )
-            d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
+            d["subagents_running"] = bool(
+                subs and subs.running_agents_for(effective_session_key(s))
+            )
             out.append(d)
         # The slot-key/session-key correspondence the lineage join needs, read the same
         # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over

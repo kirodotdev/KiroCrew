@@ -94,6 +94,7 @@ class _Sessions:
         agent: str | None = None,
         channel_id: str | None = None,
         model: str | None = None,
+        start_priority=None,
     ) -> tuple[FakeProvider, bool, bool]:
         self.last_key = key
         self.last_agent = agent

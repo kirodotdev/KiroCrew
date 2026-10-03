@@ -33,6 +33,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 from kiro_crew import llm_helpers
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+from kiro_crew.start_priority import StartPriority
 
 BASE = "/api/apps/issue-radar"
 SHA = "a" * 40
@@ -789,7 +790,10 @@ class TestModelAdapter(unittest.IsolatedAsyncioTestCase):
         ) as stream:
             with self.assertRaises(asyncio.CancelledError):
                 await routes._run_oneshot_model(_get("issue-ai", app=app), "k1", "prompt")
-        state.sessions.get_or_create.assert_awaited_once_with("k1", agent="kirocrew-lite")
+        # No owner claim on the request: not a person's click, so BACKGROUND.
+        state.sessions.get_or_create.assert_awaited_once_with(
+            "k1", agent="kirocrew-lite", start_priority=StartPriority.BACKGROUND
+        )
         self.assertIs(
             stream.await_args.kwargs["approval_policy"], llm_helpers.ToolApprovalPolicy.REJECT_ALL
         )
@@ -809,7 +813,10 @@ class TestModelAdapter(unittest.IsolatedAsyncioTestCase):
                 )
         key = state.sessions.get_or_create.await_args.args[0]
         self.assertRegex(key, r"^issue-radar-reco:o/r:[0-9a-f]{32}$")
-        self.assertEqual(state.sessions.get_or_create.await_args.kwargs, {"agent": "kirocrew-lite"})
+        self.assertEqual(
+            state.sessions.get_or_create.await_args.kwargs,
+            {"agent": "kirocrew-lite", "start_priority": StartPriority.BACKGROUND},
+        )
         self.assertIs(
             stream.await_args.kwargs["approval_policy"], llm_helpers.ToolApprovalPolicy.REJECT_ALL
         )

@@ -11,11 +11,19 @@ from ..session_map import session_files_resumable
 from ..subagent_persistence import (
     _agent_dir,
     _check_result_available,
+    result_marked_complete,
     subagent_id_from_conversation_key,
 )
 from ._component import ManagerComponent
 
 _glue_logger = _logging.getLogger(__name__)
+
+#: Longest a start may spend queued for start permits, in total, before it is reaped
+#: as never started. The startup clock pauses while a start is queued, so without a
+#: bound a start parked behind holders that no watchdog bounds would wait forever.
+#: Shares one owner with ``agent.subagent_queue_max_wait_secs`` once that lands.
+_START_QUEUE_MAX_SECS = 1800.0
+
 
 if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
@@ -124,11 +132,19 @@ def tombstone_recovery_action(agent_id: str, state: dict) -> str:
     ``write_result_chunk`` appends per streamed chunk. The run records
     ``result_complete`` when its stream reaches the complete event, so
     without that flag these bytes are an opening sentence, not an answer.
+
+    That flag lives in ``state.json``, written in a step after the one that
+    finalizes ``result.txt``. A restart landing between the two can find a
+    finished answer on disk with the flag unwritten, which alone would read a
+    whole answer as a fragment. ``result_marked_complete`` reads the durable
+    marker the completion path drops in the SAME step it finalizes ``result.txt``
+    — so either signal is proof the answer is whole, closing the crash window
+    between the result bytes and the flag write.
     """
     has_result = _check_result_available(_agent_dir(agent_id) / "result.txt")
     if not has_result:
         return "notification_pending"
-    if not state.get("result_complete"):
+    if not (state.get("result_complete") or result_marked_complete(agent_id)):
         return "partial_result"
     return "result_available"
 
@@ -994,10 +1010,28 @@ class OrphanStallMonitor(ManagerComponent):
                 # never launches the child process). Reap it fast with a clear
                 # "failed to start" error instead of burning the full deadline
                 # and surfacing a misleading 30-minute turn-0 timeout.
+                queued_for = self._start_queue_saturated_secs(info, now)
+                if queued_for:
+                    logger.warning(
+                        "Reaper: subagent %s never started: start queues saturated for %.0fs, "
+                        "force-killing",
+                        agent_id,
+                        queued_for,
+                    )
+                    try:
+                        await self._manager._force_reap(
+                            agent_id,
+                            info,
+                            now - (info._exec_started or now),
+                            reason="start_queue_saturated",
+                        )
+                    except Exception:
+                        logger.exception("Reaper: failed to reap %s", agent_id)
+                    continue
                 if self._manager._is_startup_stalled(info, now):
                     # The in-startup population is diagnostic only: the
                     # deadline is the fixed ``_startup_deadline`` whatever the
-                    # crowd, measured from gate exit (``_gate_exit_reset``).
+                    # crowd, on a clock paused while queued (``_gate_exit_reset``).
                     logger.warning(
                         "Reaper: subagent %s failed to start within %ds "
                         "(turn 0, no runtime launched; %d other agent(s) in startup; "
@@ -1066,15 +1100,20 @@ class OrphanStallMonitor(ManagerComponent):
         is never caught here.
 
         The deadline is the fixed ``_startup_deadline`` however many other
-        agents are in startup, and the clock it is measured on does not run
-        while the run is queued for a ``SessionStartGate`` permit: the clock
-        freezes at gate entry (``_gate_wait_mark`` stamps
-        ``_gate_wait_started``, which stands in for *now* here) and restarts at
-        acquisition (``_gate_exit_reset``). So the clock measures time spent
-        STARTING -- before the gate, and from gate exit until the start's exit
-        (a runtime PID, or its first answer) -- never time queued
-        behind other starts, on both start paths, and the in-startup population
-        is bounded separately by ``_startup_cap`` at admission. The deadline does not grow with the
+        agents are in startup, and the clock it is measured on PAUSES while the
+        run is queued for a start-queue permit: at queue entry
+        ``_gate_wait_mark`` stamps ``_gate_wait_started``, which stands in for
+        *now* here, and at acquisition ``_gate_exit_reset`` adds the wait to
+        ``_start_queue_wait_ms``, which is subtracted. The dedicated path pauses
+        at all three start queues (cold-start semaphore, spawn admission,
+        ``session/new`` gate), the shared path at the ``session/new`` gate and,
+        while it waits for the parent's companion runtime
+        (``START_QUEUE_COMPANION``), at that runtime's per-parent lock and its
+        spawn's admission; the companion spawn's own work runs on the clock. So
+        the clock measures time spent STARTING since ``_exec_started`` -- never
+        time queued behind other starts -- and the in-startup population is
+        bounded separately by ``_startup_cap`` at admission. The paused total is
+        bounded too, by :meth:`_start_queue_saturated_secs`. The deadline does not grow with the
         population: a term sampled at sweep time against a clock spanning the
         whole crowded period would not be monotonic -- it would shrink as the
         crowd drained and could reap at one sweep an agent the sweep before had
@@ -1085,12 +1124,31 @@ class OrphanStallMonitor(ManagerComponent):
             return False
         # Queued for a permit: the clock reads as it stood when the wait began.
         clock_now = info._gate_wait_started if info._gate_wait_started is not None else now
+        starting = clock_now - exec_started - info._start_queue_wait_ms / 1000.0
         return (
             info.turns == 0
             and info._pid is None
             and info._first_stream_started is None
-            and (clock_now - exec_started) > self._stamped_startup_deadline(info)
+            and starting > self._stamped_startup_deadline(info)
         )
+
+    def _start_queue_saturated_secs(self, info: SubagentInfo, now: float) -> float:
+        """Seconds *info* has spent queued for start permits, when that is past
+        :data:`_START_QUEUE_MAX_SECS` and it has still not started; else 0.
+
+        The startup clock pauses while a start is queued, so a start parked behind
+        holders that no watchdog bounds (a cron run, a workflow stage, the task
+        runner, a pool fill) would otherwise sit there until the run's own
+        ``subagent_timeout_secs`` ended it, reporting the turn deadline instead of
+        the queue that held it. A run whose ``subagent_timeout_secs`` is at or
+        under the cap (the default is above it) still ends on that deadline first.
+        """
+        if not self._manager._in_startup(info):
+            return 0.0
+        queued = info._start_queue_wait_ms / 1000.0
+        if info._gate_wait_started is not None:
+            queued += max(0.0, now - info._gate_wait_started)
+        return queued if queued > _START_QUEUE_MAX_SECS else 0.0
 
     def _stamped_startup_deadline(self, info: SubagentInfo) -> int:
         """*info*'s startup deadline, fixed per start clock so a config write

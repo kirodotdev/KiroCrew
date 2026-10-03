@@ -11,6 +11,7 @@ import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, registerCustomLanguage, setC
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
 import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&url'
+import { workerUrlWithBuildKey } from '../utils/workerCacheKey'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 import ErrorNotice from '../components/ErrorNotice'
@@ -322,12 +323,13 @@ export function normalizePatchHunks(patch: string): string {
  *  active request to a worker, but keying timers by request ID also makes late
  *  responses harmless and keeps the protocol contract explicit. */
 export function createMonitoredWorker(reportFailure: (failure: WorkerPoolFailureCause) => void): Worker {
-  // HTTP caches retain the worker response's old CSP along with its bytes.
-  // The library bundle did not change when WASM was enabled, so its hash alone
-  // cannot retire pre-WASM headers. Keep the revision stable across retries.
-  const url = new URL(highlightWorkerUrl, import.meta.url)
-  url.searchParams.set('csp', 'wasm-v1')
-  const worker = new Worker(url, { type: 'module' })
+  // A same-origin worker takes its CSP from its own cached response header, and
+  // a content hash does not change when a build changes only a header, so the
+  // hash alone cannot retire a header a browser holds under the year-long
+  // policy. Key the URL to the build identity so a new build is a distinct
+  // cache entry and the stranded one is left behind; the key is stable across
+  // this worker's own retries.
+  const worker = new Worker(workerUrlWithBuildKey(new URL(highlightWorkerUrl, import.meta.url)), { type: 'module' })
   const watchdogs = new Map<string, ReturnType<typeof setTimeout>>()
   const clearWatchdog = (id: string) => {
     const timer = watchdogs.get(id)

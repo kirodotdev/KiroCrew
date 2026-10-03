@@ -19,15 +19,12 @@ import { resolve } from 'node:path'
  *  3. The clearance and the tail spacer are stated in px, never viewport units.
  *     As `2vh` the clearance tracked the viewport and cut into the last line on
  *     every phone while every desktop viewport looked fine.
- *  4. The welcome hero's box ends above the dock by the same measurement (a
- *     margin, not padding under the glass), so its cards and the Refresh link
- *     are never blurred under the composer or the memory-mode chip -- and it is
- *     its own stacking context, so the z-indexes WelcomeView uses to grow a
- *     hovered card over the next row never compare against the composer's.
- *  5. The scroll-under applies to the composer alone. While the status stack
- *     above it holds a bar, or the jump-to-bottom pill shows (a row of the dock,
- *     not a float), the scroller's box ends above the dock, so neither the dense
- *     rows of the sub-agent tray nor the pill ever sit over transcript text.
+ *  4. The welcome hero is the one box that ENDS above the dock (a margin by the
+ *     same measurement, not padding under it): its cards and Refresh link are
+ *     controls, and a control under the glass is an ambiguous tap (#15820's
+ *     hero half, kept when the rest of #15820 was reverted in #16291). It is
+ *     its own stacking context so its z-indexed cards never climb over the
+ *     composer.
  *
  * There is deliberately NO opaque fade band between transcript and dock any
  * more: the material's own blur and tint are what keep the dock legible, and a
@@ -48,49 +45,24 @@ const num = (re: RegExp, src: string): number => {
 }
 
 describe('composer dock clearance', () => {
-  it('pads the scroller by the measured dock height plus the px clearance while only the composer floats', () => {
-    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{\{\s*\.\.\.\(dockReserved\s*\?[\s\S]{0,200}?:\s*\{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX \}\)/)
+  it('pads the scroller by the measured dock height plus the px clearance', () => {
+    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{\{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
     expect(num(/const DOCK_CLEARANCE_PX = (\d+)/, CHAT_PAGE)).toBeGreaterThan(0)
     expect(num(/const TRANSCRIPT_TAIL_SPACER_PX = (\d+)/, CHAT_PAGE)).toBeGreaterThan(0)
   })
 
-  it('ends the scroller above the dock while the status stack holds a bar or the jump pill shows', () => {
-    // Dense status rows (the sub-agent tray, the task bar) and the pill over
-    // transcript text were unreadable in every theme, so the scroller's BOX stops
-    // above the dock -- a margin, not padding -- and only the clearance remains as
-    // padding. The stack flag is "some child has rendered height": not the band's
-    // own height (its 11px fuse padding keeps it 11px tall when empty) and not
-    // child presence (CommandCenterDock and QueueStack keep a zero-height wrapper
-    // mounted while idle, so a presence test would reserve the band in every chat).
-    expect(CHAT_PAGE).toMatch(/dockReserved\s*\?\s*\{ marginBottom: dockH, paddingBottom: DOCK_CLEARANCE_PX \}/)
-    expect(CHAT_PAGE).toMatch(/const jumpPillVisible = !isAtBottom && messages\.length > 0\s*const dockReserved = statusStackOccupied \|\| jumpPillVisible/)
-    expect(DOCK).toMatch(/const band = el\.querySelector<HTMLElement>\('\[data-testid="composer-status-stack"\]'\)\s*setStatusStackOccupied\(!!band && Array\.from\(band\.children\)\.some\(c => \(c as HTMLElement\)\.offsetHeight > 0\)\)/)
-    expect(DOCK).not.toMatch(/setStatusStackOccupied\(!!band\?\.firstElementChild\)/)
-    expect(DOCK).toMatch(/if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); setStatusStackOccupied\(false\); return \}/)
-    // The pill is a ROW of the dock (its height lands in dockH), never a float
-    // over the transcript.
-    expect(CHAT_PAGE).toMatch(/<JumpToBottomButton visible=\{jumpPillVisible\} onClick=\{\(\) => scrollBottom\(true\)\} placement="inline" \/>/)
-    // While reserved, nothing scrolls under the strip beside the composer column,
-    // so the dock root stops passing input through (a wheel there would chain to
-    // the document) -- and the hero animates position only, since its box now
-    // changes size with the dock.
-    expect(CHAT_PAGE).toMatch(/style=\{\{ right: dockGutter, \.\.\.\(dockReserved \? \{ pointerEvents: 'auto' as const \} : null\) \}\} data-testid="composer-dock-root"/)
-    expect(CHAT_PAGE).toMatch(/key="welcome-hero"[\s\S]{0,600}?layout="position"/)
-    expect(CHAT_PAGE).not.toMatch(/<JumpToBottomButton visible=\{!isAtBottom && messages\.length > 0\}/)
-  })
-
   it('measures the dock root from a callback ref through a ResizeObserver', () => {
-    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter, \.\.\.\(dockReserved \? \{ pointerEvents: 'auto' as const \} : null\) \}\} data-testid="composer-dock-root">/)
+    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root">/)
     // A callback ref, not a `[]` layout effect: the dock sits inside the pane's
     // conditional branch, so a mount-once effect can run before it exists and
     // never measure. The ref fires on every mount/unmount of the box.
     // The same measurement reads the scroller's reserved scrollbar gutter, so
     // the dock's `right` inset lines its column up with the transcript's and
     // leaves the thumb uncovered — hence `scrollerRef` in the deps.
-    const hook = /const dockRef = useCallback\(\(el: HTMLDivElement \| null\) => \{[\s\S]*?if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); setStatusStackOccupied\(false\); return \}[\s\S]*?setDockH\(el\.offsetHeight\)[\s\S]*?setDockGutter\(sc \? Math\.max\(0, sc\.offsetWidth - sc\.clientWidth\) : 0\)[\s\S]*?new ResizeObserver\(measure\)[\s\S]*?ro\.observe\(el\)[\s\S]*?\}, \[scrollerRef\]\)/
+    const hook = /const dockRef = useCallback\(\(el: HTMLDivElement \| null\) => \{[\s\S]*?if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); return \}[\s\S]*?setDockH\(el\.offsetHeight\)[\s\S]*?setDockGutter\(sc \? Math\.max\(0, sc\.offsetWidth - sc\.clientWidth\) : 0\)[\s\S]*?new ResizeObserver\(measure\)[\s\S]*?ro\.observe\(el\)[\s\S]*?\}, \[scrollerRef\]\)/
     expect(DOCK).toMatch(hook)
-    expect(CHAT_PAGE, 'the page takes dockRef from the dock owner').toMatch(/const \{ inputAreaRef, dockH, dockGutter, dockRef, statusStackOccupied \} = useComposerDockMetrics\(scrollerRef\)/)
-    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*" style=\{\{ right: dockGutter[^\n]*? \}\} data-testid="composer-dock-root">/)
+    expect(CHAT_PAGE, 'the page takes dockRef from the dock owner').toMatch(/const \{ inputAreaRef, dockH, dockGutter, dockRef \} = useComposerDockMetrics\(scrollerRef\)/)
+    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root">/)
     for (const src of [CHAT_PAGE, DOCK]) expect(src).not.toMatch(/useLayoutEffect\(\(\) => \{\s*const el = dockRef\.current/)
   })
 

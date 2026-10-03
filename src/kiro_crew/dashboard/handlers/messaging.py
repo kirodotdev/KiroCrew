@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib.util
+import inspect
 import json
 import logging
 import math
@@ -40,7 +41,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_path,
 )
-from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
+from kiro_crew.constants import CHANNEL_SEND_NAMESPACES, SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
     CHANNEL_CONFIG_SECTIONS,
@@ -53,6 +54,7 @@ from kiro_crew.dashboard.channel_slots import backfill_channel_folder
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
+    SUBAGENT_COMPLETION_KIND,
     _remove_queued_by_id,
     dashboard_slot_key,
     drained_to_thread,
@@ -81,7 +83,11 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     stage_boundary_for,
 )
-from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
+from kiro_crew.dashboard.token_auth import (
+    LINK_WINDOW_SECS,
+    caller_names_a_missing_slot,
+    generate_token,
+)
 from kiro_crew.dashboard.ws_event_scope import (
     _audit_allow,
     _audit_deny,
@@ -110,7 +116,7 @@ from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.client import BLOCKS_REMOTE_MEDIA_ERROR, blocks_request_remote_media
-from kiro_crew.slack.format import build_options_blocks, extract_options
+from kiro_crew.slack.format import SESSION_LINK_ACTION, build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent import (
@@ -120,6 +126,11 @@ from kiro_crew.subagent import (
     effort_drop_reason,
     parent_spawn_allowlists,
     stage_boundary_owner_for_run,
+)
+from kiro_crew.subagent_manager.admission.types import (
+    QueuedReadUnavailable,
+    QueuedRun,
+    QueuedRunListing,
 )
 from kiro_crew.subagent_persistence import (
     DISMISSAL_FAILED,
@@ -437,6 +448,106 @@ def _run_belongs_to_caller(caller: str, run_id: str, parent: object) -> bool:
     return parent_key == caller
 
 
+async def _queued_run(state: DashboardState, run_id: str) -> QueuedRun | None:
+    """The accepted spawn *run_id* when it has no run yet, else None.
+
+    A spawn the gate deferred, or one waiting for a slot, exists only as a queue
+    entry or a task-store row, so the registry and the run folders cannot name
+    it. Without this read a caller that was just told "queued" is then told the
+    run does not exist. A read that fails answers None, which leaves the caller
+    where it was before this lookup existed.
+    """
+    if state.subagents is None:
+        return None
+    try:
+        return await state.subagents.queued_run_async(run_id)
+    except QueuedReadUnavailable:
+        raise  # "not queued" is unknowable: the caller answers 503, never 404
+    except Exception:
+        logger.debug("Queued-run lookup failed for %s", run_id, exc_info=True)
+        return None
+
+
+def _queue_unreadable() -> web.Response:
+    """503 for a lookup the task store could not answer: transient, retry it."""
+    return web.json_response(
+        {"error": "the task queue is unreadable; retry shortly", "code": "taskq_unavailable"},
+        status=503,
+        headers={"Retry-After": "2"},
+    )
+
+
+async def _queued_runs(
+    state: DashboardState, parent: str | None, *, app: str | None = None
+) -> QueuedRunListing:
+    """:func:`_queued_run` for a listing: *parent*'s queued spawns (None = all).
+
+    A failed read is a PARTIAL listing, never an empty one: an empty answer
+    reads as "nothing queued", the reading that gets accepted work dispatched
+    twice.
+    """
+    if state.subagents is None:
+        return QueuedRunListing(())
+    try:
+        return await state.subagents.queued_runs_async(parent, app=app)
+    except Exception:
+        logger.debug("Queued-run listing failed", exc_info=True)
+        return QueuedRunListing((), partial=True)
+
+
+async def _queued_lookup(
+    request: web.Request, state: DashboardState, run_id: str
+) -> QueuedRun | None:
+    """The guard's queued lookup for this request, or a fresh one."""
+    if "spawn_queued_lookup" in request:
+        return cast("QueuedRun | None", request["spawn_queued_lookup"])
+    return await _queued_run(state, run_id)  # QueuedReadUnavailable: the caller's 503
+
+
+def _queued_not_started() -> web.Response:
+    """409 for a control that needs a run, aimed at a spawn still queued.
+
+    The same id answers ``queued`` on ``GET /api/spawn/{id}``, so "not found"
+    here would contradict it.
+    """
+    return web.json_response(
+        {"error": "queued — not started", "code": "queued_not_started"}, status=409
+    )
+
+
+def _queued_run_payload(queued: QueuedRun) -> dict[str, object]:
+    """The wire shape of a queued spawn, shared by the status and list routes.
+
+    ``done: false`` with ``queued: true`` and no transcript: the run has not
+    started, so there are no turns and no partial text. ``reason`` and
+    ``reason_detail`` are present only when known, the same fields the accept
+    answer (``POST /api/spawn``) carries for a deferred spawn.
+    """
+    data: dict[str, object] = {
+        "id": queued.id,
+        "task": _redact(queued.task),
+        "done": False,
+        # Both spellings: ``status`` matches the accept answer
+        # (``POST /api/spawn``), ``queued`` is what the poll loops read.
+        "status": "queued",
+        "queued": True,
+        "agent": _redact(queued.agent),
+    }
+    if queued.accepted_at > 0:
+        data["started"] = queued.accepted_at
+        data["elapsed"] = max(0, round(time.time() - queued.accepted_at))
+    if queued.reason:
+        data["reason"] = queued.reason
+    if queued.reason_detail:
+        data["reason_detail"] = _redact(queued.reason_detail)
+    if queued.resuming:
+        # It STARTED and waits to go on (after a restart, or to retry): queued,
+        # but never "not started".
+        data["resuming"] = True
+        data["resuming_reason"] = queued.resuming
+    return data
+
+
 async def _spawn_scope_refusal(
     request: web.Request, *, claimed_session: str | None = None
 ) -> web.Response | None:
@@ -463,11 +574,25 @@ async def _spawn_scope_refusal(
     state = request.app["state"]
     run_id = request.match_info["agent_id"]
     info = state.subagents.get(run_id) if state.subagents else None
-    record = None if info is not None else await asyncio.to_thread(read_state, run_id)
+    queued: QueuedRun | None = None
+    if info is None and state.subagents:
+        # Kept on the request, None included, so the handler does not ask the
+        # store again.
+        try:
+            queued = request["spawn_queued_lookup"] = await _queued_run(state, run_id)
+        except QueuedReadUnavailable:
+            return _queue_unreadable()
     parent: object
+    # One order, stated once: the live run, then a spawn the gate is still
+    # holding, then the persisted record, then a harness-native card.
     if info is not None:
         parent = info.parent_session_key
-    elif record is not None:
+    elif queued is not None:
+        # A spawn the gate is still holding has no run folder yet; its row's
+        # session key is the originating session, the field the live branch
+        # reads from ``info``.
+        parent = queued.parent_session_key
+    elif (record := await asyncio.to_thread(read_state, run_id)) is not None:
         # The persisted record spells the field ``parent_session``
         # (``subagent_persistence.write_state``). A record that lacks it is an
         # unknown owner, not a parentless run: ``None`` stays ``None``.
@@ -899,7 +1024,6 @@ async def _spawn_on_loop(state: "DashboardState", task: str, **kwargs: Any) -> A
     A manager without that entry -- a test double -- is spawned synchronously,
     which is the pre-queue behaviour those doubles model.
     """
-    import inspect
 
     subagents = state.subagents
     assert subagents is not None  # every caller checked ``state.subagents`` first
@@ -912,7 +1036,6 @@ async def _spawn_on_loop(state: "DashboardState", task: str, **kwargs: Any) -> A
 async def _continue_on_loop(state: "DashboardState", conv_id: str, task: str, **kwargs: Any) -> Any:
     """:func:`_spawn_on_loop` for continuations: ``continue_conversation_async``
     writes the durable row off-loop; a double without it continues synchronously."""
-    import inspect
 
     subagents = state.subagents
     assert subagents is not None
@@ -1061,6 +1184,11 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"error": native, "code": NATIVE_CHILD_NOT_RESUMABLE}, status=409
                 )
+            try:
+                if await _queued_lookup(request, state, agent_id) is not None:
+                    return _queued_not_started()
+            except QueuedReadUnavailable:
+                return _queue_unreadable()
             return web.json_response({"error": detail, "code": "not_found"}, status=404)
         if detail.startswith("not_running"):
             return web.json_response({"error": detail, "code": "not_running"}, status=409)
@@ -1140,6 +1268,13 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     return web.json_response({"status": "reconciled", "batch_id": batch_id})
 
 
+#: Bounds on the inline-collected ids a slot retains: each id's length (run ids
+#: are 16 hex characters), and the set as a whole, since only a completion that
+#: matches an id evicts it.
+_COLLECTED_ID_MAX_LEN = 128
+_COLLECTED_IDS_CAP = 1000
+
+
 async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     """POST /api/spawn/mark-collected — suppress injection for blocking tool.
 
@@ -1170,10 +1305,41 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     slot = state.get_slot(slot_name)
     if not slot:
         return web.json_response({"status": "no_slot"})
-    # Record the IDs (bounded to 200 to prevent unbounded growth)
-    for aid in ids[:200]:
-        if isinstance(aid, str) and aid:
-            slot._subagents_inline_collected.add(aid)
+    # Record the IDs (bounded to 200 to prevent unbounded growth). A member whose
+    # completion is already QUEUED on the slot (its delivery timed out waiting on
+    # this tool's turn) is settled here instead: the queued announce is removed
+    # so it never plays as a redundant turn, and its owed delivery marks are
+    # written now, since the tool's return value IS the consumption. Its id is
+    # kept out of the set, where nothing would ever discard it again.
+    wanted = {
+        aid
+        for aid in ids[:200]
+        if isinstance(aid, str) and 0 < len(aid) <= _COLLECTED_ID_MAX_LEN
+        # Only ids this gateway knows: nothing else will ever discard them.
+        and (state.subagents is None or state.subagents.get(aid) is not None)
+    }
+    owed: list[Any] = []
+    for item in list(slot._queue):
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        card = meta.get(SUBAGENT_COMPLETION_META_KEY) if meta else None
+        aid = card.get("agentId") if isinstance(card, dict) and card.get("kind") == "single" else ""
+        if item.get("kind") != SUBAGENT_COMPLETION_KIND or aid not in wanted:
+            continue
+        if slot.queue_remove_by_id(str(item.get("id") or "")) is None:
+            continue
+        wanted.discard(aid)
+        try:
+            owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
+        except Exception:
+            logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
+    room = max(0, _COLLECTED_IDS_CAP - len(slot._subagents_inline_collected))
+    slot._subagents_inline_collected.update(sorted(wanted)[:room])
+    if owed and state.subagents is not None:
+        try:
+            await state.subagents.settle_queued_delivery(owed)
+        except Exception:
+            logger.debug("Could not settle inline-collected deliveries", exc_info=True)
+    state.push_slots_update()
     return web.json_response({"status": "ok", "marked": len(ids)})
 
 
@@ -1248,6 +1414,20 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     agent_id = request.match_info["agent_id"]
     info = state.subagents.get(agent_id)
     if not info:
+        # Accepted but not started: the gate deferred it, or it waits for a
+        # slot. It has no run folder, so the persistence fallback below would
+        # answer 404 for a spawn the caller was just told is queued. The scope
+        # guard already looked it up for an internal caller.
+        try:
+            queued = await _queued_lookup(request, state, agent_id)
+        except QueuedReadUnavailable:
+            return _queue_unreadable()
+        if queued is not None:
+            return web.json_response(_queued_run_payload(queued))
+        # The pump can register the run while that lookup awaited; the
+        # registry then answers, not the half-written folder.
+        info = state.subagents.get(agent_id)
+    if not info:
         # Fall back to persistence layer (orphaned/recovered agents)
         try:
             disk_state = read_state(agent_id)
@@ -1295,10 +1475,13 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                     classify_persisted_ending, agent_dir
                 )
                 if not outcome:
-                    # Nothing recorded an ending, so this run has no outcome to
-                    # report. The caller asked for this id by name, so the card
-                    # is served with what IS known and the outcome field is left
-                    # out rather than filled with a guess.
+                    # Nothing recorded an ending, so this run is not known to be
+                    # over: it may be registering this instant, or be an earlier
+                    # process's orphan the reconcile has not reached. Not done,
+                    # with what IS known and no outcome: a caller that read
+                    # ``done`` here would collect a result that is still coming.
+                    disk_data["done"] = False
+                    disk_data["result"] = _redact(view) if view else ""
                     disk_data.pop("outcome", None)
                     disk_data["stopped"] = False
                     disk_data["error"] = ""
@@ -1408,6 +1591,16 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     # needs, so the list must not hand out what the control route would refuse.
     # The dashboard owner (no ``internal_auth``) still sees everything.
     internal = request.get("internal_auth") is True
+    # The queued half is opt-in (``?queued=1``): only the spawn tools act on it,
+    # and the dashboard's pollers would otherwise pay a store read every few
+    # seconds to throw it away. Read BEFORE the live registry: a spawn that
+    # registers between the two reads is then live in the second (live wins
+    # below), where the other order would show it in neither.
+    queued_listing: QueuedRunListing | None = None
+    if request.query.get("queued") in ("1", "true"):
+        queued_listing = await _queued_runs(
+            state, caller if internal else None, app=str(request.get("app") or "") or None
+        )
     for info in state.subagents.all_agents:
         if internal and not _run_belongs_to_caller(caller, info.id, info.parent_session_key):
             continue
@@ -1449,12 +1642,6 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if withheld:
             entry["context_withheld"] = withheld
         agents.append(entry)
-    # Durable half of the inventory: the runs this process never tracked, which
-    # a memory-only listing cannot name at all. Live entries win -- an id listed
-    # above is excluded rather than merged -- and the caller's own scope gate is
-    # re-applied here on the record's parent, the same field the live branch
-    # compares.
-    listed = {str(entry["id"]) for entry in agents}
     # The audit identity is the APP, never the caller-supplied session key. The
     # dedup registry behind ``_audit_deny`` is keyed on it and is not evicted, so a
     # per-run session id would leave one permanent entry per subagent run. Every
@@ -1484,6 +1671,36 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     # one -- and a decision taken off-loop would be read from state the caller
     # does not describe. The WS replay reads the same pair for the same reason.
     owner_now = slot_owner_snapshot(state)
+
+    # Accepted spawns with no run yet: deferred by the memory gate, waiting for
+    # a slot, or claimed and not registered. They go under their own key rather
+    # than into ``agents``, whose readers (the dashboard's reconcile and agent
+    # strip) take a not-done entry for a run in progress. Same bounds as the
+    # other halves: an internal caller sees only its own, and an app caller only
+    # its app's (filtered in the store read, before its cap). Each row is a
+    # permission decision, audited under its own reason.
+    live_ids = {str(entry["id"]) for entry in agents}
+    queued_entries: list[dict[str, object]] = []
+    for queued in queued_listing.runs if queued_listing is not None else ():
+        if queued.id in live_ids:
+            continue
+        if caller_is_app and queued.app != caller_app:
+            _audit_deny(auditee, "api_spawn_list", "queued_app_mismatch")
+            continue
+        if internal and not _run_belongs_to_caller(caller, queued.id, queued.parent_session_key):
+            _audit_deny(auditee, "api_spawn_list", "queued_scope_mismatch")
+            continue
+        _audit_allow(auditee, "api_spawn_list")
+        queued_entry = _queued_run_payload(queued)
+        queued_entry["parent"] = queued.parent_session_key
+        queued_entries.append(queued_entry)
+    # Durable half of the inventory: the runs this process never tracked, which
+    # a memory-only listing cannot name at all. Live and queued entries win --
+    # an id listed above is excluded rather than merged (a row a restart left
+    # claimable beside its orphan tombstone will run again, so it is queued) --
+    # and the caller's own scope gate is re-applied here on the record's parent,
+    # the same field the live branch compares.
+    listed = live_ids | {str(entry["id"]) for entry in queued_entries}
 
     def _admit(record: dict) -> bool:
         """This caller's own visibility, applied before the cap.
@@ -1576,6 +1793,15 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             }
         )
     payload: dict[str, object] = {"agents": agents}
+    if queued_entries:
+        payload["queued"] = queued_entries
+    if queued_listing is not None and queued_listing.partial:
+        # A page or an outage, and said so: unlike the persisted half, the
+        # caller of this listing acts on it, and a cut-off or unread tail taken
+        # as complete tells it accepted spawns were never accepted -- the
+        # reading that gets work dispatched twice. Present only when true; the
+        # bridge logs the transition once.
+        payload["queued_truncated"] = True
     if persisted.overflow or persisted.overflow_is_lower_bound:
         # Said out loud once per listing, to the operator rather than the client:
         # a listing of 50 of 51 eligible runs otherwise reads exactly like a
@@ -1622,6 +1848,11 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         )
     old = state.subagents.get(agent_id)
     if not old:
+        try:
+            if await _queued_lookup(request, state, agent_id) is not None:
+                return _queued_not_started()
+        except QueuedReadUnavailable:
+            return _queue_unreadable()
         return web.json_response({"error": "not found"}, status=404)
     if not old.done:
         return web.json_response({"error": "agent is still running"}, status=409)
@@ -2887,6 +3118,144 @@ def _vet_channel_send(channel_type: str, caller_session: str) -> str:
     return ""
 
 
+#: ``action_id`` on the "Open session" link button. Slack still emits a
+#: ``block_actions`` event when a URL button is clicked, so this stable id is
+#: declared and ack'd as a no-op by ``slack.interactions.dispatch``; the ``url``
+#: is what actually opens the tab. The id lives in ``slack.format`` so the
+#: producer here and the router there share one source of truth.
+
+
+def _session_link_blocks(url: str) -> list[dict[str, Any]]:
+    """One Block Kit ``actions`` block with an "Open session" link button.
+
+    A URL button opens *url* in the user's browser directly, so it needs no
+    interaction handler beyond the no-op ack (see ``SESSION_LINK_ACTION``).
+
+    ``api_send_message`` attaches this block to the SAME Slack message the caller
+    is already sending whenever that message carries Block Kit blocks (caller
+    blocks, or a plain-text send upgraded to a text section), so an opted-in send
+    is ONE message and ONE notification. It falls back to posting these blocks as
+    a trailing follow-up message only when the primary message cannot carry them
+    (a caller using ``options``) or when the merged post was rejected -- so a link
+    Slack rejects never fails the message the caller actually asked to send.
+
+    The trailing ``context`` line states the sign-in window up front: the button
+    outlives its embedded credential (``LINK_WINDOW_SECS``), and status messages
+    are often read late, so without the hint a late tap lands on the sign-in
+    wall as a surprise. The wall itself offers recovery (send a sign-in link
+    from a signed-in device, or ``kirocrew token``), but expectation-setting at
+    the message is what keeps the late tap from reading as a dead end.
+    """
+    minutes = max(1, LINK_WINDOW_SECS // 60)
+    return [
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open session"},
+                    "url": url,
+                    "action_id": SESSION_LINK_ACTION,
+                }
+            ],
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"Signs you in if opened within ~{minutes} min of this "
+                        "message; after that you may be asked to sign in."
+                    ),
+                }
+            ],
+        },
+    ]
+
+
+# Slack rejects a ``section`` block whose mrkdwn ``text`` exceeds 3000 chars, so
+# a plain-text send longer than this is posted as text (via ``post_message``)
+# with the button trailing, rather than merged into one ``section`` Slack refuses.
+_SLACK_SECTION_TEXT_MAX = 3000
+
+
+async def _resolve_session_link_url(
+    state: DashboardState, caller_session: str, declared_session: str
+) -> str:
+    """The presigned deep link to the CALLER's own dashboard session, or ``""``.
+
+    The session is resolved SERVER-SIDE, never from a body field: a cron caller
+    links to the origin session that spawned it (``_channel_delivery_key`` reads
+    the job's stored ``session_key``), and every other caller is identified by
+    the ``X-Session-Key`` header, which ``token_auth`` kernel-attests against the
+    AF_UNIX peer. So the link can only ever point at the session that actually
+    sent the message -- a wrong-session link is structurally impossible.
+
+    ``dashboard_slot_key`` maps that session key to the tab that displays it and
+    answers ``""`` when no tab does; the button is omitted rather than pointing
+    ``?sid=`` at a key the SPA cannot resolve.
+
+    The origin follows ``slack.allowlist.send_dashboard_link``'s convention (the
+    shared ``dashboard_link_origin`` helper): the live tunnel URL when
+    ``slack.use_tunnel_url`` is set and one is connected, otherwise the configured
+    dashboard origin. A presigned ``token_auth`` click token is appended so the
+    link authenticates off-host; the button is delivered to the owner DM only (see
+    ``api_send_message``), so the token never reaches a shared channel.
+
+    Returns ``""`` -- and the caller omits the button -- for a headless caller (no
+    resolvable session / no open tab) or when no usable origin exists (no tunnel
+    and no dashboard origin). Never raises: a config-read failure degrades to no
+    button, because the message must still go.
+    """
+    session_key = _channel_delivery_key(state, caller_session, declared_session)
+    # The dashboard TAB that displays this conversation, or "" when none does.
+    # ``dashboard_slot_key`` is the real mapping: a bare ``removeprefix(
+    # "dashboard:")`` leaves a channel-born key unchanged -- an inbound Slack DM
+    # runs under ``slack:<ts>`` while its tab is ``slack_<ts>``, and a cron whose
+    # origin is a channel session carries that channel key verbatim -- so the
+    # SPA's ``?sid=`` would never match and the button would open a missing
+    # session. It also answers "" when the conversation has no open tab, and then
+    # we OMIT the button rather than deep-link to a tab that does not exist.
+    slot_key = dashboard_slot_key(session_key)
+    if not slot_key:
+        return ""
+    # A dashboard-prefixed key resolves to a slot key UNCONDITIONALLY:
+    # ``has_dashboard_surface`` short-circuits True for any ``dashboard:`` key
+    # before consulting the surface registry, so a dashboard-born session whose
+    # tab has since been closed still yields a slot key here. Minting a link for
+    # it hands the owner a button that opens "Session not found." Confirm a LIVE
+    # slot still exists (``get_slot`` returns None for a closed/absent tab) and
+    # omit the button otherwise -- the message still goes, just without a link
+    # that leads nowhere.
+    if state.get_slot(slot_key) is None:
+        return ""
+    # Lazy imports: keep the tunnel and backfill modules off this handler
+    # module's import path (it loads at gateway boot) and matches the file's
+    # other deferred imports. The config read is paid only on this opt-in path.
+    from kiro_crew.dashboard.chat_backfill import session_deep_link
+    from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
+
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except Exception:
+        logger.debug("send_message: session-link config load failed", exc_info=True)
+        return ""
+    # The tunnel-vs-dashboard decision lives in one shared helper (the same one
+    # ``chat_mirror`` and ``chat_slack`` use), not re-spelled here.
+    tunnel_url = tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+    # Presigned link, the same door as ``slack.allowlist.send_dashboard_link``: a
+    # raw ``/chat?sid=`` link is refused by ``token_auth`` (a valid token is
+    # required on every request), so off-host -- the tunnel arm's whole reason to
+    # exist -- it lands on the sign-in wall instead of the session. Mint the owner
+    # a click token so the link authenticates. ``api_send_message`` posts this
+    # button to the OWNER DM only, so the token never rides a shared channel --
+    # the same DM-only rule ``send_dashboard_link`` keeps. No owner id means no DM
+    # to post to, so no token is minted (the button is not posted either).
+    token = generate_token(state.owner_id) if state.owner_id else ""
+    return session_deep_link(cfg.dashboard.url, slot_key, tunnel_url=tunnel_url, token=token)
+
+
 async def api_send_message(request: web.Request) -> web.Response:
     """POST /api/send-message — send a message to a chat surface and/or dashboard.
 
@@ -3428,6 +3797,29 @@ async def api_send_message(request: web.Request) -> web.Response:
                     channel_text,
                     channel_type=channel_type,
                 )
+            # Opt-in "Open session" deep-link button: resolved (server-side) only
+            # when the caller asked for it AND this send actually reaches Slack.
+            # Owner DM only -- not a named channel, not another user's DM: the link
+            # carries a presigned auth token (see _resolve_session_link_url) that
+            # must not leak into a shared channel, and only the owner can open the
+            # dashboard anyway. That is exactly the no-target fall-through path
+            # (``elif state.owner_id`` below), so gate it on the absence of both.
+            # Built here, before the post, so the button rides the same Slack leg.
+            session_link_url = ""
+            # ``is True``, not truthiness: a string like "false" (e.g. from a
+            # script caller serializing booleans) must not opt in to a
+            # credential-bearing button. The schema validator coerces real
+            # callers to a bool; anything else is treated as not-opted-in.
+            if (
+                body.get("include_session_link") is True
+                and send_to_slack
+                and state.slack_client
+                and not target_channel
+                and not target_user
+            ):
+                session_link_url = await _resolve_session_link_url(
+                    state, caller_session, declared_session
+                )
             # A separate ``if``, not an ``elif``: ``send_to_slack`` is the single
             # predicate that decides Slack delivery, so it must be false when a
             # channel session took the routing over rather than merely
@@ -3445,14 +3837,80 @@ async def api_send_message(request: web.Request) -> web.Response:
 
                     if channel:
                         slack_attempted = True
+                        # The opt-in "Open session" button rides the SAME Slack
+                        # message whenever that message can carry Block Kit blocks
+                        # -- caller-supplied blocks, or a plain-text send upgraded
+                        # to a text section -- so an opted-in send is ONE message
+                        # (one notification), not a message plus a bare-button
+                        # follow-up. Attaching the button never risks the caller's
+                        # message: a combined post Slack rejects falls back to the
+                        # message alone, with the button trailing as its own
+                        # best-effort follow-up (see below).
+                        link_blocks = (
+                            _session_link_blocks(session_link_url) if session_link_url else []
+                        )
+                        # Deferred import, matching this module's other slack_sdk
+                        # uses. SlackApiError is the ONE failure shape where Slack
+                        # ANSWERED (ok=false): the combined post definitively did
+                        # not land, so retrying without the button cannot deliver
+                        # the caller's message twice. Every other exception
+                        # (timeout, connection drop) is ambiguous -- the post may
+                        # have landed -- so those propagate to the delivery-failed
+                        # path below instead of triggering a duplicate-risking
+                        # second post.
+                        from slack_sdk.errors import SlackApiError
+
+                        button_rode_primary = False
                         if blocks:
-                            slack_ts = await state.slack_client.post_blocks(
-                                channel,
-                                blocks,
-                                text,
-                                thread_ts=thread_ts,
-                                reply_broadcast=reply_broadcast,
-                            )
+                            # Caller Block Kit blocks: append the button to them.
+                            try:
+                                slack_ts = await state.slack_client.post_blocks(
+                                    channel,
+                                    blocks + link_blocks,
+                                    text,
+                                    thread_ts=thread_ts,
+                                    reply_broadcast=reply_broadcast,
+                                )
+                                button_rode_primary = bool(link_blocks)
+                            except SlackApiError:
+                                if not link_blocks:
+                                    raise
+                                # Slack REJECTED the combined post; the caller's
+                                # blocks must still post, so retry them alone and
+                                # let the button trail as a follow-up.
+                                slack_ts = await state.slack_client.post_blocks(
+                                    channel,
+                                    blocks,
+                                    text,
+                                    thread_ts=thread_ts,
+                                    reply_broadcast=reply_broadcast,
+                                )
+                        elif (
+                            link_blocks and not options and 0 < len(text) <= _SLACK_SECTION_TEXT_MAX
+                        ):
+                            # Plain-text send WITH a link: one message carrying a
+                            # text section plus the button. Falls back to text-only
+                            # (button trails) only when Slack REJECTS the combined
+                            # post (SlackApiError = answered ok=false, nothing
+                            # landed); an ambiguous transport failure propagates
+                            # rather than risking the text posting twice.
+                            try:
+                                slack_ts = await state.slack_client.post_blocks(
+                                    channel,
+                                    [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+                                    + link_blocks,
+                                    text,
+                                    thread_ts=thread_ts,
+                                    reply_broadcast=reply_broadcast,
+                                )
+                                button_rode_primary = True
+                            except SlackApiError:
+                                slack_ts = await state.slack_client.post_message(
+                                    channel,
+                                    text,
+                                    thread_ts=thread_ts,
+                                    reply_broadcast=reply_broadcast,
+                                )
                         else:
                             slack_ts = await state.slack_client.post_message(
                                 channel,
@@ -3515,6 +3973,26 @@ async def api_send_message(request: web.Request) -> web.Response:
                                         exc_info=True,
                                     )
                         sent_slack = True
+                        # Trailing "Open session" button -- posted as its own
+                        # message ONLY when it could not ride the primary one (a
+                        # caller using `options`, or a combined post Slack
+                        # rejected). Best-effort and isolated: a link Slack rejects
+                        # fails only this follow-up, never the message the caller
+                        # actually sent (already delivered above). Threaded with
+                        # the main post when that was a threaded reply.
+                        if session_link_url and not button_rode_primary:
+                            try:
+                                await state.slack_client.post_blocks(
+                                    channel,
+                                    _session_link_blocks(session_link_url),
+                                    "Open session",
+                                    thread_ts=thread_ts,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "send_message: failed to post session-link button",
+                                    exc_info=True,
+                                )
                 except Exception as exc:
                     slack_attempted = True
                     slack_error = str(exc)

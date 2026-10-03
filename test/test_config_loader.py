@@ -5354,12 +5354,185 @@ class TestAppAgentDispatch(unittest.TestCase):
         import kiro_crew.config.loader as loader
 
         loader._MATERIALIZED_AGENTS = frozenset()
+        loader._MATERIALIZED_STEMS = {}
         loader._MATERIALIZED_AGENTS_READY = False
         loader._MATERIALIZED_AGENTS_GENERATION = 0
         loader._MATERIALIZED_REFRESH_ISSUED = 0
         loader._MATERIALIZED_REFRESH_APPLIED = 0
 
     tearDown = setUp
+
+    def test_crewmate_bound_to_a_file_name_dispatches_the_declared_agent(self):
+        # A package installs `KiroPkg-captain.json` declaring "captain", and kiro-cli
+        # lists only "captain". A crewmate that recorded the FILE name dispatches
+        # the declared agent, and its row is not edited.
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
+            cfg = self._config()
+            cfg.agents["KiroPkg-captain"] = KiroCrewAgentConfig(kiro_agent="KiroPkg-captain")
+            cfg.default_agent = "KiroPkg-captain"
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                assert loader.resolve_agent_bindings(cfg, "KiroPkg-captain").kiro_agent == "captain"
+                # The default path (no name) resolves the same crewmate the same way.
+                assert loader.resolve_agent_bindings(cfg).kiro_agent == "captain"
+                assert loader.resolve_agent_identity(cfg, "KiroPkg-captain")[1] == "captain"
+        assert cfg.agents["KiroPkg-captain"].kiro_agent == "KiroPkg-captain"
+
+    def test_subagent_paths_of_a_file_name_bound_crewmate_dispatch_the_declared_agent(self):
+        # The subagent run hands ``execution.template_id`` to kiro-cli without
+        # the resolver, so every builder of that field from a crewmate row must
+        # map the file name: the member record itself, a resumed member
+        # conversation, and a spawn inheriting the parent's member selection.
+        from types import SimpleNamespace
+
+        import kiro_crew.config.loader as loader
+        from kiro_crew import execution_context as ec
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.subagent_manager.admission.gate import _GateMixin
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
+            cfg = self._config()
+            cfg.agents["pkg"] = KiroCrewAgentConfig(kiro_agent="KiroPkg-captain")
+            with (
+                unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d),
+                unittest.mock.patch.object(
+                    loader.KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg)
+                ),
+            ):
+                member = ec.resolve_member_execution(cfg, "pkg")
+                assert member.template_id == "captain"
+                # A record written before the mapping existed still names the file.
+                stale = ec.ExecutionContext(
+                    None,
+                    ec.MemoryStoreRef("default"),
+                    "member",
+                    "KiroPkg-captain",
+                    selection_name="pkg",
+                )
+                resumed = _GateMixin.resolve_spawn_execution(
+                    SimpleNamespace(), conversation_key="subagent:run-1", _record=stale
+                )
+                assert resumed.template_id == "captain"
+                inherited = _GateMixin.resolve_spawn_execution(
+                    SimpleNamespace(),
+                    parent_session_key="dashboard:chat",
+                    _record=None,
+                    _inherited_selection=("member", "pkg"),
+                )
+                assert (inherited.selection_name, inherited.template_id) == ("pkg", "captain")
+                # The chat read of such a record dispatches the declared agent too.
+                assert (
+                    loader.resolve_agent_bindings(
+                        cfg, "pkg", selection_kind="member", execution_context=stale
+                    ).kiro_agent
+                    == "captain"
+                )
+                from kiro_crew import session_agent_selection as sas
+
+                with unittest.mock.patch.object(sas, "read_session_execution", lambda _k: stale):
+                    session = sas.resolve_session_agent_bindings(
+                        loader.resolve_agent_bindings, cfg, "dashboard:chat", None
+                    )
+                assert session.kiro_agent == "captain"
+
+                # A TEMPLATE selection already names the exact provider agent.
+                # Even when that id equals a global file stem, only a member
+                # record is eligible for stem-to-declared-name repair.
+                template = ec.ExecutionContext(
+                    None,
+                    ec.MemoryStoreRef("default"),
+                    "template",
+                    "KiroPkg-captain",
+                    selection_name="KiroPkg-captain",
+                )
+                assert (
+                    loader.resolve_agent_bindings(
+                        cfg,
+                        "KiroPkg-captain",
+                        selection_kind="template",
+                        execution_context=template,
+                    ).kiro_agent
+                    == "KiroPkg-captain"
+                )
+                with unittest.mock.patch.object(sas, "read_session_execution", lambda _k: template):
+                    session = sas.resolve_session_agent_bindings(
+                        loader.resolve_agent_bindings, cfg, "dashboard:chat", None
+                    )
+                assert session.kiro_agent == "KiroPkg-captain"
+        assert cfg.agents["pkg"].kiro_agent == "KiroPkg-captain"
+
+    def test_stem_mapping_never_overrides_a_declared_name(self):
+        # Only a name kiro-cli does not know is mapped: a declared name, a stem two
+        # configs share, and an unknown name all pass through unchanged.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(
+                Path(td),
+                {
+                    "worker.json": {"name": "worker"},
+                    "Pkg-worker.json": {"name": "other"},
+                    "worker2.json": {"name": "Pkg-worker"},
+                },
+            )
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                assert loader.dispatch_kiro_agent("worker") == "worker"
+                assert loader.dispatch_kiro_agent("Pkg-worker") == "Pkg-worker"
+                assert loader.dispatch_kiro_agent("nope") == "nope"
+                assert loader.dispatch_kiro_agent("") == ""
+
+    def test_file_name_bound_crewmate_takes_the_background_role_effort(self):
+        # The role set holds declared names; a crew that recorded a background
+        # worker's FILE name runs that worker, so it takes the role effort too.
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"Pkg-kirocrew-lite.json": {"name": "kirocrew-lite"}})
+            cfg = self._config()
+            cfg.agent.reasoning_effort = "high"
+            cfg.agent.role_efforts = {"background": "low"}
+            cfg.agents["bg"] = KiroCrewAgentConfig(kiro_agent="Pkg-kirocrew-lite")
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                assert cfg.resolve_session_effort(None, "bg") == "low"
+                # A pin on the crew still outranks the role effort.
+                cfg.agents["bg"].reasoning_effort = "medium"
+                assert cfg.resolve_session_effort(None, "bg") == "medium"
+
+    def test_file_name_bound_crewmate_resolves_its_template_model_pin(self):
+        # The model readers (_session_model, the spawn readout) need no mapping:
+        # _resolve_named_agent_model already matches the file stem, so the file
+        # name finds the pin the declared name finds, and the factory selection
+        # both feed answers the same for either spelling.
+        import kiro_crew.config.loader as loader
+        from kiro_crew import subagent
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.session import _session_model
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(
+                Path(td), {"KiroPkg-captain.json": {"name": "captain", "model": "claude-opus-4.8"}}
+            )
+            cfg = self._config()
+            cfg.agents["pkg"] = KiroCrewAgentConfig(kiro_agent="KiroPkg-captain")
+            with (
+                unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d),
+                unittest.mock.patch.object(
+                    loader.KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg)
+                ),
+            ):
+                by_stem = cfg._resolve_named_agent_model("KiroPkg-captain", agents_dir=d)
+                assert by_stem == cfg._resolve_named_agent_model("captain", agents_dir=d)
+                assert by_stem == "claude-opus-4.8"
+                # A pinned template defers to the factory, as the declared name does.
+                assert _session_model(cfg, None, crew_agent="pkg") is None
+                selected = cfg.acp_effective_model("captain", None)
+                assert selected and cfg.acp_effective_model("KiroPkg-captain", None) == selected
+                assert subagent._spawn_effective_model(None, "pkg") == selected
 
     def _config(self):
         from kiro_crew.config.loader import (
@@ -5556,14 +5729,16 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         def _older_scan_that_is_overtaken(_p):
             with unittest.mock.patch.object(
-                loader, "_scan_materialized_agents", lambda _p2: frozenset({"kept"})
+                loader,
+                "_scan_materialized_index",
+                lambda _p2: (frozenset({"kept"}), {}),
             ):
                 loader.refresh_materialized_agents()  # newer refresh lands first
             # This older view still contains the agent that was deleted meanwhile.
-            return frozenset({"kept", "deleted"})
+            return frozenset({"kept", "deleted"}), {}
 
         with unittest.mock.patch.object(
-            loader, "_scan_materialized_agents", _older_scan_that_is_overtaken
+            loader, "_scan_materialized_index", _older_scan_that_is_overtaken
         ):
             loader.refresh_materialized_agents()
 
@@ -5611,9 +5786,9 @@ class TestAppAgentDispatch(unittest.TestCase):
         def _scan_that_races(_p):
             # Stands in for "the directory as it looked before the write".
             loader.publish_materialized_agents({"mochi", "mochi--mochi"})
-            return frozenset({"other", "other--other"})
+            return frozenset({"other", "other--other"}), {}
 
-        with unittest.mock.patch.object(loader, "_scan_materialized_agents", _scan_that_races):
+        with unittest.mock.patch.object(loader, "_scan_materialized_index", _scan_that_races):
             loader.refresh_materialized_agents()
 
         cfg = self._config()
@@ -5631,7 +5806,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         assert loader.resolve_agent_bindings(self._config(), agent_name="gone").kiro_agent == "gone"
 
         with unittest.mock.patch.object(
-            loader, "_scan_materialized_agents", lambda _p: frozenset({"kept"})
+            loader, "_scan_materialized_index", lambda _p: (frozenset({"kept"}), {})
         ):
             loader.refresh_materialized_agents()
 
@@ -5681,7 +5856,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         import kiro_crew.config.loader as loader
 
         scan_threads: list[int] = []
-        real_scan = loader._scan_materialized_agents
+        real_scan = loader._scan_materialized_index
 
         def _recording_scan(p):
             scan_threads.append(threading.get_ident())
@@ -5702,7 +5877,7 @@ class TestAppAgentDispatch(unittest.TestCase):
 
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 with unittest.mock.patch.object(
-                    loader, "_scan_materialized_agents", _recording_scan
+                    loader, "_scan_materialized_index", _recording_scan
                 ):
                     loop_thread = asyncio.run(_on_loop())
 
@@ -5908,6 +6083,231 @@ class TestAppAgentDispatch(unittest.TestCase):
                 )
         assert r.kiro_agent == "kirocrew"
         assert r.requested_resolved is False
+
+
+class TestDanglingDefaultAgentReset(unittest.TestCase):
+    """A default agent whose template file is gone is pointed back at ``default``
+    by the next landed snapshot refresh, and only then: a healthy, managed,
+    cold, unreadable or concurrently changed state leaves ``config.json`` as it
+    is, and the alias row is never edited."""
+
+    def setUp(self):
+        import kiro_crew.config.loader as loader
+
+        loader._MATERIALIZED_AGENTS = frozenset()
+        loader._MATERIALIZED_STEMS = {}
+        loader._MATERIALIZED_AGENTS_READY = False
+        loader._MATERIALIZED_AGENTS_GENERATION = 0
+        loader._MATERIALIZED_REFRESH_ISSUED = 0
+        loader._MATERIALIZED_REFRESH_APPLIED = 0
+        loader._invalidate_config_cache()
+
+    tearDown = setUp
+
+    def _home(self, tmp: Path, agents: dict[str, dict], default: str, files: dict[str, dict]):
+        """A ``config.json`` naming *default* over *agents*, and an agents dir of *files*."""
+        config = tmp / "config.json"
+        config.write_text(
+            json.dumps({"default_agent": default, "agents": agents}), encoding="utf-8"
+        )
+        agents_dir = tmp / "agents"
+        agents_dir.mkdir()
+        for filename, body in files.items():
+            (agents_dir / filename).write_text(json.dumps(body), encoding="utf-8")
+        return config, agents_dir
+
+    def _patched(self, config: Path, agents_dir: Path):
+        import kiro_crew.config.loader as loader
+
+        return (
+            unittest.mock.patch.object(loader, "config_path", lambda: config),
+            unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents_dir),
+        )
+
+    @staticmethod
+    def _on_disk(config: Path) -> dict:
+        return json.loads(config.read_text(encoding="utf-8"))
+
+    def test_dangling_default_is_reset_to_default_and_the_row_kept(self):
+        # The owner made the ``pkg`` crew (running ``captain``) the default, then
+        # the package was uninstalled. The landed refresh points the default back
+        # at ``default``; the row stays, since the template may come back.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2, unittest.mock.patch("kiro_crew.sel.sel") as sel:
+                with self.assertLogs("kiro_crew.config.loader", level="WARNING") as logs:
+                    loader.refresh_materialized_agents()
+            on_disk = self._on_disk(config)
+        assert on_disk["default_agent"] == "default"
+        assert on_disk["agents"]["pkg"]["kiro_agent"] == "captain"
+        assert any("'pkg'" in line and "'captain'" in line for line in logs.output)
+        event = sel.return_value.log.call_args.args[0]
+        assert event.event_type == "default_agent_reset"
+        assert event.resources == "agent:pkg"
+        assert event.metadata == {"template": "captain", "reset_to": "default"}
+
+    def test_file_name_binding_counts_as_the_declared_agent(self):
+        # A row that recorded the FILE name is healthy while that file declares
+        # its agent, and dangling once the file is gone.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "KiroPkg-captain"}},
+                "pkg",
+                {
+                    "kirocrew.json": {"name": "kirocrew"},
+                    "KiroPkg-captain.json": {"name": "captain"},
+                },
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                (d / "KiroPkg-captain.json").unlink()
+                loader.refresh_materialized_agents()
+                assert self._on_disk(config)["default_agent"] == "default"
+
+    def test_healthy_default_is_untouched(self):
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                assert loader.reset_dangling_default_agent() is False
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_cold_empty_or_failed_snapshot_acts_on_nothing(self):
+        # No scan has landed, the scan found no agent at all, or the scan failed:
+        # none of these says anything about one template, so nothing is written.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                assert loader.reset_dangling_default_agent() is False
+                loader.refresh_materialized_agents()  # lands an EMPTY snapshot
+                assert loader._MATERIALIZED_AGENTS_READY is True
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                (d / "kirocrew.json").write_text(json.dumps({"name": "kirocrew"}), encoding="utf-8")
+                with unittest.mock.patch.object(
+                    loader, "_scan_materialized_index", side_effect=OSError("boom")
+                ):
+                    loader.refresh_materialized_agents()
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                # The lazy build a lookup performs answers that lookup only.
+                loader._MATERIALIZED_AGENTS_READY = False
+                assert loader.dispatch_kiro_agent("captain") == "captain"
+                assert loader._MATERIALIZED_AGENTS_READY is True
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_managed_template_is_left_to_its_own_self_heal(self):
+        # A missing ``kirocrew.json`` is regenerated before spawn, so a default
+        # bound to it -- explicitly or by an empty binding -- is not dangling.
+        import kiro_crew.config.loader as loader
+
+        for bound in ("kirocrew", ""):
+            with tempfile.TemporaryDirectory() as td:
+                config, d = self._home(
+                    Path(td),
+                    {"default": {"kiro_agent": "kirocrew"}, "mine": {"kiro_agent": bound}},
+                    "mine",
+                    {"other.json": {"name": "other"}},
+                )
+                p1, p2 = self._patched(config, d)
+                with p1, p2:
+                    loader.refresh_materialized_agents()
+                assert self._on_disk(config)["default_agent"] == "mine"
+
+    def test_missing_default_alias_invents_no_target(self):
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"pkg": {"kiro_agent": "captain"}, "other": {"kiro_agent": "kirocrew"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_default_changed_inside_the_lock_wins(self):
+        # A PUT that repointed the default between the check and the locked
+        # read-modify-write is not overwritten: the mutate re-derives both
+        # conditions on the document it actually holds.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {
+                    "default": {"kiro_agent": "kirocrew"},
+                    "pkg": {"kiro_agent": "captain"},
+                    "other": {"kiro_agent": "kirocrew"},
+                },
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}},
+            )
+            real_read = loader.read_config_for_update
+
+            def _repointed(path=None):
+                data = real_read(path)
+                data["default_agent"] = "other"
+                config.write_text(json.dumps(data), encoding="utf-8")
+                return data
+
+            p1, p2 = self._patched(config, d)
+            with p1, p2, unittest.mock.patch.object(loader, "read_config_for_update", _repointed):
+                loader.refresh_materialized_agents()
+            assert self._on_disk(config)["default_agent"] == "other"
+
+    def test_unreadable_config_is_untouched(self):
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=False)
+                with unittest.mock.patch.object(
+                    loader.KiroCrewConfig, "load", classmethod(lambda cls: 1 / 0)
+                ):
+                    assert loader.reset_dangling_default_agent() is False
+                with unittest.mock.patch.object(
+                    loader, "read_config_for_update", side_effect=loader.ConfigReadError("torn")
+                ):
+                    assert loader.reset_dangling_default_agent() is False
+            assert self._on_disk(config)["default_agent"] == "pkg"
 
 
 class TestWeixinConfig(unittest.TestCase):

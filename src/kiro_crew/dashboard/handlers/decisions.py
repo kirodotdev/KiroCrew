@@ -429,8 +429,8 @@ def _payload(state: dict, *, denied: bool) -> dict:
 def _seam_withdrawn() -> bool:
     """Whether governance withdraws the seam for the provider configured now. Filesystem IO.
 
-    The row follows the provider: ``capabilities.decisions_local`` while a local
-    preset answers, ``capabilities.decisions`` otherwise. Derived from the config,
+    A local preset adds ``capabilities.decisions_local`` on top of
+    ``capabilities.decisions``; any other provider reads the hosted row. Derived from the config,
     never from the request, so a caller cannot pick the more permissive row.
     """
     from kiro_crew.decisions import gate as _gate
@@ -441,13 +441,11 @@ def _seam_withdrawn() -> bool:
     )
 
     endpoint, model = _gate.configured_endpoint(), _gate.configured_provider_model(None)
-    # Preparing counts: the switch is offered while the chosen preset downloads.
-    local = is_local_preset(endpoint, model, serving=False)
-    denied = is_decisions_denied(local=local)
-    # Unattested preset shape: both rows govern, as on the send path.
-    if not local and names_local_preset(endpoint, model):
-        denied = is_decisions_denied(local=True) or denied
-    return denied
+    # Preparing counts: the switch is offered while the chosen preset downloads. An
+    # unattested preset shape answers under both rows too, as on the send path, and
+    # the local evaluation already holds the hosted row's deny.
+    local = is_local_preset(endpoint, model, serving=False) or names_local_preset(endpoint, model)
+    return is_decisions_denied(local=local)
 
 
 async def api_decisions_consent_get(request: web.Request) -> web.Response:
@@ -1046,7 +1044,7 @@ def _provider_payload() -> dict:
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions import local_models
-    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.capability import denied_sides
     from kiro_crew.decisions.local_runtime import get_runtime
 
     cfg = live.snapshot() or KiroCrewConfig.load()
@@ -1057,6 +1055,7 @@ def _provider_payload() -> dict:
     installed = set(runtime.installed_ids())
     status = runtime.status()
     active = local_models.active_id(endpoint, model)
+    hosted_denied, local_denied = denied_sides()
     return {
         "presets": [
             {**local_models.as_payload(m), "installed": m.id in installed}
@@ -1070,10 +1069,10 @@ def _provider_payload() -> dict:
         # The card needs to say when a hand-written address gets no key; the one
         # predicate the oracle uses decides it, so the two surfaces cannot disagree.
         "loopback": local_models.is_loopback_endpoint(endpoint),
-        # Which side of the picker the fleet allows: hosted Jev is governed by
-        # ``capabilities.decisions``, a local preset by ``capabilities.decisions_local``.
-        "hosted_permitted": not is_decisions_denied(),
-        "local_permitted": not is_decisions_denied(local=True),
+        # Which side of the picker the fleet allows: hosted Jev by
+        # ``capabilities.decisions``, a local preset by both rows, each audited once.
+        "hosted_permitted": not hosted_denied,
+        "local_permitted": not local_denied,
     }
 
 
@@ -1146,8 +1145,17 @@ def _write_provider(endpoint: str, model: str, timeout_ms: int) -> None:
 
 
 #: Serialises provider switches: the config write and the consent carry land as
-#: one change.
+#: one change. The startup resume takes it too, so a switch made just after boot
+#: cannot be overtaken by a resume that read the config before it.
 _PROVIDER_SWITCH_LOCK = LoopBoundLock()
+
+
+async def resume_local_decision_model() -> str:
+    """Start the preset the provider names, under the provider-switch lock; its id or ""."""
+    from kiro_crew.decisions.local_runtime import resume_configured
+
+    async with _PROVIDER_SWITCH_LOCK:
+        return await asyncio.to_thread(resume_configured)
 
 
 def _carry_consent(endpoint: str) -> bool:
@@ -1156,7 +1164,7 @@ def _carry_consent(endpoint: str) -> bool:
     from kiro_crew.decisions.capability import is_decisions_denied
     from kiro_crew.decisions.local_models import is_loopback_endpoint
 
-    # Only route-built preset addresses reach here, so the local row governs.
+    # Only route-built preset addresses reach here, so both rows govern.
     if not is_loopback_endpoint(endpoint) or is_decisions_denied(local=True):
         return False
     # One locked check-and-write: a consent revoked while this PUT ran stays revoked.

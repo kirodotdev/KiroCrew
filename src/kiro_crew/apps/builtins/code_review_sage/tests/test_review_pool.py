@@ -92,7 +92,7 @@ class FakeRuntime:
     def is_alive(self):
         return self.spawned and not self.killed
 
-    async def spawn(self):
+    async def spawn(self, start_priority=None):
         self.spawned = True
 
     async def kill(self, *, expected: bool = False, reason: str = ""):
@@ -240,9 +240,10 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
             r = FakeRuntime(agent=agent, work_dir=work_dir)
             calls["n"] += 1
             if calls["n"] == 1:
-                async def _boom():
+                async def _boom(start_priority=None):
                     raise RuntimeError("spawn boom")
-                r.spawn = _boom  # type: ignore[method-assign]
+
+                r.spawn = _boom  # type: ignore[assignment]
             return r
         orig = rp.AcpRuntime
         rp.AcpRuntime = factory  # type: ignore[assignment]

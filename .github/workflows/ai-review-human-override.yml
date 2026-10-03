@@ -14,7 +14,7 @@ on:
   issue_comment:
     types: [created, edited]
 
-# Re-run completed Fable / GPT workflows and record the trusted decision.
+# Re-run completed Opus / GPT workflows and record the trusted decision.
 # PR-write is required because the trusted
 # record is a pull-request comment. Deliberately no id-token or contents:write.
 permissions:
@@ -305,10 +305,10 @@ jobs:
 
           #                workflow             label      fork check-run name / external-id lane / fork workflow
           if [ "$TARGET" = "fable" ] || [ "$TARGET" = "all" ]; then
-            rerun_reviewer "claude-review.yml" "Fable 5" "Opus 5 Review" "opus" "fork-opus-review.yml"
+            rerun_reviewer "claude-review.yml" "Opus 5.5" "Opus 5.5 Review" "opus" "fork-opus-review.yml"
           fi
           if [ "$TARGET" = "gpt" ] || [ "$TARGET" = "all" ]; then
-            rerun_reviewer "codex-review.yml" "GPT 5.6" "GPT 5.6 Review" "gpt" "fork-gpt-review.yml"
+            rerun_reviewer "codex-review.yml" "GPT 6.1" "GPT 6.1 Review" "gpt" "fork-gpt-review.yml"
           fi
           # The design-family lanes clear a BLOCK the same way: the re-run's
           # "Resolve human override" step finds this recorded marker, skips the

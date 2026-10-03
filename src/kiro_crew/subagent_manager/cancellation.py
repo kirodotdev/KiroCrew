@@ -29,14 +29,20 @@ class CancellationCoordinator(ManagerComponent):
 
     __slots__ = ()
 
-    def _schedule_cancel_recovery_impl(self, info: SubagentInfo) -> None:
-        """Respawn *info*'s run on a fresh task after an unexpected cancellation.
+    def _schedule_cancel_recovery_impl(
+        self, info: SubagentInfo, *, reason: str = "unexpected_cancel"
+    ) -> None:
+        """Respawn *info* on a fresh task after a recoverable terminal event.
 
-        Called from ``_run``'s CancelledError handler — the current task is
-        being cancelled and cannot continue itself, so the continuation runs on
-        a new task. One-shot: gated by ``info._cancel_retry_used`` at the call
-        site. The original run's finally block still performs session cleanup
-        (release/reset) but skips terminal finalization while ``_recovering``.
+        The default serves an unexpected cancellation. ``context_overflow``
+        serves a first-turn overflow and forces the replacement onto a fresh
+        dedicated runtime after the original attempt's handle (shared) or
+        process (dedicated) has finished teardown.
+
+        The current task cannot continue itself, so the replacement runs on a
+        new task. Each caller owns its one-shot gate. The original run's finally
+        block still performs session cleanup but skips terminal finalization
+        while ``_recovering``.
 
         **Cancellation-source contract.** This branch exists for cancellations
         that arrive from OUTSIDE the manager's own lifecycle — in practice the
@@ -86,6 +92,75 @@ class CancellationCoordinator(ManagerComponent):
                 if info.done or info._reap_started or info.reaped or self._manager._shutting_down:
                     info._recovering = False
                     return
+                if reason == "context_overflow":
+                    # Reset preserves a dedicated session's durable pointer so
+                    # an ordinary keep run can resume it. This session was
+                    # rejected before its first turn, however, and loading it
+                    # would reproduce the same deterministic overflow. Forget
+                    # only the exact rejected SID after teardown and before any
+                    # replacement allocation or capacity wait. SessionMap owns
+                    # the comparison and removal under one process-wide lock,
+                    # so a successor SID survives and makes recovery fail closed,
+                    # and so does a run whose rejected SID was never captured.
+                    session_key = f"subagent:{info.id}"
+                    rejected_sid = str(getattr(info, "_session_id", "") or "")
+                    if not rejected_sid:
+                        # The identity capture after session acquisition is
+                        # best-effort, while the allocation may already have
+                        # persisted a resumable mapping for this key. Without
+                        # the rejected SID nothing can tell a mapped SID that
+                        # IS the rejected attempt from a successor, so neither
+                        # deletion nor a replacement that could ``session/load``
+                        # it is safe. Fail closed here, touching no mapping,
+                        # before any capacity wait or allocation -- the same
+                        # terminal arm a preserved successor takes.
+                        raise RuntimeError(
+                            "rejected session identity unknown; cannot retire it "
+                            "before recovery respawn"
+                        )
+                    removed, current_sid = self._manager._sessions.forget_conversation_if_sid(
+                        session_key, rejected_sid
+                    )
+                    if not removed and current_sid is not None:
+                        raise RuntimeError(
+                            "rejected session mapping changed before recovery respawn"
+                        )
+                    if removed:
+                        # Deletion changes the live map immediately, while its
+                        # file rewrite is debounced. Make retirement durable
+                        # before clearing attempt state, waiting for capacity,
+                        # allocating the replacement, or publishing recovery.
+                        # An absent mapping changed nothing and needs no flush;
+                        # a successor mapping failed closed above untouched.
+                        await self._manager._sessions.aflush()
+
+                    # The original task has completed its finally, including
+                    # destruction of its shared handle or the reset of its own
+                    # dedicated process. The replacement has not entered
+                    # ``_run_inner`` yet, so the record must read as a run
+                    # that has not started: the startup watchdog reaps a run
+                    # with ``_exec_started`` set, no PID, no stream and no turn
+                    # once its clock passes the deadline, and the clock still
+                    # stamped here belongs to the FIRST attempt. With the PID
+                    # cleared below, a capacity wait that outlives that stale
+                    # clock would be force-reaped as a stalled start. So both
+                    # clock fields go first, before the PID and before any
+                    # await; ``_run_inner_impl`` re-stamps them for the
+                    # replacement as its first statement.
+                    info._startup_deadline_stamp = None
+                    info._exec_started = None
+                    # Then process identity, because samplers read the PID
+                    # before sharing state; then ownership. The PID is the
+                    # retired first attempt's (a shared runtime this run no
+                    # longer leases, or its own process the reset ended), and
+                    # the replacement records its own in ``_run_inner``. All
+                    # of this runs only after teardown, since clearing any of
+                    # it earlier would make the original teardown treat a
+                    # shared runtime as a dedicated session and reset the
+                    # wrong lifecycle boundary.
+                    info._pid = None
+                    info._session_sharing = False
+                    info._shared_provider = None
                 # Re-acquire a slot through capacity, not blind increment:
                 # the old finally freed our slot and may have drained a queued
                 # spawn into it. Wait (bounded) for a free slot so recovery
@@ -140,10 +215,18 @@ class CancellationCoordinator(ManagerComponent):
                     # failure (with any partial result) even when the respawn
                     # itself could not happen.
                     info.done = True
-                    info.error = "cancelled (recovery failed)"
+                    if reason == "context_overflow":
+                        info.error = (
+                            "agent context exceeded the model window and the dedicated-session "
+                            "recovery could not start"
+                        )
+                        tombstone_cause = "error"
+                    else:
+                        info.error = "cancelled (recovery failed)"
+                        tombstone_cause = "cancelled"
                     info.elapsed = time.time() - info.started
                     Stats().inc_subagent_failed()
-                    self._manager._write_tombstone(info, "cancelled")
+                    self._manager._write_tombstone(info, tombstone_cause)
                     self._manager._record_cost(info)
                 if not info.elapsed:
                     # Report needs an elapsed even when the record above was
@@ -247,10 +330,11 @@ class CancellationCoordinator(ManagerComponent):
         # name is visible to both.
         if not store_cancelled:
             stored = admission.taskq_cancel_queued(agent_id)
+        row = stored
         for index, params in enumerate(self._manager._queue):
             if params.get("_resume_id") or str(params.get("_preassigned_id") or "") != agent_id:
                 continue
-            dropped = self._manager._queue.pop(index)
+            row = self._manager._queue.pop(index)
             store = admission.taskq_store()
             if stored is None and store is not None:
                 # A window entry always HAS a row while a store is attached -- a
@@ -275,18 +359,20 @@ class CancellationCoordinator(ManagerComponent):
                     admission.taskq_cancel_queued,
                     agent_id,
                 )
-            try:
-                self._manager._emit_queue_depth(
-                    str(dropped.get("parent_session_key", "")),
-                    str(dropped.get("batch_id", "")),
-                )
-            except Exception:
-                logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
-            return dropped
-        return stored
+            break
+        return row
 
     def _report_queued_stop_impl(self, params: dict) -> None:
-        """Publish a neutral terminal record for work stopped before startup."""
+        """Publish a neutral terminal record for work stopped before startup.
+
+        Every stop of a waiting row ends here, whichever path removed it, so
+        this is where the parent's queued depth is asked for -- once per row,
+        each under its own wave; a bulk stop's requests share one read -- and
+        the terminal record itself asks for nothing (``queued=True``).
+        """
+        self._republish_queue_depth(
+            str(params.get("parent_session_key") or ""), str(params.get("batch_id") or "")
+        )
         info = SubagentInfo(
             id=str(params.get("_preassigned_id") or ""),
             task=str(params.get("task") or "(stopped before start)"),
@@ -560,7 +646,8 @@ class CancellationCoordinator(ManagerComponent):
             # for as long as the task store is contended. The store phase is awaited
             # through the writer thread and the result handed to ``_unqueue``, which
             # then skips its own call and keeps the rest of its behaviour — the
-            # cancel-did-not-land retry and the queue-depth re-emit.
+            # cancel-did-not-land retry. The depth request rides on the
+            # ``_report_queued_stop`` below, as it does for every stopped row.
             try:
                 params = await self._manager._admission.taskq_cancel_queued_async(
                     # A teardown may not cancel a CLAIMED-but-unstarted row. Its claimer
@@ -651,22 +738,34 @@ class CancellationCoordinator(ManagerComponent):
         # resident), so a pump pass during the store read below can only hand a
         # slot back to a coroutine the running sweep then reaps, and a pass after
         # the sweep meets a ``user_stopped`` run that ``resume_reserve`` refuses.
-        queued_stopped = self._stop_queued(
-            [
-                str(params.get("_preassigned_id") or "")
-                for params in self._manager._queue
-                if params.get("parent_session_key", "") == parent_session_key
-                and not params.get("_resume_id")
-            ]
-        )
-        # This parent's rows waiting outside the in-memory window. The read is
-        # a store read, so it comes AFTER the in-memory queue is drained: its
-        # await is the first suspension point this method has, and one taken
-        # before the drain would let a stagger timer start a queued agent. A row
-        # started from disk during it is caught by the running sweep below.
-        queued_stopped += self._stop_queued(
-            await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
-        )
+        queued_stopped = 0
+        try:
+            queued_stopped = self._stop_queued(
+                [
+                    str(params.get("_preassigned_id") or "")
+                    for params in self._manager._queue
+                    if params.get("parent_session_key", "") == parent_session_key
+                    and not params.get("_resume_id")
+                ]
+            )
+            # This parent's rows waiting outside the in-memory window. The read is
+            # a store read, so it comes AFTER the in-memory queue is drained: its
+            # await is the first suspension point this method has, and one taken
+            # before the drain would let a stagger timer start a queued agent. A
+            # row started from disk during it is caught by the running sweep below.
+            queued_stopped += self._stop_queued(
+                await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
+            )
+        finally:
+            # Each row the pass stopped asked for the depth in its queued-stop
+            # report. A pass that stopped none -- nothing was left, or it failed
+            # or was cancelled first -- asks here, so a card whose count went
+            # stale is repaired even then. A pass that raises ends the call
+            # here too, before the running sweep: reaping would free slots the
+            # pump fills at once with the very rows the failed pass did not
+            # reach, and the request reports the failure.
+            if not queued_stopped:
+                self._republish_queue_depth(parent_session_key)
 
         running_ids = [
             info.id
@@ -682,6 +781,25 @@ class CancellationCoordinator(ManagerComponent):
         )
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
+
+    def _republish_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
+        """Re-publish *parent_session_key*'s queued depth after a stop.
+
+        A dashboard still showing a count from a frame it never saw superseded
+        gets its answer here even from a stop that found nothing: Stop all and
+        the stage's Cancel are the controls a user reaches for exactly then,
+        and this is the authoritative count that repairs the card (and, at
+        depth 0, forgets the remembered wait label). Guarded: an advisory event
+        must never turn a stop into a failed request.
+        """
+        # Imported here: this helper is not an ``_impl`` and so keeps this
+        # module's namespace, where the facade's ``logger`` is only a type hint.
+        from ..subagent import logger
+
+        try:
+            self._manager._emit_queue_depth(parent_session_key, batch_id)
+        except Exception:
+            logger.debug("queue-depth re-emit failed after stop", exc_info=True)
 
     def _boundary_scope_matches_impl(
         self,
@@ -738,7 +856,9 @@ class CancellationCoordinator(ManagerComponent):
             self._manager._boundary_cancel_retry_handle = None
             self._manager._drain_queue()
 
-        delay = max(0.05, self._manager._admission.taskq_admit_wait_secs())
+        from kiro_crew.subagent_manager.admission.types import MIN_RECHECK_DELAY_SECS
+
+        delay = max(MIN_RECHECK_DELAY_SECS, self._manager._admission.taskq_admit_wait_secs())
         self._manager._boundary_cancel_retry_handle = loop.call_later(delay, _retry)
 
     def _apply_boundary_cancelled_rows_impl(
@@ -755,7 +875,6 @@ class CancellationCoordinator(ManagerComponent):
             for params in cancelled
             if params.get("_preassigned_id")
         }
-        stopped = 0
         dropped_rows: list[dict] = []
         for index in range(len(self._manager._queue) - 1, -1, -1):
             params = self._manager._queue[index]
@@ -770,28 +889,22 @@ class CancellationCoordinator(ManagerComponent):
                 continue
             dropped_rows.append(self._manager._queue.pop(index))
             by_id.pop(agent_id, None)
-        for dropped in reversed(dropped_rows):
-            self._manager._report_queued_stop(dropped)
-            self._manager._emit_queue_depth(
-                str(dropped.get("parent_session_key") or ""),
-                str(dropped.get("batch_id") or ""),
-            )
-            stopped += 1
-        for agent_id, params in by_id.items():
-            if agent_id in self._manager._agents:
-                continue
+        stopped_rows = [
+            *reversed(dropped_rows),
+            *(
+                params
+                for agent_id, params in by_id.items()
+                if agent_id not in self._manager._agents
+            ),
+        ]
+        for params in stopped_rows:
             self._manager._report_queued_stop(params)
-            self._manager._emit_queue_depth(
-                str(params.get("parent_session_key") or ""),
-                str(params.get("batch_id") or ""),
-            )
-            stopped += 1
         if settled:
             self._manager._pending_boundary_cancellations.pop(
                 (parent_session_key, boundary_owner),
                 None,
             )
-        return stopped
+        return len(stopped_rows)
 
     async def _settle_boundary_queue_impl(
         self,
@@ -928,16 +1041,19 @@ class CancellationCoordinator(ManagerComponent):
             parent_session_key,
             boundary_owner,
         )
-        if refusal:
-            results = await asyncio.gather(
-                *(self._manager.cancel(info.id) for info in live_infos),
-                return_exceptions=True,
+        # A refused scope stops its live owners but touches no durable row:
+        # the store pass is what the refusal withheld. Both arms re-publish the
+        # depth before the reaps, so a Cancel that found nothing to stop still
+        # answers the card.
+        queued_stopped = (
+            0
+            if refusal
+            else await self._manager._settle_boundary_queue(
+                parent_session_key,
+                boundary_owner,
             )
-            return (sum(result is True for result in results), 0)
-        queued_stopped = await self._manager._settle_boundary_queue(
-            parent_session_key,
-            boundary_owner,
         )
+        self._republish_queue_depth(parent_session_key)
         results = await asyncio.gather(
             *(self._manager.cancel(info.id) for info in live_infos),
             return_exceptions=True,
@@ -950,15 +1066,38 @@ class CancellationCoordinator(ManagerComponent):
         A SEQUENCE, not an iterable: ``_unqueue`` mutates ``_queue``, so a lazy
         generator over it would stop short of the ids it was asked to remove.
         """
+        # Imported here: this helper is not an ``_impl`` and so keeps this
+        # module's namespace, where the facade's ``logger`` is only a type hint.
+        from ..subagent import logger
+
+        # Each row is unqueued and reported before the next is touched. A row
+        # whose unqueue raised was NOT removed: it still waits, so the rest of
+        # the stop goes on and the first such failure is raised once it has --
+        # the caller must not go on as if the pass had stopped everything. A
+        # row whose report raised WAS removed: it counts, and the report
+        # failure is logged.
         stopped = 0
+        failure: Exception | None = None
         for agent_id in agent_ids:
             if not agent_id:
                 continue
-            queued = self._manager._unqueue(agent_id)
+            try:
+                queued = self._manager._unqueue(agent_id)
+            except Exception as exc:
+                logger.warning("Stopping queued subagent %s failed", agent_id, exc_info=True)
+                failure = failure or exc
+                continue
             if queued is None:
                 continue
-            self._manager._report_queued_stop(queued)
             stopped += 1
+            try:
+                self._manager._report_queued_stop(queued)
+            except Exception:
+                logger.warning(
+                    "Reporting queued subagent %s stopped failed", agent_id, exc_info=True
+                )
+        if failure is not None:
+            raise failure
         return stopped
 
     async def cancel_impl(self, agent_id: str) -> bool:
@@ -1061,6 +1200,12 @@ class CancellationCoordinator(ManagerComponent):
                 reason="shutdown retained claim retry",
             )
         self._manager._retained_claim_retry_handle = None
+        for depth_retry in self._manager._queue_depth_retries.values():
+            self._manager._cancel_task_intentionally(
+                depth_retry.handle,
+                reason="shutdown queue depth retry",
+            )
+        self._manager._queue_depth_retries.clear()
         # Do not clear or release retained claims here. Their durable rows are
         # still ADMITTED, so process teardown ends the in-memory reservation and
         # the next boot reconciles them to QUEUED as one atomic ownership change.

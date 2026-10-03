@@ -1022,8 +1022,13 @@ class TelegramDispatcher:
             if not muted:
                 await renderer.on_turn_start()
             _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
+            # Imported here, not at module level: this facade's bound names are
+            # pinned to the split's base (the composition contract test).
+            from kiro_crew.start_priority import person_priority
+
             provider, is_new, resumed = await self.sessions.get_or_create(
                 session_key,
+                start_priority=person_priority(msg.person_origin),
                 agent=agent,
                 channel_id=channel_id,
                 # "" is the Auto row's stored value; collapse it to None so Auto
@@ -1579,6 +1584,10 @@ class TelegramDispatcher:
         several places, and a wake that some of them skipped is the defect it exists
         to close.
         """
+        # Imported here, not at module level: this facade's bound names are pinned to
+        # the split's base (the composition contract test).
+        from kiro_crew.messaging.queue_drain import entry_person_origin
+
         while True:
             texts: list[str] = []
             all_attachments: list[Any] = []
@@ -1588,6 +1597,8 @@ class TelegramDispatcher:
             # The origin this iteration answers, taken from the FIRST entry it
             # collapses. None until that entry is read.
             origin: _QueuedOrigin | None = None
+            # Whether a person sent any entry this turn collapses.
+            person = False
             async with self._queue.lock:
                 # Drain the ENTIRE queue under the lock, then split: the first
                 # _MAX_COLLAPSE messages FROM ONE SENDER collapse into this turn;
@@ -1638,6 +1649,7 @@ class TelegramDispatcher:
                     if fits:
                         texts.append(item[1])
                         all_attachments.extend(item_attachments)
+                        person = person or entry_person_origin(item[2])
                         requested = item[2].get("privacy_request") or ""
                         if isinstance(requested, str) and requested:
                             privacy_requests.append(requested)
@@ -1718,6 +1730,9 @@ class TelegramDispatcher:
                     chat_type=origin.chat_type,
                     username=origin.username,
                     attachments=all_attachments,
+                    # The queued entries' own flag: a gateway-built wake can have been
+                    # queued too (kiro_crew.start_priority).
+                    person_origin=person,
                 ),
                 drain=False,
                 # Drained payloads are pure turn content: a queued "/new" must reach
@@ -1775,6 +1790,7 @@ class TelegramDispatcher:
         attachments: list[Any] | None = None,
         privacy_request: str = "",
         origin: _QueuedOrigin,
+        person_origin: bool = False,
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
         "⏳ Queued (N): …" receipt, under ``self._queue.lock``.
@@ -1791,8 +1807,14 @@ class TelegramDispatcher:
         its reply goes, and the drain replays the entry under it. A default would be
         a way to enqueue an unattributed message, which under
         ``dm_scope = "unified"`` the drain could only answer under someone else's
-        identity.
+        identity. *person_origin* is the message's own
+        ``InboundMessage.person_origin``, which the drained replay's start priority
+        is read from.
         """
+        # Imported here, not at module level: this facade's bound names are pinned to
+        # the split's base (the composition contract test).
+        from kiro_crew.messaging.queue_drain import person_tag
+
         assert self.client is not None
         async with self._queue.lock:
             if not self.sessions.enqueue(
@@ -1801,6 +1823,7 @@ class TelegramDispatcher:
                 text,
                 force=False,
                 attachments=list(attachments or []),
+                **person_tag(person_origin),
                 # Rides WITH the message, for the same reason its attachments do:
                 # the drain re-enters with `interpret_commands=False` on text the
                 # modifier was already stripped from, so a request left behind here

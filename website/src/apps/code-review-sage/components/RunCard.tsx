@@ -91,7 +91,9 @@ export default function RunCard({
           { label: label || i18nT('apps.codeReviewSage.components.runCard.pull_requests'), count: more })
         : i18nT('apps.codeReviewSage.components.runCard.review_of',
           { label: label || i18nT('apps.codeReviewSage.components.runCard.pull_requests') })}
-      className={cardClass(selected)}
+      // On a touch screen the delete control is always shown in the bottom-right
+      // corner, so the card keeps a strip of room below its last row for it.
+      className={cardClass(selected) + (onDelete ? ' [@media(hover:none)]:pb-7' : '')}
     >
       <div className="flex items-center justify-between gap-2 mb-1">
         <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-text">
@@ -137,7 +139,7 @@ export default function RunCard({
         // "Done" both hides the state being checked and puts delete under the cursor
         // that was only inspecting. This is also where the confirm bar appears, so the
         // control and its confirmation occupy one place.
-        className="absolute bottom-1.5 right-1.5 rounded-md bg-card/90 p-1 text-muted opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-danger cursor-pointer"
+        className="absolute bottom-1.5 right-1.5 rounded-md bg-card/90 p-1 text-muted opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 hover:text-danger cursor-pointer"
       >
         <Trash2 size={12} />
       </button>

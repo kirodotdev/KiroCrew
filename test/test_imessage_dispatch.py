@@ -35,6 +35,7 @@ class FakeProvider:
         self.steered: list[str] = []
         self._active = active
         self.compacted = 0
+        self.compact_result: dict[str, str] = {"type": "completed", "summary": ""}
 
     def has_active_turn(self) -> bool:
         return self._active
@@ -46,8 +47,8 @@ class FakeProvider:
     async def compact(self) -> None:
         self.compacted += 1
 
-    async def wait_for_compaction(self) -> None:
-        return None
+    async def wait_for_compaction(self) -> dict[str, str]:
+        return self.compact_result
 
 
 class FakeSessions:
@@ -270,6 +271,29 @@ class TestCompact:
         assert "Compaction failed" in client.sent[0]
         assert sessions.released == [key]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "reply"),
+        [
+            ("failed", "⚠️ Compaction failed — please try again."),
+            ("timeout", "⚠️ Compaction timed out."),
+        ],
+    )
+    async def test_an_unsuccessful_result_is_reported_not_announced_as_done(
+        self, kind: str, reply: str
+    ) -> None:
+        # wait_for_compaction() reports these as a returned type, not an
+        # exception, so the receipt must read the result.
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        provider = FakeProvider()
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions.providers[key] = provider
+        sessions.sessions.add(key)
+        await dispatcher.handle_message(_inbound("/compact"))
+        assert client.sent == [reply]
+        assert sessions.released == [key]
+
 
 class TestBusyHandling:
     @pytest.mark.asyncio
@@ -370,6 +394,17 @@ class TestThresholdNotices:
                 raise RuntimeError("nope")
 
         await dispatcher._maybe_notice(_inbound("x"), "k", Boom())
+        assert client.sent == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["failed", "timeout"])
+    async def test_an_unsuccessful_auto_compaction_result_posts_no_notice(self, kind: str) -> None:
+        dispatcher, client, sessions = _dispatcher()
+        sessions.usage_pct = 99.0
+        provider = FakeProvider()
+        provider.compact_result = {"type": kind, "summary": ""}
+        await dispatcher._maybe_notice(_inbound("x"), "k", provider)
+        assert provider.compacted == 1
         assert client.sent == []
 
 

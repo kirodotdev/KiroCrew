@@ -105,7 +105,7 @@ class _Sessions(_golden.FakeSessions):
     def get_session_for_thread(self, thread_ts: str):
         return None
 
-    async def get_or_create(self, session_key, agent=None, channel_id=None):
+    async def get_or_create(self, session_key, agent=None, channel_id=None, start_priority=None):
         if session_key == BACKGROUND_KEY:
             return self._provider, False, False
         is_new = not self._seen

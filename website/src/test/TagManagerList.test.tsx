@@ -382,6 +382,15 @@ describe('TagManagerList — agent policy A1', () => {
     expect(api.updateChatTag).not.toHaveBeenCalledWith('t2', expect.objectContaining({ agent: expect.anything() }))
   })
 
+  it('shows a status toggle at rest on touch only when a tap can act on it', async () => {
+    // t1 is adopted, so its bolt gets the touch colour. t2 is a legacy tag whose
+    // toggle is disabled; its reason lives in `title`, which touch never shows,
+    // so the bolt stays transparent there instead of a visible control that does nothing.
+    renderList({ mode: 'manage' })
+    expect(await screen.findByTestId('tag-status-t1')).toHaveClass('[@media(hover:none)]:text-muted')
+    expect(screen.getByTestId('tag-status-t2')).not.toHaveClass('[@media(hover:none)]:text-muted')
+  })
+
   it('disables a legacy tag status toggle until explicit adoption and describes why', async () => {
     renderList({ mode: 'manage' })
     const reason = await screen.findByText('This tag is not set up for agents yet')

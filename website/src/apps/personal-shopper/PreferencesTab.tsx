@@ -502,7 +502,7 @@ function PreferenceRow({
             {groupNames.get(t) ?? t}
           </span>
         ))}
-      <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
+      <div className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 flex gap-1 transition-opacity">
         <button
           onClick={startEditing}
           className="text-[var(--muted)] hover:text-[var(--accent)]"

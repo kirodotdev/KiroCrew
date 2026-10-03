@@ -1323,6 +1323,35 @@ class TestARestoreRecoversAFlagItsClaimOutlived:
         assert mcp_apps_render.apply_claimed_rows([{ts}], rows) == 1
         assert rows[0]["meta"]["mcp_app"] is True
 
+    def test_a_missing_spool_logs_no_traceback(self, tmp_path, monkeypatch, caplog):
+        """An absent spool is the normal state before any app renders: it is
+        logged as a plain debug line, not a stack trace on every rehydrate."""
+        monkeypatch.setenv("KIROCREW_MCP_APPS_SPOOL", str(tmp_path / "never-created"))
+
+        with caplog.at_level("DEBUG", logger=mcp_apps_render.logger.name):
+            assert mcp_apps_render.load_claimed_row_groups("dashboard:1") == []
+
+        records = [r for r in caplog.records if "claim reconcile skipped" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+
+    def test_an_unreadable_spool_keeps_its_traceback(self, spool, monkeypatch, caplog):
+        """A spool that exists but cannot be read is abnormal: the debug line
+        keeps its traceback so the cause is diagnosable."""
+
+        def _denied(_path):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(mcp_apps_render.os, "scandir", _denied)
+
+        with caplog.at_level("DEBUG", logger=mcp_apps_render.logger.name):
+            assert mcp_apps_render.load_claimed_row_groups("dashboard:1") == []
+
+        records = [r for r in caplog.records if "claim reconcile skipped" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+        assert isinstance(records[0].exc_info[1], PermissionError)
+
     def test_a_spent_claim_puts_the_flag_back_on_its_row(self, spool):
         sid = _hex()
         ts = "2026-01-01T00:00:00.000001Z"

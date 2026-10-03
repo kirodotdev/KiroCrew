@@ -41,6 +41,7 @@ from kiro_crew.mcp_utils import (
     KIRO_SCOPES_KEY,
 )
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,7 @@ def _load_kirocrew_config_strict() -> dict | None:
     except OSError:
         return None
     try:
-        data = json.loads(text)
+        data = loads_user_json(text)
     except json.JSONDecodeError:
         return None
     if not isinstance(data, dict):

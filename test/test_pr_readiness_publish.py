@@ -554,8 +554,8 @@ def _recheck_runner(
     # `fork_lane_status` / `fork_lane_conclusion` reshape the UX Review row.
     fork_lanes = (
         ("Internal Content Scan", "internal-content-scan-pr-"),
-        ("Opus 5 Review", "opus-pr-"),
-        ("GPT 5.6 Review", "gpt-pr-"),
+        ("Opus 5.5 Review", "opus-pr-"),
+        ("GPT 6.1 Review", "gpt-pr-"),
         ("Design Review", "design-pr-"),
         ("UX Review", "ux-pr-"),
         ("First Principles Review", "first-principles-pr-"),

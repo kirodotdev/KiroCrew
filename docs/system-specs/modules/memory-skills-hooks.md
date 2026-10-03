@@ -132,7 +132,8 @@ carries project notebooks, daily history (14 full days, then decayed summaries
 and counts to day 180), task facts and past episodes as one budgeted
 `[Memory activity]` background block
 (`get_activity_context`), and it embeds the request once to rank those facts
-and episodes (two embed calls on the same text, one shared inference). With the
+and episodes, and the lessons block reuses that vector (three embed calls on
+the same text, one shared inference). With the
 switch off that material stays behind explicit `memory_recall`, and anything
 the block omits or the budget drops is reached the same way. Warm follow-ups
 retain native conversation history without repeating startup injection. V2
@@ -179,7 +180,11 @@ Global V1 uses structured files under `~/.kiro/crew/workspace/memory/`:
 V2 `MemoryStore` is a facade over an attached, prepared `VectorMemoryStore` for
 learned history and search. Its initialization creates no files. Manual profiles
 use the existing guarded filesystem reader and owner write path; they are not
-copied into the learned search index. A missing database is an explicit service
+copied into the learned search index. That reader compares the opened
+descriptor's real path with the requested path after resolving only the memory
+root's own spelling, so a store under a `$HOME` reached through a symlink
+(`/home/<user>` linking to `/local/home/<user>`) reads normally, while a link
+anywhere below the root, a leaf link and a hard link are still refused. A missing database is an explicit service
 failure, never an empty learned store or a JSONL fallback.
 
 ### A store's three paths, and where the index actually lives
@@ -381,6 +386,37 @@ interpolated into the LLM prompt so the model is told the same numbers):
 `write_lesson()` can perform up to 6 blocking embeds (1 rule plus
 `_MAX_BACKFILLS_PER_CALL = 5` lazy backfills), so an uncapped LLM array could
 occupy a worker thread for minutes.
+
+The prompt's `## Current Semantic Memory` block is bounded too, on BOTH passes
+(the preference-only pass builds the same block): the active table is read
+whole with `get_all_semantic()`, rendered as the JSON array the model updates
+against, and the rendering is held under
+`_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION = 65_536` characters
+(`_bounded_semantic_table`). A table that fits renders byte-identical to the
+uncapped form. Over the cap the most recently updated rows are kept -- the
+order the chat path's `semantic_cap` reads with no query
+([context-management](../../architecture/context-management.md)) -- and
+rendered in the same key order, followed by one `[Context budget: omitted N of
+M semantic rows ...]` line telling the model the table is partial and to
+update or delete only keys it can see. The cap bounds the prompt copy only:
+the whole table stays the `snapshot` the writers read for update-versus-create
+and the revision check, and the keys the bounded copy showed travel with the
+model's answer as `visible_keys`: a `delete` of a key the model never saw is
+withheld (logged once per key) on both write paths, the V1 writer and the
+member store's `apply_consolidation`, since keys are guessable and the notice
+alone cannot stop a blind delete. An update is not withheld: the new value's
+authority is the transcript, the store arbitrates it against the old one
+(`_write_semantic` skips a consolidation overwrite of a user-stated row; the
+member store turns a conflicting update into an owner proposal), and refusing
+it would also refuse a user's correction for a key the cap cut from the table
+while the span is marked consolidated anyway. Rows are ranked for the cut by
+their parsed `updated_at` instant (stamps in mixed formats rank by time, an
+unparseable stamp last), and a row is kept whole or not at all -- a single row
+wider than the cap renders `[]` with the notice counting it, never a cut value.
+The allowance is wider than the per-turn 12,000 because
+a pass runs rarely and merges into this table; sending only retrieval-matched
+rows was considered and not taken, since it changes which keys the model can
+dedupe against rather than how many.
 
 The `preferences_update` / `projects_update` prompt keys and whole-file writes
 are enabled only for V1 when `memory.migrated` is false. V2 always treats its
@@ -1349,8 +1385,9 @@ full, days 15–60 as one-entry summaries, older days through 180 as counts — 
 same decayed read `get_context` uses), task facts and past episodes in the
 budgeted `[Memory activity]` block
 (`get_activity_context`); the facts and episodes are ranked against the request,
-so a fresh first turn embeds the request once — two embed calls on the same text
-through the shared embedder, one inference. With the switch off, that material
+and the lessons block reuses that vector, so a fresh first turn embeds the
+request once — three embed calls on the same text through the shared embedder,
+one inference. With the switch off, that material
 is on demand through the store-bound `memory_recall` route and startup performs
 no query embedding. Warm follow-ups do not repeat startup memory injection. The
 prompt-build embedding deadline bounds that first-turn inference, and the
@@ -1535,7 +1572,12 @@ retransmission and renewed suppression. Only the model transport is simulated;
 this pins the adapter/receipt pairing, not unobservable native history behavior.
 Canonical identity and permanent-rule checks are not cached by a
 receipt. A missing declared source still refuses; missing optional root guides
-change the snapshot instead. There is no mtime-only content cache or automatic
+change the snapshot instead. The project root's implicit `AGENTS.md` and
+`SOUL.md` go through the same reader, but a refusal there -- a link to a file
+outside the project, a dangling link, a managed memory file, a hard link -- does
+not refuse the turn: the guide is not read, a warning is logged, and an in-band
+`#omitted` note names it so the agent does not assume its contents. A template
+that declares the same file still refuses, and an oversized guide still raises. There is no mtime-only content cache or automatic
 retrieval on the warm path.
 
 Structural-marker scanning copies contiguous ASCII segments without per-character
@@ -1863,6 +1905,43 @@ stage rather than using archive path extraction. Limits are 8,192 files and
 1 GiB uncompressed; the manifest itself is bounded separately.
 The database format and stable member/store identity must match before snapshot
 creation, staging or activation. Unsupported old formats are refused.
+
+One older layout is read rather than refused: the pre-identity one
+(0.7.0-insider.1 to .5, the same layout the start-of-process store upgrade above,
+`migrate_legacy_member_stores`, repairs). Its snapshot manifests and
+pending-restore journals name the owner as `owner_member`, the member's alias,
+instead of `member_id`. Its bundles also carry
+`lessons.jsonl` and `memory/history/<date>.md`, and its `memory.db` has no
+`member_database` row. `BUNDLE_VERSION` is the same for both. Such a manifest or
+journal belongs to the member only when the store record's `owner_member` is that
+alias and the member under that alias is bound to the store and carries the
+record's `owner_member_id`. Those legacy file names are accepted only inside a
+manifest of that layout. Its database must pass `PRAGMA integrity_check`, carry
+this store's `store_name` stamp, and carry no stamp or identity naming another
+store or member. So once the start-of-process store upgrade has attributed the
+store, a restore the old build staged before the upgrade can still be activated or
+cancelled, and an old snapshot can still be restored. That upgrade needs the live
+`memory.db` to be present, private and readable; a store whose live directory is
+lost, whose activation crashed between its two renames, or whose live database is
+corrupt is not attributed, and its legacy restore stays refused with "Memory has
+no member identity". A pre-identity copy is always completed in its stage, by
+`memory_stores.complete_legacy_member_directory` (the helper the store upgrade
+uses), and given a current-layout manifest before live memory is touched: an old
+snapshot restored today at staging, so it is staged with a current-layout manifest
+and journal; a restore the old build staged itself at activation, before the live
+tree is moved aside, on a fresh copy of its stage that an atomic rewrite of the
+journal then switches to. The old build's stage is never written, so a completion
+that fails or is interrupted before that switch leaves it matching its own
+manifest: live memory is untouched, the next start repeats the completion, and the
+pending restore can still be cancelled. Only a
+tree the old build itself activated, interrupted before it removed the journal, is
+completed in place at the next start. Both legacy database helpers
+open SQLite through `_sqlite_compat`, the FTS5-capable driver every other memory
+path uses. Cancelling while the live database is unreadable is refused as a
+`ValueError` and keeps the journal. The legacy `lessons.jsonl` and `memory/history/<date>.md` are restored
+into the live tree but nothing reads them: a V2 member reads lessons and history
+only from `memory.db`, and `backup_store` bundles only the current file set, so a
+later snapshot leaves them out. They are carried, not imported.
 
 **A restore request changes no live memory.** It returns `pending: true` and
 `restart_required: true`. Only `apply_pending_member_restores()` at the gateway
@@ -3067,7 +3146,7 @@ Categories: `tool`, `preference`, `knowledge`. Startup injects lessons as TWO bl
 
 **Startup selection is not re-run per turn, and the withheld notice is what carries the gap.** A session that opens with a greeting and then states its real task on the next turn keeps the greeting turn's lesson selection: the warm path does not reselect. That predates the budgets, and no per-turn retrieval trigger is added here — one would need its own trigger condition, its own budget, and its own coverage across resume, fork and compaction, which is a second mechanism rather than a bound on this one. What the budgets change is that the gap is now VISIBLE where it was not: the greeting turn renders the withheld notice naming the total and the tool, so the follow-up turn is looking at an explicit pointer instead of at filler that silently displaced the finding it needed. Closing it properly is deliberately left to a change that owns the retrieval trigger.
 
-Crossing a startup budget trims only complete lesson entries, never a partial rule, and an entry too large for the room that remains is SKIPPED rather than ending the selection: the kept set is then a superset of what stopping would give, since an oversized entry is dropped either way and continuing can only add later entries that do fit, never displacing one already accepted. Stopping wasted room a shorter, more relevant entry could have used — five in-budget rows rendered 1,408 of 1,650 characters while omitting a later 76-character line with 242 characters free. Preferences and safety rules are never sliced to make space; a preferences file that alone exceeds the ceiling is the one exception, kept from its head with an in-prompt notice naming the omitted character count and the file to read. Vector lessons keep the lexical relevance order already computed for the request. With no query vector — every startup render, and a recall whose embed is unavailable — `rank_lessons` scores a row by rarity-weighted overlap: each stemmed token it shares with the request weighs `log((N + 1) / (df + 0.5))`, where `N` is the number of rows being ranked and `df` the number of them carrying the token, and the sum is divided by the square root of the row's number of distinct words. The capped overlap count the hybrid score uses as its keyword half is not used there: it reaches 1.0 at ten shared tokens, so on a long first message it would tie nearly every rule at the top and the stable sort would hand back newest-first (#14243). Each request word contributes only its stem, so an exact inflection does not count twice. A distinctive term counts for far more than a common one; a token carried by nearly every row weighs close to nothing (about `0.5 / N`), and the length factor discounts incidental overlap in a long row. Every weight is positive, so any overlap still outranks none and a zero-overlap request keeps the stored order. Document frequency is counted only for the request's tokens, over the row token sets `_row_stem_tokens_for_scan` already memoises, so no row is stemmed again. `_keyword_score` and `_hybrid_score` are unchanged, and a query that has a vector still ranks by the hybrid score. The JSONL fallback orders EVERY tier the same way (`order_by_request_relevance`, length>=3 word tokens, no stemming and no embedding), and orders them PER TIER so authored rules keep their precedence over untagged rows: newest-first alone drops a row the task is actually about while newer irrelevant ones fit, measured on a 199-lesson store for the findings tier and on a 100-row all-untagged store for the RULE tier — every pre-field row lands in the rule tier, so leaving that tier unordered lost an exact-topic match the vector store kept, since the vector path ranks its whole eligible set before partitioning. Ordering is NOT admission: it decides only which rows survive a truncation that is going to happen anyway, so no row is dropped for being irrelevant that the budget would otherwise have kept. The residual is real and is why the omission notice exists — inside an OVERFLOWING rule tier a standing rule unrelated to this message sorts last and can be the omitted one, which the notice names and points at `learn_list` for; ordering cannot both favour the current task and ignore it. An empty query, or no overlap anywhere, leaves the stored order untouched and renders byte-identically. Both tiers' findings header reads "relevant ones first", which is what each renders: the sort runs before the block is built and deliberately lets an OLDER relevant finding outrank newer irrelevant ones, so a header reading "newest first" would describe the pre-sort order and be false for exactly the crowded store the budget exists to serve. The sort is stable, so equal-overlap rows still read newest-first underneath. **An overflow is always reported and never silent**: each block's notice names its own shown/omitted counts, names the budget it hit, states that the limit is a budget rather than a judgement that the rules stopped applying, and points at `learn_list` (rules) or `memory_recall` (findings). A budget too small for even one entry still renders the labelled block with that notice, because an empty block is indistinguishable from "this user has no rules". Startup spends no embedding inference on either tier. Below both budgets every eligible entry is kept, in the order ranked above, and a caller that names no budget (every reader predating them) is unchanged: for it the rule block keeps the two-stage contract — COMPLETE below the model-safe ceiling whatever `caps.lessons` says, which is the pinned retain-every-eligible-in-scope-rule invariant, and only an overflow, where that invariant is already unmet, trims to the ordinary lessons budget (`min(caps.lessons, ceiling)`, and the ceiling alone when no lessons budget is named). Naming a tier budget is what asks for a window-independent bound instead, so the two mechanisms never both decide one block, and the rule tier's overflow notice names `learn_list` and `memory_recall` because both reach the omitted rules. Explicit lesson readers can use hybrid relevance and fill the caller's character budget, reporting shown and omitted counts. The explicit renderer judges each entry against the rendered block, frame included, and skips the top-ranked entry too when it does not fit, so one long best match cannot crowd out the shorter lessons behind it; only when no entry fits does it keep the top one over budget. `memory_recall` gives lessons one third of its cap. When that lone top lesson still exceeds the share, `truncate_explicit_lessons` cuts its text to fit, appends a `… [truncated]` marker, so a long best match is not reported as "no lesson matched". That holds only while the share leaves room for the frame, the marker and at least one character of rule text: the frame is 147 characters (header, `]\n- ` and the closing line) when one lesson is in scope, and the `Showing 1 of N lessons, ...` counts line adds 56 more at two lessons and one per extra digit, so a share of at least 161 characters (a recall `cap` of 483 or more) is needed for a single in-scope lesson and at least 217 (`cap` 651 or more) once others are counted. A query with no recall terms renders the counts line with "most recent" instead of "most relevant", two characters shorter, so that floor is 215 (`cap` 645). Below that the block is omitted. The JSONL store retains `_MAX_LESSONS_TOTAL = 200`, and prunes **by tier**: findings first, then unstated rows, then authored rules, each oldest-first within its class. A tier-blind `[-200:]` deleted the user's oldest authored rules from disk as cheap findings accumulated, which is strictly worse than a prompt omission — an omission is announced and readable through `learn_list`, a pruned row is gone. Authored rules are evicted only when they alone exceed the cap. A submission the prune itself removes is reported as `refused`, never `inserted`: at the cap a new `on_topic` row is the first eviction candidate, and reporting success for a row that is not in the file is a silent false success the caller cannot recover from. That refusal carries its OWN reason, `store_at_capacity`, and not the content refusal's `volatile_session_fact`: the JSONL store answers both of its refusals with the same bare `refused` string, so `POST /api/lessons` re-derives the cause by re-running the volatile-text predicate — exact rather than a guess, since those are the store's only two refusal paths, and the same re-derivation the listing surface already performs for its withheld marker. Telling a user whose store is full to reword a rule is advice that cannot succeed, so `learn_add` renders a distinct message naming the row cap and `learn_remove` as the action that frees a row. Only the JSONL store raises it; the vector store has no row cap and names its own reasons. The vector store's dedup scan carries the matching guard on the other side: its three delete branches decide on text alone, so an `on_topic` write may retire ONLY another `on_topic` row (the reverse is allowed, since promoting guidance to a standing rule is the direction the user is asking for). Unstated rows are protected too, not just `always` ones: an unstated row is served AS a standing rule at injection, and on an install whose lessons predate the field every row is unstated, so a guard keyed on `always` alone would protect nothing on exactly the stores holding the user's real corrections. Read side and write side classify a row the same way. The `POST /api/lessons` route's model-judged contradiction sweep is a SECOND deletion path ending in `delete_semantic`, and it carries a STRICTER guard than the dedup scan: it retires a candidate ONLY when that candidate is itself a finding (`_candidate_applies(candidate) == on_topic`), regardless of the submission's tier. This is deliberately narrower than `tier_permissions`, and the two paths differ because their authority differs. The dedup scan decides on deterministic text (substring and embedding similarity), so it may honour the asymmetric rule and let a standing submission retire a finding. The sweep decides on a single-word LLM verdict, which is a guess, not authority to remove a standing rule the user filed — so the sweep protects EVERY standing and unstated candidate, even from a standing submission. That closes the reported case where a standing (`always`) submission retired a standing rule the model called contradictory. The filter reads the CANDIDATE's persisted tier via `_candidate_applies`, never the submission's tier (`result.applies`): the submission's tier is deliberately not consulted, because a model verdict is not authority to delete a standing rule whatever tier the submission carries. Keying on the submission (its old form, `if result.applies == on_topic`) fired only for a finding submission, so a standing or unstated submission skipped the guard and the sweep could retire a contradictory standing rule, with no recovery, since the sweep's self-heals-next-time note covers a MISSED sweep rather than a wrong deletion. `find_contradiction_candidates` therefore carries each candidate's authored tier on the row it returns: the filter can only apply the guard to a tier it can read, and `_candidate_applies` fails safe to unstated (the protected side) for a row it cannot classify — so a candidate without a stated tier is protected rather than deletable, and a store predating the field, whose every row is unstated, retires nothing on a model verdict at all. It carries each candidate's stored `value_json` too, and the sweep hands it back as `expect_value_json` so its delete is a COMPARE-AND-DELETE. Without it the tier filter is defeatable by timing rather than by tier: the candidates are a write-time snapshot, the delete runs after a per-candidate LLM verdict, and `_lesson_key` keys on rule text plus scope alone — so re-tiering that rule in between (a delete plus a re-add, the documented way to change a tier) puts a DIFFERENT row under the same key, and an unconditional delete tombstones the replacement, including when the replacement is the `always` row the filter exists to protect. A body that changed is reported as kept, not as an error: the row this decided to retire is gone, and a contradiction against whatever replaced it is re-nominated by the next write touching the topic. This is the same guard the inline dedup pass already applies to its own deferred supersedes. The guard gates deletion only, so an `on_topic` rule already contained in an `always` rule is still declined as `substring_covered`. History consolidation's `_write_structured_memory` is a THIRD model-judged deletion path — its extraction prompt renders each `lesson.*` row as rule prose and invites a `{"key": ..., "delete": true}` item — and it carries the SAME invariant as the sweep, enforced at that call site (`_lesson_delete_decision`) rather than inside `delete_semantic`, since an explicit forget must still remove a standing rule and only the inference site knows the delete is a guess. It refuses a delete whose `lesson.*` row is not `on_topic` (an `always`, unstated or non-mapping row is protected), and its three protected causes are counted and logged apart: a tier refusal and an absent row at info, an unreadable row at warning, so a store outage is not hidden among real tier refusals. An allowed delete carries the checked `value_json` into `delete_semantic` as `expect_value_json` — the same COMPARE-AND-DELETE the sweep uses — so a re-tier landing between the read and the delete tombstones nothing, and a lost compare is logged and counted (`stale-skipped`) rather than vanishing into `0 deleted`. An ABSENT `lesson.*` row is refused too, not deleted unconditionally: the absent state is the intermediate state of that same delete-plus-re-add re-tier, so an unconditional delete there would race a concurrent re-add that recreated the key as a standing rule. The DECLINE carries the MIRROR of the same rule, because tiering is what makes "already covered" conditional: a submission is covered only while the covering row arrives at least as often as the submission would, and a covering `on_topic` row arrives only when the request is about it. So a STANDING submission (`always`, or unstated) contained in an `on_topic` row is NOT declined — declining it would drop the rule from every unrelated turn while reporting `substring_covered` for a row that does not cover it there, and a re-submit is declined identically so nothing recovers it. In that one direction the submission is stored instead, which can leave a standing rule beside the longer finding containing it; that duplicate is the price of not silently refusing to create the rule. `migrate_from_markdown` carries the authored tier across for the same reason the adjacent lines carry `repo_scope`, and in the same direction: an omitted `applies` reads as unstated, which every read path serves AS a standing rule, so dropping it would promote a row the user filed as a past finding into one injected in every session. It normalizes READ-safely (`authored_lesson_applies`, not the write path's raising form) because that loop reads `lessons.jsonl` directly, so a hand-edited or future-schema value migrates the row as unstated rather than aborting the migration. The listing surface is bounded too — `GET /api/lessons` returns one `limit`/`offset` window and carries `total` and `truncated` so `learn_list` can say `Showing N of M`; `VectorMemoryStore.get_lessons(limit, offset)` honours the offset only on the bounded read, and the unbounded read the scorers use ignores it. That route also reports each row's tier, and `learn_list` marks a finding as `(applies: on_topic)` beside the rule: every overflow notice sends the reader to these surfaces, so a row filed as a finding has to be legible there or a rule the model misfiled stops arriving with nothing to show why, and re-tiering (a delete plus a re-add) cannot even be diagnosed. Only `on_topic` is marked and only an AUTHORED tier is reported — a standing rule and an unstated row are both injected every session, so marking one and not the other would name a difference the injection path does not make. Contract: [learn-cron-dashboard](learn-cron-dashboard.md).
+Crossing a startup budget trims only complete lesson entries, never a partial rule, and an entry too large for the room that remains is SKIPPED rather than ending the selection: the kept set is then a superset of what stopping would give, since an oversized entry is dropped either way and continuing can only add later entries that do fit, never displacing one already accepted. Stopping wasted room a shorter, more relevant entry could have used — five in-budget rows rendered 1,408 of 1,650 characters while omitting a later 76-character line with 242 characters free. Preferences and safety rules are never sliced to make space; a preferences file that alone exceeds the ceiling is the one exception, kept from its head with an in-prompt notice naming the omitted character count and the file to read. Vector lessons keep the relevance order already computed for the request (hybrid when the build supplied the activity block's vector, lexical otherwise). With no query vector — a startup render whose first message was not embedded, and a recall whose embed is unavailable — `rank_lessons` scores a row by rarity-weighted overlap: each stemmed token it shares with the request weighs `log((N + 1) / (df + 0.5))`, where `N` is the number of rows being ranked and `df` the number of them carrying the token, and the sum is divided by the square root of the row's number of distinct words. The capped overlap count the semantic scan uses as its keyword half is not used in lesson ranking at all: it reaches 1.0 at ten shared tokens, which a long first message clears against most rules, so on the no-vector path it would tie them at the top and the stable sort would hand back newest-first (#14243), and on the vector path it leaves the keyword half a near-constant offset that ranks them on the cosine alone (measured on an 897-rule store, each rule's own text as the request: the median row with any overlap sat AT the cap of 1.0, and 64% of them did, while a six-word request put none there; the count is `min(overlap / 10, 1.0)` on an integer overlap, so its every value lies on a 0.1 grid). Each request word contributes only its stem, so an exact inflection does not count twice. A distinctive term counts for far more than a common one; a token carried by nearly every row weighs close to nothing (about `0.5 / N`), and the length factor discounts incidental overlap in a long row. Every weight is positive, so any overlap still outranks none and a zero-overlap request keeps the stored order. Document frequency is counted only for the request's tokens, over the row token sets `_row_stem_tokens_for_scan` already memoises, so no row is stemmed again. `_hybrid_score` is unchanged and a query that has a vector still ranks by it; every row takes the same keyword half, that rarity-weighted overlap divided by the weight of a token only one ranked row carries (`_rarity_weight(N, 1)`) and capped at 1.0 — the overlap is already divided by the square root of the row's distinct words, so a row of `size` of them reaches a full half at about `sqrt(size)` such tokens and the cap is reachable rather than ornamental — with its cosine clamped at 0 as the vector term, so a row the vector says nothing about (no comparable stored vector, or a cosine at or below 0) scores `0.4 * keyword` and, within one ranking, a row whose cosine rises above 0 scores higher than it did at 0 because its keyword half does not depend on its own cosine (across the two branches only the ORDER is comparable: the no-vector branch ranks on the unscaled overlap, the vector branch on the 0.6/0.4 hybrid of its scaled form); one measure for both regimes also means the rows a vector cannot rank keep exactly the order they hold with no vector, including where two of them reach the cap, since the tie-break is that same score, so the first row an embedding backfill reaches does not reshuffle the rows behind it; when no row has a positive cosine the query vector says nothing about any row, and the ranking is the no-vector order, produced by the same code. The JSONL fallback orders EVERY tier the same way (`order_by_request_relevance`, length>=3 word tokens, no stemming and no embedding), and orders them PER TIER so authored rules keep their precedence over untagged rows: newest-first alone drops a row the task is actually about while newer irrelevant ones fit, measured on a 199-lesson store for the findings tier and on a 100-row all-untagged store for the RULE tier — every pre-field row lands in the rule tier, so leaving that tier unordered lost an exact-topic match the vector store kept, since the vector path ranks its whole eligible set before partitioning. Ordering is NOT admission: it decides only which rows survive a truncation that is going to happen anyway, so no row is dropped for being irrelevant that the budget would otherwise have kept. The residual is real and is why the omission notice exists — inside an OVERFLOWING rule tier a standing rule unrelated to this message sorts last and can be the omitted one, which the notice names and points at `learn_list` for; ordering cannot both favour the current task and ignore it. An empty query leaves the stored order untouched, and with no overlap anywhere a lexically ranked block renders byte-identically, while a startup vector still orders the vector store's rows by cosine (a zero-overlap row scores `0.6 * max(0.0, similarity(row))` there). Both tiers' findings header reads "relevant ones first", which is what each renders: the sort runs before the block is built and deliberately lets an OLDER relevant finding outrank newer irrelevant ones, so a header reading "newest first" would describe the pre-sort order and be false for exactly the crowded store the budget exists to serve. The sort is stable: with no startup vector, equal-overlap rows read newest-first underneath; under a startup vector, rows whose hybrid score ties exactly are ordered by the keyword rarity score and then newest-first. **An overflow is always reported and never silent**: each block's notice names its own shown/omitted counts, names the budget it hit, states that the limit is a budget rather than a judgement that the rules stopped applying, and points at `learn_list` (rules) or `memory_recall` (findings). A budget too small for even one entry still renders the labelled block with that notice, because an empty block is indistinguishable from "this user has no rules". Startup ranks both tiers of the V1 vector store with the hybrid score when the build has already embedded the first message: with `memory.inject_activity` on and a non-empty request, the activity block embeds it to rank facts and episodes, and the prompt builder, reading the same `MemoryStore.ranks_activity_against` gate the activity block does, then calls `startup_lesson_query` once, which the shared embed cache answers, so the build still runs one inference. The result is handed to every render of the lessons block, including the render that re-runs to fit the protected ceiling. With a vector, every row scores on the same 0.6/0.4 scale (`query_has_vector=True`, a negative cosine clamped to 0), as the semantic scan does, so a row the vector does not favour cannot keep its unweighted keyword score; the keyword half it mixes in is the rarity-weighted overlap, not the semantic scan's overlap count, so explicit recall on a fully embedded store orders rules by how distinctive the words they share with the request are. The vector orders past findings too, but their tier is admitted lexically (`_any_lesson_overlap`): when no finding shares a word with the request the tier stays withheld, since admitting on the vector would need an uncalibrated similarity floor. With `inject_activity` off, with the memory group excluded while lessons stay included (`include_memory=false, include_lessons=true`, whose build skips the activity block that would rank, so neither site asks for a vector), on a member session (which searches nothing at startup), or with no embedder, a missed deadline or a store read failure, ranking stays lexical and startup spends no inference. An embedding-space change between that embed and the lessons read ranks lexically too, because the space check and the read share one lock hold. The JSONL stores have no vectors and stay lexical. Below both budgets every eligible entry is kept, in the order ranked above, and a caller that names no budget (every reader predating them) is unchanged: for it the rule block keeps the two-stage contract — COMPLETE below the model-safe ceiling whatever `caps.lessons` says, which is the pinned retain-every-eligible-in-scope-rule invariant, and only an overflow, where that invariant is already unmet, trims to the ordinary lessons budget (`min(caps.lessons, ceiling)`, and the ceiling alone when no lessons budget is named). Naming a tier budget is what asks for a window-independent bound instead, so the two mechanisms never both decide one block, and the rule tier's overflow notice names `learn_list` and `memory_recall` because both reach the omitted rules. Explicit lesson readers can use hybrid relevance and fill the caller's character budget, reporting shown and omitted counts. The explicit renderer judges each entry against the rendered block, frame included, and skips the top-ranked entry too when it does not fit, so one long best match cannot crowd out the shorter lessons behind it; only when no entry fits does it keep the top one over budget. `memory_recall` gives lessons one third of its cap. When that lone top lesson still exceeds the share, `truncate_explicit_lessons` cuts its text to fit, appends a `… [truncated]` marker, so a long best match is not reported as "no lesson matched". That holds only while the share leaves room for the frame, the marker and at least one character of rule text: the frame is 147 characters (header, `]\n- ` and the closing line) when one lesson is in scope, and the `Showing 1 of N lessons, ...` counts line adds 56 more at two lessons and one per extra digit, so a share of at least 161 characters (a recall `cap` of 483 or more) is needed for a single in-scope lesson and at least 217 (`cap` 651 or more) once others are counted. A query with no recall terms renders the counts line with "most recent" instead of "most relevant", two characters shorter, so that floor is 215 (`cap` 645). Below that the block is omitted. The JSONL store retains `_MAX_LESSONS_TOTAL = 200`, and prunes **by tier**: findings first, then unstated rows, then authored rules, each oldest-first within its class. A tier-blind `[-200:]` deleted the user's oldest authored rules from disk as cheap findings accumulated, which is strictly worse than a prompt omission — an omission is announced and readable through `learn_list`, a pruned row is gone. Authored rules are evicted only when they alone exceed the cap. A submission the prune itself removes is reported as `refused`, never `inserted`: at the cap a new `on_topic` row is the first eviction candidate, and reporting success for a row that is not in the file is a silent false success the caller cannot recover from. That refusal carries its OWN reason, `store_at_capacity`, and not the content refusal's `volatile_session_fact`: the JSONL store answers both of its refusals with the same bare `refused` string, so `POST /api/lessons` re-derives the cause by re-running the volatile-text predicate — exact rather than a guess, since those are the store's only two refusal paths, and the same re-derivation the listing surface already performs for its withheld marker. Telling a user whose store is full to reword a rule is advice that cannot succeed, so `learn_add` renders a distinct message naming the row cap and `learn_remove` as the action that frees a row. Only the JSONL store raises it; the vector store has no row cap and names its own reasons. The vector store's dedup scan carries the matching guard on the other side: its three delete branches decide on text alone, so an `on_topic` write may retire ONLY another `on_topic` row (the reverse is allowed, since promoting guidance to a standing rule is the direction the user is asking for). Unstated rows are protected too, not just `always` ones: an unstated row is served AS a standing rule at injection, and on an install whose lessons predate the field every row is unstated, so a guard keyed on `always` alone would protect nothing on exactly the stores holding the user's real corrections. Read side and write side classify a row the same way. The `POST /api/lessons` route's model-judged contradiction sweep is a SECOND deletion path ending in `delete_semantic`, and it carries a STRICTER guard than the dedup scan: it retires a candidate ONLY when that candidate is itself a finding (`_candidate_applies(candidate) == on_topic`), regardless of the submission's tier. This is deliberately narrower than `tier_permissions`, and the two paths differ because their authority differs. The dedup scan decides on deterministic text (substring and embedding similarity), so it may honour the asymmetric rule and let a standing submission retire a finding. The sweep decides on a single-word LLM verdict, which is a guess, not authority to remove a standing rule the user filed — so the sweep protects EVERY standing and unstated candidate, even from a standing submission. That closes the reported case where a standing (`always`) submission retired a standing rule the model called contradictory. The filter reads the CANDIDATE's persisted tier via `_candidate_applies`, never the submission's tier (`result.applies`): the submission's tier is deliberately not consulted, because a model verdict is not authority to delete a standing rule whatever tier the submission carries. Keying on the submission (its old form, `if result.applies == on_topic`) fired only for a finding submission, so a standing or unstated submission skipped the guard and the sweep could retire a contradictory standing rule, with no recovery, since the sweep's self-heals-next-time note covers a MISSED sweep rather than a wrong deletion. `find_contradiction_candidates` therefore carries each candidate's authored tier on the row it returns: the filter can only apply the guard to a tier it can read, and `_candidate_applies` fails safe to unstated (the protected side) for a row it cannot classify — so a candidate without a stated tier is protected rather than deletable, and a store predating the field, whose every row is unstated, retires nothing on a model verdict at all. It carries each candidate's stored `value_json` too, and the sweep hands it back as `expect_value_json` so its delete is a COMPARE-AND-DELETE. Without it the tier filter is defeatable by timing rather than by tier: the candidates are a write-time snapshot, the delete runs after a per-candidate LLM verdict, and `_lesson_key` keys on rule text plus scope alone — so re-tiering that rule in between (a delete plus a re-add, the documented way to change a tier) puts a DIFFERENT row under the same key, and an unconditional delete tombstones the replacement, including when the replacement is the `always` row the filter exists to protect. A body that changed is reported as kept, not as an error: the row this decided to retire is gone, and a contradiction against whatever replaced it is re-nominated by the next write touching the topic. This is the same guard the inline dedup pass already applies to its own deferred supersedes. The guard gates deletion only, so an `on_topic` rule already contained in an `always` rule is still declined as `substring_covered`. History consolidation's `_write_structured_memory` is a THIRD model-judged deletion path — its extraction prompt renders each `lesson.*` row as rule prose and invites a `{"key": ..., "delete": true}` item — and it carries the SAME invariant as the sweep, enforced at that call site (`_lesson_delete_decision`) rather than inside `delete_semantic`, since an explicit forget must still remove a standing rule and only the inference site knows the delete is a guess. It refuses a delete whose `lesson.*` row is not `on_topic` (an `always`, unstated or non-mapping row is protected), and its three protected causes are counted and logged apart: a tier refusal and an absent row at info, an unreadable row at warning, so a store outage is not hidden among real tier refusals. An allowed delete carries the checked `value_json` into `delete_semantic` as `expect_value_json` — the same COMPARE-AND-DELETE the sweep uses — so a re-tier landing between the read and the delete tombstones nothing, and a lost compare is logged and counted (`stale-skipped`) rather than vanishing into `0 deleted`. An ABSENT `lesson.*` row is refused too, not deleted unconditionally: the absent state is the intermediate state of that same delete-plus-re-add re-tier, so an unconditional delete there would race a concurrent re-add that recreated the key as a standing rule. The DECLINE carries the MIRROR of the same rule, because tiering is what makes "already covered" conditional: a submission is covered only while the covering row arrives at least as often as the submission would, and a covering `on_topic` row arrives only when the request is about it. So a STANDING submission (`always`, or unstated) contained in an `on_topic` row is NOT declined — declining it would drop the rule from every unrelated turn while reporting `substring_covered` for a row that does not cover it there, and a re-submit is declined identically so nothing recovers it. In that one direction the submission is stored instead, which can leave a standing rule beside the longer finding containing it; that duplicate is the price of not silently refusing to create the rule. `migrate_from_markdown` carries the authored tier across for the same reason the adjacent lines carry `repo_scope`, and in the same direction: an omitted `applies` reads as unstated, which every read path serves AS a standing rule, so dropping it would promote a row the user filed as a past finding into one injected in every session. It normalizes READ-safely (`authored_lesson_applies`, not the write path's raising form) because that loop reads `lessons.jsonl` directly, so a hand-edited or future-schema value migrates the row as unstated rather than aborting the migration. The listing surface is bounded too — `GET /api/lessons` returns one `limit`/`offset` window and carries `total` and `truncated` so `learn_list` can say `Showing N of M`; `VectorMemoryStore.get_lessons(limit, offset)` honours the offset only on the bounded read, and the unbounded read the scorers use ignores it. That route also reports each row's tier, and `learn_list` marks a finding as `(applies: on_topic)` beside the rule: every overflow notice sends the reader to these surfaces, so a row filed as a finding has to be legible there or a rule the model misfiled stops arriving with nothing to show why, and re-tiering (a delete plus a re-add) cannot even be diagnosed. Only `on_topic` is marked and only an AUTHORED tier is reported — a standing rule and an unstated row are both injected every session, so marking one and not the other would name a difference the injection path does not make. Contract: [learn-cron-dashboard](learn-cron-dashboard.md).
 
 **`applies` is AUTHORED, never derived, and that is the whole reason it is stored.** No property of a stored row separates "a rule the user wants enforced in every session" from "something we worked out once". `source` does not: the consolidator can extract a real safety correction, and a human can type a note about last week's outage. `category` does not: its three values describe subject matter. Keyword shape does not: "always" appears in both classes and reliably in neither. A reader that guessed from any of those would re-decide the user's intent on every turn, and would fail silently in the direction that costs most. So `normalize_lesson_applies` accepts only the two literals, RAISES on a misspelling at the write path (there is no safe clamp — one choice injects a note into every session, the other demotes a standing rule, and both are silent), and treats an omitted value as the supported choice to leave the row unstated. The read path never raises: a hand-edited or future-schema value reads as unstated so one bad row cannot abort prompt assembly for every other lesson. The field is additive and absent when unset in BOTH stores -- the vector writer omits the key, and the JSONL writer drops a `None` through `_serializable` rather than emitting `"applies": null`, which would rewrite every legacy line on the next save and make the two stores disagree about what absence means -- so an unstated row is byte-identical to what the writer produced before the field existed; on the enrich path it is WRITE-ONCE like `category` and `repo_scope`, so enrichment cannot silently demote a rule and re-tiering is a delete + re-add.
 
@@ -3554,7 +3633,20 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 
 **Discovery (`skills.lazy_load`, default true):** startup and post-compaction use
 one bounded directory. The default is the usage-ranked index with a family hint
-for omitted rows; false selects a shorter search pointer. A `skill://` mapping
+for omitted rows; false selects a shorter search pointer. A `false` that 0.6.x
+materialized (when it meant the full listing) is removed once on upgrade; see the
+legacy `skills.lazy_load` rewrite in [config](config.md). Both variants order
+rows through one function, `_user_first`: the user's own skills take up to
+`_INDEX_USER_SLOTS` (6) of the first `_INDEX_HEAD_SLOTS` (8) positions, highest
+rank first; the rest of those eight go to the highest-ranked remaining rows of
+either kind; after the eighth position the remaining user rows precede the
+shipped ones, each group in rank order. Reserving most of the head, not all of
+it, is deliberate: a new install's empty usage ledger cannot hand every slot to
+the ~60 shipped skills, and a large user tree cannot evict a shipped skill the
+user actually uses. `_is_user_authored` counts a packaged key, a copy carrying
+the builtin sync's provenance marker, an app skill resolving into a provider
+root, and an edition root as shipped; everything else — user-created,
+`skills.extra_paths`, trusted project, mapped — is the user's. A `skill://` mapping
 restricts availability, not eager body delivery. Directory, search, paginated
 list, exact reads and `$full/key` expansion resolve the same project-aware mapping.
 Unqualified `$leaf` fallback is permitted only when unique. External mapped files
@@ -3564,12 +3656,58 @@ apps or bypass the existing project consent boundary.
 Ordinary mapped and project skills are activated on demand. `skill_search` always
 provides `action="list"` plus `offset` for complete discovery and `action="read"`
 plus the exact `key` for activation, even while the body index is incomplete.
-Required `always:true` bodies share `PINNED_SKILL_BODIES_CAP` (99,000 UTF-8 bytes),
-including rendered framing. Exceeding the capacity or refusing a required read
-raises `SkillContextCapacityError`; no final slice may silently discard required
-instructions. Bounded global reads use `safe_read_file_bytes_nolink`, retaining
+The operator's required `always:true` bodies share `PINNED_SKILL_BODIES_CAP`
+(99,000 UTF-8 bytes), including rendered framing. Exceeding the capacity or refusing
+a required read raises `SkillContextCapacityError`; no final slice may silently
+discard required instructions. A trusted project's `always:true` bodies are not
+charged there: a checked-out repository must not be able to fail every session in
+that project. They ride their own `project_body_budget` (`PROJECT_SKILL_BODY_CAP`
+from both `context.py` callers) through `_append_project_skill_bodies`, and one that
+does not fit or cannot be read is skipped. The budget bounds the project bodies as a
+whole, not each skill, so several large project skills cannot all inject; the
+skipped-skills notice below is separate and bounded on its own.
+One warning per context build (session start and post-compaction) names the
+skipped keys with their reasons, the trusted project, and that project's revocable
+project-skill trust grant. The required block carries a notice naming the same keys
+with their `skill_search(action='read', ...)` pointers, to be read when their topic
+applies (not all at once), so the omission is visible in the prompt; the rows join
+the on-demand directory. A repository chooses how many
+rows it ships, so the bound applies where a skipped row is retained, not where it is
+rendered: `SkippedProjectSkills` counts every skipped row and keeps, for the warning
+and for the notice separately, only the leading items that fit
+`_SKIPPED_PROJECT_KEYS_MAX_CHARS` (2,000) together. A warning item cuts its key to
+`_SKIPPED_PROJECT_KEY_LOG_CHARS` (200) and the first row is always named; a notice
+pointer keeps the whole key, since a cut key cannot be read back. Both count the rest,
+and a skipped key is discarded from the pinned set as it is skipped. Each read stays
+bounded by the room left in that budget, and the delivered bytes are re-checked
+against `repo_scope`. Bounded global reads use
+`safe_read_file_bytes_nolink`, retaining
 sensitive-path, descriptor identity and hardlink checks while allowing validated
-provider links. Project reads retain descriptor confinement and their byte cap.
+provider links. One hardlink is admitted, on content: a hardlinking installer (uv's
+default on Linux and Windows) gives every installed package file `st_nlink > 1`, so
+a built-in app skill symlinked into the tree by `apps.bridges._register_skills`
+listed but never loaded, and an `always: true` one raised
+`SkillContextCapacityError` on every session start. `_read_global_skill_text`
+therefore passes `admit_hardlinked=_installed_package_bytes_match`: a hardlinked
+file loads only when it is a `SKILL.md` the owning distribution's `RECORD` lists
+inside the installed `kiro_crew` tree AND the bytes read from the descriptor hash
+to the recorded digest (sha256 or stronger). Any other hardlink — the skills dir,
+apps under the data home, `extra_paths`, a project — has no `RECORD` entry and stays
+refused. The `RECORD` is found by name (`release_channel._DISTRIBUTION_NAME`) in one
+listing of the site dir, so no other distribution's metadata is read; an upgrade
+that left the previous `dist-info` behind contributes a second candidate, which can
+only vouch for the previous release's bytes. A `RECORD` that does not list the
+package's own `__init__.py` vouches for nothing, and an editable install keeps its
+`dist-info` in site-packages rather than beside the source tree, so it admits
+nothing. Rows are prefiltered by substring before CSV parsing, keeping the one read
+per install at a few milliseconds on the synchronous body read that asks for it.
+The digests are cached per process under the site dir's stamp and each candidate
+`RECORD`'s (inode, mtime, size), taken before and after its parse, so the steady
+state costs a few `stat` calls; a `dist-info` added or removed, a `RECORD`
+rewritten, or one replaced mid-read is read again on the next call.
+Rewriting `RECORD` takes write access to the tree holding the package code, which
+already decides what the gateway runs. Project reads retain descriptor confinement
+and their byte cap.
 The explicit unbudgeted catalog renderer remains available to non-startup callers.
 
 Native Kiro 2.21.2 progressively loads bodies but places every mapped skill's
@@ -3976,12 +4114,34 @@ row and a read, split because they cost differently:
   selected the scope, and for a table past `_MAX_CATALOG_ROWS` (100,000 rows) or
   carrying a field wider than `_MAX_CATALOG_FIELD_CHARS` (4,096) — unbounded
   materialization of an adversary-controlled table is an out-of-memory crash on load.
-* **at the read, admission.** Containment does not say the file is still a regular
-  file in a non-sensitive place, so each surviving unconfined path is recorded in
-  `_snapshot_unadmitted` and `_admit_snapshot_path` re-runs `validate_file_path` on it
-  before its first read. Admitting retires it from the set, so a repeated read costs
-  nothing, and a walk that republishes the scope admitted every path it returned and
-  clears the set outright. A path this process walked never pays the check.
+* **at the read, admission, fail-closed.** Lexical containment does not say where the
+  file resolves now, so `_read_enumerated_skill_bytes` reads an unconfined path
+  unchecked only when this process has VETTED it, and otherwise checks it first
+  (`_vet_unconfined_path`). The check is never weaker than the walk:
+  `validate_file_path` (a representable path, the Windows UNC and link screens, not
+  sensitive), then the walk's containment on what that resolved to, so the target
+  must sit inside one of the admitted roots exactly as a walked file must, and a
+  stored row naming a link to an ordinary file outside them is refused. The walk's
+  inline sensitivity gate is not asked again: `validate_file_path` already decided
+  that on the same resolved path, through the gate that suits the calling thread.
+  The vetted paths are exactly those the NEWEST published walk returned (`_walk_vetted`,
+  one set whatever the scope, since every scope enumerates the same unconfined roots,
+  replaced whole by the next walk), plus those a check admitted (`_read_vetted`,
+  bounded to `_VETTED_READS_MAX`, the oldest admission evicted first, and emptied by
+  every invalidation and every published walk; a check that an invalidation or a walk
+  straddled is not remembered). A row from the stored snapshot is never vetted by
+  being adopted, so a reader still holding an adopted list across an invalidation, a
+  row the newest walk rejected and a skill deleted since are all checked again; a
+  missing entry costs one check, never an unchecked read. A forged table cannot grow
+  either set past its bound. A path a walk returned and that is swapped afterwards is
+  read unchecked until the next walk, the same window the walk's own list has. A
+  writer reading frontmatter it will rewrite (`_cached_frontmatter(for_write=True)`)
+  hears a refusal as `PermissionError` rather than "no metadata", which would have it
+  drop `version`, `pinned`, `inject_on_trigger` and `created_at`; a reader keeps the
+  empty answer. `update_auto_skill` answers that refusal with `False` and writes
+  nothing, so the consolidation refine path audits it as `rejected`/`update_failed`.
+  The admitted roots are resolved once per generation and root set
+  (`_admitted_roots_memo`), not once per check.
 
 That placement is what keeps the cost shape: the O(N) work stays on the walk, and
 admission is paid once per row actually read, at the one point every enumerated read
@@ -4003,7 +4163,74 @@ silently undoes. `_catalog_generation` fences this loader's own worker, and the
 index's `skill_catalog_epoch` — read before a walk and re-checked inside
 `store_catalog`'s own `IMMEDIATE` transaction, because a deferred one leaves the check
 and the insert open to another process's `drop_catalog` landing between them — fences
-a walk running in ANOTHER process. A ROOT-SET change is a mutation for the same reason
+a walk running in ANOTHER process.
+
+**Adopting a stored snapshot is fenced too.** A read can race a create or delete, and
+adopting what it read would cache the pre-mutation list for a whole TTL. The rules,
+each pinned by an interleaving test in `test_skill_catalog_snapshot.py`:
+
+- **One read.** `catalog_snapshot` reads the scope row and its rows in ONE
+  transaction and returns the epoch `store_catalog` wrote into that scope row. As two
+  statements, a drop committed between them would answer a build time with no rows,
+  adopted as a complete, empty catalog. `_db()` rolls back a transaction an earlier
+  failure left open on the shared connection before handing it out (and `sync` and
+  `store_catalog` roll back their own whichever way they fail), since `BEGIN` inside
+  it would fail.
+- **Publish, then re-read the epoch.** `_adopt_snapshot` publishes the rows and then
+  re-reads the index epoch, retracting them when it differs or cannot be read: that
+  is how a drop by ANOTHER loader or process shows. Re-read before publishing, a drop
+  landing between the two would leave the rows cached for a whole TTL. An epoch that
+  is not a SQLite INTEGER is "no usable epoch", so the caller walks: the index is
+  agent-writable, and INTEGER affinity still keeps a fractional, out-of-range or
+  infinite value as REAL (and a TEXT or BLOB that does not convert as it is), none of
+  which is an exact integer epoch. A drop resets such a value, and the largest
+  INTEGER, instead of carrying it forward, so `+ 1` never produces a REAL, and the
+  reset is always below the largest INTEGER, so it never rewrites the epoch it
+  replaces. A schema
+  version that is not an INTEGER is a version mismatch, compared by type before any
+  `int()` (which raises `OverflowError` on an infinite REAL): the index is dropped and
+  rebuilt, as for any other mismatch, rather than disabled for good.
+- **Generation and watermark.** Before publishing, the rows are refused when this
+  loader closed or moved its generation since `_iter` captured it; `_iter` reads the
+  snapshot only while every drop has landed. `_snapshot_clean_generation` is the newest
+  generation a committed drop covers, and the snapshot tier is used only while it
+  equals `_catalog_generation`. `_invalidate_iter_cache` moves the generation FIRST and
+  empties the frontmatter cache, the checked paths, the stat fingerprints and the
+  "still building" marks, then drops, then clears the in-memory lists cached before
+  the drop (in a `finally`, so a drop that raises cannot leave them served), so the
+  tier is off while the drop runs and a turn on this loader keeps its list meanwhile.
+  A mark a cold read sets while the drop waits describes the post-mutation tree, so
+  it survives the drop, and a list a post-mutation walk published meanwhile is kept.
+  The drop waits the index's own busy timeout and no longer: it holds the handle's
+  lock, so every reader of that handle waits as long. Only a drop that commits
+  advances the watermark (`_advance_clean_locked`), and only to the generation it read
+  before dropping, so it never vouches for a later invalidation whose own drop failed.
+- **A failed drop lands with the next store.** `_run_catalog_build` passes
+  `drop_first` when the watermark is behind its generation, and `store_catalog` lands
+  the drop in the same `IMMEDIATE` transaction, after its epoch check, storing the rows
+  under the epoch the drop moved to. As a write of its own the drop would refuse the
+  walk's rows before the store or delete them after it, and either would block the
+  serial worker. A walk whose generation moved before its store is neither stored nor
+  published: with a failed drop the epoch has not moved, so `store_catalog` alone would
+  accept those pre-mutation rows under a fresh build time.
+- **Drops and stores do not interleave.** `_catalog_drop_lock` is held across an
+  invalidation's drop and across a build's generation check and store. A mutation that
+  overtakes the check therefore drops AFTER the store and deletes its rows, and an
+  invalidation whose generation a drop that landed meanwhile already covers does not
+  drop again, so mutations queued behind one store cost one drop.
+- **A miss only.** A list already cached when the stored read returns, such as a walk
+  that published meanwhile, is served and kept; it is checked before the fence, so a
+  fresh list is never refused and walked again.
+
+A refused read does not serve its rows, which name what the mutation removed; it falls
+into the post-mutation cold window below, and its own cold path queues the walk. What
+the fence does not cover is stated rather than implied. It is per loader: a sibling
+loader in this process (the Slack Home tab, the metrics inventory, the dashboard's own
+loader) or in another process that already HOLDS a list keeps serving it until its
+`_ITER_CACHE_TTL_SECS` expires; a drop that commits after a reader's epoch re-read is
+the same case. And a drop that fails is known only to the loader that attempted it:
+another loader or process adopts the stored rows (including any a store it overtook
+put there) until a drop lands or its own revalidation re-walks. A ROOT-SET change is a mutation for the same reason
 and takes the same path: `_adopt_extra_paths` invalidates rather than only clearing
 the in-memory list, since the stored snapshot belongs to the old root set. And
 `_run_catalog_build` captures its scope id BEFORE the walk and refuses to publish when
@@ -4015,9 +4242,13 @@ than serving the pre-mutation one, so on a tree whose walk outlasts
 `_COLD_CATALOG_WAIT_SECS` the next turn re-enters the cold path and carries the
 *discovery in progress* notice, with `always: true` bodies not yet injected. Serving
 the pre-mutation list instead would contradict the one thing the mutation path
-guarantees — that a skill written through the app is visible immediately — and would
-do it silently. The invalidation therefore also QUEUES the re-walk rather than waiting
-for the next turn to demand it, which bounds that window to the walk's own duration.
+guarantees — that a skill written through the app is visible once the write returns —
+and would do it silently. A turn on the same loader that reads while the
+invalidation's drop waits is served the list it had, since that read is ordered
+before a write that has not returned yet. The invalidation therefore also QUEUES the re-walk of every scope it
+had cached rather than waiting for the next turn to demand it, which bounds that window
+to the walk's own duration; a scope it did not have cached, such as one whose snapshot
+read the fence refused, is queued by that read's own cold path.
 
 A refresh is single-flight per scope, and the worker drains scopes SERIALLY, so
 several sessions in different trusted projects cost one walk of the shared global tree
@@ -4039,8 +4270,11 @@ queued build the worker abandons never reaches the `finally` that would have set
 and a cold caller would otherwise sit out its whole budget.
 
 **The one case that waits, and what it is allowed to withhold.** A scope with no
-stored snapshot at all — a machine's first run, or one whose index file was deleted —
-waits on the background build for at most `_COLD_CATALOG_WAIT_SECS`. A small tree
+stored snapshot to serve — a machine's first run, one whose index file was deleted, or
+the post-mutation cold window (the rows were dropped, a drop has not landed, or a read
+that raced one was refused) — waits on the background build for at most
+`_COLD_CATALOG_WAIT_SECS`. After a burst of mutations a scope that would otherwise be
+served from the snapshot can therefore go cold briefly, the same intended window. A small tree
 finishes inside that budget, and finishing is what makes `always: true` bodies known
 and therefore honored. Past the budget the partial answer is served, the scope is
 marked in `_catalog_incomplete`, and `catalog_status()` reports `"building"` so a
@@ -5410,7 +5644,7 @@ from the tests and pins it.
 
 Assembles all sources into prompts:
 - New session: `_CRITICAL_RULES` (runtime-conditional diff blocks + OPTIONS buttons) + agent prompt + static preference/project anchors + activity index + budgeted `[Memory activity]` block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes; `memory.inject_activity`, default on) + memory tool guidance + skills + scoped lessons + conversation history (last 20 messages, thread history at TOP with explicit framing)
-- Every message: channel history, hook transforms, triggered skills, context rules, OPTIONS hint (interactive sessions only). Memory search is an explicit MCP operation; a fresh first turn with `memory.inject_activity` on embeds the request once to rank the activity block's facts and episodes (two embed calls on the same text, one shared inference), and a warm follow-up generates no query embedding.
+- Every message: channel history, hook transforms, triggered skills, context rules, OPTIONS hint (interactive sessions only). Memory search is an explicit MCP operation; a fresh first turn with `memory.inject_activity` on embeds the request once to rank the activity block's facts and episodes and the lessons block (three embed calls on the same text, one shared inference), and a warm follow-up generates no query embedding.
 - Follow-up messages, with `memory.inject_lessons_per_turn` on (off by default): a `[Learned corrections — relevant to this message …]` block of at most `_TURN_LESSONS_MAX` (3) lessons whose lines total at most `_TURN_LESSONS_CHARS` (2,000) characters, with the header and footer outside that count, from the same store the session-start block reads (a private member's prepared store, else the workspace's vector store; the JSONL fallback is not read), under the same `lessons` group and config gates, never for a temporary or minimal-context turn. The match runs on the user's own text (the `user_text_range` slice, or a transform hook's output), not on context the runtime prefixes to the turn. `VectorMemoryStore.turn_lessons` ignores request words on the lesson stop list and words of two letters or fewer. It matches each remaining message word once, through its stem; a lesson is admitted only when it shares at least `_TURN_LESSON_TERMS` (2) distinct stems with the message, each carried by at most `_TURN_LESSON_RARITY` (1%) of the N stored lessons and never fewer than one, so a small store still admits a lesson through words no other lesson carries. Admitted lessons are ordered by the summed rarity weight `log((N + 1) / (df + 0.5))` of every shared stem over the square root of their number of distinct words. Rules and findings are both eligible. `ContextBuilder` keeps, per session key, the startup lessons block as sent and a `hash()` of each per-message lesson since (`_ShownLessons`: `_LESSONS_SHOWN_SESSIONS` = 256 sessions of `_LESSONS_SHOWN_PER_SESSION` = 256 lessons, oldest dropped first), skips a lesson whose `- <text>` line or hash is already there, checks its choice again against the record in place once the store has been read (a concurrent build can drop or replace it), and resets the record when a compaction re-injection runs, since the compaction dropped those blocks. Each lesson line is scrubbed of primary boundary, member-authority, lesson-frame and skill-frame markers (`_scrub_turn_lesson`). The record is in memory, so a lesson can be sent once more after a gateway restart, after 256 newer lessons in the same session, when its session's record is dropped, or when the setting is turned on mid-session. A lesson counts as shown once its block is built, so a turn that does not land (cancelled or failed) withholds it until the next compaction re-injection. No embedding is spent.
 - Runtime identity is turn-aware rather than key-only. Channel and dashboard dispatchers pass trusted `runtime_source` metadata to `build_message()`. New sessions use it for `[RUNTIME]`; follow-up turns refresh `[RUNTIME]` outside the one-time session context. This is required because a stable `dashboard:*` session can be resumed from Discord and `messaging.dm_scope="unified"` intentionally removes the originating channel from the session key. When trusted metadata is absent, namespaced keys (`discord:*`, `telegram:*`, `wecom:*`, `weixin:*`, `webex:*`, `teams:*`, `slack:*`) are recognized directly; bare unknown keys keep the legacy Slack fallback.
 - Thread history is injected only at session start (via `build_session_context`). Within the same ACP session, kiro-cli manages conversation history natively — duplicate injection wastes context window and accelerates compaction.
@@ -5478,7 +5712,8 @@ Long history blocks keep framing and the newest tail rather than disappearing.
 Confined project bodies, pinned or not, retain a separate 24,750-character
 allowance and descriptor-pinned byte-limited reads. First-turn and post-compaction
 skill injection both split protected bodies from discovery. The default discovery
-entry lists up to eight usage-ranked names and short purposes and requests short
+entry lists up to eight names and short purposes — up to six of them the user's
+own skills, the rest the highest-ranked remaining skills — and requests short
 keywords. Scoped search filters `repo_scope` and byte-identical duplicates just as
 the catalog does, and returns confined project bodies through the same reader,
 never an unconfined live path. UI language, date/runtime identity, withholding, member mode and stop notes

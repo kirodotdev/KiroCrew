@@ -18,6 +18,7 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.mcp_gateway import hazards
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.backend import INTERNAL_STUB_PREFIXES, Backend, BackendGone
@@ -276,6 +277,11 @@ async def _handle_connection(
             "type": "registered",
             "backend_id": provisional_id,
             "pool_label": pool_key.human_readable(),
+            # A Kiro Crew-owned stub requires an exact match before it entrusts
+            # its session to this broker. An older daemon omits this field, so a
+            # new stub takes its existing direct-exec fallback instead of mixing
+            # protocol generations after an in-place package upgrade.
+            "fingerprint": code_fingerprint(),
             # Capability advertisement: lets a new stub detect a
             # new gateway and run the ensure_backend pre-flight. Absent on an
             # old gateway, so the new stub skips the pre-flight (no 25s skew

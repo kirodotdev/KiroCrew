@@ -14,10 +14,12 @@ import { setNativeFocusChrome } from '../platform/electronBridge'
  * classes, the native traffic lights and drag bar, the embedded-pane relay and
  * the macOS drag gaps of the local header.
  */
-export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId }: {
+export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topReservePx = 0 }: {
   isMobile: boolean
   navCollapsed: boolean
   activeInstanceId: string | null
+  /** CSS px the shell sits below the window top (macOS fullscreen). */
+  topReservePx?: number
 }) {
   // Focus mode: the top bar and nav rail leave the shell grid and become
   // edge-triggered hover overlays, so the active surface fills the window.
@@ -41,8 +43,9 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId }: {
     // silence (pointer resting on the draggable empty region, or dragging the
     // window) can never hide it. 42 is the header's height (its
     // inline style in `App.tsx`); +6 slack so grazing the band's bottom edge does not
-    // count as departure.
-    departWhen: e => e.clientY > 48,
+    // count as departure. In macOS fullscreen the header starts topReservePx
+    // down the window, so the band moves down with it.
+    departWhen: e => e.clientY > topReservePx + 48,
     // The pointer LEAVING the window is the one case positional close cannot
     // see, and the slam below opens the bar in exactly that state.
     dismissOnWindowExit: true,

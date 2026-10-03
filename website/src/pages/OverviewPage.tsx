@@ -205,7 +205,7 @@ export const STAT_LABEL_KEY: Record<StatId, string> = {
 }
 
 /**
- * Signpost to the Kiro sign-in card's home, Developer > Agent Backend
+ * Signpost to the Kiro sign-in card's home, Settings > Agent Harness
  * (`KIRO_SIGN_IN_PATH`), shown only while KAS is the selected backend: those
  * users read token expiry on this page by habit, and the card now sits beside
  * the switch that picks KAS. Everyone else sees nothing -- the identity does not

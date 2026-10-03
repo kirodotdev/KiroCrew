@@ -26,7 +26,7 @@ import queue
 import threading
 import time
 import unittest.mock
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -1860,14 +1860,13 @@ def test_status_and_class_declare_the_whole_vocabulary_rather_than_none():
 # --------------------------------------------------------------------------- #
 
 
-def _slot_events(sink: list) -> "Callable[[Any], None]":
-    """A bus subscriber appending each SLOT event as ``(slot, fold, revision, value)``."""
-
-    def subscriber(event) -> None:
-        if event.scope == bus.SCOPE_SLOT:
-            sink.append((event.key, event.fold, event.revision, event.value))
-
-    return subscriber
+def _subscribe_slot_events(sink: list) -> None:
+    """Append each SLOT event to *sink* as ``(slot, fold, revision, value)``."""
+    bus.subscribe(
+        bus.FOLD_ADVANCED,
+        lambda event: sink.append((event.key, event.fold, event.revision, event.value)),
+        scope=bus.SCOPE_SLOT,
+    )
 
 
 @pytest.fixture
@@ -1875,7 +1874,7 @@ def pushed():
     """Every ``(slot, fold, revision, value)`` an eager advance published in this test."""
     seen: list[tuple[str, str, int, dict]] = []
     bus.reset_for_tests()
-    bus.subscribe(bus.FOLD_ADVANCED, _slot_events(seen))
+    _subscribe_slot_events(seen)
     yield seen
     bus.reset_for_tests()
 
@@ -1914,7 +1913,7 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
     eager.stop_for_tests()
     bus.reset_for_tests()
     seen: list[tuple[str, str, int, dict]] = []
-    bus.subscribe(bus.FOLD_ADVANCED, _slot_events(seen))
+    _subscribe_slot_events(seen)
     seqs = [_work_entry(handle, f"it-{index}", slot=slot) for index in range(3)]
     for seq in seqs:
         eager.note_commit("s-push-2", "work/recorded", seq, board=slot)
@@ -1939,7 +1938,7 @@ def test_a_listener_that_raises_does_not_stop_the_fold(pushed):
     bus.reset_for_tests()
     bus.subscribe(bus.FOLD_ADVANCED, lambda _event: (_ for _ in ()).throw(RuntimeError("no")))
     landed: list[tuple] = []
-    bus.subscribe(bus.FOLD_ADVANCED, _slot_events(landed))
+    _subscribe_slot_events(landed)
 
     slot = WORK_SLOT
     handle = _slot_log("s-push-3", slot)

@@ -164,6 +164,19 @@ async def test_force_reap_startup_timeout_error_and_tombstone_cause():
 
 
 @pytest.mark.asyncio
+async def test_force_reap_start_queue_saturated_error_and_tombstone_cause():
+    mgr = _make_manager(startup_timeout=120)
+    _neuter_force_reap_collaborators(mgr)
+    info = _info(_exec_started=1.0, _pid=None, turns=0)
+
+    await mgr._force_reap("a1b2c3d4", info, 4_000.0, reason="start_queue_saturated")
+
+    assert info.done is True
+    assert info.error.startswith("Never started: start queues saturated")
+    assert mgr._write_tombstone.call_args.args[1] == "start_queue_saturated"
+
+
+@pytest.mark.asyncio
 async def test_startup_reap_names_the_co_tenant_frames_it_received():
     """A start that received only another tenant's fanned-out traffic reads
     apart, in its reap record, from one whose stream stayed silent."""

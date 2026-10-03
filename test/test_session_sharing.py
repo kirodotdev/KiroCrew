@@ -324,7 +324,8 @@ class TestSessionSharingSpawn:
             await _wait_until_done(info)
 
         # Verify runtime.create_session was called (not get_or_create)
-        sessions.get_subagent_runtime.assert_awaited_once_with("dashboard:slot1")
+        sessions.get_subagent_runtime.assert_awaited_once()
+        assert sessions.get_subagent_runtime.await_args.args == ("dashboard:slot1",)
         runtime = await sessions.get_subagent_runtime("dashboard:slot1")
         runtime.create_session.assert_awaited_once()
         # get_or_create should NOT have been called
@@ -868,7 +869,7 @@ class TestSessionSharingParentReset:
             def __init__(self, agent=None, **kwargs):
                 pass
 
-            async def spawn(self):
+            async def spawn(self, start_priority=None):
                 pass
 
             def is_alive(self):
@@ -917,7 +918,7 @@ class TestSessionSharingParentReset:
             def __init__(self, agent=None):
                 self._alive = False
 
-            async def spawn(self):
+            async def spawn(self, start_priority=None):
                 calls["n"] += 1
                 if calls["n"] == 1:
                     raise AcpRuntimeDead("transient spawn failure")
@@ -952,7 +953,7 @@ class TestSessionSharingParentReset:
             def __init__(self, agent=None):
                 pass
 
-            async def spawn(self):
+            async def spawn(self, start_priority=None):
                 calls["n"] += 1
                 raise AcpRuntimeDead("permanent spawn failure")
 
@@ -964,3 +965,100 @@ class TestSessionSharingParentReset:
             await sm.get_subagent_runtime("dashboard:slot1")
         assert calls["n"] == 2  # initial attempt + one retry
         assert "dashboard:slot1" not in sm._subagent_runtimes
+
+    @pytest.mark.asyncio
+    async def test_get_subagent_runtime_brackets_only_its_waits(self, monkeypatch):
+        """A waiting start's clock pair brackets the per-parent lock wait and is
+        handed to the spawn (which brackets its own admission wait); the spawn's
+        own work runs between the brackets, on the caller's running clock, so a
+        companion spawn that hangs is still reaped at the startup deadline."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+        from kiro_crew.start_priority import START_QUEUE_COMPANION, StartPriority
+
+        sm = SessionManager(KiroCrewConfig.load())
+        sm._get_session_agent = lambda k: "kirocrew"  # type: ignore[assignment]
+        events: list[str] = []
+        paused = {"now": False}
+
+        def _queued(queue):
+            events.append(f"queued:{queue}")
+            paused["now"] = True
+
+        def _acquired(_wait_ms, queue):
+            events.append(f"acquired:{queue}")
+            paused["now"] = False
+
+        class _Runtime:
+            def __init__(self, agent=None, **kwargs):
+                self._alive = False
+
+            async def spawn(self, **kwargs):
+                assert kwargs == {
+                    "start_priority": StartPriority.BACKGROUND,
+                    "on_gate_queued": _queued,
+                    "on_gate_acquired": _acquired,
+                }
+                events.append(f"spawn work, paused={paused['now']}")
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+        monkeypatch.setattr("kiro_crew.acp.runtime.AcpRuntime", _Runtime)
+        lock = sm._subagent_runtime_locks.setdefault("dashboard:slot1", asyncio.Lock())
+        await lock.acquire()  # a sibling is spawning the runtime
+        waiter = asyncio.ensure_future(
+            sm.get_subagent_runtime(
+                "dashboard:slot1", on_gate_queued=_queued, on_gate_acquired=_acquired
+            )
+        )
+        await asyncio.sleep(0)
+        assert events == [f"queued:{START_QUEUE_COMPANION}"]
+        lock.release()
+        runtime = await asyncio.wait_for(waiter, timeout=5)
+        assert runtime.is_alive()
+        assert events == [
+            f"queued:{START_QUEUE_COMPANION}",
+            f"acquired:{START_QUEUE_COMPANION}",
+            "spawn work, paused=False",
+        ]
+        assert not lock.locked()
+
+    @pytest.mark.parametrize("via_task_run", [False, True])
+    @pytest.mark.asyncio
+    async def test_the_companion_spawn_keeps_the_callers_start_priority(
+        self, monkeypatch, via_task_run
+    ):
+        """A task run a person opened reaches the companion runtime when no
+        bootstrap provider is configured; its cold start must queue at the spawn
+        admission as FOREGROUND, not fall back to the spawn's BACKGROUND default
+        behind every subagent start ahead of it."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+        from kiro_crew.start_priority import StartPriority
+
+        sm = SessionManager(KiroCrewConfig.load())
+        sm._get_session_agent = lambda k: "kirocrew"  # type: ignore[assignment]
+        sm._provider_factory = None
+        seen: list[StartPriority] = []
+
+        class _Runtime:
+            def __init__(self, agent=None, **kwargs):
+                self._alive = False
+
+            async def spawn(self, *, start_priority, **_kwargs):
+                seen.append(start_priority)
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+        monkeypatch.setattr("kiro_crew.acp.runtime.AcpRuntime", _Runtime)
+        if via_task_run:
+            await sm._get_or_bootstrap_run_runtime(
+                "taskrunner:run", start_priority=StartPriority.FOREGROUND
+            )
+        else:
+            await sm.get_subagent_runtime("taskrunner:run", start_priority=StartPriority.FOREGROUND)
+        assert seen == [StartPriority.FOREGROUND]

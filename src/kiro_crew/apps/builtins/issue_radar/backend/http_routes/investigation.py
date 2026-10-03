@@ -1,8 +1,9 @@
 """``/investigation``: the local per-item record behind the Investigate button.
 
 Purely local triage state -- the linked chat session, status and findings --
-so nothing is written to the provider and there is no permission gate. The PUT is
-also the write behind the ``issue_radar_record_investigation`` MCP tool.
+so nothing is written to the provider and there is no forge permission gate. A
+dashboard PUT is owner only; the internal-secret PUT behind the
+``issue_radar_record_investigation`` MCP tool is the one other caller it admits.
 """
 
 from __future__ import annotations

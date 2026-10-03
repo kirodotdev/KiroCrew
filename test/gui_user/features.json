@@ -7382,17 +7382,15 @@
     {
       "id": "developer-agent-backend",
       "feature": "developer",
-      "title": "Developer › Agent backend",
+      "title": "Settings › Agent Harness",
       "user_story": "As a developer, I want to see which agent harness backend is live, what each harness can and cannot do, and whether Kiro prerequisites are met, so that I know what turns run on before I choose a harness.",
-      "start_url": "/developer",
-      "entry_path": "Developer → agent-backend tab (?tab=agent-backend)",
+      "start_url": "/settings/agent",
+      "entry_path": "Settings → Agent Harness (/settings/agent)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
-        "feature_flags": [
-          "mc-dev-mode"
-        ],
-        "notes": "Shows the fake ACP backend in the nightly harness. The panel is a LIST of harnesses and a DETAIL for the highlighted one. Clicking a row only changes which detail is shown and is READ-ONLY and safe -- it is the intended way to read a harness. Do NOT click **Use <name>**: that is the switch, and changing the binding restarts sessions and detaches the harness's fake ACP backend. **Check again** is safe to press but it clears this gateway's cached resolution for that one harness, so prefer not to. The capability list is already open (it needs no disclosure now that one card renders at a time); only the operator notes are behind one, and opening that is read-only."
+        "feature_flags": [],
+        "notes": "Shows the fake ACP backend in the nightly harness. The panel lives in ordinary Settings (no Developer Mode needed) and is one RADIO GROUP of harness rows with the DETAIL of the checked row under it, laid out like first-run setup's picker. Checking a row only changes which detail is shown and is READ-ONLY and safe -- it is the intended way to read a harness. Do NOT click **Use <name>**: that is the switch, and changing the binding restarts sessions and detaches the harness's fake ACP backend. **Check again** is safe to press but it clears this gateway's cached resolution for that one harness, so prefer not to. The capability list is already open (it needs no disclosure now that one card renders at a time); only the operator notes are behind one, and opening that is read-only."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -7401,7 +7399,7 @@
         "docs/feature-map/README.md",
         "website/src/pages/developer/AgentBackendTab.tsx",
         "src/kiro_crew/agent_sdk/backend_cards.py",
-        "website/src/pages/DeveloperPage.tsx",
+        "website/src/pages/SettingsPage.tsx",
         "src/kiro_crew/agent_sdk/backend_install.py"
       ],
       "priority": "P2",

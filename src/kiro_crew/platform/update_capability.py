@@ -30,7 +30,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from kiro_crew._bootstrap import _source_checkout_root
-from kiro_crew.beacon import distribution
+from kiro_crew.beacon import baked_distribution, distribution
 from kiro_crew.platform_compat import trusted_system_bin
 
 #: Who owns replacing this install's bytes.
@@ -511,6 +511,20 @@ _RESOLVE_PROVIDER: Any = object()
 _SOURCE_PIN_REASON = "the update source is not the one the security policy pins"
 
 
+def bundled_by_desktop_app(dist: str | None = None) -> bool:
+    """Is this gateway the backend the desktop app bundles and launches?
+
+    Read from the BAKED distribution stamp, the same check ``derive_capability``
+    makes first, so it is a property of how this copy was packaged and nothing a
+    running install can relabel. Independent of who owns the UPDATE: with a
+    policy ``updates`` provider, ``managed_by`` reports ``command`` on the very
+    same bundle (the provider is resolved before the desktop deferral), so a
+    surface that needs "am I inside the app" cannot read that field for it. No
+    I/O, so a status frame may call it.
+    """
+    return (baked_distribution() if dist is None else dist) in _ELECTRON_DISTRIBUTIONS
+
+
 def _installer_runs_here() -> bool:
     """cli.sh is POSIX shell; the seam tests pin instead of ``sys.platform``."""
     return sys.platform != "win32"
@@ -545,11 +559,17 @@ def _git_route(root: str) -> tuple[str | None, str]:
     return AUTO_ROUTE_GIT, ""
 
 
+def _runs_from_managed_venv() -> bool:
+    """Whether the cli.sh-managed venv serves this process (layout stats only)."""
+    from kiro_crew.platform.wheel_engine import running_from_managed_venv
+
+    return running_from_managed_venv()
+
+
 def _wheel_route() -> tuple[str | None, str]:
     """The unattended installer re-run's STATIC gates."""
     from kiro_crew.platform.update_governance import update_blocked_reason
     from kiro_crew.platform.update_layout import cdn_bases, cdn_bases_are_safe
-    from kiro_crew.platform.wheel_engine import running_from_managed_venv
     from kiro_crew.platform_compat import trusted_system_bin
 
     if not _installer_runs_here():
@@ -558,7 +578,7 @@ def _wheel_route() -> tuple[str | None, str]:
         # The apply refuses rather than fall back to a bare name, so a host
         # with no trusted shell cannot install unattended at all.
         return None, "no trusted shell outside PATH to run the installer"
-    if not running_from_managed_venv():
+    if not _runs_from_managed_venv():
         return None, "only the managed venv re-runs its own installer"
     if not cdn_bases_are_safe():
         return None, "the CDN base is not a safe HTTPS URL"
@@ -573,7 +593,8 @@ def auto_update_effect(
     dist: str | None = None,
     provider: Any = _RESOLVE_PROVIDER,
     running_version: str | None = None,
-) -> AutoUpdateEffect:
+    git_probes: bool = True,
+) -> AutoUpdateEffect | None:
     """What an available update leads to on this install, and by which path.
 
     Derived from install shape and policy alone, so it is known before any
@@ -587,6 +608,14 @@ def auto_update_effect(
     Blocking I/O (git, policy, the filesystem): call it off the event loop.
     *provider* defaults to the policy's; pass ``None`` when the caller already
     knows there is none.
+
+    ``git_probes=False`` answers only where no git subprocess is needed -- the
+    packaged shapes from their baked stamp, a policy provider from the
+    boot-frozen pins, and every install not running from a source checkout from
+    the installer route's own gates -- and returns ``None`` for a checkout,
+    whose branch and remote only git can report. A status surface serving a frame before the update loop's
+    first derivation uses it, so a shape whose answer is already knowable is
+    never reported as unknown.
     """
     if provider is _RESOLVE_PROVIDER:
         from kiro_crew.platform.update_provider import resolve_provider
@@ -599,6 +628,17 @@ def auto_update_effect(
             route, reason = AUTO_ROUTE_PROVIDER, ""
         else:
             route, reason = None, "the policy's apply_command is missing or cannot run here"
+    elif (distribution() if dist is None else dist) in EXTERNALLY_MANAGED_STAMPS:
+        # The baked stamp, so this one needs no I/O at all.
+        route, reason = None, "its own updater owns this install"
+    elif not git_probes and _source_checkout_root() is None:
+        # Not running from a source checkout, so the git route cannot apply and
+        # the answer is the installer route's, which needs no git: a managed
+        # venv installs, a pipx or bare venv only notifies.
+        route, reason = _wheel_route()
+    elif not git_probes:
+        # A checkout: its branch and remote are what git alone can report.
+        return None
     else:
         if install_root is None:
             install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
@@ -633,6 +673,7 @@ __all__ = [
     "AUTO_ROUTE_WHEEL",
     "AutoUpdateEffect",
     "auto_update_effect",
+    "bundled_by_desktop_app",
     "CHECK_CHECKING",
     "CHECK_DEFERRED",
     "CHECK_FAILED",

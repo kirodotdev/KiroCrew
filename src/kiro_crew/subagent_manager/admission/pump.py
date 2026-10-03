@@ -6,7 +6,7 @@ import logging as _logging
 from typing import TYPE_CHECKING, Any
 
 from .._component import ManagerComponent
-from .types import ClaimPoint
+from .types import MIN_RECHECK_DELAY_SECS, ClaimPoint
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
@@ -43,6 +43,9 @@ class _PumpMixin(ManagerComponent):
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
 
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
+
+        @staticmethod
+        def entry_is_resident_resume(params: "Mapping[str, Any]") -> bool: ...
 
     def _should_stagger_queue_impl(self, now: float) -> tuple[bool, bool]:
         """Decide whether a spawn arriving at *now* must be queued.
@@ -169,7 +172,7 @@ class _PumpMixin(ManagerComponent):
             self._manager._retained_claim_retry_handle = None
             self._manager._drain_queue()
 
-        delay = max(0.05, self.taskq_admit_wait_secs())
+        delay = max(MIN_RECHECK_DELAY_SECS, self.taskq_admit_wait_secs())
         self._manager._retained_claim_retry_handle = loop.call_later(delay, _retry)
 
     def _retain_claim(
@@ -438,8 +441,10 @@ class _PumpMixin(ManagerComponent):
             if not claim_will_register:
                 # The claim did not take the row (store unavailable, refused,
                 # superseded): it is still QUEUED and the re-entry's own depth
-                # emit must count it. The emit snapshots the exclusion set
-                # synchronously, so the mark has to go BEFORE re-entry.
+                # request must count it. A read takes the exclusion set when it
+                # starts, after the request (a burst's first read runs in its
+                # own task; one in flight reads again), so dropping the mark
+                # here, before re-entry asks, is always seen by that read.
                 self._manager._dispatching_ids.discard(point.agent_id)
             result = reenter(claimed)
         finally:
@@ -451,20 +456,17 @@ class _PumpMixin(ManagerComponent):
             if not registered and not claim_retained:
                 self.release_reservation(point.agent_id)
             if registered:
-                # Every registered start re-publishes the parent's queued
-                # depth. A direct spawn owes nothing to the count, so its emit
-                # reports the depth as it stands; a row the drain popped was
-                # counted as waiting until this claim moved it out of the
-                # claimable states, and this emit is what removes it. Without
-                # it the chip keeps "1 waiting" and the old wait reason forever.
+                # Every registered start re-publishes the parent's queued depth.
+                # A direct spawn owes nothing to the count, so its emit reports
+                # the depth as it stands. A row the drain popped was asked for
+                # at the pop, but that read may have failed (nothing published,
+                # a retry armed), and this request is the one that follows the
+                # row out of the claimable states; asked twice, the burst
+                # coalesces it into at most one more read.
                 started = self._manager._agents[point.agent_id]
                 self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
             if report_params is not None:
                 self._manager._report_queued_stop(report_params)
-                self._manager._emit_queue_depth(
-                    point.parent_session_key,
-                    str(report_params.get("batch_id") or ""),
-                )
         assert not isinstance(result, ClaimPoint)
         return result
 
@@ -533,8 +535,7 @@ class _PumpMixin(ManagerComponent):
                 (
                     i
                     for i, p in enumerate(self._manager._queue)
-                    if p.get("_resume_id")
-                    and not p.get("_startup_release")
+                    if self.entry_is_resident_resume(p)
                     and not (
                         callable(boundary_cancellation_pending) and boundary_cancellation_pending(p)
                     )
@@ -618,19 +619,22 @@ class _PumpMixin(ManagerComponent):
         # in none of the exclusion sets the store count reads (not windowed,
         # not registered, not admitting) while its durable state is still
         # QUEUED, so every depth read until the claim lands counts it as
-        # waiting. Mark it dispatching so the emit below, and any refill or
-        # overflow read in the meantime, leave it out. The mark lives for one
-        # attempt and is released where the attempt ends: the ``finally``
+        # waiting. Mark it dispatching so the depth request below and any
+        # refill in the meantime leave it out (the pending-work guards still
+        # count it: it is accepted work until the claim lands). The mark lives
+        # for one attempt and is released where the attempt ends: the ``finally``
         # around each ``spawn`` call (inline pump below, coroutine pump in
         # ``_drain_queue_pass_impl``), the not-a-claim branch of
         # ``_dispatch_async_impl``, the non-proceeding claim in
         # ``claim_and_start``, and the gate's failed-claim emit.
         if queued_id:
             self._manager._dispatching_ids.add(queued_id)
-        # The popped item's parent just lost one waiting agent — re-emit its
+        # The popped item's parent just lost one waiting agent — ask for its
         # queued depth (0 when this was its last) so the chip's "waiting" count
-        # tracks the drain. Done before spawn() so an immediate re-queue there
-        # (still too soon since last start) re-bumps it correctly afterwards.
+        # tracks the drain. The read runs later, as its own task, and the mark
+        # above already leaves the row out; a re-queue in spawn() (still too
+        # soon since last start) asks again, and the coalesced emit reads after
+        # both.
         self._manager._emit_queue_depth(
             str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
         )

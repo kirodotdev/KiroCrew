@@ -53,7 +53,7 @@
 #   secrets.SHIP_REPORT_BEDROCK_ROLE_ARN     -- OIDC role, bedrock:InvokeModel only
 #   vars.SHIP_REPORT_BEDROCK_MODEL_ID        -- whitespace-separated model
 #                                               priority chain; first success
-#                                               wins (default Opus 5 -> Opus 4.8)
+#                                               wins (default Opus 5.5 -> Sonnet 5.5)
 #   vars.SHIP_REPORT_LINK_STYLE              -- mrkdwn (default) | plain; set
 #                                               plain when the webhook is a Slack
 #                                               Workflow Builder webhook, which
@@ -228,7 +228,7 @@ jobs:
           # Whitespace-separated priority list: first model that returns a
           # non-empty body wins; each failure is a warning, and total failure
           # drops to the deterministic template step.
-          MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
+          MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5-5 global.anthropic.claude-sonnet-5-5' }}
         run: |
           set -euo pipefail
           if [ "$LINK_STYLE" = "plain" ]; then
@@ -342,7 +342,7 @@ jobs:
         if: steps.issues.outputs.count != '' && steps.issues.outputs.count != '0' && env.HAS_BEDROCK && steps.creds.outcome == 'success'
         continue-on-error: true
         env:
-          MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
+          MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5-5 global.anthropic.claude-sonnet-5-5' }}
         run: |
           set -euo pipefail
           jq -r '[ .bugs[] | "#\(.number) \(.title | .[0:200]) [\([.labels[]?.name] | join(", "))]" ] | join("\n")' \

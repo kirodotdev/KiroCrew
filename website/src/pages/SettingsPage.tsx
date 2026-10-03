@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -27,6 +27,16 @@ import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanel } from './settings/SecretsPanel'
 import { ConnectionsPanel } from './settings/ConnectionsPanel'
 import SettingsSearch from './settings/SettingsSearch'
+import { ContentSkeleton } from '../components/ui'
+
+/**
+ * Lazy: the coding-agent switch pulls in the Kiro sign-in card and its OIDC
+ * chooser, which no other Settings tab needs, so the chunk is fetched when the
+ * Agent Harness tab is first opened rather than on every Settings visit.
+ */
+const AgentBackendTab = lazy(() =>
+  import('./developer/AgentBackendTab').then(m => ({ default: m.AgentBackendTab })),
+)
 
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
@@ -53,6 +63,12 @@ function buildTabs() {
   return [
     { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
+    // The coding-agent switch (and the Kiro sign-in card under it) used to be a
+    // Developer-page tab, which the sidebar only shows in Developer Mode. First-run
+    // setup now lets a user pick Claude Code, Codex and the rest, so switching
+    // agents is an ordinary preference and has to be reachable without that mode.
+    // Old `/developer?tab=agent-backend` links are forwarded here by DeveloperPage.
+    { key: 'agent', tile: 'var(--tile-teal)', label: i18nT('settings.tabs.agent.label'), icon: <Cpu size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.agent.description') },
     { key: 'chat', tile: 'var(--tile-green)', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.chat.description'), hostsSubNav: true },
     { key: 'display', tile: 'var(--tile-indigo)', label: i18nT('settings.tabs.display.label'), icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.display.description'), hostsSubNav: true },
     { key: 'voice', tile: 'var(--tile-pink)', label: i18nT('settings.tabs.voice.label'), icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.voice.description') },
@@ -235,6 +251,11 @@ export default function SettingsPage() {
       {tab => <>
         {tab === 'overview' && <OverviewPanel />}
         {tab === 'imports' && <ImportPanel />}
+        {tab === 'agent' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <AgentBackendTab />
+          </Suspense>
+        )}
         {tab === 'chat' && <ChatPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'display' && <DisplayPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'voice' && <VoicePanel />}

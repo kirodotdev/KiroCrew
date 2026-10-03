@@ -1227,15 +1227,64 @@ async def subagents_attached_async(
     if subs is None:
         return False
     running = subs.running_agents_for(session_key)
-    queued = 0
-    if running is not None:
-        try:
-            queued = await _queued_depth_off_loop(subs, session_key)
-        except Exception:
-            # An unreadable queue is unknown children, not zero children.
-            logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
-            queued = 1
+    if _attached_verdict(running, 0, slot):
+        # Running, unknown, or still delivering: attached whatever the store
+        # says, so the store read is not taken.
+        return True
+    try:
+        queued = await _queued_depth_off_loop(subs, session_key)
+    except Exception:
+        # An unreadable queue is unknown children, not zero children.
+        logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
+        queued = 1
     return _attached_verdict(running, queued, slot)
+
+
+#: :func:`synthesis_fire_verdict` answers.
+SYNTHESIS_CLEAR = "clear"
+SYNTHESIS_HELD = "held"
+SYNTHESIS_UNKNOWN = "unknown"
+
+
+async def synthesis_fire_verdict(state: DashboardState, slot: _ChatSlot) -> str:
+    """Whether the post-fan-out synthesis may fire for *slot* now.
+
+    The ONE place the synthesis decision reads the task store (the arm in the
+    gateway's completion path is in-memory only). Four terms, each on the
+    slot's real session key (:func:`effective_session_key`, which a channel- or
+    cron-born tab does not spell ``dashboard:<slot>``):
+
+    * a RUNNING child, or a result still being delivered to the slot;
+    * the in-memory pending work ``has_pending_work_for`` adds: a spawn in the
+      dispatch window, a run whose report still waits on its teardown, a live
+      follow-up watcher;
+    * a QUEUED child that lives only in the store: gate-deferred, waiting for a
+      slot, or claimed and not registered.
+
+    ``SYNTHESIS_UNKNOWN`` is a store nobody could read (or a probe that
+    failed), told apart from children that are really waiting, because only
+    the first can resolve without a further completion to re-trigger the
+    check (the caller re-checks on a timer).
+    """
+    subs = getattr(state, "subagents", None)
+    if subs is None:
+        return SYNTHESIS_HELD
+    key = effective_session_key(slot)
+    try:
+        running = subs.running_agents_for(key)
+        if running is None:
+            return SYNTHESIS_UNKNOWN
+        if running or getattr(slot, "_subagent_deliveries_inflight", 0):
+            return SYNTHESIS_HELD
+        if subs.has_in_memory_pending_work_for(key) is True:
+            return SYNTHESIS_HELD
+        queued = await subs.queued_count_or_none_async(key)
+    except Exception:
+        logger.debug("synthesis fire probe failed for slot %s", slot.key, exc_info=True)
+        return SYNTHESIS_UNKNOWN
+    if queued is None:
+        return SYNTHESIS_UNKNOWN
+    return SYNTHESIS_HELD if int(queued) > 0 else SYNTHESIS_CLEAR
 
 
 async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
@@ -2455,7 +2504,9 @@ _CONN_RECOVER_MSG = (
     "it as a cancellation or interruption by the user. The work already done "
     "above is preserved in the conversation. Continue from where it stopped "
     "and finish the request — do not restart it or repeat steps or tools that "
-    "already completed successfully."
+    "already completed successfully. Some of that work may have taken effect "
+    "without appearing above, so check the current state (files, commands, "
+    "external systems) before repeating any step."
 )
 _BUSY_RECOVER_MSG = (
     f"{BUSY_RECOVERY_PREFIX}\n"
@@ -3624,7 +3675,12 @@ _CONTINUATION_BY_CAUSE = {
 
 
 def build_recovery_requeue(
-    message: str, turn_emitted: bool, cause: ResetCause, *, message_is_synthetic: bool
+    message: str,
+    turn_emitted: bool,
+    cause: ResetCause,
+    *,
+    message_is_synthetic: bool,
+    ambiguous_delivery: bool = False,
 ) -> tuple[str, RecoveryPayload]:
     """Choose the prompt for a reset-and-requeue recovery, and label its provenance.
 
@@ -3632,6 +3688,14 @@ def build_recovery_requeue(
     can repeat side effects. A continuation instead resumes from restored
     conversation state. Before any output, the original request is safe and is
     still required for the model to begin the work.
+
+    ``ambiguous_delivery`` forces the continuation even BEFORE any output: a
+    request-frame drain stall (see ``AcpProcessDied``) left the prompt in the
+    transport, so a kiro-cli that merely paused reading could have consumed and
+    acted on it without ever producing host-visible output -- the one case
+    ``turn_emitted`` cannot see. Replaying the prompt verbatim there would run its
+    tools a second time, so an ambiguous delivery takes the same safe continuation
+    an emitted turn does.
 
     That decision is the same for every cause, but the continuation is not:
     ``cause`` is required because the marker it carries is what the transcript
@@ -3646,7 +3710,7 @@ def build_recovery_requeue(
     queue entry that produced the turn, and is required for the same reason ``cause``
     is — a requeue site added later must not silently inherit "the user said this".
     """
-    if turn_emitted:
+    if turn_emitted or ambiguous_delivery:
         return _CONTINUATION_BY_CAUSE[cause], RecoveryPayload.CONTINUATION
     return message, payload_for_replay(message_is_synthetic)
 
@@ -3722,7 +3786,7 @@ MODEL_UNENTITLED_KIND = "model_unentitled"
 #: produces (the agent process reported it is not signed in). Like
 #: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
 #: and the frontend uses the kind to offer the fix that does end it: a deep link
-#: to the dashboard's Kiro sign-in card (Developer > Agent Backend), where the
+#: to the dashboard's Kiro sign-in card (Settings > Agent Harness), where the
 #: user signs in to Kiro Crew's own identity again. The prose stays as the
 #: backend formatted it.
 AUTH_REQUIRED_KIND = "auth_required"
@@ -3890,6 +3954,18 @@ def is_system_injection_item(item: dict) -> bool:
     return False
 
 
+#: Queue-entry meta key: a requeued steer whose RPC died ambiguously may already
+#: have been delivered. The drain prefixes the turn's model input with
+#: ``STEER_POSSIBLY_DELIVERED_NOTE``; the user's row keeps the text as typed.
+STEER_POSSIBLY_DELIVERED_META = "steer_possibly_delivered"
+STEER_POSSIBLY_DELIVERED_NOTE = (
+    "[The message below was sent into your previous turn, which then lost its "
+    "backend connection before confirming it. It may already have been "
+    "delivered: check what was already done, and do not act on it a second "
+    "time.]\n\n"
+)
+
+
 def carries_attachments(item: dict) -> bool:
     """Whether a queue entry's meta names attachment lists (``files``/``dirs``).
 
@@ -3910,14 +3986,21 @@ def carries_attachments(item: dict) -> bool:
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
-    A merge run stops at a system injection and at an attachment-bearing entry
-    (see :func:`carries_attachments`); an attachment-bearing entry at the head
-    of the queue pops alone.
+    A merge run stops at a system injection, at an attachment-bearing entry
+    (see :func:`carries_attachments`) and at a possibly-delivered steer
+    (``STEER_POSSIBLY_DELIVERED_META``); either of the last two at the head of
+    the queue pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
         for item in list(slot._queue):
-            if is_system_injection_item(item) or carries_attachments(item):
+            if (
+                is_system_injection_item(item)
+                or carries_attachments(item)
+                # Its note speaks for one message; merged, it would vouch that
+                # messages never written to any pipe may already have run.
+                or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
+            ):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

@@ -625,6 +625,7 @@ def inject_cron_result_to_dashboard(
     history: list[dict[str, Any]] | None,
     dismissed: object = _DISMISSED_UNREAD,
     context_reading: dict[str, Any] | None = None,
+    turn_stats: dict[str, Any] | None = None,
 ) -> None:
     """Inject cron result into linked dashboard chat slot (shared by to-chat and auto-inject).
 
@@ -670,6 +671,10 @@ def inject_cron_result_to_dashboard(
     can serve it after the executor resets the session. ``None`` (the to-chat
     replay path, or a run that measured nothing) records nothing and keeps
     whatever snapshot an earlier run stored.
+
+    ``turn_stats`` is the run's ``meta.turn_stats`` (``chat_runner.turn_stats_meta``),
+    stamped on the result row so the chat footer shows the run's usage the same
+    way it does for a chat turn. ``None`` (the to-chat replay path) stamps nothing.
     """
     slot = _bind_cron_slot(state, job, history, dismissed)
     safe_name = _safe_job_name(job)
@@ -678,9 +683,14 @@ def inject_cron_result_to_dashboard(
     # Collected rather than written per row: the pair is flushed once, below,
     # under a single ``atomic_appends`` hold -- see the flush for why.
     durable_rows: list[tuple[str, str, str, str | None]] = []
+    durable_meta: list[dict[str, Any] | None] = []
 
-    def _reflect(role: str, content: str, cls: str) -> None:
-        """Put one row in the live slot and queue it for the durable write."""
+    def _reflect(role: str, content: str, cls: str, meta: dict[str, Any] | None = None) -> None:
+        """Put one row in the live slot and queue it for the durable write.
+
+        ``meta`` rides the append itself, so the live broadcast carries it too,
+        and the durable copy, so a restart before the slot save keeps it.
+        """
         if any(msg.get("content") == content for msg in slot.messages):
             return
         # The durable copy must carry the SAME ``meta.mid`` the window copy is
@@ -688,8 +698,9 @@ def inject_cron_result_to_dashboard(
         # durable row cannot be matched by the bounded read's identity walk,
         # which then treats the window copy as still owed and re-appends the
         # injection.
-        window_mid = row_mid(slot.append(role, content, cls))
+        window_mid = row_mid(slot.append(role, content, cls, meta=meta))
         durable_rows.append((role, content, cls, window_mid))
+        durable_meta.append(meta)
 
     def _flush_durable_rows() -> None:
         """Write the queued rows to the canonical log as ONE grouped append.
@@ -726,6 +737,7 @@ def inject_cron_result_to_dashboard(
             f"cron:{job.id}",
             durable_rows,
             agent=job.agent_id or None,
+            row_meta=durable_meta,
         )
 
     if result_text:
@@ -779,6 +791,7 @@ def inject_cron_result_to_dashboard(
             "assistant",
             f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
             "msg msg-a",
+            meta={"turn_stats": dict(turn_stats)} if turn_stats else None,
         )
         # After BOTH rows are queued, so the pair lands as one write.
         _flush_durable_rows()

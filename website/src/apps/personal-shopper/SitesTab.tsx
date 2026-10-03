@@ -174,7 +174,7 @@ export function SitesTab() {
           <button
             onClick={() => removeSite(site.id)}
             disabled={busy}
-            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-[var(--muted)] hover:text-[var(--danger)] disabled:opacity-30 transition-all flex-shrink-0"
+            className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 text-[var(--muted)] hover:text-[var(--danger)] disabled:opacity-30 [@media(hover:none)]:disabled:opacity-30 transition-all flex-shrink-0"
             title={i18nT('apps.personalShopper.sitesTab.remove_site')}
             aria-label={i18nT('apps.personalShopper.sitesTab.remove_named_site', { name: site.name })}
           >

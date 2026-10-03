@@ -411,8 +411,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   /** Play on a loop: save the edited fields (only those -- an untouched field
    *  is never written back over a revision that landed while the popover sat
    *  open), resume when paused, then fire. The write comes first because
-   *  `fire_now` fires whatever the loop holds and refuses an inactive loop. A
-   *  resume runs a fresh budget server-side, so no bound has to be raised. */
+   *  `fire_now` fires whatever the loop holds and refuses an inactive loop.
+   *  Server-side the resume resets only the counter behind a spent bound (a
+   *  spent cycle cap restarts the count, a spent time budget restarts the
+   *  clock), so no bound has to be raised and the rest of the loop resumes
+   *  from the cycle it stopped at. */
   function play() {
     if (!loop) return
     const fields = editedFields()
@@ -797,9 +800,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             control, names in `aria-label` and `title`. Running: a LIGHTNING
             glyph -- a play triangle beside "Goal active" had no cold reading --
             saves pending edits and fires now. Paused: Pause is disabled and a
-            PLAY glyph saves pending edits, resumes on a fresh budget and fires
-            -- one request path, nothing to raise first. A pending edit marks
-            the fire control with a dot. The
+            PLAY glyph saves pending edits, resumes and fires -- one request
+            path, nothing to raise first: a spent cycle cap restarts the
+            count and a spent time budget restarts the clock, each on its
+            own, and everything else resumes from the cycle it stopped at. A
+            pending edit marks the fire control with a dot. The
             Clear confirm is a sub-step, not a state: it REPLACES the row with an
             accented box (the question, then a filled Clear and a plain Cancel)
             under the status line, which stays. Clear writes nothing to the

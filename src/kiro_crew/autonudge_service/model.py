@@ -108,6 +108,20 @@ class NudgeAdmissionRefused(RuntimeError):
     """The session authorized for an arm disappeared before its commit point."""
 
 
+# The two stops where a bound the user typed ran out, each the ending ``_timer``
+# records when that bound trips. The user's resume (``fresh_run``) resets the
+# counter BEHIND the spent bound alone: a spent cap zeroes ``cycle_count``, a
+# spent budget re-anchors ``created_ts``, and each is read either from the reason
+# the loop stopped with or from the bounds as they stand at the press (the wall
+# clock keeps running through a pause). Play on a spent bound is otherwise a dead
+# press, re-stopped on its first tick unless the bound is raised first; the other
+# counter describes an allowance that is not spent and is kept, because the cap is
+# a lifetime limit the user typed and a pause must not quietly mint a fresh one.
+CYCLE_CAP_REASON = "cycle_cap"
+RUNTIME_BUDGET_REASON = "runtime_budget"
+_BUDGET_EXHAUSTED_REASONS = frozenset({CYCLE_CAP_REASON, RUNTIME_BUDGET_REASON})
+
+
 # System-imposed terminal bounds. Membership here gives a reason TWO properties:
 # (1) ``update`` refuses to overwrite an ALREADY-inactive loop with one of these
 # (the no-op branch in ``_update_locked``), so a stop these mark cannot clobber a
@@ -116,15 +130,11 @@ class NudgeAdmissionRefused(RuntimeError):
 # make it directive-revivable; and (2) they are re-armable (folded into
 # ``_REPLACEABLE_LOOP_STOP_REASONS`` below). ``structural_terminal`` needs both,
 # for the same reason ``cycle_cap``/``runtime_budget`` do.
-_TERMINAL_BOUND_REASONS = frozenset(
-    {
-        "cycle_cap",
-        "runtime_budget",
-        APPROVAL_STALL_REASON,
-        STRUCTURAL_TERMINAL_REASON,
-        SESSION_START_FAILURE_REASON,
-    }
-)
+_TERMINAL_BOUND_REASONS = _BUDGET_EXHAUSTED_REASONS | {
+    APPROVAL_STALL_REASON,
+    STRUCTURAL_TERMINAL_REASON,
+    SESSION_START_FAILURE_REASON,
+}
 
 
 # Persisted reason for a loop ``_load`` deactivated because its kill-switch path
@@ -287,10 +297,14 @@ class NudgeLoop:
     # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
     # idle gap is long can run for days within its cycle budget. Anchoring on
     # the persisted ``created_ts`` (not arm time) makes the budget restart-proof
-    # — a gateway restart re-arms the loop but never resets its clock. The user's
-    # RESUME does: a revival flagged ``fresh_run`` re-anchors ``created_ts`` and
-    # zeroes ``cycle_count`` (``_update_unserialized``); a reconciler re-arm or a
-    # ``monitor_update`` bound raise revives without the flag and keeps both.
+    # — a gateway restart re-arms the loop but never resets its clock, and the
+    # clock keeps running through a pause. The user's RESUME of a loop whose
+    # TIME budget is spent does: a revival flagged ``fresh_run`` on a row that
+    # stopped on ``runtime_budget``, or whose budget has elapsed by the press,
+    # re-anchors ``created_ts`` (``_update_unserialized``); a spent CAP zeroes
+    # ``cycle_count`` on its own, each bound resetting only its own counter. A
+    # resume with that allowance left, a reconciler re-arm or a ``monitor_update``
+    # bound raise keeps both.
     max_runtime_secs: int = 0
     #: Whether this loop may be observation-gated. Defaults to FALSE, which is what
     #: a record stored before this field existed decodes to.
@@ -526,6 +540,36 @@ def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool
     if not loop.max_runtime_secs or not loop.created_ts:
         return False
     return (now if now is not None else time.time()) - loop.created_ts >= loop.max_runtime_secs
+
+
+def cap_reached(loop: "NudgeLoop") -> bool:
+    """True when *loop* has a cycle cap and its count has reached it.
+
+    The cap check ``_timer`` makes before a fire, asked at resume time so the
+    user's resume cannot read "cycles left" on a loop the timer would re-stop
+    unfired. Read defensively through ``_positive_number``, as
+    ``nudge_cycle_header`` reads the same fields: ``_load`` leaves the bounds as
+    the store wrote them, and this runs inside a revival after ``active`` has
+    flipped and before the write, so a non-numeric value an agent wrote must
+    read as "no cap" rather than raise and leave the loop half-revived in memory.
+    """
+    cap = _positive_number(loop.max_cycles)
+    return bool(cap) and _positive_number(loop.cycle_count) >= cap
+
+
+def budget_elapsed(loop: "NudgeLoop", now: float | None = None) -> bool:
+    """True when *loop* has a wall-clock budget and the clock has run it out.
+
+    ``runtime_budget_exceeded`` asked at resume time, with the same defensive
+    reads as :func:`cap_reached` and for the same reason. The clock keeps running
+    through a pause, so a loop paused with an hour of budget left and resumed the
+    next day reads as spent here exactly as the timer would read it.
+    """
+    budget = _positive_number(loop.max_runtime_secs)
+    anchor = _positive_number(loop.created_ts)
+    if not budget or not anchor:
+        return False
+    return (now if now is not None else time.time()) - anchor >= budget
 
 
 #: Share of a loop's cycle or runtime cap at or under which the nudge header

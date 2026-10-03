@@ -10,6 +10,7 @@ import asyncio
 import copy
 import errno
 import fnmatch
+import functools
 import hashlib as _hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
@@ -42,6 +43,11 @@ from kiro_crew.atomic_write import (
     _should_carry_xattr,
 )
 from kiro_crew.config import paths as _config_paths
+
+# ``_coerce_bool`` reads a hand-edited bool without the ``bool("false")`` trap;
+# one copy, owned with the other config field coercers. Re-exported here because
+# ``dashboard/handlers/security.py`` imports it from this module.
+from kiro_crew.config.fields import _coerce_bool  # noqa: F401
 
 # Canonical home of the descriptor-path primitive (Windows fail-closed branch
 # included). The module-local alias is load-bearing: the gate helpers below
@@ -344,6 +350,51 @@ class ToolHookResult:
         return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=False)
 
 
+#: The reason a call is refused when the gate itself raised while judging it.
+#: Says plainly that the refusal is a gate defect, not a rule the call broke and
+#: not a user action -- without it the host surfaces kiro-cli's generic
+#: "User denied tool execution" and the model concludes the user cancelled.
+GATE_CRASH_REASON = (
+    "Blocked: the safety check crashed while judging this call ({error}), so the "
+    "call was refused and nothing ran. This is a Kiro Crew bug, not a policy rule "
+    "and not a user action."
+)
+
+
+def _fail_closed_on_gate_crash(judge: Any) -> Any:
+    """Turn an exception out of the tool gate into a visible security deny.
+
+    The gate parses untrusted command text, and a parser can raise on input
+    nobody anticipated (a NUL byte once made the inline-payload lexer raise
+    ``SystemError``). An exception that escapes ``on_tool_call`` reaches each
+    caller's own handling -- some refuse with a vague reason, some let the
+    turn fail, and on the dashboard the call was reported as aborted by the
+    user. Refusing here, in the one place every surface consults, makes the
+    outcome the same everywhere: fail closed, and say why.
+
+    ``PlatformCompositionError`` still propagates: it means the host itself is
+    mis-composed, which the gate re-raises on purpose so a broken install is
+    loud instead of degrading one call at a time. ``functools.wraps`` keeps the
+    wrapped signature and source visible to ``inspect``, which the gate's
+    parameter-parity and source-shape tests read.
+    """
+
+    @functools.wraps(judge)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> ToolHookResult:
+        try:
+            result: ToolHookResult = judge(self, *args, **kwargs)
+            return result
+        except Exception as exc:
+            from kiro_crew.platform.context import PlatformCompositionError
+
+            if isinstance(exc, PlatformCompositionError):
+                raise
+            logger.exception("tool gate raised while judging a call; refusing it")
+            return ToolHookResult.deny(GATE_CRASH_REASON.format(error=type(exc).__name__))
+
+    return wrapper
+
+
 # ── Config Types ──
 
 
@@ -374,27 +425,6 @@ class TransformHook:
 
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
-
-
-def _coerce_bool(value: object, default: bool) -> bool:
-    """Coerce an operator-editable config value to a bool without ``bool()`` traps.
-
-    ``config.json`` is hand-editable, and plain ``bool("false")`` is ``True`` in
-    Python — a footgun that would let ``"disable_all": "false"`` silently turn
-    OFF every opt-out-capable protection.  A real bool is returned as-is; a
-    recognized string spelling (``true``/``false``/``1``/``0``/``yes``/``no``/
-    ``on``/``off``, case-insensitive) maps to its value; anything else falls back
-    to *default* (chosen by the caller to fail safe).
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in ("true", "1", "yes", "on"):
-            return True
-        if v in ("false", "0", "no", "off"):
-            return False
-    return default
 
 
 @dataclass
@@ -809,6 +839,7 @@ class HookManager:
 
     # ── Tool hooks ──
 
+    @_fail_closed_on_gate_crash
     def on_tool_call(
         self,
         tool_name: str,
@@ -3295,6 +3326,7 @@ def safe_read_file_bytes_nolink(
     max_bytes: int | None = None,
     allow_truncate: bool = False,
     within_root_is_canonical: bool = False,
+    admit_hardlinked: Callable[[str, bytes], bool] | None = None,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -3317,6 +3349,14 @@ def safe_read_file_bytes_nolink(
     window remains. If the fd's real path cannot be determined, fail closed.
     ``within_root_is_canonical`` preserves a caller's already-resolved admission
     root literally, so replacing that directory with a link cannot redefine it.
+
+    ``admit_hardlinked`` is the one opt-in exception to the hardlink refusal, and
+    it is decided on CONTENT, never on the link count alone. A hardlinked inode
+    still passes every other check here (regular file, opened-path identity,
+    containment, sensitive path, size cap); then the callback receives the
+    validated path and the exact bytes read from the descriptor, and only a
+    ``True`` answer returns them. Without it, ``st_nlink > 1`` is refused as
+    before.
 
     That final-component refusal comes from
     :func:`kiro_crew.platform_compat.open_file_no_reparse`, not from an
@@ -3348,7 +3388,8 @@ def safe_read_file_bytes_nolink(
         return None
     try:
         st = os.fstat(fd)
-        if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+        hardlinked = st.st_nlink > 1
+        if (hardlinked and admit_hardlinked is None) or not _stat.S_ISREG(st.st_mode):
             return None
         if not _opened_file_matches_validated_path(fd, path):
             return None
@@ -3370,9 +3411,13 @@ def safe_read_file_bytes_nolink(
             # as fits" rather than "refuse oversize" -- the artifact store
             # displays a truncated view of a large linked file. The memory bound
             # is unaffected: at most ``read_limit + 1`` bytes were ever read.
-            if allow_truncate:
+            # An admitted hardlink is judged on its WHOLE content, so it is
+            # never handed back as a prefix the admission did not see.
+            if allow_truncate and not hardlinked:
                 return data[:read_limit]
             raise FileTooLargeError(f"File exceeds {read_limit // (1024 * 1024)} MB safety cap")
+        if hardlinked and not (admit_hardlinked is not None and admit_hardlinked(path, data)):
+            return None
         return data
     except OSError:
         return None

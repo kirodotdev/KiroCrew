@@ -28,6 +28,7 @@ export type PetEvent =
   | 'walk_start'
   | 'walk_done'
   | 'error'
+  | 'delivery_uncertain'
   | 'connect'
   | 'disconnect'
   | 'timeout'

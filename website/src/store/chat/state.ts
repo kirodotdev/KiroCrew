@@ -136,6 +136,8 @@ export interface FollowupItem {
 export type SlotStatusDetail = ((ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail) & { ts: number }
 
 export interface ChatState {
+  recoveryRevision?: number
+  lastRecoveryRequestId?: string
   activeSlot: string | null
   messages: ChatMessage[]
   slotRunning: boolean

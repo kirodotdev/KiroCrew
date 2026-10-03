@@ -304,7 +304,7 @@ Incognito/temporary artifact persistence restrictions remain unchanged.
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
 | `description` | string | Optional, ≤ 2,000 chars |
-| `tags` | string[] | ≤ 16 tags, alphanumeric / `_`, `:`, `.`, `-` |
+| `tags` | string[] | ≤ 16 labels, each a well-formed tag (see [Validation & Limits](#validation--limits)) stored in its NFC spelling |
 | `version` | int | Latest snapshot version; bumps when a content change is snapshotted |
 | `created_at` / `updated_at` | string | ISO 8601 UTC microseconds |
 
@@ -405,8 +405,8 @@ forwarded name by name keeps its own copy, as `code_review_sage`'s report module
 does with `_SLUG_RE`), and the store reads these names through the owner module too (`create_image`
 truncates to `MAX_NAME_LEN` / `MAX_DESCRIPTION_LEN`, and `update` pre-checks
 `ALLOWED_EVENT_TYPES`). That covers the field limits and grammar
-(`MAX_NAME_LEN`, `MAX_DESCRIPTION_LEN`, `MAX_TAGS`, `MAX_SOURCE_PATH_LEN`,
-`_SLUG_RE`, `_TAG_RE`, `_SLUG_NORMALIZE_RE`), the kind sets and inference tables
+(`MAX_NAME_LEN`, `MAX_DESCRIPTION_LEN`, `MAX_TAGS`, `MAX_TAG_LEN`,
+`MAX_SOURCE_PATH_LEN`, `_SLUG_RE`, `_SLUG_NORMALIZE_RE`), the kind sets and inference tables
 (`ALLOWED_KINDS`, `ALLOWED_SOURCES`, `DOC_EXTENSIONS`, `_EXT_KIND_MAP`,
 `_HTML_SNIFF_MARKERS`, `_MD_HEADING_RE`, `_SVG_ROOT_RE`), the theme-colour lint
 patterns (`_HARDCODED_COLOR_RE`, `_HREF_ATTR_RE`) and `_strip_session_scope` in
@@ -486,7 +486,11 @@ doc stored as `widget` renders as raw inner HTML).
 Schemas live in `validation.py` (`ARTIFACT_*_SCHEMA`) and are registered in
 `MCP_CORE_SCHEMAS`. The MCP tool layer always proxies through the HTTP API so
 SEL audit, restricted-session enforcement, and any future authorization
-middleware live in one place.
+middleware live in one place. The `tags` and `tag` arguments are checked by the
+store's own tag rule (`rules.normalize_tag`, called from the schemas' custom
+validator) rather than by a pattern of their own, so the tool and the store
+cannot disagree about a tag; the schema fields keep only the count and length
+caps.
 
 ### CLI (`kirocrew artifact`)
 
@@ -1071,12 +1075,71 @@ version and auto-widget caps are the store's, in `kiro_crew.artifacts`.
 | `slug` | regex `^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$`, ≤ 80 chars |
 | `name` | ≤ 200 chars, non-empty |
 | `description` | ≤ 2,000 chars |
-| `tags` | ≤ 16 tags; each ≤ 64 chars |
+| `tags` | ≤ 16 tags; each ≤ 64 code points of its NFC form (`MAX_TAG_LEN`), made of Unicode letters, the marks that attach to them (`Mn`/`Mc`, at most 4 on one character) and digits (`Nd`/`Nl`) plus `_`, `:`, `.`, `-`, opening with a letter or digit, every code point visible (no `Default_Ignorable_Code_Point`, no enclosing mark) and its own spelling (no compatibility form of other characters) (`normalize_tag`) |
 | `content` | ≤ 25 MiB (`MAX_CONTENT_BYTES`) |
 | `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` / `image` / `webapp` |
 | `source` | stored values: `chat` / `cron` / `subagent` / `manual` / `import` / `dashboard` / `slack` / `cli` / `task-runner` / `unknown`; the MCP save schema accepts the first five explicitly |
 | `MAX_VERSIONS` | 50 (oldest pruned beyond cap) |
 | `MAX_AUTO_WIDGET_ARTIFACTS` | 200 (oldest **unpinned auto-registered** widgets pruned beyond cap) |
+
+A tag is a user-facing label that lives only in `meta.json` — never a file
+name, a URL segment or a query identifier, which is the slug's job (`slugify`
+keeps slugs ASCII by transliterating) — so its alphabet is the user's: `売上`,
+`café`, `München` and `हिन्दी` are tags. Nonspacing and spacing marks (`Mn`,
+`Mc`) are admitted because NFC leaves some standing beside their base letter
+(Devanagari vowel signs, Thai tone marks) and without them whole scripts could
+not be written, and a mark follows a letter, a digit or another mark, never a
+separator (an accent on a hyphen is refused the way a leading mark is: it has
+no base); enclosing marks (`Me`, the keycap that turns `1` into an emoji,
+the enclosing circle) are refused with the symbols, and so are other numbers
+(`No`: `½`, `²`, `①`, the numerals of scripts that do not count in decimal
+digits), which are symbols drawn from a digit rather than digits. One character
+carries at most four combining marks (`MAX_CONSECUTIVE_MARKS`): Hebrew pointing
+and a Tibetan syllable stay within that, and `a` under 63 accents is a glyph
+that overflows its chip, not writing. Everything else is refused
+with a plain-English reason: punctuation other than the four separators, symbols
+and emoji, and every control, format (zero-width, bidi override) and whitespace
+character. A second test runs before the category test: every code point of the
+Unicode `Default_Ignorable_Code_Point` property (`_DEFAULT_IGNORABLE`, the
+published table, 4,174 code points) is refused as "renders as nothing", because
+the property also holds letters and marks — the variation selectors, the
+combining grapheme joiner, the Hangul fillers — that the category test would
+admit although a reader cannot see them. Admitting one would give `ops` an
+invisible twin `ops<VS16>` that `list(tag="ops")` misses, and would let a
+credential planted in a tag (`AKIA<VS16>IOSFODNN7EXAMPLE`) pass the dashboard's
+redactor while reading as the bare key; the MCP gate's sanitizer keeps these
+marks (they are `Mn`, and emoji text needs them), so the tag rule is the check
+that stops them. The table is hand-derived from Unicode 15.0, the version Python
+3.12 ships; a test pins `unicodedata.unidata_version` to it, and on a runtime
+with a newer Unicode (Python 3.13 ships 15.1) it is skipped with a reason that
+names the regeneration step, since the table cannot be checked there. A third test, also
+before the category test, refuses every code point whose NFKC form differs from
+itself — a compatibility form of other characters: full-width `ｏｐｓ`,
+mathematical `𝐨𝐩𝐬`, the `ﬁ` ligature, `µ`, `①`, `Ⅻ` — naming the plain
+spelling to write instead, because NFC leaves these alone and each would be a
+second stored tag with the look of `ops`, `fi`, `μ`, `1` or `XII`. Two letters
+are kept as typed by decision: THAI CHARACTER SARA AM and LAO VOWEL SIGN AM
+decompose for compatibility into NIKHAHIT + SARA AA, yet the composed form is
+what every Thai and Lao keyboard types (`น้ำ`, water, is written with U+0E33);
+they are the only tag-admissible letters whose `<compat>` decomposition opens
+with a combining mark, and a test pins the allowlist to exactly them. The
+outcome is that a tag is always visible and has one unambiguous spelling, with
+two stated residuals the rule does not chase: a cross-script confusable such as
+Cyrillic `орѕ` beside Latin `ops`, and the decomposed twin `นํา` of the kept SARA
+AM. The confusable is not a compatibility form -- NFKC leaves it, so no
+normalization rule tells the two apart -- and telling them apart is a
+confusables check (UTS #39 skeletons compared against the tags already stored,
+plus its script-mixing restriction, under which a Latin-with-Han-and-Kana tag
+such as `日本語-api` is allowed and `орѕ` beside `ops` is caught), a different
+mechanism from the spelling rule this change is about and left out of it rather
+than half-done. The store writes the NFC form, two spellings of one
+label dedupe to one tag, and `list(tag=…)` reads its filter through the same
+rule, so a label matches however it was typed and a filter that is not a tag
+matches nothing. ASCII tags are unchanged by all of this. The widening is a
+one-way door: once non-ASCII tags are stored in `meta.json`, reverting this
+rule or narrowing it later strands them — an update that re-sends such a tag is
+refused and `list(tag=…)` cannot reach it — so a later narrowing ships with a
+migration that rewrites or drops the stranded tags first.
 
 ## Security
 

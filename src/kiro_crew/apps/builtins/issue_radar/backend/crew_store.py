@@ -2100,10 +2100,9 @@ def commit_work_progress(
 
 
 def _read_legacy_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    return atomic_write_module.read_json_or(
+        path, None, logger=logger, what="issue-radar legacy record"
+    )
 
 
 def _legacy_text(value: Any, limit: int = _MAX_CARRIED_TEXT) -> str:

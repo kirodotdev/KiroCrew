@@ -77,9 +77,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
 
+from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.paths import data_home
 from kiro_crew.constants import env_file_display
 from kiro_crew.platform_compat import (
+    make_owner_only_dir,
     release_lock,
     strip_extended_length_prefix,
     try_acquire_lock,
@@ -397,7 +399,9 @@ def _control_file(slot_key: str, name: str, *, create: bool = False) -> Path:
     """
     directory = control_dir(slot_key)
     if create:
-        directory.mkdir(parents=True, exist_ok=True)
+        # Owner-only at the DIRECTORY, so every control file and every temp a rewrite
+        # stages inside it is covered without each writer choosing a mode.
+        make_owner_only_dir(directory)
     return directory / name
 
 
@@ -1178,7 +1182,9 @@ class SlotExclusion(NamedTuple):
     carry_tombstoned: bool
 
 
-def exclude_units(slot_key: str, unit_ids: "tuple[str, ...]") -> SlotExclusion:
+def exclude_units(
+    slot_key: str, unit_ids: "tuple[str, ...]", *, refusable: bool = True
+) -> SlotExclusion:
     """Record that *unit_ids* must never again be folded into *slot_key*'s record.
 
     Returns what this call recorded -- see :class:`SlotExclusion`. A delete with NO
@@ -1219,6 +1225,11 @@ def exclude_units(slot_key: str, unit_ids: "tuple[str, ...]") -> SlotExclusion:
     its transcript on the strength of an exclusion this call was about to withdraw --
     resurrecting the state that delete removed. From inside the hold no other delete can
     observe the intermediate state, so there is no reliance to break.
+
+    *refusable* is False for a caller already past the transcript's unlink, which has
+    nothing left to refuse. Its directory sync is then best-effort, because taking the
+    ids back over a failed sync would leave the deleted conversation's unit neither
+    excluded nor removed.
     """
     if not slot_key:
         return SlotExclusion((), False)
@@ -1267,16 +1278,44 @@ def exclude_units(slot_key: str, unit_ids: "tuple[str, ...]") -> SlotExclusion:
             # settle the marker, and UNLINK its transcript on the strength of an
             # exclusion this call is about to take back -- resurrecting the state it
             # deleted. Nobody can observe the intermediate state from in here.
+            tombstoned = False
+            # Whether the take-back may withdraw the marker is decided from what the
+            # marker WAS, not from ``tombstoned``: a commit whose read-back raises has
+            # already renamed the marker into place without ever returning True.
+            committed_before = True
             try:
+                committed_before = _carry_committed(carried)
                 tombstoned = _settle_carry_locked(carried, landed=True)
+                # ONE sync of the control directory for both renames above. The caller
+                # unlinks the transcript next, and a crash that kept that unlink while
+                # losing the exclusion's rename would fold the deleted units into the
+                # next session. A control directory this call created relies on the
+                # filesystem to order its own entry in the parent.
+                fsync_dir(path.parent, best_effort=not refusable)
             except (ValueError, OSError):
                 # ROLLED BACK to the set this transaction FOUND, not by subtracting the
                 # ids it added: inside the hold those are the same thing, and writing
                 # back what was read cannot express anything else. The delete is refused
                 # either way, so a rollback that does not persist is reported rather
                 # than raised over the original failure.
+                took_back = False
+                if not committed_before:
+                    # The tombstone THIS call committed goes too, or a refused delete
+                    # would silence the still-live session's earlier state for good.
+                    try:
+                        took_back = _withdraw_tombstone_locked(carried)
+                    except OSError:
+                        logger.error(
+                            "ledger: could not withdraw slot %r's carry tombstone after "
+                            "the delete was refused; remove %r by hand to restore that "
+                            "session's earlier state",
+                            slot_key,
+                            _CARRIED_FILE,
+                            exc_info=True,
+                        )
                 if added:
                     _rewrite_lines(path, current)
+                    took_back = True
                     if set(added) & set(
                         _read_lines(path, limit=_MAX_EXCLUDED_BYTES, reject_oversized=True)
                     ):
@@ -1287,6 +1326,22 @@ def exclude_units(slot_key: str, unit_ids: "tuple[str, ...]") -> SlotExclusion:
                             slot_key,
                             list(added),
                             _DELETED_UNITS_FILE,
+                        )
+                if took_back:
+                    # The take-back is synced like the writes it undoes: a crash that
+                    # kept their renames and lost this one would leave the live
+                    # session's record excluded with nothing to say so.
+                    try:
+                        fsync_dir(path.parent)
+                    except OSError:
+                        logger.error(
+                            "ledger: could not confirm slot %r's take-back reached disk "
+                            "after the delete was refused; after a crash, check %r and "
+                            "%r by hand",
+                            slot_key,
+                            _DELETED_UNITS_FILE,
+                            _CARRIED_FILE,
+                            exc_info=True,
                         )
                 raise
         return SlotExclusion(added, tombstoned)
@@ -1336,7 +1391,7 @@ def unexclude_units(
     live slot's record reading empty until an operator edits it -- recoverable by hand,
     which the alternative ordering is not. A failed WITHDRAWAL is raised for the same
     reason rather than logged and dropped: the marker standing means the spared
-    session's earlier state is never carried, and only this path ever removes one.
+    session's earlier state is never carried, and a raise is a retryable answer.
     """
     if not slot_key or not (unit_ids or restore_carry):
         return
@@ -1355,19 +1410,20 @@ def unexclude_units(
         # Removing that marker carries the other delete's legacy state into a recycled
         # slot, silently, with nothing left to put it back.
         with _locked(control_dir(slot_key), create=False):
-            kept: "tuple[str, ...]" = ()
-            if path.exists():
-                kept = tuple(
-                    unit
-                    for unit in _read_lines(path, limit=_MAX_EXCLUDED_BYTES, reject_oversized=True)
-                    if unit not in drop
-                )
+            current = _read_lines(path, limit=_MAX_EXCLUDED_BYTES, reject_oversized=True)
+            kept = tuple(unit for unit in current if unit not in drop)
+            changed = kept != current
+            if changed:
                 _rewrite_lines(path, kept)
             if restore_carry and not kept:
                 # NOT ``_finish_carry(landed=False)``: that releases a claim still
                 # reading ``pending`` and deliberately leaves a committed marker alone,
                 # so it would be inert against the very tombstone this is undoing.
-                _withdraw_tombstone_locked(carried)
+                changed = _withdraw_tombstone_locked(carried) or changed
+            if changed:
+                # Best-effort: the rollback has already landed, so a failed sync must
+                # not report a record that folds normally as one that reads empty.
+                fsync_dir(path.parent, best_effort=True)
     except (ValueError, OSError) as exc:
         logger.error(
             "ledger: could NOT roll back slot %r's exclusion of %s after a delete that "
@@ -1611,15 +1667,19 @@ def _finish_carry(slot_key: str, *, landed: bool) -> bool:
     try:
         path = _control_file(slot_key, _CARRIED_FILE)
         with _locked(control_dir(slot_key)):
-            return _settle_carry_locked(path, landed=landed)
+            committed = _settle_carry_locked(path, landed=landed)
+            if committed:
+                # Best-effort: the marker already reads committed, and the non-empty
+                # fold refuses a second carry whether or not this rename survives.
+                fsync_dir(path.parent, best_effort=True)
+            return committed
     except (ValueError, OSError):
         if landed:
-            # NOT swallowed: an absent or pending marker is a CLAIMABLE one, so a
-            # delete that went ahead on it would let the next session on this recycled
-            # slot key carry the deleted conversation's document in. The delete's
-            # caller turns this into a refused delete, mirroring the exclusion write;
-            # the carry path keeps its own tolerance at its own call site, where the
-            # append has already landed and the stale claim is safe to leave.
+            # NOT swallowed: ``False`` already means "committed by another call", so a
+            # commit that did not reach disk has to be told apart from it. The carry
+            # path tolerates the raise at its own call site, where the append has
+            # already landed and the stale claim is safe to leave. A delete settles
+            # inside its own hold through ``_settle_carry_locked`` instead.
             logger.error(
                 "ledger: could NOT commit slot %r's legacy-document marker", slot_key, exc_info=True
             )
@@ -1631,14 +1691,18 @@ def _finish_carry(slot_key: str, *, landed: bool) -> bool:
     return False
 
 
-def _withdraw_tombstone_locked(path: Path) -> None:
+def _withdraw_tombstone_locked(path: Path) -> bool:
     """Remove a COMMITTED carry marker, for a caller ALREADY holding the slot's lock.
 
-    The exact inverse of the tombstone :func:`exclude_units` writes, and the only thing
-    in this module that removes a committed marker: :func:`_finish_carry` refuses to,
-    because a committed marker is normally another call's proof that a carry landed. The
-    caller earns this by having reported writing it and by finding no exclusion left on
-    the slot.
+    Answers whether a marker was removed. The exact inverse of the tombstone
+    :func:`exclude_units` writes, and the only thing in this module that removes a
+    committed marker: :func:`_finish_carry` refuses to, because a committed marker is
+    normally another call's proof that a carry landed. Two callers earn it, in
+    different ways. :func:`unexclude_units` has been told the delete wrote it, and
+    lifts it only when no exclusion is left on the slot. :func:`exclude_units`'s
+    take-back removes a marker it committed in the SAME hold, whatever else is
+    recorded, because that marker is its own write. A ``pending`` claim it overwrote
+    is not put back, the residual the carry restore in :func:`unexclude_units` accepts.
 
     Split out for the same reason :func:`_settle_carry_locked` is: the lock is not
     re-entrant, and the withdrawal has to happen in the SAME hold as the exclusion
@@ -1647,14 +1711,17 @@ def _withdraw_tombstone_locked(path: Path) -> None:
     is undoing -- ``_carry_committed`` answers what the marker SAYS, never whose it is.
 
     RAISES rather than swallowing, because the marker standing means the spared
-    session's earlier goal and phase are never carried, and only this function ever
-    removes a committed marker. Swallowing makes that loss permanent and silent; the
-    caller turns a raise into a retryable answer, which can actually succeed.
+    session's earlier goal and phase are never carried. :func:`unexclude_units` turns
+    the raise into a retryable answer, which can actually succeed. The take-back in
+    :func:`exclude_units` LOGS it instead: that delete is already refused, and its
+    original failure is the one that propagates.
     """
+    if not _carry_committed(path):
+        return False
+    path.unlink(missing_ok=True)
     if _carry_committed(path):
-        path.unlink(missing_ok=True)
-        if _carry_committed(path):
-            raise OSError("the carry tombstone did not withdraw")
+        raise OSError("the carry tombstone did not withdraw")
+    return True
 
 
 def _note_unit_order(slot_key: str, session_id: str, *, order_file: str = _UNIT_ORDER_FILE) -> None:
@@ -1791,19 +1858,23 @@ def panel_crew_log_units(slot_key: str) -> tuple[str, ...]:
 
 
 def _rewrite_lines(path: Path, lines: "tuple[str, ...]") -> None:
-    """Replace a control file with *lines*, one per line, atomically.
+    """Replace a control file with *lines*, one per line, atomically and fsynced.
 
-    A torn rewrite would lose the causal order the fold depends on, so the new content
-    is written beside the file and renamed over it: a reader sees the whole old file
-    or the whole new one.
+    A torn rewrite would lose the causal order the fold depends on, so a reader must
+    see the whole old file or the whole new one. The caller holds the slot's lock,
+    and every control-file writer does, so a temp already in the directory is one a
+    killed writer left behind: it is swept here, or every SIGKILL mid-rewrite would
+    leave a uniquely named temp that nothing ever removes.
+
+    The directory is NOT synced here. The callers whose next step depends on the
+    rename surviving a crash sync it once for the whole transaction.
     """
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for line in lines:
-            fh.write(f"{line}\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    for stale in path.parent.glob("*.tmp"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    atomic_write(path, "".join(f"{line}\n" for line in lines), fsync=True)
 
 
 def _recorded_unit_order(slot_key: str, *, order_file: str = _UNIT_ORDER_FILE) -> "tuple[str, ...]":

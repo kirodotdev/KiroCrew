@@ -267,3 +267,114 @@ describe('InstancesViewport relay listener', () => {
     expect(api.refreshInstanceToken).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('InstancesViewport origin embeddability', () => {
+  const realLocation = window.location
+
+  function setLocation(href: string) {
+    const url = new URL(href)
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...realLocation,
+        href: url.href,
+        protocol: url.protocol,
+        hostname: url.hostname,
+        host: url.host,
+        port: url.port,
+        origin: url.origin,
+      },
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation })
+  })
+
+  it('mounts no pane iframe on a non-loopback origin and shows the honest card', async () => {
+    // A dashboard served on a reverse proxy / tunnel origin: the browser's CSP
+    // frame-src refuses the loopback pane, so mounting it would only arm the 15s
+    // watchdog and end at a misleading "the tunnel looks connected" error.
+    setLocation('https://dash.example.com/')
+    const store = warmStore()
+    renderWithProviders(<InstancesViewport />, { store })
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain('This pane needs a local dashboard address'),
+    )
+    // No doomed iframe, no timeout-error card.
+    expect(document.querySelector('iframe')).toBeNull()
+    expect(document.querySelector('[data-testid="instances-viewport-timeout-error"]')).toBeNull()
+  })
+
+  it('mounts the pane iframe on a loopback origin as before', async () => {
+    setLocation('http://127.0.0.1:7778/')
+    const store = warmStore()
+    renderWithProviders(<InstancesViewport />, { store })
+
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+    expect(document.body.textContent).not.toContain('This pane needs a local dashboard address')
+  })
+
+  it('keeps the pane src on http even under an https loopback parent (plain-http forwarded port)', async () => {
+    // The SSH-forwarded gateway port speaks plain http; http://localhost is a
+    // trustworthy origin exempt from mixed-content blocking, so minting https
+    // here would fail the TLS handshake and never load.
+    setLocation('https://localhost:7778/')
+    const store = warmStore()
+    renderWithProviders(<InstancesViewport />, { store })
+
+    const iframe = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      expect(el).not.toBeNull()
+      return el as HTMLIFrameElement
+    })
+    expect(iframe.getAttribute('src')).toMatch(/^http:\/\/localhost:7778\/\?token=/)
+  })
+
+  it('shows the honest card for the loopback origins the CSP does not admit (::1, https *.localhost)', async () => {
+    for (const href of ['https://kirocrew.localhost:7778/', 'http://[::1]:7778/']) {
+      setLocation(href)
+      const store = warmStore()
+      const { unmount } = renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() =>
+        expect(document.body.textContent).toContain('This pane needs a local dashboard address'),
+      )
+      expect(document.querySelector('iframe')).toBeNull()
+      unmount()
+    }
+  })
+
+  it('shows the card (not a blank window) when a remote tab is active but nothing is warm yet', async () => {
+    // Regression: clicking a remote crew sets activeId before the connect
+    // mutation populates `warm` (useSelectInstance dispatches setActiveId then
+    // mutates). On a non-loopback origin that leaves warmIds empty with the
+    // card due — the empty-warm early return must not blank the window, and the
+    // loading overlay must not paint over the card once warm arrives.
+    setLocation('https://dash.example.com/')
+    const store = createTestStore({
+      instances: {
+        warm: {},
+        activeId: 'cd-1',
+        mru: ['cd-1'],
+        unread: {},
+        ready: {},
+        host: null,
+      },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain('This pane needs a local dashboard address'),
+    )
+    // The card renders (viewport did not take the empty-warm `return null`
+    // path that blanked the window), with no doomed iframe mounted.
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+})
+

@@ -46,6 +46,7 @@ from kiro_crew.subagent import (
     visible_agent_names,
 )
 from kiro_crew.subagent_persistence import agent_dir_for_display
+from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
@@ -510,7 +511,10 @@ def schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "spawn_list",
-            "description": "List all running and completed subagents (read-only, no commands executed)",
+            "description": (
+                "List all running, queued (accepted, not yet started) and completed "
+                "subagents (read-only, no commands executed)"
+            ),
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -562,7 +566,9 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
                 "gets its own session with full tool access. BLOCKS until all sub-agents "
-                "complete, then returns their collected results. Use for delegating "
+                "complete, then returns their collected results; a sub-agent the spawn "
+                "gate deferred is reported with why it waits, and its result arrives "
+                "later as a completion event. Use for delegating "
                 "independent subtasks to specialist agents. Preferred over spawn_run when "
                 "you need results before continuing." + _cap_hint
             ),
@@ -968,8 +974,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         if parent_session:
             guidance += " and wait for completion events"
         guidance += (
-            ". An empty spawn_list result is inconclusive for queued work; "
-            "wait and recheck before retrying to avoid duplicate work."
+            ". spawn_list lists queued spawns too, but a submission still in flight "
+            "may not be listed yet; wait and recheck before retrying to avoid "
+            "duplicate work."
         )
         spawn_lines.append(guidance)
     if agent_ids:
@@ -1057,15 +1064,54 @@ def spawn_release(name: str, args: dict[str, Any]) -> str:
     return f"Released conversation {conv} — it can no longer be continued."
 
 
+def _held_by_a_deferral(record: Mapping[str, Any]) -> bool:
+    """A queued, not-started member the gate DEFERRED (not one waiting for a slot).
+
+    Read off the row's OWN deferral sentence (``reason_detail``), which the
+    gateway sends only while that deferral is in force. ``reason`` is the
+    parent's wait label, last writer wins, so a sibling's deferral would
+    relabel a member that only waits behind the cap.
+    """
+    return (
+        record.get("queued") is True
+        and record.get("resuming") is not True
+        and bool(str(record.get("reason_detail") or "").strip())
+    )
+
+
+def _queued_why(record: Mapping[str, Any]) -> str:
+    """Why a queued spawn waits, redacted (:func:`queued_wait_text`)."""
+    return redact(queued_wait_text(record))
+
+
 def spawn_list(name: str, args: dict[str, Any]) -> str:
-    d = mcp_core._get("/api/spawn")
+    d = mcp_core._get("/api/spawn?queued=1")
     agents = d.get("agents", [])
+    # Accepted spawns with no run yet (gate-deferred, or waiting for a slot);
+    # the gateway lists them apart from the runs.
+    queued = d.get("queued") or []
+    if not isinstance(queued, list):
+        queued = []
 
     def _redact(text: str) -> str:
         return redact(text)
 
     lines: list[str] = []
-    if not agents:
+    for q in queued:
+        if isinstance(q, Mapping) and q.get("id"):
+            tag = "resuming" if q.get("resuming") is True else "not started"
+            lines.append(
+                f"{q['id']}  [queued] ({tag}: {_queued_why(q)})  "
+                f"{_redact(str(q.get('task') or ''))[:60]}"
+            )
+    if d.get("queued_truncated") is True:
+        # The gateway listed only the oldest queued spawns, or could not read
+        # them all; the rest exist too.
+        lines.append(
+            "(the queued list is partial: more spawns may be queued than listed here; "
+            "they are accepted and start on their own -- do not spawn them again)"
+        )
+    if not agents and not lines:
         lines.append("No subagents running.")
     else:
         for a in agents:
@@ -1161,8 +1207,22 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     # "approve it ... to start this run", so this tool must not report work
     # under way for it either.
     awaiting = running and d.get("awaiting_approval") is True
+    # Accepted but not started (the gate deferred it, or it waits for a slot).
+    # It is real accepted work: re-spawning it would run it twice.
+    queued = running and d.get("queued") is True
     result = d.get("result") or ""
-    if running and not result:
+    if queued and d.get("resuming") is True:
+        # It ran before and waits to go on: never "not started".
+        result = (
+            f"(queued — {_queued_why(d)}. It continues on its own and its completion "
+            "event arrives as usual; do not spawn it again)"
+        )
+    elif queued:
+        result = (
+            f"(not started — queued: {_queued_why(d)}. It starts on its own once that "
+            "clears and its completion event arrives as usual; do not spawn it again)"
+        )
+    elif running and not result:
         turns = d.get("turns", 0)
         if awaiting:
             result = (
@@ -1201,7 +1261,13 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         result = f"[{' | '.join(hdr)}]\n{result}"
 
     if running:
-        status = ["AWAITING-APPROVAL" if awaiting else "RUNNING"]
+        if queued:
+            state = "QUEUED"
+        elif awaiting:
+            state = "AWAITING-APPROVAL"
+        else:
+            state = "RUNNING"
+        status = [state]
         if "elapsed" in d:
             status.append(f"{d['elapsed']}s")
         if "turns" in d:
@@ -1317,8 +1383,8 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
 
     sa_ids: list[str] = []
     sa_errors: list[str] = []
-    # subagent id -> the gate's reason, for members accepted as ``queued``.
-    sa_deferred: dict[str, str] = {}
+    # Members the gate accepted as ``queued`` (deferred, not started).
+    sa_deferred: set[str] = set()
     for entry in agents_input:
         prompt = entry.get("prompt", "").strip()
         if not prompt:
@@ -1340,15 +1406,9 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             if aid:
                 sa_ids.append(aid)
                 if d.get("status") == "queued":
-                    # Deferred by the gate, not started; reported under its
-                    # own ``queued`` line if the wait outlives this call.
-                    sa_deferred[aid] = _redact_sa(
-                        str(
-                            d.get("reason_detail")
-                            or d.get("reason")
-                            or "deferred by the spawn gate"
-                        )
-                    )
+                    # Deferred by the gate, not started. Its final read decides
+                    # how it is reported; this says it was accepted.
+                    sa_deferred.add(aid)
             else:
                 sa_errors.append(f"{_redact_sa(prompt)[:60]}: spawn returned no agent id")
 
@@ -1369,6 +1429,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     max_wait = max(60.0, min(7200.0, max_wait))  # clamp: 1 min .. 2 hours
     deadline = mcp_core.time.monotonic() + max_wait
     _next_ping = mcp_core.time.monotonic() + 60.0  # first keepalive after 60s, not immediately
+    _wait_settled: set[str] = set()
     while mcp_core.time.monotonic() < deadline:
         # Cooperative cancellation: honor notifications/cancelled the same
         # way wait does, so a cancelled spawn_sub_agents call exits promptly
@@ -1384,15 +1445,23 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             except Exception:
                 pass  # keepalive is best-effort
             _next_ping = mcp_core.time.monotonic() + 60.0
-        all_done = True
-        for aid in sa_ids:
+        # Settled for this wait, and not polled again: done, or held by a gate
+        # DEFERRAL -- that can wait far longer than this call should hold the
+        # parent's turn, and its completion event arrives on its own later. A
+        # member queued only behind the concurrency cap is NOT settled: it
+        # drains with the wave itself, and the tool's contract is to return its
+        # result. An error settles only THIS pass (an agent that never sets
+        # done=True would otherwise spin the loop until max_wait), since it can
+        # be one failed poll of a member that is still running.
+        all_settled = True
+        for aid in [a for a in sa_ids if a not in _wait_settled]:
             sa_st = mcp_core._get(f"/api/spawn/{aid}")
-            # An errored/crashed agent is "settled" — without this, an agent
-            # that never sets done=True would spin the loop until max_wait.
-            if not (sa_st.get("done") or sa_st.get("error")):
-                all_done = False
+            if sa_st.get("done") or _held_by_a_deferral(sa_st):
+                _wait_settled.add(aid)
+            elif not sa_st.get("error"):
+                all_settled = False
                 break
-        if all_done:
+        if all_settled:
             break
         mcp_core.time.sleep(poll_interval)
 
@@ -1418,10 +1487,23 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # events still arrive, so the caller is told how to keep following them
     # rather than told they failed.
     _unsettled: dict[str, str] = {}
+    # Members accepted and still not started when the wait ended (gate-deferred,
+    # or waiting for a slot), with the reason they wait. Each is reported ONCE,
+    # in the ``queued`` record below, and never as an error: a caller that sees
+    # an error for accepted work dispatches it again, and then it runs twice.
+    never_started: dict[str, str] = {}
     for aid in sa_ids:
         sa_st = mcp_core._get(f"/api/spawn/{aid}")
         sa_name = _redact_sa(sa_st.get("agent", ""))
         label = sa_name if sa_name else aid
+        if not sa_st.get("done") and sa_st.get("queued") is True:
+            still_running += 1
+            if sa_st.get("resuming") is True:
+                # It ran before and waits to go on: running work, not unstarted.
+                _unsettled[aid] = "waiting_to_resume"
+            else:
+                never_started[aid] = _queued_why(sa_st)
+            continue
         if sa_st.get("error"):
             errored += 1
             # Only mark as settled if done is also true (confirmed terminal
@@ -1429,21 +1511,21 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             # from _get() — the agent may still be running.
             if sa_st.get("done"):
                 _settled_ids.add(aid)
-            sa_results.append(
-                json.dumps(
-                    {
-                        "agent": label,
-                        "status": "error",
-                        "error": _redact_sa(sa_st["error"]),
-                    }
+            failure: dict[str, Any] = {
+                "agent": label,
+                "status": "error",
+                "error": _redact_sa(sa_st["error"]),
+            }
+            if aid in sa_deferred and not sa_st.get("done"):
+                failure["hint"] = (
+                    "accepted at spawn time; its state couldn't be read now; "
+                    "check spawn_status before re-spawning"
                 )
-            )
+            sa_results.append(json.dumps(failure))
         elif not sa_st.get("done"):
             still_running += 1
             if sa_st.get("awaiting_approval"):
                 _unsettled[aid] = "waiting_permission"
-            elif sa_st.get("queued"):
-                _unsettled[aid] = "queued"
             else:
                 _unsettled[aid] = "running"
         else:
@@ -1489,13 +1571,9 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 }
             )
         )
-    # Members the gate DEFERRED at accept time (memory floor, critical posture,
-    # adaptive cap at 0) that never reached a settled state within the wait. A
-    # deferred row is not registered as a run, so the per-id poll above cannot
-    # see it; without this line the caller's only trace of it is a bare error
-    # entry, and the reason -- the one fact that says what to change -- stays
-    # in the gateway log.
-    never_started = {aid: why for aid, why in sa_deferred.items() if aid not in _settled_ids}
+    # Members still queued and not started (collected above). They have no run
+    # yet, so without this record the reason -- the one fact that says what to
+    # change -- would stay in the gateway log.
     if never_started:
         sa_results.append(
             json.dumps(
@@ -1503,9 +1581,10 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                     "status": "queued",
                     "agents": never_started,
                     "note": (
-                        "Queued, not started: the spawn gate deferred these at accept "
-                        "time for the reason given and re-checks every admit wait. They "
-                        "start once the condition clears; nothing was cancelled."
+                        "Queued, not started: accepted, and waiting for the reason given. "
+                        "They start on their own once it clears and their [Subagent "
+                        "completion event] messages arrive as usual; nothing was "
+                        "cancelled. Do not spawn them again."
                     ),
                 }
             )

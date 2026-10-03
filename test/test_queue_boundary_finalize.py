@@ -157,7 +157,10 @@ async def test_synthesis_dispatch_emits_finalize_before_its_row(tmp_path, monkey
     slot = state.get_or_create_slot("chat-1")
     slot._titled = True
     slot._pending_synthesis = True
-    state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+    state.subagents = MagicMock(
+        running_agents_for=MagicMock(return_value=[]),
+        queued_count_for_async=AsyncMock(return_value=0),
+    )
     state._slots[slot.key] = slot
 
     def _fake_spawn(_state, _slot, coro):

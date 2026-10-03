@@ -594,7 +594,7 @@ class TestGetBgSessionRespawn:
                 self.pid = 4242
                 created.append(self)
 
-            async def spawn(self) -> None:
+            async def spawn(self, start_priority=None) -> None:
                 return None
 
             def is_alive(self) -> bool:

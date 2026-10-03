@@ -223,11 +223,20 @@ def sel(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 def _registered_line(frame: dict[str, Any]) -> bytes:
     pool_key = PoolKey.from_register(frame)
+    # The daemon stamps its own code generation into the ``registered`` reply so
+    # a Kiro Crew-owned stub can detect a pre-upgrade broker and fall back; the
+    # value is whatever ``code_fingerprint()`` reports in this environment, so
+    # the contract reproduces it rather than hardcoding a fixed string.
     return (
         '{"type":"registered","backend_id":"pending-%s","pool_label":%s,'
+        '"fingerprint":%s,'
         '"capabilities":["ensure_backend","bridge_ping","poolable_ack",'
         '"spawn_queue","tenant_nonce"]}\n'
-        % (pool_key.stable_hash()[:12], json.dumps(pool_key.human_readable()))
+        % (
+            pool_key.stable_hash()[:12],
+            json.dumps(pool_key.human_readable()),
+            json.dumps(gw.code_fingerprint()),
+        )
     ).encode("utf-8")
 
 

@@ -240,7 +240,7 @@ class _FakeSessionManager:
         self.success_calls: list[str] = []
         self._is_new = True
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         was_new = self._is_new
         self._is_new = False
         return self._provider, was_new, False

@@ -35,7 +35,13 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
-from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
+from kiro_crew.acp.runtime import (
+    AcpRuntime,
+    AcpRuntimeDead,
+    AcpRuntimeError,
+    AcpRuntimeStdinStalled,
+    AcpSessionHandle,
+)
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
     ACP_BACKENDS_COMPACT,
@@ -613,8 +619,15 @@ class AcpSessionProvider(LLMProvider):
             await self._end_shared_turn(claim)
 
     async def steer(self, message: str) -> bool:
-        """Forward a mid-turn steer to the session handle (kiro _session/steer)."""
-        return await self._guarded(self._handle.steer(message))
+        """Forward a mid-turn steer to the session handle (kiro _session/steer).
+
+        A failed steer is ambiguous only when its OWN frame was left buffered:
+        the session's outstanding prompt says nothing about a steer that was
+        refused before its first byte, and marking that steer possibly
+        delivered would make the next turn skip an instruction that never
+        reached the backend.
+        """
+        return await self._guarded(self._handle.steer(message), own_write_only=True)
 
     @property
     def last_steer_monotonic(self) -> float:
@@ -668,7 +681,9 @@ class AcpSessionProvider(LLMProvider):
         finally:
             await self._end_shared_turn(claim)
 
-    def _translate_dead(self, exc: AcpRuntimeDead) -> AcpProcessDied | AcpAuthRequired:
+    def _translate_dead(
+        self, exc: AcpRuntimeDead, *, own_write_only: bool = False
+    ) -> AcpProcessDied | AcpAuthRequired:
         """Map a shared-runtime death (AcpRuntimeDead — an AcpRuntimeError OUTSIDE
         the AcpError hierarchy) to the AcpError-hierarchy exception every caller
         expects: AcpAuthRequired on auth-expiry, the typed transient
@@ -695,14 +710,25 @@ class AcpSessionProvider(LLMProvider):
                 host_auth.signed_out_message(self._runtime.acp_backend),
                 backend=self._runtime.acp_backend,
             )
-        if not getattr(getattr(self, "_handle", None), "prompt_or_tool_seen", True):
+        # A stdin-stall death is the host's own verdict, never a throttle: the
+        # transient subclass would license a verbatim replay of a prompt the
+        # live child may still read. Ambiguity is the stalling write's own flag
+        # or, for a co-tenant, its prompt left outstanding in the stalled pipe.
+        handle = getattr(self, "_handle", None)
+        ambiguous = getattr(exc, "ambiguous_delivery", False) is True or (
+            not own_write_only and getattr(handle, "prompt_outstanding_on_stall", False) is True
+        )
+        stalled = isinstance(exc, AcpRuntimeStdinStalled) or (
+            getattr(self._runtime, "stdin_stall_death", False) is True
+        )
+        if not stalled and not getattr(handle, "prompt_or_tool_seen", True):
             tail = getattr(self._runtime, "redacted_stderr_tail", lambda: "")()
             cause = registration_throttle_line(tail) if tail else None
             if cause is not None:
                 return registration_rate_limited_error(str(exc), cause)
-        return AcpProcessDied(str(exc))
+        return AcpProcessDied(str(exc), ambiguous_delivery=ambiguous)
 
-    async def _guarded(self, awaitable: Any) -> Any:
+    async def _guarded(self, awaitable: Any, *, own_write_only: bool = False) -> Any:
         """Await a runtime-touching handle coroutine, translating AcpRuntimeDead
         into the AcpError hierarchy (see _translate_dead), and any other base
         AcpRuntimeError into a generic AcpError so nothing outside AcpError
@@ -710,7 +736,7 @@ class AcpSessionProvider(LLMProvider):
         try:
             return await awaitable
         except AcpRuntimeDead as exc:
-            raise self._translate_dead(exc) from exc
+            raise self._translate_dead(exc, own_write_only=own_write_only) from exc
         except AcpRuntimeError as exc:
             raise AcpError(str(exc)) from exc
 

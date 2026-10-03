@@ -44,6 +44,7 @@ from kiro_crew.dashboard.urls import (  # noqa: F401
     build_allowed_hosts,
     build_allowed_origins,
     build_dashboard_url,
+    dashboard_link_origin,
     dashboard_origin,
     dashboard_socket_path,
     devspaces_proxy_url,

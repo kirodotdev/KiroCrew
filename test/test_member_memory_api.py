@@ -1307,6 +1307,145 @@ async def test_spawn_list_shows_an_identity_less_caller_only_unowned_runs(env):
     assert "dashboard:someone" not in response.text and "result-owned" not in response.text
 
 
+def _queued_registry(*queued, truncated=False):
+    """A registry holding only accepted spawns that have not started yet."""
+    from kiro_crew.subagent_manager.admission.types import QueuedRunListing
+
+    by_id = {q.id: q for q in queued}
+
+    async def queued_run_async(run_id):
+        return by_id.get(run_id)
+
+    async def queued_runs_async(parent=None, *, app=None):
+        return QueuedRunListing(
+            tuple(q for q in queued if parent is None or q.parent_session_key == parent),
+            truncated,
+        )
+
+    return SimpleNamespace(
+        get=lambda _id: None,
+        all_agents=[],
+        queued_run_async=queued_run_async,
+        queued_runs_async=queued_runs_async,
+    )
+
+
+def _queued(run_id, parent, **kw):
+    from kiro_crew.subagent_manager.admission.types import QueuedRun
+
+    return QueuedRun(id=run_id, task=f"task {run_id}", parent_session_key=parent, **kw)
+
+
+@pytest.mark.asyncio
+async def test_a_queued_run_is_owned_by_its_rows_session_and_reported_queued(env):
+    """A spawn the gate deferred has no run and no folder. Its row's session key
+    owns it, so the caller that was told "queued" can read it (and nobody else
+    can), and the status route answers ``queued`` instead of 404."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    env.state.subagents = _queued_registry(
+        _queued(
+            "q1",
+            "dashboard:alice",
+            accepted_at=1.0,
+            reason="low_memory",
+            reason_detail="low memory: 3.9 GB available, need 4.5 GB",
+        )
+    )
+    with mock.patch(
+        "kiro_crew.dashboard.handlers.messaging.read_state",
+        side_effect=AssertionError("a queued id has no run folder to read"),
+    ):
+        for session, admitted in (("dashboard:alice", True), ("dashboard:bob", False), ("", False)):
+            req = request(env, internal=True, session=session)
+            req.match_info["agent_id"] = "q1"
+            refusal = await messaging._spawn_scope_refusal(req)
+            assert (refusal is None) is admitted, session
+
+        req = request(env, internal=True, session="dashboard:alice")
+        req.match_info["agent_id"] = "q1"
+        response = await messaging.api_spawn_status(req)
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["done"] is False and payload["queued"] is True
+    assert payload["reason"] == "low_memory"
+    assert payload["reason_detail"] == "low memory: 3.9 GB available, need 4.5 GB"
+    assert payload["started"] == 1.0 and payload["elapsed"] > 0
+    assert "result" not in payload and "turns" not in payload
+
+
+@pytest.mark.asyncio
+async def test_spawn_list_names_the_callers_own_queued_runs_apart_from_its_runs(env):
+    """Queued spawns are listed under ``queued`` -- not in ``agents``, whose
+    readers take a not-done entry for a run in progress -- and within the same
+    caller bound as the run rows."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    env.state.subagents = _queued_registry(
+        _queued("q-alice", "dashboard:alice"), _queued("q-bob", "dashboard:bob")
+    )
+    body = json.loads(
+        (
+            await messaging.api_spawn_list(
+                request(env, internal=True, session="dashboard:alice", query={"queued": "1"})
+            )
+        ).text
+    )
+    assert body["agents"] == []
+    assert [(q["id"], q["queued"], q["done"]) for q in body["queued"]] == [("q-alice", True, False)]
+    assert "q-bob" not in json.dumps(body)
+
+    owner = json.loads(
+        (await messaging.api_spawn_list(request(env, owner=True, query={"queued": "1"}))).text
+    )
+    assert sorted(q["id"] for q in owner["queued"]) == ["q-alice", "q-bob"]
+
+    # Every row is a permission decision and is audited, allowed or denied. A
+    # registry that ignores the parent narrowing forces the route's own bound.
+    registry = _queued_registry(
+        _queued("q-alice", "dashboard:alice"), _queued("q-bob", "dashboard:bob")
+    )
+    everyone = registry.queued_runs_async
+
+    async def ignore_parent(_parent=None, **_kw):
+        return await everyone(None)
+
+    registry.queued_runs_async = ignore_parent
+    env.state.subagents = registry
+    with (
+        mock.patch.object(messaging, "_audit_deny") as deny,
+        mock.patch.object(messaging, "_audit_allow") as allow,
+    ):
+        body = json.loads(
+            (
+                await messaging.api_spawn_list(
+                    request(env, internal=True, session="dashboard:alice", query={"queued": "1"})
+                )
+            ).text
+        )
+    assert [q["id"] for q in body["queued"]] == ["q-alice"]
+    assert [c.args[1:] for c in deny.call_args_list] == [
+        ("api_spawn_list", "queued_scope_mismatch")
+    ]
+    assert [c.args[1:] for c in allow.call_args_list] == [("api_spawn_list",)]
+
+    env.state.subagents = _queued_registry()
+    empty = json.loads(
+        (await messaging.api_spawn_list(request(env, owner=True, query={"queued": "1"}))).text
+    )
+    assert "queued" not in empty, "the payload is unchanged when nothing is queued"
+    assert "queued_truncated" not in empty
+
+    # A page that stopped at the cap says so, so its tail is not read as spawns
+    # that were never accepted.
+    env.state.subagents = _queued_registry(_queued("q-old", "dashboard:alice"), truncated=True)
+    page = json.loads(
+        (await messaging.api_spawn_list(request(env, owner=True, query={"queued": "1"}))).text
+    )
+    assert [q["id"] for q in page["queued"]] == ["q-old"]
+    assert page["queued_truncated"] is True
+
+
 @pytest.mark.asyncio
 async def test_the_dashboard_owner_still_sees_and_controls_every_run(env):
     """Cookie-authenticated owner surface: no ``internal_auth``, no ownership fence."""

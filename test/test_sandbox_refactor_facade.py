@@ -141,6 +141,7 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
             "_voice_runtime_ancestor_guards",
             "_voice_runtime_parent_paths",
             "_voice_runtime_sandbox_paths",
+            "_window_ancestors",
             "_writable_carveout_spellings",
         ),
     ),

@@ -1,4 +1,4 @@
-name: GPT 5.6 Review
+name: GPT 6.1 Review
 
 # Second AI reviewer using OpenAI GPT-5.6 Sol via Amazon Bedrock (Mantle).
 # Runs alongside claude-review.yml to provide a second independent perspective.
@@ -6,7 +6,7 @@ name: GPT 5.6 Review
 # authenticates to Bedrock with the OIDC role's SigV4 credentials via the AWS
 # SDK credential chain. No proxy, no bearer token, no OpenAI API key.
 #
-# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 5
+# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 5.5
 # reviewer's. Two structural changes vs. the original three-pass design:
 #   * pass 2 is a FALSIFICATION pass, not a second discovery pass. The old
 #     "find what pass 1 missed" instruction was a recall ratchet that only ever
@@ -42,7 +42,7 @@ concurrency:
 jobs:
   codex-review:
     # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
-    # publish the protected check name "GPT 5.6 Review": this same-repo lane and the
+    # publish the protected check name "GPT 6.1 Review": this same-repo lane and the
     # privileged Stage-2 fork-gpt-review.yml. GitHub resolves a required status
     # check to the NEWEST check-run carrying that name, so on a fork PR -- where
     # this lane reviews nothing -- any `pull_request` event firing AFTER the fork
@@ -63,7 +63,7 @@ jobs:
     # reports the intended name instead. `test_ai_review_workflows.py` asserts
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
-    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'GPT 5.6 Review' || 'GPT 5.6 Review (same-repo lane, not applicable to forks)' }}"
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'GPT 6.1 Review' || 'GPT 6.1 Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: each pass carries its
     # own PASS_WALL and self-terminates first. This wall MUST therefore stay
@@ -232,7 +232,7 @@ jobs:
           # The falsification pass is where accuracy now comes from.
           cat > "$HOME/.codex/config.toml" <<'EOF'
           model_provider = "amazon-bedrock"
-          model = "openai.gpt-5.6-sol"
+          model = "openai.gpt-6.1-sol"
           model_reasoning_effort = "medium"
           EOF
 
@@ -494,7 +494,7 @@ jobs:
       # Assume the Bedrock role only now, immediately before the step that calls
       # Bedrock, to minimize the window the credentials exist in the job
       # environment. Uses a DEDICATED least-privilege role (GPT/Mantle only,
-      # pull_request-scoped) so a leaked token can't reach the Opus 5 reviewer's model access.
+      # pull_request-scoped) so a leaked token can't reach the Opus 5.5 reviewer's model access.
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -505,7 +505,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: GPT 5.6 review (discovery pass)
+      - name: GPT 6.1 review (discovery pass)
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
@@ -582,10 +582,10 @@ jobs:
             # neither line-leading nor reliably last. The 4000-byte tail fits
             # a single pipe buffer, so the grep cannot SIGPIPE the tail.
             if tail -c 4000 "$RUNNER_TEMP/codex-pass-1-log.txt" | grep -q "^$REFUSAL_SIGNATURE"; then
-              echo "::warning::GPT 5.6 review pass 1 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
+              echo "::warning::GPT 6.1 review pass 1 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
               printf ' 1' >> "$RUNNER_TEMP/codex-refused-passes"
             else
-              echo "::warning::GPT 5.6 review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+              echo "::warning::GPT 6.1 review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
             fi
             printf ' 1' >> codex-failed-passes
           fi
@@ -607,7 +607,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: GPT 5.6 review (falsification pass)
+      - name: GPT 6.1 review (falsification pass)
         id: gpt_pass2
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -683,10 +683,10 @@ jobs:
             "$PROMPT" 2>&1 | tee "$RUNNER_TEMP/codex-pass-2-log.txt" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
             if tail -c 4000 "$RUNNER_TEMP/codex-pass-2-log.txt" | grep -q "^$REFUSAL_SIGNATURE"; then
-              echo "::warning::GPT 5.6 review pass 2 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
+              echo "::warning::GPT 6.1 review pass 2 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
               printf ' 2' >> "$RUNNER_TEMP/codex-refused-passes"
             else
-              echo "::warning::GPT 5.6 review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+              echo "::warning::GPT 6.1 review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
             fi
             failed_passes="${failed_passes} 2"
           fi
@@ -1045,8 +1045,8 @@ jobs:
           # below is what turns a floor/pin mismatch into a configuration-time
           # failure instead of a silent per-PR one. The floor must cover both
           # the primary (--model) and the overload fallback (--fallback-model);
-          # 2.1.255 is the Opus 4.8 fallback's minimum.
-          ADJ_CLAUDE_CODE_FLOOR: "2.1.255"
+          # Opus 5.5 needs 2.1.280 and the Sonnet 5.5 fallback 2.1.284.
+          ADJ_CLAUDE_CODE_FLOOR: "2.1.284"
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/review-cli/node_modules/.bin/claude"
@@ -1069,7 +1069,7 @@ jobs:
           echo "Claude Code $installed satisfies the adjudicator's floor $ADJ_CLAUDE_CODE_FLOOR"
           echo "path=$bin" >> "$GITHUB_OUTPUT"
 
-      - name: Opus 5 adjudication (blocking findings only)
+      - name: Opus 5.5 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -1077,7 +1077,7 @@ jobs:
           (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
           || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -1090,8 +1090,8 @@ jobs:
           # enter an agentic reviewer's context, and this stage in particular
           # must not be able to post its own verdict anywhere.
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -1187,7 +1187,7 @@ jobs:
             # produced none reads like an adjudication that ran and declined to
             # overturn. Surface the failure where the conclusion is read instead.
             note="Adjudication produced no [GPT-ADJUDICATED] marker for $HEAD: the adjudication stage FAILED TO RUN (its raw output is in the Adjudication details block -- typically an API or setup error), so no proportionality review took place and GPT's blocking verdict stands unreviewed."
-            echo "::error::the Opus 5 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 5 adjudication' step output; GPT's blocking verdict stands unreviewed."
+            echo "::error::the Opus 5.5 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 5.5 adjudication' step output; GPT's blocking verdict stands unreviewed."
           elif [ "$fenced" -gt 0 ]; then
             note="$fenced of $count blocking finding(s) are security-class and were withheld from adjudication, so the blocking verdict stands."
           elif [ "$adjudicable" -eq 0 ]; then
@@ -1270,7 +1270,7 @@ jobs:
             cat codex-adjudication.md
           fi
 
-      # Upsert a SINGLE GPT 5.6 summary comment per PR, keyed by a hidden marker,
+      # Upsert a SINGLE GPT 6.1 summary comment per PR, keyed by a hidden marker,
       # so re-scanning on every push UPDATEs that one comment instead of
       # stacking near-duplicates.
       - name: Post/update review comment
@@ -1295,12 +1295,12 @@ jobs:
           MARKER="<!-- codex-ai-review -->"
           kind="incomplete"
           verdict="⚠️ review incomplete"
-          sentence="GPT 5.6 did not produce a complete verdict for \`$HEAD\`; inspect the workflow logs and re-run it."
+          sentence="GPT 6.1 did not produce a complete verdict for \`$HEAD\`; inspect the workflow logs and re-run it."
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             kind="override"
             verdict="✅ human override accepted"
             source_url="https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE"
-            sentence="Human judgment by @$OVERRIDE_ACTOR overrides the GPT 5.6 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
+            sentence="Human judgment by @$OVERRIDE_ACTOR overrides the GPT 6.1 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
           elif [ "$REFUSED" = "true" ]; then
             # The provider REFUSED this diff -- a terminal state distinct from
             # "incomplete": the refusal is caused by the reviewed content, so
@@ -1328,16 +1328,16 @@ jobs:
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"
                 verdict="✅ no blocking findings (all downgraded on adjudication)"
-                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Opus 5 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                sentence="GPT 6.1 flagged blocking issues on \`$HEAD\`; Opus 5.5 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"
                 verdict="🔴 changes requested (blocking)"
-                sentence="GPT 5.6 found at least one blocking issue that must be resolved before merging \`$HEAD\`. ${ADJ_NOTE:-}"
+                sentence="GPT 6.1 found at least one blocking issue that must be resolved before merging \`$HEAD\`. ${ADJ_NOTE:-}"
               fi
             else
               kind="clear"
               verdict="✅ no blocking findings"
-              sentence="GPT 5.6 completed its review of \`$HEAD\` and found no blocking issues."
+              sentence="GPT 6.1 completed its review of \`$HEAD\` and found no blocking issues."
             fi
           fi
           # What makes a body authoritative for THIS head. The model
@@ -1361,7 +1361,7 @@ jobs:
           fi
           {
             echo "$MARKER"
-            echo "## GPT 5.6 Review — $verdict"
+            echo "## GPT 6.1 Review — $verdict"
             echo ""
             echo "$sentence"
             echo ""
@@ -1391,16 +1391,16 @@ jobs:
               echo
               echo "</details>"
             elif [ "$kind" = "incomplete" ]; then
-              echo "_See the GPT 5.6 Review job logs; this commit has no completed GPT verdict._"
+              echo "_See the GPT 6.1 Review job logs; this commit has no completed GPT verdict._"
             elif [ "$kind" = "refused" ]; then
-              echo "_The refusal text is in the GPT 5.6 Review job logs. It is caused by the diff's content: re-runs have not been observed to clear this class of refusal._"
+              echo "_The refusal text is in the GPT 6.1 Review job logs. It is caused by the diff's content: re-runs have not been observed to clear this class of refusal._"
             else
               echo "_The model was not re-run because an authorized human decision supersedes it._"
             fi
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 5) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Opus 5.5) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo
@@ -1881,13 +1881,13 @@ jobs:
               existing_json="$(printf '%s\n' "$matches" | awk 'NR == 1')"
               break
             fi
-            echo "Reading this PR's comments to find the GPT 5.6 comment failed on attempt $attempt."
+            echo "Reading this PR's comments to find the GPT 6.1 comment failed on attempt $attempt."
             if [ "$attempt" -lt 6 ]; then
               sleep "$(( attempt * 5 ))"
             fi
           done
           if [ "$verdict_read_rc" -ne 0 ]; then
-            note_read_failure "$verdict_read_rc" "reading this PR's comments to find the GPT 5.6 comment" "$READ_ERR_FILE"
+            note_read_failure "$verdict_read_rc" "reading this PR's comments to find the GPT 6.1 comment" "$READ_ERR_FILE"
           fi
           existing="$(printf '%s\n' "$existing_json" | jq -r '.id // empty' 2>/dev/null || true)"
           # GitHub stores comment bodies with CRLF line endings; normalize to LF
@@ -1919,7 +1919,7 @@ jobs:
                 if [ "$kind" = "refused" ]; then
                   echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** the provider REFUSED to review \`$HEAD\` — the refusal is caused by the diff's own content, so a re-run is very unlikely to produce a fresh verdict. The verdict below is from an earlier completed run on an OLDER commit. A repository writer must adjudicate: \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
                 else
-                  echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** a later GPT 5.6 run did not produce a completed verdict for \`$HEAD\`; the verdict below is from an earlier completed run. Inspect the GPT 5.6 Review job logs and re-run the workflow, or have a repository writer comment \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
+                  echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** a later GPT 6.1 run did not produce a completed verdict for \`$HEAD\`; the verdict below is from an earlier completed run. Inspect the GPT 6.1 Review job logs and re-run the workflow, or have a repository writer comment \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
                 fi
                 echo "<!-- codex-stale-notice-end -->"
                 echo ""
@@ -1947,13 +1947,13 @@ jobs:
                 "repos/$REPO/issues/comments/$existing" \
                 --field body="$(cat "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md")" || write_rc=$?
               if [ "$write_rc" -eq 0 ]; then
-                echo "Preserved GPT 5.6 verdict in comment #$existing; prepended $kind-run notice for $HEAD"
+                echo "Preserved GPT 6.1 verdict in comment #$existing; prepended $kind-run notice for $HEAD"
               elif [ "$write_rc" -eq 4 ]; then
-                echo "GPT 5.6 Review stopped prepending its $kind-run notice for $HEAD because this PR has moved to a newer head; the run for that head owns comment #$existing."
+                echo "GPT 6.1 Review stopped prepending its $kind-run notice for $HEAD because this PR has moved to a newer head; the run for that head owns comment #$existing."
               elif [ "$write_rc" -eq 5 ]; then
-                echo "GPT 5.6 Review left comment #$existing alone because it carries an accepted human override for this lane; the override stands and no notice was prepended."
+                echo "GPT 6.1 Review left comment #$existing alone because it carries an accepted human override for this lane; the override stands and no notice was prepended."
               else
-                echo "::error::GPT 5.6 Review could not prepend its $kind-run notice for $HEAD to comment #$existing, so that comment still presents an older head's verdict with no staleness notice."
+                echo "::error::GPT 6.1 Review could not prepend its $kind-run notice for $HEAD to comment #$existing, so that comment still presents an older head's verdict with no staleness notice."
               fi
             else
               write_rc=0
@@ -1961,13 +1961,13 @@ jobs:
                 "repos/$REPO/issues/comments/$existing" \
                 --field body="$(cat "${RUNNER_TEMP:-/tmp}/codex-comment.md")" || write_rc=$?
               if [ "$write_rc" -eq 0 ]; then
-                echo "Updated existing GPT 5.6 comment #$existing"
+                echo "Updated existing GPT 6.1 comment #$existing"
               elif [ "$write_rc" -eq 4 ]; then
-                echo "GPT 5.6 Review stopped publishing its $HEAD verdict to comment #$existing because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
+                echo "GPT 6.1 Review stopped publishing its $HEAD verdict to comment #$existing because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
               elif [ "$write_rc" -eq 5 ]; then
-                echo "GPT 5.6 Review left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
+                echo "GPT 6.1 Review left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
               else
-                echo "::error::GPT 5.6 Review produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                echo "::error::GPT 6.1 Review produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
                 exit 1
               fi
             fi
@@ -1988,17 +1988,17 @@ jobs:
             retry_comment_write "$MARKER" "$head_needle" "${RUNNER_TEMP:-/tmp}/codex-comment.md" "" \
               gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/codex-comment.md" || write_rc=$?
             if [ "$write_rc" -eq 0 ]; then
-              echo "Published GPT 5.6 comment for $HEAD"
+              echo "Published GPT 6.1 comment for $HEAD"
             elif [ "$write_rc" -eq 3 ]; then
-              echo "::error::GPT 5.6 Review produced a verdict for $HEAD, but this lane's slot already holds one for $HEAD from an earlier run, so this run's verdict was not published and the PR presents that earlier sample instead -- including whatever it says about blocking. Re-run this lane to publish this run's verdict."
+              echo "::error::GPT 6.1 Review produced a verdict for $HEAD, but this lane's slot already holds one for $HEAD from an earlier run, so this run's verdict was not published and the PR presents that earlier sample instead -- including whatever it says about blocking. Re-run this lane to publish this run's verdict."
               exit 1
             elif [ "$write_rc" -eq 4 ]; then
-              echo "GPT 5.6 Review stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
+              echo "GPT 6.1 Review stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
             elif [ "$write_rc" -eq 2 ]; then
-              echo "::error::GPT 5.6 produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+              echo "::error::GPT 6.1 produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             else
-              echo "::error::GPT 5.6 Review produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+              echo "::error::GPT 6.1 Review produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             fi
           fi
@@ -2086,15 +2086,15 @@ jobs:
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
-            echo "Human judgment by $OVERRIDE_ACTOR overrides GPT 5.6 for $HEAD. Passing gate."
+            echo "Human judgment by $OVERRIDE_ACTOR overrides GPT 6.1 for $HEAD. Passing gate."
             exit 0
           fi
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR ($ACTOR): GPT 5.6 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
+            echo "Dependabot PR ($ACTOR): GPT 6.1 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
             exit 0
           fi
           if [ ! -s codex-review-output.md ]; then
-            echo "::error::GPT 5.6 review produced no output"
+            echo "::error::GPT 6.1 review produced no output"
             exit 1
           fi
           reviewed="[GPT-REVIEWED] $HEAD"
@@ -2107,12 +2107,12 @@ jobs:
           # output for THIS run, so a marker quoted inside an old or completed
           # verdict body can never trip this branch.
           if [ "$REFUSED" = "true" ]; then
-            echo "::error::GPT 5.6 REFUSED to review $HEAD: the provider declined the request because of the diff's own content, and re-runs have not been observed to clear this class of refusal. Failing closed — a declined review is not an approval. This needs human adjudication: a repository writer can comment '/ai-review override gpt $HEAD: <one-sentence reason>'."
+            echo "::error::GPT 6.1 REFUSED to review $HEAD: the provider declined the request because of the diff's own content, and re-runs have not been observed to clear this class of refusal. Failing closed — a declined review is not an approval. This needs human adjudication: a repository writer can comment '/ai-review override gpt $HEAD: <one-sentence reason>'."
             exit 1
           fi
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "$reviewed" codex-review-output.md; then
-            echo "::error::GPT 5.6 review did not complete for $HEAD (no [GPT-REVIEWED] marker). Failing closed — re-run the workflow or inspect the GPT 5.6 review step logs."
+            echo "::error::GPT 6.1 review did not complete for $HEAD (no [GPT-REVIEWED] marker). Failing closed — re-run the workflow or inspect the GPT 6.1 review step logs."
             echo "--- review output ---"
             cat codex-review-output.md
             exit 1
@@ -2125,9 +2125,9 @@ jobs:
           # finding, any upheld finding) leaves it at "uphold" and this gate red.
           if grep -Fq "$blocked" codex-review-output.md; then
             if [ "${ADJ_DECISION:-}" = "cleared" ]; then
-              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Opus 5 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
+              echo "::warning::GPT 6.1 flagged blocking findings on $HEAD; Opus 5.5 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
             else
-              echo "::error::GPT 5.6 review flagged a blocking issue on $HEAD — see PR comment. ${ADJ_NOTE:-}"
+              echo "::error::GPT 6.1 review flagged a blocking issue on $HEAD — see PR comment. ${ADJ_NOTE:-}"
               exit 1
             fi
           fi
@@ -2135,6 +2135,6 @@ jobs:
           # finding without the marker means the model's label and its verdict
           # disagree. Worth tuning the prompt over; not worth blocking a merge.
           if grep -qE '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING\b' codex-review-output.md; then
-            echo "::warning::GPT 5.6 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
+            echo "::warning::GPT 6.1 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
           fi
-          echo "GPT 5.6 review completed for $HEAD with no blocking findings."
+          echo "GPT 6.1 review completed for $HEAD with no blocking findings."

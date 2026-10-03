@@ -120,6 +120,68 @@ class TestConcurrentMutation:
         assert errors == []
 
 
+class TestDeleteIfSid:
+    def test_reports_match_mismatch_and_absence(self, session_map):
+        key = "subagent:kept-run"
+        session_map.set(key, "rejected-sid")
+
+        assert session_map.delete_if_sid(key, "other-sid") == (
+            False,
+            "rejected-sid",
+        )
+        assert session_map.mapped_sid(key) == "rejected-sid"
+        assert session_map.delete_if_sid("subagent:absent", "rejected-sid") == (
+            False,
+            None,
+        )
+        assert session_map.delete_if_sid(key, "rejected-sid") == (
+            True,
+            "rejected-sid",
+        )
+        assert session_map.mapped_sid(key) == ""
+
+    def test_compare_and_delete_excludes_a_successor_writer(self, session_map):
+        key = "subagent:kept-run"
+        session_map.set(key, "rejected-sid")
+        compare_completed = threading.Event()
+        release_delete = threading.Event()
+        successor_written = threading.Event()
+        result: list[tuple[bool, str | None]] = []
+        real_remove = session_map._remove_entry
+
+        def held_remove(*args, **kwargs):
+            compare_completed.set()
+            assert release_delete.wait(timeout=10), "delete hold was not released"
+            return real_remove(*args, **kwargs)
+
+        def delete_rejected() -> None:
+            result.append(session_map.delete_if_sid(key, "rejected-sid"))
+
+        def write_successor() -> None:
+            session_map.set(key, "successor-sid")
+            successor_written.set()
+
+        with patch.object(session_map, "_remove_entry", side_effect=held_remove):
+            deleter = threading.Thread(target=delete_rejected)
+            deleter.start()
+            assert compare_completed.wait(timeout=10), "delete never completed its comparison"
+            successor = threading.Thread(target=write_successor)
+            successor.start()
+            try:
+                assert not successor_written.wait(
+                    timeout=0.5
+                ), "successor interleaved between the expected-SID comparison and delete"
+            finally:
+                release_delete.set()
+                deleter.join(timeout=10)
+                successor.join(timeout=10)
+
+        assert not deleter.is_alive() and not successor.is_alive()
+        assert result == [(True, "rejected-sid")]
+        assert successor_written.is_set()
+        assert session_map.mapped_sid(key) == "successor-sid"
+
+
 class TestBatchIsOneCriticalSection:
     """Property 2: a batch excludes other threads, not just extra writes."""
 

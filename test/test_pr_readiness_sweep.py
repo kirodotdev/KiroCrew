@@ -1494,7 +1494,7 @@ def test_a_later_ordinary_comment_is_not_disposition_evidence(runner: Runner) ->
             check_completed_at="2026-08-30T18:55:00Z",
             other_comments=[
                 {
-                    "body": "<!-- codex-ai-review -->\nGPT 5.6 Review",
+                    "body": "<!-- codex-ai-review -->\nGPT 6.1 Review",
                     "updated_at": "2026-08-30T19:40:00Z",
                 }
             ],

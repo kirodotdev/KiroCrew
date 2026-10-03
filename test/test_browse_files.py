@@ -79,8 +79,11 @@ class TestBrowseFiles:
             assert file_names == ["apple_file.txt", "zzz_file.txt"]
 
     @pytest.mark.asyncio
-    async def test_hidden_files_skipped(self, tmp_path, mock_sel):
-        (tmp_path / ".secret_dir").mkdir()
+    async def test_hidden_files_skipped_but_dot_dirs_listed(self, tmp_path, mock_sel):
+        # Dot-directories are listed; dot-files stay hidden.
+        (tmp_path / ".worktrees").mkdir()
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".pytest_cache").mkdir()
         (tmp_path / ".hidden.txt").write_text("x")
         (tmp_path / "visible.txt").write_text("y")
         async with TestClient(TestServer(_make_app())) as client:
@@ -89,7 +92,23 @@ class TestBrowseFiles:
             file_names = {f["name"] for f in data["files"]}
             dir_names = {d["name"] for d in data["dirs"]}
             assert file_names == {"visible.txt"}
-            assert dir_names == set()
+            assert dir_names == {".worktrees"}
+
+    @pytest.mark.asyncio
+    @requires_symlinks
+    async def test_dot_dir_linked_to_a_sensitive_path_filtered(self, tmp_path, mock_sel):
+        secret = tmp_path / "secret_store"
+        secret.mkdir()
+        os.symlink(secret, tmp_path / ".creds", target_is_directory=True)
+
+        def is_sens(p: str) -> bool:
+            return os.path.realpath(p) == os.path.realpath(secret)
+
+        with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", side_effect=is_sens):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/browse-files?path={tmp_path}")
+                data = await resp.json()
+        assert {d["name"] for d in data["dirs"]} == set()
 
     @pytest.mark.asyncio
     async def test_build_artifact_dirs_skipped(self, tmp_path, mock_sel):

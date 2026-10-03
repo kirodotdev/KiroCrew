@@ -74,7 +74,9 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
     entry_channel,
+    entry_person_origin,
     owner_token,
+    person_tag,
     register_drain,
     tag_entry,
 )
@@ -90,6 +92,7 @@ from kiro_crew.messaging.session_resume import refused_resume_is_restricted
 from kiro_crew.messaging.upload_gate import session_is_restricted
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
+from kiro_crew.start_priority import person_priority
 from kiro_crew.teams.approvals import TeamsApprovalDecider
 from kiro_crew.teams.attachments import append_attachment_context, process_teams_attachments
 from kiro_crew.teams.cards import (
@@ -669,6 +672,7 @@ class TeamsDispatcher:
         try:
             await drive_turn(
                 ChannelTurn(
+                    start_priority=person_priority(inbound.person_origin),
                     channel_type="teams",
                     session_key=session_key,
                     inbound_route=inbound_route,
@@ -996,6 +1000,8 @@ class TeamsDispatcher:
                 # this a message queued by one of them during the other's turn is
                 # answered into the other's chat and attributed to them.
                 **_origin_kwargs(inbound),
+                # Whether a PERSON sent it: the drained replay's start priority.
+                **person_tag(inbound.person_origin),
             ):
                 return False
             # An upload with no caption has no text; a placeholder keeps it from
@@ -1069,6 +1075,8 @@ class TeamsDispatcher:
             # collapses rather than from *inbound*, whose turn another person may
             # have opened.
             origin: _QueuedOrigin | None = None
+            # Whether a person sent any entry this turn collapses.
+            person = False
             async with self._queue.lock:
                 remainder: list[tuple[str, str, dict]] = []
                 defer_rest = False
@@ -1114,6 +1122,7 @@ class TeamsDispatcher:
                     if fits:
                         texts.append(item[1])
                         attachments.extend(queued_files)
+                        person = person or entry_person_origin(item[2])
                     else:
                         # Once one message does not fit, defer it AND everything
                         # behind it, so the queue keeps exact FIFO order.
@@ -1155,6 +1164,10 @@ class TeamsDispatcher:
                     user_email=origin.user_email,
                     aad_object_id=origin.aad_object_id,
                     activity_id=origin.activity_id,
+                    # The queued entries' own flag, never the opener's: the finished
+                    # turn can have been opened by a gateway-built wake, and a wake
+                    # can itself have been queued (kiro_crew.start_priority).
+                    person_origin=person,
                 )
                 # The receipt too: its bubble was posted into the chat of whoever
                 # queued first, so editing it under the opener's address reaches a
@@ -1520,11 +1533,16 @@ class TeamsDispatcher:
             self._conv.clear_awaiting(email)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
-                await self._reply(
-                    inbound,
-                    "🗜️ Context was near its limit, so it was compacted automatically.",
-                )
+                # A failed or timed-out compaction is a RETURNED result, not an
+                # exception, so the notice is posted only for a completed one.
+                cr = await provider.wait_for_compaction()
+                if cr["type"] == "completed":
+                    await self._reply(
+                        inbound,
+                        "🗜️ Context was near its limit, so it was compacted automatically.",
+                    )
+                else:
+                    logger.warning("Teams hard-threshold compaction reported %s", cr["type"])
             except Exception:
                 logger.debug("Teams hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(email):
@@ -1569,8 +1587,15 @@ class TeamsDispatcher:
                 await self._reply(inbound, compact_unsupported_reply(unsupported))
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self._reply(inbound, "🗜️ Context compacted.")
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self._reply(inbound, "🗜️ Context compacted.")
+            elif cr["type"] == "failed":
+                await self._reply(inbound, "⚠️ Compaction failed — please try again.")
+            else:
+                await self._reply(inbound, "⚠️ Compaction timed out.")
         except Exception:
             logger.exception("Teams /compact failed for %s", session_key)
             await self._reply(inbound, "⚠️ Compaction failed — please try again.")

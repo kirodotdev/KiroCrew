@@ -241,6 +241,13 @@ def test_user_data_reads_limited_to_managed_instances():
     assert allowed("ec2:DescribeSpotFleetRequestHistory", "*", {})
 
 
+def test_account_wide_tag_reads_denied_but_instance_reads_allowed():
+    # DescribeTags returns free-text tag values for every resource in the
+    # account; DescribeInstances returns tags too, but the launcher needs it.
+    assert not allowed("ec2:DescribeTags", "*", {})
+    assert allowed("ec2:DescribeInstances", "*", {})
+
+
 def test_passrole_denied_for_a_root_path_role():
     root_role = f"arn:aws:iam::{_ACCOUNT}:role/{iam.ROLE_NAME_PREFIX}demo"
     ctx = {"iam:PassedToService": "ec2.amazonaws.com", **_MANAGED}

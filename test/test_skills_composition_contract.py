@@ -113,15 +113,15 @@ _LOADER_MEMBERS = {
         _ALLOWED_CANDIDATE_TOP
     """,
     "method": """
-        __init__ _admit_snapshot_path _adopt_catalog _adopt_extra_paths
+        __init__ _adopt_extra_paths _adopt_snapshot
         _append_project_skill_bodies _archive_root _audit_project_skill_enforcement
         _auto_activity _auto_created_ts _auto_slug_available _auto_slug_claim_lock
         _body_hits _body_matches _cached_frontmatter _candidate_layout_findings_at
         _candidate_layout_ok _catalog_fingerprint_hint _catalog_scope_id
         _catalog_scope_key _catalog_worker_loop _collect_scripts_pinned
         _confined_frontmatter_and_size _create_skill_pinned _delivery_count
-        _exact_read_while_building _get_disabled_app_names _invalidate_iter_cache _iter
-        _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
+        _exact_read_while_building _get_disabled_app_names _invalidate_iter_cache _is_user_authored
+        _iter _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
         _max_triggered_now _on_config_change _owned_hint _owning_app _pending_root
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
         _read_candidate_pinned _read_enumerated_skill_bytes _read_exact_key
@@ -131,7 +131,7 @@ _LOADER_MEMBERS = {
         _redact_validation_report _request_catalog_refresh _resolve_path
         _resolve_path_and_root _resolve_snapshot_version _run_catalog_build
         _scoped_entries _served_key_by_realpath _snapshot_admitted_roots
-        _trusted_project_key _validate_and_redact_candidate _versions_root
+        _trusted_project_key _user_first _validate_and_redact_candidate _versions_root _vet_unconfined_path
         approve_pending_skill approve_pending_skill_checked approve_pending_update
         approve_pending_update_checked archive_auto_skill catalog_project_skills
         catalog_status close create_auto_skill create_skill credit_skill_reads
@@ -160,10 +160,9 @@ _LOADER_MEMBERS = {
 _LOADER_SIGNATURES = {
     "_ALLOWED_CANDIDATE_TOP": "['.meta.json', 'SKILL.md', 'scripts']",
     "__init__": "(self, skills_path: 'Path | None' = None, install_builtins: 'bool' = True, config: 'KiroCrewConfig | None' = None)",
-    "_admit_snapshot_path": "(self, path: 'Path') -> 'bool'",
-    "_adopt_catalog": "(self, project_key: 'str', rows: 'list[tuple[str, Path, str | None]]', fingerprints: 'dict[str, str]', *, complete: 'bool') -> 'None'",
+    "_adopt_snapshot": "(self, project_key: 'str', snapshot: '_StoredCatalog', *, generation: 'int') -> 'list[tuple[str, Path, str | None]] | None'",
     "_adopt_extra_paths": "(self, resolved_paths: 'list[Path]') -> 'None'",
-    "_append_project_skill_bodies": "(self, parts: 'list[str]', project_skills: 'list[dict]', project_dir: 'str | Path | None', budget: 'int | None') -> 'None'",
+    "_append_project_skill_bodies": "(self, parts: 'list[str]', project_skills: 'list[dict]', project_dir: 'str | Path | None', budget: 'int | None', pinned: 'set[str] | None' = None) -> '_delivery.SkippedProjectSkills'",
     "_archive_root": "(self) -> 'Path'",
     "_audit_project_skill_enforcement": "(self, project_dir: 'str | Path', key: 'str | None', allowed: 'bool') -> 'None'",
     "_auto_activity": "(self, key: 'str', path_str: 'str', meta: 'dict') -> 'tuple[int, float]'",
@@ -173,7 +172,7 @@ _LOADER_SIGNATURES = {
     "_auto_slug_from_name": "(name: 'str') -> 'str'",
     "_body_hits": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'dict[str, int]'",
     "_body_matches": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'tuple[dict[str, set[str]], bool]'",
-    "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None) -> 'dict[str, str]'",
+    "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None, for_write: 'bool' = False) -> 'dict[str, str]'",
     "_candidate_has_symlink": "(pdir: 'Path') -> 'bool'",
     "_candidate_layout_findings_at": "(self, root_fd: 'int') -> 'list[str]'",
     "_candidate_layout_ok": "(self, src: 'Path', name: 'str') -> 'bool'",
@@ -193,12 +192,13 @@ _LOADER_SIGNATURES = {
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
     "_invalidate_iter_cache": "(self) -> 'None'",
     "_is_pending_slug_safe": "(slug: 'str') -> 'bool'",
+    "_is_user_authored": "(self, s: 'dict') -> 'bool'",
     "_iter": "(self, project_dir: 'str | Path | None' = None) -> 'list[tuple[str, Path, str | None]]'",
     "_iter_uncached": "(self, project_key: 'str | None' = None) -> 'list[tuple[str, Path, str | None]]'",
     "_iter_visible": "(self, project_dir: 'str | Path | None' = None) -> 'list[tuple[str, Path, str | None]]'",
     "_key_denotes_path": "(key: 'str', absolute: 'str', own_roots: 'tuple[Path, ...]', provider_roots: 'tuple[str, ...]') -> 'bool'",
     "_legacy_context": "(self, all_skills: 'list[dict]', restricted: 'bool' = False, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None) -> 'str'",
-    "_load_catalog_snapshot": "(self, project_key: 'str') -> 'tuple[list[tuple[str, Path, str | None]], float] | None'",
+    "_load_catalog_snapshot": "(self, project_key: 'str') -> '_StoredCatalog | None'",
     "_max_triggered_now": "(self) -> 'int'",
     "_on_config_change": "(self, change: \"'live.ConfigChange'\") -> 'None'",
     "_owned_hint": "(self, skill_file: 'Path') -> 'bool'",
@@ -236,7 +236,9 @@ _LOADER_SIGNATURES = {
     "_short_desc": "(desc: 'str', suffix: 'str' = '...') -> 'str'",
     "_snapshot_admitted_roots": "(self) -> 'tuple[str, ...]'",
     "_trusted_project_key": "(self, project_dir: 'str | Path | None') -> 'str'",
+    "_user_first": "(self, ranked: 'list[dict]') -> 'list[dict]'",
     "_validate_and_redact_candidate": "(self, src: 'Path', name: 'str') -> 'dict[Path, bytes]'",
+    "_vet_unconfined_path": "(self, path: 'Path') -> 'bool'",
     "_versions_root": "(self, target_slug: 'str') -> 'Path'",
     "_write_skill_md": "(skill_file: 'Path', content: 'str', *, dir_fd: 'int | None') -> 'bool'",
     "approve_pending_skill": "(self, slug: 'str') -> 'str | None'",

@@ -15,6 +15,13 @@ export interface SlotListSync {
   onSlotPatch(frame: SlotPatchFrame): void
 }
 
+/** Tell AppHost apps (`useAppEvents('slots')`) the session list changed.
+ *  No payload: an app re-reads through its own scoped API client, so the
+ *  owner's full slot list never crosses into app code. */
+function notifyAppsSlotsChanged(): void {
+  window.dispatchEvent(new CustomEvent('mc:app:slots', { detail: null }))
+}
+
 export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient): SlotListSync {
   const lastGitlabHostsGenRef = useRef<number | null>(null)
   const lastFoldersGenRef = useRef<number | null>(null)
@@ -152,6 +159,7 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       // and issues another, so separate calls put two identical GETs on the
       // wire where one answers them all.
       for (const key of staleKeys) queryClient.invalidateQueries({ queryKey: [key] })
+      notifyAppsSlotsChanged()
     },
     onSlotPatch(frame) {
       const dashboard = store.getState().dashboard
@@ -166,6 +174,7 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       // restore that row, so the authoritative list repairs the omission.
       if (hasUnknownRow) dispatch(fetchSlots())
       dispatch(sseSlotPatch(frame))
+      notifyAppsSlotsChanged()
     },
   }), [dispatch, queryClient])
 }

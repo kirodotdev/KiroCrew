@@ -249,7 +249,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
                     {stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}
                   </div>
                 </div>
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                <div className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity shrink-0">
                   <FolderMenu folder={folder} folders={folders} actions={actions} />
                 </div>
               </div>

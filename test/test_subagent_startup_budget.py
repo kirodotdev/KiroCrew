@@ -54,7 +54,18 @@ def _starting(now: float, elapsed: float) -> SubagentInfo:
 
 
 def _one_clock(budget: float, collect: int = COLLECT) -> float:
-    return budget + collect + _STARTUP_COLLECT_GRACE_SECS + _STARTUP_LAUNCH_MARGIN_SECS
+    """Every phase one start clock RUNS through: two rounds (a retried start) of
+    the spawn's own ``initialize`` handshake and ``session/new``, the late-start
+    collector's wait and the margin. The clock pauses only in a start QUEUE, so
+    each of these counts."""
+    from kiro_crew.constants import INITIALIZE_TIMEOUT_SECS
+
+    return (
+        2 * (budget + INITIALIZE_TIMEOUT_SECS)
+        + collect
+        + _STARTUP_COLLECT_GRACE_SECS
+        + _STARTUP_LAUNCH_MARGIN_SECS
+    )
 
 
 @pytest.mark.parametrize("budget", [90, 900])
@@ -74,6 +85,18 @@ def test_start_past_the_window_is_reaped(monkeypatch, budget):
     _budget(monkeypatch, budget)
     mgr = _manager()
     assert mgr._is_startup_stalled(_starting(NOW, _one_clock(budget) + 1), NOW) is True
+
+
+@pytest.mark.parametrize("budget", [90, 300])
+def test_a_retried_start_spending_two_full_handshake_rounds_is_not_reaped(monkeypatch, budget):
+    """A retried start (a dead-runtime retry, a re-derive, a resume whose runtime
+    died, a re-projected claim) runs ``initialize`` and ``session/new`` twice on one
+    clock; with the collector wait at its floor, two full rounds still fit."""
+    from kiro_crew.constants import INITIALIZE_TIMEOUT_SECS
+
+    _budget(monkeypatch, budget, collect=10)
+    two_rounds = 2 * (budget + INITIALIZE_TIMEOUT_SECS)
+    assert _manager()._is_startup_stalled(_starting(NOW, two_rounds), NOW) is False
 
 
 def test_late_answer_inside_the_collector_wait_is_not_reaped(monkeypatch):

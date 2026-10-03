@@ -1,6 +1,6 @@
 """Keyword-only lesson ranking: rare words decide, long rows do not win on length.
 
-Startup renders lessons with no query vector, so the keyword score is the whole
+A startup render with no query vector makes the keyword score the whole
 ranking there. A capped overlap count would tie every rule sharing ten tokens with
 a long first message, and the stable sort would then return newest-first. These
 cases pin the scorer used instead: rarity-weighted overlap divided by the square
@@ -58,7 +58,7 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[VectorMem
     # Distinct write instants, so newest-first is a defined order to beat.
     ticks = iter(f"2026-01-01T00:00:00.{tick:06d}+00:00" for tick in range(1, 1000))
     monkeypatch.setattr(vector_memory, "_now_iso", lambda: next(ticks))
-    # Startup has no query vector; pin that no embedder is consulted either way.
+    # These renders carry no query vector; pin that no embedder is consulted either way.
     memory.embed_fn = None
     yield memory
     memory.close()

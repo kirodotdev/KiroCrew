@@ -4658,13 +4658,10 @@
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "Ask the {{productName}} owner to install Kiro CLI and sign in on this gateway. This dashboard\n          will open for you as soon as the gateway is ready.",
       "check_again": "Check again",
       "complete": "Complete",
-      "copy_sign_in_command": "Copy sign-in command",
       "could_not_check_kiro_cli": "Could not check Kiro CLI.",
       "gateway": "gateway",
-      "gateway_host": "gateway host",
       "gateway_setup_required": "Gateway setup required",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Install Kiro CLI, sign in once, and {{productName}} will take it from here.",
-      "kiro_crew_uses_kiro_cli_as_its_agent_engine_comp": "{{productName}} uses Kiro CLI as its agent engine. Complete these two steps on the",
       "or_run_in_terminal": "or run in terminal:",
       "refresh": "Refresh",
       "retry_the_gateway_check_before_starting_a_sessio": "Retry the gateway check before starting a session.",
@@ -4673,9 +4670,7 @@
       "set_up_kiro": "Set up Kiro",
       "setup": "Setup",
       "setup_check_unavailable": "Setup check unavailable",
-      "sign_in_to_kiro": "Sign in to Kiro",
       "the_gateway_owner_needs_to_finish_setup": "The gateway owner needs to finish setup.",
-      "then_the_dashboard_will_open_automatically": ", then\n              the dashboard will open automatically.",
       "try_again": "Try again",
       "we_could_not_check_kiro_cli": "We could not check Kiro CLI.",
       "your_crew_is_almost_ready": "Your crew is almost ready."
@@ -5529,9 +5524,7 @@
       "this_dashboard_is_served_over_https_so_the_brows": "This dashboard is served over HTTPS, so the browser blocks embedding an",
       "web_preview": "Web preview"
     },
-    "welcomeView": {
-      "refresh_suggestions": "Refresh suggestions"
-    },
+    "welcomeView": {},
     "widgetFrame": {
       "could_not_render": "Couldn't render this widget",
       "download_as_html": "Download as HTML",
@@ -6717,7 +6710,7 @@
       "drag_to_reorder": "Drag to reorder",
       "drop_here_to_remove_from_folder": "Drop here to remove from folder",
       "drop_to_reference_session": "Drop to reference this session",
-      "duplicate": "Duplicate",
+      "duplicate": "Fork chat",
       "failed_to_load_preview": "Failed to load preview.",
       "filter": "Filter",
       "filter_manage_tags": "Filter & manage tags",
@@ -6972,7 +6965,6 @@
     },
     "developer": {
       "agentBackendTab": {
-        "agent_backend": "Agent Backend",
         "approval_agent_spec": "Asks before each tool, because {{productName}} tells it to.",
         "approval_seeded_settings": "Asks before each tool only if its own settings say so. {{productName}} writes that setting and cannot confirm it took effect.",
         "approval_session_config": "Asks before it runs a command or changes a file. {{productName}} turns that on and checks it. Plain reads do not ask.",
@@ -6998,8 +6990,6 @@
         "card_subagent_continuation": "A subagent chat can be picked up later",
         "card_supports_n_of_m": "{{name}} supports {{available}} of {{total}} features",
         "card_unmeasured_no_driven_capture": "Nobody has tried this on a real session yet, so it is not available with this agent. Nothing for you to do.",
-        "check_again": "Check again",
-        "checking": "Checking…",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code normally asks before it acts, and {{productName}} gates that request. But a tool pre-approved in Claude's own settings — including a .claude/settings.json inside the project — never asks, so the deny rules and audit log do not see it.",
         "could_not_load_the_agent_backend": "Could not load the agent backend.",
@@ -7008,8 +6998,6 @@
         "experimental": "Experimental",
         "in_use": "In use.",
         "install_check_failed": "Could not check whether this is installed on this machine.",
-        "install_command": "Install command",
-        "installed_check_again_to_use": "Installed on this machine. Press Check again to pick it up. If this line is still here after that, restart {{productName}} from Settings > About.",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Loading configuration…",
@@ -7037,12 +7025,8 @@
         "retry": "Retry",
         "set_is_fixed_at_gateway_start": "Which agents appear here is decided when the gateway starts. A managed deployment can restrict the set by policy; editing that policy takes effect on the next start.",
         "use_button_in_use": "In use",
-        "use_harness": "Use {{name}}",
-        "word_missing": "Missing",
-        "word_not_checked": "Not checked",
-        "word_not_offered": "Not offered",
-        "word_ready": "Ready",
-        "word_recheck": "Not live"
+        "use_switches_new_sessions": "New sessions switch from {{current}} to {{name}}.",
+        "word_not_offered": "Not offered"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Overlays the chat with live scroll and anchor diagnostics",
@@ -7476,6 +7460,8 @@
       "filters_clear": "Clear filters",
       "star": "Star {{name}}",
       "unstar": "Unstar {{name}}",
+      "default_agent_failed_title": "Couldn't read the default crewmate, so every crewmate is shown",
+      "all_hidden_hint": "Crewmates you haven't used yet are hidden. Search to find them.",
       "star_failed_title": "Star not saved",
       "star_failed": "Could not update this crewmate's star.",
       "filter_source_mine_description": "Crews you created in the crew manager",
@@ -8707,7 +8693,7 @@
         "history_expanded": "History Expanded",
         "how_aggressively_the_agent_uses_inline_widgets_f": "How aggressively the agent uses inline widgets for visual content",
         "how_file_diff_chips_appear_below_assistant_messa": "How file diff chips appear below assistant messages",
-        "how_long_models_think_before_answering_by_defaul": "How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x).",
+        "how_long_models_think_before_answering_by_defaul": "Higher is slower and costs more. Only available on reasoning-capable models.",
         "how_long_to_wait_for_the_agent_to_honor_a_stop_p": "How long to wait for the agent to honor a Stop press before forcefully killing the session. Longer budgets preserve session state more often but make stops feel laggy when agents are stuck in long tool calls.",
         "how_much_an_automatically_registered_source_may_i": "How much an automatically-registered source may take in one pass. Each piece of a document costs one extraction call, so this is what bounds the cost; newest documents land first and the rest follow on later passes. 0 removes the bound. Default {{count}}.",
         "how_terse_the_agent_s_prose_is_ultra_concise_cap": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level; security warnings always appear but stay brief, and multi-step instructions stay complete. Answer-only goes further and drops explanation entirely: one sentence at most, and detail only when you ask for it — or when a decision is consequential enough (security, exposure, data loss, spend, anything hard to undo) that you need the reasoning to choose correctly.",

@@ -21,9 +21,11 @@ any one of them is a second diagnosis of one file, and the drift guard here fail
 
 from __future__ import annotations
 
+import argparse
 import inspect
 import os
 import sys
+from unittest import mock
 
 import pytest
 
@@ -633,11 +635,38 @@ class TestTheSiblingRefusalsAreDefusedToo:
     """The new CLI print takes ANY ``SandboxCeilingUnsealable`` verbatim, not just ours.
 
     ``cli_chat._run_chat`` prints the exception's own text, so every builder of that
-    exception is now a terminal sink. Three siblings interpolate ``os.readlink`` output the
+    exception is now a terminal sink. The siblings interpolate ``os.readlink`` output the
     same way the live-target formatter did, and leaving them raw would make this change's
     stated rule ("defused where the sentence is BUILT") true only of the sentences it
     happens to own.
+
+    Every one of them now reads the link target through ``_symlink_target_display``, which
+    returns it already escaped, so the cases below cover that one helper as well as each
+    refusal's own path, ``harm``, ``remedy`` and ``OSError`` text. ``_require_real_file_nofollow``
+    is the case to read first: its ``remedy`` is built from the very path the sentence
+    names (``require_unaliased_launch_state`` passes ``_delete_file_command(path)``), so
+    escaping only the left half of the sentence would re-emit the bytes on the right AND
+    show two different names for one file.
     """
+
+    @staticmethod
+    def _assert_defused(message: str, what: str) -> None:
+        """No control byte from *message* survived, named by code point when one did."""
+        leaked = sorted(_FORBIDDEN & set(message))
+        assert not leaked, f"{what} leaked {[hex(ord(c)) for c in leaked]}"
+
+    @staticmethod
+    def _strict_file(target: str, **kwargs) -> None:
+        """The strict file check with FIXED wording, for the cases measuring shape only.
+
+        ``harm`` and ``remedy`` are required of every caller, so a case that is not about
+        their text supplies constants here. The production remedy -- the one built from the
+        refused path -- is exercised by ``test_the_strict_file_remedy_is_defused`` through
+        the real caller instead, because a constant cannot catch a raw path on that side.
+        """
+        sandbox._require_real_file_nofollow(
+            target, harm="pick what the launch does", remedy="Make it a lone file.", **kwargs
+        )
 
     def test_the_dangling_ceiling_refusal_is_defused(self, tmp_path) -> None:
         link = tmp_path / "ceiling"
@@ -646,8 +675,7 @@ class TestTheSiblingRefusalsAreDefusedToo:
         with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
             sandbox._refuse_if_dangling_symlink(str(link))
 
-        leaked = sorted(_FORBIDDEN & set(str(refusal.value)))
-        assert not leaked, f"dangling-ceiling refusal leaked {[hex(ord(c)) for c in leaked]}"
+        self._assert_defused(str(refusal.value), "dangling-ceiling refusal")
 
     def test_the_masked_directory_refusal_is_defused(self, tmp_path) -> None:
         real = tmp_path / f"{_LINKABLE_PAYLOAD}real"
@@ -658,8 +686,7 @@ class TestTheSiblingRefusalsAreDefusedToo:
         with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
             sandbox._refuse_if_symlink_leaf(str(link))
 
-        leaked = sorted(_FORBIDDEN & set(str(refusal.value)))
-        assert not leaked, f"masked-directory refusal leaked {[hex(ord(c)) for c in leaked]}"
+        self._assert_defused(str(refusal.value), "masked-directory refusal")
 
     def test_the_create_race_refusal_is_defused(self, tmp_path) -> None:
         """The third site, which the review did not name -- found by grepping for all of
@@ -672,8 +699,171 @@ class TestTheSiblingRefusalsAreDefusedToo:
         with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
             sandbox._require_real_dir_nofollow(str(link))
 
-        leaked = sorted(_FORBIDDEN & set(str(refusal.value)))
-        assert not leaked, f"create-race refusal leaked {[hex(ord(c)) for c in leaked]}"
+        self._assert_defused(str(refusal.value), "create-race refusal")
+
+    def test_the_strict_file_symlink_refusal_is_defused(self, tmp_path) -> None:
+        link = tmp_path / "cloud.json"
+        link.symlink_to(tmp_path / f"{_LINKABLE_PAYLOAD}real.json")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            self._strict_file(str(link))
+
+        message = str(refusal.value)
+        self._assert_defused(message, "strict-file refusal")
+        # A raw newline would start an unprefixed line that reads as the CLI's own output,
+        # which is the first harm ``safe_terminal_line`` names and the one byte ``_FORBIDDEN``
+        # cannot report, because the escaped rendering is the literal ``\x0a``.
+        assert "\n" not in message
+        assert str(link) in message, "the refused path is the operator's handle on this"
+        assert "real.json" in message, "the link's destination is the diagnostic value"
+
+    def test_the_protected_leaf_refusal_is_defused(self, tmp_path) -> None:
+        # A directory leaf whose disposition attaches to the NAME. Picked from the
+        # production set, skipping any multi-component entry: a sibling set already holds
+        # one, and ``os.symlink`` into a missing parent would fail for its own reason.
+        leaf = next(
+            (name for name in sorted(sandbox._CREW_NO_ALIAS_LEAVES) if "/" not in name), None
+        )
+        assert leaf is not None, "no single-component no-alias leaf to plant a link at"
+        link = tmp_path / leaf
+        link.symlink_to(tmp_path / f"{_LINKABLE_PAYLOAD}elsewhere")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            sandbox._refuse_if_aliased_protected_leaf(str(link))
+
+        message = str(refusal.value)
+        self._assert_defused(message, "protected-leaf refusal")
+        assert str(link) in message
+        assert "elsewhere" in message
+
+    def test_the_strict_file_remedy_is_defused(self, tmp_path) -> None:
+        """The remedy is built FROM the refused path, so it is a second copy of it.
+
+        ``require_unaliased_launch_state`` spells its remedy as ``_delete_file_command(path)``
+        -- the path again, inside a command the operator is meant to copy. Escaping the
+        sentence's left half alone would leave those bytes live on the right and print two
+        different names for one file, so this case uses the real caller rather than the
+        fixed wording the other cases supply.
+        """
+        record = tmp_path / f"cloud_launch_state{_LINKABLE_PAYLOAD}.json"
+        record.write_text("{}", encoding="utf-8")
+        os.link(str(record), str(tmp_path / "second-name.json"))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            sandbox.require_unaliased_launch_state(str(record))
+
+        message = str(refusal.value)
+        self._assert_defused(message, "strict-file remedy")
+        assert "2 hardlinks" in message, "the shape that refused is still named"
+        assert "cloud_launch_state" in message
+
+    def test_a_non_regular_strict_file_refusal_is_defused(self, tmp_path) -> None:
+        target = tmp_path / f"cloud{_LINKABLE_PAYLOAD}.json"
+        target.mkdir()
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            self._strict_file(str(target))
+
+        message = str(refusal.value)
+        self._assert_defused(message, "non-regular refusal")
+        assert "not a regular file" in message
+
+    @pytest.mark.parametrize("probe", ["lstat", "fstat"])
+    def test_a_strict_file_stat_failure_is_defused(self, tmp_path, monkeypatch, probe) -> None:
+        # The ``OSError`` text is the third value these sentences quote, and ``strerror``
+        # comes from the platform rather than from this process.
+        target = tmp_path / "cloud.json"
+        target.write_text("{}", encoding="utf-8")
+        failure = OSError(5, f"io error{_LINKABLE_PAYLOAD}", str(target))
+        monkeypatch.setattr(sandbox.os, probe, mock.Mock(side_effect=failure))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            self._strict_file(str(target), fd=0 if probe == "fstat" else None)
+
+        message = str(refusal.value)
+        self._assert_defused(message, f"{probe} failure")
+        assert "io error" in message
+
+    def test_a_target_that_escapes_to_nothing_is_named_not_blanked(self, tmp_path) -> None:
+        """Suppressing the field entirely is what the planter of the link would choose.
+
+        A target that is ALL control bytes escapes to the empty string, which would print
+        ``-> .`` and read as though the refusal had nothing to report.
+        """
+        link = tmp_path / "staging"
+        link.symlink_to("\x1b[2K\x1b[31m")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            sandbox._refuse_if_symlink_leaf(str(link))
+
+        assert "(unprintable)" in str(refusal.value)
+
+    def test_a_surrogate_escaped_link_target_is_defused(self, tmp_path) -> None:
+        """The byte a file name can hold that is NOT the character the C1 class matches.
+
+        ``os.readlink`` decodes with ``surrogateescape``, so a raw ``0x9b`` in the target
+        comes back as U+DC9B rather than U+009B. Re-encoded by a stream using the same
+        handler -- the default under C/POSIX locale coercion -- it becomes the 8-bit CSI
+        again, so the refusal would drive the terminal it is printed on. Asserted on the
+        ENCODED form, because that is what the terminal receives.
+        """
+        link = tmp_path / "staging"
+        os.symlink(os.fsdecode(b"\x9b2J-target"), str(link))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            sandbox._refuse_if_symlink_leaf(str(link))
+
+        message = str(refusal.value)
+        assert not [ch for ch in message if 0xD800 <= ord(ch) <= 0xDFFF]
+        assert b"\x9b" not in message.encode("utf-8", "surrogateescape")
+        # And it still prints at all: a lone surrogate makes a strict stream raise.
+        assert message.encode("utf-8")
+
+    def test_an_unreadable_target_still_refuses(self, tmp_path, monkeypatch) -> None:
+        link = tmp_path / "staging"
+        link.symlink_to(tmp_path / "elsewhere")
+        monkeypatch.setattr(sandbox.os, "readlink", mock.Mock(side_effect=OSError(5, "boom")))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            sandbox._refuse_if_symlink_leaf(str(link))
+
+        assert "(unreadable)" in str(refusal.value)
+
+    def test_an_ordinary_path_is_quoted_unchanged(self, tmp_path) -> None:
+        """Escaping must not alter what an operator copies out of an ordinary refusal."""
+        link = tmp_path / "cloud.json"
+        link.symlink_to(tmp_path / "elsewhere.json")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as refusal:
+            self._strict_file(str(link))
+
+        assert f"{link} is a SYMLINK -> {tmp_path / 'elsewhere.json'}." in str(refusal.value)
+
+    def test_the_cloud_cli_sink_defuses_builders_it_does_not_own(self) -> None:
+        """``kirocrew cloud`` prints every one of these verbatim, as ``kirocrew chat`` does.
+
+        The sink is the half that covers a builder added later in a module this handler
+        does not own, which is why both halves exist.
+
+        Asserted on what the handler HANDS ``ui.fail``, not on captured stdout. ``ui``
+        binds its colour constants at import from ``sys.stdout.isatty()``, and ``RED`` is
+        ``\x1b[31m`` -- a byte-for-byte substring of the payload here -- so a run with
+        ``-s`` on a terminal would fail on the UI's own decoration while the refusal text
+        was escaped correctly.
+        """
+        from kiro_crew import cli_cloud
+
+        def explode(_args):
+            raise sandbox.SandboxCeilingUnsealable(f"refused {_LINKABLE_PAYLOAD} here")
+
+        with mock.patch.dict(cli_cloud._DISPATCH, {"list": explode}, clear=False):
+            with mock.patch.object(cli_cloud.ui, "fail") as failed:
+                assert cli_cloud.handle_cloud(argparse.Namespace(cloud_action="list")) == 1
+
+        failed.assert_called_once()
+        message = failed.call_args.args[0]
+        self._assert_defused(message, "the cloud sink")
+        assert "refused" in message
 
 
 class TestAnUnconfinedHostIsNotToldItIsBroken:

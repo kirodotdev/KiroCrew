@@ -52,6 +52,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
+from kiro_crew.start_priority import person_priority
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -257,6 +258,7 @@ class IMessageDispatcher:
 
         await drive_turn(
             ChannelTurn(
+                start_priority=person_priority(inbound.person_origin),
                 channel_type="imessage",
                 session_key=session_key,
                 inbound_route=inbound_route,
@@ -406,11 +408,16 @@ class IMessageDispatcher:
             self._conv.clear_awaiting(handle)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
-                await self._notify(
-                    handle,
-                    "🗜️ Context was near its limit, so it was compacted automatically.",
-                )
+                # A failed or timed-out compaction is a RETURNED result, not an
+                # exception, so the notice is posted only for a completed one.
+                cr = await provider.wait_for_compaction()
+                if cr["type"] == "completed":
+                    await self._notify(
+                        handle,
+                        "🗜️ Context was near its limit, so it was compacted automatically.",
+                    )
+                else:
+                    logger.warning("imessage hard-threshold compaction reported %s", cr["type"])
             except Exception:
                 logger.debug("imessage hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(handle):
@@ -454,8 +461,15 @@ class IMessageDispatcher:
                 await self._notify(handle, _compact_refusal_text(unsupported))
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self._notify(handle, "🗜️ Context compacted.")
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self._notify(handle, "🗜️ Context compacted.")
+            elif cr["type"] == "failed":
+                await self._notify(handle, "⚠️ Compaction failed — please try again.")
+            else:
+                await self._notify(handle, "⚠️ Compaction timed out.")
         except Exception:
             logger.exception("imessage /compact failed for %s", session_key)
             await self._notify(handle, "⚠️ Compaction failed — please try again.")

@@ -66,6 +66,8 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _coerce_requested_mode,
+    _has_validated_effort_marker,
+    _load_restore_cfg,
     _local_turn_generation,
     _local_turn_prompt,
     _rebase_rehydrated_refresh_mark,
@@ -73,6 +75,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
     _restore_dismissed_source_links,
+    _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
     _validate_autocompact_pct,
@@ -160,6 +163,7 @@ from kiro_crew.dashboard.remote_relay import (
     relay_remote_turn,
     remote_bound_refusal,
 )
+from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
@@ -1006,7 +1010,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if (
         not body.get("steer")
         and state.subagents is not None
-        and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+        and state.subagents.running_agents_for(effective_session_key(slot))
     ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
@@ -4497,8 +4501,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # `name` can address an already-used slot, so clearing outright would
             # unfile a conversation that was sitting in a perfectly good folder
             # of its own. This is a chat turn, so declining the move beats
-            # failing the turn.
-            if not await _unhide_folder(state, folder_id):
+            # failing the turn. A person opening a chat in the folder (no
+            # internal secret: the browser) claims it, so an agent's
+            # chat_folder_delete refuses it from then on.
+            if not await _unhide_folder(
+                state,
+                folder_id,
+                claim_for_person=(
+                    folder_id != previous_folder
+                    and request.headers.get("X-Internal-Secret") is None
+                ),
+            ):
                 slot.folder_id = previous_folder
                 slot._folder_changed = previous_changed
             else:
@@ -4708,7 +4721,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # kiro-cli spawned here would idle until it timed out, having consumed a
     # process and a model handshake for a session that never uses it.
     if not slot.is_remote:
-        schedule_eager_spawn(state, slot)
+        schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     return web.json_response(state.serialize_slot(slot))
 
 
@@ -5935,6 +5948,7 @@ async def stop_slot_turn(
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)
+            slot._steer_possibly_delivered.discard(_discarded)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
@@ -9592,7 +9606,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # project), so re-arm the speculative spawn for the new bindings.
     if slot.agent is committed_agent:
         slot.agent_kind = bindings.selection_kind if assignment_resolved else ""
-    schedule_eager_spawn(state, slot)
+    schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     state.push_slots_update()
     resp_body: dict = {
         "ok": True,
@@ -11996,7 +12010,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # cwd change is paid during think-time. The eager task consumes the
             # deferred reset itself, but only when no turn is running — the
             # same killpg constraint that deferred the reset applies to it.
-            schedule_eager_spawn(state, slot)
+            schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
 
@@ -13478,6 +13492,13 @@ async def resume_slot_from_history(
     restored_agent = await asyncio.to_thread(
         _restored_agent_name, _resume_session_identity(state, history_key), meta
     )
+    # The model restore needs the provider (config.json) and the effort marker
+    # (a file under the config dir). Both are disk reads, so they are taken here,
+    # off the loop, before the synchronous construction below.
+    _prefetched_effort = meta.get("reasoning_effort")
+    restore_cfg, effort_marker = await asyncio.to_thread(
+        lambda: (_load_restore_cfg(), _has_validated_effort_marker(_prefetched_effort))
+    )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
     resume_outcome = await _live_slot_for_resume(
@@ -13801,6 +13822,17 @@ async def resume_slot_from_history(
         # Restore the protected choice read before construction, not the
         # editable transcript's provisional agent name.
         slot.agent = restored_agent
+    # Same model + effort restore as the restart loaders. Without it the resumed
+    # slot runs on the default model, and its next save writes ``model: ""``
+    # over the user's pick. Resume only: import deliberately does not carry a
+    # model (see session_transfer). The marker was read for the pre-await
+    # snapshot, so it only vouches for an unchanged effort value.
+    _restore_model_fields(
+        slot,
+        meta,
+        cfg=restore_cfg,
+        effort_marker=effort_marker and meta.get("reasoning_effort") == _prefetched_effort,
+    )
     if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
         # The hook reads the slot's own fields; ``_app`` comes from the request
         # (none here), so the line's app scope is restored onto the built slot

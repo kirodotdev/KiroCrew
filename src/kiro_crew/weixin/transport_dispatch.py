@@ -40,6 +40,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_TIMED_OUT_REPLY_ZH,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     note_user_stop,
@@ -65,6 +66,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
+from kiro_crew.start_priority import person_priority
 from kiro_crew.weixin.attachments import process_weixin_attachments
 from kiro_crew.weixin.commands import ConversationState, build_help, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
@@ -384,6 +386,7 @@ class WeixinDispatcher:
         # messaging.dispatch. Only the weixin-specific pieces are injected.
         await drive_turn(
             ChannelTurn(
+                start_priority=person_priority(inbound.person_origin),
                 channel_type="weixin",
                 session_key=session_key,
                 # Durable inbound spool: the peer id IS the reply
@@ -651,8 +654,13 @@ class WeixinDispatcher:
             self._conv.clear_awaiting(user_id)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
-                await self._say(user_id, _AUTO_COMPACTED)
+                # A failed or timed-out compaction is a RETURNED result, not an
+                # exception, so the notice is posted only for a completed one.
+                cr = await provider.wait_for_compaction()
+                if cr["type"] == "completed":
+                    await self._say(user_id, _AUTO_COMPACTED)
+                else:
+                    logger.warning("weixin hard-threshold compaction reported %s", cr["type"])
             except Exception:
                 logger.debug("weixin hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(user_id):
@@ -685,8 +693,15 @@ class WeixinDispatcher:
                 await self._say(user_id, compact_unsupported_reply_zh(unsupported))
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self._say(user_id, _COMPACT_DONE)
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self._say(user_id, _COMPACT_DONE)
+            elif cr["type"] == "failed":
+                await self._say(user_id, _COMPACT_FAILED)
+            else:
+                await self._say(user_id, COMPACT_TIMED_OUT_REPLY_ZH)
         except Exception:
             logger.exception("weixin /compact failed for %s", session_key)
             await self._say(user_id, _COMPACT_FAILED)

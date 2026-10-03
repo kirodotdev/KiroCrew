@@ -2223,6 +2223,12 @@ _SHAPES = [
         None,
         id="provider-no-apply-below-floor",
     ),
+    pytest.param(
+        {"managed_by": "kirocrew", "provider": "apply", "floor": True},
+        "mandatory",
+        "provider",
+        id="provider-apply-below-floor",
+    ),
 ]
 
 
@@ -2555,3 +2561,322 @@ def test_the_derivation_reads_every_static_gate_its_apply_path_reads(apply_name,
         "admission is already paused. Read it in the route, or declare it in "
         "_DYNAMIC_GATES with its reason."
     )
+
+
+class TestTheStatusFrameAnswersBeforeAnyCheck:
+    """A frame served before the loop's first derivation still reports the truth.
+
+    The modal opens on the first boot after an app update, before any check has
+    run, so ``unknown`` is reserved for the one shape whose answer only git can
+    give: a checkout's branch and remote.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_derivation_yet(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import updates
+
+        monkeypatch.setattr(updates, "_auto_effect", None)
+        monkeypatch.setattr(updates, "_auto_effect_task", None)
+        monkeypatch.setattr(updates, "_shape_effect", None)
+        return updates
+
+    @staticmethod
+    def _no_git(monkeypatch):
+        def _boom(*_a, **_k):  # pragma: no cover - must not be called
+            raise AssertionError("the status frame must not shell out to git")
+
+        monkeypatch.setattr("kiro_crew.platform.update_governance._git_probe", _boom)
+        monkeypatch.setattr("kiro_crew.platform.update_capability.subprocess.run", _boom)
+
+    def test_a_desktop_bundle_reports_notify(self, monkeypatch, _no_derivation_yet):
+        self._no_git(monkeypatch)
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "dmg")
+        monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: None)
+
+        assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "notify"
+
+    def test_a_managed_venv_reports_install(self, monkeypatch, _no_derivation_yet):
+        self._no_git(monkeypatch)
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
+        monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability._source_checkout_root", lambda: None
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability._runs_from_managed_venv", lambda: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability._installer_runs_here", lambda: True
+        )
+        monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda _n: "/bin/sh")
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_layout.cdn_bases", lambda: ("https://a", "https://b")
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.update_blocked_reason", lambda _u: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.update_required", lambda _v: False
+        )
+
+        assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "install"
+
+    @pytest.mark.parametrize(
+        "can_apply, floor, expected",
+        [(True, False, "install"), (True, True, "mandatory"), (False, False, "notify")],
+    )
+    def test_a_policy_provider_is_answered_from_the_pins(
+        self, monkeypatch, _no_derivation_yet, can_apply, floor, expected
+    ):
+        """The provider path publishes no ``can_apply``, so the field must not read it."""
+        self._no_git(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_provider.resolve_provider",
+            lambda: _provider(can_apply=can_apply),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.update_required", lambda _v: floor
+        )
+
+        original = dict(_no_derivation_yet._update_info)
+        try:
+            _no_derivation_yet._update_info.clear()
+            # A frame BEFORE any check: nothing has published can_apply yet.
+            _no_derivation_yet._update_info.update(
+                {"managed_by": "command", "update_available": True, "check_status": "succeeded"}
+            )
+            fields = status_fields_of(_no_derivation_yet)
+        finally:
+            _no_derivation_yet._update_info.clear()
+            _no_derivation_yet._update_info.update(original)
+
+        assert fields["update_can_apply"] is False
+        assert fields["update_auto_effect"] == expected
+
+    def test_a_checkout_is_the_one_shape_that_waits(self, monkeypatch, _no_derivation_yet):
+        """Only git can report a branch and a remote, so this one stays unknown."""
+        self._no_git(monkeypatch)
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "source")
+        monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability._source_checkout_root",
+            lambda: Path("/somewhere/checkout"),
+        )
+
+        assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "unknown"
+
+
+def status_fields_of(updates_module) -> dict:
+    """The fields as the status funnel serves them: primed off-loop, then read."""
+    asyncio.run(updates_module.prime_status_auto_update_effect())
+    return updates_module.status_update_fields()
+
+
+def test_a_non_boolean_auto_update_on_disk_reads_as_the_default(tmp_path, monkeypatch):
+    """A hand-edited ``"auto_update": "false"`` reads as OFF, as its owner meant.
+
+    Stored verbatim it is truthy to the update loop, which would install on a
+    host whose owner wrote the opposite, and no switch can render a string.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    path = tmp_path / "config.json"
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: path)
+    monkeypatch.setattr("kiro_crew.config.loader.config_local_path", lambda: tmp_path / "none.json")
+
+    def _loaded(value) -> bool:
+        path.write_text(json.dumps({"auto_update": value}), encoding="utf-8")
+        return KiroCrewConfig.load().auto_update
+
+    # A recognized spelling is honoured either way.
+    assert _loaded("false") is False
+    assert _loaded("off") is False
+    assert _loaded("yes") is True
+    assert _loaded(True) is True
+    assert _loaded(False) is False
+    # Anything else unreadable falls toward OFF: an update not applied is a
+    # notification, one applied against the owner's wish is a restart. Before,
+    # 0 and null read OFF too, so this keeps them OFF.
+    for unreadable in (0, None, "", [], "maybe"):
+        assert _loaded(unreadable) is False, unreadable
+    # An absent key still defaults ON.
+    path.write_text("{}", encoding="utf-8")
+    assert KiroCrewConfig.load().auto_update is True
+
+
+class TestTheProviderPathPublishesItsOwnCanApply:
+    """``can_apply`` is the provider's answer, not the install shape's.
+
+    The loop runs a policy ``apply_command`` when one is configured, so a frame
+    reporting ``can_apply: false`` for that host is wrong for every reader that
+    is not reading the effect.
+    """
+
+    @pytest.mark.parametrize("can_apply", [True, False])
+    def test_a_loop_check_publishes_the_providers_verdict(self, monkeypatch, can_apply):
+        import kiro_crew.dashboard.handlers as handlers
+        from kiro_crew.platform.governance import UpdatePins
+
+        provider = _provider(can_apply=can_apply)
+        _pin_install_shape(monkeypatch, managed_by="kirocrew", provider=provider)
+        orch = TestAutoApplyGuard._orchestrator()
+        orch._prepare_auto_update_apply = AsyncMock(return_value=True)
+        orch._finish_auto_update_apply = AsyncMock()
+        orch._restart_after_update = AsyncMock()
+        cfg = MagicMock()
+        cfg.auto_update = True
+
+        original = dict(handlers._update_info)
+        try:
+            handlers._update_info.clear()
+            with (
+                patch("kiro_crew.config.KiroCrewConfig.load", return_value=cfg),
+                patch(
+                    "kiro_crew.platform.governance.active_update_pins", return_value=UpdatePins()
+                ),
+                patch("kiro_crew.slack.gateway.respawn_executable", create=True),
+            ):
+                asyncio.run(orch._check_for_updates())
+            fields = handlers.updates.status_update_fields()
+        finally:
+            handlers._update_info.clear()
+            handlers._update_info.update(original)
+
+        assert fields["update_can_apply"] is can_apply
+        assert fields["update_auto_effect"] == ("install" if can_apply else "notify")
+        assert provider.apply.await_count == (1 if can_apply else 0)
+
+
+def test_a_pipx_install_answers_notify_without_git(monkeypatch):
+    """Not a checkout, not the managed venv: the git-free path already knows."""
+    from kiro_crew.dashboard.handlers import updates
+
+    def _boom(*_a, **_k):  # pragma: no cover - must not be called
+        raise AssertionError("the status frame must not shell out to git")
+
+    monkeypatch.setattr("kiro_crew.platform.update_governance._git_probe", _boom)
+    monkeypatch.setattr(updates, "_auto_effect", None)
+    monkeypatch.setattr(updates, "_shape_effect", None)
+    monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
+    monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: None)
+    monkeypatch.setattr("kiro_crew.platform.update_capability._source_checkout_root", lambda: None)
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_capability._runs_from_managed_venv", lambda: False
+    )
+    monkeypatch.setattr("kiro_crew.platform.update_capability._installer_runs_here", lambda: True)
+    monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda _n: "/bin/sh")
+
+    assert status_fields_of(updates)["update_auto_effect"] == "notify"
+
+
+def test_the_git_free_answer_is_derived_once_per_process(monkeypatch):
+    from kiro_crew.dashboard.handlers import updates
+
+    calls = {"n": 0}
+
+    def _derive(**_kw):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(updates, "_auto_effect", None)
+    monkeypatch.setattr(updates, "_shape_effect", None)
+    monkeypatch.setattr(updates, "auto_update_effect", _derive)
+    for _ in range(5):
+        assert status_fields_of(updates)["update_auto_effect"] == "unknown"
+    assert calls["n"] == 1
+
+
+def test_the_status_reader_never_derives_on_the_loop(monkeypatch):
+    """The sync reader only reads the memo; the funnel primes it off the loop."""
+    from kiro_crew.dashboard.handlers import updates
+
+    def _boom(**_kw):  # pragma: no cover - must not be called
+        raise AssertionError("status_update_fields must not derive the effect itself")
+
+    monkeypatch.setattr(updates, "_auto_effect", None)
+    monkeypatch.setattr(updates, "_shape_effect", None)
+    monkeypatch.setattr(updates, "auto_update_effect", _boom)
+    assert updates.status_update_fields()["update_auto_effect"] == "unknown"
+
+
+def test_the_status_funnel_primes_the_effect_before_reading(monkeypatch):
+    from kiro_crew.dashboard import status_counts
+    from kiro_crew.dashboard.handlers import updates
+    from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+    monkeypatch.setattr(updates, "_auto_effect", None)
+    monkeypatch.setattr(updates, "_shape_effect", None)
+    monkeypatch.setattr(
+        updates, "auto_update_effect", lambda **_kw: AutoUpdateEffect("notify", None, "x")
+    )
+    monkeypatch.setattr(status_counts, "_refresh_status_counts", AsyncMock(return_value=(0, 0)))
+    state = MagicMock()
+    state.status_snapshot = lambda **kw: kw
+
+    snapshot = asyncio.run(status_counts.cached_status_snapshot(state))
+    assert snapshot["update_auto_effect"] == "notify"
+
+
+@pytest.mark.parametrize(
+    "dist, bundled",
+    [
+        ("dmg", True),
+        ("appimage", True),
+        ("deb", True),
+        ("rpm", True),
+        ("nsis", True),
+        ("docker", False),
+        ("wheel", False),
+        ("source", False),
+        ("", False),
+    ],
+)
+def test_only_a_desktop_bundle_reports_itself_bundled_by_the_app(dist, bundled):
+    from kiro_crew.platform.update_capability import bundled_by_desktop_app
+
+    assert bundled_by_desktop_app(dist) is bundled
+
+
+@pytest.mark.parametrize(
+    "provider_kind, effect",
+    [(None, "notify"), ("apply", "install"), ("check-only", "notify")],
+)
+def test_a_bundled_gateway_with_a_policy_provider_says_both_facts(
+    monkeypatch, provider_kind, effect
+):
+    """``managed_by`` reads ``command`` there, so the bundle needs its own field.
+
+    The effect is the provider's answer, because the provider is what this
+    gateway's loop runs; without one, the app's own updater owns it: notify.
+    """
+    from kiro_crew.dashboard.handlers import updates
+
+    provider = None if provider_kind is None else _provider(can_apply=provider_kind == "apply")
+    monkeypatch.setattr(updates, "_auto_effect", None)
+    monkeypatch.setattr(updates, "_shape_effect", None)
+    monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "dmg")
+    monkeypatch.setattr("kiro_crew.platform.update_capability.baked_distribution", lambda: "dmg")
+    monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: provider)
+    monkeypatch.setattr("kiro_crew.platform.update_governance.update_required", lambda _v: False)
+    original = dict(updates._update_info)
+    try:
+        updates._update_info.clear()
+        if provider is not None:
+            updates._update_info.update({"managed_by": "command"})
+        fields = status_fields_of(updates)
+    finally:
+        updates._update_info.clear()
+        updates._update_info.update(original)
+
+    assert fields["update_bundled_by_app"] is True
+    assert fields["update_auto_effect"] == effect
+
+
+def test_a_runtime_distribution_override_cannot_claim_the_bundle(monkeypatch):
+    """Only the BAKED stamp says "bundled": an env override cannot relabel it."""
+    from kiro_crew.platform.update_capability import bundled_by_desktop_app
+
+    monkeypatch.setattr("kiro_crew.platform.update_capability.baked_distribution", lambda: "")
+    monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "dmg")
+    assert bundled_by_desktop_app() is False

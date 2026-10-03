@@ -76,7 +76,7 @@ export function CrewmatesSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.settings.crewmatesSection.reply_threads')}
-          description={i18nT('pages.settings.crewmatesSection.reply_threads_desc')}
+          hint={i18nT('pages.settings.crewmatesSection.reply_threads_desc')}
           checked={threads}
           onChange={(v) => threadsMut.mutate(v)}
           disabled={!cfgQ.isSuccess || threadsMut.isPending}

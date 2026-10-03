@@ -363,7 +363,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               )}
               {/* Status lightning — filled for status tags, muted ghost for non-status on hover */}
               <button type="button" data-testid={`tag-status-${t.id}`}
-                className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all outline-hidden focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40 ${t.status ? 'text-accent hover:text-accent-hover' : 'text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-text'}`}
+                className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all outline-hidden focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40 ${t.status ? 'text-accent hover:text-accent-hover' : `text-transparent group-hover/tag:text-muted ${statusDisabled ? '' : '[@media(hover:none)]:text-muted '}focus-visible:!text-muted hover:!text-text`}`}
                 title={!t.agent_provenanced
                   // A legacy row's status flip is refused until adoption; name the
                   // unlock instead of promising an action the click ignores.
@@ -382,7 +382,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               </button>
               {/* Delete */}
               <button type="button" data-testid={`tag-delete-${t.id}`}
-                className="shrink-0 cursor-pointer bg-transparent border-none p-[2px] text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-danger transition-all outline-hidden focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+                className="shrink-0 cursor-pointer bg-transparent border-none p-[2px] text-transparent group-hover/tag:text-muted [@media(hover:none)]:text-muted focus-visible:!text-muted hover:!text-danger transition-all outline-hidden focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
                 title={i18nT('components.tagManagerList.delete_tag', { name: t.name })}
                 aria-disabled={deleteDisabled}
                 aria-describedby={tagStoreDegraded ? policyUnavailableId : undefined}

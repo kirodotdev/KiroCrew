@@ -397,11 +397,11 @@ _KIRO_SIGNED_OUT = (
 # process had, so its messages name both remedies. Plain prose (no backticks, no
 # "--") in the remedy: the panel renders it as text.
 _KAS_REMEDY = (
-    "Sign in from Developer → Agent Backend → Kiro sign-in, or run kiro-cli login "
+    "Sign in from Settings → Agent Harness → Kiro sign-in, or run kiro-cli login "
     "in your terminal if kiro-cli owns the sign-in, then start a new chat."
 )
 _KAS_SIGNED_OUT = (
-    "Not signed in to Kiro. Sign in again from Developer → Agent Backend → Kiro sign-in, "
+    "Not signed in to Kiro. Sign in again from Settings → Agent Harness → Kiro sign-in, "
     "or run `kiro-cli login` in your terminal if kiro-cli owns the sign-in, then start a "
     "new chat."
 )

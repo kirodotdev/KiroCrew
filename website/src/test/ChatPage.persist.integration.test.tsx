@@ -58,6 +58,10 @@ vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAg
 vi.mock('../hooks/useFilteredDropdown', () => ({ useFilteredDropdown: () => ({ filtered: [], query: '', setQuery: vi.fn(), selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn() }) }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 
+// Crash-recovery reload flag, flipped per test (see lib/safeReload.ts).
+const safeReloadFlag = vi.hoisted(() => ({ on: false }))
+vi.mock('../lib/safeReload', () => ({ isSafeReload: () => safeReloadFlag.on, captureSafeReload: () => safeReloadFlag.on }))
+
 // --- Stub API ---
 vi.mock('../api/client', () => ({
   api: Object.fromEntries(
@@ -83,6 +87,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
+import { setActiveSlot } from '../store/chatSlice'
 
 const slot = (key: string, mode = ''): ChatSlot => ({
   key, title: key, messages: 0, running: false, mode, created: '', last_ts: '',
@@ -114,7 +119,7 @@ function renderChatPage(
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  return { store, ...render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -124,12 +129,13 @@ function renderChatPage(
         </ThemeProvider>
       </Provider>
     </QueryClientProvider>,
-  )
+  ) }
 }
 
 beforeEach(() => {
   localStorage.clear()
   __resetPanelTabs()
+  safeReloadFlag.on = false
 })
 
 const allSlots = [slot('chat-1'), slot('chat-2')]
@@ -237,5 +243,35 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     await act(async () => {})
 
     expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+  })
+})
+
+describe('ChatPage crash-recovery reload (#12907)', () => {
+  it('a normal load reopens the remembered chat', async () => {
+    localStorage.setItem('mc-active-slot-chat', 'chat-2')
+    const { store } = renderChatPage(undefined, null, allSlots)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+  })
+
+  it('a safe reload opens no chat, so a chat that froze the window is not reopened', async () => {
+    safeReloadFlag.on = true
+    vi.mocked(api.chatSlotDetail).mockClear()
+    localStorage.setItem('mc-active-slot-chat', 'chat-2')
+    const { store } = renderChatPage(undefined, null, allSlots)
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(api.chatSlotDetail).not.toHaveBeenCalled()
+    // The remembered choice survives for the next normal load.
+    expect(localStorage.getItem('mc-active-slot-chat')).toBe('chat-2')
+  })
+
+  it('after a safe reload, closing the chat the user opened moves to another chat', async () => {
+    safeReloadFlag.on = true
+    const { store } = renderChatPage(undefined, null, allSlots)
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    await act(async () => { store.dispatch(setActiveSlot('chat-2')) })
+    await act(async () => { store.dispatch(setActiveSlot(null)) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).not.toBeNull())
   })
 })

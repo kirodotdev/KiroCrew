@@ -25,20 +25,18 @@ def test_family_ladders_preserve_generation_then_capability_fallback():
     rows = [line.split("|")[2].strip() for line in _routing().splitlines() if " -> " in line]
     assert [row.split(" -> ") for row in rows] == [
         [
-            "Fable 5.1",
-            "Fable 5",
             "latest available Opus",
             "older Opus generations",
             "lower-capability available general model",
         ],
         [
-            "GPT 6",
-            "GPT 5.6 best available variant",
+            "GPT 6 Astra",
+            "GPT 6.1 Sol",
             "older capable GPT",
             "available general fallback",
         ],
     ]
-    assert "Opus-family" in _routing() and "GPT 5.6 review lane" in _routing()
+    assert "Opus-family" in _routing() and "GPT 6.1 review lane" in _routing()
     assert "fork lanes" in _routing()
 
 

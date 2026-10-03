@@ -143,6 +143,21 @@ _REASON_SKY_WINDOW_GONE = (
 )
 
 
+def _point_not_owned(app: AppRef, x: float, y: float) -> str:
+    """Refusal text for a confined ``global`` point outside the authorized app.
+
+    Appends the window a hit-test by rectangle awards the point, so the operator
+    can tell a genuinely-covered point from the case where the Dock's
+    full-screen layer-20 backing window is reported first in z-order even though a
+    physical click passes through it — without reimplementing the window walk from
+    the tool result. ``topmost_window_label`` returns ``""`` when it cannot name a
+    window, and the ``{winner}`` slot then collapses to nothing.
+    """
+    label = apps_macos.topmost_window_label(x, y)
+    winner = f"; the topmost window there is {label}" if label else ""
+    return ERR_POINT_NOT_OWNED.format(app=app.name, x=int(x), y=int(y), winner=winner)
+
+
 class MacOSBackend(ComputerUseBackend):
     """Accessibility + CoreGraphics driver for macOS.
 
@@ -308,9 +323,7 @@ class MacOSBackend(ComputerUseBackend):
                 if not apps_macos.pid_owns_point(app.pid, req.point[0], req.point[1]):
                     return DriverResult(
                         ok=False,
-                        text=ERR_POINT_NOT_OWNED.format(
-                            app=app.name, x=int(req.point[0]), y=int(req.point[1])
-                        ),
+                        text=_point_not_owned(app, req.point[0], req.point[1]),
                     )
                 macos_ffi.post_mouse_global(
                     req.point[0],
@@ -368,9 +381,7 @@ class MacOSBackend(ComputerUseBackend):
                     if not apps_macos.pid_owns_point(app.pid, point[0], point[1]):
                         return DriverResult(
                             ok=False,
-                            text=ERR_POINT_NOT_OWNED.format(
-                                app=app.name, x=int(point[0]), y=int(point[1])
-                            ),
+                            text=_point_not_owned(app, point[0], point[1]),
                         )
                 macos_ffi.post_mouse_drag_global(
                     req.start, req.end, button=req.button, points=points

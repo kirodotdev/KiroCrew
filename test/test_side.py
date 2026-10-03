@@ -86,7 +86,7 @@ def _capture_broadcasts(state) -> list[tuple[str, Any]]:
 
 
 def _stub_run_side_turn(monkeypatch, *, answer: str = _SIDE_ANSWER):
-    async def _fake_run(state, slot, run_id, question, *, is_first_turn):
+    async def _fake_run(state, slot, run_id, question, *, is_first_turn, start_priority=None):
         if slot._side is not None and slot._side.open:
             slot._side.append_assistant(answer)
 
@@ -221,7 +221,7 @@ async def test_side_turn_returns_before_run_finishes(tmp_path, monkeypatch):
     release = asyncio.Event()
     started = asyncio.Event()
 
-    async def _blocking(state, slot, run_id, question, *, is_first_turn):
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
         started.set()
         await release.wait()
 
@@ -331,7 +331,7 @@ async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
     side_started = asyncio.Event()
     side_release = asyncio.Event()
 
-    async def _streaming(state, slot, run_id, question, *, is_first_turn):
+    async def _streaming(state, slot, run_id, question, *, is_first_turn, start_priority=None):
         from kiro_crew.dashboard.ws import broadcast_side_result
 
         side_started.set()

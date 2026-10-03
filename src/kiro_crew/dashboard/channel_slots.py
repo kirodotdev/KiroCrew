@@ -508,6 +508,7 @@ def surface_channel_session(
     session_key: str = "",
     folder_id: str = "",
     folder_tags: list[str] | None = None,
+    effort_marker: bool = False,
 ) -> "_ChatSlot | None":
     """Create the dashboard slot for one channel session.
 
@@ -597,8 +598,19 @@ def surface_channel_session(
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
     slot._memory_assignment_from_history = True
-    if meta.get("model"):
-        slot.model = meta["model"]
+    # Model and reasoning_effort go through the shared restore helper so this
+    # path validates them exactly like the persistence loaders and History
+    # resume (non-string model dropped, deprecated name mapped, effort checked
+    # against the known values). No restore config is loaded here -- that would
+    # be I/O on the event loop -- so cfg=None skips provider canonicalization.
+    # *effort_marker* is the caller's off-loop ``_has_validated_effort_marker``
+    # read, so a backend-advertised level (e.g. ``minimal``) survives a restart
+    # that runs this pass before any session has re-advertised it. Local import:
+    # chat_persistence imports from this module, so a module-level import
+    # would be circular.
+    from kiro_crew.dashboard.chat_persistence import _restore_model_fields
+
+    _restore_model_fields(slot, meta, cfg=None, effort_marker=effort_marker)
     # `jev_route` is deliberately NOT read back here, for the reason the two
     # persistence loaders state: it records an owner pick that spends money, and
     # this file is editable by the agent's own tools.
@@ -1086,6 +1098,24 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
 
     transcripts = await loop.run_in_executor(None, _load_messages)
 
+    def _load_effort_markers() -> dict[str, bool]:
+        # The validated-effort marker read is file I/O, so it runs here off the
+        # loop, like the resume path's prefetch. Only pending sessions surface.
+        from kiro_crew.dashboard.chat_persistence import _has_validated_effort_marker
+
+        out: dict[str, bool] = {}
+        for s in pending:
+            key = s.get("key", "")
+            raw = (metadata.get(key) or {}).get("reasoning_effort")
+            if raw:
+                try:
+                    out[key] = _has_validated_effort_marker(raw)
+                except Exception:
+                    out[key] = False
+        return out
+
+    effort_markers = await loop.run_in_executor(None, _load_effort_markers) if pending else {}
+
     # Clear stale closed flags BEFORE the slots become visible. Running the
     # clear after surfacing leaves a race: the slot broadcast lands, the user
     # closes the tab, the close save writes a fresh `closed`, and the deferred
@@ -1291,6 +1321,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
                 session_key=state.sessions.channel_key_for_stem(key) if state.sessions else "",
                 folder_id=to_file,
                 folder_tags=inherited if to_file else None,
+                effort_marker=effort_markers.get(key, False),
             )
             if slot:
                 surfaced += 1

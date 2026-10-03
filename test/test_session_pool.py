@@ -15,6 +15,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +128,11 @@ class TestMemberContextAllocation:
             )
         assert result is expected
         mgr.get_or_create.assert_awaited_once_with(
-            "task:child", agent="review", approval_policy="", cwd="/work"
+            "task:child",
+            agent="review",
+            approval_policy="",
+            cwd="/work",
+            start_priority=StartPriority.BACKGROUND,
         )
         mgr._get_or_bootstrap_run_runtime.assert_not_awaited()
 
@@ -1793,3 +1798,223 @@ class TestDiscardReaping:
             first in attempted and second in attempted
         ), "a failing hard kill aborted the batch and leaked later providers"
         assert mgr._warm_pool.qsize() == 0
+
+
+class TestFillLockReleasedAcrossStart:
+    """``_fill_warm_pool`` holds ``_pool_fill_lock`` only around the queue
+    mutations, releasing it across each per-iteration start-permit wait.
+
+    A caller that waits on the lock -- ``refresh_defaults`` /
+    ``reload_provider_factory`` from a config apply, the identity sweep's
+    ``_retire_kiro_warm_pool`` -- interleaves between refill iterations and
+    waits at most one start, not the whole refill.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refresh_defaults_returns_mid_refill(self):
+        # Serialize starts so the refill blocks one provider at a time, the way a
+        # busy ``_start_sem`` does under a stream of foreground starts.
+        mgr, _ = _make_manager(pool_size=3)
+        mgr._start_sem = PrioritySemaphore(1)
+
+        first_started = asyncio.Event()
+        release_start = asyncio.Event()
+        started = 0
+
+        async def _slow_start() -> None:
+            nonlocal started
+            started += 1
+            if started == 1:
+                first_started.set()
+            await release_start.wait()
+
+        def _factory(*a, **kw):
+            p = _make_provider()
+            p.start = AsyncMock(side_effect=_slow_start)
+            return p
+
+        mgr._provider_factory = MagicMock(side_effect=_factory)
+
+        fill = asyncio.create_task(mgr._fill_warm_pool())
+        try:
+            # The refill is now parked inside the first provider's start(), with
+            # the fill lock released.
+            await asyncio.wait_for(first_started.wait(), timeout=2.0)
+
+            with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
+                new_cfg = _make_cfg(pool_size=0)
+                new_cfg.create_provider_factory = MagicMock(
+                    return_value=MagicMock(side_effect=lambda *a, **kw: _make_provider())
+                )
+                mock_load.return_value = new_cfg
+                # With the lock held across the whole refill this waits for all
+                # three starts; released around the start it returns at once.
+                await asyncio.wait_for(mgr.refresh_defaults(), timeout=2.0)
+
+            assert mgr._cfg is new_cfg
+        finally:
+            release_start.set()
+            await asyncio.wait_for(fill, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_refills_do_not_overfill(self):
+        # The fill lock guards the queue mutations only, not whole refills, so
+        # the single-fill guard (``fill_active``) is what keeps a replenish
+        # racing the startup fill from overshooting size.
+        #
+        # ``_start_sem`` is sized at 2 -- larger than the pool -- precisely so
+        # the second fill is NOT blocked on the semaphore. The only thing that
+        # stops it from running a real second refill is the ``fill_active``
+        # guard: with the guard the second fill is an immediate no-op; without
+        # it the second fill runs and parks inside its own start() on
+        # ``release_start``, so the wrapped call below times out.
+        mgr, _ = _make_manager(pool_size=2)
+        mgr._start_sem = PrioritySemaphore(2)
+
+        release_start = asyncio.Event()
+        in_start = asyncio.Event()
+        started = 0
+
+        async def _slow_start() -> None:
+            nonlocal started
+            started += 1
+            in_start.set()
+            await release_start.wait()
+
+        def _factory(*a, **kw):
+            p = _make_provider()
+            p.start = AsyncMock(side_effect=_slow_start)
+            return p
+
+        mgr._provider_factory = MagicMock(side_effect=_factory)
+
+        first = asyncio.create_task(mgr._fill_warm_pool())
+        try:
+            # The first fill is parked inside a start() with the fill lock
+            # released and a free start permit -- a second fill could run were
+            # it not for the guard.
+            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            # The ``fill_active`` guard makes a second refill a no-op while the
+            # first is live, so this returns at once without starting a
+            # provider of its own. Delete the guard and this second fill
+            # instead runs a real refill that blocks inside its own start() on
+            # ``release_start`` -- the ``wait_for`` then fails with a timeout
+            # (the hang the guard prevents), not a passing no-op.
+            await asyncio.wait_for(mgr._fill_warm_pool(), timeout=2.0)
+            assert started == 1
+        finally:
+            release_start.set()
+            await asyncio.wait_for(first, timeout=2.0)
+
+        assert mgr._warm_pool.qsize() == 2
+        assert started == 2
+
+    @pytest.mark.asyncio
+    async def test_factory_swap_mid_start_discards_the_stale_provider(self):
+        # The lock is released across the start, so a config apply can swap the
+        # factory in that window. The provider built from the retired factory
+        # must be discarded under the enqueue lock, never seeded into the pool
+        # the apply just drained.
+        #
+        # ``_pool_size`` stays at 1 throughout, so the factory-identity check --
+        # not a size check -- is the sole reason the stale provider is dropped:
+        # the next iteration builds from the new factory and fills the one slot.
+        mgr, old_factory = _make_manager(pool_size=1)
+        mgr._start_sem = PrioritySemaphore(1)
+
+        in_start = asyncio.Event()
+        release_start = asyncio.Event()
+        stale_providers: list = []
+        fresh_providers: list = []
+
+        async def _slow_start() -> None:
+            in_start.set()
+            await release_start.wait()
+
+        def _stale_factory(*a, **kw):
+            p = _make_provider()
+            p.start = AsyncMock(side_effect=_slow_start)
+            stale_providers.append(p)
+            return p
+
+        def _fresh_factory(*a, **kw):
+            p = _make_provider()
+            fresh_providers.append(p)
+            return p
+
+        mgr._provider_factory = MagicMock(side_effect=_stale_factory)
+
+        fill = asyncio.create_task(mgr._fill_warm_pool())
+        try:
+            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            # Swap the factory while the refill is parked inside start();
+            # pool_size is left at 1 so there is still room for a provider -- the
+            # stale one must be dropped purely because its factory is retired.
+            new_factory = MagicMock(side_effect=_fresh_factory)
+            mgr._provider_factory = new_factory
+        finally:
+            release_start.set()
+            await asyncio.wait_for(fill, timeout=2.0)
+
+        # The stale provider was discarded; the one queued slot holds a provider
+        # built from the new factory.
+        assert len(stale_providers) == 1
+        stale_providers[0].shutdown.assert_awaited_once()
+        assert mgr._warm_pool.qsize() == 1
+        assert len(fresh_providers) == 1
+        queued, _spawn_time = mgr._warm_pool.get_nowait()
+        assert queued is fresh_providers[0]
+        assert mgr._provider_factory is new_factory
+
+    @pytest.mark.asyncio
+    async def test_pre_epoch_provider_discarded_not_enqueued(self):
+        # ``_retire_kiro_warm_pool`` can mark the identity epoch and drain the
+        # queue during the released-lock window of a fill parked inside start().
+        # The pre-epoch provider that fill holds must be discarded under the
+        # enqueue lock, not seeded behind the drain -- the health sweep checks
+        # TTL only, so an enqueued stale-identity provider would run until it
+        # ages out (up to the TTL) holding a pool slot.
+        mgr, _ = _make_manager(pool_size=1)
+        mgr._start_sem = PrioritySemaphore(1)
+
+        in_start = asyncio.Event()
+        release_start = asyncio.Event()
+        providers: list = []
+
+        async def _slow_start() -> None:
+            in_start.set()
+            await release_start.wait()
+
+        def _factory(*a, **kw):
+            p = _make_provider()
+            p.start = AsyncMock(side_effect=_slow_start)
+            # The identity predicate reads this capability the object declares;
+            # a pre-epoch provider that authenticates from the retired store
+            # must be refused.
+            p.uses_kiro_identity_store = True
+            providers.append(p)
+            return p
+
+        mgr._provider_factory = MagicMock(side_effect=_factory)
+
+        fill = asyncio.create_task(mgr._fill_warm_pool())
+        try:
+            # The provider is building/starting before any epoch is marked, so
+            # its spawn_time predates the epoch set below.
+            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            # The identity sweep only marks the epoch -- pool_size stays 1, so
+            # the size check still has room for a provider. The ONLY reason the
+            # pre-epoch provider is refused is the identity-epoch check; delete
+            # that check and the provider would be enqueued and this test fail.
+            mgr._pool.mark_identity_epoch()
+        finally:
+            release_start.set()
+            await asyncio.wait_for(fill, timeout=2.0)
+
+        # Pool still has room (size 1) yet nothing is enqueued: the pre-epoch
+        # provider was discarded, not seeded behind the drain.
+        assert mgr._warm_pool.qsize() == 0
+        # The epoch mismatch stops the fill, so the loop never re-spawns a
+        # second provider against the retired identity.
+        assert len(providers) == 1
+        providers[0].shutdown.assert_awaited_once()

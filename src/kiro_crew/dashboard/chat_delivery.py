@@ -22,7 +22,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_utils import _redact_for_display, _redact_meta
+from kiro_crew.dashboard.chat_utils import (
+    STEER_POSSIBLY_DELIVERED_META,
+    _redact_for_display,
+    _redact_meta,
+)
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -521,11 +525,18 @@ async def steer_into_running_turn(
         # requeued entry keeps the exact prior shape.
         slot._steer_decision_strips[message] = decision_strip
     slot._pending_steers.append(message)
+    possibly_delivered = False
+    slot._steer_rpc_in_flight.add(message)
     try:
         steered = await client.steer(message)
     except Exception as exc:  # best-effort — the caller falls back to the queue
         logger.warning("steer failed for slot %s: %s", slot.key, exc)
         steered = False
+        # A stdin stall with the child alive: the steer frame may already be in
+        # the turn. Re-sending it as a fresh message could act on it twice.
+        possibly_delivered = getattr(exc, "ambiguous_delivery", False) is True
+    finally:
+        slot._steer_rpc_in_flight.discard(message)
 
     # The append-only log records no steer of its own, and this coroutine is why.
     # ``steered`` means the client accepted the write and nothing more: the turn it
@@ -610,6 +621,12 @@ async def steer_into_running_turn(
     stopped = int(getattr(slot, "_stop_generation", 0) or 0) != stop_gen
 
     if still_registered:
+        if not steered and possibly_delivered:
+            # Left registered: the dying turn's teardown requeues it, marked as
+            # possibly delivered (``_requeue_unconsumed_steers``), so the caller
+            # must not resend it.
+            slot._steer_possibly_delivered.add(message)
+            return STEER_REQUEUED
         if not steered:
             # Unwind the optimistic registration so a queue fallback cannot
             # double-deliver. Unambiguous by construction: the one-per-text guard
@@ -644,6 +661,11 @@ async def steer_into_running_turn(
         # The turn's teardown moved it — a natural end or a soft stop. Either
         # way it gets its own queue card and the drain appends it, so persisting
         # a row here would duplicate it.
+        if possibly_delivered:
+            # The teardown requeued it before this RPC's own stall surfaced.
+            for item in slot._queue:
+                if item.get("id") == queued_id and isinstance(item.get("meta"), dict):
+                    item["meta"][STEER_POSSIBLY_DELIVERED_META] = True
         if stopped:
             _log_stop_race(slot, stop_gen, preserved=True)
         _record_steer_requeued(queued_id)

@@ -199,6 +199,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_commits_behind",
             "update_can_arm",
             "update_auto_effect",
+            "update_bundled_by_app",
             "update_last_checked_at",
             "update_check_interval_secs",
             "update_required",

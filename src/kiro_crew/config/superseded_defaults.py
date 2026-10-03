@@ -39,13 +39,15 @@ The set is deliberately SMALL, and what keeps it small is not a judgment about h
 wide the value's range is. That test was tried and is wrong: ``instances.warm_set_cap``
 is numeric with a range, and an operator running five crews who types 5 stores
 exactly the old default -- an ordinary config, not a coincidence. The test that
-holds is whether the repository ALREADY PINS the stored value as a supported
-configuration. Three rows do, and all three stay report-only:
+holds is whether the old value is something an operator sets on purpose. For four
+rows another suite already pins it as a supported configuration:
+``test_a_real_false_still_turns_it_off`` (``mcp_gateway.forward_declared_env``),
 ``test_a_persisted_ceiling_value_is_left_alone`` (``session.autocompact_pct``),
 ``test_explicit_desktop_default_is_preserved_for_managed_service``
 (``dashboard.loop_stall_exit_after_secs``), and ``test_put_persists_streaming``
-(``stt.streaming``). A row whose old value some other suite guarantees is not stale
-noise by definition, whatever its type.
+(``stt.streaming``). Every other report-only row states its plain reason beside
+it. A row whose old value is a supported configuration is not stale noise,
+whatever its type.
 
 Two things make the rewrite safe on the rows that remain, without the per-key
 provenance the config layer still lacks:
@@ -139,6 +141,27 @@ class SupersededDefault:
     counter-example -- its stored ``False`` is also the opt-out for a server that
     must not share a backend -- and it stays report-only. The default is False, so
     an appended entry is report-only until someone states otherwise.
+
+    ``note`` is one extra sentence that ``doctor``, ``kirocrew config defaults``
+    and the ``--keep`` confirmation append to the row. Set it when choosing between
+    ``--adopt`` and ``--keep`` needs a fact the bare old/new values do not carry:
+    the stored value's meaning moved, or adopting this key alone does not reach the
+    new behaviour.
+
+    ``meaning_moved`` also puts the ``note`` on the one-line load-path warning. It
+    is for a row whose stored value now selects a DIFFERENT behaviour from the one
+    an operator who chose it got: without the note there, someone who never opens
+    ``config defaults`` would ``--keep`` it believing they keep what they chose.
+    Every other note stays off that line, which is one line precisely so it does
+    not grow with the registry.
+
+    ``applies`` narrows a row to the installs where the old and new defaults
+    actually behave differently. It receives the stored base document and returns
+    whether the row can drift there; ``None`` means everywhere. Set it when another
+    field decides whether the default change is observable, so an install where
+    adopting would change nothing is not told to act. Only the row's own value is
+    detected on the base alone; the predicate decides on whatever the deciding
+    field EFFECTIVELY is, overlay included, because that is what runs.
     """
 
     dotted_key: str
@@ -147,6 +170,71 @@ class SupersededDefault:
     changed_in: str
     new_default_display: str | None = None
     auto_adopt: bool = False
+    note: str | None = None
+    meaning_moved: bool = False
+    applies: Callable[[dict], bool] | None = None
+
+
+_ABSENT = object()
+
+
+def _overlay_stt_provider() -> object:
+    """``stt.provider`` as ``config.local.json`` states it, or ``_ABSENT``.
+
+    Best-effort, like every other overlay reader: an unreadable or malformed
+    overlay says nothing, which leaves the base value standing -- the same answer
+    the loader reaches when it warns and skips that file. Only a regular file is
+    opened, as the loader does, because this runs inside ``load()`` on the event
+    loop and opening a FIFO there would block it.
+    """
+    # Imported at call time: the loader imports this module.
+    from kiro_crew.config.loader import config_local_path
+
+    try:
+        local_path = config_local_path()
+        if not local_path.is_file():
+            return _ABSENT
+        raw = json.loads(local_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # ValueError covers malformed JSON and invalid UTF-8 alike.
+        return _ABSENT
+    stt = raw.get("stt") if isinstance(raw, dict) else None
+    if isinstance(stt, dict) and "provider" in stt:
+        return stt["provider"]
+    return _ABSENT
+
+
+def _stt_resolves_auto_locally(base_data: dict) -> bool:
+    """Whether the EFFECTIVE ``stt.provider`` runs ``"auto"`` as auto-detection.
+
+    Only the local recogniser auto-detects; every other provider resolves
+    ``"auto"`` to ``en-US`` (``SttConfig.effective_language_code``), so there a
+    stored ``en-US`` already behaves exactly like the current default.
+
+    The provider is read the way the loader resolves it, with
+    ``config.local.json`` deep-merged over the base, because the recogniser that
+    runs is the effective one. A base-only read would hide the row on a base
+    ``transcribe`` that an overlay ``local`` replaces, and raise it on a base with
+    no provider that an overlay ``transcribe`` replaces.
+    """
+    # Imported at call time: config.sections is the whole schema and its
+    # dependencies, and this module is otherwise import-light.
+    from kiro_crew.config.sections import STT_PROVIDER_LOCAL, stt_provider_resolution
+
+    provider = _overlay_stt_provider()
+    if provider is _ABSENT:
+        stt = base_data.get("stt")
+        provider = stt.get("provider") if isinstance(stt, dict) else None
+    return stt_provider_resolution(provider) == STT_PROVIDER_LOCAL
+
+
+# The session handle waits min(suspect, hard cap) before acting on a tool stall, so
+# the two tool-stall rows only move that window together.
+_TOOL_STALL_PAIR_NOTE = (
+    "the tool-stall window is the smaller of watchdog.tool_stall_suspect_secs and "
+    "watchdog.tool_stall_hard_cap_secs, so while either still holds 3600.0 the window "
+    "stays at an hour; adopt both to get the current 5400-second window"
+)
 
 
 # The explicit, versioned registry of superseded defaults. APPEND-ONLY: a future
@@ -321,6 +409,137 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=2.0,
         changed_in="#15890",
         auto_adopt=True,
+    ),
+    # 0.7.0 made the bounded ranked skill index the default, and the meaning of
+    # False moved with it: on 0.6.0 and earlier False was the default full skills
+    # dump, and now it selects the shorter entry naming only the eight hottest
+    # skills. A 0.6.0 install may therefore hold a materialized False, and an
+    # operator who chose False on 0.6.0 chose the full dump, not the short entry.
+    #
+    # REPORT-ONLY on the ``stt.streaming`` reasoning: the field has two values and
+    # False is the supported switch to the short entry, so a deliberate choice on
+    # this build stores exactly these bytes. The ``note`` says what False means now
+    # wherever the row is shown, the load-path line included (``meaning_moved``),
+    # so keeping it is never mistaken for keeping the 0.6.0 behaviour.
+    SupersededDefault(
+        dotted_key="skills.lazy_load",
+        old_default=False,
+        new_default=True,
+        changed_in="#12131",
+        meaning_moved=True,
+        note=(
+            "false meant the full skills dump on 0.6.0 and earlier; today it "
+            "selects the shorter entry naming only the eight hottest skills, so "
+            "keeping it keeps that shorter entry"
+        ),
+    ),
+    # The same PR as the turn budget above cut the spawn stagger from 2.0 to 0.25
+    # seconds. A stored 2.0 is not broken, only slow: a 16-wide fan-out takes half a
+    # minute to fill instead of four seconds.
+    #
+    # REPORT-ONLY: the field is documented as the knob to raise when the host or the
+    # provider is the bottleneck, so 2.0 is an ordinary deliberate value.
+    SupersededDefault(
+        dotted_key="agent.subagent_spawn_stagger_secs",
+        old_default=2.0,
+        new_default=0.25,
+        changed_in="#12203",
+    ),
+    # Session recycling is on by default at 1536 MiB of process-tree RSS. The old
+    # default was 0, which the field documents as "disables", so an install
+    # materialized before the change never recycles a session however large its
+    # tree grows.
+    #
+    # REPORT-ONLY: 0 is the documented off switch, so a deliberate opt-out stores
+    # exactly these bytes, and adopting would start recycling sessions for an
+    # operator who turned that off.
+    SupersededDefault(
+        dotted_key="session.watchdog_rss_max_mb",
+        old_default=0,
+        new_default=1536,
+        changed_in="#9626",
+    ),
+    # The language default is auto-detect. On the local recogniser a stored 'en-US'
+    # keeps forcing English, so dictation in any other language is recognised as
+    # English. Every other provider resolves 'auto' to 'en-US', so there the stored
+    # value already behaves like the default and ``applies`` keeps the row quiet.
+    # ``applies`` asks about the effective provider, overlay included.
+    #
+    # REPORT-ONLY: 'en-US' is a locale an operator picks on purpose, and adopting
+    # would change what the recogniser listens for without asking.
+    SupersededDefault(
+        dotted_key="stt.language_code",
+        old_default="en-US",
+        new_default="auto",
+        changed_in="#9246",
+        applies=_stt_resolves_auto_locally,
+    ),
+    # The decision seam's prior-turn budget defaults to 2000 characters, and 0.7.x
+    # materialized 0. The gate sends min(this budget, the history ceiling the owner
+    # consented to), so a stored 0 sends no earlier turns whatever that consent
+    # allows, while adopting raises the budget only up to the consented ceiling and
+    # changes nothing where the consent recorded none.
+    #
+    # REPORT-ONLY: 0 is a supported setting below the consented ceiling, an owner's
+    # way to send less than they agreed to, and those are the same bytes as the old
+    # default. The ``note`` is an adoption caveat, not a moved meaning, so it stays
+    # off the load-path line.
+    SupersededDefault(
+        dotted_key="decisions.history_budget_chars",
+        old_default=0,
+        new_default=2000,
+        changed_in="#12928",
+        note=(
+            "adopting raises it only up to the history ceiling your decision consent "
+            "recorded, and changes nothing where that consent recorded none"
+        ),
+    ),
+    # The same change as the chat turn ceiling above widened the four
+    # UNKNOWN-verdict watchdog windows. An install materialized before it probes a
+    # silent think and cancels a silent tool sooner than this build would. None of
+    # them acts on a session the liveness oracle attests as WORKING.
+    #
+    # The costs differ. A short stale or silent-think window probes a live think,
+    # which cancels and regenerates it. A short tool-stall window costs more: it
+    # cancels a tool the oracle cannot attest after an hour instead of ninety
+    # minutes (or two hours under the cap), and recovery nudges the turn on without
+    # re-running that tool, so its work is lost. The current 5400 exists to clear
+    # the task runner's ninety-minute test command.
+    #
+    # REPORT-ONLY all the same, unlike that ceiling: each window is a tuning knob an
+    # operator tightens on purpose (a per-agent override exists for the tool-stall
+    # pair), so a stored 3600 is an ordinary deliberate value and adopting would
+    # override it. The report names the cost; the operator chooses.
+    #
+    # The tool-stall pair is coupled: the session handle waits min(suspect, hard
+    # cap), so adopting one while the other still holds 3600 leaves the window at an
+    # hour. Both rows carry that ``note``, so neither is adopted or kept alone in
+    # the belief that it moves the window.
+    SupersededDefault(
+        dotted_key="watchdog.stale_window_secs",
+        old_default=300.0,
+        new_default=600.0,
+        changed_in="#8949",
+    ),
+    SupersededDefault(
+        dotted_key="watchdog.tool_stall_suspect_secs",
+        old_default=3600.0,
+        new_default=5400.0,
+        changed_in="#8949",
+        note=_TOOL_STALL_PAIR_NOTE,
+    ),
+    SupersededDefault(
+        dotted_key="watchdog.tool_stall_hard_cap_secs",
+        old_default=3600.0,
+        new_default=7200.0,
+        changed_in="#8949",
+        note=_TOOL_STALL_PAIR_NOTE,
+    ),
+    SupersededDefault(
+        dotted_key="watchdog.model_silent_probe_secs",
+        old_default=900.0,
+        new_default=1800.0,
+        changed_in="#8949",
     ),
 )
 
@@ -512,6 +731,28 @@ def adopted_superseded() -> dict[str, object]:
     week later to learn what changed in their file and how to put it back.
     """
     return _map_from_document(_read_ack_document(), ADOPTED_SECTION)
+
+
+def adopted_superseded_if_readable() -> dict[str, object] | None:
+    """The ``adopted`` map, or ``None`` when the sidecar exists but cannot be read.
+
+    The fail-CLOSED read every one-shot adoption decides from: "no file" is a
+    complete answer (nothing was ever adopted), while "a file we could not read"
+    is unknown, and treating unknown as never re-arms the one-shot over a value
+    the operator restored.
+    """
+    document, readable = _read_ack_document_status()
+    return _map_from_document(document, ADOPTED_SECTION) if readable else None
+
+
+#: The one ledger entry written by a migration rather than by a registry row:
+#: ``config.migration``'s legacy ``skills.lazy_load`` rewrite records the stored
+#: ``False`` it removes here, so ``doctor`` and ``kirocrew config defaults`` replay it
+#: like any other adoption. The ``skills.lazy_load`` registry row has the same key
+#: and old value, so :func:`adoption_summary` vouches for the entry through that row,
+#: and the marker-first residual (record landed, config write failed) leaves a value
+#: that row still lists as drift.
+LEGACY_LAZY_LOAD_ADOPTION: tuple[str, object] = ("skills.lazy_load", False)
 
 
 def _sidecar_holds_unparsable_data() -> bool:
@@ -737,10 +978,14 @@ def superseded_default_drift(
     same type -- ``bool`` is an ``int`` subclass, so requiring the type as well
     keeps a stored ``0`` from being read as ``False``. An absent section, an absent
     key, or any other value is not drift: those already resolve to the current
-    dataclass default at parse time, which is the desired outcome.
+    dataclass default at parse time, which is the desired outcome. Nor is a row
+    whose ``applies`` predicate rejects the install: there the old and new defaults
+    behave the same, so there is nothing to adopt.
 
-    Reads *base_data* (and, unless *acked* is supplied, the acknowledgment file)
-    and returns a list. Neither is mutated; no config is written.
+    Reads *base_data* (and, unless *acked* is supplied, the acknowledgment file;
+    and, for a stored value an ``applies`` predicate has to judge, the
+    ``config.local.json`` field that predicate decides on) and returns a list.
+    Nothing is mutated; no config is written.
     """
     if acked is None:
         acked = acked_superseded()
@@ -752,6 +997,8 @@ def superseded_default_drift(
             continue
         stored = section_data[field]
         if type(stored) is not type(entry.old_default) or stored != entry.old_default:
+            continue
+        if entry.applies is not None and not entry.applies(base_data):
             continue
         if _is_acked(entry, stored, acked):
             continue
@@ -790,8 +1037,8 @@ def auto_adoptable(
     deferral to the next one.
     """
     if adopted is None:
-        document, readable = _read_ack_document_status()
-        if not readable:
+        adopted = adopted_superseded_if_readable()
+        if adopted is None:
             logger.warning(
                 "Not adopting any superseded default this load: %s exists but could "
                 "not be read, so an already-adopted key cannot be told from a value "
@@ -799,7 +1046,6 @@ def auto_adoptable(
                 ACK_FILE_NAME,
             )
             return []
-        adopted = _map_from_document(document, ADOPTED_SECTION)
     return [
         entry
         for entry in superseded_default_drift(base_data, acked=acked)
@@ -1028,10 +1274,10 @@ def adoption_summary(dotted_key: str, removed: object) -> str:
     through :func:`_terminal_safe`. And the pasteable restore command is built ONLY
     from registry literals: the entry is matched against ``SUPERSEDED_DEFAULTS`` by
     key and by exact value (type included), and the command names the registry's own
-    ``dotted_key`` and ``old_default`` rather than the sidecar's bytes. No quoting
-    scheme is portable across every shell the operator might paste into (POSIX
-    quoting leaves ``cmd.exe`` metacharacters live), so a value the registry does
-    not vouch for gets no command at all -- it is shown, escaped, as unrecognised.
+    key and value rather than the sidecar's bytes. No quoting scheme is portable
+    across every shell the operator might paste into (POSIX quoting leaves
+    ``cmd.exe`` metacharacters live), so a value the registry does not vouch for gets
+    no command at all -- it is shown, escaped, as unrecognised.
     """
     key = _terminal_safe(dotted_key)
     shown = _terminal_safe(repr(removed))
@@ -1050,10 +1296,13 @@ def adoption_summary(dotted_key: str, removed: object) -> str:
             f"{key}: auto-adoption recorded for stored value {shown}, which no registered "
             f"default explains; no restore command is offered for it"
         )
+    # A bool is spelled as JSON, the way config.json and every doc spell it.
+    old = vouched.old_default
+    typed = json.dumps(old) if isinstance(old, bool) else old
     return (
         f"{key}: stored value {shown} was removed from config.json on upgrade (if that "
         f"write failed the value is still stored and still listed as drift). Restore it "
-        f"with: kirocrew config set {vouched.dotted_key} {vouched.old_default}"
+        f"with: kirocrew config set {vouched.dotted_key} {typed}"
     )
 
 
@@ -1064,20 +1313,26 @@ def drift_summary(entry: SupersededDefault) -> str:
     condition differently, and worded as a statement of fact plus the operator's
     options -- this mechanism does not know whether the stored value was chosen
     deliberately, and must not imply the value is wrong.
+
+    The remedy names the value in JSON spelling (``true``, ``null``, ``"auto"``),
+    because ``config.json`` is where the operator types it and a Python ``True``
+    there is invalid JSON. A row's ``note`` is appended, so every surface that
+    renders the row also says what the stored value now means.
     """
     new_default = entry.new_default_display or repr(entry.new_default)
     adoption = (
         "removing the key or setting it to JSON null"
         if entry.new_default is None
-        else f"removing the key or setting it to {entry.new_default!r}"
+        else f"removing the key or setting it to {json.dumps(entry.new_default)}"
     )
-    return (
+    text = (
         f"{entry.dotted_key} is stored as {entry.old_default!r}, which was the default "
         f"before {entry.changed_in} changed it to {new_default}. An install that "
         f"predates that change keeps the old value because a stored value beats the "
         f"default. If {entry.old_default!r} was not a deliberate choice, {adoption} "
         f"adopts the current default."
     )
+    return f"{text} Note: {entry.note}." if entry.note else text
 
 
 def render_doctor_section(issues: list[str]) -> None:

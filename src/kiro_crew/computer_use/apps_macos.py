@@ -496,11 +496,58 @@ def pid_owns_point(pid: int, x: float, y: float) -> bool:
             # about to swallow — the very confinement this function exists to
             # provide. ``list_apps`` skips them for the unrelated reason that they
             # are not addressable TARGETS.
+            #
+            # This includes the Dock's full-screen layer-20 backing window when it
+            # is present: "rectangle contains point" is a STAND-IN
+            # for the window server's hit test, and that window is where the two
+            # diverge — it is reported as covering the whole display yet a physical
+            # click passes through it everywhere but the Dock strip. Looking past it
+            # would need two facts only a real Mac can establish (that this specific
+            # window is genuinely click-through, and that no INTERACTIVE Dock-owned
+            # surface — Launchpad, Mission Control — shares its level and geometry);
+            # neither is observable from the window list or on CI. Rather than widen
+            # the real-cursor boundary on an unverified premise, the guard stays
+            # closed over it: a false refusal costs one recoverable error and the
+            # app-scoped paths (``app_post``, ``sky_click``) still deliver, while a
+            # mis-looked-past click moves the operator's real pointer onto a surface
+            # they never authorized. ``topmost_window_label`` names the winning
+            # window so that refusal is diagnosable from the tool result.
             return info.pid == pid and info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL
         return False
     except Exception:
         logger.debug("point ownership check failed; refusing", exc_info=True)
         return False
+
+
+def topmost_window_label(x: float, y: float) -> str:
+    """Name the window a hit-test by rectangle awards the point ``(x, y)``.
+
+    Diagnosability only — it grants nothing and changes no decision. When
+    ``pid_owns_point`` refuses, the model and operator otherwise cannot tell a
+    genuinely-covered point from the case where the Dock's
+    full-screen layer-20 backing window is reported first in z-order even though a
+    physical click passes through it. This returns a short ``'<owner>' (layer N,
+    WxH)`` label for the first on-screen window whose rectangle contains the
+    point, so the refusal text can say which window won instead of leaving the
+    operator to reimplement the window walk.
+
+    Returns ``""`` when nothing contains the point or the window list cannot be
+    read, so the caller falls back to its plain wording rather than asserting a
+    window that is not there.
+    """
+    try:
+        for info in macos_ffi.window_list():
+            bounds = info.bounds
+            if bounds is None:
+                continue
+            left, top, width, height = bounds
+            if not (left <= x < left + width and top <= y < top + height):
+                continue
+            name = info.owner_name or "?"
+            return f"'{name}' (layer {info.layer}, {int(width)}x{int(height)})"
+    except Exception:
+        logger.debug("topmost-window label lookup failed", exc_info=True)
+    return ""
 
 
 __all__ = [
@@ -515,4 +562,5 @@ __all__ = [
     "reset_identity_cache",
     "resolve_app",
     "resolve_identity",
+    "topmost_window_label",
 ]

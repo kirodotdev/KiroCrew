@@ -1,22 +1,22 @@
 ---
 title: Retire chat Autopilot mode — the plan / approve / stage-loop slot mode
-status: accepted
+status: partial
 author: iamwhatever
 created: 2026-09-30
-last-audited: 2026-09-30
-audited-at: 2b91a6badd
+last-audited: 2026-10-02
+audited-at: 6916ba17f
 doc-pr: null
 implementation-prs: [15362, 15359]
 tracking-issues: []
-supersedes: []
+supersedes: [rfc-autopilot-stage-budgets.md]
 superseded-by: []
 ---
 # RFC: Retire chat Autopilot mode
 
-- Status: accepted. This document lands before the removal because removing a user-facing mode is a product-shape change, and the First Principles lane reads that decision off the base branch. The removal is [#15362](https://github.com/kirodotdev/KiroCrew/pull/15362) (backend) and [#15359](https://github.com/kirodotdev/KiroCrew/pull/15359) (frontend). #15362 deletes `docs/system-specs/modules/autopilot.md`, so once both merge this document is the record of the retirement and its status moves to `implemented`.
+- Status: partial. Backend removal [#15362](https://github.com/kirodotdev/KiroCrew/pull/15362) and frontend removal [#15359](https://github.com/kirodotdev/KiroCrew/pull/15359) have merged. The user-visible mode is gone and saved `"orchestrator"` sessions restore as plain chat. Rollout step 3 remains open: `StageBoundary` / `_in_stage_execution` references still remain under `src/`, so the retirement is not yet implemented whole. This decision supersedes [rfc-autopilot-stage-budgets.md](rfc-autopilot-stage-budgets.md), which was not accepted before the feature disappeared.
 - Author: iamwhatever
 - Created: 2026-09-30
-- Related: [`docs/system-specs/modules/autopilot.md`](https://github.com/kirodotdev/KiroCrew/blob/2b91a6baddca220ce79ec95bec6d7ca3192fb6a4/docs/system-specs/modules/autopilot.md) (the shipped behaviour at `2b91a6badd`, deleted by #15362), [`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md) § "Retired: Crew Mode" (the precedent this follows), [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md)
+- Related: [`docs/system-specs/modules/autopilot.md`](https://github.com/kirodotdev/KiroCrew/blob/2b91a6baddca220ce79ec95bec6d7ca3192fb6a4/docs/system-specs/modules/autopilot.md) (the shipped behaviour at `2b91a6badd`, deleted by #15362), [`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md) § "Retired: Crew Mode" (the precedent this follows), [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md), and [rfc-autopilot-stage-budgets.md](rfc-autopilot-stage-budgets.md) (superseded incident record).
 
 ## Summary
 

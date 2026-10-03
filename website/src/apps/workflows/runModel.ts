@@ -43,6 +43,33 @@ export interface PhaseGroup {
   agents: AgentRow[]
 }
 
+/**
+ * Whether a run is over. `running` and `paused` are the two active states; any
+ * other status is terminal, and a terminal run has no agent still working in it.
+ */
+export function isTerminalRunStatus(status: string | null | undefined): boolean {
+  return !!status && status !== 'running' && status !== 'paused'
+}
+
+/** How one agent row reads, given the status of the run it belongs to. */
+export type AgentState = 'running' | 'stopped' | 'ok' | 'failed'
+
+/**
+ * Derive an agent's state from its row AND the run status.
+ *
+ * An `ok` of undefined means the stream carries no `agent_finished` for the
+ * agent. While the run is active that is an agent still at work. Once the run
+ * is terminal it cannot be: the runner records no `agent_finished` for work a
+ * cancel or a ceiling cuts off, so the run's status is the only fact the view
+ * has about that agent, and it says the agent was stopped. The same reading
+ * covers a stream truncated before the agent's finish; a stopped mark says
+ * less than a spinner would claim.
+ */
+export function agentState(row: Pick<AgentRow, 'ok'>, runStatus: string | null | undefined): AgentState {
+  if (row.ok === undefined) return isTerminalRunStatus(runStatus) ? 'stopped' : 'running'
+  return row.ok ? 'ok' : 'failed'
+}
+
 /** Fold a run event stream into ordered phases each holding their agent rows. */
 export function groupByPhase(events: WfEvent[]): PhaseGroup[] {
   const phases: PhaseGroup[] = []

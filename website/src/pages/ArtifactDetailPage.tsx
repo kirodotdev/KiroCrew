@@ -1816,7 +1816,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               <button
                 type="button"
                 onClick={() => removeTag(t)}
-                className="opacity-0 group-hover:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
+                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
                 title={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
                 aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
               >

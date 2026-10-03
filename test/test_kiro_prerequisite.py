@@ -155,6 +155,79 @@ async def _wait_for_operation(service: KiroPrerequisiteService) -> None:
     await asyncio.wait_for(task, timeout=5)
 
 
+class TestHostSandboxReadiness:
+    def test_probe_failure_payload_does_not_claim_host_sandbox(self) -> None:
+        from kiro_crew.dashboard.handlers.kiro_prerequisite import _not_ready_snapshot
+
+        assert _not_ready_snapshot()["sandbox_backend_available"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("floor,blocked", [(None, True), ("standard", False)])
+    async def test_effective_off_tier_blocks_only_enforced_backends(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, floor, blocked: bool
+    ) -> None:
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "off")
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: floor)
+        monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **kwargs: "namespace")
+        monkeypatch.setattr(
+            prerequisite_module, "find_kiro_cli_candidates", lambda *args, **kwargs: []
+        )
+        service = KiroPrerequisiteService(home=tmp_path, environ={}, audit_writer=_no_audit)
+        status = await service.snapshot(force=True)
+        assert status["sandbox_backend_available"] is True
+        assert ("codex" in status["sandbox_blocked_backends"]) is blocked
+        assert "claude" not in status["sandbox_blocked_backends"]
+        assert "kas" not in status["sandbox_blocked_backends"]
+        assert "kiro-cli" not in status["sandbox_blocked_backends"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "platform_name,backend,available",
+        [
+            ("win32", "none", False),
+            ("darwin", "sandbox-exec", True),
+            ("linux", "namespace", True),
+            ("linux", "none", False),
+        ],
+    )
+    async def test_no_kiro_candidate_still_reports_host_sandbox(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        platform_name: str,
+        backend: str,
+        available: bool,
+    ) -> None:
+        from kiro_crew import sandbox
+
+        loop_thread = threading.get_ident()
+
+        def detect(**kwargs) -> str:
+            assert threading.get_ident() != loop_thread
+            return backend
+
+        monkeypatch.setattr(sandbox, "detect_backend", detect)
+        monkeypatch.setattr(
+            prerequisite_module, "find_kiro_cli_candidates", lambda *args, **kwargs: []
+        )
+        service = KiroPrerequisiteService(
+            platform_name=platform_name,
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        status = await service.snapshot(force=True)
+        assert status["installed"] is False
+        assert status["sandbox_unavailable"] is False
+        assert status["sandbox_backend_available"] is available
+        # The no-op repair response is cached by the browser as the same payload.
+        repaired = await service.repair_agent_specs()
+        assert repaired["sandbox_backend_available"] is available
+
+
 class TestKiroPrerequisiteHelpers:
     def test_identity_file_lockdown_precedes_content(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -989,7 +1062,16 @@ class TestKiroPrerequisiteWorkflow:
         assert json.loads(blocked.body)["code"] == "kiro_prerequisite_required"
 
     @pytest.mark.asyncio
-    async def test_explicit_test_harness_mode_assumes_ready(self, tmp_path: Path) -> None:
+    async def test_explicit_test_harness_mode_assumes_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import sandbox
+
+        def no_host_probe():
+            raise AssertionError("test harness readiness must not probe sandbox facts")
+
+        monkeypatch.setattr(sandbox, "detect_backend", no_host_probe)
+
         async def should_not_run(
             command: str,
             args: list[str],
@@ -1013,6 +1095,8 @@ class TestKiroPrerequisiteWorkflow:
         assert status["authenticated"] is True
         assert status["ready"] is True
         assert status["initial_setup_complete"] is True
+        assert status["sandbox_backend_available"] is True
+        assert status["sandbox_blocked_backends"] == []
 
     @pytest.mark.asyncio
     async def test_user_owned_path_candidate_probes_version_then_whoami(
@@ -1049,7 +1133,7 @@ class TestKiroPrerequisiteWorkflow:
 
         assert status["installed"] is True
         assert status["authenticated"] is False
-        assert calls == [["--version"], ["whoami"]]
+        assert calls == [["--version"], ["whoami"], ["acp", "--help"]]
 
     @pytest.mark.asyncio
     async def test_whoami_runs_against_unresolved_multiplexer_path(
@@ -1164,7 +1248,7 @@ class TestKiroPrerequisiteWorkflow:
             args: list[str],
             **kwargs: Any,
         ) -> ProcessResult:
-            if args == ["--version"]:
+            if args in (["--version"], ["acp", "--help"]):
                 return ProcessResult(ok=True)
             home = kwargs["env"]["HOME"]
             whoami_homes.append(home)
@@ -1767,13 +1851,15 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
 
-        # A runnable CLI is eligible for sign-in, so the probe pairs a version
-        # check with an identity (whoami) check; here whoami reports not-signed.
+        # A runnable CLI gets identity and ACP checks even when signed out;
+        # every probe keeps its paired audit lifecycle.
         assert [(item["action"], item["outcome"]) for item in events] == [
             ("probe_version", "invoked"),
             ("probe_version", "completed"),
             ("probe_identity", "invoked"),
             ("probe_identity", "failed"),
+            ("probe_acp_support", "invoked"),
+            ("probe_acp_support", "completed"),
         ]
         assert status["ready"] is False
         assert events[0]["critical"] is True
@@ -4185,6 +4271,11 @@ class TestKiroPrerequisiteHandlers:
         state._yolo = False
         state.subagents = MagicMock()
         state.subagents.running_agents_for.return_value = []
+        # No child queued behind the spawn gate either, and none pending in
+        # memory: the synthesis fire gate counts them.
+        state.subagents.queued_count_for_async = AsyncMock(return_value=0)
+        state.subagents.queued_count_or_none_async = AsyncMock(return_value=0)
+        state.subagents.has_in_memory_pending_work_for.return_value = False
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
         slot = state.get_or_create_slot("synthesis-readiness")
         slot._titled = True
@@ -5897,12 +5988,13 @@ class TestRejectedAgentSpecsNarrowReadiness:
         self,
         tmp_path: Path,
     ) -> None:
-        """One fault, one card: a CLI that cannot authenticate is reported as that.
+        """A signed-out CLI is never asked to validate: it refuses to run.
 
-        Asking a signed-out binary whether it likes our specs spends a spawn per
-        spec on an answer the user cannot act on until sign-in is fixed, and would
-        stack a rejection card on top of the sign-in card. Pins the gate so a later
-        refactor cannot quietly reintroduce those spawns.
+        ``kiro-cli agent validate`` answers "You are not logged in" while signed
+        out, so spawning it spends a spawn per spec on no answer. A spec that
+        loads (``{}``) is not reported either: the local KAS check that runs in
+        its place accepts it. Pins the gate so a later refactor cannot quietly
+        reintroduce those spawns.
         """
         spec = self._spec_dir(tmp_path) / "kirocrew.json"
         spec.write_text("{}", encoding="utf-8")
@@ -5920,6 +6012,131 @@ class TestRejectedAgentSpecsNarrowReadiness:
         assert not status["authenticated"]
         assert not any(a[:2] == ["agent", "validate"] for a in calls)
         assert status["rejected_agent_specs"] == []
+
+    @staticmethod
+    async def _signed_out_run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+        if args == ["whoami"]:
+            return ProcessResult(ok=False, output="Not logged in")
+        if args[:2] == ["agent", "validate"]:
+            # What kiro-cli 2.21.1 answers signed out, for any spec.
+            return ProcessResult(
+                ok=False,
+                output="error: You are not logged in, please log in with kiro-cli login",
+                returncode=1,
+            )
+        return ProcessResult(ok=True, output="1.0.0")
+
+    @staticmethod
+    def _allow_kas_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew import acp_backends, sandbox
+        from kiro_crew.agent_sdk import backend_install
+
+        monkeypatch.setattr(sandbox, "detect_backend", lambda: "bwrap")
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "standard")
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: True)
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: {"kas"})
+        monkeypatch.setattr(
+            backend_install,
+            "probe_backend",
+            lambda backend: backend_install.BackendInstallState(
+                backend, backend, backend_install.INSTALLED
+            ),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,reason",
+        [
+            ('{"name":', "is not a valid spec"),
+            ("[]", "is not an object"),
+            ('{"prompt": 7}', "prompt must be a string"),
+        ],
+        ids=["unparsable", "not-an-object", "non-string-prompt"],
+    )
+    async def test_a_spec_kas_cannot_load_is_rejected_while_signed_out(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: str,
+        reason: str,
+    ) -> None:
+        """Signed out is KAS's normal state, so KAS's own loader judges the spec.
+
+        The CLI cannot validate while signed out; without the local check a spec
+        KAS session creation refuses to load was reported as fine, and KAS
+        finished first-run setup onto a session that could not start.
+        """
+        (self._spec_dir(tmp_path) / "kirocrew.json").write_text(body, encoding="utf-8")
+        self._allow_kas_setup(monkeypatch)
+        service = self._service(tmp_path, self._signed_out_run)
+
+        status = await service.snapshot(force=True)
+
+        assert status["authenticated"] is False
+        assert status["rejected_agent_specs"] == ["kirocrew.json"]
+        assert status["repair_required"] is True
+        assert reason in status["agent_spec_rejection_detail"]
+        assert await service.record_independent_backend_setup("kas") is False
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_spec_kas_loads_is_accepted_while_signed_out(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (self._spec_dir(tmp_path) / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "prompt": "You are Kiro."}), encoding="utf-8"
+        )
+        self._allow_kas_setup(monkeypatch)
+        service = self._service(tmp_path, self._signed_out_run)
+
+        status = await service.snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == []
+        assert status["repair_required"] is False
+        assert await service.record_independent_backend_setup("kas") is True
+        assert service._setup_marker.exists()
+
+    @pytest.mark.asyncio
+    async def test_kas_setup_rechecks_a_spec_broken_after_the_probe(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        spec = self._spec_dir(tmp_path) / "kirocrew.json"
+        spec.write_text(json.dumps({"name": "kirocrew"}), encoding="utf-8")
+        self._allow_kas_setup(monkeypatch)
+        service = self._service(tmp_path, self._signed_out_run)
+        assert (await service.snapshot(force=True))["rejected_agent_specs"] == []
+
+        spec.write_text('{"name":', encoding="utf-8")
+
+        assert await service.record_independent_backend_setup("kas") is False
+        assert not service._setup_marker.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_signed_in_cli_keeps_cli_validation_as_the_only_judge(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Signed in, the CLI's verdict stands and the local KAS check is not run."""
+        (self._spec_dir(tmp_path) / "kirocrew.json").write_text(
+            json.dumps({"prompt": 7}), encoding="utf-8"
+        )
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["authenticated"] is True
+        assert any(a[:2] == ["agent", "validate"] for a in calls)
+        assert status["rejected_agent_specs"] == []
+        assert status["repair_required"] is False
 
     @pytest.mark.asyncio
     async def test_an_mcp_server_with_no_command_is_reported_without_a_spawn(
@@ -6759,8 +6976,8 @@ class TestAcpSubcommandSupportNarrowsReadiness:
         assert status["ready"] is True
 
     @pytest.mark.asyncio
-    async def test_acp_probe_is_gated_on_a_successful_whoami(self, tmp_path: Path) -> None:
-        """A signed-out CLI is not asked about acp — one fault, one card."""
+    async def test_acp_probe_runs_independently_of_whoami(self, tmp_path: Path) -> None:
+        """KAS needs ACP support even when kiro-cli is signed out."""
         acp_probed = False
 
         async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
@@ -6771,14 +6988,15 @@ class TestAcpSubcommandSupportNarrowsReadiness:
                 return ProcessResult(ok=False)
             if args == ["acp", "--help"]:
                 acp_probed = True
+                return ProcessResult(ok=True, output="Usage: kiro-cli acp [OPTIONS]")
             return ProcessResult(ok=False)
 
         status = await self._service(tmp_path, run).snapshot(force=True)
 
         assert status["authenticated"] is False
-        assert acp_probed is False
-        # acp_supported stays at its safe default when the probe never ran.
+        assert acp_probed is True
         assert status["acp_supported"] is True
+        assert status["ready"] is False
 
     @pytest.mark.asyncio
     async def test_update_cli_runs_the_self_update_and_reprobes(self, tmp_path: Path) -> None:
@@ -7065,11 +7283,11 @@ class TestTerminalAuditErrorLabels:
         service, events = self._service_with_audit(tmp_path, run)
         await service.snapshot(force=True)
 
-        # The acp probe is gated on a successful whoami, so the failed identity
-        # probe is the terminal event of the run.
+        # ACP support is probed even when the identity probe times out.
         assert self._terminal_labels(events) == [
             ("probe_version", "completed", ""),
             ("probe_identity", "failed", "timeout"),
+            ("probe_acp_support", "failed", "nonzero exit"),
         ]
         self._assert_outcome_and_error_agree(events)
 
@@ -7088,6 +7306,7 @@ class TestTerminalAuditErrorLabels:
         assert self._terminal_labels(events) == [
             ("probe_version", "completed", ""),
             ("probe_identity", "failed", "nonzero exit"),
+            ("probe_acp_support", "failed", "nonzero exit"),
         ]
         self._assert_outcome_and_error_agree(events)
 
@@ -7144,3 +7363,340 @@ class TestTerminalAuditErrorLabels:
         update_labels = [item for item in self._terminal_labels(events) if item[0] == "update_cli"]
         assert update_labels == [("update_cli", "failed", "nonzero exit")]
         self._assert_outcome_and_error_agree(events)
+
+
+@pytest.mark.asyncio
+class TestKasRecordsFirstRunSetup:
+    """KAS (kiro-cli's relay) records first-run completion on the acp_supported
+    rule, in lock-step with the onboarding gate's client admission.
+
+    Before the fix ``record_independent_backend_setup`` refused KAS outright (it
+    is deliberately absent from ``ACP_BACKENDS_INDEPENDENT_SETUP``), so a KAS
+    first run never wrote the durable marker and ``initial_setup_complete``
+    stayed false forever — the gate force-probed kiro-cli and a non-owner was
+    pinned on the owner-setup screen. The client admits KAS when
+    ``acp_supported`` holds; this test pins the server marker to the SAME rule.
+    """
+
+    def _service(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        *,
+        acp_supported: bool,
+        runner: Any = None,
+        resolved: bool = True,
+    ):
+        from kiro_crew import acp_backends, sandbox
+        from kiro_crew.agent_sdk import backend_install
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        if runner is None and resolved:
+            # A gateway whose probe already resolved the kiro-cli that sessions
+            # launch, so recording re-asks only that binary for ACP support.
+            _make_executable(executable)
+            runner = _FakeRuntime(executable).run
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runner,
+            audit_writer=_no_audit,
+        )
+        service._status = replace(service._status, acp_supported=acp_supported)
+        if resolved:
+            service._viable_binary = str(executable)
+        monkeypatch.setattr(sandbox, "detect_backend", lambda: "bwrap")
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "standard")
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: True)
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: {"kas"})
+        monkeypatch.setattr(
+            backend_install,
+            "probe_backend",
+            lambda backend: backend_install.BackendInstallState(
+                backend, backend, backend_install.INSTALLED
+            ),
+        )
+        return service
+
+    @pytest.mark.parametrize("acp_supported", [False, True], ids=["too-old", "acp-capable"])
+    async def test_signed_out_kas_setup_uses_probed_acp_support(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, acp_supported: bool
+    ) -> None:
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.acp_supported = acp_supported
+        service = self._service(tmp_path, monkeypatch, acp_supported=True, runner=runtime.run)
+
+        status = await service.snapshot(force=True)
+
+        assert status["installed"] is True
+        assert status["authenticated"] is False
+        assert status["ready"] is False
+        assert status["acp_supported"] is acp_supported
+        assert status["initial_setup_complete"] is False
+        assert not service._setup_marker.exists()
+        assert runtime.calls == [
+            (str(executable), ["--version"]),
+            (str(executable), ["whoami"]),
+            (str(executable), ["acp", "--help"]),
+        ]
+
+        assert await service.record_independent_backend_setup("kas") is acp_supported
+        assert service.initial_setup_complete is acp_supported
+        assert service._setup_marker.exists() is acp_supported
+        if acp_supported:
+            assert service._setup_marker.read_text(encoding="utf-8") == "complete\n"
+
+    async def test_kas_setup_reprobes_acp_support_when_recording(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The probe saw an ACP-capable kiro-cli; it is then replaced by a build
+        # without `acp`. Recording must ask the binary again, not trust the
+        # earlier verdict, and must serve the too-old status afterwards.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        service = self._service(tmp_path, monkeypatch, acp_supported=True, runner=runtime.run)
+
+        status = await service.snapshot(force=True)
+        assert status["acp_supported"] is True
+
+        runtime.acp_supported = False
+        runtime.calls.clear()
+
+        assert await service.record_independent_backend_setup("kas") is False
+        assert runtime.calls == [(str(executable), ["acp", "--help"])]
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()
+        assert service._status.acp_supported is False
+
+    @pytest.mark.parametrize("acp_supported", [False, True], ids=["too-old", "acp-capable"])
+    async def test_kas_setup_before_any_probe_resolves_and_checks_the_binary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, acp_supported: bool
+    ) -> None:
+        # Recording can arrive before the boot probe has resolved a kiro-cli
+        # (its warm-up delay), while acp_supported still reads True. Recording
+        # must resolve the binary sessions launch and check it for `acp`.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.acp_supported = acp_supported
+        service = self._service(
+            tmp_path, monkeypatch, acp_supported=True, runner=runtime.run, resolved=False
+        )
+        assert service._viable_binary == ""
+
+        assert await service.record_independent_backend_setup("kas") is acp_supported
+        assert (str(executable), ["--version"]) in runtime.calls
+        assert (str(executable), ["acp", "--help"]) in runtime.calls
+        assert service._status.acp_supported is acp_supported
+        assert service.initial_setup_complete is acp_supported
+        assert service._setup_marker.exists() is acp_supported
+
+    async def test_kas_setup_refused_when_no_kiro_cli_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # KAS runs on kiro-cli, so with no runnable kiro-cli there is nothing a
+        # KAS session could launch and the marker must not be written.
+        runtime = _FakeRuntime(tmp_path / ".local" / "bin" / "kiro-cli")
+        service = self._service(
+            tmp_path, monkeypatch, acp_supported=True, runner=runtime.run, resolved=False
+        )
+
+        assert await service.record_independent_backend_setup("kas") is False
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()
+
+    async def test_kas_records_setup_when_kiro_cli_speaks_acp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service = self._service(tmp_path, monkeypatch, acp_supported=True)
+        # A gateway that already probed at boot: ordinary polls serve the latch.
+        service._has_probed = True
+
+        async def _same_identity() -> bool:
+            return False
+
+        monkeypatch.setattr(service, "identity_changed_since_probe", _same_identity)
+        assert service.initial_setup_complete is False
+        assert await service.record_independent_backend_setup("kas") is True
+        assert service.initial_setup_complete is True
+        # The SERVED snapshot must agree without a forced probe: a non-owner's
+        # poll cannot force one, so a stale latch would hold it on setup forever.
+        assert (await service.snapshot())["initial_setup_complete"] is True
+
+    async def test_kas_refused_when_kiro_cli_too_old_for_acp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A too-old kiro-cli (acp_supported False) blocks KAS here, matching the
+        # client's `status.acp_supported !== false` refusal.
+        service = self._service(tmp_path, monkeypatch, acp_supported=False)
+        assert await service.record_independent_backend_setup("kas") is False
+        assert service.initial_setup_complete is False
+
+    async def test_kas_refused_when_an_agent_spec_is_missing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # KAS loads Kiro Crew's agent specs, so a missing spec keeps the gate on
+        # its repair card (client) and must not write the marker (server).
+        service = self._service(tmp_path, monkeypatch, acp_supported=True)
+        monkeypatch.setattr(
+            KiroPrerequisiteService,
+            "_missing_agent_specs",
+            staticmethod(lambda: ["kirocrew-lite"]),
+        )
+        assert await service.record_independent_backend_setup("kas") is False
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()
+
+    async def test_kas_refused_when_an_agent_spec_is_rejected(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service = self._service(tmp_path, monkeypatch, acp_supported=True)
+        service._status = replace(service._status, rejected_agent_specs=["kirocrew"])
+        assert await service.record_independent_backend_setup("kas") is False
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()
+
+    async def test_kas_refused_when_not_selectable(self, tmp_path: Path, monkeypatch) -> None:
+        from kiro_crew import acp_backends
+
+        service = self._service(tmp_path, monkeypatch, acp_supported=True)
+        # KAS is only selectable in Developer Mode; when it is not offered, the
+        # marker is refused just as the client gates on `probe.selectable`.
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: set())
+        assert await service.record_independent_backend_setup("kas") is False
+        assert service.initial_setup_complete is False
+
+
+@pytest.mark.asyncio
+class TestUnsandboxedExecRecordsIndependentSetup:
+    """A non-enforced harness finishes first-run setup on a backend-less host
+    that permits unsandboxed exec (native Windows platform default, or an
+    operator opt-in), matching the client's ``configuredBackendCanStart``.
+
+    Before the fix ``record_independent_backend_setup`` refused whenever
+    ``sandbox_backend_available`` was false, for EVERY backend — so Claude Code
+    / KAS could never complete setup on native Windows (``detect_backend`` is
+    permanently "none" there while unsandboxed exec is the platform default),
+    even though a session would start fine. A non-enforced harness needs no Crew
+    OS credential mask; an enforced one stays held back by
+    ``sandbox_blocked_backends``.
+    """
+
+    def _service(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        *,
+        unsandboxed_permitted: bool,
+        mask_applies: bool = True,
+        selectable=("claude", "codex"),
+    ):
+        from kiro_crew import acp_backends, sandbox
+        from kiro_crew.agent_sdk import backend_install
+
+        # KAS runs on kiro-cli: give the gateway the binary its probe resolved,
+        # so a KAS case reaches the sandbox rule this class is about.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        service = KiroPrerequisiteService(
+            platform_name="win32",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=_FakeRuntime(executable).run,
+            audit_writer=_no_audit,
+        )
+        service._viable_binary = str(executable)
+        # A backend-less host: the Crew OS sandbox reports "none".
+        monkeypatch.setattr(sandbox, "detect_backend", lambda: "none")
+        monkeypatch.setattr(
+            sandbox,
+            "unsandboxed_exec_permitted_by",
+            lambda: "platform" if unsandboxed_permitted else "",
+        )
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "standard")
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: mask_applies)
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: set(selectable))
+        monkeypatch.setattr(
+            backend_install,
+            "probe_backend",
+            lambda backend: backend_install.BackendInstallState(
+                backend, backend, backend_install.INSTALLED
+            ),
+        )
+        return service
+
+    async def test_no_backend_but_permitted_records_claude(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service = self._service(tmp_path, monkeypatch, unsandboxed_permitted=True)
+        assert service.initial_setup_complete is False
+        assert await service.record_independent_backend_setup("claude") is True
+        assert service.initial_setup_complete is True
+        assert service._setup_marker.exists()
+
+    @pytest.mark.parametrize("backend", ["claude", "kas"])
+    @pytest.mark.parametrize("grant", ["platform", "operator"])
+    @pytest.mark.parametrize(
+        "floor,permitted",
+        [(None, True), ("off", True), ("standard", False), ("cc", False), ("strict", False)],
+    )
+    async def test_governed_floor_overrides_unsandboxed_setup_grant(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        backend: str,
+        grant: str,
+        floor: str | None,
+        permitted: bool,
+    ) -> None:
+        from kiro_crew import sandbox
+        from kiro_crew.platform import governance_profiles
+
+        service = self._service(
+            tmp_path,
+            monkeypatch,
+            unsandboxed_permitted=True,
+            mask_applies=False,
+            selectable=(backend,),
+        )
+        monkeypatch.setattr(sandbox, "unsandboxed_exec_permitted_by", lambda: grant)
+
+        def governed_floor(scope: str) -> str | None:
+            assert scope == "sandbox.min_level"
+            return floor
+
+        # Keep wrap_argv's real floor resolver and isolation predicate in play.
+        monkeypatch.setattr(governance_profiles, "governance_floor_ordinal", governed_floor)
+        status = await service._dashboard_snapshot()
+        assert status["sandbox_backend_available"] is False
+        assert status["unsandboxed_exec_permitted"] is permitted
+        assert await service.record_independent_backend_setup(backend) is permitted
+        assert service.initial_setup_complete is permitted
+        assert service._setup_marker.exists() is permitted
+
+    async def test_no_backend_and_not_permitted_refuses_claude(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service = self._service(tmp_path, monkeypatch, unsandboxed_permitted=False)
+        assert await service.record_independent_backend_setup("claude") is False
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()
+
+    async def test_enforced_backend_in_blocked_list_still_refused(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # codex is a runtime-enforced harness. With the credential mask not
+        # applying at the effective tier it lands in sandbox_blocked_backends,
+        # so it is refused even though unsandboxed exec is permitted.
+        service = self._service(
+            tmp_path, monkeypatch, unsandboxed_permitted=True, mask_applies=False
+        )
+        assert await service.record_independent_backend_setup("codex") is False
+        assert service.initial_setup_complete is False
+        assert not service._setup_marker.exists()

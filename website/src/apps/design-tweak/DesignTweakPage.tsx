@@ -75,6 +75,8 @@ function dimOptionLabel(k: string): string {
 // instead — `group-hover` for the mouse, `group-focus-within`/`focus-within` for
 // the keyboard (each row is itself focusable, so tabbing onto a row shows what
 // can be done to it), matching the Sessions sidebar's own row-action pattern.
+// A touch screen (`hover: none`) gets no hover at all, so there the cluster is
+// simply always expanded.
 //
 // The cluster collapses to zero size at rest and each call site cancels its
 // parent's flex gap with a matching negative margin, so it contributes nothing
@@ -85,7 +87,8 @@ function dimOptionLabel(k: string): string {
 const REVEAL_CLUSTER = 'shrink-0 w-0 h-0 overflow-hidden opacity-0 transition-opacity '
   + 'group-hover:w-auto group-hover:h-auto group-hover:ml-0 group-hover:opacity-100 '
   + 'group-focus-within:w-auto group-focus-within:h-auto group-focus-within:ml-0 group-focus-within:opacity-100 '
-  + 'focus-within:w-auto focus-within:h-auto focus-within:ml-0 focus-within:opacity-100'
+  + 'focus-within:w-auto focus-within:h-auto focus-within:ml-0 focus-within:opacity-100 '
+  + '[@media(hover:none)]:w-auto [@media(hover:none)]:h-auto [@media(hover:none)]:ml-0 [@media(hover:none)]:opacity-100'
 
 // --- Per-app chat session (mirrors the host's useChatSession slotting) ---------
 // Each web app (by its folder path) maps to ONE deterministic chat slot, so all
@@ -1638,7 +1641,7 @@ export default function DesignTweak() {
                             title={i18nT('apps.designTweak.projects.remove_from_list')}
                             aria-label={i18nT('apps.designTweak.projects.remove_from_list')}
                             onClick={(e: React.MouseEvent) => { e.stopPropagation(); removeProject(p) }}
-                            className="flex items-center justify-center text-muted hover:text-text hover:bg-bg-elevated cursor-pointer opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+                            className="flex items-center justify-center text-muted hover:text-text hover:bg-bg-elevated cursor-pointer opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                             style={{
                               width: '22px', height: '22px', borderRadius: '6px', flex: '0 0 auto',
                             }}

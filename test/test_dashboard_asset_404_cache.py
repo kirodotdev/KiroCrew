@@ -32,6 +32,9 @@ def _dist(tmp_path: Path) -> Path:
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
     (dist / "assets" / "main-krfrL6rl.js").write_text("export const x = 1\n", encoding="utf-8")
+    (dist / "assets" / "diffWorker-DcdnVVDz.js").write_text(
+        "self.onmessage = () => {}\n", encoding="utf-8"
+    )
     return dist
 
 
@@ -102,6 +105,42 @@ async def test_finalizer_leaves_non_asset_paths_alone(tmp_path: Path) -> None:
         assert resp.status == 404
         assert resp.headers["X-Probe"] == "1"
         assert "no-store" in resp.headers["Cache-Control"]
+
+
+@pytest.mark.asyncio
+async def test_present_worker_asset_uses_short_lived_policy(tmp_path: Path) -> None:
+    """A worker chunk on the wire carries the short-lived policy, not immutable:
+    a worker's CSP lives in its own cached response header, so a small
+    ``max-age`` re-fetches it within a minute of a header-only build while
+    keeping the bytes cache-servable across a brief gateway-down window. It must
+    NOT carry ``no-cache``/``must-revalidate`` — those forbid the cache reuse
+    the gateway-down survival depends on."""
+    async with TestClient(TestServer(_make_app(_dist(tmp_path)))) as client:
+        resp = await client.get("/assets/diffWorker-DcdnVVDz.js")
+        assert resp.status == 200
+        cc = resp.headers["Cache-Control"]
+        assert "immutable" not in cc, cc
+        assert "no-store" not in cc, cc
+        assert "max-age=60" in cc, cc
+        assert "no-cache" not in cc, cc
+        assert "must-revalidate" not in cc, cc
+
+
+@pytest.mark.asyncio
+async def test_missing_worker_asset_is_downgraded_to_no_store(tmp_path: Path) -> None:
+    """A worker 404 must not keep the worker's cacheable policy: its ``max-age``
+    would let a browser cache the error and its ``stale-if-error`` would let an
+    intermediary serve the stale bytes of an orphaned worker. The finalizer
+    downgrades it to no-store just as it does an immutable 404."""
+    async with TestClient(TestServer(_make_app(_dist(tmp_path)))) as client:
+        resp = await client.get("/assets/goneWorker-ZZZ99999.js")
+        assert resp.status == 404
+        cc = resp.headers["Cache-Control"]
+        assert "stale-if-error" not in cc, cc
+        assert "max-age=60" not in cc, cc
+        assert "no-store" in cc, cc
+        assert resp.headers.get("Pragma") == "no-cache"
+        assert resp.headers.get("Expires") == "0"
 
 
 @pytest.mark.asyncio

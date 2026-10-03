@@ -3451,8 +3451,8 @@ def _override_comment(
 def _override_lane_comment(head: str = _HEAD, actor: str = "maintainer") -> dict[str, object]:
     """The stampless body the GPT lane rewrites its keyed comment to."""
     return _bot_comment(
-        "## GPT 5.6 Review \u2014 human override accepted\n\n"
-        "Human judgment by @{} overrides the GPT 5.6 finding for `{}`.\n\n"
+        "## GPT 6.1 Review \u2014 human override accepted\n\n"
+        "Human judgment by @{} overrides the GPT 6.1 finding for `{}`.\n\n"
         "_The model was not re-run because an authorized human decision "
         "supersedes it._".format(actor, head),
         key="codex-ai-review",
@@ -3549,7 +3549,7 @@ def test_adjudication_clear_still_clears_through_its_intact_stamp(capsys) -> Non
     comments = json.dumps(
         [
             _bot_comment(
-                "## GPT 5.6 Review \u2014 adjudicated clear\n\n"
+                "## GPT 6.1 Review \u2014 adjudicated clear\n\n"
                 "The `[BLOCK-MERGE]` marker is defused. The "
                 f"`[GPT-REVIEWED] {_HEAD}` freshness stamp is deliberately left "
                 f"intact.\n[GPT-REVIEWED] {_HEAD}"

@@ -735,6 +735,19 @@ class MochiRuntime:
 
         ``user_input`` opens a turn; the terminal events (``task_complete``,
         ``error``) close it and flush anything deferred while it was open.
+        ``delivery_uncertain`` is a NON-terminal signal: a send whose HTTP
+        response was lost (transport rejection) has an unknown outcome — the
+        turn may still be running over a surviving WebSocket. It must NOT flush
+        (an immediate flush would interleave a deferred push ahead of a reply
+        that may yet arrive) AND it must NOT clear the interleave latch: clearing
+        it drops the gate to the 8s grace window, after which the drain would
+        order an ambient push ahead of that still-live reply. So the latch is
+        left ACTIVE and released only by (a) a real terminal event on the
+        surviving socket if the turn did land, or (b) the ``_CHAT_TURN_MAX_MS``
+        ceiling, which ages the flag out and lets the drain DELIVER (not discard)
+        the backlog if no terminal frame ever comes. ``delivery_uncertain`` is
+        thus a latch no-op here; its only effect is on the pet animation (returns
+        to idle, not the error face — see the state machine).
         ``approval_rejected`` is deliberately NOT terminal: unlike
         ``task_complete``/``error`` (slot-filtered to the pet's own turn on the
         panel WebSocket), the ``approval_resolved`` frame it derives from is
@@ -752,6 +765,11 @@ class MochiRuntime:
         elif event in ("task_complete", "error"):
             self._chat_turn_active = False
             self._flush_deferred_chat_pushes()
+        # `delivery_uncertain` is intentionally not handled here: it neither
+        # opens nor closes a turn. Leaving the latch set keeps the interleave
+        # gate armed for the whole `_CHAT_TURN_MAX_MS` window, so a surviving
+        # reply is never undercut by an early ambient push; the ceiling + drain
+        # release the backlog if the turn silently never completes.
 
     def _chat_turn_busy(self, now_ms: int) -> bool:
         """True while a foreground chat turn is in flight, or within the grace

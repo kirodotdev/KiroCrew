@@ -107,6 +107,7 @@ DECLARED_SITES = frozenset(
         ("dashboard/chat_tag_grants.py", "_store_dir"),
         ("dashboard/handlers/__init__.py", "_prompt_dir_entry"),
         ("dashboard/handlers/discover.py", "api_skills_discover_install._write_bundle"),
+        ("dashboard/handlers/files.py", "api_project_tree._run"),
         ("dashboard/handlers/prompts.py", "_api_prompt_write._apply_locked"),
         ("dashboard/handlers/prompts.py", "_api_user_prompt_detail._read"),
         ("dashboard/handlers/themes.py", "_copy_installed_theme"),

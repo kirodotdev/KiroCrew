@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import skill_trust
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.skills import (
     _FAMILY_LINE_MAX_LABELS,
+    PROJECT_SKILL_BODY_CAP,
     SkillBodyPage,
     SkillContextCapacityError,
     SkillsLoader,
@@ -29,6 +31,48 @@ def _skill(root: Path, key: str) -> str:
         encoding="utf-8",
     )
     return str(path)
+
+
+def _project_loader(
+    tmp_path: Path, bodies: dict[str, str], *, opened, monkeypatch
+) -> tuple[SkillsLoader, Path]:
+    """A loader plus a trusted project holding one ``always: true`` skill per name.
+
+    Where the descriptor-pinned walk is unavailable (Windows) the project cannot be
+    granted, so the trust verdict and the enumeration are stood in for; every body
+    and metadata read below that seam still goes through the real confined reader
+    on the real project bytes.
+    """
+    project = tmp_path / "project"
+    rows: list[tuple[str, Path]] = []
+    for name, body in bodies.items():
+        path = project / ".kiro" / "skills" / name / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"---\nname: {name}\ndescription: desc for {name}\nalways: true\n---\n{body}\n",
+            encoding="utf-8",
+        )
+        rows.append((name, path))
+    loader = _loader(tmp_path, opened=opened)
+    if skill_trust.project_skill_traversal_supported():
+        skill_trust.grant_project_trust(project)
+        return loader, project
+    root = str(project)
+    real_iter = loader._iter
+
+    def trusted(project_dir) -> str:
+        return root if project_dir is not None and Path(project_dir) == project else ""
+
+    def enumerate_with_project(project_dir=None):
+        # The real walk's precedence: a project key a global one already holds is dropped.
+        global_rows = real_iter(None)
+        taken = {name for name, _path, _within in global_rows}
+        confined = [(name, path, root) for name, path in rows if name not in taken]
+        return global_rows + (confined if trusted(project_dir) else [])
+
+    monkeypatch.setattr(loader, "_trusted_project_key", trusted)
+    monkeypatch.setattr(loader, "_iter", enumerate_with_project)
+    return loader, project
 
 
 def _loader(tmp_path: Path, *, opened) -> SkillsLoader:
@@ -609,9 +653,6 @@ def test_catalog_name_does_not_change_admitted_project_provenance(
     tmp_path, monkeypatch, key, opened
 ):
     """Start at the admitted enumeration seam, preserving real descriptor reads."""
-    from kiro_crew import skill_trust
-    from kiro_crew.skills import PROJECT_SKILL_BODY_CAP
-
     project = tmp_path / "project"
     path = Path(_skill(project / ".kiro" / "skills", key))
     path.write_text(
@@ -658,3 +699,215 @@ def test_regular_global_mapped_namespace_keeps_normal_reader(tmp_path, monkeypat
         reader.assert_called_once_with(key, None, max_bytes=None)
     finally:
         loader.close()
+
+
+class TestAProjectAlwaysSkillCannotFailTheSession:
+    """A checked-out repository's ``always: true`` skill degrades instead of raising.
+
+    The operator's own pinned skills keep their refuse-rather-than-trim contract;
+    a project's are delivered on their own budget, and one that cannot be
+    delivered is skipped with a warning and stays discoverable.
+    """
+
+    def test_bodies_past_the_project_budget_are_skipped_and_stay_discoverable(
+        self, tmp_path, monkeypatch, opened, caplog
+    ):
+        """Five 20,000-character bodies: each fits the per-file cap, together they
+        pass the shared startup capacity a repository must not be able to spend."""
+        loader, project = _project_loader(
+            tmp_path,
+            {f"big-{n}": str(n) * 20_000 for n in range(5)},
+            opened=opened,
+            monkeypatch=monkeypatch,
+        )
+        required: list[str] = []
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            context = loader.get_context(
+                budget=4000,
+                project_dir=project,
+                project_body_budget=PROJECT_SKILL_BODY_CAP,
+                required_parts_out=required,
+            )
+        delivered = [n for n in range(5) if str(n) * 20_000 in "".join(required)]
+        assert len(delivered) == 1, "the project budget did not bound its own bodies"
+        warned = " ".join(record.getMessage() for record in caplog.records)
+        for n in range(5):
+            if n in delivered:
+                continue
+            assert f"'big-{n}'" in warned
+            assert (
+                f"skill_search('big-{n}')" in context
+            ), "a skipped project skill left the directory"
+            # Visible in the prompt itself, inside the required block.
+            assert f"skill_search(action='read', key='big-{n}')" in "".join(required)
+
+    def test_the_warning_names_the_skill_and_the_revocable_trust_grant(
+        self, tmp_path, monkeypatch, opened, caplog
+    ):
+        """The operator's way out has to be in the message: the skill to shrink
+        and the project whose trust grant they can revoke."""
+        loader, project = _project_loader(
+            tmp_path,
+            {"one": "a" * 20_000, "two": "b" * 20_000},
+            opened=opened,
+            monkeypatch=monkeypatch,
+        )
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            loader.get_context(
+                budget=4000, project_dir=project, project_body_budget=PROJECT_SKILL_BODY_CAP
+            )
+        [message] = [
+            r.getMessage() for r in caplog.records if "were not injected" in r.getMessage()
+        ]
+        assert "'two'" in message
+        assert repr(loader._trusted_project_key(project)) in message
+        assert "revoke the project-skill trust grant" in message
+        assert f"project skill budget of {PROJECT_SKILL_BODY_CAP}" in message
+
+    def test_an_unreadable_body_is_skipped_and_stays_discoverable(
+        self, tmp_path, monkeypatch, opened, caplog
+    ):
+        loader, project = _project_loader(
+            tmp_path, {"gone": "the body"}, opened=opened, monkeypatch=monkeypatch
+        )
+        # Enumerated and listed, then refused at the body read (a file swapped or
+        # removed after the walk).
+        monkeypatch.setattr(loader, "load_skill", lambda *args, **kwargs: None)
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            context = loader.get_context(
+                budget=4000, project_dir=project, project_body_budget=PROJECT_SKILL_BODY_CAP
+            )
+        assert "skill_search('gone')" in context
+        assert any("'gone'" in record.getMessage() for record in caplog.records)
+
+    def test_a_fitting_body_has_its_own_budget_beside_a_full_operator_cap(
+        self, tmp_path, monkeypatch, opened
+    ):
+        import kiro_crew.skills as module
+
+        monkeypatch.setattr(module, "PINNED_SKILL_BODIES_CAP", 2000)
+        Path(_skill(tmp_path / "skills", "operator")).write_text(
+            "---\nname: operator\nalways: true\n---\n" + "o" * 1800, encoding="utf-8"
+        )
+        loader, project = _project_loader(
+            tmp_path, {"proj": "PROJECT BODY " + "p" * 1000}, opened=opened, monkeypatch=monkeypatch
+        )
+        required: list[str] = []
+        loader.get_context(
+            budget=4000,
+            project_dir=project,
+            project_body_budget=PROJECT_SKILL_BODY_CAP,
+            required_parts_out=required,
+        )
+        delivered = "".join(required)
+        assert "o" * 1800 in delivered
+        assert "### Skill: proj" in delivered and "PROJECT BODY" in delivered
+
+    def test_operator_capacity_still_refuses_beside_a_project_skill(
+        self, tmp_path, monkeypatch, opened
+    ):
+        """Only the project's rows degrade; the operator's own still fail loudly."""
+        import kiro_crew.skills as module
+
+        loader, project = _project_loader(
+            tmp_path, {"proj": "small body"}, opened=opened, monkeypatch=monkeypatch
+        )
+        monkeypatch.setattr(module, "PINNED_SKILL_BODIES_CAP", 2000)
+        for n in range(3):
+            Path(_skill(tmp_path / "skills", f"required-{n}")).write_text(
+                "---\nname: required\nalways: true\n---\n" + str(n) * 900, encoding="utf-8"
+            )
+        with pytest.raises(SkillContextCapacityError, match="startup instruction capacity"):
+            loader.get_context(budget=4000, project_dir=project)
+
+    def test_the_notice_and_warning_stay_bounded_however_many_rows_are_skipped(
+        self, tmp_path, monkeypatch, opened, caplog
+    ):
+        """The repository chooses how many always: true rows it ships."""
+        loader, project = _project_loader(
+            tmp_path,
+            {f"k-{n:03d}": "x" * 400 for n in range(120)},
+            opened=opened,
+            monkeypatch=monkeypatch,
+        )
+        required: list[str] = []
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            loader.get_context(
+                budget=4000,
+                project_dir=project,
+                project_body_budget=PROJECT_SKILL_BODY_CAP,
+                required_parts_out=required,
+            )
+        notice = "".join(required).split("### Project skills not injected", 1)[1]
+        assert "more not named here." in notice
+        assert len(notice) < 2600
+        warnings = [r.getMessage() for r in caplog.records if "were not injected" in r.getMessage()]
+        assert len(warnings) == 1, "one warning per context build, not one per skipped row"
+        assert "more." in warnings[0] and len(warnings[0]) < 4000
+
+    def test_skipped_rows_are_bounded_where_they_are_retained(self):
+        """Bounding only the rendered notice would still hold every skipped key."""
+        from kiro_crew.skill_runtime import delivery
+
+        cap = delivery._SKIPPED_PROJECT_KEYS_MAX_CHARS
+        reason = f"past the room left in the project skill budget of {PROJECT_SKILL_BODY_CAP}"
+        skipped = delivery.SkippedProjectSkills()
+        for n in range(5000):
+            skipped.add(f"k-{n:04d}-" + "x" * 100, reason)
+        assert skipped.count == 5000
+        assert 0 < len(skipped.notice) < 5000 and 0 < len(skipped.logged) < 5000
+        assert sum(len(line) + 2 for line in skipped.notice) <= cap
+        assert sum(len(item) + 2 for item in skipped.logged) <= cap
+
+    def test_each_list_names_only_the_rows_skipped_first(self):
+        """A key too long for the notice closes the notice, not the warning."""
+        from kiro_crew.skill_runtime import delivery
+
+        skipped = delivery.SkippedProjectSkills()
+        keys = ["short-0", "long/" + "y" * 3000] + [f"short-{n}" for n in range(1, 31)]
+        for key in keys:
+            skipped.add(key, "reason")
+        assert skipped.notice == ["- skill_search(action='read', key='short-0')"]
+        named = [item.split("'", 2)[1] for item in skipped.logged]
+        assert named[:2] == ["short-0", keys[1][: delivery._SKIPPED_PROJECT_KEY_LOG_CHARS]]
+        assert named[2:] == keys[2 : len(named)], "the warning names a prefix of the rows"
+        assert len(named) > 2
+
+        oversized = delivery.SkippedProjectSkills()
+        oversized.add("z" * 10_000, "reason")
+        assert oversized.notice == []
+        assert oversized.logged == [f"{'z' * delivery._SKIPPED_PROJECT_KEY_LOG_CHARS!r} (reason)"]
+
+    def test_every_skipped_row_rejoins_the_directory_named_or_not(self, tmp_path, opened):
+        """The pinned set loses each skipped key as it is skipped, past the bound too."""
+        loader = _loader(tmp_path, opened=opened)
+        rows = [{"key": f"k-{n:03d}-" + "z" * 100, "size_bytes": 10**6} for n in range(200)]
+        pinned = {row["key"] for row in rows} | {"operator-skill"}
+        parts: list[str] = []
+        skipped = loader._append_project_skill_bodies(parts, rows, None, 100, pinned)
+        assert parts == []
+        assert skipped.count == 200 and len(skipped.notice) < 200
+        assert pinned == {"operator-skill"}
+
+    def test_a_body_whose_repo_scope_changed_after_listing_is_not_delivered(
+        self, tmp_path, monkeypatch, opened, caplog
+    ):
+        """The scope is re-checked on the bytes delivered, not only on the listing read."""
+        loader, project = _project_loader(
+            tmp_path, {"scoped": "SCOPED BODY"}, opened=opened, monkeypatch=monkeypatch
+        )
+        rescoped = (
+            "---\nname: scoped\ndescription: d\nalways: true\n"
+            "repo_scope: somewhere/else\n---\nSCOPED BODY\n"
+        )
+        monkeypatch.setattr(loader, "load_skill", lambda *args, **kwargs: rescoped)
+        required: list[str] = []
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            loader.get_context(
+                budget=4000,
+                project_dir=project,
+                project_body_budget=PROJECT_SKILL_BODY_CAP,
+                required_parts_out=required,
+            )
+        assert "SCOPED BODY" not in "".join(required)
+        assert not [r for r in caplog.records if "were not injected" in r.getMessage()]

@@ -55,8 +55,8 @@ pull_request
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
-  |-- claude-review.yml "Opus 5 Review"     line-level, code-only, blocking
-  |-- codex-review.yml  "GPT 5.6 Review"    line-level + PR intent, blocking
+  |-- claude-review.yml "Opus 5.5 Review"     line-level, code-only, blocking
+  |-- codex-review.yml  "GPT 6.1 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape, advisory
   |-- ux-review.yml     "UX Review"         rendered experience, advisory
   |-- first-principles-review.yml
@@ -94,19 +94,19 @@ Three structural facts explain most of the rest:
   did. `merge-queue-readiness.yml` -- a `merge_group`-only workflow whose
   single job is named `PR Readiness`, the ruleset's required check -- waits for
   those six runs on the group's commit and passes only when all six did, within
-  a 150-minute budget covering `ci.yml`'s 100-minute longest chain of job caps
-  plus a rerun. A run that concludes without success has its failed jobs rerun
-  (`gh run rerun --failed`, which is why the job holds `actions: write`), up to
-  twice per workflow, and fails the check only when its third attempt still does
-  not succeed: about 15% of approved heads fail their first try, mostly Windows
-  backend shards and lost runners, and every ejection rebuilds each group queued
-  behind it, so the retry has to happen before the check fails. A failed CI run
-  is held until Fast Gate's latest run has succeeded, because CI's
-  `await-fast-gate` fails at once on a failed gate and a rerun before the gate
-  recovers would spend CI's attempts on it. A failed API
-  call, a read or a rerun request, is retried until the budget runs out and never
-  spends a rerun; only a run still absent after the five-minute appear window,
-  or one whose last attempt failed, fails the check. Each tick reads ONE runs listing for the
+  a 120-minute budget covering `ci.yml`'s 100-minute longest chain of job caps
+  plus pickup slack. The first verdict is final: a run that concludes without
+  success fails the check on the tick that reads it, with no rerun and no wait
+  for the lanes still running, and the job holds only `actions: read`. A rerun
+  inside the queue would hold every group queued behind this one for the
+  rerun's whole duration -- a CI rerun is ~40 minutes -- and two of them push a
+  failing group's ejection past the point where main has moved and every group
+  is rebuilt, so the failing group is never ejected and the green groups behind
+  it never land. A flaky shard therefore costs the pull request a re-queue, and
+  the groups behind it one rebuild; a group that fails costs them nothing. A
+  failed API call is retried until the budget runs out; only a run still absent
+  after the five-minute appear window, or one that concluded without success,
+  fails the check. Each tick reads ONE runs listing for the
   commit, not one per workflow, every 60 s while a run may still be appearing
   and every 180 s once all six are seen: the installation token is shared by
   every workflow, and 40 queued groups then cost ~800 calls an hour instead of
@@ -735,6 +735,22 @@ native Windows or CodeBuild lifecycle facts. Task Scheduler pod boot, interactiv
 installer, namespace E2E/sandbox, release and GUI jobs remain outside this migration
 pending real container proof or infrastructure approval.
 
+Neither CodeBuild image ships a runner tool cache, so every `setup-node` step
+there resolved its bare major through `actions/node-versions`' manifest -- one
+authenticated `api.github.com` call per step, per run, against the same
+`GITHUB_TOKEN` hourly budget the fleet's other calls share. The composite
+`.github/actions/seed-node-tool-cache` runs before each `setup-node` on a
+CodeBuild-routed job (and inside `setup-windows-tests`): on
+`runner.environment == 'self-hosted'` it reads the newest release of the major
+from nodejs.org's `index.json`, verifies the tarball against nodejs.org's
+`SHASUMS256.txt`, and unpacks it into `RUNNER_TOOL_CACHE/node/<version>/<arch>`
+with the `<arch>.complete` marker `@actions/tool-cache` looks for. `setup-node`
+checks that directory before the manifest, so its log then reads `Found in
+cache @ ...` instead of `Attempting to download 24...`. On GitHub-hosted
+runners the composite does nothing. It changes no pin: the version input must
+match the following `setup-node` step, and `test_node_version_pins.py` still
+governs the `setup-node` pins themselves.
+
 Rollback needs no AWS change: set Linux resolver outputs to `ubuntu-latest` and
 Windows to `windows-latest`, and return the two direct routes (`changes` and
 `await-fast-gate`) to hosted; an individual consumer can instead use its hosted
@@ -960,8 +976,7 @@ Details worth knowing:
     label whose attempt suffix is stale, and CodeBuild's documentation does not
     say whether it honours that. (It did on CI run 36831273812: attempts 2 and 3
     of a `--failed` rerun kept the `-1` label on their Linux and Windows jobs and
-    each got a fresh runner within two minutes, which is what the merge-queue
-    readiness poll's rerun relies on.) A workflow clears TWO heal-safety gates. The
+    each got a fresh runner within two minutes.) A workflow clears TWO heal-safety gates. The
     declared gate is `HEAL_SAFE_WORKFLOWS`, a written judgement that a full
     re-run is safe, and it is the LOAD-BEARING one: a workflow joining the
     watched set is exempt until a person puts it there. There are two declared
@@ -1552,11 +1567,11 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
-| Opus 5 | `Opus 5 Review` | Agentic Opus 5 with Opus 4.8 as the overload fallback, `--max-turns 180` per stage, **two real invocations** (discovery -> validation) | **Code only, and no shell**: `Read`, `Grep`, `Glob`. The diff is prefetched to a file, so `Bash(gh pr diff:*)` is not granted -- its prefix match also admits `gh pr diff <n> > <path>`, which a directive in the PR-authored diff could use to overwrite the stage-2 prompt | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
-| GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two GPT invocations** (discovery, then authoritative falsification), `reasoning_effort: medium`, plus conditional Opus 5 adjudication of blocking candidates | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
-| Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | **Code only, and no shell**: `Read`, `Grep`, `Glob`. The diff and the PR title/description are prefetched to the data files `authentic.patch` and `pr-intent.txt`, so no `Bash(...)` is granted -- every such grant is prefix-matched, so one admits `<verb> ... > <path>`, which a directive in the PR-authored diff could use to overwrite this job's own inputs | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
-| UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the PR's screenshots **only** -- the attachments its body links, downloaded, plus any committed image; pass 2: **no shell** (`Read`, `Grep`, `Glob`), reading pass 1's report plus the prefetched `authentic.patch` and `pr-intent.txt` | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
-| First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | **The whole repository, and no shell**: `Read`, `Grep`, `Glob`. The diff and the PR title/description are prefetched to `authentic.patch` and `pr-intent.txt`, for the same prefix-match reason as the rows above | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
+| Opus 5.5 | `Opus 5.5 Review` | Agentic Opus 5.5 with Sonnet 5.5 as the overload fallback, `--max-turns 180` per stage, **two real invocations** (discovery -> validation) | **Code only, and no shell**: `Read`, `Grep`, `Glob`. The diff is prefetched to a file, so `Bash(gh pr diff:*)` is not granted -- its prefix match also admits `gh pr diff <n> > <path>`, which a directive in the PR-authored diff could use to overwrite the stage-2 prompt | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
+| GPT 6.1 | `GPT 6.1 Review` | Non-agentic, **two GPT invocations** (discovery, then authoritative falsification), `reasoning_effort: medium`, plus conditional Opus 5.5 adjudication of blocking candidates | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
+| Design Review | `Design Review` | Agentic Opus 5.5, with Sonnet 5.5 as the overload fallback | **Code only, and no shell**: `Read`, `Grep`, `Glob`. The diff and the PR title/description are prefetched to the data files `authentic.patch` and `pr-intent.txt`, so no `Bash(...)` is granted -- every such grant is prefix-matched, so one admits `<verb> ... > <path>`, which a directive in the PR-authored diff could use to overwrite this job's own inputs | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
+| UX Review | `UX Review` | Agentic Opus 5.5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the PR's screenshots **only** -- the attachments its body links, downloaded, plus any committed image; pass 2: **no shell** (`Read`, `Grep`, `Glob`), reading pass 1's report plus the prefetched `authentic.patch` and `pr-intent.txt` | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
+| First Principles | `First Principles Review` | Agentic Opus 5.5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | **The whole repository, and no shell**: `Read`, `Grep`, `Glob`. The diff and the PR title/description are prefetched to `authentic.patch` and `pr-intent.txt`, for the same prefix-match reason as the rows above | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
 
 ### The description a verdict read, and the digest that names it
 
@@ -1714,7 +1729,7 @@ Three constraints keep it honest:
 It runs whenever a diff touches product or CI surface — **including a plain bug
 fix**, which is where the root-cause lens earns the most. Only a change that ships
 no capability at all (docs, tests, screenshots, generated files) skips, so the
-2x-rate-card Fable 5 spend goes to diffs that can actually produce a finding.
+Opus 5.5 spend goes to diffs that can actually produce a finding.
 
 A `BLOCK` here fails the lane's own check and `pr-readiness.yml` scores that failure as
 a readiness blocker, exactly as it does for Design Review and UX Review. Every other
@@ -1798,7 +1813,7 @@ is deliberate — premise and cause here, shape quality there — and if the two
 converge in practice, the answer is to trim the overlap out of Design Review, not to
 tune two prompts against each other.
 
-### Why Opus 5 is code-only
+### Why Opus 5.5 is code-only
 
 It is the agentic reviewer, so pulling attacker-controllable PR prose into its
 context is a prompt-injection surface. `gh pr view` and `gh api` are disallowed, and
@@ -1806,7 +1821,7 @@ so is `gh pr comment`: a **CI step**, not the model, upserts a single
 hidden-marker-keyed summary captured from the run transcript, which trades scattered
 inline chatter for one terse summary plus a binary gate. The PR-intent
 responsibility, including flagging a description-versus-diff mismatch, is
-deliberately handed to the read-only, non-agentic GPT 5.6 reviewer, which treats
+deliberately handed to the read-only, non-agentic GPT 6.1 reviewer, which treats
 that prose as **untrusted evidence, never authority to waive a code finding**. The
 prose is fetched by a step that has network and the token, then baked into the
 prompt wrapped in a collision-resistant nonce, because the review sandbox unshares
@@ -1867,13 +1882,13 @@ and therefore cannot contradict itself across rounds.
 
 The markers are the **only** gate:
 
-- Opus 5 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
+- Opus 5.5 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
   blocking finding exists. Both are parsed out of the action's `execution_file`
   transcript rather than a `--json-schema` structured output, because the harness's
   internal structured-output tool is unreliable when other tools are enabled:
   reviews completed with a success result yet returned no structured output,
   failing this gate closed on healthy reviews.
-- GPT 5.6 emits `[GPT-REVIEWED] <sha>` / `[BLOCK-MERGE] <sha>`. When the provider
+- GPT 6.1 emits `[GPT-REVIEWED] <sha>` / `[BLOCK-MERGE] <sha>`. When the provider
   *refuses* the request — declines to review the diff because of what it contains,
   as opposed to crashing or timing out — the **same-repo lane** publishes a distinct
   terminal state: the synthetic verdict body names the refusal in prose (no
@@ -2108,6 +2123,25 @@ Design verdict at `CONCERNS` rather than failing the lane, because the UX lane f
 its run on the same failure and readiness already holds. An image hosted off a
 commit outside the PR, or one the description says shows another PR, is not evidence
 of this revision.
+
+**Design Review checks the readers of anything a PR takes away.** Both Design
+lanes run a TAKE-AWAY CHECK: the reviewer lists what the patch removes, renames,
+hides, tightens or migrates, greps the tree itself for readers across every entry
+point (crew page, chat, subagent, cron, app bundles, prompt builder, release), and
+compares them with the description's `## Backwards compatibility` section, where
+each reader is one `Reader: <path>:<symbol> -- <entry> -- <why it still works |
+test name>` line, or the section is `Removes nothing: <why>`. A reader a
+`Breaking:` line names counts as listed and accepted. A reader that breaks under
+the patch and is not listed is a `BLOCK` naming it (`Removes nothing` lists no
+reader); a listed reader with a weak reason is `CONCERNS`. A reader a `Compatible:` line names by `<path>:<symbol>` counts as
+listed too. When a description cut at the capture cap is missing the section, or
+the section is the last one before the cut, its list may be past the cut and the
+check caps at `CONCERNS`; a section that ends before the cut is judged on its text.
+The same-repo lane runs the PR's own copy of the prompt (`pull_request`), the fork
+lane the default branch's (`workflow_run`), so only a same-repo prompt change
+reviews itself under its own edit. #13273 (apps tree hidden from app
+crons) and #12798 (crewmate rows pruned under chat resume and subagents) are why:
+both passed every lane on an unchecked compatibility claim.
 
 **Design Review owns the long-term / one-way-door lens** as its gate 8, "LONG-TERM
 REVERSIBILITY", in both the same-repo and fork variants. An unsafe one-way door is
@@ -2398,12 +2432,12 @@ Python, and the job that can write a comment runs only base-committed harness.
 
 | Job | Holds | Runs | Platform |
 |---|---|---|---|
-| `generate` | the Bedrock credential (`id-token: write`) | Fable 5, which proposes `candidates.json` reading with `Read` / `Grep` / `Glob` | ubuntu |
+| `generate` | the Bedrock credential (`id-token: write`) | Opus 5.5, which proposes `candidates.json` reading with `Read` / `Grep` / `Glob` | ubuntu |
 | `validate` | `contents: read` | `scope_candidates.py validate`, which proves the model's file is a corpus the differential can consume | ubuntu |
 | `adjudicate` | `contents: read` | `deny_diff.py`, classifying each candidate at the base ref and the head ref | ubuntu, macOS, windows |
 | `publish` | `pull-requests: write` | the fold and comment assembly, staged from the base commit | ubuntu |
 
-The model is `us.anthropic.claude-fable-5`, with `us.anthropic.claude-opus-4-8` as
+The model is `us.anthropic.claude-opus-5-5`, with `us.anthropic.claude-sonnet-5-5` as
 the overload fallback. `generate` mints the credential but runs no repository
 Python, so a prompt injection reaches no product code. `validate` and `adjudicate`
 execute the change's own harness — `adjudicate` materializes each ref's own
@@ -2455,7 +2489,7 @@ steps still run, which is deliberate, because a lane reporting `skipped` is read
 "the review has not posted yet" and waited on. What the gate buys is that the two
 failure sources this ruling is about — an outage and a flaky matrix leg — cannot red
 a PR the lane would not have judged. And
-it matches `Opus 5 Review` and `GPT 5.6 Review`, both fail-closed in the table
+it matches `Opus 5.5 Review` and `GPT 6.1 Review`, both fail-closed in the table
 above; a security lane resolving softer than them would be the weakest link in the
 same rollup. To reverse the ruling, set `_UNSETTLED_CONCLUSION = "concerns"` — one
 constant, no other edit, both lanes already map `concerns` to a non-blocking
@@ -2503,7 +2537,7 @@ status plus one `readiness:` label**.
   `branches: [main]` filter, so it sits in the same stacked-PR carve-out: on a PR
   whose base is not the default branch it never starts, and a monitored lane that
   reads `(not started)` would freeze the verdict at pending forever.
-- **Additionally required on a same-repo PR:** CodeQL, Opus 5 Review, GPT 5.6
+- **Additionally required on a same-repo PR:** CodeQL, Opus 5.5 Review, GPT 6.1
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
 - **Design Review, UX Review and First Principles Review are completion-required
@@ -2875,7 +2909,7 @@ protection remain separate gates.
 **completion of `Fast Gate`** (stage 1) and run privileged from the default branch
 (stage 2), gated on
 `workflow_run.head_repository.full_name != github.repository`. Each posts a check-run
-named exactly like its same-repo twin (`Opus 5 Review`, `GPT 5.6 Review`,
+named exactly like its same-repo twin (`Opus 5.5 Review`, `GPT 6.1 Review`,
 `Design Review`, `UX Review`, `First Principles Review`, `Security Scope Review`),
 so branch protection is
 satisfied on either path, and it opens that check-run as early as possible keyed to
@@ -3074,7 +3108,7 @@ exact-match exception behavior without network access.
 
 The command grammar and the marker contract are in [Human override](#human-override); this section states the authorization and freshness rules the handler enforces.
 
-Human judgment is the final authority over the Fable 5 and GPT 5.6
+Human judgment is the final authority over the Opus 5.5 and GPT 6.1
 AI-review results. A repository member with `write`, `maintain`, or `admin`
 permission can record a false-positive, not-applicable, or accepted-risk
 decision with:
@@ -3107,7 +3141,7 @@ turn a gate green. The handler has only review-control permissions
 on a pull request; `issues:write` alone does not make that write reliable for a
 GitHub Actions installation token.
 
-For Fable 5 and GPT 5.6, the handler re-runs the existing PR workflow. The
+For Opus 5.5 and GPT 6.1, the handler re-runs the existing PR workflow. The
 re-run resolves the trusted marker before acquiring AWS credentials, skips the
 model invocation, updates the existing summary with a human-override banner,
 and exits its original gate successfully. Either event ordering — an override
@@ -3115,13 +3149,13 @@ recorded before a reviewer starts, or one arriving during model execution —
 leaves the SHA-scoped human decision authoritative.
 
 The marker-keyed comments expose the override command to repository
-writers. GPT 5.6 also normalizes each current-commit result into a
+writers. GPT 6.1 also normalizes each current-commit result into a
 top verdict plus one sentence: `✅ no blocking findings`,
 `🔴 changes requested (blocking)`, an incomplete state, or a human-override
 state, so a green verdict from the previous commit is never left looking
 current.
 
-When no current-SHA override is active, GPT 5.6 injects a bounded
+When no current-SHA override is active, GPT 6.1 injects a bounded
 ADJUDICATION LEDGER into the review prompt: the bot-authored override
 records, plus the marker and finding-title lines of review-disposition
 comments whose authors' current collaborator permission is `write`,
@@ -3135,7 +3169,7 @@ waive a new defect or authorize a green verdict.
 GPT makes exactly two GPT calls. Pass 1 discovers candidates across the
 full diff; pass 2 attempts to falsify each candidate and emits the only GPT
 verdict exposed to the comment and gate. Blocking candidates may then receive a
-separate, conditional Opus 5 adjudication. Pass 2 also drops or downgrades a
+separate, conditional Opus 5.5 adjudication. Pass 2 also drops or downgrades a
 candidate whose proposed fix violates the FIX BAR, a BLOCKING candidate that
 cannot be anchored to an AUTOSDE rule or residual defect class, and a
 relocated variant of a ledger-adjudicated class; an adjudication goes stale
@@ -3159,7 +3193,7 @@ Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
 The aggregate covers the latest PR result for Fast Gate, CI, Build, Code Review,
-Internal Content Scan, Opus 5 Review, GPT 5.6 Review (two GPT passes plus
+Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
 conditional Opus adjudication), Security Scope Review, Design Review, UX Review,
 and First Principles Review. For managed CodeQL it requires
 both the dynamic analysis workflow and the exact-head `CodeQL` security result
@@ -3224,15 +3258,15 @@ resists this:
 - **Both line reviewers share an identical FIX BAR:** every finding must carry a fix
   expressible as an edit to lines **this PR changed**. If the fix would need a new
   function, module, abstraction, config knob, dependency, or an edit to untouched
-  code, it is out of scope for the bot. GPT 5.6 drops such a finding; Opus 5
+  code, it is out of scope for the bot. GPT 6.1 drops such a finding; Opus 5.5
   **demotes it to advisory instead of dropping it** -- the author cannot land the
   remedy in this PR, so it must not gate the merge, but the signal is real and a
   human decides. A regression the diff itself introduces still blocks either way,
   since reverting the hunk is an in-diff fix. **The absence of a
   mechanism is never a finding.** This makes "add mechanism X" structurally
   un-reportable: the demand fails the bar before it can become a finding. A scope cap
-  complements it: Opus 5 stays within the evident scope of the diff (it is code-only),
-  and GPT 5.6 stays within the PR's stated purpose, flagging a
+  complements it: Opus 5.5 stays within the evident scope of the diff (it is code-only),
+  and GPT 6.1 stays within the PR's stated purpose, flagging a
   description-versus-diff mismatch as an **advisory** finding rather than a block.
 - **The WHAT BLOCKS list is closed:** exhaustive, never extended, never reasoned about
   by analogy, with no "and other serious issues" clause. A finding blocks only if it

@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import stat as stat_module
@@ -74,6 +75,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     reproject_claimed_session,
     session_agent,
 )
+from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
@@ -131,6 +133,8 @@ from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
     _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
+    STEER_POSSIBLY_DELIVERED_META,
+    STEER_POSSIBLY_DELIVERED_NOTE,
     ResetCause,
     _append_compaction_notice,
     _apply_incognito_prefix,
@@ -280,6 +284,7 @@ from kiro_crew.llm_helpers import (
     TURN_FALLBACK_ATTR,
     FallbackState,
     PromptBusyExhaustedError,
+    acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
     configured_fallback_chain,
@@ -304,6 +309,7 @@ from kiro_crew.members import (
     is_dispatchable_member_name,
     member_lifecycle,
     record_activity,
+    select_provider_backend,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_reply
@@ -395,6 +401,7 @@ from kiro_crew.session_agent_selection import (
 from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.start_priority import StartPriority, person_priority
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
     approval_command,
@@ -416,6 +423,15 @@ from kiro_crew.wakatime.heartbeats import (
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
 logger = logging.getLogger(__name__)
+
+#: Shown once when a live backend lost this chat's session and a fresh
+#: runtime re-loads it; the turn is retried once behind it.
+SESSION_NOT_FOUND_RETRY_TEXT = "⟳ The agent lost this chat's session — reconnecting…"
+#: Shown when the one reconnect also failed to get a usable session.
+SESSION_NOT_FOUND_GIVE_UP_TEXT = (
+    "❌ Could not reconnect this chat's session. Send your message again, "
+    "or start a new chat if this keeps happening."
+)
 
 # The synthetic recovery message constants live in chat_utils (single source
 # of truth shared with the queue/merge predicates — is_system_injection must
@@ -443,6 +459,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     SESSION_START_FAILED_KIND,
     STAGE_DELIVERY_KINDS,
     SUBAGENT_COMPLETION_KIND,
+    SYNTHESIS_CLEAR,
+    SYNTHESIS_HELD,
+    SYNTHESIS_UNKNOWN,
     SYNTHETIC_RECOVERY_KIND,
     TRANSIENT_GIVE_UP_TEXT,
     TRANSIENT_NOTICE_GIVE_UP,
@@ -473,6 +492,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
     subagents_attached_async,
+    synthesis_fire_verdict,
     tool_calls_are_read_only_preparation,
 )
 
@@ -3156,6 +3176,32 @@ def _flush_file_changes(
         reply_mids.clear()
 
 
+def turn_stats_meta(
+    elapsed_ms: int, credits: float, cost_usd: float, model: str = ""
+) -> dict[str, Any] | None:
+    """The ``meta.turn_stats`` value the footer renders, or None for nothing to show.
+
+    One shape for every writer: a chat turn (``_attach_turn_stats``) and a cron
+    run's result row (the gateway passes it to ``inject_cron_result_to_dashboard``).
+    Zero/empty fields are omitted so the footer shows only what was reported.
+    A non-finite number is omitted too: ``json.dumps`` writes it as a bare
+    ``Infinity``/``NaN`` that no browser parses. The provider-reported model id is
+    scrubbed like every ACP-controlled string (``_redact_acp_string``) and dropped past ``_MAX_MODEL_ID_LEN``, because the row is retained.
+    """
+    if elapsed_ms <= 0:
+        return None
+    stats: dict[str, Any] = {"elapsed_ms": int(elapsed_ms)}
+    if math.isfinite(credits) and credits > 0:
+        stats["credits"] = round(credits, 4)
+    if math.isfinite(cost_usd) and cost_usd > 0:
+        stats["cost_usd"] = round(cost_usd, 6)
+    if model:
+        safe_model = _redact_acp_string(model)
+        if len(safe_model) <= _MAX_MODEL_ID_LEN:
+            stats["model"] = safe_model
+    return stats
+
+
 def _attach_turn_stats(
     slot: "_ChatSlot",
     elapsed_ms: int,
@@ -3194,15 +3240,9 @@ def _attach_turn_stats(
     with the failed turn's numbers. No-op when the turn produced no assistant
     message or when there is nothing to show.
     """
-    if elapsed_ms <= 0:
+    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
+    if stats is None:
         return False
-    stats: dict[str, Any] = {"elapsed_ms": int(elapsed_ms)}
-    if credits > 0:
-        stats["credits"] = round(credits, 4)
-    if cost_usd > 0:
-        stats["cost_usd"] = round(cost_usd, 6)
-    if model:
-        stats["model"] = model
     if ttft_ms > 0:
         stats["ttft_ms"] = int(ttft_ms)
     boundary = max(0, turn_boundary)
@@ -7348,7 +7388,11 @@ async def _cap_armed_prefetches(
 
 
 def schedule_eager_spawn(
-    state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    *,
+    allow_resume: bool = False,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -7366,6 +7410,11 @@ def schedule_eager_spawn(
     first real turn and a TTL teardown if no turn ever claims it. The other
     intent signals keep the refusal — slot create has no mapping, and the
     agent/project switch handlers reset the session themselves.
+
+    ``start_priority`` is FOREGROUND only from a handler serving the dashboard
+    owner's own slot action (create, agent or project switch), where the person is
+    about to type; the focus-driven resume prefetch, reloads and app callers stay
+    BACKGROUND (rule: ``kiro_crew.start_priority``).
 
     The flag is read from the live-config watcher's adopted snapshot, a plain
     attribute read, and there is deliberately no disk fallback behind it: this
@@ -7397,7 +7446,13 @@ def schedule_eager_spawn(
     # its first step would otherwise be inside a later snapshot and look
     # evictable to the very signal it raced.
     task = asyncio.create_task(
-        _eager_spawn(state, slot, allow_resume=allow_resume, signal_generation=_arm_generation)
+        _eager_spawn(
+            state,
+            slot,
+            allow_resume=allow_resume,
+            signal_generation=_arm_generation,
+            start_priority=start_priority,
+        )
     )
     slot._eager_spawn_task = task
     return task
@@ -7492,6 +7547,7 @@ async def _eager_spawn(
     *,
     allow_resume: bool = False,
     signal_generation: float | None = None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -7709,6 +7765,24 @@ async def _eager_spawn(
                         slot.key,
                     )
                     return
+            # A resume the provider answers with a fresh session plus replay
+            # (Tool Search on, kiro backend, direct dashboard key) can only
+            # come back ``resumed=False`` and be refused -- after a whole
+            # runtime was spawned and torn down. Ask the provider's own
+            # decision before anything exists; the first real turn takes the
+            # same fresh-session path it always does. The backend is the
+            # factory's own selection for this key, and the prefetch allocates
+            # with no channel identity.
+            if allow_resume and resume_takes_tool_search_replay(
+                tool_search=cfg.agent.tool_search,
+                backend=select_provider_backend(
+                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                ),
+                channel_id=None,
+                session_key=session_key,
+            ):
+                logger.info("Eager spawn: %s left to first turn (tool-search replay)", session_key)
+                return
             # Off the loop: the resolve globs and reads agent JSON (see
             # _default_session_model). It converts every resolver error,
             # StopIteration included, to "" inside the worker.
@@ -7770,6 +7844,7 @@ async def _eager_spawn(
                     default_model=default_model,
                     allow_resume=allow_resume,
                     _bound=_bound,
+                    start_priority=start_priority,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -7792,6 +7867,21 @@ async def _eager_spawn(
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
 
 
+def _turn_start_priority(
+    *, user_origin: bool, crew_log_actor: str, provenance_restored: bool
+) -> StartPriority:
+    """The start priority of a turn's cold start (rule: ``kiro_crew.start_priority``).
+
+    FOREGROUND only for a turn a person sent: authenticated-human provenance this
+    process observed, owned by the user -- the same predicate the crew-log gates
+    use (``_crew_log_actor == "user" and not _turn_provenance_restored``). That
+    covers a typed turn, a person's Resume/Continue press and the runner's requeue
+    of a person's failed turn; a self-wake, a dispatch-named actor (cron, sub-agent,
+    gateway, app, crew) or a restored queue entry starts BACKGROUND.
+    """
+    return person_priority(user_origin and crew_log_actor == "user" and not provenance_restored)
+
+
 async def _spawn_admitted_prefetch(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -7805,6 +7895,7 @@ async def _spawn_admitted_prefetch(
     default_model: str,
     allow_resume: bool,
     _bound: tuple,
+    start_priority: StartPriority,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
@@ -7855,6 +7946,7 @@ async def _spawn_admitted_prefetch(
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
+                start_priority=start_priority,
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -8338,6 +8430,7 @@ def _settle_consumed_steers(
     for settled_msg in set(previous) - set(remaining):
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
+        slot._steer_possibly_delivered.discard(settled_msg)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -8454,6 +8547,14 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # narrower channel authority a queued channel message carries. Absent means
         # not through a channel.
         _channel = bool(getattr(slot, "_steer_channel_origin", {}).pop(steer_msg, False))
+        _maybe_delivered: set[str] = getattr(slot, "_steer_possibly_delivered", set())
+        # An RPC still in flight counts too: its frame may already be in the
+        # pipe, and its verdict lands after this entry may have drained.
+        if steer_msg in _maybe_delivered or steer_msg in getattr(
+            slot, "_steer_rpc_in_flight", set()
+        ):
+            _maybe_delivered.discard(steer_msg)
+            _meta[STEER_POSSIBLY_DELIVERED_META] = True
         qid = slot.queue_insert(
             0,
             steer_msg,
@@ -8884,6 +8985,38 @@ def _retry_cancel_reason(rebound: bool, superseded: bool, stopped: bool) -> str:
     return "the turn was stopped."
 
 
+def _session_not_found_replay_revoked(state: Any, slot: Any) -> tuple[bool, bool, bool]:
+    """Whether the queued lost-session replay was revoked since it was enqueued.
+
+    Returns ``(stopped, superseded, rebound)``: a Stop on the slot or its session
+    counted since the enqueue, a user follow-up or steer queued behind it, or the
+    slot bound to a different session than the one the replay belongs to.
+    """
+    bound_key = getattr(slot, "_session_not_found_session_key", "")
+    live_key = effective_session_key(slot)
+    rebound = bool(bound_key) and live_key != bound_key
+    cur_stop_gen = getattr(slot, "_stop_generation", 0)
+    cur_session_stop_gen = _session_stop_generation_for(
+        getattr(state, "sessions", None), bound_key or live_key
+    )
+    stopped = cur_stop_gen != getattr(
+        slot, "_session_not_found_stop_gen", cur_stop_gen
+    ) or cur_session_stop_gen != getattr(
+        slot, "_session_not_found_session_stop_gen", cur_session_stop_gen
+    )
+    superseded = bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
+    return stopped, superseded, rebound
+
+
+def _clear_session_not_found_replay(slot: Any) -> None:
+    """Forget the queued lost-session replay's identity and binding."""
+    slot._session_not_found_queue_id = ""
+    slot._session_not_found_session_key = ""
+
+
+SESSION_NOT_FOUND_CANCELLED_TEXT = "ℹ️ Session reconnect cancelled — nothing was run."
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -9137,6 +9270,47 @@ async def _start_next_queued_turn(
             if not slot._queue:
                 return False
 
+    # The lost-session replay is enqueued at index 0 under the shared
+    # SYNTHETIC_RECOVERY_KIND, and the session reset that follows its enqueue is
+    # awaited: a soft Stop landing there preserves the queue and leaves
+    # `_stopping` back at idle. Identified by queue id, purged on any revocation.
+    _snf_qid = getattr(slot, "_session_not_found_queue_id", "")
+    if _snf_qid:
+        if not any(q.get("id") == _snf_qid for q in slot._queue):
+            _clear_session_not_found_replay(slot)
+        else:
+            _snf_stopped, _snf_superseded, _snf_rebound = _session_not_found_replay_revoked(
+                state, slot
+            )
+            if (
+                _should_suppress_requeue(slot)
+                or slot._stopping
+                or _snf_stopped
+                or _snf_superseded
+                or _snf_rebound
+            ):
+                slot.queue_remove_by_id(_snf_qid)
+                if _remove_queued_by_id(slot.messages, _snf_qid):
+                    state.broadcast_ws(
+                        "queue_pop",
+                        {"slot": slot.key, "content": "", "queue_id": _snf_qid},
+                    )
+                _clear_session_not_found_replay(slot)
+                # Aborted before dispatch: refund the one-shot so the user's own
+                # next turn keeps its reconnect.
+                slot._session_not_found_retry_used = False
+                slot.append("notice", SESSION_NOT_FOUND_CANCELLED_TEXT, "msg msg-info")
+                logger.info(
+                    "Dropped lost-session replay before dispatch for slot %s "
+                    "(stop_since_enqueue=%s superseded=%s rebound=%s)",
+                    slot.key,
+                    _snf_stopped,
+                    _snf_superseded,
+                    _snf_rebound,
+                )
+                if not slot._queue:
+                    return False
+
     # The unsupported-history-image recovery carries the identical hazard, and it
     # is NOT covered by either guard above: it is enqueued at index 0 under the
     # shared SYNTHETIC_RECOVERY_KIND, carries neither continuation constant nor
@@ -9301,7 +9475,7 @@ async def _start_next_queued_turn(
         (
             not allow_user_during_subagents
             and state.subagents is not None
-            and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+            and state.subagents.running_agents_for(effective_session_key(slot))
         )
         or in_stage
     )
@@ -9414,6 +9588,7 @@ async def _start_next_queued_turn(
     is_app_message = any(item.get("kind") == MCP_APP_MESSAGE_KIND for item in consumed)
     if not (is_cron or is_subagent or is_recovery or is_app_message):
         slot._pending_synthesis = False
+        slot._synthesis_rechecks = 0
 
     for item in consumed:
         content, _ = redact_exfiltration_urls(item["content"])
@@ -9544,6 +9719,8 @@ async def _start_next_queued_turn(
             _drained_meta.update(
                 (k, v) for k, v in _item_meta.items() if k != QUEUED_CONTAINMENT_META_KEY
             )
+    # Model input only: the row keeps the user's text as typed.
+    _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids
@@ -9704,11 +9881,16 @@ async def _start_next_queued_turn(
         and consumed[0].get("id") == _replay_dispatch_qid
     ):
         _run_kwargs["_refusal_replay"] = True
+    _snf_dispatch_qid = getattr(slot, "_session_not_found_queue_id", "")
+    if _snf_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _snf_dispatch_qid:
+        _run_kwargs["_session_not_found_recovery"] = True
     _image_dispatch_qid = getattr(slot, "_image_recovery_queue_id", "")
     if _image_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _image_dispatch_qid:
         _run_kwargs["_image_recovery"] = True
     if is_recovery:
         _run_kwargs["_synthetic_recovery_turn"] = True
+    if _possibly_delivered_steer:
+        _run_kwargs["_steer_possibly_delivered"] = True
     task = spawn_guarded_turn(
         state,
         slot,
@@ -9818,16 +10000,12 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
             state.push_slots_update()
             if await _start_next_queued_turn(state, slot):
                 return
-        if (
-            state.subagents is None
-            or state.subagents.running_agents_for(f"dashboard:{slot.key}")
-            or slot._subagent_deliveries_inflight != 0
-        ):
-            await _finish_queue_cycle(state, slot)
-            return
+        # The fire gate's verdict was taken by the caller (`_finish_queue_cycle`
+        # or the outage re-check), the one place the decision reads the store.
 
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
+        slot._synthesis_rechecks = 0
         # Same successor boundary as the queue drain (see the finalize comment in
         # `_start_next_queued_turn`): this dispatch is reached from the previous
         # turn's tail without a `chat_done`, so the predecessor's streaming row
@@ -9879,6 +10057,70 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
         slot._synthesis_inflight = False
 
 
+#: How often, and how many times, an idle slot re-asks the synthesis fire gate
+#: after the task store could not be read (``SYNTHESIS_UNKNOWN``). Bounded: a
+#: store that stays down past it leaves the synthesis armed for the next turn
+#: end, as before.
+_SYNTHESIS_RECHECK_SECS = 5.0
+_SYNTHESIS_RECHECK_MAX = 12
+
+
+def _launch_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
+    slot._synthesis_inflight = True
+    task = asyncio.create_task(_run_pending_synthesis(state, slot))
+    slot.task = task
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    state.push_slots_update()
+
+
+def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
+    """Re-ask the fire gate later: an unreadable store has no completion to wake it.
+
+    One timer per slot (``slot._synthesis_recheck``), cancelled when the slot
+    closes (``begin_close``), at most :data:`_SYNTHESIS_RECHECK_MAX` times per
+    armed synthesis. Each attempt runs only while the slot is idle, registered
+    and still armed; a real "children attached" answer stops the chain, since
+    that child's own completion re-triggers the check.
+    """
+    if slot._synthesis_recheck is not None or slot._synthesis_rechecks >= _SYNTHESIS_RECHECK_MAX:
+        return
+    slot._synthesis_rechecks += 1
+
+    async def _recheck() -> None:
+        slot._synthesis_recheck = None
+
+        def _still_wanted() -> bool:
+            return bool(
+                slot._pending_synthesis
+                and not slot._synthesis_inflight
+                and not slot.turn_running
+                and not slot._closing
+                and state._slots.get(slot.key) is slot
+            )
+
+        if not _still_wanted():
+            return
+        verdict = await synthesis_fire_verdict(state, slot)
+        if verdict == SYNTHESIS_UNKNOWN:
+            _arm_synthesis_recheck(state, slot)
+        elif verdict == SYNTHESIS_CLEAR and _still_wanted():
+            # Re-read after the store read: the tab may have started closing.
+            _launch_synthesis(state, slot)
+
+    def _fire() -> None:
+        task = asyncio.ensure_future(_recheck())
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
+    try:
+        slot._synthesis_recheck = asyncio.get_running_loop().call_later(
+            _SYNTHESIS_RECHECK_SECS, _fire
+        )
+    except RuntimeError:
+        slot._synthesis_recheck = None
+
+
 async def _finish_queue_cycle(
     state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
 ) -> None:
@@ -9888,7 +10130,9 @@ async def _finish_queue_cycle(
     :func:`chat_utils.chat_done_payload` whether the floor really goes back to
     the user, and that question reaches the task store."""
 
-    will_synthesize = (
+    will_synthesize = False
+    verdict = SYNTHESIS_HELD
+    if (
         allow_automatic_successor
         and slot._pending_synthesis
         and not slot._synthesis_inflight
@@ -9896,9 +10140,22 @@ async def _finish_queue_cycle(
         # user turn to owe a held note to -- withholding there would lose it.
         and state._slots.get(slot.key) is slot
         and state.subagents is not None
-        and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
-        and slot._subagent_deliveries_inflight == 0
-    )
+    ):
+        # Running, delivering, pending in memory, or queued in the store: the
+        # one fire-gate read (`synthesis_fire_verdict`).
+        verdict = await synthesis_fire_verdict(state, slot)
+        will_synthesize = verdict == SYNTHESIS_CLEAR
+        if verdict == SYNTHESIS_UNKNOWN:
+            _arm_synthesis_recheck(state, slot)
+        if not will_synthesize and slot._queue and not slot._last_turn_auth_required:
+            # A message the user sent while the fire gate read the store found
+            # the turn still running and was queued behind it. Drain it as a
+            # normal turn end does (`_start_next_queued_turn` keeps its own hold
+            # rules); only this await could have let it in after the turn's own
+            # drain attempt.
+            state.push_slots_update()
+            if await _start_next_queued_turn(state, slot):
+                return
 
     # Before any successor is dispatched. A held note's CONTEXT half drains into
     # the next turn, so flushing after that turn started would let the note shape
@@ -9927,12 +10184,7 @@ async def _finish_queue_cycle(
     if not slot._queue:
         slot._stopping = False
     if will_synthesize:
-        slot._synthesis_inflight = True
-        task = asyncio.create_task(_run_pending_synthesis(state, slot))
-        slot.task = task
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
-        state.push_slots_update()
+        _launch_synthesis(state, slot)
         return
 
     slot.append("done", "", "done")
@@ -10351,6 +10603,9 @@ async def _run_chat(
     # the drain so a Stop or correction in the spawn-to-consume window can veto
     # the destructive continuation before the provider sees it.
     _image_recovery: bool = False,
+    # The drained entry is the lost-session replay whose queue id matched the
+    # slot's recorded one; the consume seam re-checks its Stop snapshots.
+    _session_not_found_recovery: bool = False,
     # The drained entry carried the synthetic-recovery ``kind`` tag (a runner
     # requeue after a pre-output failure, including a re-queue of the USER'S OWN
     # words on a poisoned-conversation discard). Structural, from the entry --
@@ -10358,6 +10613,10 @@ async def _run_chat(
     # user message, and re-arming the refusal-retry allowance on one would let a
     # crashing fallback replay re-arm and repeat indefinitely.
     _synthetic_recovery_turn: bool = False,
+    # The drained entry is a steer that may already have been delivered
+    # (``STEER_POSSIBLY_DELIVERED_META``): the model input, and only it, is led
+    # by ``STEER_POSSIBLY_DELIVERED_NOTE``.
+    _steer_possibly_delivered: bool = False,
     _directive_user_origin: bool = False,
     # This turn was drained from a queue entry a PREVIOUS process accepted
     # (`slot_queue_repository.RESTORED_QUEUE_KEY`). Its provenance therefore
@@ -10544,6 +10803,12 @@ async def _run_chat(
     # turn no dispatch claimed is a user turn -- never a guess read off the
     # message, which the user writes.
     _crew_log_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
+    # This turn's start priority: its cold start and the eager respawn it may arm.
+    _turn_priority = _turn_start_priority(
+        user_origin=_directive_user_origin,
+        crew_log_actor=_crew_log_actor,
+        provenance_restored=_turn_provenance_restored,
+    )
     # A set_project directive can update the slot while this turn is still
     # streaming. Heartbeats describe coding done during this turn, so bind
     # their project to the same start-of-turn state as the actor above.
@@ -11107,6 +11372,38 @@ async def _run_chat(
                 getattr(slot, "_refusal_fallback_session_key", "") or session_key,
             )
         return _recovery_qid
+
+    if _session_not_found_recovery:
+        # Task scheduling after the drain's check is another revocation window.
+        _snf_stopped_c, _snf_superseded_c, _snf_rebound_c = _session_not_found_replay_revoked(
+            state, slot
+        )
+        _clear_session_not_found_replay(slot)
+        if (
+            _snf_stopped_c
+            or _snf_superseded_c
+            or _snf_rebound_c
+            or slot._stopping
+            or _should_suppress_requeue(slot)
+        ):
+            slot._session_not_found_retry_used = False
+            slot.append("notice", SESSION_NOT_FOUND_CANCELLED_TEXT, "msg msg-info")
+            logger.info(
+                "Lost-session replay aborted at consume for slot %s "
+                "(stopped=%s superseded=%s rebound=%s)",
+                slot.key,
+                _snf_stopped_c,
+                _snf_superseded_c,
+                _snf_rebound_c,
+            )
+            try:
+                state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
+            except Exception:  # pragma: no cover - unblock is best-effort
+                logger.debug(
+                    "chat_done broadcast failed for aborted lost-session replay",
+                    exc_info=True,
+                )
+            return
 
     if _image_recovery:
         # The drain validated this replay before spawning the guarded task, but
@@ -12354,6 +12651,7 @@ async def _run_chat(
             # direct dashboard turn.
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            start_priority=_turn_priority,
         )
 
         def _release_dispatch_lock() -> None:
@@ -13438,6 +13736,10 @@ async def _run_chat(
 
         if _interrupted_turn_preamble:
             full_message = f"{_interrupted_turn_preamble}\n\n{full_message}"
+        if _steer_possibly_delivered and not is_slash:
+            # Model input only: dispatch, the mirror legs and the row read the
+            # user's own text.
+            full_message = STEER_POSSIBLY_DELIVERED_NOTE + full_message
 
         # Checklist resync. The pill's snapshot outlives the native conversation
         # that produced it (agent switch, failed session/load, poisoned discard,
@@ -19223,6 +19525,7 @@ async def _run_chat(
             # turn must not re-arm a second discard without that evidence.
             slot._prestream_exhausted_cycles = 0
             slot._poisoned_reset_used = False
+            slot._session_not_found_retry_used = False
             # This turn landed: the prompt (including any re-injected skills
             # index) reached the model, so the `finally` must NOT restore the
             # one-shot flag.
@@ -19593,6 +19896,10 @@ async def _run_chat(
         # here is what keeps `turn/failed` from reporting an unnamed failure.
         _crew_log_error = type(exc).__name__
         needs_session_reset = True
+        if getattr(exc, "ambiguous_delivery", False) is True:
+            # Every steer written into this turn sits in the same stalled pipe as
+            # its prompt, so the teardown requeues each as possibly delivered.
+            slot._steer_possibly_delivered.update(slot._pending_steers)
         _persist_partial_reply()
         # WHOSE failure was this? A process this slot was sharing -- with a
         # sub-agent of its own, or with a co-tenant session -- died for reasons
@@ -19637,6 +19944,10 @@ async def _run_chat(
                 _turn_emitted,
                 cause=ResetCause.CONNECTION_LOST,
                 message_is_synthetic=_is_synthetic,
+                # A request-frame drain stall may have delivered the buffered
+                # prompt to a kiro-cli that resumed reading; replaying it verbatim
+                # would run its tools twice. Resume from restored state instead.
+                ambiguous_delivery=getattr(exc, "ambiguous_delivery", False),
             )
             _queue_recovery(
                 0,
@@ -19832,6 +20143,52 @@ async def _run_chat(
                     else "⟳ Session busy — please retry."
                 )
                 slot.append("error", _retry_msg, "msg msg-err")
+        elif acp_error_is_session_not_found(exc):
+            # The backend process is alive but holds no session under the id this
+            # chat is bound to, so the dead-provider eviction never fires and a
+            # plain retry draws the same answer. Reset drops the live binding and
+            # keeps the session-map entry, so the next claim spawns a fresh
+            # process that session/loads the SAME backend id (falling back to a
+            # new session plus history replay only when that load fails). ONE
+            # retry per landed turn: a backend that loses it again ends here.
+            logger.warning(
+                "Backend lost the session for slot %s — re-loading on a fresh runtime",
+                slot.key,
+            )
+            needs_session_reset = True  # checked in finally block
+            _persist_partial_reply()
+            if _should_suppress_requeue(slot):
+                pass
+            elif _prompt_depth == 0 and not slot._session_not_found_retry_used:
+                slot._session_not_found_retry_used = True
+                slot.append(
+                    "error",
+                    SESSION_NOT_FOUND_RETRY_TEXT,
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND},
+                )
+                _requeue_text, _requeue_payload = build_recovery_requeue(
+                    message,
+                    _turn_emitted,
+                    cause=ResetCause.CONNECTION_LOST,
+                    message_is_synthetic=_is_synthetic,
+                )
+                # Snapshot BEFORE the enqueue: the reset in this turn's finally is
+                # awaited, and a Stop landing there must veto the replay.
+                slot._session_not_found_stop_gen = getattr(slot, "_stop_generation", 0)
+                slot._session_not_found_session_stop_gen = _session_stop_generation()
+                slot._session_not_found_session_key = session_key
+                slot._session_not_found_queue_id = (
+                    _queue_recovery(
+                        0,
+                        _requeue_text,
+                        kind=SYNTHETIC_RECOVERY_KIND,
+                        payload=_requeue_payload,
+                    )
+                    or ""
+                )
+            else:
+                slot.append("error", SESSION_NOT_FOUND_GIVE_UP_TEXT, "msg msg-err")
         elif (
             getattr(exc, "image_format_unsupported", False)
             and not _attachments
@@ -20708,6 +21065,8 @@ async def _run_chat(
                             sel_source="poisoned_canary",
                             sel_session_key="_poison_canary",
                             timeout=_POISON_CANARY_TIMEOUT_SECS,
+                            # Inside the failing turn: whoever waits on it waits here.
+                            start_priority=_turn_priority,
                         )
                         # Require actual output: an empty completion is not
                         # positive evidence that fresh conversations work.
@@ -21293,7 +21652,7 @@ async def _run_chat(
             # actually tore down, not on what was queued — a discard left armed
             # behind attached sub-agents changed nothing to respawn for.
             if torn_down:
-                schedule_eager_spawn(state, slot)
+                schedule_eager_spawn(state, slot, start_priority=_turn_priority)
         except Exception:
             logger.debug("_consume_pending_reset failed", exc_info=True)
         # ── Requeue unconsumed steers ──

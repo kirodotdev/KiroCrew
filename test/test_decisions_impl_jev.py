@@ -27,7 +27,7 @@ from kiro_crew.decisions.impl_jev import (
     _to_wire,
     resolve_api_key,
 )
-from kiro_crew.decisions.types import Choice
+from kiro_crew.decisions.types import Choice, Noul, Score
 
 VAULT_REF = "secret://TYPESAFE_API_KEY"
 VAULT_KEY = "test-key"
@@ -209,8 +209,8 @@ class TestRequestShape:
         assert q["instructions"] == CHOICE.prompt
         assert q["criteria"] == {"billing": None, "technical": None, "sales": None}
 
-    def test_only_choice_questions_go_over_the_wire(self):
-        """The wire speaks Choice only; any other object is a caller bug, not a request."""
+    def test_an_object_of_no_question_type_is_refused(self):
+        """The wire speaks the three question types; any other object is a caller bug."""
         from kiro_crew.decisions.impl_jev import _to_wire
 
         with pytest.raises(JevProtocolError, match="unsupported question type"):
@@ -630,3 +630,135 @@ class TestProviderDefaults:
         from kiro_crew.decisions.impl_jev import _to_wire
 
         json.dumps(_to_wire("hi", "jev-latest", [CHOICE, URGENT]))
+
+
+# ---------------------------------------------------------------------------
+# Noul and Score: the provider's other two question types
+# ---------------------------------------------------------------------------
+
+IS_URGENT = Noul(
+    id="is_urgent",
+    prompt="Does this convey urgency?",
+    true_means="Explicitly time-sensitive",
+    false_means="No urgency expressed",
+)
+FRUSTRATION = Score(
+    id="frustration",
+    prompt="How frustrated is the customer?",
+    levels=["Calm", "Frustrated", "Very angry"],
+)
+
+
+def _score_body(score=1.05, probabilities=None, confidence=0.92):
+    return {
+        "type": "score",
+        "score": score,
+        "legend": {"0": "Calm", "1": "Frustrated", "2": "Very angry"},
+        "probabilities": (
+            {"0": 0.0, "1": 0.95, "2": 0.05} if probabilities is None else probabilities
+        ),
+        "confidence": confidence,
+    }
+
+
+class TestNoulAndScoreRequestShape:
+    def test_noul_and_score_go_out_in_the_documented_shape(self):
+        rec = _Recorder(
+            body=_ok_body(
+                {"is_urgent": {"type": "noul", "noul": 0.95}, "frustration": _score_body()}
+            )
+        )
+        asyncio.run(_run(rec, [IS_URGENT, FRUSTRATION]))
+        questions = rec.requests[0]["questions"]
+        assert questions["is_urgent"] == {
+            "type": "noul",
+            "instructions": IS_URGENT.prompt,
+            "criteria": {"true": "Explicitly time-sensitive", "false": "No urgency expressed"},
+        }
+        assert questions["frustration"] == {
+            "type": "score",
+            "instructions": FRUSTRATION.prompt,
+            "criteria": ["Calm", "Frustrated", "Very angry"],
+        }
+
+    def test_a_noul_with_no_rubric_sends_no_criteria(self):
+        """``criteria`` is optional for a Noul; an empty object is not sent in its place."""
+        wire = _to_wire("hi", "jev-latest", [Noul(id="n", prompt="Yes?")])
+        assert wire["questions"]["n"] == {"type": "noul", "instructions": "Yes?"}
+
+    def test_a_noul_with_one_side_sends_only_that_side(self):
+        wire = _to_wire("hi", "jev-latest", [Noul(id="n", prompt="Yes?", true_means="it is")])
+        assert wire["questions"]["n"]["criteria"] == {"true": "it is"}
+
+    @pytest.mark.parametrize("levels", [[], ["only"], [str(i) for i in range(11)]])
+    def test_a_score_outside_two_to_ten_levels_is_refused_before_sending(self, levels):
+        with pytest.raises(JevProtocolError, match="number of levels"):
+            _to_wire("hi", "jev-latest", [Score(id="s", prompt="?", levels=levels)])
+
+
+class TestNoulAndScoreParse:
+    def test_noul_value_is_the_probability_of_yes(self):
+        rec = _Recorder(body=_ok_body({"is_urgent": {"type": "noul", "noul": 0.2}}))
+        answer = asyncio.run(_run(rec, [IS_URGENT]))["is_urgent"]
+        assert answer.value == pytest.approx(0.2)
+        assert answer.p == pytest.approx(0.8), "p is the more likely side's probability"
+        assert answer.confidence is None
+
+    def test_score_value_is_the_weighted_level_and_p_the_likeliest_level(self):
+        rec = _Recorder(body=_ok_body({"frustration": _score_body()}))
+        answer = asyncio.run(_run(rec, [FRUSTRATION]))["frustration"]
+        assert answer.value == pytest.approx(1.05)
+        assert answer.p == pytest.approx(0.95)
+        assert answer.confidence == pytest.approx(0.92)
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"type": "choice", "choice": "yes", "probabilities": {"yes": 1.0}},
+            {"type": "noul"},
+            {"type": "noul", "noul": 1.5},
+            {"type": "noul", "noul": -0.1},
+            {"type": "noul", "noul": True},
+            {"type": "noul", "noul": "0.9"},
+            {"type": "noul", "noul": float("nan")},
+        ],
+        ids=["wrong-type", "missing", "above-1", "below-0", "bool", "string", "nan"],
+    )
+    def test_a_malformed_noul_answer_raises(self, raw):
+        rec = _Recorder(raw=json.dumps(_ok_body({"is_urgent": raw}), allow_nan=True))
+        with pytest.raises(JevProtocolError):
+            asyncio.run(_run(rec, [IS_URGENT]))
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"type": "noul", "noul": 0.5},
+            _score_body(score=2.5),
+            _score_body(score=-0.1),
+            _score_body(score=True),
+            _score_body(probabilities={}),
+            _score_body(probabilities={"3": 1.0}),
+            _score_body(probabilities={"0": 1.2}),
+            {k: v for k, v in _score_body().items() if k != "probabilities"},
+        ],
+        ids=[
+            "wrong-type",
+            "above-top-level",
+            "below-0",
+            "bool",
+            "empty-distribution",
+            "unknown-level",
+            "probability-above-1",
+            "no-probabilities",
+        ],
+    )
+    def test_a_malformed_score_answer_raises(self, raw):
+        rec = _Recorder(body=_ok_body({"frustration": raw}))
+        with pytest.raises(JevProtocolError):
+            asyncio.run(_run(rec, [FRUSTRATION]))
+
+    def test_a_partial_response_across_types_raises(self):
+        """One answer missing from a mixed request is a failure, never a partial result."""
+        rec = _Recorder(body=_ok_body({"is_urgent": {"type": "noul", "noul": 0.9}}))
+        with pytest.raises(JevProtocolError, match="no answer for question"):
+            asyncio.run(_run(rec, [IS_URGENT, FRUSTRATION, CHOICE]))

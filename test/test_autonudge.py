@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,11 @@ from kiro_crew import autonudge_authz as _autonudge_mod
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
+    CYCLE_CAP_REASON,
+    MANUAL_STOP_REASON,
+    RUNTIME_BUDGET_REASON,
+    SESSION_START_FAILURE_REASON,
+    STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
     MonitorUpdateConflict,
     NudgeLoop,
@@ -2681,8 +2687,9 @@ async def test_a_retarget_under_a_terminal_verdict_is_not_settled(tmp_path, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("write_secs", [0.0, 0.5], ids=["fast-disk", "slow-disk"])
 async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, write_secs
 ):
     """The finish must reach the user, not be lost to a self-cancel.
 
@@ -2691,6 +2698,13 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
     that timer, outside the firing window that would have deferred the cancel. So
     anything sequenced AFTER the await can be dropped, and that is the
     notification.
+
+    The notification is emitted only after the settlement is durable, and the
+    tick makes two fsync'd store writes before it gets there (the in-flight
+    marker, then the settlement). On a shared Windows runner each of those can
+    take hundreds of milliseconds, the rename retry alone allowing ~0.45s, so a
+    fixed wall-clock wait reads a slow disk as a lost notification. The
+    ``slow-disk`` case pins that: it holds every write for ``write_secs``.
     """
     import kiro_crew.autonudge as _an
 
@@ -2706,6 +2720,13 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
         _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    real_write_state = service._store.write_state
+
+    def _slow_write_state(payload):
+        time.sleep(write_secs)
+        real_write_state(payload)
+
+    monkeypatch.setattr(service._store, "write_state", _slow_write_state)
 
     def _record(event, loop):
         events.append(event)
@@ -2730,10 +2751,13 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
         # defect lives in update() cancelling the timer task that awaits it, so a
         # direct call registers no timer and cannot see it.
         service._arm_timer(loop, delay=0)
-        for _ in range(80):
-            await asyncio.sleep(0.01)
-            if events:
-                break
+        timer = service._timers[loop.id]
+        # Wait for the timer task itself to end, not for a fixed time. A
+        # self-cancel ends it at once with nothing emitted, so the assertion
+        # below still fails fast on the defect; a slow disk only delays it.
+        # The timeout is a hang guard, never the expected path.
+        await asyncio.wait({timer}, timeout=30)
+        assert timer.done(), "the terminal tick must finish, not hang"
         assert "expired" in events, "the user must be told the watch finished"
         assert reasons and reasons[0] == _an.MONITOR_TERMINAL_REASON, (
             "the reason must be readable at emit time or the wording falls through "
@@ -3796,6 +3820,78 @@ async def test_a_bare_revival_keeps_the_count_so_a_reconciler_cannot_mint_a_fres
     assert fired.count(capped.id) == 1, "the still-spent cap must re-stop the loop unfired"
     assert svc._loops[capped.id].active is False
     assert svc._loops[capped.id].stopped_reason == "cycle_cap"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "cycles", "budget", "count_zeroed", "clock_reanchored"),
+    [
+        (MANUAL_STOP_REASON, 7, 3600, False, False),
+        (AUTONUDGE_STOP_REASON, 7, 0, False, False),
+        (APPROVAL_STALL_REASON, 7, 0, False, False),
+        (SESSION_START_FAILURE_REASON, 7, 0, False, False),
+        (STRUCTURAL_TERMINAL_REASON, 7, 0, False, False),
+        (CYCLE_CAP_REASON, 7, 0, True, False),
+        (RUNTIME_BUDGET_REASON, 7, 0, False, True),
+        # An agent-written row: the loader copies the field as stored, whatever its shape.
+        pytest.param([CYCLE_CAP_REASON], 7, 0, False, False, id="malformed-list"),
+        pytest.param(MANUAL_STOP_REASON, 7, "300", False, False, id="malformed-bounds"),
+        # Paused by hand with a bound spent: the first tick would refuse it anyway, so
+        # that bound's counter resets while the other keeps the breakpoint.
+        pytest.param(MANUAL_STOP_REASON, 24, 0, True, False, id="paused-at-cap"),
+        pytest.param(MANUAL_STOP_REASON, 7, 300, False, True, id="budget-elapsed-during-pause"),
+        pytest.param(MANUAL_STOP_REASON, 24, 300, True, True, id="both-spent"),
+    ],
+)
+async def test_the_users_resume_resets_only_the_counter_behind_a_spent_bound(
+    svc, monkeypatch, reason, cycles, budget, count_zeroed, clock_reanchored
+):
+    """Play on a paused loop (the dashboard route's ``fresh_run`` revival through
+    ``authorize_and_update_nudge``) picks the loop up where it stopped: a loop a
+    person paused at cycle 7 of 24 comes back at cycle 7, not cycle 1, because
+    the cap is a lifetime limit and a pause must not quietly mint a fresh
+    allowance. Only a spent bound resets, and only its own counter: a spent cap
+    (stopped on it, or the count reached it) zeroes the count; a spent time
+    budget (stopped on it, or the clock ran it out while the loop sat paused)
+    re-anchors the clock -- Play there is otherwise a dead press, re-stopped on
+    its first tick unless the bound is raised first -- so an overnight pause at
+    7 of 24 with an hour of budget comes back at 7 of 24 on a fresh clock. A
+    reason or a bound that is not even the right type reads as "not spent"
+    rather than raising after ``active`` has flipped. The loop was armed 600s
+    ago in every row."""
+    monkeypatch.setattr(
+        _autonudge_mod, "sel", lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None)
+    )
+    well_typed = isinstance(budget, int)
+    loop = await svc.add(
+        slot_key="chat-1-304",
+        message="go",
+        idle_secs=15,
+        max_cycles=24,
+        max_runtime_secs=budget if well_typed else 0,
+    )
+    if not well_typed:
+        loop.max_cycles, loop.max_runtime_secs = "24", budget
+    loop.cycle_count = cycles
+    loop.created_ts -= 600
+    created = loop.created_ts
+    if isinstance(reason, str):
+        await svc.update(loop.id, active=False, stopped_reason=reason)
+    else:
+        await svc.update(loop.id, active=False)
+        loop.stopped_reason = reason
+    assert svc._loops[loop.id].stopped_reason == reason
+    revived, error, status = await _autonudge_mod.authorize_and_update_nudge(
+        svc=svc, loop_id=loop.id, active=True, fresh_run=True, source="dashboard"
+    )
+    assert error is None and status == 200 and revived is not None
+    assert revived.active is True and revived.stopped_reason == ""
+    assert revived.cycle_count == (0 if count_zeroed else cycles)
+    if clock_reanchored:
+        assert revived.created_ts > created
+    else:
+        assert revived.created_ts == created
     svc.stop()
 
 
