@@ -107,7 +107,9 @@ async def test_owner_create_waits_for_memory_recovery_before_allocating(
                     assert response.status == 200, data
                     slot = dashboard_state._slots["startup-chat"]
                     assert slot.agent == agent
-                    assert session_agent_selection_name("dashboard:startup-chat") == agent
+                    assert session_agent_selection_name("dashboard:startup-chat") == (
+                        agent if agent == "default" else None
+                    )
             finally:
                 if not preparation.done():
                     preparation.set_result(None)
@@ -446,7 +448,7 @@ async def test_switch_resolves_off_loop_and_refuses_rebound_slot_before_reset(
     if change == "none":
         assert response.status == 200
         assert slot.agent == "worker"
-        assert slot.memory_store == cfg.agents["worker"].memory_store
+        assert slot.memory_store == ""
         dashboard_state.sessions.reset.assert_awaited_once()
     else:
         assert response.status == 409

@@ -2698,6 +2698,7 @@ class _ChatSlot:
         "title",
         "agent",
         "agent_kind",
+        "member_choice",
         "model",
         "jev_route",
         "_model_withheld",
@@ -2967,6 +2968,9 @@ class _ChatSlot:
         # made by name alone or restored from history. Display provenance for
         # the picker; never an authorization input.
         self.agent_kind: str = ""
+        # The member identity, ``(member_id, store)``, an empty plain chat was
+        # given while its private member stays unbound until the first send.
+        self.member_choice: tuple[str, str] | None = None
         # The agent whose ``welcomeMessage`` this slot has already rendered.
         # The hint is a ONE-SHOT per activation: the switch row emits it and
         # the session start that the switch's own reset produces must not emit

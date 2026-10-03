@@ -39,6 +39,7 @@ from kiro_crew.history import (
     latest_transcript_ts,
 )
 from kiro_crew.memory_stores import named_store_or_empty
+from kiro_crew.session_agent_selection import member_choice_record
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -424,6 +425,7 @@ def merge_empty_window(
         # Clearable like memory_store: a name-only pick after a template
         # pick must not keep advertising the template namespace.
         fields["agent_kind"] = slot.agent_kind
+        fields["member_choice"] = member_choice_record(slot.member_choice)
         # Written even when EMPTY: the merge is an upsert that cannot delete a key, so
         # omitting a cleared project leaves the previous directory on disk to be read
         # back as though the clear never happened.
@@ -751,6 +753,8 @@ def build_full_line(
         meta_line["memory_store"] = _named
     if slot.agent_kind:
         meta_line["agent_kind"] = slot.agent_kind
+    if slot.member_choice is not None:
+        meta_line["member_choice"] = member_choice_record(slot.member_choice)
     if slot.project:
         meta_line["project"] = slot.project
     # Remote-execution binding. All three are written together or not at

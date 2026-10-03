@@ -13,7 +13,11 @@ from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.cron import CronJob, CronService, resolve_cron_memory
 from kiro_crew.history import ConversationLog
 from kiro_crew.member_memory_auth import bind_private_session_store
-from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
+from kiro_crew.memory_stores import (
+    DEFAULT_MEMORY_STORE,
+    UnknownMemoryStore,
+    provision_member_memory,
+)
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_persistence import (
     create_agent_folder,
@@ -328,30 +332,88 @@ async def test_http_resume_cannot_authorize_private_transcript(tmp_path, member_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("explicit", [False, True])
-async def test_owner_create_pins_private_selection_before_history_save(
-    tmp_path, member_stores, explicit
+@pytest.mark.parametrize("target", ["reviewer", "default"])
+@pytest.mark.parametrize("named", [False, True])
+async def test_owner_create_on_a_member_leaves_the_agent_menu_open(
+    tmp_path, member_stores, named, target
 ):
+    """New chat on a member, named or the default, names that member but does not bind it."""
     from aiohttp.test_utils import TestClient, TestServer
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
     from dashboard_owner_helpers import as_owner
 
-    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.execution_context import read_session_execution
 
-    writer, _ = member_stores
     cfg = KiroCrewConfig.load()
     cfg.default_agent = "writer"
     cfg.save()
     state = _make_state(tmp_path)
-    payload = {"name": "owner-private"}
-    if explicit:
-        payload["agent"] = "writer"
+    state.sessions.reset = AsyncMock(return_value=True)
+    key = "dashboard:unbound"
+    body = {"name": "unbound", **({"agent": "writer"} if named else {})}
     with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
         async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
-            response = await client.post("/api/chat/slots", json=payload)
+            response = await client.post("/api/chat/slots", json=body)
             assert response.status == 200, await response.text()
-    assert state._slots["owner-private"].memory_store == writer
-    assert read_private_session_store("dashboard:owner-private") == writer
+            slot = state._slots["unbound"]
+            assert slot.agent == "writer"
+            assert slot.agent_kind == "member"
+            assert slot.memory_store == ""
+            assert read_session_execution(key) is None
+
+            response = await client.post("/api/chat/slots/unbound/agent", json={"agent": target})
+            assert response.status == 200, await response.text()
+            assert slot.agent == target
+            if target == "default":
+                assert read_session_execution(key).member_id is None
+                assert slot.memory_store == DEFAULT_MEMORY_STORE
+            else:
+                assert read_session_execution(key) is None
+                assert slot.memory_store == ""
+
+            response = await client.post("/api/chat/slots/unbound/agent", json={"agent": "writer"})
+            assert response.status == 200, await response.text()
+    assert slot.agent == "writer"
+    assert slot.memory_store == ""
+    assert read_session_execution(key) is None
+
+
+@pytest.mark.asyncio
+async def test_new_chat_inheriting_a_default_member_is_restored_unbound(tmp_path, member_stores):
+    """The empty chat reopens after a restart on its member, still free to switch."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard.chat_persistence import restore_open_slots
+    from kiro_crew.execution_context import read_session_execution
+
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    key = "dashboard:inherited"
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post("/api/chat/slots", json={"name": "inherited"})
+            assert response.status == 200, await response.text()
+    state._persist_open_slots()
+
+    restarted = _make_state(tmp_path)
+    assert restore_open_slots(restarted) == 1
+    restored = restarted._slots["inherited"]
+    assert restored.agent == "writer"
+    assert read_session_execution(key) is None
+    restarted.sessions.reset = AsyncMock(return_value=True)
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(
+            TestServer(as_owner(_make_app_with_agent_routes(restarted)))
+        ) as client:
+            response = await client.post(
+                "/api/chat/slots/inherited/agent", json={"agent": "default"}
+            )
+            assert response.status == 200, await response.text()
+    assert restored.agent == "default"
 
 
 @pytest.mark.asyncio
@@ -391,6 +453,820 @@ async def test_owner_direct_first_send_pins_private_memory_before_user_history(
     assert state._slots["owner-direct"].memory_store == writer
     assert read_private_session_store("dashboard:owner-direct") == writer
     run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_first_send_private_bind_has_no_second_selection_publication(
+    tmp_path, member_stores, monkeypatch
+):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    run = AsyncMock()
+    second_publication = AsyncMock(side_effect=OSError("selection unavailable"))
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_record_explicit_agent_selection", second_publication)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    key = "dashboard:single-bind"
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "single-bind"})
+        assert response.status == 200, await response.text()
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "single-bind", "message": "Remember this task"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    execution = read_session_execution(key)
+    assert execution is not None
+    assert execution.member_id == KiroCrewConfig.load().agents["writer"].member_id
+    assert read_private_session_store(key) == execution.store.store_id
+    assert [row["role"] for row in state._slots["single-bind"].messages] == ["user"]
+    second_publication.assert_not_awaited()
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_first_send_rebound_withdraws_the_new_private_binding(
+    tmp_path, member_stores, monkeypatch
+):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.chat_persistence import pin_private_agent_store
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    key = "dashboard:rebound-bind"
+
+    async def bind_then_rebound(*args, **kwargs):
+        store = await pin_private_agent_store(*args, **kwargs)
+        if not kwargs.get("validate_only"):
+            state._slots["rebound-bind"].linked_session_key = "task:replacement"
+        return store
+
+    monkeypatch.setattr(chat_handlers, "pin_private_agent_store", bind_then_rebound)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "rebound-bind"})
+        assert response.status == 200, await response.text()
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "rebound-bind", "message": "Remember this task"}
+        )
+        assert response.status == 409, await response.text()
+        assert (await response.json())["code"] == "session_rebound"
+    assert read_session_execution(key) is None
+    assert read_private_session_store(key) is None
+    assert state._slots["rebound-bind"].messages == []
+    assert ConversationLog().get_metadata(key)["memory_mode"] == "persistent"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_first_send_withdraws_the_binding_its_worker_published(
+    tmp_path, member_stores, monkeypatch
+):
+    """Repeated cancellation drains withdrawal of the first send's publication."""
+    import threading
+
+    import aiohttp
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers, chat_persistence
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    run = AsyncMock()
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    key = "dashboard:cancelled-bind"
+    loop = asyncio.get_running_loop()
+    handler: list[asyncio.Task] = []
+    published = threading.Event()
+    original_runs = chat_handlers._runs_unbound_member
+    original_pin = chat_persistence._pin_private_agent_assignment
+    original_withdraw = chat_handlers.withdraw_new_agent_selection
+
+    async def capture_handler(*args, **kwargs):
+        handler.append(asyncio.current_task())
+        return await original_runs(*args, **kwargs)
+
+    def pin_after_cancel(session_key, agent, config, **kwargs):
+        if kwargs.get("validate_only"):
+            return original_pin(session_key, agent, config, **kwargs)
+        cancelled = threading.Event()
+
+        def cancel_handler():
+            handler[0].cancel()
+            cancelled.set()
+
+        loop.call_soon_threadsafe(cancel_handler)
+        cancelled.wait(5)
+        try:
+            return original_pin(session_key, agent, config, **kwargs)
+        finally:
+            published.set()
+
+    def withdraw_after_second_cancel(*args):
+        cancelled = threading.Event()
+
+        def cancel_handler():
+            handler[0].cancel()
+            cancelled.set()
+
+        loop.call_soon_threadsafe(cancel_handler)
+        cancelled.wait(5)
+        return original_withdraw(*args)
+
+    monkeypatch.setattr(chat_handlers, "_runs_unbound_member", capture_handler)
+    monkeypatch.setattr(chat_persistence, "_pin_private_agent_assignment", pin_after_cancel)
+    monkeypatch.setattr(chat_handlers, "withdraw_new_agent_selection", withdraw_after_second_cancel)
+    app = _inheriting_chat_app(state)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/chat/slots", json={"name": "cancelled-bind"})
+        assert response.status == 200, await response.text()
+        with pytest.raises(aiohttp.ClientError):
+            await client.post(
+                "/api/chat?ws=1", json={"slot": "cancelled-bind", "message": "Remember this task"}
+            )
+        assert handler[0].cancelled()
+    assert await asyncio.to_thread(published.wait, 5)
+    assert read_session_execution(key) is None
+    assert read_private_session_store(key) is None
+    assert ConversationLog().get_metadata(key)["memory_mode"] == "persistent"
+    assert state._slots["cancelled-bind"].messages == []
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_first_send_preserves_a_binding_published_by_another_writer(
+    tmp_path, member_stores, monkeypatch
+):
+    """Cancellation restores the exact record that preceded this send's pin."""
+    import threading
+
+    import aiohttp
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers, chat_persistence
+    from kiro_crew.execution_context import (
+        bind_session_execution,
+        read_session_execution,
+        resolve_member_execution,
+    )
+
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    run = AsyncMock()
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    key = "dashboard:cancelled-external-bind"
+    loop = asyncio.get_running_loop()
+    handler: list[asyncio.Task] = []
+    original_runs = chat_handlers._runs_unbound_member
+    original_pin = chat_persistence._pin_private_agent_assignment
+    external = resolve_member_execution(cfg, "writer", validate_memory_files=False)
+
+    async def capture_handler(*args, **kwargs):
+        handler.append(asyncio.current_task())
+        return await original_runs(*args, **kwargs)
+
+    def pin_after_external_publication(session_key, agent, config, **kwargs):
+        if kwargs.get("validate_only"):
+            return original_pin(session_key, agent, config, **kwargs)
+        bind_session_execution(session_key, external)
+        cancelled = threading.Event()
+
+        def cancel_handler():
+            handler[0].cancel()
+            cancelled.set()
+
+        loop.call_soon_threadsafe(cancel_handler)
+        cancelled.wait(5)
+        return original_pin(session_key, agent, config, **kwargs)
+
+    monkeypatch.setattr(chat_handlers, "_runs_unbound_member", capture_handler)
+    monkeypatch.setattr(
+        chat_persistence, "_pin_private_agent_assignment", pin_after_external_publication
+    )
+    app = _inheriting_chat_app(state)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/chat/slots", json={"name": "cancelled-external-bind"})
+        assert response.status == 200, await response.text()
+        with pytest.raises(aiohttp.ClientError):
+            await client.post(
+                "/api/chat?ws=1",
+                json={
+                    "slot": "cancelled-external-bind",
+                    "message": "Remember this task",
+                },
+            )
+        assert handler[0].cancelled()
+    assert read_session_execution(key) == external
+    assert state._slots["cancelled-external-bind"].messages == []
+    run.assert_not_awaited()
+
+
+def _inheriting_chat_app(state):
+    from chat_test_helpers import _make_app
+
+    from kiro_crew.dashboard.chat import api_chat_slot_agent, api_chat_slot_create
+
+    app = _make_app(state)
+    app.router.add_post("/api/chat/slots", api_chat_slot_create)
+    app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("default_at_send", ["writer", "reviewer"])
+async def test_owner_first_send_on_an_inherited_member_chat_pins_before_user_history(
+    tmp_path, member_stores, monkeypatch, default_at_send
+):
+    """The member the create stamped is bound with the full pin, even after the default moves."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers, chat_persistence
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.llm_helpers import slot_switch_session_lock
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    key = "dashboard:inherited"
+    original_pin = chat_persistence._pin_private_agent_assignment
+    pin_observations = []
+
+    def observed_pin(session_key, agent, config, **kwargs):
+        pin_observations.append(
+            (
+                agent,
+                bool(kwargs.get("validate_only")),
+                state.conversation_log.has_messages(session_key),
+                slot_switch_session_lock(session_key).locked(),
+            )
+        )
+        return original_pin(session_key, agent, config, **kwargs)
+
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_persistence, "_pin_private_agent_assignment", observed_pin)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "inherited"})
+        assert response.status == 200, await response.text()
+        assert read_session_execution(key) is None
+        cfg = KiroCrewConfig.load()
+        cfg.default_agent = default_at_send
+        cfg.save()
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "inherited", "message": "Remember this task"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    assert pin_observations == [("writer", True, False, True), ("writer", False, False, True)]
+    assert state._slots["inherited"].memory_store == writer
+    assert read_private_session_store(key) == writer
+    assert read_session_execution(key).member_id == KiroCrewConfig.load().agents["writer"].member_id
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("default_at_send", ["writer", "reviewer"])
+async def test_restored_inherited_chat_binds_its_member_on_the_first_send(
+    tmp_path, member_stores, monkeypatch, default_at_send
+):
+    """After a restart the first send pins the restored member before the user row."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+    from test_chat_agent_selection import _turn_state
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers, chat_persistence
+    from kiro_crew.dashboard.chat_persistence import restore_open_slots
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    key = "dashboard:inherited"
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "inherited"})
+        assert response.status == 200, await response.text()
+    state._persist_open_slots()
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = default_at_send
+    cfg.save()
+
+    restarted = _turn_state(tmp_path, monkeypatch)
+    assert restore_open_slots(restarted) == 1
+    slot = restarted._slots["inherited"]
+    assert slot.agent == "writer"
+    original_pin = chat_persistence._pin_private_agent_assignment
+    pin_had_history = []
+
+    def observed_pin(session_key, agent, config, **kwargs):
+        pin_had_history.append(restarted.conversation_log.has_messages(session_key))
+        return original_pin(session_key, agent, config, **kwargs)
+
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_persistence, "_pin_private_agent_assignment", observed_pin)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    async with TestClient(TestServer(_inheriting_chat_app(restarted))) as client:
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "inherited", "message": "Remember this task"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(slot.task, 10)
+        await asyncio.wait_for(drain_background_tasks(restarted), timeout=5)
+    assert pin_had_history == [False]
+    restarted.sessions.get_or_create.assert_awaited_once()
+    assert read_private_session_store(key) == writer
+    assert read_session_execution(key).member_id == KiroCrewConfig.load().agents["writer"].member_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selection", ["shared", "v1_member", "same_name_template"])
+async def test_first_send_on_an_empty_shared_memory_chat_reads_no_config_before_the_user_row(
+    tmp_path, member_stores, monkeypatch, selection
+):
+    """Only a chat that may run a private member loads config before its user row."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+
+    if selection == "v1_member":
+        cfg = KiroCrewConfig.load()
+        cfg.agents["legacy"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        cfg.save()
+    state = _make_state(tmp_path)
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        create = {"name": "shared"}
+        if selection == "v1_member":
+            create.update(agent="legacy", agent_kind="member")
+        response = await client.post("/api/chat/slots", json=create)
+        assert response.status == 200, await response.text()
+        slot = state._slots["shared"]
+        if selection == "same_name_template":
+            slot.agent = "writer"
+            slot.agent_kind = "template"
+        expected = (
+            "legacy"
+            if selection == "v1_member"
+            else (
+                "writer"
+                if selection == "same_name_template"
+                else KiroCrewConfig.load().default_agent
+            )
+        )
+        assert slot.agent == expected
+        with pytest.MonkeyPatch.context() as unreadable:
+            unreadable.setattr(
+                chat_handlers.KiroCrewConfig,
+                "load",
+                MagicMock(side_effect=OSError("config unreadable")),
+            )
+            response = await client.post(
+                "/api/chat?ws=1", json={"slot": "shared", "message": "Remember this task"}
+            )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    assert [m["role"] for m in slot.messages] == ["user"]
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_inherited_member_chat_refused_on_first_send_keeps_nothing_and_stays_open(
+    tmp_path, member_stores, monkeypatch
+):
+    """A default member that does not own its store refuses the send before the user row."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers, chat_persistence
+    from kiro_crew.execution_context import read_session_execution
+
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = "writer"
+    cfg.save()
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    key = "dashboard:inherited"
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "inherited"})
+        assert response.status == 200, await response.text()
+        slot = state._slots["inherited"]
+        with pytest.MonkeyPatch.context() as moved:
+            moved.setattr(chat_persistence, "member_store_ownership_holds", lambda *a: False)
+            response = await client.post(
+                "/api/chat?ws=1", json={"slot": "inherited", "message": "Remember this task"}
+            )
+        assert response.status == 503, await response.text()
+        assert not slot.messages
+        assert not state.conversation_log.has_messages(key)
+        assert read_session_execution(key) is None
+        run.assert_not_awaited()
+
+        response = await client.post("/api/chat/slots/inherited/agent", json={"agent": "reviewer"})
+        assert response.status == 200, await response.text()
+    assert slot.agent == "reviewer"
+    assert read_session_execution(key) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["owner", "non_owner", "app"])
+@pytest.mark.parametrize("unavailable", ["member", "store", "store_version", "member_id"])
+async def test_picked_member_unavailable_before_first_send_keeps_nothing_and_stays_open(
+    tmp_path, member_stores, monkeypatch, unavailable, caller
+):
+    """A picked member that does not resolve at first send is refused before the user row."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import read_session_execution
+
+    writer, _ = member_stores
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    key = "dashboard:picked"
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(as_owner(_inheriting_chat_app(state)))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "picked", "agent": "writer"})
+        assert response.status == 200, await response.text()
+        slot = state._slots["picked"]
+        assert read_session_execution(key) is None
+        cfg = KiroCrewConfig.load()
+        if unavailable == "member":
+            del cfg.agents["writer"]
+        elif unavailable == "store":
+            del cfg.memory_stores[writer]
+        elif unavailable == "store_version":
+            cfg.memory_stores[writer].memory_version = 1
+        else:
+            cfg.agents["writer"].member_id = "changed-writer"
+        cfg.save()
+        if caller == "app":
+            monkeypatch.setattr(
+                chat_handlers.app_permissions,
+                "app_can_manage_session_approvals",
+                lambda _app: True,
+            )
+        headers = {
+            "owner": {},
+            "non_owner": {"X-Test-User": "other-user"},
+            "app": {"X-Test-App": "test-app"},
+        }[caller]
+        response = await client.post(
+            "/api/chat?ws=1",
+            json={"slot": "picked", "message": "Remember this task"},
+            headers=headers,
+        )
+        assert response.status == 503, await response.text()
+        assert (await response.json())["code"] == "store_unavailable"
+        assert not slot.messages
+        assert not state.conversation_log.has_messages(key)
+        assert read_session_execution(key) is None
+        run.assert_not_awaited()
+
+        response = await client.post("/api/chat/slots/picked/agent", json={"agent": "reviewer"})
+        assert response.status == 200, await response.text()
+    assert slot.agent == "reviewer"
+    assert read_session_execution(key) is None
+
+
+def _recreate_member(name: str) -> str:
+    cfg = KiroCrewConfig.load()
+    del cfg.agents[name]
+    cfg.agents[name] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    replacement = provision_member_memory(cfg, name)
+    cfg.save()
+    return replacement
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pick, caller",
+    [
+        ("create", "owner"),
+        ("create", "app"),
+        ("menu", "owner"),
+        ("menu", "app"),
+        ("restart", "owner"),
+    ],
+)
+async def test_a_member_recreated_under_the_picked_name_is_refused_at_first_send(
+    tmp_path, member_stores, monkeypatch, pick, caller
+):
+    """The first send binds only the member the empty chat chose, not its same-name successor."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+    from dashboard_owner_helpers import as_owner
+    from test_chat_agent_selection import _turn_state
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.chat_persistence import restore_open_slots
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    key = "dashboard:picked"
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    if caller == "app":
+        monkeypatch.setattr(
+            chat_handlers.app_permissions, "app_can_manage_session_approvals", lambda _app: True
+        )
+    headers = {"X-Test-App": "test-app"} if caller == "app" else {}
+    chosen = KiroCrewConfig.load().agents["writer"].member_id
+    async with TestClient(TestServer(as_owner(_inheriting_chat_app(state)))) as client:
+        create = {"name": "picked"} if pick == "menu" else {"name": "picked", "agent": "writer"}
+        response = await client.post("/api/chat/slots", json=create)
+        assert response.status == 200, await response.text()
+        if pick == "menu":
+            response = await client.post("/api/chat/slots/picked/agent", json={"agent": "writer"})
+            assert response.status == 200, await response.text()
+        assert state._slots["picked"].member_choice == (chosen, writer)
+    if pick == "restart":
+        state._persist_open_slots()
+        state = _turn_state(tmp_path, monkeypatch)
+        state.sessions.reset = AsyncMock(return_value=True)
+        assert restore_open_slots(state) == 1
+        assert state._slots["picked"].member_choice == (chosen, writer)
+    replacement = _recreate_member("writer")
+    assert KiroCrewConfig.load().agents["writer"].member_id != chosen
+    slot = state._slots["picked"]
+    async with TestClient(TestServer(as_owner(_inheriting_chat_app(state)))) as client:
+        response = await client.post(
+            "/api/chat?ws=1",
+            json={"slot": "picked", "message": "Remember this task"},
+            headers=headers,
+        )
+        assert response.status == 503, await response.text()
+        assert (await response.json())["code"] == "store_unavailable"
+        assert not slot.messages
+        assert not state.conversation_log.has_messages(key)
+        assert read_session_execution(key) is None
+        run.assert_not_awaited()
+
+        response = await client.post("/api/chat/slots/picked/agent", json={"agent": "writer"})
+        assert response.status == 200, await response.text()
+        replacement_id = KiroCrewConfig.load().agents["writer"].member_id
+        assert slot.member_choice == (replacement_id, replacement)
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "picked", "message": "Remember this task"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    assert read_session_execution(key).member_id == replacement_id
+    assert read_private_session_store(key) == replacement
+    assert slot.member_choice is None
+
+
+@pytest.mark.asyncio
+async def test_a_first_turn_dispatched_past_the_send_check_never_binds_a_replacement(
+    tmp_path, member_stores, monkeypatch
+):
+    """The runner holds the chat to its chosen member when no send preflight ran."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from dashboard_owner_helpers import as_owner
+    from test_chat_agent_selection import _turn_state
+
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.execution_context import read_session_execution
+
+    writer, _ = member_stores
+    state = _turn_state(tmp_path, monkeypatch)
+    key = "dashboard:picked"
+    async with TestClient(TestServer(as_owner(_inheriting_chat_app(state)))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "picked", "agent": "writer"})
+        assert response.status == 200, await response.text()
+    slot = state._slots["picked"]
+    chosen = slot.member_choice
+    assert chosen == (KiroCrewConfig.load().agents["writer"].member_id, writer)
+    _recreate_member("writer")
+    slot.append("user", "Remember this task", "msg msg-u")
+
+    await chat_runner._run_chat(state, slot, "Remember this task")
+
+    assert read_session_execution(key) is None
+    state.sessions.get_or_create.assert_not_awaited()
+    assert slot.member_choice == chosen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["owner", "app"])
+async def test_an_unbound_member_chat_without_a_recorded_choice_is_refused_at_first_send(
+    tmp_path, member_stores, monkeypatch, caller
+):
+    """A chat whose chosen identity is unknown cannot bind whichever member holds the name."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import read_session_execution
+
+    state = _make_state(tmp_path)
+    key = "dashboard:picked"
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    if caller == "app":
+        monkeypatch.setattr(
+            chat_handlers.app_permissions, "app_can_manage_session_approvals", lambda _app: True
+        )
+    async with TestClient(TestServer(as_owner(_inheriting_chat_app(state)))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "picked", "agent": "writer"})
+        assert response.status == 200, await response.text()
+        slot = state._slots["picked"]
+        slot.member_choice = None
+        _recreate_member("writer")
+        response = await client.post(
+            "/api/chat?ws=1",
+            json={"slot": "picked", "message": "Remember this task"},
+            headers={"X-Test-App": "test-app"} if caller == "app" else {},
+        )
+        assert response.status == 503, await response.text()
+        assert (await response.json())["code"] == "store_unavailable"
+    assert not slot.messages
+    assert read_session_execution(key) is None
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", ["recorded", "missing"])
+async def test_an_openai_compatible_first_send_cannot_bind_a_replacement_member(
+    tmp_path, member_stores, monkeypatch, choice
+):
+    """The completions endpoint refuses before the user row, so the chat stays re-pickable."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard import chat_handlers, openai_compat
+    from kiro_crew.execution_context import read_session_execution
+
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    run = AsyncMock()
+    monkeypatch.setattr(openai_compat, "_run_chat", run)
+    monkeypatch.setattr(openai_compat, "reject_if_kiro_unverified", AsyncMock(return_value=None))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    app = _inheriting_chat_app(state)
+    app.router.add_post("/v1/chat/completions", openai_compat.api_completions)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "picked", "agent": "writer"})
+        assert response.status == 200, await response.text()
+        slot = state._slots["picked"]
+        if choice == "missing":
+            slot.member_choice = None
+        _recreate_member("writer")
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "id": "picked",
+                "model": "writer",
+                "messages": [{"role": "user", "content": "Remember this task"}],
+            },
+        )
+        assert response.status == 503, await response.text()
+        assert (await response.json())["code"] == "store_unavailable"
+        assert not slot.messages
+        assert read_session_execution("dashboard:picked") is None
+        run.assert_not_called()
+
+        response = await client.post("/api/chat/slots/picked/agent", json={"agent": "writer"})
+        assert response.status == 200, await response.text()
+    assert slot.member_choice == (
+        KiroCrewConfig.load().agents["writer"].member_id,
+        KiroCrewConfig.load().agents["writer"].memory_store,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_named_by_the_first_send_itself_is_bound(
+    tmp_path, member_stores, monkeypatch
+):
+    """An agent adopted by the send that runs it is a fresh choice, not a missing one."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("adopt")
+    state._slots["adopt"].agent = ""
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(as_owner(_inheriting_chat_app(state)))) as client:
+        response = await client.post(
+            "/api/chat?ws=1",
+            json={"slot": "adopt", "agent": "writer", "message": "Remember this task"},
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    assert read_private_session_store("dashboard:adopt") == writer
+    assert read_session_execution("dashboard:adopt").member_id == (
+        KiroCrewConfig.load().agents["writer"].member_id
+    )
+    run.assert_awaited_once()
+
+
+def test_a_chat_resumed_from_history_keeps_its_member_choice(tmp_path):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    slot = chat_handlers._materialise_slot_from_history(
+        _make_state(tmp_path),
+        name="picked",
+        history_key="dashboard:picked",
+        meta={
+            "agent": "writer",
+            "agent_kind": "member",
+            "member_choice": {"member_id": "writer-id", "store": "writer-store"},
+        },
+        all_messages=[],
+    )
+
+    assert slot.member_choice == ("writer-id", "writer-store")
 
 
 @pytest.mark.asyncio
@@ -462,14 +1338,13 @@ async def test_agent_pick_cannot_promote_an_existing_v1_transcript(tmp_path, mem
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", [False, True])
-async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, member_stores, owner):
-    """The agent menu on an empty chat is a grant door, like create-with-agent.
+async def test_agent_pick_on_empty_chat_binds_no_private_memory(tmp_path, member_stores, owner):
+    """The agent menu on an empty chat binds nothing; the chat's first send does.
 
     The transcript file already exists (the slot's metadata was flushed when it
-    was created) but holds no message row: that is an EMPTY chat, and the
-    owner's pick must pin the member's store so the first turn is admitted
-    rather than refused with "no verified assignment". A non-owner pick
-    grants nothing.
+    was created) but holds no message row: that is an EMPTY chat. The owner's
+    pick switches the agent and leaves the session without an execution record;
+    a non-owner cannot pick a private member.
     """
     from aiohttp.test_utils import TestClient, TestServer
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
@@ -478,12 +1353,10 @@ async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, memb
     from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
-    writer, _ = member_stores
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock(return_value=True)
     state.get_or_create_slot("empty-pick", agent="default")
     key = "dashboard:empty-pick"
-    # A metadata-only transcript: born by the slot's first flush, no messages.
     await asyncio.to_thread(
         state.conversation_log.update_metadata, key, {"agent": "default", "title": "New"}
     )
@@ -498,21 +1371,13 @@ async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, memb
             )
             if owner:
                 assert response.status == 200, await response.text()
+            else:
+                assert response.status != 200, await response.text()
     slot = state._slots["empty-pick"]
-    if owner:
-        assert read_private_session_store(key) == writer
-        assert slot.memory_store == writer
-        # The first turn confirms the grant instead of refusing it.
-        read_session_execution(key, required=True)
-        assert read_private_session_store(key) == writer
-    else:
-        assert read_private_session_store(key) is None
-        with pytest.raises(
-            UnknownMemoryStore,
-            match="canonical execution identity|canonical member identity|missing or malformed execution context",
-        ):
-            read_session_execution(key, required=True)
-        assert read_private_session_store(key) is None
+    assert slot.agent == ("writer" if owner else "default")
+    assert slot.memory_store == ""
+    assert read_session_execution(key) is None
+    assert read_private_session_store(key) is None
 
 
 @pytest.mark.asyncio
@@ -577,13 +1442,16 @@ async def test_member_pick_on_unused_linked_or_channel_slot_captures_identity(
 
 
 @pytest.mark.asyncio
-async def test_owner_agent_pick_accepts_message_racing_with_private_pin(tmp_path, member_stores):
+async def test_owner_send_racing_a_member_pick_binds_that_member_before_its_user_row(
+    tmp_path, member_stores, monkeypatch
+):
+    """A send that arrives while the pick holds the slot lock binds the picked member first."""
     from aiohttp.test_utils import TestClient, TestServer
-    from chat_test_helpers import _make_app_with_agent_routes, _make_state
-    from dashboard_owner_helpers import as_owner
+    from chat_test_helpers import _make_state, drain_background_tasks
 
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.chat_persistence import pin_private_agent_store
-    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -591,29 +1459,86 @@ async def test_owner_agent_pick_accepts_message_racing_with_private_pin(tmp_path
     state.sessions.reset = AsyncMock(return_value=True)
     slot = state.get_or_create_slot("raced-pick", agent="default")
     key = "dashboard:raced-pick"
+    run = AsyncMock()
+    sends = []
+    pins = []
 
-    async def pin_with_message(state, session_key, agent, config, **kwargs):
-        assigned_store = await pin_private_agent_store(state, session_key, agent, config, **kwargs)
+    async def pin_while_a_send_arrives(state, session_key, agent, config, **kwargs):
+        pins.append((bool(kwargs.get("validate_only")), len(slot.messages)))
         if kwargs.get("validate_only"):
-            return assigned_store
-        assert slot.agent == "writer"
-        slot.messages.append({"role": "user", "content": "first private message"})
-        read_session_execution(session_key, required=True)
-        return assigned_store
-
-    with (
-        patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"),
-        patch("kiro_crew.dashboard.chat_handlers.pin_private_agent_store", pin_with_message),
-    ):
-        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
-            response = await client.post(
-                "/api/chat/slots/raced-pick/agent", json={"agent": "writer"}
+            sends.append(
+                asyncio.create_task(
+                    client.post(
+                        "/api/chat?ws=1", json={"slot": "raced-pick", "message": "first message"}
+                    )
+                )
             )
-            assert response.status == 200, await response.text()
-    assert slot.messages
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert not slot.messages
+        return await pin_private_agent_store(state, session_key, agent, config, **kwargs)
+
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "pin_private_agent_store", pin_while_a_send_arrives)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        response = await client.post("/api/chat/slots/raced-pick/agent", json={"agent": "writer"})
+        assert response.status == 200, await response.text()
+        sent = await asyncio.wait_for(sends[0], 10)
+        assert sent.status == 200, await sent.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    assert pins == [(True, 0), (False, 0)]
+    assert [m["role"] for m in slot.messages] == ["user"]
     assert slot.agent == "writer"
     assert slot.memory_store == writer
     assert read_private_session_store(key) == writer
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("memory_mode", ["persistent", "incognito"])
+async def test_rebound_member_pick_restores_the_template_selection_it_withdrew(
+    tmp_path, member_stores, monkeypatch, memory_mode
+):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import read_session_execution
+
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("withdrawn", agent="writer", memory_mode=memory_mode)
+    key = "dashboard:withdrawn"
+    withdraw = chat_handlers.withdraw_agent_selection
+
+    def withdraw_then_rebind(session_key, expected):
+        withdraw(session_key, expected)
+        assert read_session_execution(session_key) is None
+        slot.linked_session_key = "task:rebound"
+
+    monkeypatch.setattr(chat_handlers, "withdraw_agent_selection", withdraw_then_rebind)
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/withdrawn/agent", json={"agent": "default"}
+            )
+            assert response.status == 200, await response.text()
+            template = read_session_execution(key)
+            assert template is not None and template.member_id is None
+            response = await client.post(
+                "/api/chat/slots/withdrawn/agent", json={"agent": "writer"}
+            )
+            assert response.status == 409, await response.text()
+            assert (await response.json())["code"] == "session_rebound"
+    assert slot.agent == "default"
+    assert read_session_execution(key) == template
+    metadata = ConversationLog().get_metadata(key)
+    assert ("execution_context" in metadata) is (memory_mode == "persistent")
 
 
 @pytest.mark.asyncio
@@ -649,34 +1574,73 @@ async def test_owner_agent_pick_pin_failure_rolls_the_switch_back(tmp_path, memb
 
 
 @pytest.mark.asyncio
-async def test_owner_second_member_pick_on_pinned_empty_chat_is_refused(tmp_path, member_stores):
-    from aiohttp.test_utils import TestClient, TestServer
-    from chat_test_helpers import _make_app_with_agent_routes, _make_state
-    from dashboard_owner_helpers import as_owner
+@pytest.mark.parametrize("memory_mode", ["persistent", "incognito"])
+@pytest.mark.parametrize("entry", ["create", "agent_menu"])
+async def test_owner_member_picks_on_an_empty_chat_stay_open_until_the_first_send(
+    tmp_path, member_stores, monkeypatch, entry, memory_mode
+):
+    """An empty chat is unbound whichever way a member was picked; its first send binds.
 
+    After that first turn the member is permanent.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state, drain_background_tasks
+
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
-    writer, _ = member_stores
+    _, reviewer = member_stores
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock(return_value=True)
-    slot = state.get_or_create_slot("pinned-pick", agent="default")
-    key = "dashboard:pinned-pick"
-    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
-        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
-            response = await client.post(
-                "/api/chat/slots/pinned-pick/agent", json={"agent": "writer"}
-            )
+    key = "dashboard:picked"
+    run = AsyncMock()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", run)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(_inheriting_chat_app(state))) as client:
+        created = {"name": "picked", "memory_mode": memory_mode}
+        if entry == "create":
+            body = {**created, "agent": "writer", "agent_kind": "member"}
+            response = await client.post("/api/chat/slots", json=body)
             assert response.status == 200, await response.text()
-            assert slot.agent == "writer"
-            assert read_private_session_store(key) == writer
-            for agent in ("reviewer", "default"):
-                response = await client.post(
-                    "/api/chat/slots/pinned-pick/agent", json={"agent": agent}
-                )
-                assert response.status == 409, await response.text()
-                assert (await response.json())["code"] == "member_session_pinned"
-                assert slot.agent == "writer"
-                assert read_private_session_store(key) == writer
+        else:
+            response = await client.post("/api/chat/slots", json=created)
+            assert response.status == 200, await response.text()
+            response = await client.post("/api/chat/slots/picked/agent", json={"agent": "writer"})
+            assert response.status == 200, await response.text()
+        slot = state._slots["picked"]
+        assert slot.agent == "writer"
+        assert slot.memory_mode == memory_mode
+        assert read_session_execution(key) is None
+        for agent in ("default", "reviewer"):
+            response = await client.post("/api/chat/slots/picked/agent", json={"agent": agent})
+            assert response.status == 200, await response.text()
+            assert slot.agent == agent
+            execution = read_session_execution(key)
+            if agent == "default":
+                assert execution is not None and execution.member_id is None
+            else:
+                assert execution is None
+                assert slot.memory_store == ""
+
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "picked", "message": "Remember this task"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+        assert read_private_session_store(key) == reviewer
+        assert slot.memory_store == reviewer
+        for agent in ("writer", "default"):
+            response = await client.post("/api/chat/slots/picked/agent", json={"agent": agent})
+            assert response.status == 409, await response.text()
+            assert (await response.json())["code"] == "member_session_pinned"
+    assert slot.agent == "reviewer"
+    assert read_private_session_store(key) == reviewer
+    run.assert_awaited_once()
 
 
 @pytest.mark.asyncio

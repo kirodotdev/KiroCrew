@@ -209,6 +209,9 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # as memory_store: a name-only pick after a template pick writes no key,
         # and an unowned key would carry the stale "template" forward forever.
         "agent_kind",
+        # The member identity an unbound empty chat was given. Slot-owned so a
+        # later template or bound pick clears it by omission.
+        "member_choice",
         "project",
         # Remote-execution binding: owned by the slot, so clearing it in memory
         # clears it on disk. Left unowned, a rebind or an unbind would be undone

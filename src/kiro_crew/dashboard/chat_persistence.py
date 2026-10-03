@@ -130,7 +130,12 @@ from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 from kiro_crew.sel import sel  # noqa: F401
-from kiro_crew.session_agent_selection import session_agent_selection_name  # noqa: F401
+from kiro_crew.session_agent_selection import (  # noqa: F401
+    MemberChoice,
+    SelectionChange,
+    member_choice_from_record,
+    session_agent_selection_name,
+)
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
@@ -854,6 +859,7 @@ def _pin_private_agent_assignment(
     authorized_store: str | None = None,
     memory_mode: str = "persistent",
     validate_only: bool = False,
+    selection_changes: list[SelectionChange] | None = None,
 ) -> str:
     """Pin an authorized member selection, never a name recovered from history.
 
@@ -915,6 +921,10 @@ def _pin_private_agent_assignment(
     bind_session_execution(
         session_key, execution, replace_existing=previous is not None, expected=previous
     )
+    if selection_changes is not None:
+        selection_changes.append(
+            (previous.to_record() if previous is not None else None, execution.to_record())
+        )
     return store
 
 
@@ -940,6 +950,38 @@ def _member_private_selection(
     if record is None or record.memory_version != 2:
         return "", ""
     return selected, store
+
+
+def member_replaced_message(agent: str) -> str:
+    return (
+        f"Crew Member {agent!r} is not the member this conversation chose; "
+        "choose the member again"
+    )
+
+
+def member_choice_refusal(
+    choice: MemberChoice | None, agent: str, config: KiroCrewConfig, *, fresh: bool
+) -> str | None:
+    """Why an unbound empty chat holding *choice* cannot run *agent* now, or ``None``.
+
+    A recorded choice must still be the member *agent* names. Without one, a
+    private member may run only when this request itself chose it (*fresh*).
+    """
+    current = _member_choice(agent, config)
+    if choice is not None:
+        return None if current == choice else member_replaced_message(agent)
+    if current is not None and not fresh:
+        return member_replaced_message(agent)
+    return None
+
+
+def _member_choice(agent: str, config: KiroCrewConfig) -> MemberChoice | None:
+    """The immutable identity of the private member *agent* names in *config*."""
+    selected, store = _member_private_selection(agent, config)
+    member_id = getattr(config.agents.get(selected), "member_id", "") if store else ""
+    if not isinstance(member_id, str) or not member_id:
+        return None
+    return member_id, store
 
 
 async def release_prewarmed_session(
@@ -1039,6 +1081,8 @@ async def pin_private_agent_store(
     *,
     memory_mode: str = "persistent",
     validate_only: bool = False,
+    selection_changes: list[SelectionChange] | None = None,
+    expected_member: MemberChoice | None = None,
 ) -> str:
     """Pin one dashboard selection from current private ownership off the loop.
 
@@ -1057,6 +1101,10 @@ async def pin_private_agent_store(
     asked for. This wrapper deliberately does not take the async config lock:
     callers may already hold a slot lock, while config writers serialize private
     ownership changes through the namespace lock.
+
+    *expected_member* is the member identity recorded when an empty chat chose
+    the member. A member whose identity differs from it, such as a same-name
+    replacement, is refused.
     """
     selected = agent or config.default_agent
     _entry_selected, entry_store = _member_private_selection(selected, config)
@@ -1085,6 +1133,8 @@ async def pin_private_agent_store(
             raise UnknownMemoryStore(changed)
         if current_store and not member_store_ownership_holds(current, selected, current_store):
             raise UnknownMemoryStore(changed)
+        if expected_member is not None and _member_choice(selected, current) != expected_member:
+            raise UnknownMemoryStore(member_replaced_message(selected))
         return _pin_private_agent_assignment(
             session_key,
             selected,
@@ -1093,6 +1143,7 @@ async def pin_private_agent_store(
             native_context=native_context,
             memory_mode=memory_mode,
             validate_only=validate_only,
+            selection_changes=selection_changes,
         )
 
     return await asyncio.to_thread(pin_current_assignment)
@@ -1326,6 +1377,7 @@ def _rehydrate_slot_from_history(
         # same-name member row. Only the two known values are honoured.
         if meta.get("agent_kind") in ("member", "template"):
             slot.agent_kind = meta["agent_kind"]
+        slot.member_choice = member_choice_from_record(meta.get("member_choice"))
         if meta.get("project"):
             slot.project = meta["project"]
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
@@ -1985,6 +2037,7 @@ def _apply_recent_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("agent_kind") in ("member", "template"):
         slot.agent_kind = meta["agent_kind"]
+    slot.member_choice = member_choice_from_record(meta.get("member_choice"))
     if meta.get("project"):
         slot.project = meta["project"]
     if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):

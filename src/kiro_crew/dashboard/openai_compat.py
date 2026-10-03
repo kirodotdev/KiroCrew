@@ -25,10 +25,13 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
+from kiro_crew.dashboard.chat_persistence import member_choice_refusal
 from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
+from kiro_crew.execution_context import read_session_execution
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
@@ -126,6 +129,14 @@ def _redact(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+async def _unbound_member_refusal(slot, *, fresh: bool) -> str | None:
+    """The first-send member-choice refusal ``/api/chat`` applies, for this endpoint."""
+    if await asyncio.to_thread(read_session_execution, effective_session_key(slot)) is not None:
+        return None
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    return member_choice_refusal(slot.member_choice, slot.agent, config, fresh=fresh)
 
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
@@ -584,7 +595,40 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
+        adopted_agent = not slot.agent
         slot.agent = agent
+        if adopted_agent:
+            slot.member_choice = None
+    else:
+        adopted_agent = False
+    if (
+        slot_id
+        and not slot.messages
+        and not slot.linked_session_key
+        and not slot.channel_origin
+        and slot.agent_kind != "template"
+    ):
+        refusal = await _unbound_member_refusal(slot, fresh=freshly_created or adopted_agent)
+        if refusal is not None:
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="member_choice",
+                resources=f"slot={slot.key}",
+                error=refusal,
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": refusal,
+                        "type": "invalid_request_error",
+                        "code": "store_unavailable",
+                    },
+                    "code": "store_unavailable",
+                },
+                status=503,
+            )
     slot.append("user", prompt, "msg msg-u")
 
     # SEL audit for tool invocation visibility

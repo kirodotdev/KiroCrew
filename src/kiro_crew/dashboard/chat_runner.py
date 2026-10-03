@@ -5321,6 +5321,7 @@ async def _recover_app_agent_binding(
         effective_session_key(slot),
         selected_agent or None,
         project,
+        selection_kind=slot.agent_kind,
     )
     if slot.agent != selected_agent:
         raise _MemoryUnavailable(
@@ -5329,7 +5330,7 @@ async def _recover_app_agent_binding(
     return bindings
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -5345,6 +5346,7 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
         slot.project,
         slot.reasoning_effort,
         slot.memory_store,
+        slot.agent_kind,
     )
 
 
@@ -5451,6 +5453,7 @@ async def _eager_spawn(
                     cfg,
                     session_key,
                     _bound[0] or None,
+                    selection_kind=_bound[5],
                 )
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
@@ -5484,6 +5487,7 @@ async def _eager_spawn(
                         cfg,
                         session_key,
                         _bound[0] or None,
+                        selection_kind=_bound[5],
                     )
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
@@ -8782,6 +8786,7 @@ async def _run_chat(
                 slot.memory_store,
                 slot._memory_assignment_from_history,
                 effective_session_key(slot),
+                slot.agent_kind,
             )
 
         # Serialize this turn's binding capture and session registration
@@ -8842,6 +8847,7 @@ async def _run_chat(
                 session_key,
                 selected_binding[0] or None,
                 selected_binding[1] or None,
+                selection_kind=selected_binding[6],
             )
             _require_current_binding()
             kiro_agent = bindings.kiro_agent
@@ -8884,6 +8890,7 @@ async def _run_chat(
                     session_key,
                     selected_binding[0] or None,
                     selected_binding[1] or None,
+                    selection_kind=selected_binding[6],
                 )
                 _require_current_binding()
                 kiro_agent = bindings.kiro_agent
@@ -8960,6 +8967,14 @@ async def _run_chat(
                     app=slot._app or "",
                     validate_memory_files=False,
                 )
+                if slot.member_choice is not None and slot.member_choice != (
+                    execution_context.member_id,
+                    execution_context.store.store_id,
+                ):
+                    raise _MemoryUnavailable(
+                        f"memory_unavailable: Crew Member {crew_alias!r} is not the member "
+                        "this conversation chose; open a new conversation"
+                    )
             else:
                 execution_context = ExecutionContext(
                     None,
@@ -8991,6 +9006,8 @@ async def _run_chat(
                     replace_existing=previous_execution is not None,
                 )
             _require_current_binding()
+            if previous_execution is None:
+                slot.member_choice = None
             tightened_execution = await asyncio.to_thread(
                 _read_and_tighten_turn_execution,
                 state.conversation_log,
