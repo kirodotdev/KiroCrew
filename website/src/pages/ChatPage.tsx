@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useShellSlot } from '../hooks/useShellSlot'
 import { useMobileNavRail } from '../components/MobileNavRailContext'
 import { useVisualViewport } from '../hooks/useVisualViewport'
@@ -466,6 +467,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // effect reads it (mobile replaces rather than pushes a session switch), and
   // that effect is defined well above where the layout hooks start.
   const isMobile = useIsMobile()
+  // Width alone cannot tell a phone from a narrow desktop pane, which still has
+  // Enter: only a narrow TOUCH device forces Ctrl+Enter over the saved choice.
+  const isTouch = useIsTouchDevice()
   /**
    * Phone: the App shell's top bar is the ONE bar, and this page's title row
    * lives in it. The shell renders `#mobile-topbar-slot` (centre cell) and
@@ -6284,7 +6288,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               sentMessages={sentMessages}
               onEditLastRequest={handleEditLastRequest}
-              sendOnEnter={isMobile ? 'ctrl-enter' : chatConfig.sendOnEnter}
+              sendOnEnter={isMobile && isTouch ? 'ctrl-enter' : chatConfig.sendOnEnter}
               followUpOptions={followUpOptions}
               followUpPicked={followUpPicked}
               quickSend={dashCfg?.quick_send}
