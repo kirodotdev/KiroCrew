@@ -8,7 +8,7 @@
  * live under `./markdown/`, and this module re-exports their public surface
  * unchanged. The owner map is in website/docs/frontend-conventions.md.
  */
-import React, { useContext, memo, useEffect, useMemo, useCallback, useState } from 'react'
+import React, { useContext, memo, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { GitPullRequest } from 'lucide-react'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { canonicalChatHref, chatHrefSid, namesASession } from '../utils/sessionKeys'
@@ -323,7 +323,8 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
   // A confirmed session link is in-app navigation, so it keeps in-place semantics.
-  if (sessionLink) ext = true
+  // So does a `#heading` link: the renderer scrolls to it (see handleClick).
+  if (sessionLink || href?.startsWith('#')) ext = true
   return (
     <>
     <a
@@ -1007,9 +1008,19 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   rearmConfigScanBudget()
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
-   *  only the artifact-link delegation it has always been. */
+   *  only link delegation: `#heading` jumps and `/artifacts/<slug>` links. */
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
+    // `#heading` links scroll within THIS message, never the whole document:
+    // several renderers coexist and may repeat one heading.
+    const frag = e.defaultPrevented ? null : el.closest('a[href^="#"]')
+    if (frag) {
+      e.preventDefault()
+      let id = frag.getAttribute('href')!.slice(1)
+      try { id = decodeURIComponent(id) } catch { /* keep it raw */ }
+      Array.from(e.currentTarget.querySelectorAll('[id]')).find(n => n.id === id)?.scrollIntoView({ block: 'start' })
+      return
+    }
     // e.target may be an inline child of the `/artifacts/<slug>` anchor (e.g.
     // <em>/<code>), so walk up with closest(). preventDefault stops the
     // relative href from navigating full-page instead of opening the panel.
@@ -1025,6 +1036,23 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       }
     }
   }, [onArtifactOpen])
+
+  // Repeated headings get GitHub's -1/-2 suffixes so each `#` link has one target.
+  // `ids` remembers each heading's [own slug, id written here]: an id that still
+  // equals what we wrote keeps its slug; anything else is React's fresh slug.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const ids = useRef(new WeakMap<Element, [string, string]>())
+  useLayoutEffect(() => {
+    const seen = new Map<string, number>()
+    rootRef.current?.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]').forEach(h => {
+      const prev = ids.current.get(h)
+      const slug = prev && prev[1] === h.id ? prev[0] : h.id
+      const n = seen.get(slug) ?? 0
+      seen.set(slug, n + 1)
+      h.id = n ? `${slug}-${n}` : slug
+      ids.current.set(h, [slug, h.id])
+    })
+  })
 
   /** Stable identity so every chip in a long transcript doesn't re-render when
    *  this component does. */
@@ -1147,7 +1175,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
 
   return (
     // Presentational content wrapper for rendered markdown blocks. The onClick is
-    // pure event delegation for `/artifacts/<slug>` links only — path chips bind
+    // pure event delegation for `#heading` and `/artifacts/<slug>` links — path chips bind
     // their own handlers (see InlineCode), so this wrapper is not an interactive
     // control and carries no role. `data-image-scope` is the lightbox's grouping
     // root; `data-tip-flow` is the InstantTip flow container (one rendered
@@ -1155,6 +1183,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // attributes on the one per-message root, each owned by its feature.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div
+      ref={rootRef}
       className={`group${animClass}${streamClass}`}
       onClick={handleClick}
       data-image-scope=""
