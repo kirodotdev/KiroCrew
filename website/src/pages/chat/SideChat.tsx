@@ -530,6 +530,22 @@ export default function SideChat({ slot }: { slot: string }) {
     },
   })
 
+  // Stop the in-flight side turn. ``/interrupt`` targets the slot's MAIN run, so
+  // a side turn — a separate background task — needs its own cancel. The
+  // backend broadcasts a terminal frame that clears streaming/pending, so the
+  // composer is wired to this rather than to an optimistic local flip: the
+  // server stays authoritative over run state exactly as it is for queue cards.
+  // No onError copy for the idempotent case: a stop that races the turn's own
+  // completion returns ``{ok: true}`` (not an error), and the terminal frame —
+  // or the turn ending on its own — is the real feedback either way.
+  const stopMutation = useMutation({
+    mutationFn: ({ slot: target }: { slot: string }) => api.sideStop(target),
+    // A rejected stop (transport failure, or the handler's own 404/409) must not
+    // be a silent dead end: the hung turn is still busy and this is its only
+    // escape hatch, so surface the failure through the file's ErrorNotice.
+    onError: () => setLocalError(i18nT('pages.chat.sideChat.stop_failed')),
+  })
+
   // Scroll follow lives in the virtualizer behind ChatMessageList; no
   // tail-keyed effect — its measurement sees every height change.
 
@@ -626,6 +642,12 @@ export default function SideChat({ slot }: { slot: string }) {
     refreshMutation.mutate({ slot })
   }, [refreshMutation, slot])
 
+  // Fire-and-forget: the terminal frame the backend broadcasts drives the UI
+  // back to idle, so there is nothing to await here.
+  const handleStop = useCallback(() => {
+    stopMutation.mutate({ slot })
+  }, [stopMutation, slot])
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {showBanner && (
@@ -642,12 +664,15 @@ export default function SideChat({ slot }: { slot: string }) {
                   ? i18nT('pages.chat.sideChat.refresh_blocked_busy')
                   : undefined
             }
-            // Closing the sidecar clears the queue AND the steer ledger. A queued question,
-            // an undeliverable steer parked in that list, and an accepted steer still waiting
-            // to be consumed are all discarded — the last one is invisible here, which is why
-            // a running turn blocks too: its unconsumed steer only survives via the requeue
-            // that closing skips.
-            disabled={refreshMutation.isPending || queue.length > 0 || isBusy}
+            // Disabled WHILE a turn runs: a running turn can hold an accepted
+            // but unconsumed steer that has no queue card, so the empty-queue
+            // check cannot see it and a mid-turn Refresh would silently drop
+            // it. The hung-turn escape is the Stop control, which cancels the
+            // turn and settles the panel; once that clears (`is_complete` flips,
+            // `isBusy` falls), Refresh becomes reachable the ordinary way. So
+            // the steer-loss collateral never exists and Stop is the single
+            // in-flight escape.
+            disabled={isBusy || refreshMutation.isPending || queue.length > 0}
             className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover disabled:opacity-50 bg-transparent border-none cursor-pointer disabled:cursor-not-allowed"
           >
             <RotateCcw size={11} className={refreshMutation.isPending ? 'animate-spin' : ''} />
@@ -748,6 +773,7 @@ export default function SideChat({ slot }: { slot: string }) {
             onSend={() => { void send() }}
             canSteer
             onSteer={() => { void send(undefined, true) }}
+            onStop={handleStop}
             isRunning={isBusy}
             placeholder={i18nT('pages.chat.sideChat.ask_a_side_question_2')}
             inputAriaLabel={i18nT('pages.chat.sideChat.ask_a_side_question')}

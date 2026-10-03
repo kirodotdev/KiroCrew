@@ -77,9 +77,9 @@ describe('SideChat busy-send: steer vs queue', () => {
     const user = userEvent.setup()
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
 
+    await user.type(screen.getByLabelText('Ask a side question'), 'later please')
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-queue'))
-    await user.type(screen.getByLabelText('Ask a side question'), 'later please')
     await user.click(screen.getByTestId('busy-send-button'))
 
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'later please', undefined))
@@ -450,9 +450,12 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
+    // Type first: the mid-turn split button (with its mode caret) renders only
+    // once the composer has a draft — an empty busy composer now shows the Stop
+    // control instead.
+    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-steer'))
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 
@@ -489,9 +492,12 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
+    // Type first: the mid-turn split button (with its mode caret) renders only
+    // once the composer has a draft — an empty busy composer now shows the Stop
+    // control instead.
+    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-steer'))
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 
@@ -1088,9 +1094,12 @@ describe('chatSlice steer frame placement', () => {
     expect(screen.getByRole('button', { name: /refresh/i })).toBeEnabled()
   })
 
-  it('refresh is blocked during a running turn, which can hold an unconsumed steer', async () => {
-    // An accepted steer is not in `queue` and has no card, so the empty-queue check cannot see
-    // it. Closing clears the ledger before the cleanup can requeue it, losing the question.
+  it('refresh is disabled during a running turn; Stop is the in-flight escape', async () => {
+    // The hung-turn escape (#15069) is the Stop control, not a mid-turn Refresh.
+    // A running turn can hold an accepted-but-unconsumed steer that has no queue
+    // card, so the empty-queue guard cannot see it and a mid-turn Refresh would
+    // silently drop it. Refresh becomes reachable the ordinary way once the turn
+    // settles (Stop → is_complete → busy clears).
     const store = busyState()
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 

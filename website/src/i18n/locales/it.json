@@ -10773,12 +10773,13 @@
         "queue_edit_failed": "Impossibile aggiornare quella domanda in coda",
         "refresh_context": "Aggiorna il contesto",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
-        "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "Il turno è terminato: messo in coda invece",
         "thinking": "Riflessione…",
         "turn_many": "{{count}} turni",
         "turn_one": "{{count}} turno",
-        "turn_other": "{{count}} turni"
+        "turn_other": "{{count}} turni",
+        "stop_failed": "Impossibile interrompere il turno laterale — riprova",
+        "refresh_blocked_busy": "Ferma prima la risposta in corso — aggiornare la eliminerebbe"
       },
       "sidePanel": {
         "close_panel": "Chiudi il pannello",

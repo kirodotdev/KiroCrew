@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 
 _MAX_QUESTION_BYTES = 32_768
 
+# How long the stop handler waits for a cancelled side turn's cleanup (session
+# release, queue hold, is_complete flip) to run before settling the client
+# anyway. Bounds a wedged ``finally`` so a stop never hangs the request.
+_STOP_CLEANUP_TIMEOUT = 5.0
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -108,6 +113,10 @@ def _dispatch_side_turn(
             start_priority=start_priority,
         )
     )
+    # Store the handle on the sidecar so ``api_side_stop`` can cancel this turn
+    # by lookup; ``state._background_tasks`` has no per-slot key. The turn's
+    # finally clears it once this run is the sidecar's current one.
+    side.task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     return run_id
@@ -181,12 +190,16 @@ def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
 
     ``run_id`` is identity-checked against the sidecar's current run so a stale
     task from a closed-and-reopened side can never dispatch onto the new state.
-    No-op when the side is closed, still busy, or the queue is empty.
+    No-op when the side is closed, still busy, STOPPING, or the queue is empty.
     """
     side = slot._side
     if side is None or not side.open:
         return
-    if side.last_run_id != run_id or not side.is_complete:
+    if side.last_run_id != run_id or not side.is_complete or side.is_stopping:
+        # ``is_stopping`` holds a deliberately-cancelled turn busy through the
+        # stop handler's cleanup even after its own ``finally`` flipped
+        # ``is_complete`` True; draining a successor in that window is the exact
+        # GPT F1 race (a replacement over the still-settling cancelled turn).
         return
     entry = side.queue_pop()
     if entry is None:
@@ -373,6 +386,11 @@ async def _run_side_turn(
     provider = None
     acquired_key = ""
     auth_required = False
+    # A stop request cancels this task; the finally then holds the queue intact
+    # rather than draining the next question into a fresh turn — stopping means
+    # halt, not "run the next one". The requeue of unconsumed steers still runs,
+    # so nothing the user typed is lost.
+    cancelled = False
     try:
         # Resolve the KiroCrew slot agent name (e.g. "default") to the real
         # kiro-cli agent (e.g. "kirocrew") before creating the session. Passing
@@ -681,6 +699,12 @@ async def _run_side_turn(
             final=True,
         )
     except asyncio.CancelledError:
+        # A stop request (``api_side_stop``) cancels this task. The terminal
+        # frame that clears the client's streaming/pending is broadcast by that
+        # handler, not here: a cancel can interrupt this task mid-await, and the
+        # handler is the one place that knows a cancel is deliberate rather than
+        # a shutdown. Mark it so the finally holds the queue instead of draining.
+        cancelled = True
         raise
     except AcpAuthRequired as exc:
         # A signed-out CLI is actionable, so surface its own message rather than
@@ -784,6 +808,12 @@ async def _run_side_turn(
         # side never flips is_complete on the new state's in-flight turn.
         if slot._side is not None and slot._side.last_run_id == run_id:
             slot._side.is_complete = True
+            # Drop the handle this run registered: it is done, and a stop
+            # request landing after this must not cancel a task that already
+            # finished (or, worse, the NEXT turn once the drain below starts
+            # one). The identity gate above already excludes a superseded
+            # sidecar, whose own task handle this task never owned.
+            slot._side.task = None
         if acquired_key:
             try:
                 state.sessions.release(acquired_key)
@@ -799,7 +829,7 @@ async def _run_side_turn(
         # Unconsumed steers are still requeued above — they were never delivered
         # either, and the head of the queue is where a resume should find them.
         # Only the DISPATCH is withheld, so nothing is lost, merely paused.
-        if not auth_required:
+        if not auth_required and not cancelled:
             _drain_side_queue(state, slot, run_id)
 
 
@@ -957,11 +987,16 @@ async def api_side_turn(request: web.Request) -> web.Response:
             status=409,
         )
 
-    if slot._side.last_run_id and not slot._side.is_complete:
+    if slot._side.last_run_id and (not slot._side.is_complete or slot._side.is_stopping):
         # A turn is in flight. Mirror the main chat: steer injects into the
         # RUNNING turn, queue defers it to the next one, and an unavailable
         # steer falls through to the queue so the text is NEVER dropped.
         #
+        # ``is_stopping`` is folded into "in flight" so a stop in progress keeps
+        # the turn busy through its cleanup: the cancelled turn's own ``finally``
+        # flips ``is_complete`` True as it unwinds, which lands during the stop
+        # handler's bounded await, and without this clause a successor could
+        # dispatch in that window before the stopped row is recorded (GPT F1).
         # Bind the commit to the sidecar OBJECT and run the steer was aimed at,
         # captured before the RPC suspends. Re-reading them afterwards would
         # attribute a steer to whatever is live now: a close+reopen swaps in a
@@ -1181,6 +1216,248 @@ async def api_side_turn(request: web.Request) -> web.Response:
             "messages": len(slot._side.messages),
         }
     )
+
+
+async def api_side_stop(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/side/stop — cancel the in-flight side turn.
+
+    The escape hatch for a hung side turn. ``/interrupt`` targets the slot's
+    MAIN run (``slot.running``); a side turn runs on a separate background
+    asyncio task whose handle lives on the sidecar (``slot._side.task``), so it
+    needs its own cancel path. Cancelling the task alone is not enough — the
+    client's ``streaming``/``pending`` only clears on a terminal frame — so a
+    terminal ``chat.side_result`` is broadcast here, where a cancel is known to
+    be deliberate (``_run_side_turn`` cannot tell a stop from a shutdown).
+
+    Idempotent: with no turn in flight (or a stop already claimed) it returns
+    ``{"ok": True}`` without settling. The SEL ``resources=`` line records the
+    ``stopped``/``settled`` disposition for audit; the wire body stays minimal
+    because the frontend fires the mutation and wires only ``onError``.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # Owner-dashboard gate, mirroring ``api_side_turn``: stopping a turn is a
+    # dashboard-user action, and an app token keeps the slot scoping below.
+    if request.get("app") == "":
+        # circular import: handlers._shared pulls in sibling handler modules in
+        # this package at import time, so a module-level import here risks closing
+        # the cycle; bind it at call time (mirrors api_side_turn above).
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "chat.side_stop")
+        if owner_denied is not None:
+            return owner_denied
+
+    own = _check_slot_ownership(request, slot, "chat.side_stop")
+    if own is not None:
+        return own
+
+    side = slot._side
+    if side is None or not side.open:
+        return web.json_response(
+            {"error": "side conversation is not open", "code": "side_not_open"},
+            status=409,
+        )
+
+    run_id = side.last_run_id
+    task = side.task
+    # Nothing to stop: no run id, the turn already settled, or no live handle.
+    # Report it rather than erroring — a stop pressed just as the turn finished
+    # is a race the UI must survive, not a failure.
+    if not run_id or side.is_complete or task is None or task.done():
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="chat.side_stop",
+            outcome="allowed",
+            source="dashboard",
+            resources=f"slot={slot.key},stopped=false",
+        )
+        return web.json_response({"ok": True})
+
+    # Atomically CLAIM the turn before the first await by clearing the HANDLE
+    # (not ``is_complete``). This runs synchronously after the early-out above
+    # with no await between the two, so in asyncio's single-threaded model the
+    # check-and-claim is atomic: a second concurrent stop (ordinary double-click,
+    # or two dashboard tabs) that races in while we are awaiting
+    # ``provider.cancel()`` / the task cleanup below re-reads ``side.task`` at the
+    # early-out, sees it is ``None``, and returns ``{ok}`` without settling — so
+    # only ONE request appends the stopped row and broadcasts the terminal frame.
+    #
+    # We MUST claim via ``side.task`` and NOT via ``is_complete``: a concurrent
+    # ``POST /side/turn`` suspended at ``await request.json()`` resumes to read
+    # the busy gate ``last_run_id and not is_complete`` — flipping
+    # ``is_complete`` True here would read as idle, dispatching a replacement R2
+    # over the still-cancelling R1, after which the stop handler sees the
+    # replacement and returns ``superseded``, leaving R1's user line unanswered
+    # in the history fed to the next turn (GPT F1 / Opus, security-class). Leaving
+    # ``is_complete`` False keeps both ``api_side_turn`` and ``_drain_side_queue``
+    # seeing the turn as in flight, so no replacement is dispatched during the
+    # cancel window. ``task`` is already captured above, so clearing the field
+    # does not lose the handle we still cancel+await.
+    #
+    # Clearing ``side.task`` is NOT sufficient on its own: the cancelled turn's
+    # own ``finally`` flips ``is_complete`` True synchronously as it unwinds, and
+    # that lands DURING the ``await`` of the task cleanup below — reopening the
+    # busy gate before this handler resumes to record the stopped row. So we also
+    # raise ``is_stopping``, which the busy gate honours as "in flight", holding
+    # the turn busy until we clear it in the ``finally`` after settling (GPT F1 /
+    # Opus, security-class). Both writes are a single synchronous claim with no
+    # await between them, so the check-and-claim stays atomic.
+    side.task = None
+    side.is_stopping = True
+
+    try:
+        return await _cancel_and_settle_side_turn(request, state, slot, side, task, run_id)
+    finally:
+        # Release the busy claim on EVERY exit path (settled, superseded,
+        # timeout, or an unexpected error): a stop that failed to clear it would
+        # wedge the sidecar busy forever, so no further turn could ever start —
+        # a worse hang than the one the endpoint exists to escape. By here the
+        # terminal row (if any) is already recorded, so admitting a successor is
+        # safe.
+        side.is_stopping = False
+
+
+async def _cancel_and_settle_side_turn(
+    request: web.Request,
+    state,
+    slot,
+    side,
+    task: asyncio.Task[None],
+    run_id: str,
+) -> web.Response:
+    """Cancel the in-flight side turn and settle the client with a terminal row.
+
+    Factored out of :func:`api_side_stop` so the caller can hold the
+    ``is_stopping`` busy claim across the whole cancel+settle in a ``try`` and
+    release it in a ``finally`` on every exit path. Assumes the caller has
+    already claimed the turn (``side.task = None``, ``side.is_stopping = True``).
+    """
+    # whose ``finally`` releases the lease but never sends ``session/cancel`` —
+    # so without this the stopped turn keeps generating (and billing) and the
+    # next side question pays the prompt-busy retry cycle. ``provider.cancel()``
+    # is the typed protocol cancel (AcpProvider.cancel routes it to the backend
+    # and swallows a dead-runtime error), so it cannot raise out of this handler.
+    provider = state.sessions.get_provider(_side_session_key(slot.key, side.gen))
+    if provider is not None:
+        await provider.cancel()
+
+    # Cancel the task, then AWAIT its cancellation cleanup before publishing
+    # idle. ``_run_side_turn`` re-raises CancelledError (marking the turn
+    # ``cancelled`` so its finally holds the queue) and its finally releases the
+    # session lease and flips ``is_complete``. Awaiting it here closes the race
+    # GPT flagged: a concurrent side-turn request that replaced ``last_run_id``
+    # before the cleanup ran would make the cancelled turn's identity-gated
+    # requeue skip, losing a pending steer. Awaiting (bounded, shielded from a
+    # cancel of THIS request) lets that cleanup finish first.
+    task.cancel()
+    timed_out = False
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=_STOP_CLEANUP_TIMEOUT)
+    except asyncio.TimeoutError:
+        # The task's finally is wedged (cleanup did not finish within the
+        # budget). We must still settle the client regardless — leaving it
+        # unsettled is the exact deep-hang the endpoint exists to escape.
+        timed_out = True
+    except (asyncio.CancelledError, Exception):
+        # CancelledError is the task's own expected unwind; any other exception
+        # is the turn's own error, already surfaced on its frame.
+        pass
+
+    # Decide whether to settle with a stopped row. Two conditions must hold:
+    #
+    #   1. No genuine replacement took over. ``provider.cancel()`` can end the
+    #      prompt NORMALLY (no CancelledError); the turn's own finally then flips
+    #      ``is_complete`` and ``_drain_side_queue`` can dispatch the NEXT queued
+    #      turn onto the same ``side:<slot>:<gen>`` key during the awaits above.
+    #      If that happened, ``last_run_id`` now belongs to that replacement, so
+    #      settling here would erase its live handle. The cancelled turn's own
+    #      finally never changes ``last_run_id`` (and the drain that would start
+    #      a replacement is skipped only when ``cancelled`` is True), so a
+    #      changed ``last_run_id`` is the replacement signal. We also require the
+    #      same sidecar object.
+    #
+    #   2. The task was actually CANCELLED (or the cleanup WEDGED). If
+    #      ``provider.cancel()`` let the prompt finish normally before
+    #      ``task.cancel()`` landed, the turn took its SUCCESS path — the real
+    #      answer was appended and broadcast — and ``task.cancelled()`` is False
+    #      with the task genuinely done. Appending a ``(side response stopped)``
+    #      row on top of a delivered answer would corrupt the transcript (Opus
+    #      FINDING), so a genuinely-normal completion gets no row. But a TIMEOUT
+    #      is NOT a normal completion: the task is still running, its finally is
+    #      wedged, and ``task.cancelled()`` is also False — folding that into the
+    #      normal-completion branch would leave the panel streaming forever in
+    #      the exact deep-hang the endpoint exists to escape (Design FINDING). So
+    #      we settle the stopped row whenever the task was cancelled OR the
+    #      cleanup timed out, and skip it only on a genuine normal completion.
+    settled_as = None
+    if not (slot._side is side and side.last_run_id == run_id):
+        settled_as = "superseded"
+    elif timed_out:
+        # Wedged cleanup: fall through to settle the client with the stopped row
+        # below (do NOT classify as completed-normally). SEL records the wedge.
+        settled_as = None
+    elif not task.cancelled():
+        # Turn ended normally during the cancel window; its own answer already
+        # settled the row. Nothing to append — just report the stop as a no-op
+        # settle (the turn's own finally flips ``is_complete``, so the panel is
+        # consistent).
+        settled_as = "completed-normally"
+
+    if settled_as is not None:
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="chat.side_stop",
+            outcome="allowed",
+            source="dashboard",
+            resources=f"slot={slot.key},stopped=true,settled={settled_as}",
+        )
+        return web.json_response({"ok": True})
+
+    # Mark the turn settled. On a real cancel the task's own finally also flips
+    # this (idempotent); on a WEDGED timeout the finally never ran, so without
+    # this the panel's sidecar would stay ``is_complete=False`` after we settle
+    # the client, re-reading as busy. ``side.task`` was already cleared at the
+    # claim above.
+    side.is_complete = True
+
+    # Record the stop in the sidecar transcript so the next turn does not read
+    # the stopped question as an open, unanswered ``User:`` line. Without this
+    # ``side.messages`` ends ``[user: Q1]`` and ``_format_side_history`` hands
+    # the model Q1 as still-pending.
+    side.append_assistant("(side response stopped)")
+
+    # The terminal frame the client needs to clear streaming/pending. A fresh
+    # run_id would read as a new turn's answer; this one matches the row the
+    # hung turn was streaming into, so it settles that row.
+    broadcast_side_result(
+        state,
+        slot_key=slot.key,
+        run_id=run_id,
+        role="assistant",
+        content="(side response stopped)",
+        is_error=True,
+        final=True,
+    )
+
+    sel().log_api_access(
+        caller=request.get("app", "") or "dashboard",
+        operation="chat.side_stop",
+        outcome="allowed",
+        source="dashboard",
+        resources=(
+            f"slot={slot.key},run_id={run_id},stopped=true,"
+            f"settled={'timeout' if timed_out else 'cancelled'}"
+        ),
+    )
+    # The SEL ``resources=`` line above records ``run_id``/``stopped`` for
+    # audit; the frontend ignores the response body (fires the mutation,
+    # wires only ``onError``), so the success body is the minimal ``{ok}``.
+    return web.json_response({"ok": True})
 
 
 async def _read_side_queue_body(request: web.Request) -> str | web.Response:

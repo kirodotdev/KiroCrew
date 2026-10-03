@@ -505,7 +505,15 @@ class TestFiltersStillNarrowTheTree:
             ),
             ("session-map-batch", session_map.TestNoAwaitInsideBatch._REQUIRE_ALL, (), 100),
             ("security-census", _CENSUS_REQUIRE_ALL, (), 700),
-            ("blocking-on-loop", blocking._REQUIRE_ALL, (), 907),
+            # The broadest filter: it keeps ~43% of the package tree, and the
+            # ceiling is a drift-guard the kept-count must stay strictly under so
+            # the filter is still narrowing. This is a RATCHET
+            # (``a-ratchet-may-only-tighten``): pin it just above the measured
+            # live count, never reserve slack. When real tree growth adds an
+            # in-scope ``.py`` matching the loop-blocking shape, that growth's own
+            # change re-pins it one higher — the bound tracks the true count, it
+            # is not loosened ahead of it.
+            ("blocking-on-loop", blocking._REQUIRE_ALL, (), 908),
         ],
     )
     def test_the_filter_narrows_the_tree(self, label, require_all, require_any, ceiling):

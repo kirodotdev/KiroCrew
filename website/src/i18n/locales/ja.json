@@ -10483,10 +10483,11 @@
         "queue_edit_failed": "キューに入っている質問を更新できませんでした",
         "refresh_context": "コンテキストを更新",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
-        "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "ターンが終了したためキューに入れました",
         "thinking": "考え中…",
-        "turn_other": "{{count}} ターン"
+        "turn_other": "{{count}} ターン",
+        "stop_failed": "サイドターンを停止できませんでした — もう一度お試しください",
+        "refresh_blocked_busy": "まず実行中の応答を停止してください — 更新すると破棄されます"
       },
       "sidePanel": {
         "close_panel": "パネルを閉じる",

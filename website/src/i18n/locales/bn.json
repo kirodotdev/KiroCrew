@@ -10628,11 +10628,12 @@
         "queue_edit_failed": "সেই কিউ করা প্রশ্নটি আপডেট করা যায়নি",
         "refresh_context": "কনটেক্সট রিফ্রেশ করুন",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
-        "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "টার্ন শেষ হয়েছে — পরিবর্তে কিউ করা হয়েছে",
         "thinking": "ভাবছে…",
         "turn_one": "{{count}}টি টার্ন",
-        "turn_other": "{{count}}টি টার্ন"
+        "turn_other": "{{count}}টি টার্ন",
+        "stop_failed": "সাইড টার্ন থামানো যায়নি — আবার চেষ্টা করো",
+        "refresh_blocked_busy": "আগে চলমান উত্তরটি থামান — রিফ্রেশ করলে সেটি বাতিল হয়ে যাবে"
       },
       "sidePanel": {
         "close_panel": "প্যানেল বন্ধ করুন",

@@ -10628,11 +10628,12 @@
         "queue_edit_failed": "Diese Frage in der Warteschlange konnte nicht aktualisiert werden",
         "refresh_context": "Kontext aktualisieren",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
-        "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",
-        "turn_other": "{{count}} Züge"
+        "turn_other": "{{count}} Züge",
+        "stop_failed": "Der Seiten-Turn konnte nicht gestoppt werden — bitte erneut versuchen",
+        "refresh_blocked_busy": "Beende zuerst die laufende Antwort — ein Aktualisieren würde sie verwerfen"
       },
       "sidePanel": {
         "close_panel": "Panel schließen",

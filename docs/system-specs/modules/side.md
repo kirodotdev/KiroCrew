@@ -183,6 +183,7 @@ second time.
 | queue cancel | DELETE | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Drop a queued entry; echoes its text back for the composer |
 | queue edit | PATCH | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Rewrite a queued entry in place |
 | close | POST | `/api/chat/slots/{slot}/side/close` | Drop buffer + queue + destroy LLM session |
+| stop | POST | `/api/chat/slots/{slot}/side/stop` | Cancel the in-flight side turn (hung-turn escape hatch); idempotent when none is running |
 
 ## Wire Protocol
 
@@ -226,7 +227,8 @@ a parent-slot turn.
 ### `dashboard/side_state.py`
 
 `SideState` dataclass: `open`, `messages`, `last_run_id`, `created_at`,
-`is_complete`, `queue`, `steers`.
+`is_complete`, `queue`, `steers`, `task` (the running side turn's asyncio task
+handle, so `/side/stop` can cancel it; `None` when idle).
 Helpers: `append_user` (with a `steer` marker), `append_assistant`, `clear`,
 `queue_append` / `queue_insert_front` / `queue_pop` / `queue_remove` /
 `queue_edit`, and the ledger's `steer_register` / `steer_state` /

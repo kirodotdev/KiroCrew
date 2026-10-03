@@ -114,7 +114,7 @@ const API_KEY_ORDER = [
   'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
   'reorderQueuedMessages', 'interruptSlot', 'endWait', 'approveChatSlot',
   'resumeChatSlot', 'forkChatSlot', 'sideOpen',
-  'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose',
+  'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose', 'sideStop',
   'chatMode', 'generateTitle', 'resolveNavLinks', 'renameSlot', 'setTodoTask',
   'regenerateSlot', 'continueSlot', 'switchVariant', 'editResend',
   'rewind', 'slackLink', 'unlinkSlack', 'pauseSlack',

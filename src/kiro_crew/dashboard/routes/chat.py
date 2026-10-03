@@ -146,6 +146,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/threads/{mid}/reply", chat_threads.api_chat_thread_reply)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
+    app.router.add_post("/api/chat/slots/{slot}/side/stop", handlers.api_side_stop)
     app.router.add_post("/api/chat/slots/{slot}/side/close", handlers.api_side_close)
     app.router.add_delete(
         "/api/chat/slots/{slot}/side/queue/{queue_id}",

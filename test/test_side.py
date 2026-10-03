@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.side import (
     _run_side_turn,
     api_side_close,
     api_side_open,
+    api_side_stop,
     api_side_turn,
 )
 from kiro_crew.dashboard.side_prompts import SIDE_BOUNDARY_PROMPT
@@ -68,6 +69,7 @@ def _make_side_app(
     )
     app.router.add_post("/api/chat/slots/{slot}/side/open", api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", api_side_turn)
+    app.router.add_post("/api/chat/slots/{slot}/side/stop", api_side_stop)
     app.router.add_post("/api/chat/slots/{slot}/side/close", api_side_close)
     return app
 
@@ -1451,3 +1453,523 @@ async def test_side_turn_on_another_backend_runs_no_tools_and_derives_nothing(
     last = [d for t, d in events if d.get("role") == "assistant" and d.get("final")][-1]
     assert "can't use tools on this agent backend" in last["content"]
     assert parent._side.binding == (created[0]["agent"] or "", "", "reject_all")
+
+
+@pytest.mark.asyncio
+async def test_side_stop_cancels_in_flight_turn_and_settles(tmp_path, monkeypatch):
+    """POST /side/stop cancels the hung turn's task and broadcasts a terminal frame.
+
+    The escape hatch for a hung side turn: /interrupt targets the main
+    run, so a side turn — a separate background task — needs its own cancel. The
+    stop must cancel the task AND broadcast a terminal frame that clears the
+    client's streaming/pending, keyed to the same run so the hung row settles.
+    """
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # Mirror the REAL _run_side_turn finally: on cancellation it clears
+            # ``slot._side.task = None`` under its own ``last_run_id == run_id``
+            # gate. The handler then awaits this task, so by the time it
+            # re-checks identity ``side.task`` is already None — the exact
+            # production condition that a strict ``side.task is task`` gate
+            # mis-read as "superseded", trapping the panel busy. Reproducing it
+            # here is what makes this test exercise the real settle path.
+            if slot._side is not None and slot._side.last_run_id == run_id:
+                slot._side.is_complete = True
+                slot._side.task = None
+            raise
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    events = _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        slot = state._slots["parent"]
+        assert slot._side.task is not None and not slot._side.is_complete
+
+        stop = await client.post("/api/chat/slots/parent/side/stop", json={})
+        body = await stop.json()
+        assert body == {"ok": True}
+
+    # The task was cancelled, the turn marked complete, and the handle cleared so
+    # a later stop cannot cancel a finished (or next) turn.
+    assert slot._side.is_complete
+    assert slot._side.task is None
+    # The stopped question is settled in the transcript with an assistant row, so
+    # the next turn does not re-read it as an open, unanswered User: line.
+    assert slot._side.messages
+    last = slot._side.messages[-1]
+    assert last["role"] == "assistant"
+    assert "stopped" in last["content"]
+    # A terminal error frame for THIS run clears streaming/pending on the client.
+    terminal = [
+        d
+        for _t, d in events
+        if d.get("role") == "assistant" and d.get("final") and d.get("run_id") == run_id
+    ]
+    assert terminal, "no terminal frame broadcast on stop"
+    assert terminal[-1]["is_error"] is True
+    assert "stopped" in terminal[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_side_stop_cancels_the_backend_session(tmp_path, monkeypatch):
+    """Stop reaches kiro-cli: it awaits the provider's cancel, not just the task.
+
+    task.cancel() only unwinds the local consumer; without a backend cancel the
+    stopped turn keeps generating and billing. The handler must await the side
+    session provider's cancel before dropping the task handle.
+    """
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            raise
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    provider = MagicMock(name="side provider")
+    provider.cancel = AsyncMock()
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        stop = await client.post("/api/chat/slots/parent/side/stop", json={})
+        assert (await stop.json()) == {"ok": True}
+
+    # The backend session was cancelled, not just the local task.
+    provider.cancel.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_side_stop_does_not_clobber_a_replacement_turn(tmp_path, monkeypatch):
+    """Identity re-check: a turn that settles during the cancel yield is not erased.
+
+    ``provider.cancel()`` can end the prompt normally, so the cancelled turn's
+    own finally may flip ``is_complete`` and ``_drain_side_queue`` dispatch the
+    NEXT queued turn onto the same ``side:<slot>:<gen>`` key before the stop
+    handler resumes. Without an identity re-check the handler would then run
+    ``is_complete = True`` / ``task = None`` / ``append_assistant`` on the
+    REPLACEMENT turn — erasing its live handle, marking a streaming turn
+    complete, and leaving a stale terminal frame. The handler must instead bail
+    once it sees the turn it cancelled was superseded.
+    """
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            raise
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    state.get_or_create_slot("parent")
+
+    # The replacement turn's live handle, installed DURING the cancel await to
+    # simulate a concurrent side-turn request draining the queue mid-stop.
+    replacement_task = None
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q1"})
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        slot = state._slots["parent"]
+        side = slot._side
+
+        async def _supersede():
+            # Stand in for the replacement turn's state: a new run id and a new,
+            # still-running task handle, installed while the stop handler is
+            # awaiting the cancel of the turn it snapshotted.
+            nonlocal replacement_task
+            replacement_task = asyncio.ensure_future(asyncio.sleep(3600))
+            side.last_run_id = "run-replacement"
+            side.is_complete = False
+            side.task = replacement_task
+
+        provider = MagicMock(name="side provider")
+        provider.cancel = AsyncMock(side_effect=_supersede)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+
+        stop = await client.post("/api/chat/slots/parent/side/stop", json={})
+        body = await stop.json()
+        # It still reports the stop succeeded, but settles nothing.
+        assert body == {"ok": True}
+
+    # The replacement turn is untouched: its handle survives, it is not marked
+    # complete, and no "(side response stopped)" row was appended over it.
+    assert side.task is replacement_task
+    assert side.task is not None and not side.task.done()
+    assert side.is_complete is False
+    assert side.last_run_id == "run-replacement"
+    assert not any(m["role"] == "assistant" and "stopped" in m["content"] for m in side.messages)
+    assert run_id != "run-replacement"
+    replacement_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_side_stops_settle_the_row_exactly_once(tmp_path, monkeypatch):
+    """A double-click (two concurrent stops) appends ONE stopped row, not two.
+
+    GPT fenced finding: both requests pass the pre-await early-out while the
+    turn is live, both await the cancel, both reach the settle block — so
+    without an atomic claim both append ``(side response stopped)`` and
+    broadcast a terminal frame, duplicating the terminal transcript row kiro-cli
+    is then fed. The handler claims the turn by clearing the handle
+    (``side.task = None``) synchronously before the first await, so the second
+    request re-reads ``task is None`` at the early-out and settles nothing.
+    """
+    release = asyncio.Event()
+    started = asyncio.Event()
+    in_cancel = asyncio.Event()
+    hold_cancel = asyncio.Event()
+
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            raise
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    events = _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+
+    # ``provider.cancel`` parks on the first request inside the await window and
+    # releases only once the SECOND stop has been issued, so the two overlap on
+    # the exact window the fence is about.
+    async def _park_cancel():
+        in_cancel.set()
+        await hold_cancel.wait()
+
+    provider = MagicMock(name="side provider")
+    provider.cancel = AsyncMock(side_effect=_park_cancel)
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        # First stop: enters the await window and parks inside provider.cancel.
+        first = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
+        await asyncio.wait_for(in_cancel.wait(), timeout=5.0)
+        # Second stop while the first is parked: must hit the claimed early-out.
+        second = await client.post("/api/chat/slots/parent/side/stop", json={})
+        assert (await second.json()) == {"ok": True}
+        # Let the first finish.
+        hold_cancel.set()
+        first_resp = await asyncio.wait_for(first, timeout=5.0)
+        assert (await first_resp.json()) == {"ok": True}
+
+        slot = state._slots["parent"]
+
+    # Exactly one stopped row in the transcript — not two.
+    stopped_rows = [
+        m for m in slot._side.messages if m["role"] == "assistant" and "stopped" in m["content"]
+    ]
+    assert len(stopped_rows) == 1, f"expected 1 stopped row, got {len(stopped_rows)}"
+    # Exactly one terminal error frame for this run — not two.
+    terminal = [
+        d
+        for _t, d in events
+        if d.get("role") == "assistant" and d.get("final") and d.get("run_id") == run_id
+    ]
+    assert len(terminal) == 1, f"expected 1 terminal frame, got {len(terminal)}"
+
+
+@pytest.mark.asyncio
+async def test_side_stop_appends_no_row_when_turn_ends_normally(tmp_path, monkeypatch):
+    """If ``provider.cancel()`` lets the prompt finish normally, no stopped row.
+
+    Opus FINDING: ``provider.cancel()`` can end the prompt before ``task.cancel()``
+    lands, so the turn takes its SUCCESS path (real answer appended + broadcast)
+    and ``task.cancelled()`` is False. The handler must NOT then append a second
+    ``(side response stopped)`` row and terminal error frame over the delivered
+    answer. The settle is gated on ``task.cancelled()``.
+    """
+    started = asyncio.Event()
+
+    async def _finishing(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        # The turn completes normally (no cancellation): append its real answer
+        # and settle, mirroring _run_side_turn's success + finally path.
+        if slot._side is not None:
+            slot._side.append_assistant("the real answer")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # Swallow the cancel (do NOT re-raise) so task.cancelled() is False —
+            # the "ended normally during the cancel window" condition.
+            if slot._side is not None and slot._side.last_run_id == run_id:
+                slot._side.is_complete = True
+                slot._side.task = None
+            return
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _finishing)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    events = _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+
+    provider = MagicMock(name="side provider")
+    provider.cancel = AsyncMock()
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q?"})
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        stop = await client.post("/api/chat/slots/parent/side/stop", json={})
+        assert (await stop.json()) == {"ok": True}
+        slot = state._slots["parent"]
+
+    # No "(side response stopped)" row was appended over the delivered answer.
+    assert not any(
+        m["role"] == "assistant" and "stopped" in m["content"] for m in slot._side.messages
+    ), "a stopped row was appended over a normally-completed turn"
+    # No terminal error frame for this run from the stop handler.
+    stop_terminals = [
+        d
+        for _t, d in events
+        if d.get("role") == "assistant"
+        and d.get("final")
+        and d.get("run_id") == run_id
+        and d.get("is_error")
+        and "stopped" in str(d.get("content", ""))
+    ]
+    assert not stop_terminals, "a spurious stopped terminal frame was broadcast"
+
+
+@pytest.mark.asyncio
+async def test_a_submit_during_the_stop_window_does_not_replace_the_cancelled_turn(
+    tmp_path, monkeypatch
+):
+    """GPT F1 (fenced) / Opus: a concurrent /side/turn mid-stop must NOT dispatch.
+
+    The subtle seam: clearing ``side.task`` alone does not close the race,
+    because the cancelled turn's own ``finally`` flips ``is_complete = True``
+    synchronously as it unwinds — and that lands DURING the stop handler's
+    bounded await of the task cleanup, before the handler resumes to record the
+    stopped row. In that window ``is_complete`` reads idle, so a ``POST
+    /side/turn`` that finished parsing its body would pass the busy gate,
+    dispatch a REPLACEMENT, and the stop would then return ``superseded``,
+    leaving the cancelled turn's user line unanswered in the history fed to the
+    next turn (security-class). The ``is_stopping`` claim keeps the turn busy
+    through cleanup: the busy gate honours it, so the concurrent submit is
+    QUEUED (not dispatched) even AFTER the finally flipped ``is_complete``, and
+    the cancelled turn settles with its stopped row with no replacement over it.
+
+    This test forces the submit into exactly that post-flip window: the stub's
+    cancellation handler flips ``is_complete = True`` (mirroring the real
+    ``finally``) and then PARKS, and the concurrent submit is issued while it is
+    parked there — so the only thing keeping the busy gate shut is
+    ``is_stopping``.
+    """
+    release = asyncio.Event()
+    started = asyncio.Event()
+    in_cancel_cleanup = asyncio.Event()
+    hold_cancel_cleanup = asyncio.Event()
+    dispatched_runs: list[str] = []
+
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        dispatched_runs.append(run_id)
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # Mirror the real _run_side_turn finally: flip is_complete True
+            # SYNCHRONOUSLY as the turn unwinds, THEN park so a concurrent submit
+            # can race in while is_complete already reads idle. Only is_stopping
+            # keeps the busy gate shut in this window.
+            if slot._side is not None and slot._side.last_run_id == run_id:
+                slot._side.is_complete = True
+                slot._side.task = None
+            in_cancel_cleanup.set()
+            await hold_cancel_cleanup.wait()
+            raise
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    events = _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+
+    # provider.cancel returns immediately; the task's own cancel-cleanup is where
+    # we park (after the is_complete flip), via the stub above.
+    provider = MagicMock(name="side provider")
+    provider.cancel = AsyncMock()
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q1"})
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        slot = state._slots["parent"]
+
+        # Stop R1: task.cancel() lands, the stub flips is_complete=True and parks
+        # in its cancel-cleanup. The stop handler is now awaiting that cleanup.
+        stop = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
+        await asyncio.wait_for(in_cancel_cleanup.wait(), timeout=5.0)
+
+        # The exact GPT seam: is_complete is already True here, so WITHOUT the
+        # is_stopping claim the busy gate would read idle and dispatch q2 as a
+        # replacement. is_stopping must keep it QUEUED.
+        assert slot._side.is_complete is True, "precondition: finally flipped is_complete"
+        assert slot._side.is_stopping is True, "stop must hold the busy claim"
+        r2 = await client.post("/api/chat/slots/parent/side/turn", json={"question": "q2"})
+        assert r2.status in (200, 202, 409), r2.status
+
+        # Let the stop finish its cancel-cleanup + settle.
+        hold_cancel_cleanup.set()
+        stop_resp = await asyncio.wait_for(stop, timeout=5.0)
+        assert (await stop_resp.json()) == {"ok": True}
+
+    # Only the original turn was ever dispatched to _run_side_turn — the submit
+    # did not run as a replacement over the cancelling turn.
+    assert dispatched_runs == [run_id], f"a replacement turn dispatched: {dispatched_runs}"
+    # The stop released the busy claim once it settled.
+    assert slot._side.is_stopping is False, "is_stopping must be cleared after settle"
+    # The cancelled turn settled with its stopped row (not left unanswered).
+    assert any(
+        m["role"] == "assistant" and "stopped" in m["content"] for m in slot._side.messages
+    ), "the cancelled turn's user line was left unanswered"
+    terminal = [
+        d
+        for _t, d in events
+        if d.get("role") == "assistant" and d.get("final") and d.get("run_id") == run_id
+    ]
+    assert terminal, "no terminal frame settled the cancelled turn"
+
+
+@pytest.mark.asyncio
+async def test_side_stop_settles_the_client_when_cleanup_wedges(tmp_path, monkeypatch):
+    """Design FINDING: a wedged cleanup (timeout) must still broadcast the frame.
+
+    If the task's finally hangs past ``_STOP_CLEANUP_TIMEOUT`` the awaited
+    cleanup times out and the task is still running — ``task.cancelled()`` is
+    False, but this is NOT a normal completion. Folding it into the
+    completed-normally branch would return without a terminal frame, leaving the
+    panel streaming in the exact deep-hang the endpoint exists to escape. The
+    handler must settle the stopped row + terminal frame on timeout, mark the
+    sidecar complete, and record ``settled=timeout`` in SEL.
+    """
+    started = asyncio.Event()
+
+    async def _wedged(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # The finally is WEDGED: swallow the cancel and keep running past the
+            # stop handler's cleanup budget (never clears is_complete/task).
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _wedged)
+    # Shrink the cleanup budget so the test does not wait the real timeout.
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._STOP_CLEANUP_TIMEOUT", 0.05)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    events = _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+
+    provider = MagicMock(name="side provider")
+    provider.cancel = AsyncMock()
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post("/api/chat/slots/parent/side/turn", json={"question": "hangs?"})
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        slot = state._slots["parent"]
+
+        stop = await client.post("/api/chat/slots/parent/side/stop", json={})
+        assert (await stop.json()) == {"ok": True}
+
+    # Even though the task never finished its cleanup, the panel is settled:
+    # is_complete flipped, a stopped row appended, and a terminal frame sent.
+    assert slot._side.is_complete, "a wedged cleanup left the sidecar busy"
+    assert any(
+        m["role"] == "assistant" and "stopped" in m["content"] for m in slot._side.messages
+    ), "no stopped row on a wedged cleanup"
+    terminal = [
+        d
+        for _t, d in events
+        if d.get("role") == "assistant" and d.get("final") and d.get("run_id") == run_id
+    ]
+    assert terminal, "a wedged cleanup did not broadcast a terminal frame"
+    assert terminal[-1]["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_side_stop_is_idempotent_when_idle(tmp_path, monkeypatch):
+    """Stop with no turn in flight reports stopped=False rather than erroring.
+
+    A stop pressed just as the turn settles is a race the UI must survive.
+    """
+    _stub_run_side_turn(monkeypatch)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    state.get_or_create_slot("parent")
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        # Idle sidecar, no turn ever started.
+        stop = await client.post("/api/chat/slots/parent/side/stop", json={})
+        assert stop.status == 200
+        assert await stop.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_side_stop_on_missing_or_closed_side(tmp_path, monkeypatch):
+    """Stop on a slot with no open sidecar is a 409, not a 500."""
+    _stub_run_side_turn(monkeypatch)
+    state = _make_state(tmp_path)
+    state.sessions.destroy = AsyncMock()
+    state.get_or_create_slot("parent")
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/chat/slots/parent/side/stop", json={})
+        assert resp.status == 409
+        body = await resp.json()
+        assert body["code"] == "side_not_open"

@@ -4395,7 +4395,8 @@
         "question_too_long_with_paste": "Question too long — reduce to under ~{{max}} characters (yours: {{current}}, counting the collapsed paste). Select the paste pill and press Backspace to remove it, or paste a shorter excerpt.",
         "queue_cancel_failed": "Could not cancel that queued question",
         "queue_edit_failed": "Could not update that queued question",
-        "steer_demoted_to_queue": "The turn ended — queued instead"
+        "steer_demoted_to_queue": "The turn ended — queued instead",
+        "stop_failed": "Could not stop the side turn — try again"
       },
       "sidePanel": {
         "dock_bottom": "Dock panel below chat",

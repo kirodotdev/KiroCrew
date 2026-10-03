@@ -1081,9 +1081,8 @@ function ChatInput({
               <MicButton voiceHoldMode={voiceHoldMode} voiceRecording={voiceRecording} micIsModeSwitch={micIsModeSwitch} transcribeInFlight={transcribeInFlight} micHeldElsewhere={micHeldElsewhere} micBlocked={micBlocked} toggleVoiceMode={toggleVoiceMode} onVoiceToggle={onVoiceToggle} onVoicePrewarm={onVoicePrewarm} disabled={disabled} optimizing={optimizing} micLabel={micLabel} />
             )}
             {/* The busy branch is reachable with EITHER a stop affordance or a
-                steer path: a host without onStop (the side panel — stopping the
-                main turn from there would be misdirected) still needs the
-                split steer/queue button while a turn runs. */}
+                steer path: a host without onStop still needs the split
+                steer/queue button while a turn runs. */}
             {compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle') ? (
               // An automatic compaction holds the session. It is NOT a turn
               // (`isRunning` is false), so without this branch the composer

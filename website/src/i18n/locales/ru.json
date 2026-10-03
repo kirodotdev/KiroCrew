@@ -10918,13 +10918,14 @@
         "queue_edit_failed": "Не удалось обновить этот вопрос из очереди",
         "refresh_context": "Обновить контекст",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
-        "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "Ход завершился — вместо этого добавлено в очередь",
         "thinking": "Размышление…",
         "turn_few": "{{count}} хода",
         "turn_many": "{{count}} ходов",
         "turn_one": "{{count}} ход",
-        "turn_other": "{{count}} хода"
+        "turn_other": "{{count}} хода",
+        "stop_failed": "Не удалось остановить дополнительный ответ — попробуй ещё раз",
+        "refresh_blocked_busy": "Сначала останови текущий ответ — обновление отменит его"
       },
       "sidePanel": {
         "close_panel": "Закрыть панель",
