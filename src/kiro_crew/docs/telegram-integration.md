@@ -218,6 +218,17 @@ Everything lives in the `telegram` section of `config.json`:
 Prefer the `TELEGRAM_BOT_TOKEN` env var over `bot_token` — it keeps your secret
 out of `config.json`.
 
+**Behind a network that blocks `api.telegram.org`?** Set `TELEGRAM_API_BASE_URL`
+to a reverse proxy that forwards to the Bot API. It is a full method template
+containing `{token}` and `{method}`, e.g.
+`https://your-proxy.example.com/bot{token}/{method}`. When set, it is used for
+all Bot API method calls, the dashboard's token verification (`getMe`), and
+file/photo downloads (whose origin is derived from it). When unset, everything
+uses the public `https://api.telegram.org` host exactly as before. This is
+distinct from `HTTPS_PROXY`: use `HTTPS_PROXY` for an ordinary forward proxy, and
+`TELEGRAM_API_BASE_URL` when the API host itself must be swapped for a
+reverse-proxy origin.
+
 **If something's off:** no reply usually means your ID isn't allowed or
 `enabled` is `false`; a missing `Telegram channel started` line means the token
 isn't set; slow replies behind a proxy mean you should set `HTTPS_PROXY` for the
