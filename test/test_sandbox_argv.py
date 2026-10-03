@@ -186,7 +186,11 @@ class TestWrapArgv:
         ]
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_ns_argv.assert_called_once_with(
-            ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
+            ["kiro-cli"],
+            "strict",
+            strip_python_env=False,
+            forward_ssh_auth_sock=False,
+            gateway_publish=False,
         )
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
@@ -195,7 +199,12 @@ class TestWrapArgv:
         mock_sb_argv.return_value = (["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb")
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_sb_argv.assert_called_once_with(
-            ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
+            ["kiro-cli"],
+            "strict",
+            child_env=None,
+            strip_python_env=False,
+            forward_ssh_auth_sock=False,
+            gateway_publish=False,
         )
 
     @patch("kiro_crew.sandbox.detect_backend")
@@ -1109,6 +1118,56 @@ class TestWritableCarveouts:
             carveable_parents=[str(home / "run")],
         )
         assert approved == []
+
+    def test_sandbox_push_verdict_mirror_leaf_matches(self):
+        """The OS-level seal's mirror-leaf name must equal the handler's ``MIRROR_DIR``.
+
+        ``sandbox.py`` keeps its own bare-string copy so the seal module has no dependency
+        on the handler layer; a rename on one side that this let drift would carve a directory
+        the mirrors do not live under while the seal still covers the real one -- a silent
+        EROFS. This pins the two equal.
+        """
+        from kiro_crew.security.push_verdict import MIRROR_DIR
+
+        assert sandbox_mod._PUSH_VERDICT_MIRROR_LEAF == MIRROR_DIR
+
+    def _relocated_mirror(self, monkeypatch, tmp_path):
+        """A relocated crew home with the sealed push-verdict mirror leaf present."""
+        home, _probe = self._relocated_home(monkeypatch, tmp_path)
+        mirror = home / sandbox_mod._PUSH_VERDICT_MIRROR_LEAF / "abcd1234"
+        mirror.mkdir(parents=True)
+        return home, mirror
+
+    def test_seatbelt_gateway_publish_carves_the_mirror_leaf(self, monkeypatch, tmp_path):
+        """gateway_publish=True admits a write carve-out under the sealed mirror parent."""
+        home, mirror = self._relocated_mirror(monkeypatch, tmp_path)
+        profile = _build_seatbelt_profile(
+            "standard", extra_writable_dirs=(str(mirror),), gateway_publish=True
+        )
+        for spelling in self._spellings(mirror):
+            assert f'(allow file-write* (subpath "{spelling}"))' in profile
+
+    def test_seatbelt_agent_spawn_refuses_the_mirror_leaf(self, monkeypatch, tmp_path):
+        """gateway_publish defaults False: the mirror parent stays sealed for every agent spawn."""
+        home, mirror = self._relocated_mirror(monkeypatch, tmp_path)
+        profile = _build_seatbelt_profile("standard", extra_writable_dirs=(str(mirror),))
+        assert "(allow file-write*" not in profile
+
+    @_POSIX_ONLY
+    def test_launcher_gateway_publish_carves_the_mirror_leaf(self, monkeypatch, tmp_path):
+        """gateway_publish=True embeds the mirror carve-out in the launcher's WRITABLE_DIRS."""
+        home, mirror = self._relocated_mirror(monkeypatch, tmp_path)
+        script = _build_launcher_script(
+            "standard", extra_writable_dirs=(str(mirror),), gateway_publish=True
+        )
+        assert f"WRITABLE_DIRS = {json.dumps(self._spellings(mirror))}" in script
+
+    @_POSIX_ONLY
+    def test_launcher_agent_spawn_refuses_the_mirror_leaf(self, monkeypatch, tmp_path):
+        """gateway_publish defaults False: the launcher grants no mirror write to an agent spawn."""
+        home, mirror = self._relocated_mirror(monkeypatch, tmp_path)
+        script = _build_launcher_script("standard", extra_writable_dirs=(str(mirror),))
+        assert "WRITABLE_DIRS = []" in script
 
 
 class TestSealedRuntimeParentPredicate:

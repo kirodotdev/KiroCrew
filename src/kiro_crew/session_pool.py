@@ -36,6 +36,28 @@ ProviderFactory = Callable[..., LLMProvider]
 KillProvider = Callable[[LLMProvider], None]
 
 
+#: Async callables invoked once per pool-health tick, AFTER the warm-pool sweep. The agent
+#: layer registers its pre-activation live-runtime reap here (``AcpClient`` registers from
+#: its own module, which is the one tree allowed to depend on both sides). Keeping the hook
+#: list HERE -- and letting the agent layer push into it -- is what keeps the dependency
+#: pointing from the agent layer toward the session layer, so this module imports nothing
+#: from ``kiro_crew.acp`` and the agent-SDK boundary gate stays satisfied. Each hook is
+#: isolated: one raising never stops the loop or a sibling hook.
+#: The single pre-activation drift reap the drift-sweep loop calls each tick. The agent layer
+#: sets it at import (``acp.client`` -> ``AcpClient.sweep_pre_activation_runtimes``); it stays
+#: None on a build where that layer never loaded, so the loop simply reaps nothing. A single
+#: slot rather than a list registry: there is exactly one reaper, and the slot keeps the
+#: dependency pointing FROM the agent layer TO this one, which the agent-SDK boundary requires
+#: (this module must not import ``kiro_crew.acp``).
+_PRE_ACTIVATION_SWEEP: "Callable[[], Any] | None" = None
+
+
+def set_pre_activation_sweep(sweep: "Callable[[], Any]") -> None:
+    """Install the agent layer's pre-activation live-runtime reap for the drift-sweep loop."""
+    global _PRE_ACTIVATION_SWEEP
+    _PRE_ACTIVATION_SWEEP = sweep
+
+
 class _SessionMapPort(Protocol):
     def prune(self) -> int: ...
 
@@ -138,6 +160,9 @@ class WarmSessionPool:
         self._owner = owner
         self._deps = deps
         self.state = state if state is not None else self._state_from_owner()
+        # The pool-independent activation-drift sweep loop's task handle (armed once by
+        # ``_start_activation_drift_sweep``, which is idempotent across a config reapply).
+        self._drift_sweep_task: "asyncio.Task[Any] | None" = None
 
     def _state_from_owner(self) -> WarmPoolState:
         cfg = self._owner._cfg
@@ -295,6 +320,9 @@ class WarmSessionPool:
                     self._pool_health_task = asyncio.create_task(self._owner._pool_health_loop())
                     self._owner._background_tasks.add(self._pool_health_task)
                     self._pool_health_task.add_done_callback(self._owner._background_tasks.discard)
+                # Independent of the warm pool: the activation-drift sweep must run even on the
+                # default ``pool_size=0`` install, where the health loop above never starts.
+                self._start_activation_drift_sweep()
 
             task = asyncio.create_task(_start_bg_and_pool())
             self._owner._background_tasks.add(task)
@@ -313,6 +341,35 @@ class WarmSessionPool:
             self._pool_health_task = asyncio.create_task(self._owner._pool_health_loop())
             self._owner._background_tasks.add(self._pool_health_task)
             self._pool_health_task.add_done_callback(self._owner._background_tasks.discard)
+        # Independent of the warm pool (see the non-blocking path): always arm the drift sweep.
+        self._start_activation_drift_sweep()
+
+    def _start_activation_drift_sweep(self) -> None:
+        """Arm the pool-independent activation-drift sweep loop exactly once, and ONLY when
+        push-verdict gating is activated.
+
+        A plain install -- one that never activated the gate -- has no pre-activation runtime to
+        reap, so the loop is not armed there at all and behaves exactly as it did before this
+        feature existed. The keystone read happens once here at startup (off any hot path), not
+        on every tick.
+
+        Idempotent: a second ``start_pool`` (a live-config reapply) must not stack a second loop.
+        """
+        if self._drift_sweep_task is not None and not self._drift_sweep_task.done():
+            return
+        # Read the activation keystone once, at arm time. Absence (the common install) or an
+        # unreadable record both leave the loop unarmed -- there is nothing to sweep until an
+        # operator activates the gate, and this is startup, not the permission hot path.
+        from kiro_crew.security import push_verdict as _push_verdict
+
+        try:
+            if not _push_verdict.activation_enabled():
+                return
+        except _push_verdict.ActivationUnreadable:
+            return
+        self._drift_sweep_task = asyncio.create_task(self._activation_drift_sweep_loop())
+        self._owner._background_tasks.add(self._drift_sweep_task)
+        self._drift_sweep_task.add_done_callback(self._owner._background_tasks.discard)
 
     async def _stamp_privacy_headers_for_startup(self) -> None:
         """Stamp the mode into the flagged rows' transcript headers, once per start.
@@ -666,6 +723,34 @@ class WarmSessionPool:
         """Return a copy of the facade's start-to-registration PID guard."""
         return set(self._owner._starting_pids)
 
+    @staticmethod
+    def _push_verdict_masks_ssh() -> bool:
+        """Whether push-verdict gating is active on this installation (keystone read).
+
+        Imported here, not at module scope, because ``kiro_crew.sandbox`` crosses the
+        agent-SDK boundary and this module is on the hot import path. Returns the same
+        off-loop-resolvable boolean the ACP drift guards read, so the warm-pool reap and the
+        per-turn/per-call reaps agree about the same keystone.
+        """
+        from kiro_crew.sandbox import _push_verdict_masks_ssh
+
+        return _push_verdict_masks_ssh()
+
+    @staticmethod
+    def _spawned_pre_activation(provider: LLMProvider) -> bool:
+        """True when this pooled provider's runtime was spawned BEFORE gating was activated.
+
+        The ACP client stamps ``_spawn_push_verdict_activation`` at spawn: ``False`` means the
+        child was built on a non-activated install (its credential mask is fixed OFF for its
+        lifetime), ``True`` means it was built under the mask, and ``None`` means unknown. Only
+        the explicit ``False`` can drift on when an operator activates, so only that is reaped;
+        a provider with no client (or an unknown stamp) is left to the ordinary health checks.
+        """
+        return (
+            getattr(getattr(provider, "client", None), "_spawn_push_verdict_activation", None)
+            is False
+        )
+
     async def _pool_health_loop(self) -> None:
         """Periodically discard dead/expired providers and refill the pool."""
         while True:
@@ -676,6 +761,32 @@ class WarmSessionPool:
                 raise
             except Exception:
                 self._deps.logger.exception("Pool health sweep failed")
+
+    async def _activation_drift_sweep_loop(self) -> None:
+        """Reap pre-activation live runtimes on an interval, INDEPENDENT of the warm pool.
+
+        This runs in its OWN loop rather than inside ``_pool_health_loop`` because that loop is
+        only started when a warm pool is configured (``pool_size`` truthy), and the default
+        configuration has ``pool_size=0`` -- so a between-turns live runtime spawned before
+        activation would never be reaped on the common install. The companion warm-pool arm
+        (``_sweep_warm_pool_once``) still handles IDLE pooled providers when a pool exists; this
+        covers the CLAIMED/live ones. Only armed on an activated install (see
+        ``_start_activation_drift_sweep``), so there is exactly one thing to do each tick: the
+        agent layer's single reaper (``AcpClient.sweep_pre_activation_runtimes``), installed via
+        ``set_pre_activation_sweep``. A single slot, not a registry -- there is one reaper, and
+        the slot keeps the import pointing agent-layer -> here, which the boundary gate requires.
+        """
+        while True:
+            await asyncio.sleep(self._deps.get_health_interval())
+            sweep = _PRE_ACTIVATION_SWEEP
+            if sweep is None:
+                continue
+            try:
+                await sweep()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._deps.logger.exception("Activation-drift sweep failed")
 
     async def _sweep_warm_pool_once(self) -> None:
         """Perform one race-safe health sweep over the current queue snapshot."""
@@ -689,6 +800,24 @@ class WarmSessionPool:
                 self._pool_size,
                 self._pool_ttl_secs,
             )
+        # Push-verdict activation drift, proactive arm. ``AcpClient`` already retires a
+        # pre-activation runtime at the next turn boundary (``ensure_ready``) and refuses a
+        # pre-activation child's next tool call -- but a WARM-POOL provider is an approved,
+        # idle runtime that is issuing no tool calls and has not reached a turn boundary, so
+        # neither event fires. If an operator activated gating AFTER these providers were
+        # spawned, each still holds the git credentials an activated install must withhold,
+        # and a descendant it starts (a build/script subprocess that itself runs ``git push``)
+        # issues no ACP permission event at all. Retire them HERE, on the periodic sweep, so
+        # activation becoming effective reaps the waiting runtimes and their process trees
+        # (``shutdown`` killpg's the group) before any claimant can use one. Resolved once
+        # per sweep, off any caller's hot path; only a non-activated spawn can drift on
+        # (deactivation only relaxes), so an already-activated provider is never discarded here.
+        try:
+            pv_activated = await asyncio.to_thread(self._push_verdict_masks_ssh)
+        except Exception:
+            # Fail CLOSED on an unreadable keystone: an operator who activated gating does not
+            # silently keep stale credentialed providers because one read hiccuped.
+            pv_activated = True
         healthy: list[tuple[LLMProvider, float]] = []
         to_shutdown: list[LLMProvider] = []
         now = time.monotonic()
@@ -702,6 +831,17 @@ class WarmSessionPool:
                 pid = getattr(getattr(provider, "client", None), "_pid", None)
                 if isinstance(pid, int):
                     self._pool_sweep_pids.add(pid)
+                if pv_activated and self._spawned_pre_activation(provider):
+                    self._deps.logger.warning(
+                        "Pool health: push-verdict gating is now active but provider (pid=%s, "
+                        "age=%.0fs) was spawned BEFORE activation, so it still holds git "
+                        "credentials this install must withhold -- retiring it and its process "
+                        "tree before it can be claimed",
+                        pid,
+                        age,
+                    )
+                    to_shutdown.append(provider)
+                    continue
                 if self._pool_ttl_secs and age > self._pool_ttl_secs:
                     try:
                         ttl_alive = provider.is_process_alive()

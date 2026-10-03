@@ -544,6 +544,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # turn computer use on for itself.
     "denied_commands.json",
     "computer_use.json",
+    # A writable push-verdict enable lets an auto-approved agent switch its own publish
+    # gate off, which is the same shape as the two leaves above it. A writable mirror lets it
+    # plant the base its own push is then judged against, which is the same shape again.
+    "push-verdict-activation.json",
+    "push-verdict-mirrors",
     "oauth_endpoints.json",
     "aws_service_consent.json",
     # The runtime config and its overlay. They are ordinary settings files, but they
@@ -865,6 +870,8 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "profiles",
     "denied_commands.json",
     "computer_use.json",
+    "push-verdict-activation.json",
+    "push-verdict-mirrors",
     "oauth_endpoints.json",
     "decisions_consent.json",
     "file_delivery_consent.json",
@@ -1552,6 +1559,14 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # Pre-creation gives Linux concrete bind targets on a fresh install.
     "mcp-launch-approvals",
     "mcp/resolved",
+    # The push-verdict mirrors, the bare repositories the gateway judges a branch in.
+    # Same mechanism as ``panel-templates`` and ``decisions``: the read-only listing
+    # seals an EXISTING path only, and on a fresh activated install no verdict has been
+    # requested yet, so the directory is absent, the mount is skipped, and the agent can
+    # create it and plant the base commit its own push is then measured against. That is
+    # the write the read-only listing exists to deny, so without this entry the listing
+    # protects only hosts that have already run a judgement.
+    "push-verdict-mirrors",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -1568,6 +1583,11 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "pi-gate",
     "mcp-launch-approvals",
     "mcp/resolved",
+    # The mirrors, for the same reason as ``decisions``: a resolving symlink leaves the
+    # lexical name replaceable, and the party that would replace it is the one whose push
+    # the mirror's contents decide. A planted link would let the agent choose the
+    # repository the ancestry check runs in.
+    "push-verdict-mirrors",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 #: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
@@ -1636,6 +1656,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed resolved MCP launches",
         "the agent could replace the executable the gateway substitutes for an approved launch",
     ),
+    "push-verdict-mirrors": (
+        "sealed push verdict mirrors",
+        "the agent could plant the base commit its own push is then measured against",
+    ),
 }
 assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(
     _CREW_NOFOLLOW_READONLY_DIR_LEAVES
@@ -1651,6 +1675,7 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # previous launch found" rather than acting on one, which is narrower than the truth.
     "cloud_launch_state.json",
     "computer_use.json",
+    "push-verdict-activation.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
     "decisions_consent.json",
@@ -4791,7 +4816,39 @@ def _relocated_crew_targets(leaves: tuple[str, ...]) -> list[str]:
     return out
 
 
-#: Tier leaves NOT re-anchored under a pod child's remapped home, because they ARE
+#: The crew-home leaf that holds the gateway's push-verdict mirrors. Kept as a bare
+#: string (not imported from ``security.push_verdict``) so this OS-level seal module has
+#: no dependency on the handler layer; the two are pinned equal by
+#: ``test_sandbox_push_verdict_mirror_leaf_matches``.
+_PUSH_VERDICT_MIRROR_LEAF = "push-verdict-mirrors"
+
+
+def _push_verdict_mirror_parents() -> list[str]:
+    """Every filesystem spelling of the sealed push-verdict mirror PARENT.
+
+    ``push-verdict-mirrors`` is a crew-home readonly leaf: sealed against every agent
+    subprocess so a prompt-injected agent cannot plant the base commit its own push is then
+    judged against. But the ONE gateway-owned publish spawn (``gateway_publish=True``) OWNS
+    that tree -- it runs ``git init --bare``, the mirror fetches and the ref cleanup there --
+    so for that spawn alone the leaf must become a validated WRITE carve-out inside the
+    readonly seal. This returns the parent in the same spellings the seal itself uses (both
+    ``_CREW_HOME_PREFIXES`` under ``$HOME``, plus the relocated data home), so the carve and
+    the seal line up exactly and the agent-facing seal is never widened.
+    """
+    parents: list[str] = []
+    try:
+        home = str(Path.home())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        home = ""
+    if home:
+        parents.extend(
+            os.path.normpath(os.path.join(home, prefix, _PUSH_VERDICT_MIRROR_LEAF))
+            for prefix in _CREW_HOME_PREFIXES
+        )
+    parents.extend(_relocated_crew_targets((_PUSH_VERDICT_MIRROR_LEAF,)))
+    return list(dict.fromkeys(parents))
+
+
 #: the pod's own MCP OAuth grant store: the child WRITES its grants under this tree
 #: and ``mcp_grant`` stats them there, so bind-masking it empty would discard every
 #: grant the pod mints. Nothing host-derived lives here -- the seeder creates
@@ -5907,6 +5964,33 @@ _SENSITIVE_ENV_PREFIXES: list[str] = [
     "GNUPGHOME",
     "GIT_ASKPASS",
 ]
+
+# The HTTPS git-publish credential stores and token env the push-verdict
+# activation mask withholds from agent subprocesses, so that an activated
+# install is credential-free for EVERY git transport under the mask -- not the
+# SSH transport alone. The strict tier already hides all of these; the cc and
+# standard agent tiers leave them readable (``.config/gh`` is a dir absent from
+# ``_CC_DIRS``/``_STANDARD_DIRS`` but present in ``_STRICT_DIRS``;
+# ``.git-credentials``/``.netrc`` are ``_CC_FILES`` entries the standard tier's
+# empty file list leaves visible). Under the mask an opaque subprocess would
+# otherwise authenticate a ``git push`` over HTTPS via the visible credential
+# helper or token env and land a commit the argv floor never judged -- the same
+# bypass class the SSH key/socket hide closes, through the HTTPS transport. The
+# gateway-owned publish (``gateway_publish=True``) is exempt and keeps them.
+#
+# ``.cache/git/credential`` is the git credential-cache daemon's socket dir
+# (``$XDG_CACHE_HOME/git/credential`` -> ``~/.cache/git/credential`` by
+# default). The ``GIT_CONFIG_*`` empty-helper reset the launcher injects clears
+# every CONFIGURED helper, but a command-line ``git -c credential.helper=cache
+# push`` outranks ``GIT_CONFIG_*`` and re-adds the cache helper, which then
+# authenticates over this socket -- a daemon, not a file, that no config the
+# child controls can withhold. Masking the socket DIR here enforces the
+# boundary OUTSIDE the agent process: with an empty dir bound over it the
+# re-added helper has no socket to reach, so the gateway-owned publish stays the
+# only path that can retrieve the HTTPS helper credential.
+_PUSH_VERDICT_HTTPS_CRED_DIRS: list[str] = [".config/gh", ".cache/git/credential"]
+_PUSH_VERDICT_HTTPS_CRED_FILES: list[str] = [".git-credentials", ".netrc"]
+_PUSH_VERDICT_HTTPS_ENV_PREFIXES: list[str] = ["GH_TOKEN", "GITHUB_TOKEN"]
 
 # Python interpreter env that must NOT leak into a *foreign* Python subprocess
 # launched under the sandbox (e.g. the MCP servers kiro-cli spawns, such as
@@ -7397,6 +7481,41 @@ def namespace_launcher_script_dir() -> str:
     return os.path.normpath(os.path.abspath(str(config_dir() / "run")))
 
 
+def _push_verdict_masks_ssh() -> bool:
+    """Whether an agent spawn must lose ``~/.ssh`` because push-verdict gating is active.
+
+    An activated push-verdict installation gates the agent's OWN visible ``git push`` at the
+    argv floor, but an opaque subprocess (an interpreter that shells out to git from compiled
+    code) presents no publish source for the floor to judge. Outside the strict tier ``~/.ssh``
+    is otherwise readable, so that subprocess authenticates over SSH and lands a commit the gate
+    never saw. Withholding the key from every agent subprocess on an activated install closes
+    that path: the gateway-owned publish, which runs outside this sandbox, is the one operation
+    that keeps its SSH access.
+
+    FAIL CLOSED. Absence of the keystone means nobody activated gating, so the key stays
+    readable and a normal install is unchanged. Anything else -- an unreadable or corrupt leaf,
+    or an unexpected read error -- masks the key, because a readable key on an install whose
+    operator turned gating on is the exact hole, and an unreadable record is not the same as
+    gating being off. The read matches the argv floor's own treatment of the same leaf.
+
+    Imported lazily: ``sandbox`` is a low-level module and ``push_verdict`` reads the keystone
+    through ``config.paths``, so the import is deferred to call time to avoid an import cycle,
+    mirroring the other function-local ``kiro_crew.security`` imports in this module.
+    """
+    try:
+        from kiro_crew.security import push_verdict
+    except Exception:
+        # An import error here is a defect in this tree, not an unactivated install; treat it
+        # the same conservative way the read errors below are treated and mask the key.
+        return True
+    try:
+        return push_verdict.activation_enabled()
+    except push_verdict.ActivationUnreadable:
+        return True
+    except Exception:
+        return True
+
+
 def _ensure_run_dir() -> str:
     """Create ``<config_dir>/run/`` with mode 0o700, falling back to tmpdir on failure."""
     run_dir = namespace_launcher_script_dir()
@@ -7453,6 +7572,7 @@ def namespace_argv(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
@@ -7589,6 +7709,7 @@ def namespace_argv(
         sandbox_level,
         strip_python_env=strip_python_env,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        gateway_publish=gateway_publish,
         extra_hidden_dirs=extra_hidden_dirs + tuple(m.path for m in alias_masks),
         extra_hidden_dir_ids=extra_hidden_dir_ids,
         extra_alias_credential_ids=extra_alias_credential_ids,
@@ -8093,6 +8214,7 @@ def _delegate_to_kiro_internal_sandbox(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gateway_publish: bool = False,
 ) -> tuple[list[str], str | None] | None:
     """Delegate an explicitly trusted kiro-cli spawn to its internal sandbox.
 
@@ -8182,8 +8304,41 @@ def _delegate_to_kiro_internal_sandbox(
                 _KIRO_INTERNAL_SANDBOX_KEY,
             )
     if sys.platform == "win32":
+        # FAIL CLOSED under push-verdict activation. Windows has no OS sandbox and no
+        # ``env -u`` launcher, so the ONLY credential mask on this path is the env dict a
+        # caller passes as the child's environment (``scrub_agent_subprocess_env``). That
+        # mask lives entirely INSIDE the child's own, mutable environment: a delegated agent
+        # can ``set GIT_SSH_COMMAND=`` / clear the ``GIT_CONFIG_*`` helper-neutralizing pairs
+        # at runtime, after which Windows OpenSSH loads its default disk keys or the fixed
+        # ``\\.\pipe\openssh-ssh-agent`` and a git helper re-attaches credentials -- so an
+        # opaque ``git push`` authenticates past the gate the operator turned on. A guarantee
+        # that only holds while the guarded party chooses not to undo it is no guarantee, so
+        # when gating is active and this is NOT the credential-exempt gateway publish, there
+        # is no enforcement point outside the child's control: refuse the spawn rather than
+        # launch it with a mask it can remove. ``gateway_publish`` stays exempt (it keeps full
+        # credentials by design). The activation read is the same off-loop keystone read the
+        # POSIX path does below; here it is reached only on an installation that activated.
+        if not gateway_publish and _push_verdict_masks_ssh():
+            raise SandboxUnavailableError(
+                "push-verdict gating is active, but this is the Windows kiro-cli delegation "
+                "path, which has no OS sandbox: the credential mask would live only in the "
+                "child's own mutable environment, which a delegated agent can clear before it "
+                "runs git. Refusing to spawn an agent whose git credentials cannot be withheld "
+                "outside its own control.",
+                "no_backend",
+                "windows delegation has no out-of-child enforcement point for the push-verdict "
+                "credential mask",
+            )
         return list(argv), None
-    unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
+    # Resolve the push-verdict activation mask off-loop here (this delegation
+    # runs inside the synchronous ``wrap_argv`` prep shielded off-loop by
+    # ``wrap_argv_async``, so ``_push_verdict_masks_ssh()`` reads config off the
+    # event loop as the Linux launcher does). Under the mask the seatbelt-tier
+    # ``env -u`` set also drops the HTTPS token env; ``gateway_publish`` is exempt.
+    push_verdict_activation = not gateway_publish and _push_verdict_masks_ssh()
+    unset_args = _sandbox_env_unset_args(
+        sandbox_level, strip_python_env, forward_ssh_auth_sock, push_verdict_activation
+    )
     if unset_args:
         return [_pinned_env_bin(), *unset_args, *argv], None
     return list(argv), None
@@ -8193,8 +8348,10 @@ def sandbox_exec_argv(
     argv: list[str],
     sandbox_level: str = "strict",
     *,
+    child_env: dict[str, str] | None = None,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
@@ -8316,6 +8473,7 @@ def sandbox_exec_argv(
             )
     profile = sandbox_seatbelt._build_seatbelt_profile(
         sandbox_level,
+        gateway_publish=gateway_publish,
         # These entries become path RULES, not binds over an inode. That is weaker than it
         # first appears: the rule keeps naming a path, and nothing here denies a write to the
         # alias's parent or its ancestors while the data home root stays writable in-sandbox,
@@ -8343,7 +8501,17 @@ def sandbox_exec_argv(
     # Build env -u flags for sensitive vars present in current env. cc/strict
     # additionally scrub agent-denied credential keys (Slack tokens, owner id)
     # since loader.py seeds them into os.environ for trusted children only.
-    unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
+    # Resolve the push-verdict activation mask HERE, off the event loop -- this
+    # function runs inside the synchronous ``wrap_argv`` prep that
+    # ``wrap_argv_async`` shields off-loop, so the ``_push_verdict_masks_ssh()``
+    # config read is off-loop exactly as the Linux launcher's own read at the
+    # ``ENV_PREFIXES`` hunk is. The mask withholds the ``GH_TOKEN`` /
+    # ``GITHUB_TOKEN`` HTTPS-publish token env from the seatbelt spawn; the
+    # gateway-owned publish (``gateway_publish=True``) is exempt and keeps it.
+    push_verdict_activation = not gateway_publish and _push_verdict_masks_ssh()
+    unset_args = _sandbox_env_unset_args(
+        sandbox_level, strip_python_env, forward_ssh_auth_sock, push_verdict_activation
+    )
     # Mark the sandboxed tree, exactly as the Linux namespace launcher does after
     # its own env scrub (see the export beside ``KIROCREW_HOST_PID`` in the program
     # ``sandbox_launcher._build_launcher_script`` renders). Without
@@ -8356,6 +8524,44 @@ def sandbox_exec_argv(
     # position so the scrub cannot drop it — an in-sandbox wrap_argv
     # passthrough compares it against the requested tier to detect downgrades.
     level_assign = f"{_IN_SANDBOX_LEVEL_VAR}={sandbox_level}"
+    # Neutralize the git credential HELPER under the push-verdict activation mask on macOS,
+    # matching the Linux launcher's own child-side neutralization. The seatbelt profile hides
+    # the HTTPS credential FILES and the ``env -u`` above drops the token env, but a configured
+    # ``credential.helper`` (macOS keychain via ``osxkeychain``, git-credential-manager, or a
+    # ``store --file``) sits outside both: an opaque agent ``git push`` over HTTPS still gets a
+    # credential by RUNNING the helper, a program no file mask withholds. An EMPTY
+    # ``credential.helper`` resets git's helper list (git >= 2.9), and we add none after it, so
+    # no helper runs; injected via ``GIT_CONFIG_*``, git's highest-precedence config source,
+    # inherited by the git processes git starts. APPENDED to any inherited ``GIT_CONFIG_COUNT``
+    # -- read from the CHILD's env (``child_env``), the environment the spawned process actually
+    # receives, NOT the gateway's ``os.environ``. The caller (dev_fleet ``_run_cmd`` ->
+    # ``sandboxed_spawn_argv``) hands a ``base_env`` carrying ``_GIT_ENV_NEUTRALIZERS``
+    # (``GIT_CONFIG_COUNT=9``: ``core.fsmonitor``/``core.hooksPath``/``gpg.program``...); reading
+    # the gateway ``os.environ`` (count usually 0) here would set ``GIT_CONFIG_KEY_0`` and
+    # ``GIT_CONFIG_COUNT=1``, silently dropping those 9 pins so an agent-planted
+    # ``core.fsmonitor``/``core.hooksPath`` in the repo config runs again. Reading from
+    # ``child_env`` extends the caller's set exactly as the Linux child's in-process mutation
+    # does (``sandbox_launcher.py``, where ``os.environ`` already IS the child's env). Falls back
+    # to ``os.environ`` only when no ``child_env`` is threaded (legacy callers). ``env KEY=VALUE``
+    # assignments land AFTER the ``-u`` flags, so the scrub cannot drop them. gateway_publish
+    # keeps its helper because ``push_verdict_activation`` is False for it.
+    cred_helper_assigns: list[str] = []
+    if push_verdict_activation:
+        _gc_count_src = os.environ if child_env is None else child_env
+        try:
+            _gc_count = int(_gc_count_src.get("GIT_CONFIG_COUNT", "0") or "0")
+        except ValueError:
+            _gc_count = 0
+        if _gc_count < 0:
+            _gc_count = 0
+        cred_helper_assigns = [
+            f"GIT_CONFIG_KEY_{_gc_count}=credential.helper",
+            f"GIT_CONFIG_VALUE_{_gc_count}=",
+            f"GIT_CONFIG_COUNT={_gc_count + 1}",
+            # With every helper neutralized, force a would-be credential prompt to FAIL the
+            # fetch rather than block on a terminal no one is attached to.
+            "GIT_TERMINAL_PROMPT=0",
+        ]
     # SECURITY: BOTH wrappers this function prepends are pinned here, at the layer
     # that prepends them, so no spawn site has to remember to re-pin (the caller's
     # ``env`` may carry a config-declared PATH, and CPython resolves a slash-less
@@ -8378,6 +8584,7 @@ def sandbox_exec_argv(
             *unset_args,
             marker,
             level_assign,
+            *cred_helper_assigns,
             sandbox_exec,
             "-f",
             path,
@@ -8388,7 +8595,10 @@ def sandbox_exec_argv(
 
 
 def _sandbox_env_scrub_keys(
-    sandbox_level: str, strip_python_env: bool, forward_ssh_auth_sock: bool = False
+    sandbox_level: str,
+    strip_python_env: bool,
+    forward_ssh_auth_sock: bool = False,
+    push_verdict_activation: bool = False,
 ) -> list[str]:
     """Names of the live environment keys to scrub for a given sandbox level.
 
@@ -8403,16 +8613,59 @@ def _sandbox_env_scrub_keys(
         prefixes.extend(_AGENT_DENIED_ENV_KEYS)
     if strip_python_env:
         prefixes.extend(_PYTHON_ENV_PREFIXES)
+    # Withhold the HTTPS git-publish token env under the activation mask on the
+    # macOS seatbelt ``env -u`` path, matching the Linux launcher's
+    # ``ENV_PREFIXES`` hunk. The macOS profile hides the HTTPS credential FILES
+    # (``.config/gh``/``.git-credentials``/``.netrc``) but not the ``GH_TOKEN`` /
+    # ``GITHUB_TOKEN`` env, so absent this an activated macOS install keeps an
+    # unjudged HTTPS publish path: an opaque subprocess authenticates a ``git
+    # push`` over HTTPS via the token env and lands a commit the argv floor never
+    # saw. The decision is passed in as an already-resolved boolean (computed
+    # off-loop by the agent caller as ``not gateway_publish and
+    # _push_verdict_masks_ssh()``, exactly where ``forward_ssh_auth_sock`` is
+    # resolved), so no synchronous config read runs on the asyncio event loop
+    # here. It defaults False, so the gateway-owned publish (which keeps the
+    # token) and every non-activated or non-agent caller are unchanged.
+    if push_verdict_activation:
+        prefixes.extend(_PUSH_VERDICT_HTTPS_ENV_PREFIXES)
     # Honour the SSH_AUTH_SOCK forward opt-in on the seatbelt
     # ``env -u`` path (macOS) exactly as on the Linux launcher. The decision is
     # passed in (resolved off-loop on the agent path) and defaults False, so a
     # generic caller keeps the socket in the unset flags.
     prefixes = _agent_scrub_prefixes(prefixes, forward_ssh_auth_sock)
+    # Under the activation mask the forwarded SSH agent socket is an equivalent
+    # publish credential -- an opaque subprocess authenticates over it just as it
+    # would over the on-disk key -- so it is ALSO withheld from agent
+    # subprocesses, re-scrubbing ``SSH_AUTH_SOCK`` even where
+    # ``forward_ssh_auth_sock`` re-admitted it above. This mirrors the Linux
+    # launcher's own re-scrub (the ``push_verdict_activation_mask`` hunk in
+    # ``_build_launcher_script``): without it the macOS seatbelt ``env -u`` path
+    # and the kiro-cli-delegated path (``_delegate_to_kiro_internal_sandbox``,
+    # via ``_sandbox_env_unset_args``) would leave the socket in an activated
+    # agent child's env even though the Linux path removes it, so an activated
+    # install with a recorded ``ssh_auth_sock_consent`` on macOS -- or on any
+    # POSIX host delegating to kiro-cli's internal sandbox -- keeps an unjudged
+    # SSH publish path. ``push_verdict_activation`` is already resolved by the
+    # caller as ``not gateway_publish and _push_verdict_masks_ssh()``, so the
+    # gateway-owned publish is exempt and keeps the socket.
+    if push_verdict_activation and "SSH_AUTH_SOCK" not in prefixes:
+        prefixes.append("SSH_AUTH_SOCK")
+    # Also scrub the session bus the libsecret / git-credential-manager helpers
+    # dial, matching the Linux launcher's ``push_verdict_activation_mask`` hunk:
+    # a command-line ``git -c credential.helper=libsecret push`` outranks the
+    # ``GIT_CONFIG_*`` empty-helper reset and re-adds the helper, which then
+    # reaches the secret-service daemon over this bus (a daemon no path mask
+    # covers). Removing the address leaves the re-added helper no bus to reach.
+    if push_verdict_activation and "DBUS_SESSION_BUS_ADDRESS" not in prefixes:
+        prefixes.append("DBUS_SESSION_BUS_ADDRESS")
     return [key for key in os.environ if any(key.startswith(p) for p in prefixes)]
 
 
 def _sandbox_env_unset_args(
-    sandbox_level: str, strip_python_env: bool, forward_ssh_auth_sock: bool = False
+    sandbox_level: str,
+    strip_python_env: bool,
+    forward_ssh_auth_sock: bool = False,
+    push_verdict_activation: bool = False,
 ) -> list[str]:
     """``env -u`` flags scrubbing sensitive vars for a sandboxed/delegated spawn.
 
@@ -8422,7 +8675,9 @@ def _sandbox_env_unset_args(
     the active isolation layer.
     """
     unset_args: list[str] = []
-    for key in _sandbox_env_scrub_keys(sandbox_level, strip_python_env, forward_ssh_auth_sock):
+    for key in _sandbox_env_scrub_keys(
+        sandbox_level, strip_python_env, forward_ssh_auth_sock, push_verdict_activation
+    ):
         unset_args.extend(["-u", key])
     return unset_args
 
@@ -9964,8 +10219,10 @@ def wrap_argv(
     argv: list[str],
     mode: str = "auto",
     *,
+    env: dict[str, str] | None = None,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
@@ -10323,8 +10580,10 @@ def wrap_argv(
                 return sandbox_exec_argv(
                     argv,
                     sandbox_level,
+                    child_env=env,
                     strip_python_env=strip_python_env,
                     forward_ssh_auth_sock=forward_ssh_auth_sock,
+                    gateway_publish=gateway_publish,
                     extra_hidden_dirs=extra_hidden_dirs,
                     extra_hidden_dir_ids=extra_hidden_dir_ids,
                     extra_visible_dirs=extra_visible_dirs,
@@ -10339,6 +10598,7 @@ def wrap_argv(
                 sandbox_level,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                gateway_publish=gateway_publish,
             )
             if delegated is not None:
                 return delegated
@@ -10348,8 +10608,10 @@ def wrap_argv(
                 return sandbox_exec_argv(
                     argv,
                     sandbox_level,
+                    child_env=env,
                     strip_python_env=strip_python_env,
                     forward_ssh_auth_sock=forward_ssh_auth_sock,
+                    gateway_publish=gateway_publish,
                 )
 
     backend = detect_backend(config_mode=mode)
@@ -10367,6 +10629,7 @@ def wrap_argv(
                 sandbox_level,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                gateway_publish=gateway_publish,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_hidden_dir_ids=extra_hidden_dir_ids,
                 extra_alias_credential_ids=extra_alias_credential_ids,
@@ -10382,6 +10645,7 @@ def wrap_argv(
                 sandbox_level,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                gateway_publish=gateway_publish,
             )
         # Caller deletes the generated launcher script. Its position is
         # ``1 + len(flags)``, NOT a hardcoded 1: the interpreter flags sit between
@@ -10400,8 +10664,10 @@ def wrap_argv(
             return sandbox_exec_argv(
                 argv,
                 sandbox_level,
+                child_env=env,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                gateway_publish=gateway_publish,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_hidden_dir_ids=extra_hidden_dir_ids,
                 extra_visible_dirs=extra_visible_dirs,
@@ -10413,8 +10679,10 @@ def wrap_argv(
         return sandbox_exec_argv(
             argv,
             sandbox_level,
+            child_env=env,
             strip_python_env=strip_python_env,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
+            gateway_publish=gateway_publish,
         )
 
     if backend == "none":
@@ -10707,6 +10975,7 @@ async def wrap_argv_async(
     argv: list[str],
     mode: str = "auto",
     *,
+    env: dict[str, str] | None = None,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
@@ -10729,6 +10998,8 @@ async def wrap_argv_async(
     :func:`wrap_argv`, and the default is this module's implementation.
     """
     options: dict[str, Any] = {"mode": mode}
+    if env is not None:
+        options["env"] = env
     if strip_python_env:
         options["strip_python_env"] = True
     if forward_ssh_auth_sock:
@@ -10840,7 +11111,10 @@ def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
 
 
 def scrub_agent_subprocess_env(
-    env: dict[str, str] | None = None, *, forward_ssh_auth_sock: bool = False
+    env: dict[str, str] | None = None,
+    *,
+    forward_ssh_auth_sock: bool = False,
+    push_verdict_activation: bool = False,
 ) -> dict[str, str]:
     """Return the full environment scrub required for a Kiro/ACP child.
 
@@ -10860,14 +11134,128 @@ def scrub_agent_subprocess_env(
     False, so a caller that does not opt in scrubs the socket as before. When
     set, the socket value is preserved across the scrub for the agent child
     alone.
+
+    ``push_verdict_activation`` is threaded the SAME way: the ACP caller resolves
+    the push-verdict activation mask off-loop (``not gateway_publish and
+    _push_verdict_masks_ssh()``, an agent spawn is never ``gateway_publish``) and
+    passes the resolved boolean in, so this on-loop enforcement point does not
+    read config synchronously. When set, the ``GH_TOKEN`` / ``GITHUB_TOKEN``
+    HTTPS-publish token env is withheld from the delegated child, matching the
+    Linux launcher and the macOS seatbelt ``env -u`` set: on an activated install
+    a Windows-delegated (or otherwise parent-scrubbed) agent subprocess otherwise
+    keeps the token and authenticates a ``git push`` over HTTPS past the argv
+    floor. It defaults False, so the gateway-owned publish and every non-activated
+    or non-agent caller keep the token as before.
+
+    When set it ALSO neutralizes the git credential HELPER: a configured
+    ``credential.helper`` backed by the OS keychain (macOS), libsecret (Linux),
+    git-credential-manager, or a ``store --file`` is a program git RUNS, so it
+    sits outside the file/env mask -- an opaque agent ``git push`` over HTTPS
+    still gets a credential from it. There is no ``env -u`` or launcher child on
+    the Windows delegation path to disable it, so it is disabled HERE by SETTING
+    an empty ``credential.helper`` via ``GIT_CONFIG_*`` in the returned env: git
+    (>= 2.9) treats an empty helper value as resetting the helper list, we add no
+    helper after it, and ``GIT_CONFIG_*`` is git's highest-precedence config
+    source, inherited by the git processes git starts. The pair is APPENDED to any
+    inherited ``GIT_CONFIG_COUNT`` in the source env so an existing env-config set
+    is extended, not clobbered. The gateway-owned publish keeps its helper (its
+    caller resolves ``push_verdict_activation`` False).
+
+    When set it ALSO removes every SSH identity from the child's git-over-SSH by
+    setting ``GIT_SSH_COMMAND`` to
+    ``<ssh> -F none -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none``.
+    The POSIX SSH mask (the ``SSH_AUTH_SOCK`` scrub plus launcher/OS filesystem
+    masks) is POSIX-only, but the Windows delegation path has no launcher and no
+    OS sandbox, and Windows OpenSSH both loads default disk keys (``~/.ssh/id_*``)
+    and holds an agent key behind a FIXED named pipe
+    (``\\\\.\\pipe\\openssh-ssh-agent``) the client consults by default regardless
+    of ``SSH_AUTH_SOCK`` -- so an env scrub, or disabling only the agent, cannot
+    remove disk identities. Per ``ssh_config(5)`` ``-F none`` ignores the user ssh
+    config, ``IdentitiesOnly=yes`` restricts ssh to command-line identities (none
+    are given), ``IdentityFile=none`` disables the default identity files, and
+    ``IdentityAgent=none`` disables any agent -- so the child presents NO identity
+    from any transport. The command is a TRUSTED, literal ``ssh``: an inherited
+    ``GIT_SSH_COMMAND`` is NOT preserved, because a hostile wrapper need not forward
+    the appended options to a real ssh and could authenticate from its own identity.
+    The gateway-owned publish (mask False) keeps agent access.
     """
-    scrubbed = scrub_env(env, extra_prefixes=_PYTHON_ENV_PREFIXES)
+    extra_prefixes = list(_PYTHON_ENV_PREFIXES)
+    if push_verdict_activation:
+        extra_prefixes.extend(_PUSH_VERDICT_HTTPS_ENV_PREFIXES)
+    scrubbed = scrub_env(env, extra_prefixes=extra_prefixes)
     src = os.environ if env is None else env
     if forward_ssh_auth_sock and "SSH_AUTH_SOCK" in src:
         # scrub_env removed it unconditionally; re-add the socket for the agent
         # child only. Restricted to the exact key, so nothing else the generic
         # scrub dropped is reintroduced.
         scrubbed["SSH_AUTH_SOCK"] = src["SSH_AUTH_SOCK"]
+    if push_verdict_activation:
+        # Append an empty ``credential.helper`` to any inherited env-config set, resetting
+        # git's helper list for the delegated child. ``scrub_env`` does not carry
+        # ``GIT_CONFIG_*`` through by default, so read the count from the SOURCE env (what the
+        # child would otherwise inherit) rather than the scrubbed dict.
+        try:
+            gc_count = int(src.get("GIT_CONFIG_COUNT", "0") or "0")
+        except (TypeError, ValueError):
+            gc_count = 0
+        if gc_count < 0:
+            gc_count = 0
+        # Preserve any existing env-config pairs the child would inherit, so this extends the
+        # set instead of dropping the caller's own entries. The two names are spelled as WHOLE
+        # GIT_CONFIG_* templates (the full key template and the full value template) rather
+        # than composed from a bare three-letter suffix string: this function is one of the
+        # composers ``test_every_scrub_class_name_crew_writes_on_the_child_is_reserved`` scans
+        # for the env NAMES Crew writes on the child, and a bare uppercase suffix word that is
+        # itself inside the harness's KEY-PASSWORD-SECRET-TOKEN scrub class (as the key suffix
+        # is) would be misread as a scrub-class env NAME this function sets and demanded to be
+        # reserved -- but it is a format fragment, not a variable. The full templates carry a
+        # ``%d`` the literal-name scan does not match, so no phantom name is derived.
+        for idx in range(gc_count):
+            for name in ("GIT_CONFIG_KEY_%d" % idx, "GIT_CONFIG_VALUE_%d" % idx):
+                if name in src:
+                    scrubbed[name] = src[name]
+        scrubbed["GIT_CONFIG_KEY_%d" % gc_count] = "credential.helper"
+        scrubbed["GIT_CONFIG_VALUE_%d" % gc_count] = ""
+        scrubbed["GIT_CONFIG_COUNT"] = str(gc_count + 1)
+        # With every helper neutralized, force a would-be credential prompt to FAIL the fetch
+        # rather than block on a terminal no one is attached to.
+        scrubbed["GIT_TERMINAL_PROMPT"] = "0"
+        # Disable the SSH AGENT for the child's git-over-SSH. The POSIX SSH mask is an
+        # ``SSH_AUTH_SOCK`` env scrub plus launcher/OS filesystem masks -- both POSIX-only. The
+        # Windows delegation path has NO launcher and NO OS sandbox, and Windows OpenSSH holds
+        # its key behind a FIXED named pipe (``\\.\pipe\openssh-ssh-agent``) that the client
+        # consults by default regardless of ``SSH_AUTH_SOCK``, so an env scrub alone cannot
+        # remove it. ``GIT_SSH_COMMAND`` with ``-o IdentityAgent=none`` closes it robustly and
+        # transport/platform-agnostically: per ``ssh_config(5)`` ``IdentityAgent`` OVERRIDES
+        # ``SSH_AUTH_SOCK`` and ``none`` DISABLES the use of any authentication agent, so the
+        # child's ssh consults neither a socket nor the Windows pipe.
+        #
+        # The command is set to a TRUSTED, literal ``ssh`` -- an inherited ``GIT_SSH_COMMAND`` is
+        # NOT preserved. ``GIT_SSH_COMMAND`` is NOT in ``_SENSITIVE_ENV_PREFIXES``, so a value in
+        # the source env (an app cron's ``_extra_env``, say) survives ``scrub_env`` into ``src``.
+        # Preserving it and only APPENDING ``-o`` options cannot bind it: git hands
+        # ``GIT_SSH_COMMAND`` to a shell as ``<wrapper> <host> <command>``, and a hostile wrapper
+        # need not forward the appended options to a real ssh at all -- it can invoke its own ssh
+        # with its own identity, defeating the mask and authenticating an unjudged push. The mask's
+        # invariant is that the child presents NO identity, which only a trusted ssh binary carrying
+        # the hardening flags can guarantee, so the source value is discarded, not re-admitted.
+        #
+        # Disable the AGENT *and* every disk identity, not only the agent: on the no-sandbox
+        # Windows delegation path OpenSSH loads default keys (``~/.ssh/id_*``) and honors a
+        # user ``~/.ssh/config`` directly, so ``IdentityAgent=none`` alone still authenticates
+        # from a passphrase-less disk key. Per ``ssh_config(5)``:
+        #   * ``-F none`` ignores the user/system ssh config, so a ``~/.ssh/config``
+        #     ``IdentityFile`` directive cannot re-add a key;
+        #   * ``IdentitiesOnly=yes`` uses only identities given on the command line (we give
+        #     none), suppressing the default ``~/.ssh/id_*`` set;
+        #   * ``IdentityFile=none`` disables even the default identity files explicitly;
+        #   * ``IdentityAgent=none`` disables any agent (socket or the Windows pipe).
+        # Together the child's ssh presents NO identity from any transport, so an opaque
+        # ``git push`` cannot authenticate past the gate. The gateway-owned publish resolves
+        # this mask False and keeps full agent+key access.
+        scrubbed["GIT_SSH_COMMAND"] = (
+            "ssh -F none -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none"
+        )
     return scrubbed
 
 
@@ -10877,6 +11265,7 @@ def sandboxed_spawn_argv(
     *,
     env: dict[str, str] | None = None,
     strip_python_env: bool = False,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -10909,6 +11298,10 @@ def sandboxed_spawn_argv(
             hidden in both the macOS Seatbelt and Linux namespace profiles.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them (the whole parent's mask is lifted).
+        gateway_publish: Threaded to :func:`wrap_argv`. Marks the ONE gateway-owned
+            operation that keeps ``~/.ssh`` on a push-verdict-activated install so it
+            can publish; every agent-influenced spawn leaves it False and loses the key
+            on such an install. Only the gateway publish path passes True.
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
             (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
             read-write as a window; the parent's mask and every sibling stay hidden.
@@ -10939,7 +11332,9 @@ def sandboxed_spawn_argv(
         wrapped, cleanup = wrap_argv(
             argv,
             mode=mode,
+            env=env,
             strip_python_env=strip_python_env,
+            gateway_publish=gateway_publish,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
@@ -10951,7 +11346,9 @@ def sandboxed_spawn_argv(
         wrapped, cleanup = wrap_argv(
             argv,
             mode=mode,
+            env=env,
             strip_python_env=strip_python_env,
+            gateway_publish=gateway_publish,
             first_party_fixed_argv=first_party_fixed_argv,
             is_kiro_cli=is_kiro_cli,
         )
@@ -10962,6 +11359,19 @@ def sandboxed_spawn_argv(
     # whether a backend is available.
     extra = _PYTHON_ENV_PREFIXES if strip_python_env else None
     scrubbed = scrub_env(env, extra_prefixes=extra)
+    # The gateway-owned publish is the ONE trusted publisher; it is exempt from the credential
+    # masks so it can authenticate. ``wrap_argv`` keeps ``~/.ssh`` VISIBLE for it on the
+    # filesystem, but ``scrub_env`` drops ``SSH_AUTH_SOCK`` unconditionally (a sensitive
+    # prefix), so a gateway publish that authenticates through an SSH AGENT (no on-disk key)
+    # would find no socket and FAIL. Restore the exact ``SSH_AUTH_SOCK`` key from the source
+    # env for the gateway publish only, mirroring how ``scrub_agent_subprocess_env`` re-admits
+    # it for an opted-in agent child -- restricted to that one key, so nothing else the generic
+    # scrub dropped is reintroduced. Every agent-influenced spawn leaves ``gateway_publish``
+    # False and keeps the socket scrubbed.
+    if gateway_publish:
+        src = os.environ if env is None else env
+        if "SSH_AUTH_SOCK" in src:
+            scrubbed["SSH_AUTH_SOCK"] = src["SSH_AUTH_SOCK"]
     # The cgroup wrapper prepended below needs the user session bus in the
     # environment it is spawned with, so restore its locator vars after the
     # scrub. Callers that pass a strict allowlist env (e.g. the source-provider

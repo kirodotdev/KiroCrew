@@ -2583,11 +2583,19 @@ class RunEventCoordinator(ManagerComponent):
                         metadata={"subagent_id": info.id, "reason": "spec_hook"},
                     )
                     continue
+                # Resolve the push-verdict activation keystone OFF the event loop, so this
+                # async subagent permission path performs no keystone read on the loop (the
+                # no-blocking-call-on-event-loop finding). Local import keeps this module's
+                # surface unchanged.
+                from kiro_crew.security import resolve_push_verdict_activation
+
+                _pv_activation = await asyncio.to_thread(resolve_push_verdict_activation)
                 tool_result = self._manager._ctx_builder.hooks.on_tool_call(
                     event.title,
                     session_key=session_key,
                     agent=info.agent or "",
                     app=info.app or "",
+                    push_verdict_activation=_pv_activation,
                     **hook_gate_kwargs(event),
                 )
                 if tool_result.action == TOOL_DENY:

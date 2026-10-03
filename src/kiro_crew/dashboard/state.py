@@ -2714,7 +2714,7 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_project",
         "created_at",
         "messages",
         "total_messages",
@@ -3054,7 +3054,7 @@ class _ChatSlot:
         # assignment. Only a protected binding or an explicit owner pick clears
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
-        self.project: str = ""
+        self._project: str = ""
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -4233,6 +4233,16 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+
+    @property
+    def project(self) -> str:
+        """The slot's project directory."""
+        return self._project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        """Set the project directory."""
+        self._project = value
 
     def bump_tags_revision(self) -> str:
         """Rotate and return the revision for the current tag list.

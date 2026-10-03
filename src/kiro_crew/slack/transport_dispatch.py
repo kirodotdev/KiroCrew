@@ -49,7 +49,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import SLACK_NAMESPACE, canonical_key
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.platform import current_context
-from kiro_crew.security import redact, redact_local_paths
+from kiro_crew.security import redact, redact_local_paths, resolve_push_verdict_activation
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.slack.handler import (
@@ -801,6 +801,11 @@ async def handle_message_transport(
         # approves, e.g. reads), or "" (passthrough). The closure reads the
         # event's raw_tool_params so the arg-derived scopes (filesystem.write,
         # network.egress) are evaluated, matching native.
+        # Resolve the push-verdict activation keystone OFF the event loop once, so the sync
+        # ``_tool_gate`` the ACP dispatcher calls back on the loop performs no keystone read on
+        # it (the no-blocking-call-on-event-loop finding).
+        _pv_activation = await asyncio.to_thread(resolve_push_verdict_activation)
+
         def _tool_gate(event: Any) -> str:
             if context_builder is None:
                 return ""
@@ -808,6 +813,7 @@ async def handle_message_transport(
                 getattr(event, "title", "") or "",
                 session_key=session_key,
                 agent=_agent or "",
+                push_verdict_activation=_pv_activation,
                 **hook_gate_kwargs(event),
             )
             if result.action == TOOL_DENY:

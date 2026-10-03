@@ -1283,12 +1283,26 @@ async def _run_hook_inner(
             hooks_gate = getattr(state.context_builder, "hooks", None)
             if hooks_gate is not None:
                 try:
-                    decision = hooks_gate.on_tool_call(
-                        event.title,
-                        session_key=session_key,
-                        agent=agent or "",
-                        **hook_gate_kwargs(event),
-                    )
+                    # Off the event loop: ``on_tool_call`` reaches the git-publish floor, which
+                    # reads the push-verdict activation keystone (an ``open`` + JSON parse of a
+                    # leaf under the crew data home). On an activated, network-mounted data home
+                    # that stat/read can stall, and this hook runs inline on the gateway loop --
+                    # a stall here freezes the gateway and its heartbeat. The read is deliberately
+                    # live per publish (no cache -- see ``activation()``), so the fix is to run
+                    # the whole synchronous hook in a worker thread rather than to memoize it.
+                    # The consultation keeps the shared ``**hook_gate_kwargs(event)`` splat (the
+                    # structural contract in ``TestHookGateKwargs``) -- the thread hop wraps it,
+                    # it does not hand-spell the event-derived kwargs.
+                    def _consult_hook_gate():
+                        result = hooks_gate.on_tool_call(
+                            event.title,
+                            session_key=session_key,
+                            agent=agent or "",
+                            **hook_gate_kwargs(event),
+                        )
+                        return result
+
+                    decision = await asyncio.to_thread(_consult_hook_gate)
                 except Exception:
                     # A raising gate must not leave the request unanswered --
                     # an unanswered request is the exact stall this branch

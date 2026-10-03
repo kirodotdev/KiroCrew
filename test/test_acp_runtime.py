@@ -3219,6 +3219,64 @@ async def test_is_stale_rss_when_tree_over_threshold(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_is_stale_recycles_when_push_verdict_activation_drifts_on(monkeypatch):
+    """A process spawned NON-activated is stale once an operator activates gating (codex F1).
+
+    The credential mask is baked into the sandbox wrap at spawn and is fixed for the child's
+    lifetime, and activation is a manual keystone write with no watcher to re-sandbox a running
+    child. So a runtime spawned while gating was OFF keeps full git credentials after activation
+    -- an opaque subprocess of it could publish an unjudged commit. ``_is_stale`` catches the
+    drift and returns ``push_verdict_activation`` so the existing recycle machinery respawns the
+    child under the mask. Checked BEFORE the age/RSS probes, so no RSS round-trip is needed.
+    """
+    rt, _, _ = _make_runtime()
+    rt._spawn_push_verdict_activation = False  # spawned before activation
+    rt._max_age_secs = 6 * 3600
+    rt._spawn_monotonic = time.monotonic()  # young: age/RSS would say not-stale
+    monkeypatch.setattr(
+        "kiro_crew.acp.runtime._get_rss_tree_mb",
+        lambda pid, depth=None: pytest.fail("RSS probed despite activation-drift short-circuit"),
+    )
+    monkeypatch.setattr("kiro_crew.acp.runtime._push_verdict_masks_ssh", lambda: True)
+    assert await rt._is_stale() == "push_verdict_activation"
+
+
+@pytest.mark.asyncio
+async def test_is_stale_ignores_activation_when_spawned_activated(monkeypatch):
+    """A process spawned WHILE activated has no OFF->ON drift to catch; activation is skipped.
+
+    Only a NON-activated spawn can drift on (deactivation only relaxes the mask), so a runtime
+    spawned activated must not consult the keystone here -- and a still-current activation must
+    not be read as a reason to recycle a correctly-masked child.
+    """
+    rt, _, _ = _make_runtime()
+    rt._spawn_push_verdict_activation = True  # spawned already activated
+    rt._max_age_secs = 6 * 3600
+    rt._spawn_monotonic = time.monotonic()
+    rt._max_rss_mb = 500.0
+
+    def _must_not_read():
+        pytest.fail("activation keystone read for a runtime spawned already-activated")
+
+    monkeypatch.setattr("kiro_crew.acp.runtime._push_verdict_masks_ssh", _must_not_read)
+    monkeypatch.setattr("kiro_crew.acp.runtime._get_rss_tree_mb", lambda pid, depth=None: 10.0)
+    assert await rt._is_stale() is None
+
+
+@pytest.mark.asyncio
+async def test_is_stale_not_recycled_when_activation_still_off(monkeypatch):
+    """A NON-activated spawn on a still-non-activated install is not recycled for activation."""
+    rt, _, _ = _make_runtime()
+    rt._spawn_push_verdict_activation = False
+    rt._max_age_secs = 6 * 3600
+    rt._spawn_monotonic = time.monotonic()
+    rt._max_rss_mb = 500.0
+    monkeypatch.setattr("kiro_crew.acp.runtime._push_verdict_masks_ssh", lambda: False)
+    monkeypatch.setattr("kiro_crew.acp.runtime._get_rss_tree_mb", lambda pid, depth=None: 10.0)
+    assert await rt._is_stale() is None
+
+
+@pytest.mark.asyncio
 async def test_the_declared_reclaim_scope_reaches_the_probe(monkeypatch):
     """A harness that bounds its RSS scope must have that bound actually applied.
 

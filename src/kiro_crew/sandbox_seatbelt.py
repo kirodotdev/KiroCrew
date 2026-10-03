@@ -35,6 +35,7 @@ _SEATBELT_PROFILE = """\
 def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -48,6 +49,8 @@ def _build_seatbelt_profile(
         _CREW_HIDDEN_LEAVES,
         _CREW_READONLY_LEAVES,
         _CREW_READONLY_TARGETS,
+        _PUSH_VERDICT_HTTPS_CRED_DIRS,
+        _PUSH_VERDICT_HTTPS_CRED_FILES,
         _STANDARD_DIRS,
         _crew_hidden_sandbox_targets,
         _hidden_path_contains_visible_path,
@@ -56,6 +59,8 @@ def _build_seatbelt_profile(
         _md_notebook_degraded_mask_dirs,
         _pod_os_home_targets,
         _private_window_spellings,
+        _push_verdict_masks_ssh,
+        _push_verdict_mirror_parents,
         _relocated_crew_targets,
         _relocated_policy_cache_dirs,
         _resolved_kiro_agents_targets,
@@ -84,6 +89,13 @@ def _build_seatbelt_profile(
         dirs = _sandbox_policy().strict_dirs()
     files = _CC_FILES if sandbox_level in ("cc", "strict") else []
     expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
+    # Under the push-verdict activation mask, an agent-tier spawn is credential-free for the
+    # HTTPS git transport as well as SSH (see the launcher builder's mask block): the
+    # GitHub-CLI helper dir and the git HTTPS credential stores the cc/standard tiers leave
+    # readable are hidden here too, strict already covering them and gateway_publish exempt.
+    if not gateway_publish and _push_verdict_masks_ssh():
+        dirs = list(dirs) + [d for d in _PUSH_VERDICT_HTTPS_CRED_DIRS if d not in dirs]
+        files = list(files) + [f for f in _PUSH_VERDICT_HTTPS_CRED_FILES if f not in files]
     expose_abs = {os.path.join(home, f) for f in expose_files}
     # Caller-supplied read-only carve-outs (the enforced adapter's
     # ``~/.aws/config``). Folded into the SAME set the tier loop reads, not only
@@ -308,9 +320,13 @@ def _build_seatbelt_profile(
         rules.append(f'(deny file-write* (literal "{escaped}"))')
         rules.append(f'(deny file-link (literal "{escaped}"))')
 
-    # .ssh: deny all access except reading known_hosts (strict only)
+    # .ssh: deny all access except reading known_hosts. Applied in the strict tier always,
+    # and in every agent tier once push-verdict gating is activated -- an activated install
+    # judges the agent's own ``git push`` at the argv floor, but an opaque subprocess reaches
+    # the private key and pushes past it, so the key is withheld here too and left only to the
+    # gateway-owned publish. ``gateway_publish`` is that one exempt caller and keeps SSH.
     ssh_guards: list[str] = []
-    if sandbox_level == "strict":
+    if sandbox_level == "strict" or (not gateway_publish and _push_verdict_masks_ssh()):
         ssh_dir = os.path.join(home, ".ssh")
         ssh_guards.append(ssh_dir)
         ssh_escaped = ssh_dir.replace('"', '\\"')
@@ -333,11 +349,19 @@ def _build_seatbelt_profile(
     # deny deliberately stays in force: a probe scratch dir never needs to mint
     # hardlinks, and the deny is what stops aliasing a sealed inode into the
     # writable window.
+    # The gateway-owned publish OWNS the push-verdict mirror tree, so for that spawn ALONE
+    # the sealed mirror leaf becomes a validated write carve-out: its parent joins the
+    # carveable set and drops out of the readonly subtree guards. Agent spawns leave
+    # ``gateway_publish`` False and the mirror stays sealed for them.
+    mirror_carveable = _push_verdict_mirror_parents() if gateway_publish else []
     for spelling in _writable_carveout_spellings(
         extra_writable_dirs,
-        subtree_guards=masked_targets + readonly_targets + extra_hidden_targets + ssh_guards,
+        subtree_guards=masked_targets
+        + [path for path in readonly_targets if path not in set(mirror_carveable)]
+        + extra_hidden_targets
+        + ssh_guards,
         literal_guards=ancestor_guards + [os.path.join(home, f) for f in files],
-        carveable_parents=runtime_parents,
+        carveable_parents=runtime_parents + mirror_carveable,
     ):
         escaped = spelling.replace('"', '\\"')
         rules.append(f'(allow file-write* (subpath "{escaped}"))')

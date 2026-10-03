@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -328,6 +329,16 @@ async def decompose(
             full_prompt = prompt
 
         text = ""
+        # Resolve activation OFF the event loop (no-blocking-call-on-event-loop):
+        # this decomposition-phase permission path is async, so reading the
+        # push-verdict keystone inline inside on_tool_call would open and read a
+        # file on the loop and stall every gateway session plus the heartbeat.
+        # Resolve it once here before streaming and pass it into each hook call.
+        _pv_activation = None
+        if ctx is not None and getattr(ctx, "hooks", None) is not None:
+            from kiro_crew.security import resolve_push_verdict_activation
+
+            _pv_activation = await asyncio.to_thread(resolve_push_verdict_activation)
         async for event in client.stream(full_prompt):
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
@@ -342,6 +353,7 @@ async def decompose(
                         event.title,
                         session_key=session_key,
                         agent=agent,
+                        push_verdict_activation=_pv_activation,
                         **hook_gate_kwargs(event),
                     )
                     if hook_result.action == TOOL_DENY:

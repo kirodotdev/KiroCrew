@@ -86,3 +86,26 @@ def test_no_ctx_denies_by_default():
 
     provider.reject_tool.assert_awaited_once_with("r1")
     provider.approve_tool.assert_not_awaited()
+
+
+def test_decompose_resolves_activation_off_loop_and_passes_it_in():
+    """The decomposition gate must resolve push-verdict activation OFF the event
+    loop and pass it into on_tool_call, so the inline keystone read in
+    ``security.is_denied`` (no-blocking-call-on-event-loop) never runs on the loop.
+
+    Proof: ``on_tool_call`` is called with a resolved ``PushVerdictActivation``
+    object (not ``None``). ``None`` is the synchronous-caller sentinel that makes
+    ``is_denied`` fall back to the inline on-loop read -- so a non-``None`` value
+    is exactly what keeps the read off the loop.
+    """
+    from kiro_crew.security import PushVerdictActivation
+
+    provider = _provider_requesting_tool()
+    sessions = _sessions_with(provider)
+    ctx = _ctx_with_hook(TOOL_ALLOW)
+
+    asyncio.run(decompose("spec", sessions, ctx=ctx, task_id="t1"))
+
+    ctx.hooks.on_tool_call.assert_called_once()
+    passed = ctx.hooks.on_tool_call.call_args.kwargs.get("push_verdict_activation")
+    assert isinstance(passed, PushVerdictActivation)
