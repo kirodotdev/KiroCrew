@@ -360,7 +360,7 @@ async def test_a_config_option_harness_that_stays_on_default_touches_no_bookkeep
 # ── SESSION_CONFIG permission routing ─────────────────────────────────────────
 
 
-def _codex_options(value: str = "read-only") -> list[dict[str, Any]]:
+def _codex_options(value: str = "agent") -> list[dict[str, Any]]:
     option_id, _required = acp_tool_gate.permission_config_for(ACP_BACKEND_CODEX)
     return [{"id": option_id, "options": [{"value": value}]}]
 
@@ -421,8 +421,8 @@ async def test_an_advertised_option_whose_write_fails_refuses_as_bypassed():
 async def test_an_advertised_option_that_takes_arms_the_route():
     """The success path writes the harness's OWN required option and value.
 
-    Writing anything else leaves the harness on a mode that permits workspace
-    changes without asking.
+    Writing anything else silently selects a different approval posture than the
+    one the backend contract promises.
     """
     handle = _make_handle(ACP_BACKEND_CODEX)
     handle._config_options = _codex_options()
