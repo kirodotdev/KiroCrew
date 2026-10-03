@@ -35,7 +35,13 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import CRED_WEIXIN_TOKEN, KiroCrewConfig, config_path, env_path
+from kiro_crew.config.loader import (
+    CRED_WEIXIN_TOKEN,
+    KiroCrewConfig,
+    config_path,
+    env_path,
+    read_config_text,
+)
 from kiro_crew.dashboard.channel_folders import (
     channel_restart_required,
     clean_session_folder,
@@ -242,7 +248,7 @@ def _stage_weixin_config(*, account_id: str, base_url: str) -> tuple[Path, str]:
     cp = config_path()
     data: Dict[str, Any] = {}
     if cp.exists():
-        data = json.loads(cp.read_text(encoding="utf-8"))
+        data = json.loads(read_config_text(cp))
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
     weixin = data.get("weixin")
@@ -444,7 +450,7 @@ async def weixin_config_save(request: web.Request) -> web.Response:
         cp = config_path()
 
         def _read_config() -> Dict[str, Any]:
-            return json.loads(cp.read_text(encoding="utf-8")) if cp.exists() else {}
+            return json.loads(read_config_text(cp)) if cp.exists() else {}
 
         # Off-loop read: a large or slow config.json must not stall the gateway
         # event loop. Reading under the lock keeps the snapshot current relative

@@ -39,7 +39,7 @@ from aiohttp import web
 
 from kiro_crew import __version__, beacon
 from kiro_crew import sel as _sel_mod
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.chat_utils import slot_transcript_key
 from kiro_crew.dashboard.handlers.usage import (
@@ -1578,7 +1578,7 @@ def _telemetry_overlay_pins(leaf: str) -> bool:
         path = config_local_path()
         if not path.exists():
             return False
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_config_text(path))
     except (OSError, json.JSONDecodeError):
         return False
     section = data.get("telemetry") if isinstance(data, dict) else None

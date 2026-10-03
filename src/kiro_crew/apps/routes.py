@@ -127,6 +127,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
     config_path,
+    read_config_text,
     update_config_locked,
 )
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
@@ -4651,7 +4652,9 @@ async def handle_registries(request: web.Request) -> web.Response:
     # Update config file (atomic write to prevent corruption on crash)
     cfg = Path(config_path())
     try:
-        data = json.loads(cfg.read_text(encoding="utf-8")) if cfg.is_file() else {}
+        data = json.loads(read_config_text(cfg)) if cfg.is_file() else {}
+        if not isinstance(data, dict):
+            raise json.JSONDecodeError("config.json is not a JSON object", "", 0)
     except json.JSONDecodeError:
         sel().log_api_access(
             caller="dashboard",

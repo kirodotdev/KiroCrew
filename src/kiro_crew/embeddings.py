@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, NamedTuple, Protocol
 
 from kiro_crew import asset_downloader
-from kiro_crew.config.loader import config_path
+from kiro_crew.config.loader import config_path, read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.cpu_affinity import affinity_cpu_count
 from kiro_crew.metrics.provider import get_recorder
@@ -995,7 +995,7 @@ def _read_memory_config() -> dict:
     try:
         path = config_path()
         if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_config_text(path))
             section = data.get("memory", {})
             if isinstance(section, dict):
                 return section

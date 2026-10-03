@@ -57,6 +57,7 @@ from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.service.common import session_runtime_dir, systemctl_user_env
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.user_json import strip_utf8_bom
 
 if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     from kiro_crew.pod.runtime_boot import (  # noqa: F401
@@ -1002,7 +1003,7 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     if not src_cfg.is_file():
         return None
     try:
-        data = json.loads(src_cfg.read_text())
+        data = json.loads(strip_utf8_bom(src_cfg.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         print("WARN: could not parse seed config.json — skipping seed (pod boots blank)")
         return None

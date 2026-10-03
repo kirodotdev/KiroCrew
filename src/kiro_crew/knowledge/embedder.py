@@ -231,9 +231,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
     else:
         if isinstance(parsed, list):
             try:
-                if all(
-                    isinstance(x, (int, float)) and not isinstance(x, bool) for x in parsed
-                ):
+                if all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in parsed):
                     return [float(x) for x in parsed]
             except (ValueError, OverflowError):
                 pass
@@ -249,9 +247,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
     return []
 
 
-def embed_signature(
-    model: str, dim: int, content_budget: int = _EMBED_CONTENT_BUDGET
-) -> str:
+def embed_signature(model: str, dim: int, content_budget: int = _EMBED_CONTENT_BUDGET) -> str:
     """Signature over the embedding inputs a re-embed can actually change.
 
     Built ON TOP of :func:`~kiro_crew.embeddings.embedding_space_signature`
@@ -341,7 +337,10 @@ def create_embedder_from_config(config: dict) -> InProcessEmbedder:
     # fall back to the module defaults unless the config supplies a *positive*
     # number (missing key, 0 sentinel, negative, or non-numeric all resolve to
     # the built-in default).
-    knowledge_cfg = config.get("knowledge", {}) or {}
+    knowledge_cfg = config.get("knowledge") if isinstance(config, dict) else None
+    if not isinstance(knowledge_cfg, dict):
+        # A hand-edited non-object section is a state the loader degrades too.
+        knowledge_cfg = {}
     timeout_secs = _positive_or(knowledge_cfg.get("embed_timeout_secs"), TIMEOUT)
     content_budget = int(
         _positive_or(knowledge_cfg.get("embed_content_budget"), _EMBED_CONTENT_BUDGET)

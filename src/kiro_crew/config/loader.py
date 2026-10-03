@@ -592,10 +592,10 @@ def read_config_text(path: Path) -> str:
     U+FEFF in front that ``json.loads`` refuses. The mark is dropped by
     :func:`kiro_crew.user_json.strip_utf8_bom`, the one place that already does it
     for the other user-owned JSON files. Writers keep emitting plain UTF-8, so a
-    locked write removes the mark. Every reader in this module comes through here,
-    as do the consumers that must agree with the loader about what the files say:
-    the hot-reload tear probe, doctor's drift and overlay reads, and the
-    app-trust gates. Other readers of these files are not yet converted.
+    locked write removes the mark. Every in-tree reader of the live files comes
+    through here (``test_config_json_bom.test_every_config_reader_tolerates_a_bom``
+    pins it); readers of COPIES of them -- the pod seed -- and ``agent._load_json``
+    strip the same mark with :func:`~kiro_crew.user_json.strip_utf8_bom` directly.
     """
     return strip_utf8_bom(path.read_text(encoding="utf-8"))
 

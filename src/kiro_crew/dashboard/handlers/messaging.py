@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     TELEGRAM_ACTIVATIONS,
     KiroCrewConfig,
     config_path,
+    read_config_text,
 )
 from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
@@ -4909,7 +4910,9 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # Config → config.json under "slack" (staged, applied only after Phase 1).
     path = config_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(read_config_text(path)) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("config.json is not a JSON object")
     except Exception:
         return _deny("config.json is corrupt", status=500)
     if not isinstance(data.get("slack"), dict):
@@ -5270,7 +5273,9 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
     # Config → config.json under "discord" (staged, applied only after Phase 1).
     path = config_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(read_config_text(path)) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("config.json is not a JSON object")
     except Exception:
         return _deny("config.json is corrupt", status=500)
     if not isinstance(data.get("discord"), dict):
@@ -5661,7 +5666,10 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     path = config_path()
 
     def _read_config() -> dict:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(read_config_text(path)) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("config.json is not a JSON object")
+        return data
 
     try:
         data = await asyncio.to_thread(_read_config)
@@ -6335,7 +6343,10 @@ async def _teams_config_save(request: web.Request) -> web.Response:
             # Offload read_text + json.loads to a thread so a slow filesystem
             # cannot stall the async event loop.
             def _read_config_15() -> dict:
-                return json.loads(_p15_cfg.read_text(encoding="utf-8")) if _p15_cfg.exists() else {}
+                data = json.loads(read_config_text(_p15_cfg)) if _p15_cfg.exists() else {}
+                if not isinstance(data, dict):
+                    raise ValueError("config.json is not a JSON object")
+                return data
 
             _rd15 = await asyncio.to_thread(_read_config_15)
             # Guard against a malformed config.json where "teams" is not a dict
@@ -6389,7 +6400,9 @@ async def _teams_config_save(request: web.Request) -> web.Response:
     async with _get_config_lock():
         path = config_path()
         try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            data = json.loads(read_config_text(path)) if path.exists() else {}
+            if not isinstance(data, dict):
+                raise ValueError("config.json is not a JSON object")
         except Exception:
             return _deny("config.json is corrupt", status=500)
         if not isinstance(data.get("teams"), dict):
@@ -6820,7 +6833,9 @@ async def _webex_config_save(request: web.Request) -> web.Response:
     async with _get_config_lock():
         path = config_path()
         try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            data = json.loads(read_config_text(path)) if path.exists() else {}
+            if not isinstance(data, dict):
+                raise ValueError("config.json is not a JSON object")
         except Exception:
             return _deny("config.json is corrupt", status=500)
         if not isinstance(data.get("webex"), dict):
@@ -7445,7 +7460,10 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     path = config_path()
 
     def _read_config() -> dict:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(read_config_text(path)) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("config.json is not a JSON object")
+        return data
 
     try:
         data = await asyncio.to_thread(_read_config)
@@ -7880,7 +7898,10 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     path = config_path()
 
     def _read_config() -> dict:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(read_config_text(path)) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("config.json is not a JSON object")
+        return data
 
     def _corrupt_config() -> web.Response:
         message = "config.json is corrupt"

@@ -87,6 +87,7 @@ from kiro_crew.config.loader import (
     config_path,
     inject_kiro_cli_api_key,
     normalize_agent_model,
+    read_config_text,
     resolve_agent_config_path,
     resolve_agent_identity,
     resolve_effective_model,
@@ -3049,11 +3050,14 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                 # a process that skips the sidecar lock) can, so the reference
                 # check re-reads the FILE before unlinking.
                 try:
-                    raw = json.loads(config_path().read_text(encoding="utf-8"))
+                    raw = json.loads(read_config_text(config_path()))
                 except Exception:
                     raw = {}
+                if not isinstance(raw, dict):
+                    raw = {}
                 targets = {copy_name, dest.stem}
-                for entry in raw.get("agents", {}).values():
+                bound = raw.get("agents")
+                for entry in bound.values() if isinstance(bound, dict) else ():
                     if isinstance(entry, dict) and entry.get("kiro_agent") in targets:
                         logger.warning(
                             "a crew bound private copy %r mid-fork; leaving it in place",

@@ -69,7 +69,7 @@ from kiro_crew import feature_videos_cache as cache_mod
 from kiro_crew import feature_videos_manifest as manifest_mod
 from kiro_crew.apps.version import parse_version
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import KiroCrewConfig, config_local_path, config_path
+from kiro_crew.config.loader import KiroCrewConfig, config_local_path, config_path, read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import (
     _blocks_reads_session,
@@ -410,7 +410,7 @@ def _probe_config_key_set(dotted: str) -> bool:
         return False
     for path in (config_path(), config_local_path()):
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(read_config_text(path))
         except (OSError, ValueError, RecursionError):
             continue
         cur: object = raw

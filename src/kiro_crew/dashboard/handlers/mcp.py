@@ -29,6 +29,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     _resolve_stub_overrides,
     _resolve_stub_roster,
+    read_config_text,
 )
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.chat_utils import run_to_completion
@@ -3359,7 +3360,7 @@ def _local_overlay_section() -> dict:
     if not path.is_file():
         return {}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except (OSError, json.JSONDecodeError):
         # Unreadable overlay: treat as absent. The loader logs and ignores it
         # too, so behaving otherwise here would diverge from the runtime.

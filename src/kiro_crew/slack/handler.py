@@ -55,6 +55,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
     config_path,
+    read_config_text,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
@@ -1410,10 +1411,11 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     _vr: dict = cfg.raw.get("voice_reply", {}) if (cfg is not None and hasattr(cfg, "raw")) else {}
     if not _vr:
         try:
-            with open(config_path()) as f:
-                _vr = json.load(f).get("voice_reply", {})
+            _vr = json.loads(read_config_text(config_path())).get("voice_reply", {})
         except Exception:
             _vr = {}
+    if not isinstance(_vr, dict):
+        _vr = {}
     _enabled = bool(_vr.get("enabled", False))
     if _enabled:
         _vc.global_enabled = True

@@ -23,6 +23,7 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
+from kiro_crew.config.loader import read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.sandbox import (
@@ -107,7 +108,7 @@ def _read_config() -> dict:
     try:
         config_path = config_dir() / "config.json"
         if config_path.exists():
-            data = json.loads(config_path.read_text())
+            data = json.loads(read_config_text(config_path))
             if isinstance(data, dict):
                 # Coerce nested sections to dicts so the pure parsers' chained
                 # ``.get(...).get(...)`` never hits a hand-edited leaf value

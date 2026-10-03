@@ -16,7 +16,7 @@ from kiro_crew.channel import (
     _shell_base_binary,
     run_channel_agent,
 )
-from kiro_crew.config.loader import config_path
+from kiro_crew.config.loader import config_path, read_config_text
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -154,7 +154,7 @@ def _load_presets() -> object:
         return cached[1]
     config: dict = {}
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(read_config_text(path))
         if isinstance(parsed, dict):
             config = parsed
     except (OSError, json.JSONDecodeError):

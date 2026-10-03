@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
     config_path,
     env_path,
     normalize_workspace_path,
+    read_config_text,
     unsandboxed_exec_declared,
     unsandboxed_exec_platform_default,
     update_config_locked,
@@ -866,7 +867,7 @@ def _setup_whatsapp() -> None:
     cfg: dict = {}
     if cfg_file.exists():
         try:
-            loaded = json.loads(cfg_file.read_text(encoding="utf-8"))
+            loaded = json.loads(read_config_text(cfg_file))
         except Exception as exc:
             print(f"  ⚠️  Could not read {cfg_file}: {exc}\n")
             return
@@ -1007,9 +1008,12 @@ def _setup_slash_command() -> None:
     cfg: dict = {}
     if cfg_file.exists():
         try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            cfg = json.loads(read_config_text(cfg_file))
         except Exception as exc:
             print(f"  ⚠️  Could not read {cfg_file}: {exc}")
+            return
+        if not isinstance(cfg, dict):
+            print(f"  ⚠️  {cfg_file} is not a JSON object; leaving config untouched.")
             return
 
     print("── Slash Command ──\n")
@@ -1190,7 +1194,7 @@ def _setup_sandbox_consent() -> None:
     cfg: dict = {}
     if cfg_file.exists():
         try:
-            loaded = json.loads(cfg_file.read_text(encoding="utf-8"))
+            loaded = json.loads(read_config_text(cfg_file))
         except Exception as exc:
             print(f"  ⚠️  Could not read {cfg_file}: {exc}")
             return
@@ -1357,9 +1361,12 @@ def _setup_timezone() -> None:
     data: dict = {}
     if cfg_file.exists():
         try:
-            data = json.loads(cfg_file.read_text(encoding="utf-8"))
+            data = json.loads(read_config_text(cfg_file))
         except Exception as exc:
             print(f"  ⚠️  Could not read {cfg_file}: {exc}")
+            return
+        if not isinstance(data, dict):
+            print(f"  ⚠️  {cfg_file} is not a JSON object; leaving config untouched.")
             return
     current = data.get("timezone", "")
 
