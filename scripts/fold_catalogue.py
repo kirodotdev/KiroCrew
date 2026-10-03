@@ -100,6 +100,18 @@ _ANSWERS: dict[str, str] = {
     "radar": "An issue crew's items, counts, phase lines and recorded skips",
     "work": "A conductor's board: the header, every work item, and what the fold dropped",
     "panel": "The publisher's own record, in the shape the crew drawer consumes",
+    "agentic": (
+        "Which dashboard fields this crewmate filled itself, with what value, of what "
+        "declared type and when"
+    ),
+    "mistakes": (
+        "Which dashboard writes of this crewmate's were refused, grouped by reason and "
+        "field, how often, and what worked instead"
+    ),
+    "workstreams": (
+        "Every workstream this crewmate is running: each board's goal and counts, each "
+        "task's result, and what each task cost its own worker session"
+    ),
 }
 
 

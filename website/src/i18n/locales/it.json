@@ -17399,6 +17399,8 @@
       "profile_goals_tab": "Obiettivi",
       "profile_goals_soon": "Gli obiettivi arriveranno presto: imposta qui ciò a cui lavora {{name}} e seguine i progressi.",
       "dashboard_empty": "{{name}} non ha ancora pubblicato una dashboard. Chiediglielo in questa chat e ciò che pubblica apparirà qui.",
+      "dashboard_kept_last_good": "Una versione più recente di questa dashboard non si è caricata, quindi questa è l'ultima che si è caricata.",
+      "dashboard_unavailable": "Non è stato possibile caricare questa dashboard. Riprova o ricarica la pagina.",
       "profile_permissions": "Autorizzazioni",
       "profile_permissions_sub": "Cosa può fare · impostato nell’editor",
       "schedule_up_next": "Prossimo",

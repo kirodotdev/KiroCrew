@@ -1,0 +1,19 @@
+{
+  "id": "session-ledger",
+  "version": 1,
+  "title": "Session ledger",
+  "description": "What a long-running session is carrying: its goal, the phase it is in, the next step as an intent, the approaches it tried and rejected, and the artifacts it produced. Read from the ledger slot fold, which is the record a cold resume reads, so this page is what the work would be resumed from. One field is the crewmate's own headline, which no fold records; the page marks it as agent-written.",
+  "source": "builtin",
+  "fields": {
+    "headline": { "type": "string", "source": { "agentic": true } },
+    "goal": { "type": "string", "source": { "fold": "ledger", "path": "goal" } },
+    "phase": { "type": "string", "source": { "fold": "ledger", "path": "phase" } },
+    "next_step": { "type": "string", "source": { "fold": "ledger", "path": "next" } },
+    "tried": { "type": "array", "source": { "fold": "ledger", "path": "tried" } },
+    "artifacts": { "type": "object", "source": { "fold": "ledger", "path": "artifacts" } },
+    "events": { "type": "array", "source": { "fold": "ledger", "path": "events" } },
+    "created_at": { "type": "string", "source": { "fold": "ledger", "path": "created_at" } },
+    "last_progress_at": { "type": "string", "source": { "fold": "ledger", "path": "last_progress_at" } },
+    "finished_at": { "type": "string", "source": { "fold": "ledger", "path": "finished_at" } }
+  }
+}

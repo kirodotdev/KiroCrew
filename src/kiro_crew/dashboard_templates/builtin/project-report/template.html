@@ -1,0 +1,1359 @@
+<style>
+  /* Warm dark, per STYLE-v2. Base surfaces and text come from the theme variables so
+     the page works on the light canvas too; the warmth is a small MIX over them
+     rather than a second palette, which is what keeps one stylesheet honest in both
+     themes. The accent and the three series colours are fixed values -- the theme has
+     no warm accent -- and every one of them is mixed with `--card` before it is used
+     as a fill, so none of them sits on light as a saturated patch. */
+  .pr {
+    --pr-bg: color-mix(in oklab, var(--bg, #12141a) 94%, #48291f 6%);
+    --pr-card: color-mix(in oklab, var(--card, #181b22) 92%, #48291f 8%);
+    --pr-line: var(--border, #27272a);
+    --pr-accent: #ef9a85;
+    --pr-s1: #efb399;
+    --pr-s2: #b7a6df;
+    --pr-s3: #8ed8b5;
+    --pr-s4: #e0a6c0;
+    --pr-radius: 14px;
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text, #e4e4e7);
+    background: var(--pr-bg);
+    padding: 14px;
+    display: grid;
+    gap: 12px;
+  }
+  .pr * { box-sizing: border-box; }
+
+  /* ---- header: title, pills, the one summary sentence ---- */
+  .pr-head { display: grid; gap: 10px; }
+  .pr-titles { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .pr-eyebrow { font-size: 11px; color: var(--muted, #7f7f88); }
+  .pr-title { font-size: 19px; font-weight: 650; letter-spacing: .01em;
+    color: var(--text-strong, #fafafa); }
+  .pr-sentence { font-size: 12.5px; color: var(--muted-strong, #52525b); }
+  .pr-sentence b { color: var(--text, #e4e4e7); font-weight: 600; }
+  .pr-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pr-pill { font: 500 12px/1 system-ui, sans-serif; padding: 7px 11px;
+    border-radius: 999px; border: 1px solid var(--pr-line);
+    background: color-mix(in oklab, var(--pr-card) 88%, transparent);
+    color: var(--muted, #7f7f88); cursor: pointer; max-width: 230px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-pill:hover { color: var(--text, #e4e4e7); }
+  .pr-pill[aria-current="true"] {
+    background: color-mix(in oklab, var(--pr-accent) 20%, var(--pr-card));
+    border-color: color-mix(in oklab, var(--pr-accent) 42%, var(--pr-line));
+    color: var(--text-strong, #fafafa); }
+  .pr-pill-n { opacity: .62; margin-left: 5px; }
+
+  /* ---- cards ---- */
+  .pr-card { background: var(--pr-card); border: 1px solid var(--pr-line);
+    border-radius: var(--pr-radius); padding: 12px 13px; min-width: 0; }
+  .pr-card-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+  .pr-card-t { font-size: 13px; font-weight: 600; color: var(--text, #e4e4e7); }
+  .pr-card-c { font-size: 11px; color: var(--muted, #7f7f88); }
+
+  /* ---- KPI row ---- */
+  .pr-kpis { display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(164px, 1fr)); }
+  .pr-kpi { display: grid; grid-template-columns: 1fr auto; align-items: end;
+    gap: 6px; }
+  .pr-kpi-label { grid-column: 1 / -1; font-size: 11px; color: var(--muted, #7f7f88); }
+  .pr-kpi-v { font-size: 26px; font-weight: 640; line-height: 1.05;
+    color: var(--text-strong, #fafafa); font-variant-numeric: tabular-nums; }
+  .pr-kpi-u { font-size: 12px; font-weight: 500; color: var(--muted, #7f7f88);
+    margin-left: 3px; }
+  .pr-kpi-sub { grid-column: 1 / -1; font-size: 11px;
+    color: color-mix(in oklab, var(--pr-accent) 72%, var(--text, #e4e4e7)); }
+  .pr-kpi-sub.pr-quiet { color: var(--muted, #7f7f88); }
+  .pr-kpi-spark { align-self: center; }
+  .pr-bar { grid-column: 1 / -1; height: 4px; border-radius: 999px; margin-top: 2px;
+    background: color-mix(in oklab, var(--pr-line) 70%, var(--pr-card)); overflow: hidden; }
+  .pr-bar > i { display: block; height: 100%; border-radius: 999px;
+    background: color-mix(in oklab, var(--pr-accent) 76%, var(--pr-card)); }
+
+  /* ---- hero chart, and the legend rows the sunburst shares with it ---- */
+  .pr-hero { position: relative; overflow: hidden; }
+  /* The glow is a gradient, not an image: the frame blocks the network. */
+  .pr-hero::before { content: ""; position: absolute; inset: -40% -10% auto -10%;
+    height: 180%; pointer-events: none;
+    background: radial-gradient(60% 55% at 42% 68%,
+      color-mix(in oklab, var(--pr-accent) 24%, transparent), transparent 72%); }
+  .pr-hero > * { position: relative; }
+  .pr-plot { display: block; width: 100%; min-height: 156px; }
+  .pr-plot svg { display: block; }
+  .pr-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;
+    color: var(--muted, #7f7f88); }
+  .pr-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+    margin-right: 5px; vertical-align: 1px; }
+  .pr-rows { display: grid; gap: 7px; min-width: 0; }
+  .pr-row { display: grid; grid-template-columns: 1fr auto; gap: 8px;
+    align-items: baseline; min-width: 0; }
+  /* Without `min-width: 0` a grid item refuses to shrink below its content, so the
+     name pushes the right-aligned percent off the card instead of ellipsising. */
+  .pr-row-l { min-width: 0; }
+  .pr-row-n { font-size: 12px; color: var(--text, #e4e4e7); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .pr-row-s { font-size: 10.5px; color: var(--muted, #7f7f88); }
+  .pr-row-p { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--text-strong, #fafafa); }
+
+  /* ---- needs you ---- */
+  .pr-todo { display: grid; gap: 7px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .pr-todo-i { display: grid; grid-template-columns: auto 1fr; gap: 9px;
+    align-items: start; padding: 8px 10px; border-radius: 10px;
+    border: 1px solid color-mix(in oklab, var(--pr-accent) 24%, var(--pr-line));
+    background: color-mix(in oklab, var(--pr-accent) 9%, var(--pr-card)); }
+  .pr-todo-k { font-size: 10px; font-weight: 600; letter-spacing: .03em;
+    padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+    background: color-mix(in oklab, var(--pr-accent) 24%, var(--pr-card));
+    color: var(--text-strong, #fafafa); }
+  .pr-todo-x { min-width: 0; }
+  .pr-todo-x b { display: block; font-size: 12.5px; font-weight: 500;
+    color: var(--text, #e4e4e7); }
+  .pr-todo-x span { font-size: 10.5px; color: var(--muted, #7f7f88); }
+  .pr-empty { font-size: 12px; color: var(--muted, #7f7f88); padding: 4px 0; }
+
+  /* ---- shared small pieces: a chip, a verdict pill, a chevron, a truncation line.
+     Read by the tree rows and by the "needs you" card, so they live above both. ---- */
+  .pr-chip { font-size: 10px; padding: 2px 6px; border-radius: 5px;
+    border: 1px solid var(--pr-line); color: var(--muted, #7f7f88);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pr-chip-cr { color: var(--text, #e4e4e7); }
+  .pr-vp { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    white-space: nowrap; }
+  .pr-held { font-size: 10.5px; color: var(--muted, #7f7f88); padding: 2px; }
+  .pr-chev { font-size: 10px; color: var(--muted, #7f7f88); width: 11px;
+    transition: transform .14s ease; }
+  .pr-n[data-open="true"] > .pr-n-h .pr-chev { transform: rotate(90deg); }
+
+  /* ---- epic tree: one row per node, four levels, a tint per level ----
+     Each row sets `--pr-lv` to its own level's colour, so the tag, the guide line
+     and the progress bar of that row are one family without a class per level. */
+  .pr-tree { display: grid; gap: 3px; }
+  .pr-n { border-radius: 9px; min-width: 0; }
+  .pr-n-h { display: grid; grid-template-columns: 11px auto 1fr auto; gap: 8px;
+    align-items: center; padding: 7px 9px; border-radius: 9px; }
+  .pr-n[data-kids="true"] > .pr-n-h { cursor: pointer; }
+  .pr-n[data-kids="true"] > .pr-n-h:hover {
+    background: color-mix(in oklab, var(--pr-lv) 10%, transparent); }
+  .pr-n-h:focus-visible { outline: 1px solid var(--pr-lv); outline-offset: -1px; }
+  /* The level tag. One tint each, every one mixed with the card so it sits on the
+     light canvas as well as the warm dark one. */
+  .pr-lv { font: 700 9px/1 system-ui, sans-serif; letter-spacing: .06em;
+    padding: 4px 5px; border-radius: 4px; white-space: nowrap;
+    background: color-mix(in oklab, var(--pr-lv) 24%, var(--pr-card));
+    color: color-mix(in oklab, var(--pr-lv) 42%, var(--text-strong, #fafafa)); }
+  .pr-n-x { min-width: 0; }
+  .pr-n-t { font-size: 12.5px; color: var(--text, #e4e4e7); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .pr-n-epic > .pr-n-h .pr-n-t { font-size: 13px; font-weight: 620;
+    color: var(--text-strong, #fafafa); }
+  .pr-n-t[role="button"] { cursor: pointer; }
+  .pr-n-t[role="button"]:hover { text-decoration: underline;
+    text-decoration-color: var(--pr-lv); text-underline-offset: 3px; }
+  .pr-n-s { font-size: 10.5px; line-height: 1.4; color: var(--muted, #7f7f88);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-n-r { display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+    flex-wrap: wrap; }
+  .pr-n-done { font-size: 11px; font-variant-numeric: tabular-nums;
+    color: var(--muted, #7f7f88); white-space: nowrap; }
+  .pr-n-bar { width: 54px; height: 3px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in oklab, var(--pr-line) 70%, var(--pr-card)); }
+  .pr-n-bar > i { display: block; height: 100%; border-radius: 999px;
+    background: color-mix(in oklab, var(--pr-lv) 80%, var(--pr-card)); }
+  .pr-n-cr { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--text, #e4e4e7); min-width: 40px; text-align: right; }
+  /* The guide line is the PARENT's tint, so a deep row still says what it hangs
+     under even when its own tag has scrolled out of view. */
+  .pr-kids { display: none; margin-left: 18px; padding-left: 9px;
+    border-left: 1px solid color-mix(in oklab, var(--pr-lv) 34%, var(--pr-line)); }
+  .pr-n[data-open="true"] > .pr-kids { display: grid; gap: 3px; }
+  @media (max-width: 719px) {
+    /* At the panel's width the right-hand group wraps under the name instead of
+       squeezing the title to nothing. */
+    .pr-n-h { grid-template-columns: 11px auto 1fr; }
+    .pr-n-r { grid-column: 2 / -1; justify-content: flex-start; }
+    .pr-kids { margin-left: 10px; }
+  }
+
+  /* ---- sunburst: two rings of spend beside the tree ---- */
+  .pr-tree-wrap { display: grid; gap: 12px; grid-template-columns: 1fr;
+    align-items: start; }
+  @media (min-width: 980px) { .pr-tree-wrap { grid-template-columns: 1fr 252px; } }
+  .pr-sun { display: grid; gap: 10px; justify-items: center; }
+  .pr-sun svg { display: block; }
+  .pr-sun-rows { display: grid; gap: 6px; width: 100%; min-width: 0; }
+  .pr-sun-k { font-size: 10px; color: var(--muted-strong, #52525b);
+    text-align: center; }
+
+  .pr-note { font-size: 10.5px; color: var(--muted-strong, #52525b);
+    border-top: 1px solid var(--pr-line); padding-top: 9px; }
+  .pr-agent { font-size: 10px; letter-spacing: .03em; padding: 2px 6px;
+    border-radius: 999px; color: var(--muted, #7f7f88);
+    border: 1px dashed color-mix(in oklab, var(--pr-s2) 48%, var(--pr-line)); }
+</style>
+
+<div class="pr">
+  <div class="pr-head">
+    <div class="pr-titles">
+      <div>
+        <div class="pr-eyebrow">What this crewmate is doing</div>
+        <div class="pr-title" id="pr-title">Project report</div>
+      </div>
+      <div class="pr-sentence" id="pr-sentence" style="margin-left:auto"></div>
+    </div>
+    <div class="pr-pills" id="pr-pills"></div>
+  </div>
+
+  <div id="pr-view"></div>
+
+  <div class="pr-note">
+    <span data-dashboard-field="items">&mdash;</span> boards,
+    <span data-dashboard-field="omitted">&mdash;</span> the fold did not retain,
+    <span data-dashboard-field="series">&mdash;</span> hours carry a record,
+    <span data-dashboard-field="for_you">&mdash;</span> written by the crewmate itself.
+  </div>
+</div>
+
+<script>
+(function () {
+  var DASH = '—';
+  var SVGNS = 'http://www.w3.org/2000/svg';
+
+  //: The four levels of the tree, each with the tag a row wears and its one tint. A
+  //: level is named here rather than derived from the data's depth because the tag is
+  //: what tells a reader WHICH record a row is -- a board's goal, a round of it, a work
+  //: item, or an item on a board one of those items' workers runs.
+  var LEVELS = {
+    epic:  ['EPIC',  'var(--pr-accent)'],
+    story: ['STORY', 'var(--pr-s2)'],
+    task:  ['TASK',  'var(--pr-s1)'],
+    sub:   ['SUB',   'var(--pr-s3)']
+  };
+  //: How many boards deep below a task the walk goes. A nested board's own task can
+  //: bind a worker running a third board, so the nesting has no natural floor; this is
+  //: the floor, and a subtree cut here says so on the page rather than vanishing.
+  var SUB_DEPTH = 4;
+  //: An item whose record carries no round. Grouped under its own story rather than
+  //: folded into round 0, which is a round some boards really have.
+  var NO_ROUND = -1;
+  var ALL = '__all__';
+
+  //: Section order of the global view. The question the page answers is "what was
+  //: done, what did it cost, what came of it, what do I have to do", and these four
+  //: blocks are that sentence in that order.
+  var LAYOUT = ['kpi', 'hero', 'todo', 'tree'];
+
+  var view = ALL;
+  //: Which tree rows are expanded, keyed by the node's own path key so a re-render
+  //: puts the reader back where they were. Seeded ONCE per page (`treeInit`): a reader
+  //: who collapsed a row does not have it re-open under them on the next push.
+  var treeOpen = {};
+  var treeInit = false;
+  //: Charts awaiting a width. Reset at the top of every render, filled while the view
+  //: is built, drained once it is attached. See `heroChart`.
+  var plots = [];
+
+  function txt(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;
+    return n;
+  }
+  function svgEl(tag, attrs) {
+    var n = document.createElementNS(SVGNS, tag);
+    for (var k in attrs) {
+      if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]);
+    }
+    return n;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  function fields() { return (window.kirocrew || {}).fields || {}; }
+  function agenticNames() {
+    var a = (window.kirocrew || {}).agentic;
+    return Array.isArray(a) ? a : [];
+  }
+
+  //: Absent cost is NOT zero. The fold says so with `credits_reported`, and every
+  //: credit on this page is read through here, so a board nobody measured draws a dash
+  //: instead of claiming it was free.
+  function credits(holder) {
+    if (!holder || holder.credits_reported !== true) return null;
+    return num(holder.credits);
+  }
+  function fmtCr(v) {
+    if (v === null) return DASH;
+    if (v >= 100) return String(Math.round(v));
+    if (v >= 10) return v.toFixed(1);
+    return v.toFixed(2);
+  }
+  //: English needs the unit to agree with the count, and the count comes from the
+  //: record, so it is decided here rather than guessed at each call site.
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
+  function fmtDur(ms) {
+    var v = num(ms);
+    if (v === null || v <= 0) return DASH;
+    var mins = Math.round(v / 60000);
+    if (mins < 60) return mins + 'm';
+    return Math.floor(mins / 60) + 'h' + (mins % 60 ? (mins % 60) + 'm' : '');
+  }
+  //: Stamps are SLICED, not parsed: `new Date` re-expresses a UTC hour in whoever is
+  //: looking, so the page would quietly disagree with the record it is showing.
+  function hourLabel(iso) {
+    var s = txt(iso);
+    if (!s) return '';
+    var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2})/.exec(s);
+    return m ? m[3] + ':00' : s;
+  }
+
+  function streams() {
+    var list = fields().items;
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (s) { return s && typeof s === 'object'; });
+  }
+  function tasksOf(s) {
+    return Array.isArray(s.tasks)
+      ? s.tasks.filter(function (t) { return t && typeof t === 'object'; }) : [];
+  }
+  function seriesOf(holder) {
+    var list = holder && holder.series;
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (p) { return p && typeof p === 'object'; });
+  }
+  function forYou() {
+    var list = fields().for_you;
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (r) { return r && typeof r === 'object' && txt(r.text); });
+  }
+  function forYouIsAgentic() { return agenticNames().indexOf('for_you') !== -1; }
+
+  //: STATE is the conductor's own stamp; STATUS is the worker's last claim. The board
+  //: needs both, because the one column a reader opens this page to find -- a task whose
+  //: worker says done and which nothing has ruled on yet -- is named by neither alone.
+  function columnOf(t) {
+    var state = txt(t.state);
+    if (state === 'accepted') return 'acc';
+    if (state === 'rejected' || state === 'abandoned') return 'shut';
+    return txt(t.status) === 'done' ? 'await' : 'prog';
+  }
+  function needsMe(t) {
+    var st = txt(t.status);
+    return st === 'question' || st === 'blocked';
+  }
+
+  // ---------------------------------------------------------------- the tree model
+
+  //: WHAT A SUBTREE'S COST IS. A task row reports the WHOLE bill of the worker session
+  //: bound to it, which is the fold's own posture: that is what the task cost to run.
+  //: One session bound to two tasks therefore shows the same amount twice, so a tree
+  //: that ADDED its rows up would bill that session once per task it served -- the
+  //: error the fold refuses to make in a board total. So a node does not carry a
+  //: number; it carries the SET of sessions its subtree was billed through, and the
+  //: number is that set's values summed. A roll-up then reproduces the fold's rule
+  //: instead of contradicting it, at every level.
+  //:
+  //: The key is the session. A task with a measured cost and no session key (an older
+  //: fold value) falls back to its own item id, so the credit still counts, once.
+  function billKey(t) {
+    return txt(t.worker_session_key) || ('item:' + (txt(t.item_id) || ''));
+  }
+  function bills(t) {
+    var out = {}, c = credits(t);
+    if (c !== null) out[billKey(t)] = c;
+    return out;
+  }
+  function mergeBills(into, from) {
+    for (var k in from) {
+      if (Object.prototype.hasOwnProperty.call(from, k)) into[k] = from[k];
+    }
+  }
+  //: `null` for an empty set, never 0: a subtree nobody measured draws a dash, which
+  //: is the same promise `credits()` keeps for one row.
+  function billTotal(set) {
+    var n = null;
+    for (var k in set) {
+      if (Object.prototype.hasOwnProperty.call(set, k)) n = (n || 0) + set[k];
+    }
+    return n;
+  }
+
+  //: Nested boards by the task they hang under. The fold hands the boards back FLAT
+  //: with a `parent` link on each nested one, so this is the index that turns the list
+  //: into a tree without a second read.
+  function nestIndex(list) {
+    var map = {}, i;
+    for (i = 0; i < list.length; i++) {
+      var p = list[i].parent;
+      if (!p || typeof p !== 'object') continue;
+      var k = (txt(p.board) || '') + '\u0000' + (txt(p.item_id) || '');
+      if (!map[k]) map[k] = [];
+      map[k].push(list[i]);
+    }
+    return map;
+  }
+  function nestedUnder(nest, boardId, itemId) {
+    return nest[(txt(boardId) || '') + '\u0000' + (txt(itemId) || '')] || [];
+  }
+  //: The roots: a board nobody bound, and a board whose parent the fold did not retain.
+  //: The second case matters -- a nested board whose parent fell off the board cap
+  //: would otherwise be on the page nowhere at all.
+  function rootBoards(list) {
+    var ids = {}, out = [], i;
+    for (i = 0; i < list.length; i++) ids[txt(list[i].id) || String(i)] = true;
+    for (i = 0; i < list.length; i++) {
+      var p = list[i].parent;
+      if (p && typeof p === 'object' && ids[txt(p.board) || '']) continue;
+      out.push(list[i]);
+    }
+    return out;
+  }
+
+  //: One node. `kids` are the rows under it; `total`/`done` and `bill` are its whole
+  //: subtree, itself included, which is what makes a parent's numbers the sum of its
+  //: children's. `task` is set on a leaf level so the row can draw its result pill,
+  //: and `focus` on an epic so its name can switch the page to that workstream.
+  function node(level, key, name, sub, task) {
+    return { level: level, key: key, name: name, sub: sub || '', task: task || null,
+      focus: '', kids: [], total: 0, done: 0, bill: {}, held: 0 };
+  }
+  function absorb(parent, child) {
+    parent.kids.push(child);
+    parent.total += child.total;
+    parent.done += child.done;
+    mergeBills(parent.bill, child.bill);
+  }
+
+  //: A task, and under it every item of every board its own worker runs. Recursive,
+  //: because that worker's board can itself bind workers running boards; `depth` is
+  //: what stops it, and `seen` is what stops a bind cycle from being one.
+  function taskNode(level, key, board, t, nest, depth, seen) {
+    var n = node(level, key, txt(t.title) || DASH, txt(t.summary) || '', t);
+    n.total = 1;
+    n.done = columnOf(t) === 'acc' ? 1 : 0;
+    mergeBills(n.bill, bills(t));
+    var subs = nestedUnder(nest, board.id, t.item_id), i, j;
+    for (i = 0; i < subs.length; i++) {
+      var sb = subs[i], sid = txt(sb.id) || String(i);
+      if (seen[sid]) continue;
+      if (depth <= 0) { n.held += tasksOf(sb).length; continue; }
+      seen[sid] = true;
+      var st = tasksOf(sb);
+      for (j = 0; j < st.length; j++) {
+        absorb(n, taskNode('sub', key + '/s:' + sid + ':' + (txt(st[j].item_id) || j),
+          sb, st[j], nest, depth - 1, seen));
+      }
+      n.held += num(sb.tasks_omitted) || 0;
+    }
+    return n;
+  }
+
+  //: An epic: one board, its tasks grouped into a story per round. The rounds run
+  //: NEWEST first, which is the order the board was worked in reverse and puts the
+  //: story a reader came for at the top.
+  function epicNode(board, nest, seen) {
+    var bid = txt(board.id) || '';
+    var n = node('epic', 'e:' + bid, txt(board.goal) || bid || DASH,
+      'round ' + (num(board.round) === null ? DASH : num(board.round)));
+    n.focus = bid;
+    var ts = tasksOf(board), order = [], groups = {}, i;
+    for (i = 0; i < ts.length; i++) {
+      var r = num(ts[i].round);
+      if (r === null) r = NO_ROUND;
+      if (!groups[r]) { groups[r] = []; order.push(r); }
+      groups[r].push(ts[i]);
+    }
+    order.sort(function (a, b) { return b - a; });
+    for (i = 0; i < order.length; i++) {
+      var r2 = order[i], rows = groups[r2];
+      var story = node('story', n.key + '/r:' + r2,
+        r2 === NO_ROUND ? 'No round recorded' : ('Round ' + r2), '');
+      for (var j = 0; j < rows.length; j++) {
+        absorb(story, taskNode('task',
+          story.key + '/t:' + (txt(rows[j].item_id) || j),
+          board, rows[j], nest, SUB_DEPTH, seen));
+      }
+      story.sub = plural(story.total, 'item', 'items');
+      absorb(n, story);
+    }
+    n.held = num(board.tasks_omitted) || 0;
+    return n;
+  }
+
+  //: The whole forest. `scope` is null for every workstream, or one board for the
+  //: one-workstream view -- in which case that board is the single root even if the
+  //: fold says it is itself nested, because the pill the reader pressed names it.
+  function buildTree(list, scope) {
+    var nest = nestIndex(list), seen = {}, roots, i, out = [];
+    if (scope) {
+      roots = [scope];
+    } else {
+      roots = rootBoards(list);
+    }
+    for (i = 0; i < roots.length; i++) {
+      var rid = txt(roots[i].id) || String(i);
+      if (seen[rid]) continue;
+      seen[rid] = true;
+      out.push(epicNode(roots[i], nest, seen));
+    }
+    return out;
+  }
+
+  //: Which rows start open: every epic, and the newest story of each -- the first in
+  //: the story order, which `epicNode` already sorted newest first. Tasks start shut,
+  //: so an epic opens onto its rounds rather than onto every item at once.
+  function seedOpen(nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      treeOpen[nodes[i].key] = true;
+      if (nodes[i].kids.length) treeOpen[nodes[i].kids[0].key] = true;
+    }
+  }
+
+  // ---------------------------------------------------------------- small pieces
+
+  function sparkline(points, width, height, colour) {
+    var w = width, h = height;
+    var svg = svgEl('svg', { width: w, height: h, viewBox: '0 0 ' + w + ' ' + h,
+      'aria-hidden': 'true' });
+    var vals = [], i;
+    for (i = 0; i < points.length; i++) vals.push(num(points[i].credits) || 0);
+    if (vals.length < 2) return svg;
+    var max = Math.max.apply(null, vals) || 1;
+    var step = w / (vals.length - 1), d = '';
+    for (i = 0; i < vals.length; i++) {
+      d += (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' +
+        (h - 1 - (vals[i] / max) * (h - 2)).toFixed(1) + ' ';
+    }
+    svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: colour,
+      'stroke-width': '1.4', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    return svg;
+  }
+
+  function kpi(label, value, unit, sub, subQuiet, extra) {
+    var card = el('div', 'pr-card pr-kpi');
+    card.appendChild(el('div', 'pr-kpi-label', label));
+    var v = el('div', 'pr-kpi-v', value);
+    if (unit) v.appendChild(el('span', 'pr-kpi-u', unit));
+    card.appendChild(v);
+    if (extra && extra.spark) {
+      var s = el('div', 'pr-kpi-spark');
+      s.appendChild(extra.spark);
+      card.appendChild(s);
+    } else {
+      card.appendChild(el('div'));
+    }
+    if (sub) card.appendChild(el('div', 'pr-kpi-sub' + (subQuiet ? ' pr-quiet' : ''), sub));
+    if (extra && typeof extra.bar === 'number') {
+      var bar = el('div', 'pr-bar');
+      var fill = el('i');
+      fill.style.width = Math.max(0, Math.min(100, extra.bar * 100)).toFixed(1) + '%';
+      bar.appendChild(fill);
+      card.appendChild(bar);
+    }
+    return card;
+  }
+
+  //: The hero: credits per hour as soft bars, with what was ACCEPTED in that hour as a
+  //: glowing line over them. Two scales, because a count of items and an amount of
+  //: credits share no unit and one axis would flatten whichever is smaller.
+  //:
+  //: Built in TWO steps. An element that is not in the document yet measures zero, so
+  //: a chart sized at construction time would be drawn into a 240-wide viewBox and then
+  //: stretched to the card's real width -- bars and axis labels distorted by whatever
+  //: the ratio happened to be. So this returns an empty host, registers it, and
+  //: `drawPlots` fills it once the view is attached and the width is a real number.
+  function heroChart(points, lineLabel) {
+    var host = el('div');
+    var plot = el('div', 'pr-plot');
+    host.appendChild(plot);
+    if (!points.length) {
+      plot.appendChild(el('div', 'pr-empty',
+        'No hourly record yet'));
+      return host;
+    }
+    //: Every hour at zero credits is not a chart. The fold's series carries an hour
+    //: whenever anything happened in it, so a run of zeroes means nobody REPORTED a
+    //: cost -- and a flat line along the axis would read as "it was free" rather than
+    //: "nobody said". The accepted counts are still worth drawing when there are any.
+    var measured = false, accepted = false, i;
+    for (i = 0; i < points.length; i++) {
+      if ((num(points[i].credits) || 0) > 0) measured = true;
+      if ((num(points[i].accepted) || 0) > 0) accepted = true;
+    }
+    if (!measured && !accepted) {
+      plot.appendChild(el('div', 'pr-empty',
+        'These ' + points.length +
+        ' hours carry a record; none of them reported a cost' +
+        ', and nothing was accepted in them'));
+      return host;
+    }
+    plots.push({ plot: plot, points: points, measured: measured });
+
+    var legend = el('div', 'pr-legend');
+    if (measured) {
+      var a = el('span');
+      var sw1 = el('span', 'pr-swatch');
+      sw1.style.background = 'color-mix(in oklab, var(--pr-s1) 56%, transparent)';
+      a.appendChild(sw1);
+      a.appendChild(document.createTextNode('credits that hour'));
+      legend.appendChild(a);
+    } else {
+      legend.appendChild(el('span', null,
+        'no hour reported a cost'));
+    }
+    var b = el('span');
+    var sw2 = el('span', 'pr-swatch');
+    sw2.style.background = 'var(--pr-accent)';
+    b.appendChild(sw2);
+    b.appendChild(document.createTextNode(lineLabel));
+    legend.appendChild(b);
+    host.appendChild(legend);
+    return host;
+  }
+
+  function drawHero(plot, points, w, measured) {
+    var H = 156, padL = 6, padR = 6, padT = 12, padB = 20;
+    var svg = svgEl('svg', { width: w, height: H, viewBox: '0 0 ' + w + ' ' + H,
+      role: 'img' });
+    var i, cr = [], ac = [];
+    for (i = 0; i < points.length; i++) {
+      cr.push(num(points[i].credits) || 0);
+      ac.push(num(points[i].accepted) || 0);
+    }
+    var crMax = Math.max.apply(null, cr) || 1;
+    var acMax = Math.max.apply(null, ac) || 1;
+    var plotW = w - padL - padR, plotH = H - padT - padB;
+    var slot = plotW / points.length;
+    var barW = Math.max(3, Math.min(30, slot * 0.5));
+
+    var defs = svgEl('defs', {});
+    var filt = svgEl('filter', { id: 'pr-glow', x: '-30%', y: '-80%',
+      width: '160%', height: '260%' });
+    filt.appendChild(svgEl('feGaussianBlur', { stdDeviation: '3.4', result: 'b' }));
+    var merge = svgEl('feMerge', {});
+    merge.appendChild(svgEl('feMergeNode', { in: 'b' }));
+    merge.appendChild(svgEl('feMergeNode', { in: 'SourceGraphic' }));
+    filt.appendChild(merge);
+    defs.appendChild(filt);
+    svg.appendChild(defs);
+
+    if (measured) {
+      for (i = 0; i < points.length; i++) {
+        var bh = Math.max(1, (cr[i] / crMax) * plotH);
+        svg.appendChild(svgEl('rect', {
+          x: (padL + i * slot + (slot - barW) / 2).toFixed(1),
+          y: (padT + plotH - bh).toFixed(1),
+          width: barW.toFixed(1), height: bh.toFixed(1), rx: '2',
+          fill: 'color-mix(in oklab, var(--pr-s1) 34%, transparent)' }));
+      }
+    }
+
+    var pts = [];
+    for (i = 0; i < points.length; i++) {
+      pts.push([padL + i * slot + slot / 2, padT + plotH - (ac[i] / acMax) * plotH * 0.86]);
+    }
+    var d;
+    if (pts.length === 1) {
+      d = 'M' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1) +
+          'L' + (pts[0][0] + 1).toFixed(1) + ' ' + pts[0][1].toFixed(1);
+    } else {
+      // Catmull-Rom through the points, emitted as cubics: a smooth line without a
+      // library, which the frame could not load anyway.
+      d = 'M' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1);
+      for (i = 0; i < pts.length - 1; i++) {
+        var p0 = pts[i > 0 ? i - 1 : 0], p1 = pts[i], p2 = pts[i + 1];
+        var p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1];
+        d += 'C' + (p1[0] + (p2[0] - p0[0]) / 6).toFixed(1) + ' ' +
+                   (p1[1] + (p2[1] - p0[1]) / 6).toFixed(1) + ' ' +
+                   (p2[0] - (p3[0] - p1[0]) / 6).toFixed(1) + ' ' +
+                   (p2[1] - (p3[1] - p1[1]) / 6).toFixed(1) + ' ' +
+                   p2[0].toFixed(1) + ' ' + p2[1].toFixed(1);
+      }
+    }
+    svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: 'var(--pr-accent)',
+      'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      filter: 'url(#pr-glow)' }));
+
+    // The peak, marked -- the reference's one labelled point. Only when a cost was
+    // reported: a marker on a zero would point at an amount nobody claimed.
+    if (measured) {
+      var peak = 0;
+      for (i = 1; i < cr.length; i++) if (cr[i] > cr[peak]) peak = i;
+      svg.appendChild(svgEl('circle', {
+        cx: (padL + peak * slot + slot / 2).toFixed(1),
+        cy: (padT + plotH - (cr[peak] / crMax) * plotH).toFixed(1),
+        r: '3', fill: 'var(--pr-bg)', stroke: 'var(--pr-accent)',
+        'stroke-width': '1.6' }));
+    }
+
+    //: Labels are thinned to what FITS: a 760 px panel cannot carry eight stamps, and
+    //: the alternative to dropping some is drawing them on top of each other.
+    var every = Math.max(1, Math.ceil(points.length / Math.max(2, Math.floor(w / 72))));
+    for (i = 0; i < points.length; i++) {
+      if (i % every && i !== points.length - 1) continue;
+      var t = svgEl('text', { x: (padL + i * slot + slot / 2).toFixed(1),
+        y: String(H - 6), 'text-anchor': 'middle', 'font-size': '9.5',
+        fill: 'var(--muted, #7f7f88)' });
+      t.textContent = hourLabel(points[i].hour);
+      svg.appendChild(t);
+    }
+    clear(plot);
+    plot.appendChild(svg);
+  }
+
+  function drawPlots() {
+    for (var i = 0; i < plots.length; i++) {
+      var p = plots[i];
+      drawHero(p.plot, p.points, Math.max(220, Math.round(p.plot.clientWidth) || 220),
+               p.measured);
+    }
+  }
+
+  var SERIES_COLOURS = ['var(--pr-s1)', 'var(--pr-s2)', 'var(--pr-s3)', 'var(--pr-s4)',
+    'color-mix(in oklab, var(--pr-accent) 70%, var(--pr-card))'];
+
+  //: THE SUNBURST, the page's one ring of spend and the tree's companion: two rings of
+  //: the same money, the inner one a level of the tree and the outer one the level
+  //: under it. An SVG arc whose start and end coincide draws NOTHING, so a lone 100%
+  //: segment is a circle -- on either ring, because one epic holding every credit and
+  //: one story inside it is a real board and not a corner case.
+  function ringSeg(svg, c, r, band, from, span, colour, label) {
+    if (span <= 0) return;
+    var seg;
+    if (span >= Math.PI * 2 - 1e-6) {
+      seg = svgEl('circle', { cx: c, cy: c, r: r, fill: 'none', stroke: colour,
+        'stroke-width': String(band) });
+    } else {
+      var to = from + span;
+      seg = svgEl('path', {
+        d: 'M' + (c + r * Math.cos(from)).toFixed(2) + ' ' +
+           (c + r * Math.sin(from)).toFixed(2) +
+           'A' + r + ' ' + r + ' 0 ' + (span > Math.PI ? 1 : 0) + ' 1 ' +
+           (c + r * Math.cos(to)).toFixed(2) + ' ' + (c + r * Math.sin(to)).toFixed(2),
+        fill: 'none', stroke: colour, 'stroke-width': String(band),
+        'stroke-linecap': 'butt' });
+    }
+    //: Hover is a native SVG `<title>`, so the name and the amount are there with no
+    //: listener and no second element to keep in step with the geometry.
+    var tip = svgEl('title', {});
+    tip.textContent = label;
+    seg.appendChild(tip);
+    svg.appendChild(seg);
+  }
+
+  //: A bill key already drawn, so one session is on the ring ONCE. A worker that
+  //: served two stories is drawn under the first of them: the alternative is a ring
+  //: whose segments add up to more than the total in its own centre.
+  function exclusive(set, claimed) {
+    var n = null;
+    for (var k in set) {
+      if (!Object.prototype.hasOwnProperty.call(set, k) || claimed[k]) continue;
+      claimed[k] = true;
+      n = (n || 0) + set[k];
+    }
+    return n;
+  }
+
+  //: *src* are the nodes of the inner ring; each one's own children are its outer
+  //: band. Only MEASURED money is on the ring, so a node nobody costed is absent
+  //: rather than drawn at zero.
+  function spendGroups(src) {
+    var claimed = {}, groups = [], i, j;
+    for (i = 0; i < src.length; i++) {
+      var kids = [], sum = 0, kv;
+      for (j = 0; j < src[i].kids.length; j++) {
+        kv = exclusive(src[i].kids[j].bill, claimed);
+        if (kv === null || kv <= 0) continue;
+        kids.push({ label: src[i].kids[j].name, value: kv });
+        sum += kv;
+      }
+      // Whatever the node holds that none of its children do. Zero in practice,
+      // since a parent's bill is its children's union -- kept so a level that gains
+      // a cost of its own does not silently drop off the ring.
+      kv = exclusive(src[i].bill, claimed);
+      if (kv !== null) sum += kv;
+      if (sum <= 0) continue;
+      groups.push({ label: src[i].name, value: sum, kids: kids });
+    }
+    return groups;
+  }
+
+  //: *inner* and *outer* are each a [singular, plural] pair, because the legend's
+  //: sub-line counts the outer band's segments and English wants the unit to agree.
+  function sunburst(groups, inner, outer) {
+    var host = el('div', 'pr-sun');
+    var R = 80, size = R * 2, c = R;
+    var innerR = 46, innerBand = 19, outerR = 68, outerBand = 13;
+    var svg = svgEl('svg', { width: size, height: size,
+      viewBox: '0 0 ' + size + ' ' + size, role: 'img' });
+    svg.setAttribute('aria-label', inner[1] + ' inside, ' + outer[1] + ' outside');
+    var total = 0, i, j;
+    for (i = 0; i < groups.length; i++) total += groups[i].value;
+
+    var track = 'color-mix(in oklab, var(--pr-line) 80%, var(--pr-card))';
+    svg.appendChild(svgEl('circle', { cx: c, cy: c, r: innerR, fill: 'none',
+      stroke: track, 'stroke-width': String(innerBand) }));
+    svg.appendChild(svgEl('circle', { cx: c, cy: c, r: outerR, fill: 'none',
+      stroke: track, 'stroke-width': String(outerBand) }));
+
+    //: Three shades of the parent's own colour, so an outer band reads as belonging to
+    //: the segment under it rather than as a fifth series.
+    var SHADES = [88, 66, 48];
+    if (total > 0) {
+      var from = -Math.PI / 2;
+      for (i = 0; i < groups.length; i++) {
+        var span = (groups[i].value / total) * Math.PI * 2;
+        var colour = SERIES_COLOURS[i % SERIES_COLOURS.length];
+        ringSeg(svg, c, innerR, innerBand, from, span, colour,
+          groups[i].label + ' — ' + fmtCr(groups[i].value) + ' credits');
+        var kids = groups[i].kids, ksum = 0;
+        for (j = 0; j < kids.length; j++) ksum += kids[j].value;
+        var at = from;
+        for (j = 0; j < kids.length && ksum > 0; j++) {
+          var kspan = span * (kids[j].value / ksum);
+          ringSeg(svg, c, outerR, outerBand, at, kspan,
+            'color-mix(in oklab, ' + colour + ' ' + SHADES[j % SHADES.length] +
+            '%, var(--pr-card))',
+            kids[j].label + ' — ' + fmtCr(kids[j].value) + ' credits');
+          at += kspan;
+        }
+        from += span;
+      }
+    }
+    var mid = svgEl('text', { x: c, y: c - 1, 'text-anchor': 'middle',
+      'font-size': '17', 'font-weight': '640', fill: 'var(--text-strong, #fafafa)' });
+    mid.textContent = fmtCr(total > 0 ? total : null);
+    svg.appendChild(mid);
+    var cap = svgEl('text', { x: c, y: c + 14, 'text-anchor': 'middle',
+      'font-size': '9.5', fill: 'var(--muted, #7f7f88)' });
+    cap.textContent = 'credits';
+    svg.appendChild(cap);
+    host.appendChild(svg);
+
+    host.appendChild(el('div', 'pr-sun-k',
+      inner[1] + ' inside \u00b7 ' + outer[1] + ' outside \u00b7 hover for a name'));
+
+    var rows = el('div', 'pr-sun-rows');
+    if (!groups.length) {
+      rows.appendChild(el('div', 'pr-empty', 'No cost was reported'));
+    }
+    for (i = 0; i < groups.length; i++) {
+      var row = el('div', 'pr-row');
+      var left = el('div', 'pr-row-l');
+      var nm = el('div', 'pr-row-n', groups[i].label);
+      var dot = el('span', 'pr-swatch');
+      dot.style.background = SERIES_COLOURS[i % SERIES_COLOURS.length];
+      dot.style.borderRadius = '999px';
+      nm.insertBefore(dot, nm.firstChild);
+      left.appendChild(nm);
+      left.appendChild(el('div', 'pr-row-s', fmtCr(groups[i].value) + ' credits \u00b7 ' +
+        plural(groups[i].kids.length, outer[0], outer[1])));
+      row.appendChild(left);
+      row.appendChild(el('div', 'pr-row-p',
+        total > 0 ? Math.round((groups[i].value / total) * 100) + '%' : DASH));
+      rows.appendChild(row);
+    }
+    host.appendChild(rows);
+    return host;
+  }
+
+  function verdictPill(t) {
+    var v = txt(t.verdict);
+    var pill = el('span', 'pr-vp');
+    if (v === 'pass') {
+      pill.textContent = 'Accepted';
+      pill.style.background = 'var(--ok-subtle, rgba(34,197,94,.12))';
+      pill.style.color = 'var(--ok, #22c55e)';
+      return pill;
+    }
+    if (v === 'fail') {
+      pill.textContent = 'Rejected';
+      pill.style.background = 'var(--danger-subtle, rgba(239,68,68,.12))';
+      pill.style.color = 'var(--danger, #ef4444)';
+      return pill;
+    }
+    var st = txt(t.status);
+    if (st === 'blocked' || st === 'question') {
+      pill.textContent = st === 'blocked'
+        ? 'Blocked' : 'Your call';
+      pill.style.background = 'var(--warn-subtle, rgba(234,179,8,.12))';
+      pill.style.color = 'var(--warn, #eab308)';
+      return pill;
+    }
+    if (columnOf(t) === 'await') {
+      pill.textContent = 'Awaiting my verdict';
+      pill.style.background = 'color-mix(in oklab, var(--pr-s2) 20%, var(--pr-card))';
+      pill.style.color = 'var(--text, #e4e4e7)';
+      return pill;
+    }
+    return null;
+  }
+
+  function prChip(t) {
+    var pr = txt(t.pr);
+    if (!pr) return null;
+    return el('span', 'pr-chip', /^\d+$/.test(pr) ? 'PR ' + pr : pr);
+  }
+
+  //: ONE ROW of the tree: chevron, level tag, name, then the right-hand group --
+  //: done/total with a progress bar for a node that has children, the leaf's own
+  //: result pill and PR for a task, and the subtree's credits on every row.
+  function treeRow(n) {
+    var wrap = el('div', 'pr-n pr-n-' + n.level);
+    wrap.style.setProperty('--pr-lv', LEVELS[n.level][1]);
+    var expandable = n.kids.length > 0 || n.held > 0;
+    var open = expandable && treeOpen[n.key] === true;
+    wrap.setAttribute('data-kids', expandable ? 'true' : 'false');
+    wrap.setAttribute('data-open', open ? 'true' : 'false');
+
+    var h = el('div', 'pr-n-h');
+    h.appendChild(el('div', 'pr-chev', expandable ? '\u25b8' : ''));
+    h.appendChild(el('div', 'pr-lv', LEVELS[n.level][0]));
+
+    var x = el('div', 'pr-n-x');
+    var title = el('div', 'pr-n-t', n.name);
+    if (n.focus) {
+      //: An epic's name is also the way into its own view, which is what the pill row
+      //: does -- the same gesture the round-4 board had on a workstream title.
+      title.setAttribute('role', 'button');
+      title.setAttribute('tabindex', '0');
+      title.setAttribute('title', 'Show only this workstream');
+    }
+    x.appendChild(title);
+    if (n.sub) x.appendChild(el('div', 'pr-n-s', n.sub));
+    h.appendChild(x);
+
+    var r = el('div', 'pr-n-r');
+    if (n.task) {
+      var pill = verdictPill(n.task);
+      if (pill) r.appendChild(pill);
+      var chip = prChip(n.task);
+      if (chip) r.appendChild(chip);
+      //: How long its worker's turns ran. Only when measured, because `fmtDur`'s dash
+      //: in a chip of its own would be a column of dashes saying nothing.
+      var ran = fmtDur(n.task.duration_ms);
+      if (ran !== DASH) r.appendChild(el('span', 'pr-chip', ran));
+    }
+    //: A leaf is one item, so "1 / 1" and a full bar say nothing its pill has not
+    //: already said. The progress pair is for a node that rolls something up.
+    if (n.kids.length) {
+      r.appendChild(el('div', 'pr-n-done', n.done + ' / ' + n.total));
+      var bar = el('div', 'pr-n-bar');
+      var fill = el('i');
+      fill.style.width = (n.total ? (n.done / n.total) * 100 : 0).toFixed(1) + '%';
+      bar.appendChild(fill);
+      r.appendChild(bar);
+    }
+    r.appendChild(el('div', 'pr-n-cr', fmtCr(billTotal(n.bill))));
+    h.appendChild(r);
+    wrap.appendChild(h);
+
+    if (expandable) {
+      h.setAttribute('role', 'button');
+      h.setAttribute('tabindex', '0');
+      h.setAttribute('aria-expanded', open ? 'true' : 'false');
+      var kids = el('div', 'pr-kids');
+      for (var i = 0; i < n.kids.length; i++) kids.appendChild(treeRow(n.kids[i]));
+      if (n.held) {
+        kids.appendChild(el('div', 'pr-held',
+          plural(n.held, 'task', 'tasks') + ' the fold did not retain'));
+      }
+      wrap.appendChild(kids);
+    }
+
+    (function (key, focus, head, name) {
+      head.addEventListener('click', function (ev) {
+        if (focus && ev.target === name) { view = focus; render(); return; }
+        if (!expandable) return;
+        treeOpen[key] = treeOpen[key] !== true;
+        render();
+      });
+      head.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        if (focus && ev.target === name) { view = focus; render(); return; }
+        if (!expandable) return;
+        treeOpen[key] = treeOpen[key] !== true;
+        render();
+      });
+      if (focus) {
+        name.addEventListener('keydown', function (ev) {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          view = focus;
+          render();
+        });
+      }
+    }(n.key, n.focus, h, title));
+
+    return wrap;
+  }
+
+  // ---------------------------------------------------------------- sections
+
+  function sectionKpi(list, points) {
+    var wrap = el('div', 'pr-kpis');
+    var open = 0, acc = 0, total = 0, cr = null, measured = 0, i;
+    for (i = 0; i < list.length; i++) {
+      open += num(list[i].open) || 0;
+      acc += num(list[i].accepted) || 0;
+      total += num(list[i].total) || 0;
+      var c = credits(list[i]);
+      if (c !== null) { cr = (cr || 0) + c; measured += 1; }
+    }
+    var need = needsYou(list, null);
+    //: EPICS, where the card says "workstreams". The money and the blocked items above
+    //: are summed over every board including the nested ones -- a charge is a charge
+    //: wherever it was billed -- but a nested board is not a workstream of its own, and
+    //: this number sits beside a tree that draws one root per epic.
+    var epics = rootBoards(list).length;
+
+    wrap.appendChild(kpi('In flight', String(open), open === 1 ? 'item' : 'items',
+      plural(epics, 'workstream', 'workstreams'), true,
+      { spark: sparkline(points, 62, 26, 'color-mix(in oklab, var(--pr-s2) 85%, var(--pr-card))') }));
+    wrap.appendChild(kpi('Accepted', String(acc), acc === 1 ? 'item' : 'items',
+      acc + ' / ' + plural(total, 'item', 'items'), true,
+      { bar: total ? acc / total : 0 }));
+
+    var tail = points.length ? num(points[points.length - 1].credits) : null;
+    wrap.appendChild(kpi('Spent', fmtCr(cr), 'credits',
+      measured === list.length
+        ? (tail === null ? '' : 'last hour ' + fmtCr(tail))
+        : (list.length - measured) + ' reported no cost',
+      measured === list.length,
+      { spark: sparkline(points, 62, 26, 'var(--pr-accent)') }));
+
+    wrap.appendChild(kpi('Needs you', String(need.total),
+      need.total === 1 ? 'item' : 'items',
+      need.total
+        ? need.workers + ' from workers, ' + need.mine +
+          ' written by the crewmate'
+        : 'nothing waiting on you',
+      !need.total, {}));
+    return wrap;
+  }
+
+  //: The hero on its own, full width. Its old companion was a donut of spend per
+  //: workstream, and that question is now the sunburst's inner ring beside the tree --
+  //: where the same money is also broken down one level further.
+  function sectionHero(points, caption) {
+    var hero = el('div', 'pr-card pr-hero');
+    var hh = el('div', 'pr-card-h');
+    hh.appendChild(el('div', 'pr-card-t', 'Credits per hour'));
+    hh.appendChild(el('div', 'pr-card-c', caption));
+    hero.appendChild(hh);
+    hero.appendChild(heroChart(points, 'items accepted that hour'));
+    return hero;
+  }
+
+  //: Everything the "Needs you" question has in it, computed ONCE and read by the header
+  //: sentence, the KPI card and the list itself -- three places that showed the same
+  //: quantity and so must not be able to count it differently. A page saying "2 need you"
+  //: above a list reading "Nothing needs you" has told the reader nothing it can act on.
+  //:
+  //: `rows` are the lines it can actually draw; `total` is what the RECORD says, which
+  //: is the larger number when the fold truncated a task list (`tasks_omitted`) -- the
+  //: fold's own `needs_you` counts that board's whole board, and the tasks it retained
+  //: are a bounded view of it. The gap is drawn as a gap rather than hidden either way.
+  //:
+  //: `scope` is null for the global view, or `{id, goal}` for one workstream. A `for_you`
+  //: line is scoped by naming its workstream's goal or its id exactly; a line matching
+  //: neither still appears in the GLOBAL view, so a mislabelled one is never lost.
+  function needsYou(list, scope) {
+    var rows = [], workers = 0, mine = 0, i, j;
+    for (i = 0; i < list.length; i++) {
+      workers += num(list[i].needs_you) || 0;
+      var ts = tasksOf(list[i]);
+      for (j = 0; j < ts.length; j++) {
+        if (!needsMe(ts[j])) continue;
+        rows.push({ kind: txt(ts[j].status) === 'blocked'
+            ? 'Blocked' : 'Your call',
+          text: txt(ts[j].title) || DASH,
+          where: txt(list[i].goal) || '',
+          note: txt(ts[j].summary) || '', agent: false });
+      }
+    }
+    var written = forYou();
+    for (i = 0; i < written.length; i++) {
+      var label = txt(written[i].workstream);
+      if (scope && label !== scope.goal && label !== scope.id) continue;
+      rows.push({ kind: 'For you', text: txt(written[i].text),
+        where: label || '', note: '', agent: true });
+      mine += 1;
+    }
+    //: `workers` is the fold's own count for the boards in view, not a count of the rows
+    //: drawn: the retained task list is bounded, so the fold can legitimately know of
+    //: more than the page can show. Attributing the gap to either side would be a guess,
+    //: so each half keeps its own number and the gap is drawn as a gap.
+    var drawn = rows.length;
+    var total = workers + mine;
+    //: The record cannot report FEWER than the page can draw: a count below the rows in
+    //: hand would be the fold disagreeing with its own task list, and the rows are the
+    //: thing a reader can act on, so they win.
+    if (total < drawn) {
+      workers = drawn - mine;
+      total = drawn;
+    }
+    return { rows: rows, total: total, workers: workers, mine: mine };
+  }
+
+  function todoCard(list, scope) {
+    var card = el('div', 'pr-card');
+    var h = el('div', 'pr-card-h');
+    h.appendChild(el('div', 'pr-card-t', 'Needs you'));
+    h.appendChild(el('div', 'pr-card-c',
+      'blocked, and waiting on your call'));
+    card.appendChild(h);
+
+    var need = needsYou(list, scope);
+    var rows = need.rows, i;
+    if (!rows.length && !need.total) {
+      card.appendChild(el('div', 'pr-empty',
+        'Nothing needs you.'));
+      return card;
+    }
+    var box = el('div', 'pr-todo');
+    for (i = 0; i < rows.length; i++) {
+      var it = el('div', 'pr-todo-i');
+      it.appendChild(el('div', 'pr-todo-k', rows[i].kind));
+      var x = el('div', 'pr-todo-x');
+      x.appendChild(el('b', null, rows[i].text));
+      var meta = el('span');
+      var bits = [];
+      if (rows[i].where) bits.push(rows[i].where);
+      if (rows[i].note) bits.push(rows[i].note);
+      meta.textContent = bits.join(' · ');
+      x.appendChild(meta);
+      if (rows[i].agent && forYouIsAgentic()) {
+        x.appendChild(document.createTextNode(' '));
+        x.appendChild(el('span', 'pr-agent',
+          'crewmate wrote this'));
+      }
+      it.appendChild(x);
+      box.appendChild(it);
+    }
+    card.appendChild(box);
+    if (need.total > rows.length) {
+      //: The record counts more than the retained tasks can show, so the difference is
+      //: NAMED. Drawing only the rows would under-report what is waiting; printing only
+      //: the count would send the reader looking for lines that are not on the page.
+      var held = el('div', 'pr-held',
+        (need.total - rows.length) +
+        ' more among the tasks the fold did not retain');
+      held.style.gridColumn = '1 / -1';
+      card.appendChild(held);
+    }
+    return card;
+  }
+
+  //: THE EPIC TREE, and the page's one board. Four levels of the record -- a board's
+  //: goal, a round of it, a work item, an item on a board that item's worker runs --
+  //: with the sunburst of the same money beside it.
+  //:
+  //: `scope` is null for every workstream, where the rings are epic inside and story
+  //: outside, or one board, where the tree has a single root and the rings move down
+  //: with it to story inside and task outside. The rings are always the two levels
+  //: UNDER the tree's root, which is what keeps "inside" and "outside" meaning the
+  //: same thing in both views: a share of the root, and a share of that share.
+  //: `nodes` is the forest, already built: the one-workstream header reports the same
+  //: roll-up as the root row, so the view builds it ONCE and hands it to both. Two
+  //: builds would be two chances to disagree about the number the page states twice.
+  //: `one` is a BOOLEAN -- whether this is the one-workstream view -- and not the
+  //: board, so there is nothing here to pass the wrong object to.
+  function sectionTree(nodes, one) {
+    var card = el('div', 'pr-card');
+    var h = el('div', 'pr-card-h');
+    h.appendChild(el('div', 'pr-card-t', one ? 'This epic' : 'Every epic'));
+    h.appendChild(el('div', 'pr-card-c', one
+      ? 'story \u00b7 task \u00b7 subtask, with what each cost'
+      : 'epic \u00b7 story \u00b7 task \u00b7 subtask, with what each cost'));
+    card.appendChild(h);
+
+    if (!treeInit && nodes.length) {
+      treeInit = true;
+      seedOpen(nodes);
+    }
+    if (!nodes.length) {
+      card.appendChild(el('div', 'pr-empty', 'No workstream yet.'));
+      return card;
+    }
+
+    var wrap = el('div', 'pr-tree-wrap');
+    var tree = el('div', 'pr-tree');
+    for (var i = 0; i < nodes.length; i++) tree.appendChild(treeRow(nodes[i]));
+    wrap.appendChild(tree);
+    var inner = one ? ['story', 'stories'] : ['epic', 'epics'];
+    var outer = one ? ['task', 'tasks'] : ['story', 'stories'];
+    wrap.appendChild(sunburst(
+      spendGroups(one ? nodes[0].kids : nodes), inner, outer));
+    card.appendChild(wrap);
+    return card;
+  }
+
+  // ---------------------------------------------------------------- views
+
+  //: One pill per EPIC, not per board. A nested board is a subtask list reached by
+  //: opening its parent task, so a pill of its own would be a second door to the same
+  //: rows -- and would make the `All` count disagree with the number of epics the
+  //: tree beside it draws, which is the one thing a count next to a tree must not do.
+  function renderPills(list) {
+    var host = document.getElementById('pr-pills');
+    clear(host);
+    function pill(id, label, count) {
+      var b = el('button', 'pr-pill');
+      b.setAttribute('type', 'button');
+      b.setAttribute('aria-current', view === id ? 'true' : 'false');
+      b.appendChild(document.createTextNode(label));
+      if (count !== null && count !== undefined) {
+        b.appendChild(el('span', 'pr-pill-n', String(count)));
+      }
+      b.addEventListener('click', function () { view = id; render(); });
+      return b;
+    }
+    var roots = rootBoards(list);
+    host.appendChild(pill(ALL, 'All', roots.length));
+    for (var i = 0; i < roots.length; i++) {
+      var s = roots[i];
+      host.appendChild(pill(txt(s.id) || String(i), txt(s.goal) || String(i),
+        num(s.open)));
+    }
+  }
+
+  function sentenceAll(list) {
+    var open = 0, cr = null, i;
+    for (i = 0; i < list.length; i++) {
+      open += num(list[i].open) || 0;
+      var c = credits(list[i]);
+      if (c !== null) cr = (cr || 0) + c;
+    }
+    var need = needsYou(list, null).total;
+    var host = document.getElementById('pr-sentence');
+    clear(host);
+    function bit(strong, after) {
+      host.appendChild(el('b', null, strong));
+      host.appendChild(document.createTextNode(after));
+    }
+    bit(String(open), ' in flight, spent ');
+    bit(fmtCr(cr), ' credits，');
+    bit(String(need), need === 1 ? ' needs you' : ' need you');
+  }
+
+  function renderGlobal(list) {
+    document.getElementById('pr-title').textContent = 'Project report';
+    sentenceAll(list);
+    var host = document.getElementById('pr-view');
+    clear(host);
+    if (!list.length) {
+      host.appendChild(el('div', 'pr-card'))
+        .appendChild(el('div', 'pr-empty',
+          'No workstream yet.'));
+      return;
+    }
+    var points = seriesOf(fields());
+    var box = el('div');
+    box.style.display = 'grid';
+    box.style.gap = '12px';
+    for (var i = 0; i < LAYOUT.length; i++) {
+      if (LAYOUT[i] === 'kpi') box.appendChild(sectionKpi(list, points));
+      else if (LAYOUT[i] === 'hero') {
+        box.appendChild(sectionHero(points, 'every workstream together'));
+      } else if (LAYOUT[i] === 'todo') box.appendChild(todoCard(list, null));
+      else if (LAYOUT[i] === 'tree') {
+        box.appendChild(sectionTree(buildTree(list, null), false));
+      }
+    }
+    host.appendChild(box);
+  }
+
+  //: *list* comes in beside *s* because a nested board is a SIBLING row of the fold's
+  //: flat list, not a child of `s` -- so the tree of one epic still needs the whole
+  //: list to find the boards hanging under this one's tasks.
+  function renderStream(s, list) {
+    var goal = txt(s.goal) || txt(s.id) || DASH;
+    document.getElementById('pr-title').textContent = goal;
+    var scope = { id: txt(s.id) || '', goal: txt(s.goal) || '' };
+    //: ONE build, and the header reads the root of it. The board row's own `accepted`,
+    //: `total` and `credits` count that board ALONE, so on an epic with a nested board
+    //: they are smaller than the epic row directly below them -- the same two numbers,
+    //: stated twice, disagreeing. The roll-up is the honest one here: the subtasks are
+    //: on the page, under this epic, and their cost was spent getting this epic done.
+    var nodes = buildTree(list, s);
+    var root = nodes.length ? nodes[0] : null;
+    var acc = root ? root.done : (num(s.accepted) || 0);
+    var tot = root ? root.total : (num(s.total) || 0);
+    var cr = root ? billTotal(root.bill) : credits(s);
+    var need = needsYou([s], scope).total;
+    var host = document.getElementById('pr-sentence');
+    clear(host);
+    host.appendChild(document.createTextNode('done '));
+    host.appendChild(el('b', null, acc + ' / ' + tot));
+    host.appendChild(document.createTextNode(', spent '));
+    host.appendChild(el('b', null, fmtCr(cr)));
+    host.appendChild(document.createTextNode(' credits, '));
+    host.appendChild(el('b', null, String(need)));
+    host.appendChild(document.createTextNode(need === 1 ? ' needs you' : ' need you'));
+
+    var box = el('div');
+    box.style.display = 'grid';
+    box.style.gap = '12px';
+
+    box.appendChild(todoCard([s], scope));
+    //: The tree of this one epic REPLACES the flat task list that was here. The list
+    //: drew one row per task with its cost and result; a task row of the tree draws
+    //: the same three things and also says which round it belongs to and what its own
+    //: worker's board did under it, which the flat list had no room for.
+    box.appendChild(sectionTree(nodes, true));
+    box.appendChild(sectionHero(seriesOf(s), 'this workstream only'));
+
+    var host2 = document.getElementById('pr-view');
+    clear(host2);
+    host2.appendChild(box);
+  }
+
+  // ---------------------------------------------------------------- render
+
+  function render() {
+    var list = streams();
+    plots = [];
+    var found = null;
+    if (view !== ALL) {
+      for (var j = 0; j < list.length; j++) {
+        if ((txt(list[j].id) || String(j)) === view) { found = list[j]; break; }
+      }
+      if (!found) view = ALL;   // the fold dropped the board this pill named
+    }
+    renderPills(list);
+    //: The bound cells are filled by the host with the raw JSON of an array, which is
+    //: unreadable in a sentence, so each one is overwritten with its count here.
+    put('items', list.length);
+    put('omitted', num(fields().omitted));
+    put('series', seriesOf(fields()).length);
+    put('for_you', forYou().length);
+    if (found) renderStream(found, list); else renderGlobal(list);
+    //: Only now does a card have a width, so only now can a chart be drawn to one.
+    drawPlots();
+  }
+
+  function put(name, value) {
+    var node = document.querySelector('[data-dashboard-field="' + name + '"]');
+    if (!node) return;
+    node.textContent = (value === null || value === undefined || value === '')
+      ? DASH : String(value);
+  }
+
+  //: On load AND on every push: the order of the host's first fill against this script
+  //: is not the page's to assume, and a refill carries new values for the same page.
+  render();
+  window.addEventListener('message', function () { render(); });
+  var timer = null;
+  window.addEventListener('resize', function () {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(render, 120);
+  });
+}());
+</script>

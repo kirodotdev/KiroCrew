@@ -90,6 +90,29 @@ export type CrewPanelData = Record<string, unknown>
 
 /** Metadata half of GET /api/members/{slug}/panel. The document itself travels
  *  beside it as `html`, already composed server-side from the template. */
+/** One field of a dashboard template manifest, as the gateway serves it.
+ *
+ * `source` is the whole point of the manifest reaching the browser: a `fold`
+ * field is a number the gateway read out of the crew log, and an `agentic` one is
+ * a value the crewmate asserted. The frame marks the second kind, because a
+ * reader deciding whether to act on a number is entitled to know which it is.
+ *
+ * Mirrors `FieldSpec` in `src/kiro_crew/dashboard_templates/manifest.py`. */
+export interface DashboardFieldSpec {
+  type: 'number' | 'string' | 'boolean' | 'array' | 'object'
+  source: { agentic: true } | { fold: string; path: string }
+}
+
+/** A dashboard template's manifest. Mirrors `TemplateManifest`. */
+export interface DashboardManifest {
+  id: string
+  version: number
+  title: string
+  description: string
+  source: 'builtin' | 'user' | 'shared'
+  fields: Record<string, DashboardFieldSpec>
+}
+
 export interface CrewPanelMeta {
   template: string
   title: string
@@ -212,6 +235,32 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
       fetch(
         '/api/members/' + encodeURIComponent(slug) + '/panel?member=' + encodeURIComponent(member),
       ).then(j) as Promise<{ panel: CrewPanelMeta | null; html: string | null }>,
+    // The crewmate's dynamic dashboard INSTANCE: which template it copied, its own
+    // edited page, the manifest that says where each field's value comes from, and
+    // the instance's state. Served by the registry (contract v3 part 4/7) and read
+    // here because the frame beside the chat is what renders it.
+    //
+    // `html` and `manifest` travel TOGETHER on purpose: the page binds fields by
+    // name and the manifest is what says which of those names are the crewmate's
+    // own writes rather than folded numbers. Two reads could pair a page with a
+    // manifest from a different instance version, and the frame would then mark the
+    // wrong cells as agentic -- which is the one thing this surface must not get
+    // wrong, because it is the reader's only signal of how much to trust a number.
+    // `member` is the exact crew name, as every member route takes it (slugs are lossy).
+    memberDashboard: (slug: string, member: string) =>
+      fetch(
+        '/api/members/' + encodeURIComponent(slug) + '/dashboard?member=' + encodeURIComponent(member),
+      ).then(j) as Promise<{
+        instance_version: number
+        template: { id: string; version: number }
+        html: string
+        /** The live page with its values already filled in by the gateway (data
+         * island + bootstrap + page), absent when the fill failed or the state is not
+         * live. The frame prefers it; the raw `html` is the fallback. */
+        rendered_html?: string
+        manifest: DashboardManifest
+        state: 'empty' | 'live' | 'stale' | 'error'
+      } | null>,
     // The crewmate's self-maintained briefing markdown. Read-only from the UI
     // (no editor: the file is agent-written and edited where the crewmate keeps
     // it). `member` is the exact crew name (slugs are lossy).

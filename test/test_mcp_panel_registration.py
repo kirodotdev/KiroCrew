@@ -291,7 +291,20 @@ class TestWhatThisSetGrants:
     it actually needs.
     """
 
-    GRANTED_TOOLS = {"panel_publish", "panel_templates"}
+    #: Widened for contract v3's part 6, which puts the dynamic dashboard's agent
+    #: surface on THIS server rather than a new one. That is the right call under
+    #: this class's own rule and worth saying why: a dashboard field is published
+    #: crew state read in the crewmate's own drawer, which is exactly the class
+    #: ``panel_publish`` already is. The two new tools derive their target from the
+    #: vetted caller like their siblings, write only that caller's own crew log,
+    #: and need no gate this set does not already have -- so putting them in a
+    #: server of their own would ask the user to grant the same thing twice.
+    GRANTED_TOOLS = {
+        "panel_publish",
+        "panel_templates",
+        "dashboard_fields",
+        "dashboard_write",
+    }
 
     def test_the_set_is_exactly_the_panel_tools(self) -> None:
         mcp_panel = importlib.import_module(PANEL_MODULE)
@@ -301,12 +314,20 @@ class TestWhatThisSetGrants:
         mcp_panel = importlib.import_module(PANEL_MODULE)
         assert {t["name"] for t in mcp_panel._list_tools()} == self.GRANTED_TOOLS
 
+    #: The prefixes this server's tools may carry, each naming one class of thing
+    #: the user granted: ``panel_`` for the published webview, ``dashboard_`` for
+    #: the crewmate's own dynamic dashboard. A tool fitting NEITHER belongs in a
+    #: server of its own with the gate it actually needs, which is what this check
+    #: exists to force someone to decide.
+    TOOL_PREFIXES = ("panel_", "dashboard_")
+
     def test_every_tool_is_named_for_what_it_does(self) -> None:
         mcp_panel = importlib.import_module(PANEL_MODULE)
         names = {t["name"] for t in mcp_panel._tool_definitions()}
-        assert names == {n for n in names if n.startswith("panel_")}, (
-            f"{sorted(n for n in names if not n.startswith('panel_'))} is not panel "
-            "publishing — name the class it belongs to before adding it here"
+        stray = sorted(n for n in names if not n.startswith(self.TOOL_PREFIXES))
+        assert not stray, (
+            f"{stray} is neither panel publishing nor the crewmate dashboard — name "
+            "the class it belongs to before adding it here"
         )
 
     def test_every_tool_has_a_registered_schema(self) -> None:

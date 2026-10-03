@@ -16899,6 +16899,8 @@
       "profile_goals_tab": "목표",
       "profile_goals_soon": "목표 기능이 곧 제공됩니다. 여기서 {{name}}의 목표를 정하고 진행 상황을 확인할 수 있습니다.",
       "dashboard_empty": "{{name}}이(가) 아직 대시보드를 게시하지 않았습니다. 이 채팅에서 요청하면 게시한 내용이 여기에 표시됩니다.",
+      "dashboard_kept_last_good": "이 대시보드의 최신 버전을 불러오지 못해, 마지막으로 불러온 버전을 표시합니다.",
+      "dashboard_unavailable": "이 대시보드를 불러올 수 없습니다. 다시 시도하거나 페이지를 새로 고치세요.",
       "profile_permissions": "권한",
       "profile_permissions_sub": "할 수 있는 일 · 편집기에서 설정",
       "schedule_up_next": "다음",
