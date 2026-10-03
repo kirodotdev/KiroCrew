@@ -198,6 +198,24 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     }
   }, [revealTs, items, expandedStacks])
 
+  // Up/Down on a row's open control select its neighbour in the order rendered
+  // (a collapsed stack is one stop) and carry focus along, so repeated presses
+  // walk the feed. Keys from an inner control (dismiss, Approve, a code block),
+  // modified arrows and the ends are left to the browser.
+  const stepSelectionWithArrowKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0
+    const row = (e.target as Element).closest('[data-notif-row]')
+    const fromTs = row?.getAttribute('data-ts')
+    if (!step || !fromTs || e.target !== row?.querySelector('[role="button"]')) return
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+    const rows = Array.from(stackedGroups.values()).flat()
+    const next = rows[rows.findIndex(r => r.n.ts === fromTs) + step]
+    if (!next) return
+    e.preventDefault()
+    onSelect(next.n)
+    e.currentTarget.querySelector<HTMLElement>(`[data-ts="${CSS.escape(next.n.ts)}"] [role="button"]`)?.focus()
+  }
+
   // One-click approval resolution from the feed.
   const resolveApprovalNote = useCallback((n: Notification, action: 'approve' | 'reject') => {
     api.resolveApproval(n.approval_id || n.ts, action)
@@ -309,7 +327,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           composed into the mac variant is material or background by decision
           (shell/notifications/notificationSheet.tsx, the sheet's invariant); a new
           child needs one or the other. */}
-      <div ref={listRef} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
+      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- delegates Up/Down from the rows' own buttons; the list itself is not a control */}
+      <div ref={listRef} onKeyDown={stepSelectionWithArrowKeys} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {filtered.length === 0 ? (
           <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (
