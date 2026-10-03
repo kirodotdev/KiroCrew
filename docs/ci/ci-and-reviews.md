@@ -1492,6 +1492,17 @@ arrives with `needs-triage` and leaves triage with exactly one verdict label:
 (`TRIAGE_VERDICT_LABELS` in the workflow) and not the pipeline itself, so a
 change to the verdict set is a change in both places.
 
+**Re-run on verdict.** `issue-gate.yml` runs on pull-request events only, so a
+PR opened before triage stays red after the verdict lands on its issue.
+`issue-gate-retrigger.yml` closes that gap: on `issues: labeled` with one of the
+three verdict labels (any other label is dropped by the job `if:` before a runner
+starts), it lists the open PRs of this repository that cross-reference the issue
+and runs `gh run rerun --failed` on each one's failed Issue Gate run for its
+current head. A green, running or missing run is left alone, and at most 20 PRs
+are touched per event. One GraphQL read, then one runs read and at most one
+re-run per PR, on `GITHUB_TOKEN` with `actions: write`. The verdict set is pinned
+to `TRIAGE_VERDICT_LABELS` by `test/test_issue_gate_retrigger_workflow.py`.
+
 **One grammar.** Which issues a body declares is decided by
 `.github/scripts/issue_gate_refs.py`, an adapter onto the declaration grammar
 `prepare-pr/scripts/pr_status.py` exports as its one public entry point
