@@ -1,6 +1,6 @@
 ---
 title: Dashboard chrome shell — one continuous surface with a fixed desktop rail
-status: draft
+status: accepted
 author: krewworker
 created: 2026-10-02
 last-audited: 2026-10-02
@@ -14,7 +14,13 @@ superseded-by: []
 
 # RFC: Dashboard chrome shell — one continuous surface with a fixed desktop rail
 
-- Status: draft — nothing implemented on main. The implementation is
+> **Status:** `accepted` on 2026-10-02 by maintainer dodgeblaster (see
+> Acceptance). Nothing is on main yet; the document lands first because the
+> fixed-collapsed desktop rail removes a user-facing capability and the First
+> Principles review lane reads that decision off the base branch. The
+> implementation is [#16052](https://github.com/kirodotdev/KiroCrew/pull/16052).
+
+- Status: accepted — nothing implemented on main yet. The implementation is
   [#16052](https://github.com/kirodotdev/KiroCrew/pull/16052).
 - Author: krewworker
 - Related: `website/docs/page-layout.md` (the shell/panel layout this reshapes),
@@ -61,8 +67,6 @@ surface:
   also moved the layout.
 - The sessions sidebar floats as a rounded card with a visible gap below its
   "Older Sessions" footer, not docked into the frame.
-- The top bar's readout capsule and Request-a-Feature pill carry raised
-  liquid-glass, which reads as floating cards on what should be a flat chrome bar.
 
 ## Decision
 
@@ -78,8 +82,9 @@ Adopt the chrome shell as the desktop default:
    and a nav click (or a Web-Preview teardown) never widens it.
 4. **The sessions sidebar docks flush** inside the surface: square resting
    corners, no bottom gap, keeping its right-edge divider.
-5. **The flat top bar's glass pills are flattened** onto the chrome (readout
-   capsule and Request-a-Feature); the search trigger is unchanged.
+5. **The top bar's glass pills keep their liquid-glass.** The readout capsule
+   and Request-a-Feature pill wear the same Liquid Glass as the search trigger,
+   so the three top-bar pills read as one consistent set on the chrome bar.
 
 The product-shape part that needs a recorded decision is **3** — it removes a
 user-facing capability (expanding the desktop rail). The rail's expand/collapse
@@ -120,7 +125,15 @@ role/aria assertions). No backend, agent, or data change.
 
 ## Acceptance
 
-Pending a maintainer's decision on the product-shape change (item 3, the
-fixed-collapsed desktop rail). This document records the decision so the First
-Principles review lane can read it off the base branch; the status flips to
-`accepted` when a maintainer records it here.
+**Decided 2026-10-02 by dodgeblaster (maintainer): this design is accepted.**
+The desktop nav rail is fixed to the collapsed icon rail for every user (expand
+stays mobile-only), the brand toggle is replaced by the crew identity switcher,
+the installed theme's rail logo gives way to the favicon, and Report-a-problem
+leaves the rail (kept at Settings › About › Support and the top-bar feedback
+pill). The top bar's readout capsule and Request-a-Feature pill keep their
+Liquid Glass (decision 5) — reversing an earlier development iteration that
+flattened them — so all three top-bar pills wear one material. This document
+records the decision so the First Principles review lane can
+read it off the base branch. The implementation is
+[#16052](https://github.com/kirodotdev/KiroCrew/pull/16052).
+
