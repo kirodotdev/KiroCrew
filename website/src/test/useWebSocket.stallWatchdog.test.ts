@@ -297,6 +297,78 @@ describe('row-delivery stall watchdog', () => {
     unmount()
   })
 
+  it('counts a chunk reduced above a queued bubble as progress, firing no stall GET', async () => {
+    /* The progress probe cannot rely on the row count or the TAIL row's text:
+     * a user who queues a message mid-turn makes the queued/user bubble the
+     * tail, so every subsequent chunk accumulates into the streaming row ABOVE
+     * it -- the count and the tail length both sit still while the turn is
+     * plainly alive. The `liveFrameSeq` signal (bumped by every active-slot
+     * live frame) is what proves progress here, so no recovery GET fires. */
+    testStore.dispatch({ type: 'chat/setSlotRunning', payload: true })
+    // Streaming row first, queued bubble pushed last so it is the tail.
+    testStore.dispatch({
+      type: 'chat/replaceMessages',
+      payload: [
+        { id: 's-1', role: 'streaming', content: 'answer so far', cls: 'msg msg-a', rawText: 'answer so far' },
+        { id: 'q-1', role: 'queued', content: 'my next question', cls: 'msg msg-queued', ts: 'q-ts', meta: { queueId: 'q1' } },
+      ],
+    })
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    try {
+      // Each tick, a chunk accumulates into the streaming row above the queued
+      // tail: row count stays 2, the tail (queued) length never moves, but
+      // liveFrameSeq advances -- so the watchdog must keep re-stamping and
+      // never declare a stall.
+      for (let elapsed = 0; elapsed < ROW_STALL_MS + ROW_STALL_TICK_MS * 2; elapsed += ROW_STALL_TICK_MS) {
+        await act(async () => {
+          testStore.dispatch({ type: 'chat/sseChatMessage', payload: { slot: 'chat-active', role: 'chunk', content: '.' } })
+          await vi.advanceTimersByTimeAsync(ROW_STALL_TICK_MS)
+        })
+      }
+      expect(detailCalls()).toBe(0)
+      // The tail is still the queued bubble; the streaming row above it grew.
+      expect(testStore.getState().chat.messages.at(-1)?.role).toBe('queued')
+    } finally {
+      unmount()
+    }
+  })
+
+  it('does not reconnect while the view holds an unidentified durable row the proof cannot key', async () => {
+    /* A drained queue entry is rebuilt client-side as `{ role: 'user', ts, ... }`
+     * with no server mid, and the server's own copy on the recovery page carries
+     * a mid the client never held AND a different (drain-time vs enqueue-time)
+     * ts -- so neither a mid nor a ts match recognises it, and it would read as a
+     * missed delivery on every stall. While the view holds such an unidentified
+     * durable row the missed-row proof is untrustworthy, so the escalation is
+     * gated off and no healthy socket is torn down on a merely-slow turn. */
+    testStore.dispatch({ type: 'chat/setSlotRunning', payload: true })
+    // The client holds the drained user row WITHOUT a mid, stamped with a ts.
+    testStore.dispatch({
+      type: 'chat/replaceMessages',
+      payload: [
+        { id: 'u-1', role: 'user', content: 'queued then sent', ts: 'row-ts-1' },
+      ],
+    })
+    // The recovery page returns the server's own copy of that same row, now
+    // carrying a mid the client never held -- same ts+role.
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({
+      messages: [
+        { id: 'srv-u-1', role: 'user', content: 'queued then sent', ts: 'row-ts-2-drain', meta: { mid: 'server-mid-1' } },
+      ],
+      running: true, has_more: false, total: 1, queue: [],
+    })
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(ROW_STALL_TICK_MS) })
+      const before = socketCount()
+      await act(async () => { await vi.advanceTimersByTimeAsync(ROW_STALL_MS + ROW_STALL_TICK_MS * 2) })
+      expect(detailCalls()).toBeGreaterThan(0) // the cheap re-fetch still runs
+      expect(socketCount()).toBe(before)       // but no reconnect teardown
+    } finally {
+      unmount()
+    }
+  })
+
   it.each(['empty view', 'same-length edit'])('discards a stall refresh after a live change: %s', async shape => {
     /* A page fetched while the socket resumed delivering is older than the
      * view it would replace: applying it drops the newer rows and restores the

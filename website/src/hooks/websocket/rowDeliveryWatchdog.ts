@@ -3,7 +3,7 @@
  *  and escalates to a reconnect when the re-read proves rows were missed. */
 import { useEffect, useRef } from 'react'
 import { useAppStore, type AppDispatch } from '../../store'
-import { refreshSlot } from '../../store/chatSlice'
+import { hasUnidentifiedDurableRow, refreshSlot } from '../../store/chatSlice'
 
 /** Exported so the threshold is asserted rather than guessed at in the spec. */
 export const ROW_STALL_MS = 100_000
@@ -58,18 +58,26 @@ export function useRowDeliveryWatchdog(dispatch: AppDispatch, forceReconnect: ()
     let slotKey: string | null = null
     let rows = -1
     let tail = -1
+    let seq = -1
     let stampedAt = Date.now()
     const id = setInterval(() => {
       const chat = appStore.getState().chat
       const msgs = chat.messages
       const last = msgs[msgs.length - 1]
       const lastLen = last ? (last.rawText ?? last.content ?? '').length : 0
-      // Any change to the row count, or to the tail row's text, is progress --
-      // including a chunk appended in place to the streaming row.
-      if (chat.activeSlot !== slotKey || msgs.length !== rows || lastLen !== tail) {
+      const liveSeq = chat.liveFrameSeq ?? 0
+      // Any change to the row count, the tail row's text, or the active-slot
+      // live-frame counter is progress -- including a chunk reduced into the
+      // streaming row that sits ABOVE a queued bubble, which the row count and
+      // the tail length both miss (a queued/user row is pushed last, so the
+      // growing streaming row is no longer the tail). `liveFrameSeq` is bumped
+      // by `countLiveFrame` on every active-slot live frame, the same signal
+      // `refreshSlot` already reads for its stale-page guard.
+      if (chat.activeSlot !== slotKey || msgs.length !== rows || lastLen !== tail || liveSeq !== seq) {
         slotKey = chat.activeSlot
         rows = msgs.length
         tail = lastLen
+        seq = liveSeq
         stampedAt = Date.now()
         return
       }
@@ -95,6 +103,18 @@ export function useRowDeliveryWatchdog(dispatch: AppDispatch, forceReconnect: ()
         const mid = row?.meta?.mid
         if (typeof mid === 'string' && mid) held.add(mid)
       }
+      /* A row the client already displays WITHOUT a server mid makes the
+       * missed-row proof below untrustworthy: a drained queue entry is rebuilt
+       * client-side as `{ role: 'user', ... }` (`queue.ts`) whose meta carries
+       * no `mid`, is never echoed as `chat_message`, and -- a tail drain going
+       * through the next-queued-turn path -- is never refreshed, while the
+       * server's own copy of that row carries a mid the client never held AND a
+       * different (drain-time vs enqueue-time) `ts`. So neither a mid nor a
+       * `ts` match can recognise it, and it would read as a missed delivery on
+       * every stall. When the view holds such a row the escalation is gated off
+       * (the cheap refresh still runs); this mirrors `slotRefresh`'s own
+       * `hasUnidentifiedDurableRow` span-trust check. */
+      const proofTrustworthy = !hasUnidentifiedDurableRow(msgs)
       void dispatch(refreshSlot({ key: slot, onlyIfUnchanged: true }))
         .then((result) => {
           const current = appStore.getState().chat
@@ -110,7 +130,7 @@ export function useRowDeliveryWatchdog(dispatch: AppDispatch, forceReconnect: ()
            * (rows arrived while it was in flight) -- with no page there is no
            * missed-row proof, so the reconnect teardown is skipped too. */
           const rows = page?.messages ?? []
-          const missed = rows.some((row) => {
+          const missed = proofTrustworthy && rows.some((row) => {
             const mid = row?.meta?.mid
             return typeof mid === 'string' && !!mid && !held.has(mid)
           })
