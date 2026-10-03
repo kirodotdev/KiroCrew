@@ -5433,12 +5433,29 @@ _MATERIALIZED_AGENTS: frozenset[str] = frozenset()
 _MATERIALIZED_STEMS: dict[str, str] = {}
 _MATERIALIZED_AGENTS_READY = False
 # Every name a landed snapshot or a publish has let a binding dispatch in this
-# process: declared names and the file names mapped to one. Grown in place, never
-# rebound or shrunk. A name in it that the current snapshot does not declare
-# was REMOVED, which is the evidence :func:`reset_dangling_default_agent` needs;
+# process: declared names and the file names mapped to one. Updated in place,
+# never rebound. A name in it that the current snapshot does not declare was
+# REMOVED, which is the evidence :func:`reset_dangling_default_agent` needs;
 # keeping it here rather than diffing two consecutive scans means a refresh that
 # does not heal cannot use the evidence up before one that does.
-_MATERIALIZED_SEEN: set[str] = set()
+#
+# An insertion-ordered dict used as a set, bounded by :func:`_remember_seen`:
+# every name the directory still declares moves to the end on each scan, so the
+# oldest entries are the removals seen longest ago, and those go first when the
+# count passes its bound.
+_MATERIALIZED_SEEN: dict[str, None] = {}
+# The directory is user-writable and its files choose these names, so the
+# retained maps are bounded where they are kept: at most this many entries each,
+# and no name (a stem, or the name it maps to) longer than this. A name past the
+# length bound is not recorded. For the stem map that leaves the binding
+# dispatched verbatim; for the removal evidence it means a default bound to that
+# name is never reset, which is the healer's answer to anything it cannot be
+# sure of.
+_MATERIALIZED_SEEN_MAX = 4096
+_MATERIALIZED_SEEN_NAME_MAX_CHARS = 256
+# What the last bounded write dropped, so a diagnostic is written when that
+# changes rather than on every refresh of an unchanged directory.
+_MATERIALIZED_LAST_DROPPED: dict[str, int] = {}
 # Bumped by every publish. A refresh samples it before scanning and, if it moved
 # while the scan was in flight, unions instead of replacing — otherwise a scan
 # that globbed the directory BEFORE a registration wrote into it would assign its
@@ -5455,6 +5472,48 @@ _MATERIALIZED_REFRESH_APPLIED = 0
 # for a lookup: the read path stays lock-free, which is the whole point of the
 # snapshot.
 _MATERIALIZED_AGENTS_LOCK = threading.Lock()
+
+
+def _report_dropped(what: str, dropped: int) -> None:
+    """One aggregate line when a bounded write's drop count changes.
+
+    Every bounded map reports through here, once per landed scan or publish
+    and only when the count differs from the last report for *what*, so an
+    unchanged oversized directory is reported once, not on every refresh.
+    """
+    if _MATERIALIZED_LAST_DROPPED.get(what, 0) == dropped:
+        return
+    _MATERIALIZED_LAST_DROPPED[what] = dropped
+    if dropped:
+        logger.warning(
+            "agents directory: %d %s not kept (bounds: %d entries, %d characters per name)",
+            dropped,
+            what,
+            _MATERIALIZED_SEEN_MAX,
+            _MATERIALIZED_SEEN_NAME_MAX_CHARS,
+        )
+
+
+def _remember_seen(names: Iterable[str]) -> None:
+    """Record *names* in ``_MATERIALIZED_SEEN`` as the newest entries, within its bounds.
+
+    Caller holds ``_MATERIALIZED_AGENTS_LOCK``. A name already present moves to
+    the end, so what the directory still declares stays newest and the oldest
+    entries are stale removal evidence; those are evicted first once the count
+    passes ``_MATERIALIZED_SEEN_MAX``. Overlong names and evictions are counted
+    and reported in one line (see :func:`_report_dropped`).
+    """
+    dropped = 0
+    for name in names:
+        if len(name) > _MATERIALIZED_SEEN_NAME_MAX_CHARS:
+            dropped += 1
+            continue
+        _MATERIALIZED_SEEN.pop(name, None)
+        _MATERIALIZED_SEEN[name] = None
+    while len(_MATERIALIZED_SEEN) > _MATERIALIZED_SEEN_MAX:
+        del _MATERIALIZED_SEEN[next(iter(_MATERIALIZED_SEEN))]
+        dropped += 1
+    _report_dropped("removal-evidence name(s)", dropped)
 
 
 def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
@@ -5532,13 +5591,28 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
         else:
             names.add(af.stem)
     # A stem that is itself some agent's declared name already dispatches that
-    # agent; one two configs share is no evidence of which was meant.
-    return frozenset(names), {
-        stem: name for stem, name in stems.items() if stem not in names and stem not in ambiguous
-    }
+    # agent; one two configs share is no evidence of which was meant. The map is
+    # kept for the process, so it is bounded here, where it is built: an
+    # overlong stem or name is left out (the binding then dispatches verbatim),
+    # and past the count bound the rest are dropped. Both are reported once.
+    kept: dict[str, str] = {}
+    dropped = 0
+    for stem, name in stems.items():
+        if stem in names or stem in ambiguous:
+            continue
+        if (
+            len(stem) > _MATERIALIZED_SEEN_NAME_MAX_CHARS
+            or len(name) > _MATERIALIZED_SEEN_NAME_MAX_CHARS
+            or len(kept) >= _MATERIALIZED_SEEN_MAX
+        ):
+            dropped += 1
+            continue
+        kept[stem] = name
+    _report_dropped("file-name mapping(s)", dropped)
+    return frozenset(names), kept
 
 
-def refresh_materialized_agents(*, heal_default: bool = True) -> None:
+def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     """Rescan the kiro agents directory into the in-memory snapshot.
 
     MUST be called off the event loop — it globs a directory and reads every
@@ -5551,12 +5625,14 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
     does zero filesystem work. Never raises.
 
     A scan that lands is the one moment the snapshot is known to be whole, so
-    it also runs :func:`reset_dangling_default_agent`. ``heal_default=False`` is for the LAZY build a lookup
-    performs in a synchronous context: that lookup can run inside a caller's
-    own locked config write (the default-agent PUT reaches
-    :func:`dispatch_kiro_agent` from its mutate), and the reset's write would
-    then wait on the lock that caller holds. It is also for a caller acting for
-    someone other than the owner, since the reset writes the owner's config.
+    a caller acting for the owner passes ``heal_default=True`` to also run
+    :func:`reset_dangling_default_agent`. Healing is opt-in because the reset
+    writes the owner's ``config.json``: a refresh reached from anyone else's
+    request (an app token's turn, a lookup) must not, and a lazy build can run
+    inside a caller's own locked config write (the default-agent PUT reaches
+    :func:`dispatch_kiro_agent` from its mutate), where the reset's write would
+    wait on the lock that caller holds. A refresh that does not heal still
+    records what it saw removed, for the next one that does.
 
     Consequence worth stating plainly: editing an existing config IN PLACE — say
     renaming its ``name`` field by hand — refreshes nothing, so that new name
@@ -5599,8 +5675,9 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
         _MATERIALIZED_STEMS.update(stems)
         for stale in [stem for stem in _MATERIALIZED_STEMS if stem not in stems]:
             del _MATERIALIZED_STEMS[stale]
-        _MATERIALIZED_SEEN.update(snapshot)
-        _MATERIALIZED_SEEN.update(stems)
+        # One call per landed snapshot, so its eviction and its report happen
+        # once for the whole of what it declares.
+        _remember_seen([*snapshot, *stems])
         _MATERIALIZED_AGENTS_READY = True
         _MATERIALIZED_REFRESH_APPLIED = my_ticket
     # An app install/upgrade that rewrote agent JSON just landed in the snapshot;
@@ -5652,7 +5729,9 @@ def reset_dangling_default_agent() -> bool:
     """
     with _MATERIALIZED_AGENTS_LOCK:
         names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
-        removed = frozenset(_MATERIALIZED_SEEN - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys())
+        removed = frozenset(
+            _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
+        )
     if not names or not removed:
         return False
     try:
@@ -5784,7 +5863,7 @@ def publish_materialized_agents(names: Iterable[str]) -> None:
         return
     with _MATERIALIZED_AGENTS_LOCK:
         _MATERIALIZED_AGENTS = frozenset(_MATERIALIZED_AGENTS | fresh)
-        _MATERIALIZED_SEEN.update(fresh)
+        _remember_seen(fresh)
         _MATERIALIZED_AGENTS_READY = True
         # Signals any in-flight refresh that its view predates this write, so it
         # unions rather than replacing (see refresh_materialized_agents).
@@ -5833,7 +5912,7 @@ def dispatch_kiro_agent(kiro_agent: str) -> str:
     declares, so the existing crewmate works without editing its row.
 
     Changes nothing else: a name that is itself declared, a stem two files share,
-    and any unknown name are returned verbatim. A pure in-memory lookup (see
+    a name the edition contributes, and any unknown name are returned verbatim. A pure in-memory lookup (see
     :func:`_materialized_kiro_agent` for why), built by the same full refresh.
     """
     if not kiro_agent or kiro_agent in _MATERIALIZED_AGENTS:
@@ -5845,7 +5924,16 @@ def dispatch_kiro_agent(kiro_agent: str) -> str:
             refresh_materialized_agents(heal_default=False)
         else:
             return kiro_agent
-    return _MATERIALIZED_STEMS.get(kiro_agent, kiro_agent)
+    mapped = _MATERIALIZED_STEMS.get(kiro_agent)
+    if mapped is None:
+        return kiro_agent
+    # A name the edition contributes is that agent, whatever a local file of the
+    # same stem declares: the directory is user-writable, so a file must not be
+    # able to redirect a binding to an edition agent onto some other agent.
+    # Asked only when a mapping exists, so the common path stays in memory.
+    if kiro_agent in _edition_agent_names():
+        return kiro_agent
+    return mapped
 
 
 def member_template_id(agent_cfg: KiroCrewAgentConfig) -> str:
