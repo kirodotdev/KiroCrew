@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import { Search, Mail, Pencil, Trash2, Check, X, ArrowUpRight, ChevronLeft, ChevronRight, Lightbulb, ShieldCheck, History, ListFilter, Replace } from 'lucide-react'
 import { api } from '../../api/client'
+import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { Badge, Btn, Card, EmptyState, Input, PanelSectionHeader, Skeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
@@ -146,15 +147,29 @@ function RecordHistory({ store, row, onProposal, onKeepCurrent }: { store: strin
   </div>
 }
 
+// The applied search and kind filter, kept per store for the browser session.
+// Not the URL: the Settings rail reopens `/settings` with no query string, so a
+// URL filter would not survive the leave-and-return trip it exists for.
+const FILTER_KEY_PREFIX = 'kirocrew:memory-records-filter:'
+function loadFilter(store: string): { q: string; kind: MemoryRecordQuery['kind'] } {
+  try {
+    const saved = JSON.parse(safeGetSessionItem(FILTER_KEY_PREFIX + store) || '{}')
+    const kind = saved.kind === 'fact' || saved.kind === 'directive' || saved.kind === 'episode' ? saved.kind : 'all'
+    return { q: typeof saved.q === 'string' ? saved.q : '', kind }
+  } catch { return { q: '', kind: 'all' } }
+}
+
 export default function MemoryRecordsEditor({ store, privateMemory = false, onDirtyChange, emptyActions, onRecovery }: {
   store: string; privateMemory?: boolean; onDirtyChange?: (dirty: boolean) => void; emptyActions?: ReactNode; onRecovery?: () => void
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const reduceMotion = useReducedMotion()
-  const [input, setInput] = useState('')
-  const [search, setSearch] = useState('')
-  const [kind, setKind] = useState<MemoryRecordQuery['kind']>('all')
+  const [saved] = useState(() => loadFilter(store))
+  const [input, setInput] = useState(saved.q)
+  const [search, setSearch] = useState(saved.q)
+  const [kind, setKind] = useState<MemoryRecordQuery['kind']>(saved.kind)
+  useEffect(() => { safeSetSessionItem(FILTER_KEY_PREFIX + store, JSON.stringify({ q: search, kind })) }, [store, search, kind])
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState<Map<string, MemoryRecord>>(new Map())
   const [all, setAll] = useState<QuerySelection | null>(null)

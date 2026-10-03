@@ -64,6 +64,7 @@ function NavigationVeto({ guard }: { guard: () => boolean }) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  sessionStorage.clear()
   window.history.replaceState({}, '', `/settings/overview?view=memory&store=${MEMBER_STORE}`)
   api.memoryStores.mockResolvedValue({ stores, active: 'default' })
   api.memberMemoryPage.mockImplementation(async (store: string, table: string, offset: number) => ({ entries: offset ? [] : store === 'default' ? table === 'semantic' ? [

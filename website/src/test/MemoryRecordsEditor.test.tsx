@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useNavigate, Routes, Route } from 'react-router-dom'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import MemoryRecordsEditor from '../pages/overview/MemoryRecordsEditor'
@@ -12,6 +13,7 @@ const record = (index: number, extra: Partial<MemoryRecord> = {}): MemoryRecord 
 let records: MemoryRecord[]
 beforeEach(() => {
   vi.clearAllMocks()
+  sessionStorage.clear()
   for (const mock of Object.values(api)) mock.mockReset()
   viewport.mobile = false
   records = Array.from({ length: 65 }, (_, index) => record(index))
@@ -670,4 +672,37 @@ it.each(['default', 'member-review'])('preserves %s query, cross-page selection 
   expect(api.memoryEditPreview).toHaveBeenCalledTimes(1)
   fireEvent.click(within(dialog).getByRole('button', { name: 'Apply changes (65)' }))
   await waitFor(() => expect(api.memoryEditApply).toHaveBeenCalledWith(store, 'signed-preview'))
+})
+
+it('keeps the search text and kind filter after leaving Settings and coming back by the rail link', async () => {
+  records = [record(0), record(1, { kind: 'directive', id: 'rule:1', key: undefined, value_json: JSON.stringify('Rule one'), text: 'Rule one' })]
+  // The rail returns to a bare `/settings`: no query string survives the trip.
+  const Nav = () => { const go = useNavigate(); return <><button onClick={() => go('/chat')}>to chat</button><button onClick={() => go('/settings')}>to settings</button></> }
+  renderWithProviders(<><Nav /><Routes>
+    <Route path="/settings/*" element={<MemoryRecordsEditor store="default" />} />
+    <Route path="/chat" element={<p>chat</p>} />
+  </Routes></>, { route: '/settings/overview?view=memory' })
+  await screen.findByText('Contact 0: old@example.com')
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'Rule' } })
+  fireEvent.click(screen.getByRole('radio', { name: 'Lessons' }))
+  await waitFor(() => expect(api.memoryRecords).toHaveBeenLastCalledWith('default', { q: 'Rule', kind: 'directive' }, 0, 50))
+  fireEvent.click(screen.getByRole('button', { name: 'to chat' }))
+  expect(await screen.findByText('chat')).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Search memory' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'to settings' }))
+  expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue('Rule')
+  expect(screen.getByRole('radio', { name: 'Lessons' })).toBeChecked()
+  await waitFor(() => expect(api.memoryRecords).toHaveBeenLastCalledWith('default', { q: 'Rule', kind: 'directive' }, 0, 50))
+  expect(await screen.findByText('Rule one')).toBeVisible()
+})
+
+it('does not carry one store\'s saved filter into another store', async () => {
+  const first = mount('default')
+  await screen.findByText('Contact 0: old@example.com')
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'Contact 1' } })
+  await waitFor(() => expect(api.memoryRecords).toHaveBeenLastCalledWith('default', { q: 'Contact 1', kind: 'all' }, 0, 50))
+  first.unmount()
+  mount('member-review')
+  expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue('')
+  await waitFor(() => expect(api.memoryRecords).toHaveBeenLastCalledWith('member-review', { q: '', kind: 'all' }, 0, 50))
 })
