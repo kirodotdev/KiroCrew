@@ -713,7 +713,9 @@ def test_the_session_writes_no_forensic_marker_of_its_own() -> None:
     from kiro_crew.acp import client as client_module
 
     body = inspect.getsource(client_module.AcpClient._spawn)
-    arm_start = "if self._is_deepseek:\n            # Pinned rather than left to the ambient value"
+    arm_start = (
+        "if self._is_deepseek:\n                # Pinned rather than left to the ambient value"
+    )
     assert body.count(arm_start) == 1, "the session-env deepseek block anchor is no longer unique"
     end = "self._apply_session_identity_env(env)"
     block = body[body.index(arm_start) : body.index(end, body.index(arm_start))]
@@ -1109,7 +1111,7 @@ def test_the_shared_construction_tail_carries_nothing_from_this_adapter() -> Non
     # And the read-back itself is inside the arm, which is the other half of the
     # same claim: removed from the tail AND present where it belongs.
     arm = body[body.index("elif self._is_deepseek:") :]
-    arm = arm[: arm.index("\n        else:")]
+    arm = arm[: arm.index("\n            else:")]
     assert "_verify_deepseek_gate" in arm
     assert "agent_scratch.allocate_scratch" in arm
 
@@ -1989,7 +1991,7 @@ def test_the_arm_runs_the_credential_mask_preflight_before_its_read_back() -> No
     """
     body = inspect.getsource(AcpClient._spawn)
     arm = body[body.index("elif self._is_deepseek:") :]
-    arm = arm[: arm.index("\n        else:")]
+    arm = arm[: arm.index("\n            else:")]
     assert "_sandbox_preflight" in arm
     assert "adapter_expose_files" in arm
     assert arm.index("_sandbox_preflight") < arm.index("_verify_deepseek_gate")
@@ -2920,7 +2922,7 @@ def test_the_injection_is_inside_the_arm_and_the_probe_is_never_handed_a_key() -
     # The probe's own env build is the arm's, and it names no vault resolution: the
     # arm derives the NAMES only, which the probe hands the plugin under canaries.
     arm = body[body.index("elif self._is_deepseek:") :]
-    arm = arm[: arm.index("\n        else:")]
+    arm = arm[: arm.index("\n            else:")]
     assert "_deepseek_vault_env)" not in arm
     assert "_deepseek_vault_env_names" in arm
     assert "resolve_secret_uris" not in arm

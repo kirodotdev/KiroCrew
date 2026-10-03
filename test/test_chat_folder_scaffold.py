@@ -24,7 +24,7 @@ from unittest import mock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_state
+from chat_test_helpers import _make_state, stamp_the_person
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -44,11 +44,26 @@ from kiro_crew.dashboard.chat_folders import (
 )
 
 
-def _make_scaffold_app(state: Any) -> web.Application:
-    """Minimal aiohttp app with the folder-scaffold endpoints."""
+def _make_scaffold_app(state: Any, *, person: bool = True) -> web.Application:
+    """Minimal aiohttp app with the folder-scaffold endpoints.
+
+    ``person`` stands in for the middleware's positive ``is_dashboard_user``
+    stamp, which only the person's own cookie or session credential earns and
+    which both routes read WHO from (``chat_folders._is_the_person``): the
+    sidebar's scan-and-scaffold flow is the person's, so the harness models the
+    person unless a test says otherwise (an app claim, an internal caller).
+    """
 
     app = web.Application()
     app["state"] = state
+
+    @web.middleware
+    async def _stamp_person(request: web.Request, handler: Any) -> Any:
+        if person:
+            stamp_the_person(request)
+        return await handler(request)
+
+    app.middlewares.append(_stamp_person)
     app.router.add_post("/api/project-scaffold/scan", api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", api_chat_folders_scaffold)
     return app
@@ -317,6 +332,44 @@ class TestScanRootValidation:
         assert status == 400
         assert body["error"] == "project_dir refers to a sensitive path"
         assert body["code"] == "folder_scan_root_invalid"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unc", [r"\\evil\share\proj", "//evil/share/proj", r"\\?\UNC\evil\share\proj"]
+    )
+    async def test_unc_root_rejected_before_any_filesystem_call(
+        self, state: Any, monkeypatch: pytest.MonkeyPatch, unc: str
+    ) -> None:
+        """The scan root is request-named path text reaching ``realpath`` and a
+        directory walk. The scan is the PERSON's verb: a caller without the
+        person's stamp is refused before the root is read at all (no
+        ``realpath``, no ``isdir``), and the person's own UNC root meets main's
+        ordinary validation by name -- never the UNC refusal, which is the
+        non-person principal's -- so the faked filesystem here answers "not a
+        directory" and no host is contacted on this runner."""
+        monkeypatch.setattr("kiro_crew.dashboard.chat_folders.unc_probe_allowed", lambda raw: False)
+        touched = mock.MagicMock(
+            side_effect=AssertionError("filesystem touched for a non-person scan root")
+        )
+        monkeypatch.setattr("os.path.realpath", touched)
+        monkeypatch.setattr("os.path.isdir", touched)
+        async with TestClient(TestServer(_make_scaffold_app(state, person=False))) as client:
+            status, body = await _scan(client, unc)
+        assert status == 403
+        assert body["code"] == "scaffold_person_only"
+        touched.assert_not_called()
+
+        seen: list[str] = []
+        monkeypatch.setattr("os.path.realpath", lambda p, **kw: (seen.append(p), p)[1])
+        monkeypatch.setattr("os.path.isdir", lambda p: False)
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            status, body = await _scan(client, unc)
+        assert status == 400
+        assert body["code"] == "folder_scan_root_invalid"
+        assert body["error"] != "Project directory must not be a network (UNC) path"
+        if os.path.isabs(unc):
+            assert body["error"] == "Project directory must be an existing directory"
+            assert unc in seen
 
     @pytest.mark.asyncio
     async def test_absent_root_field_rejected(self, state: Any) -> None:
@@ -1141,7 +1194,7 @@ def _make_scaffold_app_with_claim(state: Any, app_claim: str) -> web.Application
     may read it from — never the body.
     """
 
-    app = _make_scaffold_app(state)
+    app = _make_scaffold_app(state, person=False)
 
     @web.middleware
     async def _publish_app(request: web.Request, handler: Any) -> Any:
@@ -1153,25 +1206,111 @@ def _make_scaffold_app_with_claim(state: Any, app_claim: str) -> web.Application
 
 
 class TestScaffoldOwnership:
-    """Scaffolded folders get the SAME app-ownership isolation a hand-created
-    folder gets: the caller's identity is derived from the middleware claim,
-    stamped as ``owner_app``, and an unattributable caller is refused."""
+    """The scaffold is the PERSON's verb. Every folder it creates carries a
+    ``project_dir``, and a binding is the one field the folder routes refuse an
+    agent outright (``chat_folders._agent_binding_refusal``), so both scaffold
+    routes refuse every other principal -- an enabled app posting with its own
+    credential, an internal-transport caller -- before the root they named is
+    read, with the sibling routes' own 403 and code. The person's request is
+    otherwise guarded as before: an unattributable caller is refused. Red-first
+    on the head before this class: an app's scaffold answered 200 and persisted
+    three bound folders stamped with the app, and an internal caller's scaffold
+    landed up to the create limiter.
+    """
 
     @pytest.mark.asyncio
-    async def test_an_apps_scaffold_stamps_every_folder_with_that_app(
-        self, state: Any, tmp_path: Path
+    async def test_an_apps_scaffold_is_refused_before_the_root_is_read(
+        self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from kiro_crew.dashboard import chat_folder_scaffold
+
         root = _sibling_repos(tmp_path / "work")
         selected = [str(root / "api"), str(root / "web")]
+        untouched = mock.MagicMock(side_effect=AssertionError("the root was resolved for an app"))
+        monkeypatch.setattr(chat_folder_scaffold, "_resolve_root", untouched)
         app = _make_scaffold_app_with_claim(state, "issue-radar")
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/project-scaffold/create", json={"root": str(root), "selected": selected}
             )
-            assert resp.status == 200
-            body = await resp.json()
-        assert len(body["created"]) == 3
-        assert [f.get("owner_app") for f in state._folders] == ["issue-radar"] * 3
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == "scaffold_person_only"
+            scan = await client.post("/api/project-scaffold/scan", data=b"not json")
+            # Before the body is parsed: the refusal, not the JSON error.
+            assert scan.status == 403, await scan.text()
+            assert (await scan.json())["code"] == "scaffold_person_only"
+        assert state._folders == []
+        untouched.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_allow_listed_users_dashboard_link_is_refused_like_an_app(
+        self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dashboard-user token that is not the OWNER's -- an allow-listed
+        messaging user's ``!dashboard`` link, stamped like the person's -- is
+        refused by the same person-only gate, before the root is read. Red-first
+        on the head before this test: the link holder's scaffold landed three
+        bound folders."""
+        from kiro_crew.dashboard import chat_folder_scaffold
+
+        root = _sibling_repos(tmp_path / "work")
+        selected = [str(root / "api"), str(root / "web")]
+        untouched = mock.MagicMock(side_effect=AssertionError("the root was resolved for a link"))
+        monkeypatch.setattr(chat_folder_scaffold, "_resolve_root", untouched)
+        link_holder = {"X-Test-User": "U0ALLOWED"}
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            resp = await client.post(
+                "/api/project-scaffold/create",
+                json={"root": str(root), "selected": selected},
+                headers=link_holder,
+            )
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == "scaffold_person_only"
+            scan = await client.post(
+                "/api/project-scaffold/scan", json={"root": str(root)}, headers=link_holder
+            )
+            assert scan.status == 403, await scan.text()
+            assert (await scan.json())["code"] == "scaffold_person_only"
+        assert state._folders == []
+        untouched.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_session_signed_in_before_the_owner_was_configured_is_told_to_sign_in_again(
+        self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The operator's own session from before ``KIROCREW_OWNER_ID`` was
+        configured keeps its bootstrap subject (``local-startup``) for life and is
+        not the owner once one exists: the gate refuses it before the root is
+        read like any non-person, but through the shared binding refusal it
+        answers the repo's ``401 stale_session_reauth`` -- sign in again -- not the
+        agent's 403. Red-first on the head before this test: 403
+        ``folder_project_dir_forbidden`` at both routes."""
+        from kiro_crew.dashboard import chat_folder_scaffold
+        from kiro_crew.dashboard.handlers.source_providers import STALE_OWNER_SESSION_CODE
+
+        state.owner_id = "U0OWNER"
+        root = _sibling_repos(tmp_path / "work")
+        selected = [str(root / "api"), str(root / "web")]
+        untouched = mock.MagicMock(
+            side_effect=AssertionError("the root was resolved for a stale session")
+        )
+        monkeypatch.setattr(chat_folder_scaffold, "_resolve_root", untouched)
+        stale = {"X-Test-User": "local-startup"}
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            resp = await client.post(
+                "/api/project-scaffold/create",
+                json={"root": str(root), "selected": selected},
+                headers=stale,
+            )
+            assert resp.status == 401, await resp.text()
+            assert (await resp.json())["code"] == STALE_OWNER_SESSION_CODE
+            scan = await client.post(
+                "/api/project-scaffold/scan", json={"root": str(root)}, headers=stale
+            )
+            assert scan.status == 401, await scan.text()
+            assert (await scan.json())["code"] == STALE_OWNER_SESSION_CODE
+        assert state._folders == []
+        untouched.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_persons_scaffold_leaves_the_owner_key_absent(
@@ -1207,58 +1346,87 @@ class TestScaffoldOwnership:
         assert state._folders == []
 
     @pytest.mark.asyncio
-    async def test_an_internal_caller_is_rate_limited_at_the_endpoint(
+    async def test_an_internal_caller_is_refused_the_same_way(
         self, state: Any, tmp_path: Path
     ) -> None:
-        """One scaffold call consumes one budget unit; without this check the
-        scaffold route is the loophole around the create route's limiter.
-
-        Mutation guard: drop the ``allow_create`` call and the burst all
-        returns 200.
-        """
-        from kiro_crew.dashboard import create_rate_limit
-
-        create_rate_limit.reset_for_tests()
-        try:
-            root = _sibling_repos(tmp_path / "work")
-            headers = {
-                "X-Internal-Secret": "s3cret",
-                "X-Internal-Caller": "kirocrew-dashboard",
-            }
-            async with TestClient(TestServer(_make_scaffold_app(state))) as client:
-                allowed = 0
-                for _ in range(create_rate_limit.MAX_FOLDER_CREATES_PER_WINDOW + 3):
-                    resp = await client.post(
-                        "/api/project-scaffold/create",
-                        json={"root": str(root), "selected": None},
-                        headers=headers,
-                    )
-                    if resp.status == 200:
-                        allowed += 1
-                    else:
-                        assert resp.status == 429
-                        assert (await resp.json())["code"] == "create_rate_limited"
-            assert allowed == create_rate_limit.MAX_FOLDER_CREATES_PER_WINDOW
-        finally:
-            create_rate_limit.reset_for_tests()
+        """The internal-secret transport (every agent session's tool call) is
+        not the person: refused before the root is read, nothing created. The
+        create-rate limiter this route once carried for internal callers is
+        gone with the caller it guarded."""
+        root = _sibling_repos(tmp_path / "work")
+        headers = {
+            "X-Internal-Secret": "s3cret",
+            "X-Internal-Caller": "kirocrew-dashboard",
+        }
+        async with TestClient(TestServer(_make_scaffold_app(state, person=False))) as client:
+            resp = await client.post(
+                "/api/project-scaffold/create",
+                json={"root": str(root), "selected": None},
+                headers=headers,
+            )
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == "scaffold_person_only"
+        assert state._folders == []
 
     @pytest.mark.asyncio
-    async def test_the_browser_is_not_rate_limited(self, state: Any, tmp_path: Path) -> None:
-        # Same carve-out as the create route: a request without the internal
-        # secret is the person's own browser.
+    async def test_a_non_person_scan_is_audited_and_answered_as_the_scan_it_was(
+        self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scaffold routes' refusal is their own: a non-person ``scan`` -- a
+        read of a tree, whose body carries no ``project_dir`` at all -- is
+        audited under its own operation with an error naming the SCAN, and the
+        answer's remedy is the scaffolder the person runs, not a folder binding
+        (review-caught: the shared binding refusal audited the scan as a binding
+        attempt and told the scaffolder page to use the sidebar's Folder
+        settings). The create route names the scaffold. Both stay on the
+        person-gate tail: a stale pre-owner session answers ``401
+        stale_session_reauth``."""
+        from kiro_crew.dashboard import chat_folder_scaffold
+
+        root = _sibling_repos(tmp_path / "work")
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folder_scaffold.sel",
+            lambda: mock.Mock(log_api_access=lambda **kw: events.append(kw)),
+        )
+        untouched = mock.MagicMock(side_effect=AssertionError("the root was resolved"))
+        monkeypatch.setattr(chat_folder_scaffold, "_resolve_root", untouched)
+        async with TestClient(TestServer(_make_scaffold_app(state, person=False))) as client:
+            status, body = await _scan(client, root)
+            assert status == 403
+            assert body["code"] == "scaffold_person_only"
+            assert "cannot scan a project tree" in body["error"]
+            assert (
+                "Folder settings" not in body["error"] and "project directory" not in body["error"]
+            )
+            resp = await client.post(
+                "/api/project-scaffold/create", json={"root": str(root), "selected": []}
+            )
+            assert resp.status == 403
+            created = await resp.json()
+            assert created["code"] == "scaffold_person_only"
+            assert "cannot scaffold a project tree" in created["error"]
+        untouched.assert_not_called()
+        assert [(e["operation"], e["error"]) for e in events] == [
+            ("chat.folder_scan", "agent cannot scan a project tree with the scaffolder"),
+            ("chat.folder_scaffold", "agent cannot scaffold a project tree with the scaffolder"),
+        ]
+        assert all(e["resources"] == "scaffold" and e["outcome"] == "denied" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_the_person_scaffolds_without_a_throttle(
+        self, state: Any, tmp_path: Path
+    ) -> None:
+        # The person's own browser, stamped: never throttled here, as before.
         from kiro_crew.dashboard import create_rate_limit
 
-        create_rate_limit.reset_for_tests()
-        try:
-            root = _sibling_repos(tmp_path / "work")
-            async with TestClient(TestServer(_make_scaffold_app(state))) as client:
-                for _ in range(create_rate_limit.MAX_FOLDER_CREATES_PER_WINDOW + 3):
-                    resp = await client.post(
-                        "/api/project-scaffold/create", json={"root": str(root), "selected": None}
-                    )
-                    assert resp.status == 200, "a browser scaffold must never be throttled"
-        finally:
-            create_rate_limit.reset_for_tests()
+        root = _sibling_repos(tmp_path / "work")
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            for _ in range(create_rate_limit.MAX_FOLDER_CREATES_PER_WINDOW + 3):
+                resp = await client.post(
+                    "/api/project-scaffold/create", json={"root": str(root), "selected": None}
+                )
+                assert resp.status == 200, "the person's scaffold must never be throttled"
 
 
 class TestSensitiveRootContainment:
@@ -1446,7 +1614,8 @@ class TestConcurrentScaffoldDedup:
 
 class TestCreateValidatesOffTheLoop:
     """``_validate_project_dir`` is ``realpath`` + ``isdir`` + a sensitive-path
-    scan — all blocking syscalls, and a folder can live on a network mount. The
+    scan (the person), or the link screen and the pinned opens (any other
+    principal) — all blocking syscalls, and a folder can live on a network mount. The
     scaffold calls ``create_folder_record`` once per selected directory in a
     loop, so running the validator on the loop thread would stall every chat, WS
     push and heartbeat behind one unresponsive mount for the whole scaffold. The
@@ -1463,12 +1632,12 @@ class TestCreateValidatesOffTheLoop:
 
         target = tmp_path / "repo"
         target.mkdir()
-        real_validate = cf._validate_project_dir
+        real_admit = cf._validate_project_dir
         ran_on: list[int] = []
 
         def spy(raw: str) -> tuple[str, str | None]:
             ran_on.append(threading.get_ident())
-            return real_validate(raw)
+            return real_admit(raw)
 
         monkeypatch.setattr(cf, "_validate_project_dir", spy)
         loop_thread = threading.get_ident()

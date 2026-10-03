@@ -67,6 +67,7 @@ from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_project_dir,
     _slot_meta_txn_lock,
     _unhide_folder,
+    filing_crosses_inheritance,
     note_folder_filed,
 )
 from kiro_crew.dashboard.chat_fork import (
@@ -99,6 +100,8 @@ from kiro_crew.dashboard.state import (
     SlotOrigin,
     _normalize_slot_key,
     _safe_folder_tree,
+    inherit_project_identity,
+    record_project_identity,
 )
 from kiro_crew.dashboard.stop_retry import allow_escalation
 from kiro_crew.execution_context import (
@@ -116,6 +119,7 @@ from kiro_crew.members import select_provider_backend
 from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, ChannelLink, parse_session_key
 from kiro_crew.messaging.transport import DM_TARGET_PREFIX, sole_direct_target
+from kiro_crew.sandbox import WorkspacePinFailed, directory_identity_pinned
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.session_summary import derive_state
@@ -1967,6 +1971,86 @@ def _broadcast_resolution_slots(
     return out
 
 
+async def _refuse_child_filing_across_inheritance(
+    state: "DashboardState", *, from_folder_id: str, to_folder_id: str
+) -> None:
+    """Hold an agent tool's filing of a child to the one filing decision.
+
+    Filing is how a session acquires a folder's binding and steering (on its
+    next agent switch, at its first start), and the caller of these tools is
+    always an agent, so the comparison every request-driven filing route takes
+    (``chat_folders.filing_crosses_inheritance``) holds here too: a child may be
+    filed only where it inherits nothing it would not have had from
+    *from_folder_id* -- the creator's own folder for a new session, the parent's for a
+    fork. Decided over the committed tree; refused in this module's own shape
+    with the move rule's codes.
+    """
+    crossed = await state.read_folders(
+        lambda folders: filing_crosses_inheritance(
+            [dict(f) for f in _safe_folder_tree(folders)],
+            from_folder_id=from_folder_id,
+            to_folder_id=to_folder_id,
+        )
+    )
+    if not crossed:
+        return
+    axis = "a project directory" if crossed == "binding" else "steering directories"
+    raise SessionControlError(
+        f"an agent cannot file a session where it would inherit {axis} - file it where "
+        "the folder confers the same, or ask the person",
+        status=403,
+        code="folder_project_dir_forbidden" if crossed == "binding" else "steering_dirs_forbidden",
+    )
+
+
+def _file_child_or_retract(
+    state: "DashboardState", slot: Any, *, from_folder_id: str, to_folder_id: str
+) -> None:
+    """Decide AND file a freshly minted child in the synchronous window that configures it.
+
+    The early gate (:func:`_refuse_child_filing_across_inheritance`) ran before
+    the mint; here the same comparison runs again ADJACENT to the write, in the
+    synchronous window `create_session` keeps between publishing the slot and its
+    last field (a pin forbids any suspension there), so nothing on this loop can
+    commit a folder change between the judgement and the assignment. The live
+    tree is the committed tree unless a folder write is in flight -- its
+    provisional state would be observable here -- so while the store lock is
+    held the filing is refused rather than judged on a list about to be rolled
+    back or committed; the caller retries. Existence is re-read the same way. A
+    refusal RETRACTS the child (no messages, not running -- nothing of the
+    person's is lost) and raises in this module's own shape.
+    """
+    tree = [dict(f) for f in _safe_folder_tree(state._folders)]
+    verdict = ""
+    if state._folders_lock.locked():
+        verdict = "busy"
+    elif not any(str(f.get("id") or "") == to_folder_id for f in tree):
+        verdict = "gone"
+    else:
+        verdict = filing_crosses_inheritance(
+            tree, from_folder_id=from_folder_id, to_folder_id=to_folder_id
+        )
+    if not verdict:
+        slot.folder_id = to_folder_id
+        return
+    if not slot.running and not slot.messages and state._slots.get(slot.key) is slot:
+        state._slots.pop(slot.key, None)
+    state.push_slots_update()
+    if verdict == "busy":
+        raise SessionControlError(
+            "the folder tree is being written; retry", code="folder_store_busy", status=409
+        )
+    if verdict == "gone":
+        raise SessionControlError("folder not found", code="folder_not_found")
+    axis = "a project directory" if verdict == "binding" else "steering directories"
+    raise SessionControlError(
+        f"an agent cannot file a session where it would inherit {axis} - file it where "
+        "the folder confers the same, or ask the person",
+        status=403,
+        code="folder_project_dir_forbidden" if verdict == "binding" else "steering_dirs_forbidden",
+    )
+
+
 async def create_session(
     state: "DashboardState",
     *,
@@ -2108,6 +2192,7 @@ async def create_session(
     # stale folder intent.
     folder_project_raw: str | None = None
     folder_project = ""
+    folder_identity: tuple[int, int] | None = None
     if folder_id:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
@@ -2130,6 +2215,27 @@ async def create_session(
                 f"invalid folder project: {folder_project_error}",
                 code="folder_project_invalid",
             )
+        if folder_project:
+            # The folder's directory reaches the child WITH its identity: the
+            # `(st_dev, st_ino)` read off the descriptor that opens the directory
+            # with no link followed (`sandbox.directory_identity_pinned`), off the
+            # loop and BEFORE anything is minted -- the folder-inherited bind's own
+            # treatment at `POST /api/chat/slots`. The caller holds this binding by
+            # placement (the filing decision above admitted it), so the child's
+            # record is DERIVED from the directory the binding names; the caller's
+            # own record takes precedence below when it covers the same spelling.
+            # A directory the pin cannot open -- a link or a file now at the name,
+            # or nothing -- is a failed bind and refuses the create: never a child
+            # bound without a record (review-caught: a caller whose own project is
+            # elsewhere confers nothing about the folder's directory, and a
+            # record-less child would pin whatever stands at the name by its first
+            # turn, after the directory could have been replaced).
+            try:
+                folder_identity = await asyncio.to_thread(directory_identity_pinned, folder_project)
+            except WorkspacePinFailed as exc:
+                raise SessionControlError(
+                    f"invalid folder project: {exc}", code="folder_project_invalid"
+                ) from exc
     # An unnamed agent inherits the CALLER'S, not the global default: the caller is
     # already running in this workspace, so its agent is the one bound here, and
     # falling to the global default would put the child on another workspace's
@@ -2539,6 +2645,14 @@ async def create_session(
                 code="folder_target_changed",
                 status=409,
             )
+        # The child would acquire the folder's binding and steering: the one
+        # filing decision, from the CALLER's own placement (a child filed beside
+        # its creator inherits what the creator already has) to ``folder_id``.
+        await _refuse_child_filing_across_inheritance(
+            state,
+            from_folder_id=str(getattr(caller_slot, "folder_id", "") or ""),
+            to_folder_id=folder_id,
+        )
 
     # Re-resolved and re-gated HERE, adjacent to the allocation, because every
     # decision above was made before this coroutine suspended -- for the
@@ -2747,16 +2861,42 @@ async def create_session(
         # authorization-vs-execution split as the agent binding, one layer down.
         if not slot.project:
             slot.project = project_dir
+        # The child's directory is the workspace default, or the folder's project
+        # when the child is filed into a project folder. When the caller is bound
+        # to that same spelling, the child inherits the caller's RECORDED identity
+        # with the path -- read in this synchronous window, so it is the record the
+        # caller's own spawns verify against -- and never re-pins a directory its
+        # creator already validated (``inherit_project_identity``: the re-pin at
+        # first spawn is for a slot with no record in this PROCESS, a restart; a
+        # child minted here from a bound parent is not that case, and a record-less
+        # child would pin whatever stands at the name by its first turn). A caller
+        # with no record for the directory leaves the child with none, so the
+        # child's spawn takes the caller's own path -- re-pin, or the governed
+        # refusal -- never a fresh pin taken here from the path alone; a caller
+        # bound elsewhere has nothing to say about this directory. A folder's
+        # directory the caller's record does not cover is the one exception, and
+        # it is not a fresh pin from the path: the child carries the identity the
+        # fenced pin read off that directory above, before the slot existed, which
+        # the caller's placement in the folder vouches for.
+        inherited = inherit_project_identity(slot, live_caller)
+        if not inherited and folder_project and slot.project == folder_project:
+            record_project_identity(slot, folder_identity)
         if folder_id:
             # Filed inside the same synchronous window that configures the slot, so
-            # the session is never observable unfiled -- that atomicity is the point.
-            # Existence was confirmed under the store lock above, and folder
-            # mutations run on this loop, so the folder cannot have been deleted
-            # between that check and this assignment. No `_folder_changed` flag: the
-            # slot's first turn carries the armed first-turn breadcrumb injection
-            # (`is_new` in chat_runner), so the [FOLDER] line reaches the model
-            # without it.
-            slot.folder_id = folder_id
+            # the session is never observable unfiled -- that atomicity is the point
+            # -- with the filing decision re-run ADJACENT to this write
+            # (``_file_child_or_retract``): existence and inheritance are re-read
+            # here, in the window nothing on this loop can interleave, and a folder
+            # write in flight refuses rather than being judged provisionally. No
+            # `_folder_changed` flag: the slot's first turn carries the armed
+            # first-turn breadcrumb injection (`is_new` in chat_runner), so the
+            # [FOLDER] line reaches the model without it.
+            _file_child_or_retract(
+                state,
+                slot,
+                from_folder_id=str(getattr(caller_slot, "folder_id", "") or ""),
+                to_folder_id=folder_id,
+            )
         if model_name:
             # Pinned the way a person's pick in the model dropdown pins it: the
             # slot has no provider session yet, so there is nothing to switch --
@@ -3082,6 +3222,14 @@ async def fork_session(
 
         if not await state.read_folders(_exists):
             raise SessionControlError("folder not found", code="folder_not_found")
+        # From the parent's own placement to the requested one: the one filing
+        # decision (a fork left in the parent's folder inherits what the parent
+        # already has).
+        await _refuse_child_filing_across_inheritance(
+            state,
+            from_folder_id=str(getattr(source_slot, "folder_id", "") or ""),
+            to_folder_id=folder_id,
+        )
 
     # Re-gate adjacent to the allocation, as `create_session` does: every input
     # above was read before this coroutine suspended (the folder confirmation),
@@ -3192,6 +3340,37 @@ async def fork_session(
                 )
         if folder_id and not _folder_exists_now():
             raise SessionControlError("folder not found", code="folder_not_found")
+        if folder_id:
+            # The filing decision again, adjacent to the stamp: `fork_slot` runs
+            # this re-check and `stamp` in one synchronous window, so nothing on
+            # this loop can commit a folder change between them. The live tree
+            # is the committed tree unless a folder write is in flight -- its
+            # provisional state is observable here -- so while the store lock is
+            # held the fork is refused rather than judged on a list about to be
+            # rolled back or committed; the caller retries.
+            if state._folders_lock.locked():
+                raise SessionControlError(
+                    "the folder tree is being written; retry the fork",
+                    code="folder_store_busy",
+                    status=409,
+                )
+            crossed = filing_crosses_inheritance(
+                [dict(f) for f in _safe_folder_tree(state._folders)],
+                from_folder_id=str(getattr(source_slot, "folder_id", "") or ""),
+                to_folder_id=folder_id,
+            )
+            if crossed:
+                axis = "a project directory" if crossed == "binding" else "steering directories"
+                raise SessionControlError(
+                    f"an agent cannot file a session where it would inherit {axis} - file "
+                    "it where the folder confers the same, or ask the person",
+                    status=403,
+                    code=(
+                        "folder_project_dir_forbidden"
+                        if crossed == "binding"
+                        else "steering_dirs_forbidden"
+                    ),
+                )
         # The ceilings, re-read here rather than only at entry: two forks in
         # flight could each pass the entry check and both suspend before their
         # mints. The rate budget above is consumed atomically and bounds the
@@ -5623,7 +5802,16 @@ async def revive_session(
 
     ``folder_id`` files the revived slot the way ``create_session`` does, after
     the revive has landed; a folder that does not exist refuses the whole call
-    BEFORE anything is revived, so a refusal leaves history untouched. The
+    BEFORE anything is revived, so a refusal leaves history untouched, and so
+    does the filing decision an agent's revive takes (what the revived session
+    would inherit, from the placement it was archived in). That decision is
+    taken AGAIN at the write, under the folder-store lock and in one section
+    with the assignment, because the resume in between awaits: a filing whose
+    authorization went stale there is declined with the revive already landed --
+    never an error for a revive that happened -- so the call returns success
+    with ``filed: false`` and the move rule's code in ``filing_refused``, the
+    session back where it was archived, unfiled, and the audit row records
+    ``filed: false``. The
     revived slot keeps its own creator: reviving is not creating, so ownership
     is never transferred to the caller.
     """
@@ -5776,6 +5964,22 @@ async def revive_session(
 
         if not await state.read_folders(_exists):
             raise deny("folder not found", "folder_not_found", status=400)
+        # A revive that names a folder MOVES the archived session from the
+        # placement it was archived in (``meta["folder_id"]``; none reads as the
+        # top level, the most restrictive placement) into ``folder_id`` -- the one
+        # filing decision every request-driven filing takes, as the PATCH move
+        # and ``create_session`` take it. Decided HERE, before the revive commits,
+        # so a refused filing revives nothing, files nothing and unhides no folder;
+        # a folder conferring the same binding and steering admits. This is the
+        # fail-fast reading of a snapshot; the resume that follows awaits, so the
+        # same decision is taken AGAIN at the write, under the folder-store lock
+        # and in one section with the assignment (below), as the other
+        # request-driven filings take it adjacent to theirs.
+        await _refuse_child_filing_across_inheritance(
+            state,
+            from_folder_id=str(meta.get("folder_id") or ""),
+            to_folder_id=folder_id,
+        )
 
     # A revive materialises the same resource a create does -- a live slot with
     # a hydrated transcript -- so it spends the same budgets: the per-caller
@@ -5927,6 +6131,7 @@ async def revive_session(
         )
 
     filed = False
+    filing_refused = ""  # the move rule's code when the write declined the filing
     if folder_id and folder_id != slot.folder_id:
         # The revive is already COMMITTED -- the slot is live in the sidebar --
         # so a failure to file it must not propagate as "could not revive": the
@@ -5956,8 +6161,56 @@ async def revive_session(
                 # Re-read under the lock: filed there meanwhile by another writer
                 # means nothing to do, and nothing this call may later roll back.
                 if folder_id != previous:
-                    slot.folder_id = folder_id
-                    slot._folder_changed = True
+                    # The filing decision AGAIN, adjacent to the write. The early
+                    # gate above judged a snapshot BEFORE the resume, and every
+                    # await since -- the resume itself, the lock acquisition -- is
+                    # a window in which a folder mutation can commit and change
+                    # what the destination confers (the target folder acquiring a
+                    # binding or steering), so the write would land on a tree the
+                    # decision never saw. Decided and assigned in ONE section under
+                    # the folder-store lock (``state.hold_folders``: the committed
+                    # tree, no folder mutation can commit until it returns, the
+                    # assignment synchronous inside it), the shape the folder PATCH
+                    # (``file_slot_across_inheritance``) and the two child-filing
+                    # tools (``_file_child_or_retract``, the fork's re-check) take
+                    # adjacent to their writes. The revive is already committed, so
+                    # a crossing here is the FILING's outcome alone and never turns
+                    # a revive that happened into an error (the fork raises because
+                    # it retracts its child; nothing is retracted here): nothing is
+                    # assigned, nothing to roll back, no folder unhidden, no filing
+                    # noted, and the call returns success with ``filed: false`` and
+                    # the move rule's code in ``filing_refused`` -- the posture every
+                    # post-revive filing outcome takes -- while the audit row records
+                    # the revive as allowed with ``filed: false``. The lock order is
+                    # the PATCH's own (slot-metadata txn lock, then the store lock).
+                    # The placement the decision leaves is the LIVE one, read under
+                    # the lock -- the slot is already published, and a filing that
+                    # committed while this call waited for the lock (the person
+                    # refiling the revived slot into a steered folder) is the
+                    # placement this write would overwrite; the archived
+                    # metadata's placement is where the session WAS, which that
+                    # filing may already have moved it from.
+
+                    async def _decide_and_file(folders: list[dict[str, Any]]) -> str:
+                        crossed = filing_crosses_inheritance(
+                            [dict(f) for f in _safe_folder_tree(folders)],
+                            from_folder_id=str(slot.folder_id or ""),
+                            to_folder_id=folder_id,
+                        )
+                        if crossed:
+                            return crossed
+                        slot.folder_id = folder_id
+                        slot._folder_changed = True
+                        return ""
+
+                    crossed = await state.hold_folders(_decide_and_file)
+                    if crossed:
+                        filing_refused = (
+                            "folder_project_dir_forbidden"
+                            if crossed == "binding"
+                            else "steering_dirs_forbidden"
+                        )
+                if folder_id != previous and not filing_refused:
 
                     def _roll_back() -> None:
                         if slot.folder_id == folder_id:
@@ -6017,6 +6270,7 @@ async def revive_session(
         "messages": outcome.total,
         "folder_id": slot.folder_id or "",
         "filed": filed,
+        "filing_refused": filing_refused,
     }
 
 

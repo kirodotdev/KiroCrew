@@ -362,17 +362,34 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   directory — plus a `MAX_FOLDER_STEERING_DIRS` (16) list cap and rejection of
   duplicates within one folder (compared by resolved realpath). Failures return
   `400` with code `steering_dirs_invalid`.
-- **Principal gate** (`_refuse_principal_steering_dirs`) runs at both write
+- **Agent gate** (`_refuse_agent_steering_dirs`) runs at both write
   sites BEFORE validation touches any path: only the person may declare a
-  non-empty list. A `POST`/`PATCH` carrying one from an app or crew-member
-  principal is refused `403` with code `steering_dirs_forbidden` and SEL-logged
-  as denied, because folder permission is not host-file permission -- the
-  gateway reads these files unsandboxed on the folder's behalf, and an app that
-  could point its own folder at an arbitrary readable Markdown tree would have
-  that read laundered into its own model session with no tool grant and no
-  signal. Clearing to `[]` stays allowed for every principal (it only removes
-  reads). The person may still declare steering on a folder an app or member
-  owns; delivery then routes it to that principal's chats as described below.
+  non-empty list. A `POST`/`PATCH` carrying one from any agent -- an app, a
+  crew member, an ordinary session's tool call, a channel session -- is refused
+  `403` with code `steering_dirs_forbidden` and SEL-logged as denied against the
+  agent's attested identity (its principal, else the validated token subject,
+  else a kernel-attested `X-Session-Key`, else `unattributable` -- never a bare
+  header), because folder permission is not
+  host-file permission -- the gateway reads these files unsandboxed on the
+  folder's behalf and delivers them into the folder owner's chats, so an app
+  that could point its own folder at an arbitrary readable Markdown tree would
+  have that read laundered into its own model session with no tool grant and no
+  signal, and an ordinary session would put words in front of the person's next
+  chat. The gate keys on the facts every folder fence keys WHO on
+  (`_is_the_person`: the token middleware's POSITIVE `is_dashboard_user` stamp,
+  which only a non-app dashboard token earns, AND the repo's owner predicate,
+  `is_owner_dashboard_request`, so an allow-listed messaging user's `!dashboard`
+  link — stamped like the person's — is refused with every other caller; the
+  operator's own session from before `KIROCREW_OWNER_ID` was configured is
+  refused too, answered with the repo's `401 stale_session_reauth` through the
+  fences' one refusal tail rather than this gate's 403). The
+  tree cannot route around the gate either: an agent's
+  reparent that would change the steering the moved subtree inherits
+  (`_inherited_steering_dirs`, spec'd in `session-control.md`) is refused with
+  this gate's 403. Clearing to `[]` stays allowed for every principal (it only
+  removes reads). The person may still declare or
+  clear steering on a folder an app or member owns; delivery then routes it to
+  that principal's chats as described below.
 - **Resolution** (`_resolve_folder_steering_dirs`) is ACCUMULATIVE up the
   `parent_id` chain (root ancestor first, then descendants), unlike the
   nearest-wins `project_dir` resolver: an org-standards folder above a per-repo

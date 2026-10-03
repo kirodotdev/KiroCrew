@@ -23,6 +23,7 @@ from chat_test_helpers import (
     _make_folder_app,
     _make_ready_kiro_prerequisite,
     _make_state,
+    pin_the_owners_store_step,
 )
 from dashboard_owner_helpers import as_owner
 
@@ -8943,6 +8944,120 @@ class TestRuntimeWiring:
             assert resp.status == 200
             assert slot.project == "/workspace/dev"
 
+    def _switch_harness(self, tmp_path, monkeypatch, state):
+        """The agent-switch patch set of ``test_api_chat_slot_agent_updates_project_dir``."""
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {"dev": MagicMock(workspace="dev-ws", memory_store="default")}
+        mock_cfg.workspaces = {"dev-ws": MagicMock(dir="/workspace/dev")}
+        mock_cfg.default_workspace = "default"
+        mock_cfg.default_memory_store = "default"
+        mock_cfg.memory_stores = {"default": MagicMock()}
+        mock_cfg.memory = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
+        mock_bindings.workspace_dir = Path("/workspace/dev")
+        mock_bindings.memory_store_name = "default"
+        mock_bindings.model = ""
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat._workspace_name_for_dir", lambda cfg, ws_dir: "dev-ws"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",
+            lambda cfg, ws_dir: "dev-ws",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.default_project_dir", lambda ws: "/workspace/dev"
+        )
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_records_the_folder_projects_identity(
+        self, tmp_path, monkeypatch
+    ):
+        """The agent switch commits the folder's project the create route records
+        an identity for -- so it records the same identity, read off the
+        descriptor that opens the folder's directory (off-loop), for the spawn to
+        verify against. Red on the head before this test: the switch committed
+        the project and left ``project_identity`` behind (a stale or absent record)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        bound = tmp_path / "bound"
+        bound.mkdir()
+        state._folders.append(
+            {
+                "id": "f-bound",
+                "name": "Bound",
+                "order": 1,
+                "parent_id": "",
+                "project_dir": str(bound),
+            }
+        )
+        slot = state.get_or_create_slot("s1")
+        slot.folder_id = "f-bound"
+        slot.project = ""
+        state.sessions.reset = AsyncMock()
+        self._switch_harness(tmp_path, monkeypatch, state)
+        info = os.stat(bound)
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
+            assert resp.status == 200, await resp.text()
+        assert slot.project == str(bound)
+        assert slot.project_identity == (str(bound), info.st_dev, info.st_ino)
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_rolls_the_identity_back_with_the_project(
+        self, tmp_path, monkeypatch
+    ):
+        """A refused switch unwinds the project it committed -- and the identity
+        recorded with it, alongside the same commit-token unwind, so the slot is
+        not left with the new record on the old project. Red on the head before
+        this test: the record stayed while the project rolled back."""
+        from kiro_crew.providers.base import LLMProvider
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        bound = tmp_path / "bound"
+        bound.mkdir()
+        state._folders.append(
+            {
+                "id": "f-bound",
+                "name": "Bound",
+                "order": 1,
+                "parent_id": "",
+                "project_dir": str(bound),
+            }
+        )
+        slot = state.get_or_create_slot("s1")
+        slot.folder_id = "f-bound"
+        slot.project = "/old/project"
+        slot.project_identity = ("/old/project", 5, 6)
+        busy = MagicMock(spec=LLMProvider)
+        busy.has_active_turn.side_effect = [False, False, True]
+        state.sessions.get_provider = MagicMock(return_value=busy)
+        state.sessions.reset = AsyncMock(return_value=False)
+        self._switch_harness(tmp_path, monkeypatch, state)
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
+            assert resp.status == 409, await resp.text()
+        assert slot.project == "/old/project"
+        assert slot.project_identity == ("/old/project", 5, 6)
+
     @pytest.mark.asyncio
     async def test_api_chat_slot_agent_keeps_project_for_project_agent(self, tmp_path, monkeypatch):
         """Selecting a PROJECT-scope agent must not reset slot.project.
@@ -14157,7 +14272,7 @@ class TestFolderCRUD:
     async def test_create_folder_with_project_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        app = _make_folder_app(state)
+        app = _make_folder_app(state, dashboard_user=True)
         proj = tmp_path / "proj"
         proj.mkdir()
         async with TestClient(TestServer(app)) as client:
@@ -14172,7 +14287,7 @@ class TestFolderCRUD:
     async def test_create_folder_relative_project_dir_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        app = _make_folder_app(state)
+        app = _make_folder_app(state, dashboard_user=True)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/folders", json={"name": "P", "project_dir": "relative/path"}
@@ -14183,7 +14298,7 @@ class TestFolderCRUD:
     async def test_create_folder_nonexistent_project_dir_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        app = _make_folder_app(state)
+        app = _make_folder_app(state, dashboard_user=True)
         missing = tmp_path / "does-not-exist"
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
@@ -14195,7 +14310,7 @@ class TestFolderCRUD:
     async def test_create_folder_sensitive_project_dir_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        app = _make_folder_app(state)
+        app = _make_folder_app(state, dashboard_user=True)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/folders", json={"name": "P", "project_dir": "~/.ssh"}
@@ -14208,7 +14323,7 @@ class TestFolderCRUD:
     async def test_update_folder_project_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        app = _make_folder_app(state)
+        app = _make_folder_app(state, dashboard_user=True)
         proj = tmp_path / "proj2"
         proj.mkdir()
         async with TestClient(TestServer(app)) as client:
@@ -14273,7 +14388,8 @@ class TestFolderCRUD:
             lambda *_args, **_kwargs: None,
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        pin_the_owners_store_step(monkeypatch)
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post(
                 "/api/chat/slots",
                 json={"name": "folder-project", "folder_id": "child"},
@@ -14300,7 +14416,8 @@ class TestFolderCRUD:
             }
         ]
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        pin_the_owners_store_step(monkeypatch)
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post(
                 "/api/chat/slots",
                 json={"name": "invalid-folder-project", "folder_id": "folder"},
@@ -14338,7 +14455,7 @@ class TestFolderCRUD:
             lambda *_args, **_kwargs: None,
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post(
                 "/api/chat/slots",
                 json={"name": "existing", "folder_id": "folder"},

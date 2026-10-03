@@ -850,6 +850,17 @@ def _session_model(
 # Type alias for provider factory — accepts optional session key
 ProviderFactory = Callable[..., LLMProvider]
 
+#: ``(session key, working directory) -> the identity every spawn into that
+#: directory verifies against``, or ``None`` for a directory no dashboard slot is
+#: bound to. Installed by the dashboard (``DashboardState
+#: .wire_session_cwd_identity_resolver``) and consulted by the allocation body
+#: behind :meth:`SessionManager.get_or_create` (and by the task run's
+#: shared-runtime bootstrap) -- THE seam every spawn of a bound slot's directory
+#: passes through when its producer hands over no ``cwd_identity``, consulted
+#: once the directory the spawn enters is final and before the warm-pool
+#: decision reads it.
+CwdIdentityResolver = Callable[[str, str], Awaitable["tuple[int, int] | None"]]
+
 
 def _provider_has_active_turn(provider: LLMProvider) -> bool:
     """True only if ``provider`` reports a real in-flight turn.
@@ -1944,6 +1955,15 @@ class SessionManager:
         # different account than the live one even when no read ever observed
         # the interim (see ``flag_identity_stamp_mismatches``).
         self.spawn_identity_reader: "Callable[[], Awaitable[str]] | None" = None
+        # Installed by the dashboard once its state exists
+        # (set_cwd_identity_resolver): the ONE seam through which a spawn into a
+        # working directory a dashboard slot is BOUND to gets the identity the
+        # spawn verifies, when its producer handed over none -- consulted by the
+        # allocation body once the directory is final, ahead of the warm-pool
+        # decision (a bound directory is never served a pooled child). None
+        # means "no dashboard, so no binding exists to verify" and a caller's
+        # ``cwd`` spawns unexamined, as it always did.
+        self._cwd_identity_resolver: CwdIdentityResolver | None = None
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
@@ -2566,6 +2586,25 @@ class SessionManager:
 
         ``start_priority`` orders a cold start in the start queues; a caller passes
         FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+        The bound-directory identity has ONE seam, the allocation body this
+        delegates to (``SessionAllocationService._get_or_create_impl``): every
+        spawn a dashboard slot makes -- the main chat, the side panel, a crewmate
+        thread, the eager respawn after a hard stop, and any producer written
+        later -- allocates there, and a ``cwd`` handed over with no
+        ``cwd_identity`` is resolved there against the slots bound to it
+        (:meth:`set_cwd_identity_resolver`) once the directory the spawn enters
+        is final, before the warm-pool decision reads it and before the provider
+        factory sees it. A directory a slot is bound to gets that slot's recorded
+        identity (or its restart re-pin, or the governed refusal when it cannot
+        be pinned) -- never an unexamined ``None``, and never a pooled child; a
+        directory no slot is bound to stays ``None`` = not examined. The
+        producers still pass the identity themselves (``chat_runner``,
+        ``handlers/side``, ``chat_threads``): the derivation is the safety net
+        that closes a door a new producer would otherwise open, not the design
+        (review-caught: two spawn sites passed ``cwd`` with no identity and
+        entered a swapped directory the main chat refused; then a slot bound to
+        the pool's own directory claimed a pooled child no identity ever
+        checked).
         """
         return await self._allocation_boundary().get_or_create(
             key,
@@ -2919,6 +2958,34 @@ class SessionManager:
         ``None`` uninstalls the probe (no dashboard, no children).
         """
         self._subagent_probe = fn
+
+    def set_cwd_identity_resolver(self, resolver: CwdIdentityResolver | None) -> None:
+        """Install the bound-directory identity resolver the allocation body consults.
+
+        ``resolver(session_key, cwd)`` answers the ``(st_dev, st_ino)`` a spawn
+        into *cwd* must verify against -- the record of the dashboard slot(s)
+        bound to that directory, re-pinned in this process when they carry none
+        -- or ``None`` when no slot is bound to it; it RAISES the governed
+        refusal (``sandbox.WorkspacePinFailed``) for a bound directory it cannot
+        pin, which the allocation body lets through to the producer unchanged,
+        before anything is claimed or allocated. It is consulted once the
+        directory the spawn enters is final -- the producer's ``cwd``, the one
+        the session map restored for a resume that named none, or the member's
+        project -- and only for a spawn that hands over no ``cwd_identity`` of
+        its own; a non-``None`` answer also keeps the spawn off the warm pool
+        (``bypass_cwd_identity``), so a bound directory is entered by a
+        cold-started, identity-verified child only. ``None`` uninstalls the seam
+        (no dashboard: no binding exists to verify, and every ``cwd`` spawns as
+        it always did).
+        """
+        self._cwd_identity_resolver = resolver
+
+    async def _resolve_cwd_identity(self, key: str, cwd: str) -> "tuple[int, int] | None":
+        """The identity the installed resolver assigns *cwd*, or ``None`` with none installed."""
+        resolver = self._cwd_identity_resolver
+        if resolver is None:
+            return None
+        return await resolver(key, cwd)
 
     def _has_attached_subagents(self, key: str) -> bool | Awaitable[bool]:
         """Answer the installed sub-agent probe, or False when none is installed.

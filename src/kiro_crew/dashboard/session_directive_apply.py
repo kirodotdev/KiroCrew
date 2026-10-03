@@ -58,6 +58,12 @@ from kiro_crew.autonudge import (
     is_channel_key,
 )
 from kiro_crew.autonudge_judge import screen_phrase
+from kiro_crew.dashboard.chat_folders import (
+    PROJECT_DIR_MISSING_REFUSAL,
+    PROJECT_DIR_SENSITIVE_REFUSAL,
+    project_dir_unc_refusal,
+    screen_and_resolve_project_dir,
+)
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
@@ -1399,40 +1405,72 @@ async def _autonudge_stop(
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
-    from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
+    from kiro_crew.security import is_unverifiable_path_refusal
 
     clear = bool(args.get("clear"))
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
         slot.project = ""
+        slot.project_identity = None
         if old_project:
             slot._pending_reset_history_key = effective_session_key(slot)
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
+    # Lexical, before ``expanduser`` and the worker-thread ``realpath``: a
+    # UNC-shaped project (``\\host\share``, ``//host/share``) makes a Windows
+    # gateway's ``realpath`` open an SMB connection to a host the agent named
+    # -- an outbound credential probe with no recovery. The folder endpoint's
+    # own helper decides (one rule for every site where a NON-PERSON principal
+    # names path text: this directive, the slot project endpoint's non-person
+    # arm -- the person's own request resolves by name
+    # as it always did), on every host; a permission decision, so it raises and the
+    # wrapper audits it as denied.
+    unc_err = project_dir_unc_refusal(project)
+    if unc_err:
+        raise _DirectiveDenied(f"Error: {unc_err}.")
     expanded = os.path.expanduser(project)
 
-    def _validate() -> tuple[str, str | None, bool]:
+    def _validate() -> tuple[str, str | None, bool, tuple[int, int] | None]:
         """Resolve + classify the path on a worker thread.
 
-        `realpath`/`isdir` touch the filesystem, so a network-mounted project
-        path would stall chat, heartbeat and liveness if resolved on the event
-        loop (no-blocking-call-on-event-loop). Returns
-        (realpath, refusal, is_dir); the sensitive check runs on BOTH the
-        pre-resolution and resolved forms — the pre-check keeps a sensitive
-        path from being probed at all, the post-check catches symlink/".."
-        evasion.
+        The link screen and the pinned resolve touch the filesystem, so a
+        network-mounted project path would stall chat, heartbeat and liveness
+        if resolved on the event loop (no-blocking-call-on-event-loop). Returns
+        (real_dir, refusal, is_dir, held_identity); the fourth value is the
+        identity read off the held chain, the one the fence's record is decided
+        from. The sensitive verdict is the fenced resolve's own
+        (``chat_folders.screen_and_resolve_project_dir``): taken on
+        the link-free spelling and on the PINNED real path as they stand, never
+        by resolving a name again -- ``sensitive_path_refusal`` resolves its
+        argument, and on a Windows gateway that follows a junction the agent
+        planted, or a component swapped after the pin, to the share it names
+        (review-caught).
         """
-        if reason := sensitive_path_refusal(expanded):
-            return "", reason, False
-        rp_ = os.path.realpath(expanded)
-        if reason := sensitive_path_refusal(rp_):
-            return rp_, reason, False
-        return rp_, None, os.path.isdir(rp_)
+        # The link half of the UNC rule, the resolve and the sensitive verdict,
+        # on this thread: a local link whose target names a share is read
+        # without being followed and refused before anything would open the
+        # share, and the SCREENED spelling the walk handed back -- never the
+        # original -- is resolved through the pinned open (the same call the slot
+        # project endpoint makes), so this site holds no ``realpath`` a swapped
+        # component could redirect. A missing component keeps this directive's
+        # own "not a directory" answer.
+        identity: list[tuple[int, int]] = []
+        rp_, resolve_err = screen_and_resolve_project_dir(expanded, identity_out=identity)
+        if resolve_err == PROJECT_DIR_MISSING_REFUSAL:
+            return expanded, None, False, None
+        if resolve_err == PROJECT_DIR_SENSITIVE_REFUSAL or (
+            resolve_err and is_unverifiable_path_refusal(resolve_err)
+        ):
+            return "", resolve_err, False, None
+        if resolve_err:
+            raise _DirectiveDenied(f"Error: {resolve_err}.")
+        return rp_, None, True, (identity[0] if identity else None)
 
-    rp, refusal, is_dir = await asyncio.to_thread(_validate)
+    rp, refusal, is_dir, held_identity = await asyncio.to_thread(_validate)
     if refusal:
-        # Permission decision — raise so the wrapper audits it as denied.
+        # Permission decision — raise so the wrapper audits it as denied. A
+        # resolver stall keeps its own wording (fail closed, not a match).
         if is_unverifiable_path_refusal(refusal):
             raise _DirectiveDenied(f"Error: {refusal}")
         raise _DirectiveDenied("Error: access denied (sensitive path).")
@@ -1443,12 +1481,31 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     # (set_project MCP routes here in-process, never through the endpoint), so
     # without this check the overlap refusal would still land at spawn time,
     # after the bad folder was committed. Same helper, same message; off the
-    # loop because it stats the runtime paths.
-    overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp)
+    # loop because it stats the runtime paths. ``rp`` is the real path the
+    # fenced resolve returned: compared as it stands, never re-walked by name.
+    overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp, pre_resolved=True)
     if overlap is not None:
         return f"Error: {overlap}"
     slot.project = rp
-    if rp != old_project:
+    # The directory the fenced resolve HELD, recorded against the spelling: the
+    # agent process's spawn re-opens the directory with no link followed and
+    # refuses a leaf that became a link or a different directory (a swap
+    # planted after this pin was released). A binding always records: a volume
+    # that reported no identity records the UNAVAILABLE state, opened at spawn
+    # but not compared, never a record-less binding.
+    from kiro_crew.sandbox import IDENTITY_UNAVAILABLE
+
+    previous_identity = getattr(slot, "project_identity", None)
+    slot.project_identity = (rp, *(held_identity or IDENTITY_UNAVAILABLE))
+    # The deferred reset fires on a different SPELLING or a different recorded
+    # IDENTITY under the same spelling: re-binding a directory replaced at its
+    # name records the new ``(st_dev, st_ino)`` above, and a live provider
+    # rooted in the old directory would otherwise keep serving turns there --
+    # the identity is compared only at spawn (review-caught). A re-pin that
+    # reads the same identity back stays quiet; a first record (no previous
+    # record in this process) is not a change.
+    identity_changed = previous_identity is not None and slot.project_identity != previous_identity
+    if rp != old_project or identity_changed:
         slot._pending_reset_history_key = effective_session_key(slot)
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project

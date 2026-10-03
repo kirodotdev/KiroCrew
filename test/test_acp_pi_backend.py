@@ -1348,7 +1348,7 @@ def test_the_gate_read_back_runs_off_the_event_loop() -> None:
 
 def test_the_launcher_write_runs_off_the_event_loop() -> None:
     body = _pi_arm()
-    assert "asyncio.to_thread(\n                _ensure_pi_gate_launcher" in body or (
+    assert "asyncio.to_thread(\n                    _ensure_pi_gate_launcher" in body or (
         "to_thread(_ensure_pi_gate_launcher" in body
     )
 

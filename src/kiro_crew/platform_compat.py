@@ -7141,9 +7141,167 @@ _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+#: ``GetFileInformationByHandleEx`` class that answers with the attributes AND
+#: the reparse tag of the object a handle holds (``FILE_ATTRIBUTE_TAG_INFO``).
+_WIN_FILE_ATTRIBUTE_TAG_INFO = 9
+#: ``IsReparseTagNameSurrogate``: the bit a reparse tag carries when the point
+#: REDIRECTS the name -- a symlink (``0xA000000C``), a junction / mount point
+#: (``0xA0000003``), a WSL symlink. A tag without it is a filter driver's
+#: metadata on an ordinary object: a cloud-files placeholder (OneDrive's Files
+#: On-Demand makes every synced file AND folder one), a dedup stub, an app
+#: execution alias. Traversing those reaches the object itself, never a host.
+_WIN_REPARSE_TAG_NAME_SURROGATE = 0x20000000
+#: ``IO_REPARSE_TAG_CLOUD``: the base tag the Windows cloud-files filter stamps
+#: on a Files On-Demand placeholder (OneDrive; the ``IO_REPARSE_TAG_CLOUD_1`` ..
+#: ``_F`` variants differ only in bits below the surrogate bit). No surrogate
+#: bit: the object at the name IS the directory. The fixture value the
+#: placeholder-acceptance tests drive through :func:`_win_reparse_tag`.
+_WIN_REPARSE_TAG_CLOUD = 0x9000001A
 
 
-def pin_directory(path: str | os.PathLike) -> int:
+class _WinFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+
+
+def _win_reparse_tag(fd: int) -> int | None:
+    """The reparse tag of the object the open descriptor *fd* holds, or ``None``.
+
+    Read off the HANDLE (``GetFileInformationByHandleEx`` with
+    ``FileAttributeTagInfo``), never off a path: ``os.fstat`` reports the
+    reparse attribute but leaves ``st_reparse_tag`` at zero for a descriptor, and
+    an ``lstat`` by name would judge whatever sits at the name now rather than
+    the object already opened. ``None`` is a tag that could not be read -- the
+    caller fails closed on it. The one seam between the Windows API and
+    :func:`_reparse_tag_redirects`, so a test can hand the classifier a real
+    tag value without a filter driver on the host.
+    """
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        query = kernel32.GetFileInformationByHandleEx
+        query.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
+        query.restype = wintypes.BOOL
+        info = _WinFileAttributeTagInfo()
+        ok = query(
+            wintypes.HANDLE(msvcrt.get_osfhandle(fd)),  # type: ignore[attr-defined]
+            _WIN_FILE_ATTRIBUTE_TAG_INFO,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+    except (AttributeError, OSError, ValueError):
+        return None
+    if not ok:
+        return None
+    return int(info.ReparseTag)
+
+
+def _reparse_tag_redirects(tag: int) -> bool:
+    """Whether a reparse *tag* marks a point that redirects the name (``IsReparseTagNameSurrogate``).
+
+    Pure arithmetic on the documented bit, so it runs on every host: a symlink
+    (``0xA000000C``), a junction (``0xA0000003``) and a WSL symlink carry it; a
+    cloud-files placeholder (``0x9000001A`` and its variants), a dedup stub and
+    an app execution alias do not.
+    """
+    return bool(tag & _WIN_REPARSE_TAG_NAME_SURROGATE)
+
+
+class _WinByHandleFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("dwVolumeSerialNumber", wintypes.DWORD),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("nNumberOfLinks", wintypes.DWORD),
+        ("nFileIndexHigh", wintypes.DWORD),
+        ("nFileIndexLow", wintypes.DWORD),
+    ]
+
+
+#: ``GetFileInformationByHandleEx`` class answering ``FILE_ID_INFO``: the 64-bit
+#: volume serial number and the 128-bit file id -- what CPython's ``os.stat``
+#: composes ``st_dev`` / ``st_ino`` from on Windows when the volume answers it.
+_WIN_FILE_ID_INFO = 18
+
+
+class _WinFileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_uint64),
+        ("FileIdLow", ctypes.c_uint64),
+        ("FileIdHigh", ctypes.c_uint64),
+    ]
+
+
+def handle_identity(fd: int) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of the object the OPEN descriptor *fd* holds, or ``None``.
+
+    Read off the descriptor on every host, never by name: POSIX ``fstat``;
+    Windows composed EXACTLY as CPython's ``os.stat`` composes the pair for the
+    same object -- ``GetFileInformationByHandleEx(FileIdInfo)`` first (the 64-bit
+    volume serial number as ``st_dev``, the low 64 bits of the 128-bit file id as
+    ``st_ino``, which is what ``os.stat`` reports on a volume that answers it),
+    ``GetFileInformationByHandle`` (``dwVolumeSerialNumber``, the classic
+    ``nFileIndexHigh:nFileIndexLow`` index) where it does not -- so a pair read
+    here off a held handle equals the pair a by-name ``os.stat`` of the same
+    directory would report, and the ONE function every recorder and every check
+    uses cannot disagree with itself. Never by name, because a by-name
+    ``os.stat`` while the object is HELD trips a sharing violation against the
+    holding handle, and a by-name read judges whatever sits at the name now
+    rather than the object already opened.
+
+    ``None`` when the identity is UNKNOWN -- the handle cannot be queried, or the
+    volume reports a zero file id (SMB shares and FAT volumes on Windows) --
+    the contract :func:`kiro_crew.project_scan.root_identity` pins for the same
+    comparison: an unknown identity is never recorded as one, and a check
+    against a recorded identity that reads back unknown reports it instead of
+    refusing.
+    """
+    if not IS_WINDOWS:
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino) if info.st_ino else None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))  # type: ignore[attr-defined]
+        query_ex = kernel32.GetFileInformationByHandleEx
+        query_ex.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
+        query_ex.restype = wintypes.BOOL
+        id_info = _WinFileIdInfo()
+        if query_ex(handle, _WIN_FILE_ID_INFO, ctypes.byref(id_info), ctypes.sizeof(id_info)):
+            file_id = int(id_info.FileIdLow)
+            return (int(id_info.VolumeSerialNumber), file_id) if file_id else None
+        query = kernel32.GetFileInformationByHandle
+        query.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+        query.restype = wintypes.BOOL
+        info_w = _WinByHandleFileInformation()
+        ok = query(handle, ctypes.byref(info_w))
+    except (AttributeError, OSError, ValueError):
+        return None
+    if not ok:
+        return None
+    index = (int(info_w.nFileIndexHigh) << 32) | int(info_w.nFileIndexLow)
+    if not index:
+        return None
+    return (int(info_w.dwVolumeSerialNumber), index)
+
+
+def _win_reparse_tag_is_name_surrogate(fd: int) -> bool:
+    """Whether the reparse point the open descriptor *fd* holds redirects the name.
+
+    :func:`_win_reparse_tag` then :func:`_reparse_tag_redirects`. Fails CLOSED:
+    a tag that cannot be read is treated as a surrogate, so the caller refuses.
+    """
+    tag = _win_reparse_tag(fd)
+    if tag is None:
+        return True
+    return _reparse_tag_redirects(tag)
+
+
+def pin_directory(path: str | os.PathLike, *, allow_filter_reparse: bool = False) -> int:
     """Open *path* as a directory and return a descriptor that PINS it.
 
     For code that must let a child process write to ``<dir>/<name>`` by path:
@@ -7168,14 +7326,31 @@ def pin_directory(path: str | os.PathLike) -> int:
     point raises ``NotADirectoryError``; a POSIX symlink fails with whichever
     of ``ENOTDIR`` / ``ELOOP`` the kernel reports for ``O_DIRECTORY |
     O_NOFOLLOW``. Release with ``os.close``.
+
+    ``allow_filter_reparse`` narrows the Windows reparse refusal to the points
+    that REDIRECT the name (:func:`_win_reparse_tag_is_name_surrogate`: symlink,
+    junction, WSL symlink -- the shapes a by-name traversal would follow
+    somewhere else, a share included). A reparse point without that bit is a
+    filter driver's metadata on the directory itself -- OneDrive's Files
+    On-Demand marks every synced folder that way -- and passes as the ordinary
+    directory it is. The tag is read off the handle already open, so the
+    verdict is about the object held, not a later look at the name. Off by
+    default: the gateway's own directories (the data home, an install root)
+    have no business being placeholders, and refusing every reparse point there
+    is the stricter rule those callers want. A caller pinning a directory the
+    PERSON chose (a project directory) opts in.
     """
     if IS_POSIX:
         return os.open(os.fspath(path), pinned_dir_flags())
 
     fd = _win_open_without_following(path)
     try:
-        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
-        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+        attrs = _win_file_attributes(fd)
+        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY:
+            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
+        if attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT and (
+            not allow_filter_reparse or _win_reparse_tag_is_name_surrogate(fd)
+        ):
             raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
     except BaseException:
         os.close(fd)
@@ -7500,6 +7675,17 @@ def pinned_directory(path: str | os.PathLike) -> PinnedDirectory:
     """Open *path* as a :class:`PinnedDirectory`. Refuses a link at the name."""
     target = os.fspath(path)
     return PinnedDirectory(pin_directory(target), target)
+
+
+def _win_file_attributes(fd: int) -> int:
+    """The Win32 file attributes of the object the open descriptor *fd* holds.
+
+    Read off the descriptor (``os.fstat``'s ``st_file_attributes``), never off the
+    name. The seam beside :func:`_win_open_without_following` and
+    :func:`_win_reparse_tag` that lets a test on any host drive the Windows arm
+    of :func:`pin_directory` with a real descriptor and fake attributes.
+    """
+    return int(getattr(os.fstat(fd), "st_file_attributes", 0))
 
 
 def _win_open_without_following(path: str | os.PathLike) -> int:

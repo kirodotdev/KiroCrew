@@ -361,7 +361,9 @@ async def test_both_physical_spawn_expressions_obey_admission(kernel, module_nam
     namespace = dict(
         vars(mod),
         create_subprocess_limited=factory,
-        self=SimpleNamespace(_spawn_work_dir="unused", _bound_workspace_fd=None),
+        self=SimpleNamespace(
+            _spawn_work_dir="unused", _bound_workspace_fd=None, _spawn_chdir_fd=None
+        ),
         argv=["never-launched"],
         env={},
     )

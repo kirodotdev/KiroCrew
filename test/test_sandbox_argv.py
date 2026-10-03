@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import errno
 import json
 import os
 import re
@@ -378,6 +379,38 @@ class TestBuildSeatbeltProfile:
         assert inside is not None and "inside it" in inside
 
         assert sandbox_mod.voice_runtime_workspace_conflict(sibling) is None
+
+    def test_a_pre_resolved_workspace_is_compared_as_it_stands(self, monkeypatch, tmp_path):
+        """A caller holding the real path the pinned resolve returned passes
+        ``pre_resolved=True``: the pre-flight takes the verdict on that spelling
+        and never re-walks it by name -- after the pinned verdict a ``realpath``
+        is the check-to-use window the pin closed (macOS-shard red before this
+        test: the admitted path was resolved again). Same verdicts either way."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        sibling = tmp_path / "workspace"
+        sibling.mkdir()
+        monkeypatch.setattr(sandbox_mod, "_voice_runtime_sandbox_paths", lambda: (str(runtime),))
+        resolved: list[str] = []
+        real_realpath = os.path.realpath
+        monkeypatch.setattr(
+            os.path,
+            "realpath",
+            lambda p, **kw: (resolved.append(os.fspath(p)), real_realpath(p, **kw))[1],
+        )
+
+        assert sandbox_mod.voice_runtime_workspace_conflict(str(sibling), pre_resolved=True) is None
+        contains = sandbox_mod.voice_runtime_workspace_conflict(str(tmp_path), pre_resolved=True)
+        assert contains is not None and "contains" in contains
+        inside = sandbox_mod.voice_runtime_workspace_conflict(
+            str(runtime / "nested"), pre_resolved=True
+        )
+        assert inside is not None and "inside it" in inside
+        assert not {str(sibling), str(tmp_path), str(runtime / "nested")} & set(resolved), resolved
+        # The default still resolves a spelling nothing has walked.
+        sandbox_mod.voice_runtime_workspace_conflict(str(sibling))
+        assert str(sibling) in resolved
 
     def test_voice_runtime_workspace_conflict_passes_off_darwin(self, monkeypatch, tmp_path):
         """The pre-flight matches the guards it mirrors: every spawn-time
@@ -911,6 +944,469 @@ class TestBuildSeatbeltProfile:
         profile = _build_seatbelt_profile("strict")
         assert "(deny file-link " in profile
         assert "file-link*" not in profile
+
+
+def _ident(path) -> tuple[int, int]:
+    info = os.stat(path)
+    return (info.st_dev, info.st_ino)
+
+
+def _replace_with_another_directory(path) -> None:
+    """Put a DIFFERENT directory at *path*: a sibling created while *path* still
+    existed (so its inode is necessarily another) renamed over the name. A bare
+    ``rmdir`` + ``mkdir`` can hand the freed inode straight back on ext4 and
+    tmpfs, which made the "replaced" directory read as the bound one (a CI red)."""
+    import os as _os
+
+    other = _os.path.join(
+        _os.path.dirname(str(path)), "." + _os.path.basename(str(path)) + ".other"
+    )
+    _os.mkdir(other)
+    _os.rmdir(str(path))
+    _os.rename(other, str(path))
+
+
+class _FakeStat:
+    """A Windows-shaped ``stat_result`` stand-in: the fields the branch reads."""
+
+    def __init__(self, *, attributes: int, reparse_tag: int = 0, dev: int = 7, ino: int = 11):
+        self.st_file_attributes = attributes
+        self.st_reparse_tag = reparse_tag
+        self.st_dev = dev
+        self.st_ino = ino
+        self.st_mode = 0o040755
+
+
+class TestVerifyAgentWorkspaceForSpawn:
+    """The working directory is re-verified at spawn by IDENTITY against what the
+    SESSION recorded when it was bound (``verify_agent_workspace_for_spawn``):
+    the leaf is re-read without following a link at it and its ``(st_dev,
+    st_ino)`` compared with the recorded pair. A benign link an ancestor has
+    always crossed is not a swap; a binding with no identity is not examined and
+    spawns exactly as before. The record is the slot's, passed in by the caller
+    -- nothing process-wide. Red-first on the head before this class: the
+    identity lived in a spelling-keyed process-global map, so a second session on
+    the same path inherited another session's record and a person's re-bind of a
+    recreated directory could not recover."""
+
+    def test_a_binding_with_no_identity_is_not_examined(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        assert sandbox_mod.verify_agent_workspace_for_spawn(str(target), None) == (
+            str(target),
+            None,
+        )
+        gone = tmp_path / "gone"
+        assert sandbox_mod.verify_agent_workspace_for_spawn(str(gone), None) == (str(gone), None)
+
+    def test_the_bound_directory_spawns_and_the_descriptor_is_released(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        real, fd = sandbox_mod.verify_agent_workspace_for_spawn(str(workspace), _ident(workspace))
+        assert os.path.realpath(real) == os.path.realpath(workspace)
+        if sandbox_mod.platform_compat.IS_WINDOWS:
+            # The Windows arm hands the pinned chain back OPEN (root-first): the
+            # hold the spawn keeps across CreateProcess, released here.
+            assert isinstance(fd, list) and fd
+            for handle in fd:
+                os.fstat(handle)
+            sandbox_mod.release_agent_workspace_fd(fd)
+            for handle in fd:
+                with pytest.raises(OSError):
+                    os.fstat(handle)
+        else:
+            assert fd is not None
+            assert sandbox_mod.directory_identity(fd) == _ident(workspace)
+            sandbox_mod.release_agent_workspace_fd(fd)
+            with pytest.raises(OSError):
+                os.fstat(fd)
+        sandbox_mod.release_agent_workspace_fd(None)  # nothing to close, no error
+
+    def test_a_different_directory_at_the_same_name_is_refused(self, tmp_path):
+        """A DIFFERENT directory at the bound name -- the swap of the bound
+        directory IS the threat -- refuses the spawn with the governed error
+        naming the remedy (re-bind, which re-records what stands there); no
+        descriptor is left open."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        recorded = _ident(workspace)
+        _replace_with_another_directory(workspace)  # same name, another inode, on every host
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="different directory"):
+            sandbox_mod.verify_agent_workspace_for_spawn(str(workspace), recorded)
+
+    def test_a_binding_recorded_unavailable_is_opened_but_not_compared(self, tmp_path, caplog):
+        """A binding made on a volume that reported no inode records
+        ``IDENTITY_UNAVAILABLE`` -- a state, not a missing record. At spawn the
+        leaf is still opened with no link followed (a link at it refuses) and
+        the identity is logged as unavailable instead of compared."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        with caplog.at_level("WARNING", logger="kiro_crew.sandbox"):
+            real, fd = sandbox_mod.verify_agent_workspace_for_spawn(
+                str(workspace), sandbox_mod.IDENTITY_UNAVAILABLE
+            )
+        sandbox_mod.release_agent_workspace_fd(fd)
+        assert os.path.realpath(real) == os.path.realpath(workspace)
+        assert any("identity unavailable" in r.getMessage() for r in caplog.records)
+        workspace.rmdir()
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="missing"):
+            sandbox_mod.verify_agent_workspace_for_spawn(
+                str(workspace), sandbox_mod.IDENTITY_UNAVAILABLE
+            )
+
+    def test_a_missing_bound_directory_is_refused(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        recorded = _ident(workspace)
+        workspace.rmdir()
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="missing"):
+            sandbox_mod.verify_agent_workspace_for_spawn(str(workspace), recorded)
+
+    def test_a_leaf_that_is_now_a_link_is_refused(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        recorded = _ident(workspace)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        workspace.rmdir()
+        try:
+            os.symlink(elsewhere, workspace, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            # No link privilege on this host: the kernel's answer to a no-follow
+            # open of a link is ELOOP/ENOTDIR -- hand the branch exactly that.
+            workspace.mkdir()
+
+            def _link_at_leaf(path):
+                raise OSError(errno.ELOOP, "Too many levels of symbolic links", path)
+
+            monkeypatch.setattr(sandbox_mod, "open_pinned_directory", _link_at_leaf)
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="now a link"):
+            sandbox_mod.verify_agent_workspace_for_spawn(str(workspace), recorded)
+
+    def test_a_bound_directory_reached_through_an_ancestor_link_spawns(self, tmp_path, monkeypatch):
+        (tmp_path / "real").mkdir()
+        project = tmp_path / "real" / "proj"
+        project.mkdir()
+        try:
+            os.symlink(tmp_path / "real", tmp_path / "home", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            # No link privilege: an ancestor link is followed by the kernel and
+            # the leaf open lands on the real directory -- hand the branch that.
+            (tmp_path / "home").mkdir()
+            monkeypatch.setattr(
+                sandbox_mod,
+                "open_pinned_directory",
+                lambda path: (os.open(project, os.O_RDONLY), _ident(project)),
+            )
+        spelling = str(tmp_path / "home" / "proj")  # crosses a benign, pre-existing link
+        real, fd = sandbox_mod.verify_agent_workspace_for_spawn(spelling, _ident(project))
+        try:
+            assert os.path.realpath(real) == os.path.realpath(project) or real == spelling
+        finally:
+            sandbox_mod.release_agent_workspace_fd(fd)
+
+    def test_the_windows_arm_walks_the_chain_root_first_and_reads_the_one_identity(
+        self, monkeypatch
+    ):
+        """The Windows arm on every host, through its seams: the chain is walked
+        ROOT-FIRST (``pin_directory`` per component with the placeholder
+        admitted -- a name-redirecting reparse point, a junction, is refused at
+        whichever component it sits; a file is not a directory), the identity is
+        read off the FINAL handle by the ONE function every recorder uses
+        (``handle_identity``), so the pair compared is composed exactly as the
+        recorded pair; a volume reporting no identity is reported, not refused.
+        A verified chain is RETAINED: handed back open, root-first, as the hold
+        the spawn keeps until the child exists, and closed leaf-first by
+        ``release_agent_workspace_fd`` -- nothing is closed at return
+        (review-caught: closing it there left ``CreateProcess`` a name a
+        same-UID swapper could re-point in between). A refusal retains nothing:
+        every handle the walk opened is closed before it raises."""
+        pc = sandbox_mod.platform_compat
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        leaves: dict[str, int] = {"C:\\placeholder": 41, "C:\\plain": 42, "C:\\share": 43}
+        identities = {41: (7, 11), 42: (7, 12), 43: None}
+        opened: list[int] = []
+        closed: list[int] = []
+        ancestors = iter(range(100, 200))
+
+        def _pin(path, *, allow_filter_reparse=False):
+            assert allow_filter_reparse, "the placeholder must be admitted as the directory it is"
+            if path in ("C:\\junction", "C:\\file"):
+                raise NotADirectoryError(errno.ENOTDIR, "not a real directory", path)
+            fd = leaves.get(path)
+            if fd is None:
+                fd = next(ancestors)  # a component above the leaf: opened and held
+            opened.append(fd)
+            return fd
+
+        from kiro_crew import pinned_fs
+
+        # The walk is ``real_dir_path_pinned``'s Windows arm: it resolves
+        # ``pin_directory`` through pinned_fs's own name, and on this host its
+        # POSIX arm and the real-path readback are steered as the Windows
+        # shard would answer them.
+        monkeypatch.setattr(pinned_fs, "pin_directory", _pin)
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(pinned_fs, "_windows_handle_pin_available", lambda: True)
+        monkeypatch.setattr(pinned_fs, "fd_real_path", lambda fd: f"C:\\\\held-{fd}")
+        monkeypatch.setattr(pc, "handle_identity", lambda fd: identities.get(fd, (1, 1)))
+        monkeypatch.setattr(pinned_fs, "handle_identity", lambda fd: identities.get(fd, (1, 1)))
+        monkeypatch.setattr(os, "close", lambda fd: closed.append(fd))
+
+        def _verified_and_released(spelling, leaf):
+            before = len(opened)
+            real, hold = sandbox_mod.verify_agent_workspace_for_spawn(spelling, (7, 11))
+            assert real == spelling
+            # The hold IS the chain this call opened, root-first, ending at the
+            # leaf, and none of it is closed yet.
+            assert hold == opened[before:]
+            assert hold[-1] == leaf
+            assert len(hold) > 1  # the ancestor above the leaf is held too
+            assert not set(hold) & set(closed)
+            sandbox_mod.release_agent_workspace_fd(hold)
+            assert closed[-len(hold) :] == list(reversed(hold))  # leaf first, root last
+
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="now a link"):
+            sandbox_mod.verify_agent_workspace_for_spawn("C:\\junction", (7, 11))
+        _verified_and_released("C:\\placeholder", 41)
+        # A different real directory at the name: refused, the remedy named.
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="different directory"):
+            sandbox_mod.verify_agent_workspace_for_spawn("C:\\plain", (7, 11))
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="now a link"):
+            sandbox_mod.verify_agent_workspace_for_spawn("C:\\file", (7, 11))
+        # A volume that reports no identity (SMB, FAT): UNKNOWN -- reported, not
+        # refused, as project_scan's identical comparison does -- and held.
+        _verified_and_released("C:\\share", 43)
+        assert {41, 42, 43} <= set(opened)
+        # Every handle the walk opened was released: by the walk's own unwind on
+        # a refusal, by the caller's release on a verified chain.
+        assert sorted(closed) == sorted(opened)
+
+    def test_the_windows_arm_refuses_an_intermediate_junction_before_opening_below_it(
+        self, tmp_path, monkeypatch
+    ):
+        """GPT-caught: a by-name open of the LEAF let the kernel resolve every
+        component above it first, so a same-UID junction to a share planted at
+        an ancestor after the binding was followed -- the outbound SMB
+        authentication made -- before the leaf's own reparse check could refuse.
+        The walk is root-first now: the junction is refused at its own
+        component and NOTHING below it is ever opened. On the Windows shard the
+        junction is real (``_winapi.CreateJunction``, the tag read off the real
+        handle); elsewhere the Windows arm runs through its seams -- the
+        no-follow open of a real directory, the attribute and tag reads
+        answering the mount-point tag -- so the control flow is pinned on every
+        host, no skip.
+        Without a junction the identity is the leaf's own, read off the final
+        handle, and the chain is RETAINED as the hold (open, root-first) until
+        ``release_agent_workspace_fd`` closes it -- the spawn keeps it across
+        ``CreateProcess`` so the spelling cannot be re-pointed in between; a
+        refusal leaves nothing open."""
+        pc = sandbox_mod.platform_compat
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        real = tmp_path / "real"
+        (real / "inside").mkdir(parents=True)
+        junction = tmp_path / "junction"
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(real), str(junction))
+            real_open = pc._win_open_without_following
+        else:
+            (junction / "inside").mkdir(parents=True)  # the junction object, as a real dir
+            monkeypatch.setattr(pc, "IS_POSIX", False)
+            real_open = lambda path: os.open(str(path), os.O_RDONLY)  # noqa: E731
+            reparse = pc._WIN_FILE_ATTRIBUTE_DIRECTORY | pc._WIN_FILE_ATTRIBUTE_REPARSE_POINT
+            plain = pc._WIN_FILE_ATTRIBUTE_DIRECTORY
+            junction_id = os.stat(junction).st_ino
+            monkeypatch.setattr(
+                pc,
+                "_win_file_attributes",
+                lambda fd: reparse if os.fstat(fd).st_ino == junction_id else plain,
+            )
+            monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: 0xA0000003)  # MOUNT_POINT
+            monkeypatch.setattr(
+                pc, "handle_identity", lambda fd: (os.fstat(fd).st_dev, os.fstat(fd).st_ino)
+            )
+        from kiro_crew import pinned_fs
+
+        if os.name != "nt":
+            monkeypatch.setattr(
+                pinned_fs,
+                "handle_identity",
+                lambda fd: (os.fstat(fd).st_dev, os.fstat(fd).st_ino),
+            )
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(pinned_fs, "_windows_handle_pin_available", lambda: True)
+        opened: list[str] = []
+        held: list[int] = []
+
+        def _spy_open(path):
+            opened.append(os.path.normcase(str(path)))
+            fd = real_open(path)
+            held.append(fd)
+            return fd
+
+        monkeypatch.setattr(pc, "_win_open_without_following", _spy_open)
+
+        def _all_closed(fds):
+            for fd in fds:
+                with pytest.raises(OSError):
+                    os.fstat(fd)
+
+        # The junction is an ANCESTOR of the bound spelling: refused at its own
+        # component, and the leaf below it is never opened -- nothing resolved it.
+        bound = junction / "inside"
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="component above it"):
+            sandbox_mod.verify_agent_workspace_for_spawn(str(bound), (7, 11))
+        assert os.path.normcase(str(junction)) in opened
+        assert os.path.normcase(str(bound)) not in opened
+        # ... and at the leaf itself.
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="now a link"):
+            sandbox_mod.verify_agent_workspace_for_spawn(str(junction), (7, 11))
+        _all_closed(held)  # a refusal retains nothing
+        # No junction: the identity is the leaf's own, off the final handle. A
+        # binding needs only the identity, so its chain is released at once.
+        expected = sandbox_mod.directory_identity_pinned(real / "inside")
+        assert expected is not None
+        _all_closed(held)
+        before = len(held)
+        real_path, hold = sandbox_mod.verify_agent_workspace_for_spawn(
+            str(real / "inside"), expected
+        )
+        assert real_path == str(real / "inside")
+        # The hold is the chain this verification opened, root-first, every
+        # handle still open: what the spawn keeps across CreateProcess.
+        assert hold == held[before:]
+        assert len(hold) > 1
+        for fd in hold:
+            os.fstat(fd)
+        sandbox_mod.release_agent_workspace_fd(hold)
+        # Released after the spawn: every handle the walk ever opened is closed.
+        _all_closed(held)
+
+    def test_identity_pinned_refuses_a_directory_it_cannot_pin(self, tmp_path, monkeypatch):
+        """A binding is recorded with an identity or REFUSED: a leaf that is
+        missing, a link (the flip a same-UID writer makes between the check and
+        the record), or not a directory raises ``WorkspacePinFailed`` naming the
+        reason -- never ``None``, which would store a binding the spawn does not
+        examine (review-caught). A volume that reports no inode records
+        ``IDENTITY_UNAVAILABLE``, the state the spawn logs instead of comparing."""
+        real = tmp_path / "real"
+        real.mkdir()
+        assert sandbox_mod.directory_identity_pinned(real) == _ident(real)
+        with pytest.raises(sandbox_mod.WorkspacePinFailed, match="missing"):
+            sandbox_mod.directory_identity_pinned(tmp_path / "gone")
+        afile = tmp_path / "file"
+        afile.write_text("x")
+        with pytest.raises(sandbox_mod.WorkspacePinFailed, match="link or not a directory"):
+            sandbox_mod.directory_identity_pinned(afile)
+        # The flip: the leaf is a link now, handed to the pin through its seam
+        # where this host grants no link.
+        link = tmp_path / "link"
+        try:
+            os.symlink(real, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            monkeypatch.setattr(
+                sandbox_mod,
+                "open_pinned_directory",
+                lambda path: (_ for _ in ()).throw(
+                    NotADirectoryError(errno.ENOTDIR, "not a real directory", path)
+                ),
+            )
+        with pytest.raises(sandbox_mod.WorkspacePinFailed, match="link or not a directory"):
+            sandbox_mod.directory_identity_pinned(link)
+        monkeypatch.undo()
+        monkeypatch.setattr(sandbox_mod.platform_compat, "handle_identity", lambda fd: None)
+        assert sandbox_mod.directory_identity_pinned(real) == sandbox_mod.IDENTITY_UNAVAILABLE
+
+    def test_identity_pinned_reads_the_opened_directory_and_refuses_the_rest(
+        self, tmp_path, monkeypatch
+    ):
+        """The binding's capture opens the leaf without following a link and
+        reads the identity off THAT descriptor -- never a by-name stat after
+        validation; nothing, a file, or a link at the leaf REFUSES the bind
+        (``WorkspacePinFailed``) -- a binding is recorded with an identity or not at all."""
+        target = tmp_path / "proj"
+        target.mkdir()
+        assert sandbox_mod.directory_identity_pinned(str(target)) == _ident(target)
+        with pytest.raises(sandbox_mod.WorkspacePinFailed, match="missing"):
+            sandbox_mod.directory_identity_pinned(str(tmp_path / "gone"))
+        (tmp_path / "file").write_text("x")
+        with pytest.raises(sandbox_mod.WorkspacePinFailed, match="not a directory"):
+            sandbox_mod.directory_identity_pinned(str(tmp_path / "file"))
+        try:
+            os.symlink(target, tmp_path / "link", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            with pytest.raises(sandbox_mod.WorkspacePinFailed, match="link or not a directory"):
+                sandbox_mod.directory_identity_pinned(str(tmp_path / "link"))
+        # Read off the descriptor the open produced, not by name: the identity
+        # seam is handed an open descriptor of the target and its answer is what
+        # the capture records.
+        seen: list[int] = []
+
+        def _off_the_handle(fd: int):
+            seen.append(fd)
+            assert (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == _ident(target)
+            return (1, 2)
+
+        monkeypatch.setattr(sandbox_mod.platform_compat, "handle_identity", _off_the_handle)
+        assert sandbox_mod.directory_identity_pinned(str(target)) == (1, 2)
+        assert len(seen) == 1
+
+    def test_an_unknown_identity_is_reported_not_refused_and_recorded_as_unavailable(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """POSIX arm of the zero-inode contract: the leaf's identity reads back
+        unknown (``handle_identity`` answers None) -- the spawn proceeds and logs
+        "identity unavailable on this volume"; and a zero-inode identity is never
+        what a binding records (``directory_identity`` answers None)."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setattr(sandbox_mod.platform_compat, "handle_identity", lambda fd: None)
+        with caplog.at_level("WARNING", logger="kiro_crew.sandbox"):
+            real, fd = sandbox_mod.verify_agent_workspace_for_spawn(str(workspace), (7, 11))
+        sandbox_mod.release_agent_workspace_fd(fd)
+        assert os.path.realpath(real) == os.path.realpath(workspace)
+        assert any("identity unavailable on this volume" in r.getMessage() for r in caplog.records)
+        # ... and a binding made there records the UNAVAILABLE state, not nothing.
+        assert sandbox_mod.directory_identity_pinned(str(workspace)) == (
+            sandbox_mod.IDENTITY_UNAVAILABLE
+        )
+
+    def test_a_bound_descriptor_must_be_the_verified_directory(self, monkeypatch, caplog):
+        """The macOS bind's by-name descriptor must be the directory the identity
+        check verified: the comparison reads both identities through
+        ``_directory_identity_from_fd`` -- faked here with descriptors and
+        identities of the test's choosing, so the logic runs on every host (a
+        Windows host cannot produce the ``O_DIRECTORY`` opens the real seam
+        reads). Same identity passes, a different one refuses, nothing verified
+        or an unknown identity is not compared."""
+        identities = {10: (7, 11), 11: (7, 11), 12: (7, 99), 13: None}
+        monkeypatch.setattr(sandbox_mod, "_directory_identity_from_fd", lambda fd: identities[fd])
+        sandbox_mod.refuse_unless_bound_workspace_is_pinned(10, 11)
+        with pytest.raises(sandbox_mod.AgentWorkspacePinRefused, match="not the directory"):
+            sandbox_mod.refuse_unless_bound_workspace_is_pinned(12, 11)
+        sandbox_mod.refuse_unless_bound_workspace_is_pinned(12, None)  # nothing verified
+        with caplog.at_level("WARNING", logger="kiro_crew.sandbox"):
+            sandbox_mod.refuse_unless_bound_workspace_is_pinned(13, 11)  # unknown: reported
+        assert any("identity unavailable" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_the_async_wrapper_hands_over_what_the_worker_opened(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        real, fd = await sandbox_mod.verify_agent_workspace_for_spawn_async(
+            str(workspace), _ident(workspace)
+        )
+        try:
+            assert os.path.realpath(real) == os.path.realpath(workspace)
+        finally:
+            sandbox_mod.release_agent_workspace_fd(fd)
+        assert await sandbox_mod.verify_agent_workspace_for_spawn_async(
+            str(tmp_path / "unbound"), None
+        ) == (str(tmp_path / "unbound"), None)
 
 
 class TestWritableCarveouts:

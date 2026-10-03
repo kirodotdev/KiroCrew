@@ -26,11 +26,7 @@
       "windows"
     ]
   },
-  "permissions": {
-    "api": [
-      "/api/project-scaffold"
-    ]
-  },
+  "permissions": {},
   "ui": {
     "pages": [
       {

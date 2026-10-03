@@ -1264,6 +1264,107 @@ class TestFixBDeadRuntimeRespawn:
         assert new_runtime.spawn.await_args.kwargs["start_priority"] is want
         assert new_runtime.create_session.await_args.kwargs["start_priority"] is want
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("swapped", [True, False], ids=["swapped", "same"])
+    async def test_the_respawned_runtime_verifies_the_bound_directory_like_the_first_spawn(
+        self, tmp_path, swapped
+    ):
+        """The replacement runtime the resume path builds after the first died
+        carries the session's recorded identity exactly as the first spawn did,
+        so its spawn re-verifies the bound directory: a directory replaced at its
+        name while the first runtime was dying is REFUSED at the respawn (the
+        governed refusal, no session created), and the same directory spawns.
+        The stand-in runtime does with its constructor arguments what the real
+        ``AcpRuntime.spawn`` does with them -- the identity check against the
+        recorded identity. Red on the head before this: the replacement was
+        built without ``work_dir_identity``, so the swapped directory spawned
+        unexamined."""
+        import os
+
+        from kiro_crew import sandbox
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        info = os.stat(workspace)
+        bound = (info.st_dev, info.st_ino)
+        provider = self._kiro_provider()
+        provider._client._work_dir = str(workspace)
+        provider._client._work_dir_identity = bound
+        provider._client._resume_session_id = "old-sess-id"
+        constructed: list[dict] = []
+        runtimes: list[MagicMock] = []
+
+        def _swap_then_fail_load(*_a, **_k):
+            if swapped:
+                # Replaced at its name while the first runtime is dying: a sibling
+                # made while it stood (another inode by construction) renamed over it.
+                other = tmp_path / ".ws.other"
+                other.mkdir()
+                workspace.rmdir()
+                other.rename(workspace)
+            raise RuntimeError("load failed")
+
+        def _runtime(**kw):
+            constructed.append(kw)
+            first = len(constructed) == 1
+            rt = MagicMock()
+            rt.pid = 1000 + len(constructed)
+
+            async def _spawn(**_spawn_kwargs: object) -> None:
+                # What the real spawn does with what it was handed (the start
+                # priority and gate callbacks the provider passes are not what
+                # this test observes).
+                try:
+                    _real, hold = sandbox.verify_agent_workspace_for_spawn(
+                        kw["work_dir"], kw.get("work_dir_identity")
+                    )
+                except sandbox.AgentWorkspacePinRefused as exc:
+                    raise AcpRuntimeError(str(exc)) from exc
+                sandbox.release_agent_workspace_fd(hold)
+
+            rt.spawn = AsyncMock(side_effect=_spawn)
+            rt.is_alive = MagicMock(return_value=not first)  # the first dies during resume
+            rt.kill = AsyncMock()
+            rt.load_session = AsyncMock(side_effect=_swap_then_fail_load)
+            handle = MagicMock()
+            handle.session_id = "fresh-sess"
+            handle.set_model = AsyncMock()
+            handle.store_session_config = MagicMock()
+            rt.create_session = AsyncMock(return_value=handle)
+            rt.saw_not_logged_in = MagicMock(return_value=False)
+            rt.saw_sandbox_init_failure = MagicMock(return_value=False)
+            rt.settle_stderr = AsyncMock()
+            rt.work_scratch_dir = None
+            runtimes.append(rt)
+            return rt
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", side_effect=_runtime),
+            patch(
+                "kiro_crew.providers.acp.AcpSessionProvider",
+                side_effect=lambda handle, runtime, **kw: MagicMock(
+                    _handle=handle, _runtime=runtime, resumed=False
+                ),
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            if swapped:
+                with pytest.raises(AcpRuntimeError, match="re-bind the project directory"):
+                    await provider._start_kiro_runtime()
+            else:
+                await provider._start_kiro_runtime()
+        assert len(constructed) == 2, "the first runtime did not die into a respawn"
+        # Both constructions carry the session's record -- the same seam, the same value.
+        assert [kw.get("work_dir_identity") for kw in constructed] == [bound, bound]
+        first, replacement = runtimes
+        first.kill.assert_awaited_once()
+        replacement.spawn.assert_awaited_once()
+        if swapped:
+            replacement.create_session.assert_not_called()  # refused before any session
+        else:
+            replacement.create_session.assert_awaited_once()
+
 
 class TestLoadSessionWithRetry:
     """F2 load-recovery Phase 1: ``_load_session_with_retry`` retries past a

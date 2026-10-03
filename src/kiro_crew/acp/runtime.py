@@ -195,6 +195,7 @@ from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.runtime_ownership import authorize_runtime_kill, outstanding_leases
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
+    AgentWorkspacePinRefused,
     BoundWorkspaceMismatch,
     _forward_ssh_auth_sock,
     agents_slice_throttling,
@@ -203,10 +204,13 @@ from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
     name_scope_unit,
+    refuse_unless_bound_workspace_is_pinned_async,
+    release_agent_workspace_fd,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
     scope_unit_name,
     scrub_agent_subprocess_env,
+    verify_agent_workspace_for_spawn_async,
     wrap_argv,
     wrap_argv_async,
     wrapped_by_crew_sandbox,
@@ -1008,6 +1012,23 @@ async def _retrying_spawn_factory(
     raise AssertionError("unreachable: the second attempt returns or re-raises")
 
 
+def _release_spawn_hold(hold: list[Any]) -> None:
+    """Release the verified hold a spawn acquired -- exactly once, off the loop.
+
+    *hold* is the one-slot list the spawn keeps the hold in. The first exit
+    path that reaches here pops it and releases it on a worker thread
+    (``release_agent_workspace_fd``: the POSIX descriptor closed, the Windows
+    chain closed leaf-first); every later call finds the list empty and does
+    nothing, so the success path, the spawn failure handler and the outer
+    handler for a preparation that raised can each call it without a double
+    close -- a closed-then-reused descriptor number is the hazard a second
+    release would create. Scheduled, not awaited: no loop-side close and no
+    suspension sits between a live child and the record of it.
+    """
+    if hold:
+        asyncio.get_running_loop().run_in_executor(None, release_agent_workspace_fd, hold.pop())
+
+
 class AcpRuntime:
     """Owns one kiro-cli acp subprocess with single-reader demux.
 
@@ -1025,6 +1046,7 @@ class AcpRuntime:
         agent: str = CLIENT_NAME,
         sandbox_mode: str = "auto",
         extra_env: dict[str, str] | None = None,
+        work_dir_identity: tuple[int, int] | None = None,
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         max_age_secs: float = _DEFAULT_MAX_AGE_SECS,
@@ -1046,6 +1068,11 @@ class AcpRuntime:
             from kiro_crew.config.paths import config_dir
 
             self._work_dir = config_dir() / "workspace"
+        # The (st_dev, st_ino) the SESSION recorded when it was bound to work_dir,
+        # or None; what the spawn verifies against (sandbox.verify_agent_workspace_for_spawn).
+        self._work_dir_identity: tuple[int, int] | None = (
+            (int(work_dir_identity[0]), int(work_dir_identity[1])) if work_dir_identity else None
+        )
         self._agent = agent
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
@@ -1109,6 +1136,9 @@ class AcpRuntime:
         self._expect_mcp_reports = expect_mcp_reports
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
+        # Per spawn: the descriptor the child enters (the bind's, else the
+        # identity check's hold on POSIX); None once the hold is released.
+        self._spawn_chdir_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
@@ -1677,6 +1707,7 @@ class AcpRuntime:
         """Close the parent copy of a macOS workspace identity off-loop."""
         descriptor = getattr(self, "_bound_workspace_fd", None)
         self._bound_workspace_fd = None
+        self._spawn_chdir_fd = None
         work_dir = getattr(self, "_work_dir", None)
         if work_dir is not None:
             self._spawn_work_dir = str(work_dir)
@@ -1984,333 +2015,419 @@ class AcpRuntime:
         self._max_age_secs = reclaim.max_age_secs
         self._max_rss_mb = reclaim.max_rss_mb
 
-        # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
-        # slow storage; the loop must never wait on the kernel here.
-        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
-        # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
-        # deny rules. Keep their workspace disjoint from the named voice-decoder
-        # runtime so verified executable bytes cannot be replaced before spawn.
-        if self._harness.internal_sandbox:
-            await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
-
+        # The working directory is verified FIRST -- before anything below
+        # touches its name -- against the identity the SESSION recorded when it
+        # was bound (sandbox.verify_agent_workspace_for_spawn re-reads the leaf
+        # without following a link and compares (st_dev, st_ino)): a swap at that
+        # name since the binding is refused instead of entered, so nothing is
+        # minted; a binding that carries no identity is not examined and spawns
+        # as it always did. The refusal is governed -- this site's own error,
+        # naming the remedy. What the check verified stays HELD until the child
+        # exists: the POSIX descriptor, or on Windows the pinned handle chain
+        # (each component held without FILE_SHARE_DELETE, so the name the spawn
+        # enters cannot be renamed or re-pointed at a junction in between). Every
+        # pathname probe of the preparation -- the readiness mkdir, the skill
+        # projection, the sandbox wrapper -- runs under that hold (review-caught:
+        # the mkdir ran first, and on Windows a bound directory swapped for a
+        # link to a UNC share was followed into an SMB handshake before the check
+        # refused the spawn). Released after the PID bookkeeping, and on every
+        # failure path -- exactly once, through ``_release_spawn_hold``, which is
+        # why the preparation and the spawn sit in the one ``try`` below.
         try:
-            plan = await self._resolve_spawn_plan()
-            self._max_rss_depth = plan.rss_depth
-            argv = plan.argv
-            if self.acp_backend == ACP_BACKEND_KIRO:
-                from kiro_crew.acp.skill_projection import prepare_native_skill_projection
-
-                async with self._skill_projection_lock():
-                    generation = self._issue_skill_projection_generation()
-                    spawned = await asyncio.to_thread(
-                        prepare_native_skill_projection, self._work_dir
-                    )
-                    # Issued and adopted under the lock, so nothing newer exists.
-                    self._native_skill_projection = spawned
-                    self._skill_projection_generation = generation
-                # Held for the process's life: the aliases kiro-cli listed at
-                # startup are ones it is guaranteed to have loaded, so later
-                # projections keep translating them in inbound frames
-                # (_activate_mode_bracketed), and holding the object keeps its
-                # lease -- and them -- out of the prune.
-                self._spawn_skill_projection = self._native_skill_projection
-                if self._native_skill_projection is not None:
-                    argv = list(argv)
-                    agent_position = argv.index("--agent") + 1
-                    try:
-                        argv[agent_position] = self._native_skill_projection.agent(self._agent)
-                    except ValueError as exc:
-                        # The projection refused this agent's view -- a
-                        # ``kirocrew-core`` restriction authored in its spec, a
-                        # disabled ``skill_search`` -- and says so in a sentence
-                        # that names the spec and the remedy. That sentence is
-                        # the user's, so it travels as the error the startup
-                        # paths translate (``providers/acp.py`` handles
-                        # ``AcpRuntimeError`` around ``spawn()``); a bare
-                        # ``ValueError`` would leave ``spawn()`` as an internal
-                        # failure with the actionable text unread.
-                        raise AcpRuntimeError(str(exc)) from exc
-        except _KiroExecutableTrustError as exc:
+            spawn_cwd, verified_workspace_fd = await verify_agent_workspace_for_spawn_async(
+                self._work_dir, self._work_dir_identity
+            )
+        except AgentWorkspacePinRefused as exc:
             raise AcpRuntimeError(str(exc)) from exc
-        # The handshake declaration is the harness's constant. A host that takes
-        # feature settings over the wire (``client_meta_settings``, a positive
-        # membership answer) has its channel filled here -- BEFORE the process
-        # exists, right after the freshness gate above took its snapshot, so the
-        # spec read is the generation the child will load. Every other host reads
-        # its constant directly: no new await, no new step on that path.
-        client_capabilities = self._harness.client_capabilities
-        if self._harness.client_meta_settings:
-            client_capabilities = await self._handshake_client_capabilities()
-
-        # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
-        # MCP-gateway overlay is NOT delivered through the sandbox: its broker
-        # stubs are injected at ACP session/new (see new_session), so pooling
-        # needs no bind-mount and works with sandbox mode "off". strip_python_env
-        # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
-        # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        # is_kiro_cli drives the reviewed Kiro internal-sandbox delegation: on
-        # macOS wrap_argv skips its seatbelt because the two cannot nest; on
-        # Windows the official Kiro backend delegates by default because Crew
-        # has no native OS sandbox there. Answered by the harness, which reads
-        # ACP_BACKENDS_INTERNAL_SANDBOX (harness-parity H7) — never as "not KAS":
-        # that test fails OPEN, so a harness inheriting a negative test would have
-        # Crew's seatbelt skipped in favour of an internal sandbox that never
-        # starts. KAS is a Node process with no internal sandbox, so it takes
-        # Crew's seatbelt directly, and so does every harness added later.
-        #
-        # Inside a pod apply_pod_bundle_spawn answers both questions instead, from
-        # the single reason recorded on that function: the pod HOME remap breaks
-        # the toolbox shim's own sandbox, so the child runs the bundle binary the
-        # shim itself falls back to and Crew's launcher wraps it. Off-loop because
-        # the resolution stats the candidate path.
-        argv, delegate_internal_sandbox = await asyncio.to_thread(
-            apply_pod_bundle_spawn, argv, backend=self._acp_backend
-        )
-        spawned_kiro_bin = argv[0] if argv else None
-        # The host's credential mask, resolved with its argv and applied here.
-        # Empty for a host whose privileged tools ask by construction; for one this
-        # core's tool gate ENFORCES it is the compensating control, so a spawn that
-        # dropped it would hand a third-party binary the operator's credential homes.
-        # Per-process scratch containment (twin of acp/client.py). Allocated
-        # BEFORE the wrap: the scratch ROOT is masked for every sandboxed
-        # process, so this runtime's own directory is carved back out.
-        if self._shared_scratch is None and self._scratch_dir is not None:
-            # A respawn of this runtime: its previous process's directory IS
-            # the tree its sessions and their children use (twin of
-            # acp/client.py) -- join it rather than start an empty one.
-            self._shared_scratch = self._scratch_dir
-        self._scratch_dir = None
+        hold: list[Any] = [verified_workspace_fd]
         try:
-            self._scratch_dir = await self._to_thread_guarding_sandbox(
-                agent_scratch.allocate_scratch, "runtime"
-            )
-        except (OSError, agent_scratch.ScratchBoundaryError):
-            # The boundary refusal joins OSError HERE and deliberately not at
-            # record_owner below: no child exists yet, so there is nothing to
-            # stop, and scratch is hygiene rather than a spawn prerequisite.
-            logger.warning(
-                "agent-scratch: could not allocate; spawning with inherited temp",
-                exc_info=True,
-            )
-        scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
-        # The session tree's work directory, when this runtime is not the tree's
-        # first process: a second window into the masked root, re-validated now
-        # because the allocation it names may have been swept since it was
-        # recorded (``shared_scratch_window`` answers None for anything that is
-        # not a plain directory under the root, and the spawn then carries on
-        # with the runtime's own directory alone).
-        if self._shared_scratch is not None:
-            self._shared_scratch = await self._to_thread_guarding_sandbox(
-                agent_scratch.shared_scratch_window, self._shared_scratch
-            )
-        if self._shared_scratch is not None:
-            scratch_window = (*scratch_window, str(self._shared_scratch))
-        # Resolve the SSH_AUTH_SOCK forward opt-in off-loop ONCE
-        # (config read) and pass it to both the sandbox wrap and the parent scrub
-        # below, so neither reads config on the loop. Scoped to this agent spawn.
-        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
-        argv, self._sandbox_cleanup = await wrap_argv_async(
-            argv,
-            mode=self._sandbox_mode,
-            strip_python_env=True,
-            forward_ssh_auth_sock=forward_ssh_auth_sock,
-            is_kiro_cli=delegate_internal_sandbox,
-            extra_hidden_dirs=plan.extra_hidden_dirs,
-            extra_private_dirs=scratch_window,
-            extra_expose_files=plan.extra_expose_files,
-            _prepare=wrap_argv,
-        )
-        # Twin of acp/client.py's record: the wrap's own account of the branch it
-        # took, read before the cgroup scope below prepends its tokens. A later
-        # re-derivation from mode + platform + settings cannot match it -- the
-        # delegated branch still falls back to Crew's seatbelt for a masked spawn,
-        # and the audit-or-deny step can refuse a delegation after it was chosen.
-        self._sandbox_wrapped_by_crew = wrapped_by_crew_sandbox(argv)
-        self._sandbox_hidden_dirs = tuple(plan.extra_hidden_dirs)
-        # The incarnation this spawn is. Minted BEFORE the cgroup wrap because
-        # two things carry it: the scope's unit name, and the child's own
-        # environment further down. One token for both is what lets a reader
-        # holding either one reach the other -- a scope resolves to the runtime
-        # incarnation inside it, and a process resolves to the scope bounding it.
-        # Random rather than pid-derived so a recycled pid cannot false-match.
-        spawn_instance = uuid.uuid4().hex[:16]
-        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-        # No-op + loud warning where cgroup delegation is unavailable. --scope
-        # execs into the target, so self._pid below is still the real child.
-        # Off-loop: first call probes /proc + /sys and the config read touches
-        # the config dir (mkdir + file read) — blocking syscalls that must not
-        # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
-        # file, so a cancellation here must not orphan it.
-        argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
-        # Name that scope after this spawn, because the ceiling above binds the
-        # whole runtime: when the kernel OOM-kills the scope, every session the
-        # runtime serves dies together, and an anonymous ``run-u<N>.scope`` in
-        # that report names no runtime to resolve those sessions from. A no-op
-        # where the wrap did not happen (no cgroup delegation), so it cannot turn
-        # a degraded host into a failed spawn, and pure argv rewriting, so it
-        # stays on the loop rather than costing a second thread hop.
-        named_argv = name_scope_unit(argv, spawn_instance)
-        # Whether the naming ACTUALLY happened is read off the argv, not re-derived
-        # from the token. name_scope_unit returns argv unchanged on every host where
-        # cgroup_scope_argv handed back the bare command (macOS, Windows, Linux
-        # without cgroup-v2 --user delegation, systemd-run outside a trusted dir),
-        # and the token is always spellable, so a token-derived name would claim a
-        # scope for exactly those hosts that have none.
-        scope_unit = (scope_unit_name(spawn_instance) or "") if named_argv is not argv else ""
-        argv = named_argv
+            # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
+            # slow storage; the loop must never wait on the kernel here. The unbound
+            # default is what it creates; a bound directory exists by construction
+            # (pinned at the bind, verified and held above), and ``mkdir(exist_ok=True)``
+            # of its name is a pathname probe the hold has made unnecessary.
+            if self._work_dir_identity is None:
+                await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+            # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
+            # deny rules. Keep their workspace disjoint from the named voice-decoder
+            # runtime so verified executable bytes cannot be replaced before spawn.
+            if self._harness.internal_sandbox:
+                await asyncio.to_thread(
+                    assert_voice_runtime_outside_agent_workspace, self._work_dir
+                )
 
-        env = {**os.environ}
-        if self._extra_env:
-            env.update(self._extra_env)
+            try:
+                plan = await self._resolve_spawn_plan()
+                self._max_rss_depth = plan.rss_depth
+                argv = plan.argv
+                if self.acp_backend == ACP_BACKEND_KIRO:
+                    from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
-        env["PATH"] = augmented_path(env.get("PATH", ""))
+                    async with self._skill_projection_lock():
+                        generation = self._issue_skill_projection_generation()
+                        spawned = await asyncio.to_thread(
+                            prepare_native_skill_projection, self._work_dir
+                        )
+                        # Issued and adopted under the lock, so nothing newer exists.
+                        self._native_skill_projection = spawned
+                        self._skill_projection_generation = generation
+                    # Held for the process's life: the aliases kiro-cli listed at
+                    # startup are ones it is guaranteed to have loaded, so later
+                    # projections keep translating them in inbound frames
+                    # (_activate_mode_bracketed), and holding the object keeps its
+                    # lease -- and them -- out of the prune.
+                    self._spawn_skill_projection = self._native_skill_projection
+                    if self._native_skill_projection is not None:
+                        argv = list(argv)
+                        agent_position = argv.index("--agent") + 1
+                        try:
+                            argv[agent_position] = self._native_skill_projection.agent(self._agent)
+                        except ValueError as exc:
+                            # The projection refused this agent's view -- a
+                            # ``kirocrew-core`` restriction authored in its spec, a
+                            # disabled ``skill_search`` -- and says so in a sentence
+                            # that names the spec and the remedy. That sentence is
+                            # the user's, so it travels as the error the startup
+                            # paths translate (``providers/acp.py`` handles
+                            # ``AcpRuntimeError`` around ``spawn()``); a bare
+                            # ``ValueError`` would leave ``spawn()`` as an internal
+                            # failure with the actionable text unread.
+                            raise AcpRuntimeError(str(exc)) from exc
+            except _KiroExecutableTrustError as exc:
+                raise AcpRuntimeError(str(exc)) from exc
+            # The handshake declaration is the harness's constant. A host that takes
+            # feature settings over the wire (``client_meta_settings``, a positive
+            # membership answer) has its channel filled here -- BEFORE the process
+            # exists, right after the freshness gate above took its snapshot, so the
+            # spec read is the generation the child will load. Every other host reads
+            # its constant directly: no new await, no new step on that path.
+            client_capabilities = self._harness.client_capabilities
+            if self._harness.client_meta_settings:
+                client_capabilities = await self._handshake_client_capabilities()
 
-        def _resolve_env_off_loop() -> None:
-            # KRB5CCNAME resolution lstat/stats /tmp/krb5cc_<uid>, and the
-            # CLI's own KIRO_API_KEY is settled here too: re-injected from the
-            # data home's .env for the kiro-cli backend (post-scrub Docker),
-            # actively stripped for a foreign backend, which must never
-            # receive it (see config.loader.inject/strip_kiro_cli_api_key) —
-            # a file read either way. Both are blocking syscalls that must not
-            # run on the loop, bundled into ONE thread hop. Guarded: the
-            # sandbox temp file is live, so a cancellation here must not
-            # orphan it.
-            resolve_krb5_ccname(env)
-            # KIRO_API_KEY is one host's own MODEL credential and another
-            # host's active hazard, so which way it goes is the harness's answer.
-            # kiro-cli is handed it for its v2 agent loop. The KAS relay has it
-            # REMOVED even though its process is now a kiro-cli: the v3 engine
-            # authenticates either from kiro-cli's OIDC store
-            # (--auth-method cli) or from Crew's vault over the
-            # _kiro/auth/getAccessToken callback, and in BOTH shapes the
-            # variable must be absent — the engine gives an API key in its
-            # environment precedence over the callback, so leaving it set would
-            # silently override the credential the operator signed in with.
-            # Called here, before the scrub below, so a host can both add its own
-            # variables and remove one this generic path would pass through.
-            self._harness.apply_spawn_env(env, spawned_binary=spawned_kiro_bin)
-
-        await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
-        # Parent-side equivalent of the launcher scrub. This is required on
-        # Windows where the positively classified Kiro backend delegates to the
-        # CLI's internal sandbox without a POSIX `env -u` wrapper. Do it after
-        # credential-pointer/API-key resolution so no resolver can reintroduce a
-        # denied variable; KIRO_API_KEY itself is intentionally not denied.
-        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
-        # Bundled skill scripts must not depend on a system ``python`` name.
-        # The desktop bundles carry their interpreter outside the user's PATH,
-        # while this path is already running under the exact environment that
-        # can import ``kiro_crew``. Overwrite after the scrub and after
-        # ``extra_env`` so agent configuration cannot redirect the trusted read
-        # gate to a foreign interpreter.
-        env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
-        # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
-        # confined to the pod's tree instead of the real host's -- see
-        # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and
-        # for every host whose harness answers False. That answer reads
-        # ACP_BACKENDS_POD_HOME_REMAP, its own membership set rather than a reuse
-        # of the internal-sandbox one: "carries its own OS sandbox" and
-        # "relocating HOME moves its credential store" are different questions
-        # (harness-parity H6), and conflating them is what this gate is against.
-        env = _apply_pod_home_remap(env, pod_home_remap=self._harness.pod_home_remap)
-        # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
-        # server it spawns inherit this, so escaped launcher trees (``npx
-        # @playwright/mcp`` -> node) are identifiable as ours.
-        env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
-        # The incarnation this spawn is (minted above the cgroup wrap, which
-        # names the scope after the same token). It has to travel in the child's
-        # environment: it is what a teardown reads back out of
-        # /proc/<pid>/environ to prove a process is THIS spawn's descendant once
-        # the root itself is gone.
-        env[KIROCREW_SPAWN_INSTANCE_ENV] = spawn_instance
-        # Which install spawned it: the leaked-runtime reclaim refuses a runtime
-        # whose home is absent or differs, since the marker above is shared by
-        # every install on this uid.
-        env[KIROCREW_SPAWN_HOME_ENV] = str(data_home())
-        # Own browser session per agent process, matching AcpClient._spawn (see
-        # browser_session_env). Per PROCESS, not per agent: with session sharing
-        # on (the default) an eligible subagent's session is created on the
-        # PARENT's runtime, so a parent and its subagents share this process and
-        # therefore one browser; a task-runner run is a separate family sharing
-        # one run-scoped process. What this buys is isolation BETWEEN families,
-        # which is where the reported corruption came from. The docs tell an
-        # agent sharing a process with a concurrent browser user to pass -s=.
-        browser_env = browser_session_env(env)
-        env.update(browser_env)
-        if browser_env:
-            lifecycle_env = {**os.environ, **browser_env}
-            env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
-        # Per-process scratch containment: the agent's temp AND its
-        # prompt-guided work products land in the owned directory allocated
-        # before the sandbox wrap, instead of the shared system temp dir.
-        # Fail-open -- scratch is hygiene, not a spawn prerequisite. The
-        # owner pid is recorded after spawn; reclamation is liveness-keyed
-        # (agent_scratch.sweep_dead_scratch), never age-keyed.
-        if self._scratch_dir is not None:
-            env.update(agent_scratch.scratch_env(self._scratch_dir, shared=self._shared_scratch))
-        elif self._shared_scratch is not None:
-            # Own allocation failed (inherited temp) but the tree's work
-            # directory is mounted: the prompt-visible name still points there.
-            env["KIROCREW_SCRATCH"] = str(self._shared_scratch)
-        # A host whose state cannot be shared between processes (codex's SQLite
-        # databases) keeps its own copy under this process's scratch directory.
-        _point_private_state_at_scratch(env, plan.private_state_env, self._scratch_dir)
-        # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
-        # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
-        # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
-        # Respects a pre-set value; see resource_status.inject_xdist_auto_cap.
-        # Off-loop: resolving the cap reads the raw config, and that read
-        # enters config_dir() (mkdir + file IO + JSON parse) — blocking
-        # syscalls that must not run on the loop. Guarded: the sandbox temp
-        # file is live, so a cancellation here must not orphan it.
-        await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
-
-        await self._discard_bound_workspace()
-        if self._harness.internal_sandbox:
-            self._spawn_work_dir, self._bound_workspace_fd = (
-                await bind_voice_safe_agent_workspace_async(self._work_dir)
+            # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
+            # MCP-gateway overlay is NOT delivered through the sandbox: its broker
+            # stubs are injected at ACP session/new (see new_session), so pooling
+            # needs no bind-mount and works with sandbox mode "off". strip_python_env
+            # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
+            # foreign MCP subprocesses (which bundle their own interpreter + deps).
+            # is_kiro_cli drives the reviewed Kiro internal-sandbox delegation: on
+            # macOS wrap_argv skips its seatbelt because the two cannot nest; on
+            # Windows the official Kiro backend delegates by default because Crew
+            # has no native OS sandbox there. Answered by the harness, which reads
+            # ACP_BACKENDS_INTERNAL_SANDBOX (harness-parity H7) — never as "not KAS":
+            # that test fails OPEN, so a harness inheriting a negative test would have
+            # Crew's seatbelt skipped in favour of an internal sandbox that never
+            # starts. KAS is a Node process with no internal sandbox, so it takes
+            # Crew's seatbelt directly, and so does every harness added later.
+            #
+            # Inside a pod apply_pod_bundle_spawn answers both questions instead, from
+            # the single reason recorded on that function: the pod HOME remap breaks
+            # the toolbox shim's own sandbox, so the child runs the bundle binary the
+            # shim itself falls back to and Crew's launcher wraps it. Off-loop because
+            # the resolution stats the candidate path.
+            argv, delegate_internal_sandbox = await asyncio.to_thread(
+                apply_pod_bundle_spawn, argv, backend=self._acp_backend
             )
-        try:
-            self._process = await platform_compat.create_windows_cleanup_owned_process(
-                functools.partial(
-                    _retrying_spawn_factory,
-                    functools.partial(
-                        create_subprocess_limited,
-                        *argv,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=self._spawn_work_dir,
-                        limit=_STDOUT_BUFFER_LIMIT,
-                        # POSIX: setsid so kill() can killpg the whole tree. Windows:
-                        # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-                        # makes the child tree taskkill /T-reapable (see platform_compat
-                        # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
-                        # window Windows would otherwise pop for this console child spawned
-                        # from the windowless gateway (0 on POSIX, so no effect there).
-                        start_new_session=platform_compat.IS_POSIX,
-                        creationflags=(
-                            platform_compat.CREATE_NEW_PROCESS_GROUP
-                            | platform_compat._SUBPROCESS_NO_WINDOW
-                            | platform_compat.CREATE_SUSPENDED
-                        ),
-                        # None off macOS, where nothing binds. When set, the child enters
-                        # the workspace through this verified descriptor instead of
-                        # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                        # could aim elsewhere in between; ``cwd`` stays the same directory
-                        # by name so the spawn keeps reporting a real path.
-                        chdir_fd=self._bound_workspace_fd,
-                        env=env,
-                        profile=RLIMIT_PROFILE_SESSION_HOST,
-                    ),
-                ),
+            spawned_kiro_bin = argv[0] if argv else None
+            # The host's credential mask, resolved with its argv and applied here.
+            # Empty for a host whose privileged tools ask by construction; for one this
+            # core's tool gate ENFORCES it is the compensating control, so a spawn that
+            # dropped it would hand a third-party binary the operator's credential homes.
+            # Per-process scratch containment (twin of acp/client.py). Allocated
+            # BEFORE the wrap: the scratch ROOT is masked for every sandboxed
+            # process, so this runtime's own directory is carved back out.
+            if self._shared_scratch is None and self._scratch_dir is not None:
+                # A respawn of this runtime: its previous process's directory IS
+                # the tree its sessions and their children use (twin of
+                # acp/client.py) -- join it rather than start an empty one.
+                self._shared_scratch = self._scratch_dir
+            self._scratch_dir = None
+            try:
+                self._scratch_dir = await self._to_thread_guarding_sandbox(
+                    agent_scratch.allocate_scratch, "runtime"
+                )
+            except (OSError, agent_scratch.ScratchBoundaryError):
+                # The boundary refusal joins OSError HERE and deliberately not at
+                # record_owner below: no child exists yet, so there is nothing to
+                # stop, and scratch is hygiene rather than a spawn prerequisite.
+                logger.warning(
+                    "agent-scratch: could not allocate; spawning with inherited temp",
+                    exc_info=True,
+                )
+            scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
+            # The session tree's work directory, when this runtime is not the tree's
+            # first process: a second window into the masked root, re-validated now
+            # because the allocation it names may have been swept since it was
+            # recorded (``shared_scratch_window`` answers None for anything that is
+            # not a plain directory under the root, and the spawn then carries on
+            # with the runtime's own directory alone).
+            if self._shared_scratch is not None:
+                self._shared_scratch = await self._to_thread_guarding_sandbox(
+                    agent_scratch.shared_scratch_window, self._shared_scratch
+                )
+            if self._shared_scratch is not None:
+                scratch_window = (*scratch_window, str(self._shared_scratch))
+            # Resolve the SSH_AUTH_SOCK forward opt-in off-loop ONCE
+            # (config read) and pass it to both the sandbox wrap and the parent scrub
+            # below, so neither reads config on the loop. Scoped to this agent spawn.
+            forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+            argv, self._sandbox_cleanup = await wrap_argv_async(
+                argv,
+                mode=self._sandbox_mode,
+                strip_python_env=True,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
+                is_kiro_cli=delegate_internal_sandbox,
+                extra_hidden_dirs=plan.extra_hidden_dirs,
+                extra_private_dirs=scratch_window,
+                extra_expose_files=plan.extra_expose_files,
+                _prepare=wrap_argv,
             )
-        except BaseException:
+            # Twin of acp/client.py's record: the wrap's own account of the branch it
+            # took, read before the cgroup scope below prepends its tokens. A later
+            # re-derivation from mode + platform + settings cannot match it -- the
+            # delegated branch still falls back to Crew's seatbelt for a masked spawn,
+            # and the audit-or-deny step can refuse a delegation after it was chosen.
+            self._sandbox_wrapped_by_crew = wrapped_by_crew_sandbox(argv)
+            self._sandbox_hidden_dirs = tuple(plan.extra_hidden_dirs)
+            # The incarnation this spawn is. Minted BEFORE the cgroup wrap because
+            # two things carry it: the scope's unit name, and the child's own
+            # environment further down. One token for both is what lets a reader
+            # holding either one reach the other -- a scope resolves to the runtime
+            # incarnation inside it, and a process resolves to the scope bounding it.
+            # Random rather than pid-derived so a recycled pid cannot false-match.
+            spawn_instance = uuid.uuid4().hex[:16]
+            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+            # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+            # No-op + loud warning where cgroup delegation is unavailable. --scope
+            # execs into the target, so self._pid below is still the real child.
+            # Off-loop: first call probes /proc + /sys and the config read touches
+            # the config dir (mkdir + file read) — blocking syscalls that must not
+            # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
+            # file, so a cancellation here must not orphan it.
+            argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
+            # Name that scope after this spawn, because the ceiling above binds the
+            # whole runtime: when the kernel OOM-kills the scope, every session the
+            # runtime serves dies together, and an anonymous ``run-u<N>.scope`` in
+            # that report names no runtime to resolve those sessions from. A no-op
+            # where the wrap did not happen (no cgroup delegation), so it cannot turn
+            # a degraded host into a failed spawn, and pure argv rewriting, so it
+            # stays on the loop rather than costing a second thread hop.
+            named_argv = name_scope_unit(argv, spawn_instance)
+            # Whether the naming ACTUALLY happened is read off the argv, not re-derived
+            # from the token. name_scope_unit returns argv unchanged on every host where
+            # cgroup_scope_argv handed back the bare command (macOS, Windows, Linux
+            # without cgroup-v2 --user delegation, systemd-run outside a trusted dir),
+            # and the token is always spellable, so a token-derived name would claim a
+            # scope for exactly those hosts that have none.
+            scope_unit = (scope_unit_name(spawn_instance) or "") if named_argv is not argv else ""
+            argv = named_argv
+
+            env = {**os.environ}
+            if self._extra_env:
+                env.update(self._extra_env)
+
+            env["PATH"] = augmented_path(env.get("PATH", ""))
+
+            def _resolve_env_off_loop() -> None:
+                # KRB5CCNAME resolution lstat/stats /tmp/krb5cc_<uid>, and the
+                # CLI's own KIRO_API_KEY is settled here too: re-injected from the
+                # data home's .env for the kiro-cli backend (post-scrub Docker),
+                # actively stripped for a foreign backend, which must never
+                # receive it (see config.loader.inject/strip_kiro_cli_api_key) —
+                # a file read either way. Both are blocking syscalls that must not
+                # run on the loop, bundled into ONE thread hop. Guarded: the
+                # sandbox temp file is live, so a cancellation here must not
+                # orphan it.
+                resolve_krb5_ccname(env)
+                # KIRO_API_KEY is one host's own MODEL credential and another
+                # host's active hazard, so which way it goes is the harness's answer.
+                # kiro-cli is handed it for its v2 agent loop. The KAS relay has it
+                # REMOVED even though its process is now a kiro-cli: the v3 engine
+                # authenticates either from kiro-cli's OIDC store
+                # (--auth-method cli) or from Crew's vault over the
+                # _kiro/auth/getAccessToken callback, and in BOTH shapes the
+                # variable must be absent — the engine gives an API key in its
+                # environment precedence over the callback, so leaving it set would
+                # silently override the credential the operator signed in with.
+                # Called here, before the scrub below, so a host can both add its own
+                # variables and remove one this generic path would pass through.
+                self._harness.apply_spawn_env(env, spawned_binary=spawned_kiro_bin)
+
+            await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
+            # Parent-side equivalent of the launcher scrub. This is required on
+            # Windows where the positively classified Kiro backend delegates to the
+            # CLI's internal sandbox without a POSIX `env -u` wrapper. Do it after
+            # credential-pointer/API-key resolution so no resolver can reintroduce a
+            # denied variable; KIRO_API_KEY itself is intentionally not denied.
+            env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
+            # Bundled skill scripts must not depend on a system ``python`` name.
+            # The desktop bundles carry their interpreter outside the user's PATH,
+            # while this path is already running under the exact environment that
+            # can import ``kiro_crew``. Overwrite after the scrub and after
+            # ``extra_env`` so agent configuration cannot redirect the trusted read
+            # gate to a foreign interpreter.
+            env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
+            # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
+            # confined to the pod's tree instead of the real host's -- see
+            # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and
+            # for every host whose harness answers False. That answer reads
+            # ACP_BACKENDS_POD_HOME_REMAP, its own membership set rather than a reuse
+            # of the internal-sandbox one: "carries its own OS sandbox" and
+            # "relocating HOME moves its credential store" are different questions
+            # (harness-parity H6), and conflating them is what this gate is against.
+            env = _apply_pod_home_remap(env, pod_home_remap=self._harness.pod_home_remap)
+            # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
+            # server it spawns inherit this, so escaped launcher trees (``npx
+            # @playwright/mcp`` -> node) are identifiable as ours.
+            env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+            # The incarnation this spawn is (minted above the cgroup wrap, which
+            # names the scope after the same token). It has to travel in the child's
+            # environment: it is what a teardown reads back out of
+            # /proc/<pid>/environ to prove a process is THIS spawn's descendant once
+            # the root itself is gone.
+            env[KIROCREW_SPAWN_INSTANCE_ENV] = spawn_instance
+            # Which install spawned it: the leaked-runtime reclaim refuses a runtime
+            # whose home is absent or differs, since the marker above is shared by
+            # every install on this uid.
+            env[KIROCREW_SPAWN_HOME_ENV] = str(data_home())
+            # Own browser session per agent process, matching AcpClient._spawn (see
+            # browser_session_env). Per PROCESS, not per agent: with session sharing
+            # on (the default) an eligible subagent's session is created on the
+            # PARENT's runtime, so a parent and its subagents share this process and
+            # therefore one browser; a task-runner run is a separate family sharing
+            # one run-scoped process. What this buys is isolation BETWEEN families,
+            # which is where the reported corruption came from. The docs tell an
+            # agent sharing a process with a concurrent browser user to pass -s=.
+            browser_env = browser_session_env(env)
+            env.update(browser_env)
+            if browser_env:
+                lifecycle_env = {**os.environ, **browser_env}
+                env.update(
+                    await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env)
+                )
+            # Per-process scratch containment: the agent's temp AND its
+            # prompt-guided work products land in the owned directory allocated
+            # before the sandbox wrap, instead of the shared system temp dir.
+            # Fail-open -- scratch is hygiene, not a spawn prerequisite. The
+            # owner pid is recorded after spawn; reclamation is liveness-keyed
+            # (agent_scratch.sweep_dead_scratch), never age-keyed.
+            if self._scratch_dir is not None:
+                env.update(
+                    agent_scratch.scratch_env(self._scratch_dir, shared=self._shared_scratch)
+                )
+            elif self._shared_scratch is not None:
+                # Own allocation failed (inherited temp) but the tree's work
+                # directory is mounted: the prompt-visible name still points there.
+                env["KIROCREW_SCRATCH"] = str(self._shared_scratch)
+            # A host whose state cannot be shared between processes (codex's SQLite
+            # databases) keeps its own copy under this process's scratch directory.
+            _point_private_state_at_scratch(env, plan.private_state_env, self._scratch_dir)
+            # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
+            # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
+            # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
+            # Respects a pre-set value; see resource_status.inject_xdist_auto_cap.
+            # Off-loop: resolving the cap reads the raw config, and that read
+            # enters config_dir() (mkdir + file IO + JSON parse) — blocking
+            # syscalls that must not run on the loop. Guarded: the sandbox temp
+            # file is live, so a cancellation here must not orphan it.
+            await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
+
             await self._discard_bound_workspace()
-            self._discard_sandbox_cleanup()
+            # The verified directory's own spelling is the cwd the spawn enters --
+            # assigned FIRST; the bind below replaces it only when it binds
+            # (returns a descriptor) or names a different path. Off macOS the bind
+            # is a no-op that echoes the spelling back, and echoing it over the
+            # verified real path would spawn into the unverified name (review-caught).
+            self._spawn_work_dir = spawn_cwd
+            try:
+                if self._harness.internal_sandbox:
+                    bound_path, self._bound_workspace_fd = (
+                        await bind_voice_safe_agent_workspace_async(self._work_dir)
+                    )
+                    if self._bound_workspace_fd is not None or bound_path != str(self._work_dir):
+                        self._spawn_work_dir = bound_path
+                    if self._bound_workspace_fd is not None:
+                        # The bind opened the name following links; the child enters
+                        # THAT descriptor. It must be the directory the check verified.
+                        try:
+                            await refuse_unless_bound_workspace_is_pinned_async(
+                                self._bound_workspace_fd, verified_workspace_fd
+                            )
+                        except AgentWorkspacePinRefused as exc:
+                            raise AcpRuntimeError(str(exc)) from exc
+                # The descriptor the child enters, on every POSIX host: the
+                # internal-sandbox bind's where it bound (macOS), else the identity
+                # check's own hold -- the ``O_DIRECTORY`` descriptor of the directory
+                # just verified. ``create_subprocess_limited`` drops ``cwd`` and the
+                # shim ``fchdir``s the inherited descriptor, so the spawn names the
+                # directory, not its spelling: a same-UID rename of the verified
+                # directory with a link planted at its name between the check and
+                # the fork is followed by a pathname ``chdir``, never by the
+                # descriptor (review-caught). ``None`` where nothing was verified (a
+                # working directory no slot is bound to spawns by name as it always
+                # did) and on Windows, where the hold is the handle chain that keeps
+                # the name itself from moving while ``CreateProcess`` reads it.
+                # ``cwd`` stays the verified spelling so the spawn keeps recording a
+                # real path.
+                self._spawn_chdir_fd = self._bound_workspace_fd
+                if (
+                    self._spawn_chdir_fd is None
+                    and platform_compat.IS_POSIX
+                    and isinstance(verified_workspace_fd, int)
+                ):
+                    self._spawn_chdir_fd = verified_workspace_fd
+                self._process = await platform_compat.create_windows_cleanup_owned_process(
+                    functools.partial(
+                        _retrying_spawn_factory,
+                        functools.partial(
+                            create_subprocess_limited,
+                            *argv,
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=self._spawn_work_dir,
+                            limit=_STDOUT_BUFFER_LIMIT,
+                            # POSIX: setsid so kill() can killpg the whole tree. Windows:
+                            # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+                            # makes the child tree taskkill /T-reapable (see platform_compat
+                            # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
+                            # window Windows would otherwise pop for this console child spawned
+                            # from the windowless gateway (0 on POSIX, so no effect there).
+                            start_new_session=platform_compat.IS_POSIX,
+                            creationflags=(
+                                platform_compat.CREATE_NEW_PROCESS_GROUP
+                                | platform_compat._SUBPROCESS_NO_WINDOW
+                                | platform_compat.CREATE_SUSPENDED
+                            ),
+                            chdir_fd=self._spawn_chdir_fd,
+                            env=env,
+                            profile=RLIMIT_PROFILE_SESSION_HOST,
+                        ),
+                    ),
+                )
+            except BaseException:
+                await self._discard_bound_workspace()
+                self._discard_sandbox_cleanup()
+                _release_spawn_hold(hold)
+                self._spawn_chdir_fd = None
+                raise
+            self._pid = self._process.pid
+            # The verified hold (the descriptor; on Windows the handle chain that
+            # spanned the process creation) is released on a worker thread, scheduled
+            # only now -- AFTER the PID bookkeeping -- so no await and no loop-side
+            # close sits between the live child and the record of it (review-caught).
+            _release_spawn_hold(hold)
+            # The hold closes with that call, so the per-spawn descriptor is cleared
+            # (the bind's descriptor, when one bound, stays the session's).
+            self._spawn_chdir_fd = None
+        except BaseException:
+            # A preparation step raised under the hold: release it (a no-op when
+            # the spawn's own failure handler above already did). The sandbox
+            # file, when one was allocated, is the spawn failure handler's and
+            # the caller's to discard, as before.
+            _release_spawn_hold(hold)
             raise
-        self._pid = self._process.pid
         # The same token the child carries in its environment (minted above, so
         # it could be passed in); random, not pid-derived, so it cannot
         # false-match a later spawn that the OS handed a recycled pid.

@@ -22,6 +22,7 @@ lines; the subprocess and stdin are mocked (no kiro-cli is launched).
 """
 
 import asyncio
+import errno
 import gc
 import json
 import logging
@@ -2113,6 +2114,422 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     # The sibling subcommand binary a multi-call CLI dispatches to is still
     # reachable beside the launch path.
     assert (Path(launch_path).parent / "kiro-cli-chat").exists()
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_refuses_a_bound_workspace_replaced_since_the_binding(
+    tmp_path, monkeypatch
+):
+    """The runtime's spawn re-verifies the working directory against the identity
+    the session recorded when it was bound (``work_dir_identity``): the directory
+    is replaced (a sibling renamed over the name -- another inode, on every
+    host) before the deferred spawn, and the spawn refuses with the runtime's
+    own governed error before ``create_subprocess_limited`` runs: no child."""
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    executable = tmp_path / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    spawned: list[dict] = []
+
+    async def stop_spawn(*args, **kwargs):
+        spawned.append(kwargs)
+        raise AssertionError("the process must not be created")
+
+    async def resolve_installed(*, environ=None, home=None):
+        return str(executable)
+
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_installed)
+    monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kwargs: (list(argv), None))
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", MagicMock())
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", stop_spawn)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    info = os.stat(workspace)
+    runtime = AcpRuntime(work_dir=workspace, work_dir_identity=(info.st_dev, info.st_ino))
+    # The swap, between the binding and the deferred spawn: a sibling made while
+    # the bound directory still existed (another inode by construction), renamed
+    # over the name -- a bare rmdir + mkdir can hand the freed inode back.
+    other = tmp_path / ".workspace.other"
+    other.mkdir()
+    workspace.rmdir()
+    other.rename(workspace)
+    with pytest.raises(AcpRuntimeError, match="re-bind the project directory"):
+        await runtime.spawn()
+    assert spawned == [], "the spawn was attempted into the replaced directory"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason=(
+        "the identity check hands a handle CHAIN over on Windows, which has no fchdir; "
+        "its retention across CreateProcess is pinned by the test below"
+    ),
+)
+async def test_runtime_spawn_enters_the_verified_descriptor_where_nothing_binds(
+    tmp_path, monkeypatch
+):
+    """Twin of the client's test: off macOS nothing binds, and a bound working
+    directory entered by NAME is open to a swap -- a pathname ``cwd`` is
+    re-resolved by the fork child's ``chdir``, so a same-UID rename with a link
+    planted at the name between the identity check and the fork redirects the
+    agent (review-caught). The descriptor the check itself holds is the
+    child's ``chdir_fd``; ``cwd`` stays the verified spelling
+    for the record (``create_subprocess_limited`` drops it when a descriptor is
+    given). The hold is released after the spawn, off the loop, as before."""
+    import threading
+
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew import sandbox as sandbox_module
+
+    executable = tmp_path / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    info = os.stat(workspace)
+    bound = (info.st_dev, info.st_ino)
+    held: list[tuple[int, tuple[int, int]]] = []
+    real_verify = runtime_mod.verify_agent_workspace_for_spawn_async
+
+    async def spy_verify(work_dir, expected):
+        real, fd = await real_verify(work_dir, expected)
+        assert isinstance(fd, int)
+        held_info = os.fstat(fd)  # read before the failure handler closes it
+        held.append((fd, (held_info.st_dev, held_info.st_ino)))
+        return real, fd
+
+    at_spawn: list[tuple[object, object]] = []
+
+    async def fail_spawn(*args, **kwargs):
+        at_spawn.append((kwargs.get("chdir_fd"), kwargs.get("cwd")))
+        raise RuntimeError("spawn failed")
+
+    async def resolve_installed(*, environ=None, home=None):
+        return str(executable)
+
+    async def nothing_binds(workspace_path):
+        return str(workspace_path), None
+
+    released_on: list[str] = []
+    released = threading.Event()
+    real_release = sandbox_module.release_agent_workspace_fd
+
+    def spy_release(fd):
+        released_on.append(threading.current_thread().name)
+        real_release(fd)
+        released.set()
+
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_installed)
+    monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kwargs: (list(argv), None))
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", MagicMock())
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", fail_spawn)
+    monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", nothing_binds)
+    monkeypatch.setattr(runtime_mod, "verify_agent_workspace_for_spawn_async", spy_verify)
+    monkeypatch.setattr(runtime_mod, "release_agent_workspace_fd", spy_release)
+
+    runtime = AcpRuntime(work_dir=workspace, work_dir_identity=bound)
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await runtime.spawn()
+    # Fire-and-forget on the default executor: wait for the release itself,
+    # not for a no-op another worker can finish first.
+    assert await asyncio.to_thread(released.wait, 5.0), "the release never ran"
+    assert len(held) == 1
+    hold, identity = held[0]
+    assert identity == bound
+    assert at_spawn == [(hold, os.path.realpath(workspace))], "the hold is not the child's chdir_fd"
+    assert released_on and set(released_on) != {threading.main_thread().name}
+    with pytest.raises(OSError):
+        os.fstat(hold)  # released after the spawn
+    assert runtime._bound_workspace_fd is None  # the hold is not the session's bind
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_acquires_the_hold_before_any_pathname_probe(tmp_path, monkeypatch):
+    """The verified hold is the FIRST thing the spawn does with the working
+    directory: every pathname probe of the preparation -- the readiness
+    ``mkdir``, the skill projection written into the directory, the sandbox
+    wrapper -- runs after the identity check has opened the leaf with no link
+    followed and holds it (review-caught: the ``mkdir(exist_ok=True)`` ran
+    first, and on Windows a bound directory swapped for a link to a UNC share
+    is followed by pathlib's ``is_dir`` fallback -- an SMB handshake with the
+    attacker's host -- before the check refused the spawn). A bound directory
+    exists by construction (it was pinned at the bind), so the readiness mkdir
+    is for the unbound default only; an unbound spawn still gets it, after a
+    check that answers the spelling back without touching the disk."""
+    import pathlib
+
+    from kiro_crew.acp import skill_projection as projection_mod
+
+    executable = tmp_path / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    info = os.stat(workspace)
+    bound = (info.st_dev, info.st_ino)
+    unbound = tmp_path / "unbound"  # does not exist yet: the mkdir is what creates it
+    order: list[str] = []
+    real_verify = runtime_mod.verify_agent_workspace_for_spawn_async
+
+    async def spy_verify(work_dir, expected):
+        order.append("verify")
+        return await real_verify(work_dir, expected)
+
+    real_mkdir = pathlib.Path.mkdir
+
+    def spy_mkdir(self, *args, **kwargs):
+        if self in (workspace, unbound):
+            order.append("mkdir")
+        return real_mkdir(self, *args, **kwargs)
+
+    real_projection = projection_mod.prepare_native_skill_projection
+
+    def spy_projection(work_dir, *args, **kwargs):
+        order.append("projection")
+        return real_projection(work_dir, *args, **kwargs)
+
+    def spy_wrap(argv, mode, **kwargs):
+        order.append("wrap_argv")
+        return list(argv), None
+
+    async def fail_spawn(*args, **kwargs):
+        order.append("spawn")
+        raise RuntimeError("spawn failed")
+
+    async def resolve_installed(*, environ=None, home=None):
+        return str(executable)
+
+    async def nothing_binds(workspace_path):
+        return str(workspace_path), None
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", spy_mkdir)
+    monkeypatch.setattr(projection_mod, "prepare_native_skill_projection", spy_projection)
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_installed)
+    monkeypatch.setattr(runtime_mod, "wrap_argv", spy_wrap)
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", MagicMock())
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", fail_spawn)
+    monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", nothing_binds)
+    monkeypatch.setattr(runtime_mod, "verify_agent_workspace_for_spawn_async", spy_verify)
+
+    runtime = AcpRuntime(work_dir=workspace, work_dir_identity=bound)
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await runtime.spawn()
+    assert order[0] == "verify", order
+    assert order[-1] == "spawn", order
+    # Nothing probed the bound directory's name before the check held it, and
+    # the readiness mkdir did not probe it at all: it exists by construction.
+    assert order[: order.index("projection")] == ["verify"], order
+    assert "wrap_argv" in order
+
+    order.clear()
+    runtime = AcpRuntime(work_dir=unbound, work_dir_identity=None)
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await runtime.spawn()
+    assert order[: order.index("projection")] == ["verify", "mkdir"], order
+    assert unbound.is_dir(), "the unbound default was not created"
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_releases_the_hold_when_the_preparation_raises(tmp_path, monkeypatch):
+    """The hold acquired first is released exactly once on EVERY exit. A step of
+    the preparation that raises after the check -- here the sandbox wrapper --
+    must not leak it: a leaked ``O_DIRECTORY`` descriptor pins the directory
+    for the gateway's life, and on Windows a leaked handle chain keeps the
+    directory from being renamed or removed. Spy-and-delegate, so the fd
+    checked is the one the real check opened."""
+    import threading
+
+    from kiro_crew import sandbox as sandbox_module
+
+    executable = tmp_path / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    info = os.stat(workspace)
+    bound = (info.st_dev, info.st_ino)
+    seen: list = []
+    real_verify = runtime_mod.verify_agent_workspace_for_spawn_async
+
+    async def spy_verify(work_dir, expected):
+        real, fd = await real_verify(work_dir, expected)
+        seen.append(fd)
+        return real, fd
+
+    releases: list[str] = []
+    released = threading.Event()
+    real_release = sandbox_module.release_agent_workspace_fd
+
+    def spy_release(fd):
+        releases.append(threading.current_thread().name)
+        real_release(fd)
+        released.set()
+
+    def failing_wrap(argv, mode, **kwargs):
+        raise RuntimeError("wrapper failed")
+
+    async def resolve_installed(*, environ=None, home=None):
+        return str(executable)
+
+    spawned = AsyncMock(side_effect=AssertionError("the spawn ran after the wrapper failed"))
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_installed)
+    monkeypatch.setattr(runtime_mod, "wrap_argv", failing_wrap)
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", MagicMock())
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", spawned)
+    monkeypatch.setattr(runtime_mod, "verify_agent_workspace_for_spawn_async", spy_verify)
+    monkeypatch.setattr(runtime_mod, "release_agent_workspace_fd", spy_release)
+
+    runtime = AcpRuntime(work_dir=workspace, work_dir_identity=bound)
+    with pytest.raises(RuntimeError, match="wrapper failed"):
+        await runtime.spawn()
+    assert seen, "the directory was not verified before the preparation that failed"
+    assert await asyncio.to_thread(released.wait, 5.0), "the hold was never released"
+    assert len(releases) == 1, releases
+    assert releases[0] != threading.main_thread().name
+    for handle in [seen[0]] if isinstance(seen[0], int) else list(seen[0]):
+        with pytest.raises(OSError):
+            os.fstat(handle)  # released, not leaked
+    assert runtime._spawn_chdir_fd is None
+    spawned.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_holds_the_windows_chain_across_the_spawn_and_releases_it_after(
+    tmp_path, monkeypatch
+):
+    """The runtime's spawn keeps the hold the identity read handed back -- on
+    Windows the pinned handle chain, open and root-first -- ACROSS the process
+    creation: when ``create_subprocess_limited`` runs, nothing of the chain has
+    been released and ``cwd`` is the bare spelling the held chain keeps naming
+    the verified directory; a spawn that fails releases the chain on a worker
+    thread, leaf-first, exactly once. Through the seams (fake descriptors, a
+    fake spawn, the internal-sandbox bind answering as a Windows host's does --
+    the spelling back, nothing bound): no real handle, no process; run under the
+    host's platform and under darwin forced, so a Windows hold never meets the
+    darwin bound-descriptor compare on any shard. Red-first on the head before
+    this: the Windows arm handed back no hold, the chain closed before the
+    check returned."""
+    import sys
+    import threading
+
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew import sandbox as sandbox_module
+
+    executable = tmp_path / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    info = os.stat(workspace)
+    bound = (info.st_dev, info.st_ino)
+    chain = [201, 202, 203]  # the walk's handles, root-first -- fakes, never opened
+    monkeypatch.setattr(sandbox_module, "open_pinned_directory", lambda path: (list(chain), bound))
+    closed: list[int] = []
+    released_on: list[str] = []
+    real_close = os.close
+
+    def _close(fd):
+        if fd in chain:
+            closed.append(fd)
+            released_on.append(threading.current_thread().name)
+        else:
+            real_close(fd)
+
+    monkeypatch.setattr(os, "close", _close)
+    at_spawn: list[tuple[list[int], object]] = []
+
+    async def fail_spawn(*args, **kwargs):
+        at_spawn.append((list(closed), kwargs.get("cwd")))
+        raise RuntimeError("spawn failed")
+
+    async def resolve_installed(*, environ=None, home=None):
+        return str(executable)
+
+    async def windows_bind(workspace_path):
+        # No Windows host binds: the spelling back, nothing opened.
+        return str(workspace_path), None
+
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_installed)
+    monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kwargs: (list(argv), None))
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", MagicMock())
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", fail_spawn)
+    monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", windows_bind)
+
+    platforms = (None, "darwin") if os.name == "posix" else (None,)
+    for forced in platforms:
+        closed.clear()
+        released_on.clear()
+        at_spawn.clear()
+        with pytest.MonkeyPatch.context() as platform_patch:
+            if forced:
+                platform_patch.setattr(sys, "platform", forced)
+            runtime = AcpRuntime(work_dir=workspace, work_dir_identity=bound)
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await runtime.spawn()
+            # Drain the default executor so the scheduled release has run.
+            await asyncio.get_running_loop().run_in_executor(None, lambda: None)
+        assert at_spawn == [([], str(workspace))], "the chain was released before the spawn"
+        assert closed == [203, 202, 201]  # released after the failure, leaf-first, once
+        assert released_on and set(released_on) != {threading.main_thread().name}
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_refuses_a_bound_workspace_whose_leaf_became_a_link(
+    tmp_path, monkeypatch
+):
+    """The runtime's spawn re-verifies the working directory against the identity
+    the session recorded when it was bound (``work_dir_identity``): the leaf
+    becomes a link before the deferred spawn (handed to the check through its
+    seams, so it runs on every host), and the spawn refuses with the runtime's
+    own governed error before ``create_subprocess_limited`` runs; a different
+    real directory at the name is logged and spawned as bound instead."""
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew import sandbox as sandbox_module
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    executable = tmp_path / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    spawned: list[dict] = []
+
+    async def stop_spawn(*args, **kwargs):
+        spawned.append(kwargs)
+        raise AssertionError("the process must not be created")
+
+    async def resolve_installed(*, environ=None, home=None):
+        return str(executable)
+
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_installed)
+    monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kwargs: (list(argv), None))
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", MagicMock())
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", stop_spawn)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    info = os.stat(workspace)
+    runtime = AcpRuntime(work_dir=workspace, work_dir_identity=(info.st_dev, info.st_ino))
+    # The swap, between the binding and the deferred spawn: the leaf is a link
+    # now -- the kernel's answer to a no-follow open (ELOOP) and the Windows
+    # arm's refusal of a redirecting reparse point, handed to the check.
+    monkeypatch.setattr(
+        sandbox_module,
+        "open_pinned_directory",
+        lambda path: (_ for _ in ()).throw(OSError(errno.ELOOP, "link", path)),
+    )
+    with pytest.raises(AcpRuntimeError, match="now a link"):
+        await runtime.spawn()
+    assert spawned == [], "the spawn was attempted into the replaced directory"
+    assert runtime._process is None
 
 
 @pytest.mark.asyncio

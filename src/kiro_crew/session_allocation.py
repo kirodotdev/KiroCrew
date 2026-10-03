@@ -362,6 +362,8 @@ class _AllocationOwner(Protocol):
 
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
+    async def _resolve_cwd_identity(self, key: str, cwd: str) -> tuple[int, int] | None: ...
+
     def _schedule_replenish(self) -> None: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
@@ -1046,7 +1048,21 @@ class SessionAllocationService:
                         "a stalled task-run runtime could not be confirmed dead; "
                         "not starting a replacement beside it"
                     )
-            provider = owner._provider_factory(parent_session_key, agent=agent, cwd=cwd)
+            # The one factory call that does not pass through ``get_or_create``
+            # and spawns into a caller-named directory: a run whose work
+            # directory a dashboard slot is BOUND to spawns its shared runtime
+            # verified against that binding's identity, through the same
+            # resolver the allocation body consults (the bound slot's record,
+            # its restart re-pin, or the governed refusal). A directory no slot
+            # is bound to spawns as it always did (nothing added).
+            bootstrap_kwargs: dict[str, Any] = {}
+            if cwd:
+                cwd_identity = await owner._resolve_cwd_identity(parent_session_key, cwd)
+                if cwd_identity is not None:
+                    bootstrap_kwargs["cwd_identity"] = cwd_identity
+            provider = owner._provider_factory(
+                parent_session_key, agent=agent, cwd=cwd, **bootstrap_kwargs
+            )
             provider.start_priority = start_priority
             pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
             await provider.start()
@@ -2318,6 +2334,22 @@ class SessionAllocationService:
             effective_cwd = preparation.project or effective_cwd
             extra_factory_kwargs["crew_agent"] = preparation.member
 
+        # THE seam for the bound-directory identity
+        # (``SessionManager.set_cwd_identity_resolver``). The directory this
+        # spawn enters is final only HERE -- the producer's ``cwd``, the one the
+        # session map restored for a resume whose producer named none (the eager
+        # respawn after a hard stop), or the member's project the runtime
+        # preparation resolved -- so a spawn handed over with no ``cwd_identity``
+        # is resolved here against the slots bound to that directory, before the
+        # warm-pool decision below reads it and before the factory sees it. A
+        # bound directory gets the identity its binding recorded (or its restart
+        # re-pin) or the governed refusal, never an unexamined ``None``; a
+        # directory no slot is bound to stays ``None`` = not examined.
+        if effective_cwd and extra_factory_kwargs.get("cwd_identity") is None:
+            extra_factory_kwargs["cwd_identity"] = await owner._resolve_cwd_identity(
+                key, effective_cwd
+            )
+
         # Reconciliation can publish a new template model. Resolve only after
         # that boundary, while retaining an explicit caller model unchanged.
         if model is None:
@@ -2367,6 +2399,18 @@ class SessionAllocationService:
             pool_decision = "bypass_member_context"
         elif cwd_blocks_pool:
             pool_decision = "bypass_cwd"
+        elif extra_factory_kwargs.get("cwd_identity") is not None:
+            # The directory is one a dashboard slot is BOUND to (the identity
+            # was recorded at the binding, or re-pinned at the seam above), so
+            # this spawn must verify that identity -- and a pooled child never
+            # can: it was pre-spawned into the pool directory with no binding to
+            # verify against, and a refill after a swap re-enters the swapped
+            # directory unexamined. Cold-starting is what puts the spawn through
+            # ``verify_agent_workspace_for_spawn`` with its expected identity
+            # (review-caught: a slot bound to the pool's own directory claimed a
+            # pooled child and the swap went undetected). A slot with no binding
+            # carries no identity and keeps the warm path.
+            pool_decision = "bypass_cwd_identity"
         elif extra_env:
             pool_decision = "bypass_env"
         elif extra_factory_kwargs.get("shared_scratch") is not None:

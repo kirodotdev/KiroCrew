@@ -389,6 +389,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     row_mid,
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
+    spawn_project_identity_repinned,
     stage_boundary_for,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
@@ -522,6 +523,7 @@ from kiro_crew.recovery.ladder import (
     default_ladder,
 )
 from kiro_crew.safety_override import safety_override  # noqa: F401
+from kiro_crew.sandbox import WorkspacePinFailed
 from kiro_crew.security import (
     StreamRedactor,
     is_sensitive_path,
@@ -5788,6 +5790,14 @@ async def _spawn_admitted_prefetch(
         # get_or_create's docstring.
         _requested_model = slot.model or agent_model or default_model or ""
         try:
+            _cwd_identity = await spawn_project_identity_repinned(slot)
+        except WorkspacePinFailed as exc:
+            # The bound directory could not be re-pinned: the first turn's own
+            # spawn refuses it with the user-visible error; nothing is spawned
+            # speculatively into a name the check cannot vouch for.
+            logger.info("Eager spawn: %s left to first turn (%s)", session_key, exc)
+            return
+        try:
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
@@ -5799,6 +5809,7 @@ async def _spawn_admitted_prefetch(
                 crew_agent=crew_alias,
                 model=_requested_model or None,
                 cwd=slot.project or None,
+                cwd_identity=_cwd_identity,
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
@@ -9146,6 +9157,14 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        try:
+            _cwd_identity = await spawn_project_identity_repinned(slot)
+        except WorkspacePinFailed as exc:
+            # A bound directory that cannot be re-pinned is a REFUSED spawn -- the
+            # same governed error family the spawn's own identity check raises,
+            # shown to the person by the terminal AcpError handler -- never a
+            # skipped check.
+            raise AcpError(str(exc)) from exc
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -9154,6 +9173,7 @@ async def _run_chat(
             crew_agent=crew_alias,
             model=_requested_model or None,
             cwd=slot.project or None,
+            cwd_identity=_cwd_identity,
             # The persisted channel stays separate from the dashboard-owned key
             # so provider startup can distinguish a linked dispatcher from a
             # direct dashboard turn.

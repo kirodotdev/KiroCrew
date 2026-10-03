@@ -5348,6 +5348,8 @@ class TestRunChatWakaTimeCodingAccounting:
         slot = _slot()
         project_at_start = str(tmp_path / "project-a")
         project_after_switch = str(tmp_path / "project-b")
+        (tmp_path / "project-a").mkdir()  # a bound project exists on disk: the spawn re-pins it
+        (tmp_path / "project-b").mkdir()
         slot.project = project_at_start
 
         async def _events():

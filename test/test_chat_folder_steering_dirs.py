@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import stamp_the_person
 
 from kiro_crew import folder_steering, pinned_fs
 from kiro_crew.dashboard.chat_folders import (
@@ -679,7 +680,12 @@ def _make_app(state: DashboardState) -> web.Application:
 
     @web.middleware
     async def _publish_app(request: web.Request, handler: Any) -> Any:
-        request["app"] = ""
+        # The PERSON's own sidebar call, as the token middleware publishes it:
+        # no app claim, and the stamps the middleware writes only for the
+        # person's own credential (:func:`stamp_the_person`: the positive
+        # ``is_dashboard_user`` bit and the owner's subject), which the steering
+        # and binding fences read the person by (``chat_folders._is_the_person``).
+        stamp_the_person(request)
         return await handler(request)
 
     app.middlewares.append(_publish_app)

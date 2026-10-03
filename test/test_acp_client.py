@@ -1,11 +1,14 @@
 """Tests for ACP client."""
 
 import asyncio
+import contextlib
+import errno
 import hashlib
 import json
 import os
 import signal
 import sys
+import threading
 import time
 import types
 from collections import deque
@@ -10074,6 +10077,757 @@ class TestResolveKiroBinEnvOverride:
         # The spy reads the descriptor before _spawn's failure handler closes it,
         # so the value survives even though the fd itself does not.
         assert mock_exec.await_args.kwargs["pass_fds"] == (bound_fd,)
+
+    @staticmethod
+    def _spawn_harness(client_module, tmp_path, mock_exec):
+        """The patch set every spawn-shape test in this class uses."""
+        fake = tmp_path / "kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n")
+        fake.chmod(0o755)
+        return (
+            patch.object(client_module, "_resolve_kiro_bin", return_value=str(fake)),
+            patch.object(
+                client_module,
+                "wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (list(argv), None),
+            ),
+            patch.object(client_module, "assert_voice_runtime_outside_agent_workspace"),
+            patch.object(client_module, "cgroup_scope_argv", side_effect=lambda argv: list(argv)),
+            patch("asyncio.create_subprocess_exec", mock_exec),
+        )
+
+    @staticmethod
+    def _identity(path) -> tuple[int, int]:
+        """What the SESSION recorded when it was bound: the directory's identity."""
+        info = os.stat(path)
+        return (info.st_dev, info.st_ino)
+
+    @staticmethod
+    def _binding_platforms() -> tuple[str | None, ...]:
+        """The platforms a spawn-shape test runs under: the host as it is, and --
+        where the descriptor-entering spawn exists (``fchdir`` through the POSIX
+        shim) -- forced darwin, so the REAL internal-sandbox binding runs on
+        this host too and the macOS composition is pinned on every POSIX shard
+        rather than on the on-demand macOS job alone."""
+        return (None, "darwin") if os.name == "posix" else (None,)
+
+    @staticmethod
+    def _bind_spy(client_module, bound: list[tuple[int, tuple[int, int]] | None]):
+        """Spy-and-delegate on the internal-sandbox bind: records the descriptor
+        it opened and THAT descriptor's identity, read before ``_spawn``'s
+        failure handler closes it. ``None`` where the bind bound nothing."""
+        real_bind = client_module.bind_voice_safe_agent_workspace_async
+
+        async def spy_bind(workspace):
+            spawn_dir, descriptor = await real_bind(workspace)
+            if descriptor is None:
+                bound.append(None)
+            else:
+                info = os.fstat(descriptor)
+                bound.append((descriptor, (info.st_dev, info.st_ino)))
+            return spawn_dir, descriptor
+
+        return patch.object(
+            client_module, "bind_voice_safe_agent_workspace_async", side_effect=spy_bind
+        )
+
+    @staticmethod
+    def _assert_entered(spawn_call, bound, expected_dir) -> None:
+        """The child enters *expected_dir*: on a host that BINDS (macOS, or
+        darwin forced) the pathname leaves the spawn -- ``Popen`` would chdir it
+        by name before the shim ran -- and the child enters the bound
+        descriptor, passed as exactly ``pass_fds``, whose identity is the
+        directory's; elsewhere nothing binds and ``cwd`` is the directory's own
+        real spelling."""
+        if bound is not None:
+            descriptor, identity = bound
+            assert "cwd" not in spawn_call.kwargs
+            assert spawn_call.kwargs["pass_fds"] == (descriptor,)
+            info = os.stat(expected_dir)
+            assert identity == (info.st_dev, info.st_ino)
+        else:
+            assert os.path.realpath(spawn_call.kwargs["cwd"]) == os.path.realpath(expected_dir)
+
+    @staticmethod
+    def _replace_with_another_directory(path) -> None:
+        """A DIFFERENT directory at *path*: a sibling created while *path* still
+        existed (another inode by construction) renamed over the name -- a bare
+        rmdir + mkdir can hand the freed inode straight back (a CI red)."""
+        other = path.parent / f".{path.name}.other"
+        other.mkdir()
+        path.rmdir()
+        other.rename(path)
+
+    @pytest.mark.asyncio
+    async def test_spawn_refuses_a_bound_workspace_replaced_since_the_binding(
+        self, tmp_path, monkeypatch
+    ):
+        """The working directory is re-verified at SPAWN against the identity the
+        session recorded when it was bound (``work_dir_identity``, the slot's
+        ``project_identity``). The spawn is deferred, and in between the
+        directory at that name is replaced -- another inode, on every host; a
+        same-UID process could as well plant a junction to a share there, which
+        ``CreateProcess`` would follow. The spawn refuses with its own governed
+        error naming the remedy: no process is created, no bind is made, and no
+        raw ``AgentWorkspacePinRefused`` escapes -- on the host as it is and
+        under the forced-darwin binding alike."""
+        from kiro_crew.acp import client as client_module
+
+        for forced in self._binding_platforms():
+            workspace = tmp_path / f"workspace-{forced or 'host'}"
+            workspace.mkdir()
+            bound = self._identity(workspace)
+            mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+            binds: list = []
+            with contextlib.ExitStack() as stack:
+                for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                    stack.enter_context(cm)
+                stack.enter_context(self._bind_spy(client_module, binds))
+                if forced:
+                    stack.enter_context(pytest.MonkeyPatch.context()).setattr(
+                        sys, "platform", forced
+                    )
+                client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+                # The swap, between the binding and the deferred spawn.
+                self._replace_with_another_directory(workspace)
+                with pytest.raises(client_module.AcpError, match="re-bind the project directory"):
+                    await client._spawn()
+            mock_exec.assert_not_awaited()
+            assert binds == []  # refused before the bind: nothing opened for the child
+            assert client._process is None
+
+    @pytest.mark.asyncio
+    async def test_spawn_refuses_a_leaf_that_became_a_link(self, tmp_path, monkeypatch):
+        """A link at the leaf is refused by the no-follow read on every host: the
+        POSIX open answers ELOOP/ENOTDIR and the Windows branch refuses a
+        name-redirecting reparse point -- both handed to the check here through
+        its seams, so the pin runs with fake kernels where a link needs a privilege."""
+        from kiro_crew import sandbox as sandbox_module
+        from kiro_crew.acp import client as client_module
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+
+        def _link_at_leaf(path):
+            # The kernel's answer to a no-follow open of a link (ELOOP) and the
+            # Windows walk's refusal of a redirecting reparse point, handed to
+            # THE identity read every path shares.
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links", path)
+
+        monkeypatch.setattr(sandbox_module, "open_pinned_directory", _link_at_leaf)
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        with contextlib.ExitStack() as stack:
+            for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                stack.enter_context(cm)
+            client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+            with pytest.raises(client_module.AcpError, match="now a link"):
+                await client._spawn()
+        mock_exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_keeps_working_across_benign_links_and_unbound_directories(
+        self, tmp_path, monkeypatch
+    ):
+        """The check is by identity, not by refusing links: a bound directory
+        whose spelling crosses an ancestor link spawns, entered through the
+        verified directory -- on a binding host the bind's descriptor, elsewhere
+        the descriptor the check itself holds (the spelling leaves the spawn);
+        a directory bound with no identity is not examined at all and spawns
+        exactly as before, ``cwd`` the spelling. Where this host grants no link,
+        the ancestor-link case is handed to the check through its seams (the
+        kernel follows an ancestor link and the leaf open lands on the real
+        directory). Red-first on the head two back: both spawns were refused;
+        red-first on the head before this one: the bound directory off darwin
+        was entered by its pathname."""
+        from kiro_crew import sandbox as sandbox_module
+        from kiro_crew.acp import client as client_module
+
+        (tmp_path / "real").mkdir()
+        project = tmp_path / "real" / "proj"
+        project.mkdir()
+        try:
+            os.symlink(tmp_path / "real", tmp_path / "home", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            (tmp_path / "home").mkdir()
+            monkeypatch.setattr(
+                sandbox_module,
+                "open_pinned_directory",
+                lambda path: (os.open(project, os.O_RDONLY), self._identity(project)),
+            )
+        bound_spelling = tmp_path / "home" / "proj"  # crosses the ancestor link
+        unbound = tmp_path / "unbound"
+        unbound.mkdir()
+        held: list[tuple[int, tuple[int, int]] | None] = []
+        real_verify = client_module.verify_agent_workspace_for_spawn_async
+
+        async def spy_verify(work_dir, expected):
+            # The hold the check hands back, and its identity read before the
+            # failure handler closes it: None for the unexamined directory,
+            # and on Windows, where the hold is a handle chain and the child
+            # enters by the name that chain keeps in place.
+            real, fd = await real_verify(work_dir, expected)
+            if isinstance(fd, int) and os.name == "posix":
+                info = os.fstat(fd)
+                held.append((fd, (info.st_dev, info.st_ino)))
+            else:
+                held.append(None)
+            return real, fd
+
+        handed_cwd: list[object] = []
+        real_limited = client_module.create_subprocess_limited
+
+        async def spy_limited(*argv, **kwargs):
+            # The cwd the site hands the wrapper, which drops it when a
+            # descriptor is entered -- so it is read here, not at the exec.
+            handed_cwd.append(kwargs.get("cwd"))
+            return await real_limited(*argv, **kwargs)
+
+        cases = ((bound_spelling, self._identity(project), project), (unbound, None, unbound))
+        for forced in self._binding_platforms():
+            # The internal-sandbox bind BINDS (a descriptor) on darwin -- the
+            # host's own, or forced -- for the unexamined directory as much as
+            # the bound one: it is the voice-runtime binding every spawn there
+            # has always made, not an identity check (the unbound directory
+            # gets none). Elsewhere it echoes the spelling back.
+            binding_host = bool(forced) or sys.platform == "darwin"
+            for work_dir, identity, entered in cases:
+                mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+                binds: list = []
+                held.clear()
+                handed_cwd.clear()
+                with contextlib.ExitStack() as stack:
+                    for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                        stack.enter_context(cm)
+                    stack.enter_context(self._bind_spy(client_module, binds))
+                    stack.enter_context(
+                        patch.object(client_module, "create_subprocess_limited", new=spy_limited)
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            client_module,
+                            "verify_agent_workspace_for_spawn_async",
+                            side_effect=spy_verify,
+                        )
+                    )
+                    if forced:
+                        stack.enter_context(pytest.MonkeyPatch.context()).setattr(
+                            sys, "platform", forced
+                        )
+                    client = AcpClient(work_dir=work_dir, work_dir_identity=identity)
+                    with pytest.raises(RuntimeError, match="spawn failed"):
+                        await client._spawn()
+                assert len(binds) == 1
+                assert (binds[0] is not None) == binding_host
+                assert len(held) == 1
+                assert (held[0] is not None) == (identity is not None and os.name == "posix")
+                spawn_call = mock_exec.await_args
+                # What the child enters: the bind's descriptor where one bound;
+                # otherwise the check's own hold for the bound directory (the
+                # pathname leaves the spawn, review-caught), and the spelling
+                # as given for the unexamined one.
+                self._assert_entered(spawn_call, binds[0] or held[0], entered)
+                if binds[0] is None and identity is None:
+                    assert spawn_call.kwargs["cwd"] == str(unbound)
+                if binds[0] is None and identity is not None:
+                    # The verified directory's own spelling, not the unverified
+                    # one, is still the cwd the site hands the wrapper (the
+                    # bind must not echo the spelling back over it, review-caught).
+                    assert handed_cwd == [os.path.realpath(project)]
+                    assert handed_cwd[0] != str(work_dir)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "the identity check hands a handle CHAIN over on Windows, which has no "
+            "fchdir; the chain's retention across CreateProcess is pinned by "
+            "test_the_windows_hold_spans_the_process_creation_and_is_released_after"
+        ),
+    )
+    async def test_spawn_enters_the_verified_descriptor_where_nothing_binds(
+        self, tmp_path, monkeypatch
+    ):
+        """Off macOS nothing binds, and a bound working directory entered by
+        NAME is open to a swap: a pathname ``cwd`` is re-resolved by the fork
+        child's ``chdir``, so a same-UID rename of the directory with a link
+        planted at its name between the identity check and the fork sends the
+        agent wherever the link points (review-caught). The child enters the
+        descriptor the check itself holds -- ``create_subprocess_limited(
+        chdir_fd=<hold>)`` drops the pathname and the shim ``fchdir``s the
+        inherited descriptor -- so the spawn names the directory, not the
+        spelling. Spy-and-delegate on the
+        check, so the descriptor compared is the one it opened; the bind answers
+        as every non-darwin host's does (the spelling back, nothing bound). The
+        hold is still released after the spawn, as before."""
+        from kiro_crew import sandbox as sandbox_module
+        from kiro_crew.acp import client as client_module
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        held: list[tuple[int, tuple[int, int]]] = []
+        real_verify = client_module.verify_agent_workspace_for_spawn_async
+
+        async def spy_verify(work_dir, expected):
+            real, fd = await real_verify(work_dir, expected)
+            assert isinstance(fd, int)
+            info = os.fstat(fd)  # read before the failure handler closes it
+            held.append((fd, (info.st_dev, info.st_ino)))
+            return real, fd
+
+        async def nothing_binds(workspace_path):
+            return str(workspace_path), None
+
+        released = threading.Event()
+        real_release = sandbox_module.release_agent_workspace_fd
+
+        def spy_release(fd):
+            real_release(fd)
+            released.set()
+
+        with contextlib.ExitStack() as stack:
+            for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch.object(
+                    client_module, "verify_agent_workspace_for_spawn_async", side_effect=spy_verify
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    client_module,
+                    "bind_voice_safe_agent_workspace_async",
+                    side_effect=nothing_binds,
+                )
+            )
+            stack.enter_context(
+                patch.object(client_module, "release_agent_workspace_fd", new=spy_release)
+            )
+            client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await client._spawn()
+            # Fire-and-forget on the default executor: wait for the release itself.
+            assert await asyncio.to_thread(released.wait, 5.0), "the release never ran"
+        assert len(held) == 1
+        hold, identity = held[0]
+        assert identity == self._identity(workspace)
+        spawn_call = mock_exec.await_args
+        # The pathname left the spawn and the verified descriptor is the one
+        # handed down -- the shape _assert_entered pins for the darwin bind.
+        self._assert_entered(spawn_call, (hold, identity), workspace)
+        assert any(
+            arg == f"{sandbox_module._SHIM_CHDIR_FD_FLAG}{hold}" for arg in spawn_call.args
+        ), "the shim is not entering the hold"
+        with pytest.raises(OSError):
+            os.fstat(hold)  # released after the spawn, as before
+        assert client._bound_workspace_fd is None  # the hold is not the session's bind
+
+    @pytest.mark.asyncio
+    async def test_spawn_releases_the_verified_descriptor_off_the_loop(self, tmp_path, monkeypatch):
+        """The descriptor the identity check handed over is closed on a worker
+        thread scheduled after the PID bookkeeping (or after the failure cleanup):
+        the close never runs on the loop and never sits between a live child and
+        the record of it. Spy-and-delegate, so the fd checked is the one the real
+        check opened; the executor is drained before the assertion."""
+        from kiro_crew import sandbox as sandbox_module
+        from kiro_crew.acp import client as client_module
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        seen: list[sandbox_module.WorkspaceHold | None] = []
+        real_verify = client_module.verify_agent_workspace_for_spawn_async
+
+        async def spy_verify(work_dir, expected):
+            real, fd = await real_verify(work_dir, expected)
+            seen.append(fd)
+            return real, fd
+
+        closed_on: list[str] = []
+        released = threading.Event()
+        real_release = sandbox_module.release_agent_workspace_fd
+
+        def spy_release(fd):
+            closed_on.append(threading.current_thread().name)
+            real_release(fd)
+            released.set()
+
+        monkeypatch.setattr(client_module, "release_agent_workspace_fd", spy_release)
+        with contextlib.ExitStack() as stack:
+            for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch.object(
+                    client_module, "verify_agent_workspace_for_spawn_async", side_effect=spy_verify
+                )
+            )
+            client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await client._spawn()
+            # The release is fire-and-forget on the default executor: wait for it
+            # to have run, not for a no-op another worker can finish first.
+            assert await asyncio.to_thread(released.wait, 5.0), "the release never ran"
+        assert seen, "nothing was verified"
+        assert seen[0] is not None  # POSIX hands the descriptor over, Windows the held chain
+        assert closed_on and closed_on[0] != threading.main_thread().name
+        for handle in [seen[0]] if isinstance(seen[0], int) else seen[0]:
+            with pytest.raises(OSError):
+                os.fstat(handle)
+
+    @pytest.mark.asyncio
+    async def test_spawn_acquires_the_hold_before_any_pathname_probe(self, tmp_path, monkeypatch):
+        """Twin of the runtime's test: the identity check is the FIRST thing
+        ``_spawn`` does with the working directory, ahead of the readiness
+        ``mkdir``, the skill projection, the governance reads and the sandbox
+        wrapper -- every one of them follows the pathname, and on Windows a
+        bound directory swapped for a link to a UNC share is followed by the
+        ``mkdir(exist_ok=True)`` fallback into an SMB handshake before the check
+        could refuse the spawn (review-caught). A bound directory exists by
+        construction, so its spawn skips the readiness mkdir; the unbound
+        default still gets it, after a check that answers the spelling back
+        without touching the disk."""
+        import pathlib
+
+        from kiro_crew.acp import client as client_module
+        from kiro_crew.acp import skill_projection as projection_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        unbound = tmp_path / "unbound"  # does not exist yet
+        order: list[str] = []
+        real_verify = client_module.verify_agent_workspace_for_spawn_async
+
+        async def spy_verify(work_dir, expected):
+            order.append("verify")
+            return await real_verify(work_dir, expected)
+
+        real_mkdir = pathlib.Path.mkdir
+
+        def spy_mkdir(path, *args, **kwargs):
+            if path in (workspace, unbound):
+                order.append("mkdir")
+            return real_mkdir(path, *args, **kwargs)
+
+        real_projection = projection_mod.prepare_native_skill_projection
+
+        def spy_projection(work_dir, *args, **kwargs):
+            order.append("projection")
+            return real_projection(work_dir, *args, **kwargs)
+
+        def spy_wrap(argv, mode, **kwargs):
+            order.append("wrap_argv")
+            return list(argv), None
+
+        async def fail_spawn(*args, **kwargs):
+            order.append("spawn")
+            raise RuntimeError("spawn failed")
+
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        monkeypatch.setattr(pathlib.Path, "mkdir", spy_mkdir)
+        monkeypatch.setattr(projection_mod, "prepare_native_skill_projection", spy_projection)
+        for work_dir, identity, expected in (
+            (workspace, bound, ["verify"]),
+            (unbound, None, ["verify", "mkdir"]),
+        ):
+            order.clear()
+            with contextlib.ExitStack() as stack:
+                for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                    stack.enter_context(cm)
+                stack.enter_context(patch.object(client_module, "wrap_argv", side_effect=spy_wrap))
+                stack.enter_context(
+                    patch.object(client_module, "create_subprocess_limited", side_effect=fail_spawn)
+                )
+                stack.enter_context(
+                    patch.object(
+                        client_module,
+                        "verify_agent_workspace_for_spawn_async",
+                        side_effect=spy_verify,
+                    )
+                )
+                client = AcpClient(work_dir=work_dir, work_dir_identity=identity)
+                with pytest.raises(RuntimeError, match="spawn failed"):
+                    await client._spawn()
+            assert order[0] == "verify", order
+            assert order[-1] == "spawn", order
+            # Everything that probes the name runs after the hold; the readiness
+            # mkdir probes only the unbound default, which it creates.
+            assert order[: order.index("projection")] == expected, order
+            assert "wrap_argv" in order
+        assert unbound.is_dir(), "the unbound default was not created"
+
+    @pytest.mark.asyncio
+    async def test_spawn_releases_the_hold_when_the_preparation_raises(self, tmp_path, monkeypatch):
+        """The hold acquired first is released exactly once on EVERY exit: a
+        preparation step that raises after the check (the sandbox wrapper here)
+        must not leak the descriptor or, on Windows, the handle chain."""
+        from kiro_crew import sandbox as sandbox_module
+        from kiro_crew.acp import client as client_module
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        seen: list = []
+        real_verify = client_module.verify_agent_workspace_for_spawn_async
+
+        async def spy_verify(work_dir, expected):
+            real, fd = await real_verify(work_dir, expected)
+            seen.append(fd)
+            return real, fd
+
+        releases: list[str] = []
+        released = threading.Event()
+        real_release = sandbox_module.release_agent_workspace_fd
+
+        def spy_release(fd):
+            releases.append(threading.current_thread().name)
+            real_release(fd)
+            released.set()
+
+        def failing_wrap(argv, mode, **kwargs):
+            raise RuntimeError("wrapper failed")
+
+        mock_exec = AsyncMock(side_effect=AssertionError("the spawn ran after the wrapper failed"))
+        monkeypatch.setattr(client_module, "release_agent_workspace_fd", spy_release)
+        with contextlib.ExitStack() as stack:
+            for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                stack.enter_context(cm)
+            stack.enter_context(patch.object(client_module, "wrap_argv", side_effect=failing_wrap))
+            stack.enter_context(
+                patch.object(
+                    client_module, "verify_agent_workspace_for_spawn_async", side_effect=spy_verify
+                )
+            )
+            client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+            with pytest.raises(RuntimeError, match="wrapper failed"):
+                await client._spawn()
+            assert seen, "the directory was not verified before the preparation that failed"
+            assert await asyncio.to_thread(released.wait, 5.0), "the hold was never released"
+        assert len(releases) == 1, releases
+        assert releases[0] != threading.main_thread().name
+        for handle in [seen[0]] if isinstance(seen[0], int) else list(seen[0]):
+            with pytest.raises(OSError):
+                os.fstat(handle)  # released, not leaked
+        assert client._spawn_chdir_fd is None
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_readiness_mkdirs_skip_a_bound_directory(self, tmp_path, monkeypatch):
+        """``ensure_ready`` and ``_prepare_spawn_workspace`` create the working
+        directory for a session that has none -- the unbound default. A bound
+        directory exists by construction (pinned at the bind, verified and held
+        at the spawn), and a ``mkdir(exist_ok=True)`` of its name is a pathname
+        probe the identity check has not yet covered when these run, so neither
+        touches it (review-caught, the Windows UNC-link shape)."""
+        import pathlib
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        unbound = tmp_path / "unbound"
+        made: list[pathlib.Path] = []
+        real_mkdir = pathlib.Path.mkdir
+
+        def spy_mkdir(path, *args, **kwargs):
+            if path in (workspace, unbound):
+                made.append(path)
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "mkdir", spy_mkdir)
+        client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+        client._prepare_spawn_workspace()
+        assert made == [], "the bound directory's name was probed by the readiness mkdir"
+        spawned = AsyncMock(side_effect=RuntimeError("stop before the spawn"))
+        monkeypatch.setattr(client, "_spawn", spawned)
+        with pytest.raises(RuntimeError, match="stop before the spawn"):
+            await client.ensure_ready()
+        assert made == [], "the bound directory's name was probed by ensure_ready"
+        assert client._work_dir_ready is True
+
+        client = AcpClient(work_dir=unbound, work_dir_identity=None)
+        client._prepare_spawn_workspace()
+        assert made == [unbound] and unbound.is_dir()
+        made.clear()
+        monkeypatch.setattr(client, "_spawn", spawned)
+        client._work_dir_ready = False
+        with pytest.raises(RuntimeError, match="stop before the spawn"):
+            await client.ensure_ready()
+        assert made == [unbound]
+
+    @pytest.mark.asyncio
+    async def test_the_windows_hold_spans_the_process_creation_and_is_released_after(
+        self, tmp_path, monkeypatch
+    ):
+        """The Windows arm of the identity read hands back the pinned handle
+        chain OPEN (root-first) as the hold, and the spawn keeps it ACROSS the
+        process creation: when the spawn call runs, nothing of the chain has
+        been released and ``cwd`` is the bare spelling the held chain keeps
+        naming the verified directory; once the child exists (PID bookkeeping
+        done) the chain is released on a worker thread, leaf-first, exactly
+        once -- and a spawn that FAILS releases it the same way. Through the
+        seams: the identity read answers as the Windows arm does (fake
+        descriptors, never real handles), the internal-sandbox bind answers as
+        a Windows host's does -- the spelling back, nothing bound -- and the
+        spawn is a fake (no process). Run under every platform the class's
+        spawn-shape tests use (the host as it is, and darwin forced), so the
+        Windows composition is pinned on every POSIX shard: a Windows hold never
+        meets the darwin bound-descriptor compare, because no Windows host binds
+        (review-caught on the macOS shard: with the real bind binding under the
+        host's own platform, the fake chain's leaf was compared against a
+        descriptor the process happened to hold, and the compare refused).
+        Red-first on the head before this: the Windows arm returned no hold at
+        all -- the chain was closed before the check returned, so
+        ``CreateProcess`` entered a name a same-UID swapper could re-point at a
+        junction to a share in between (GPT, security-class)."""
+        from test_update_provider import _UNALLOCATABLE_PID
+
+        from kiro_crew import sandbox as sandbox_module
+        from kiro_crew.acp import client as client_module
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        chain = [101, 102, 103]  # the walk's handles, root-first -- fakes, never opened
+        monkeypatch.setattr(
+            sandbox_module, "open_pinned_directory", lambda path: (list(chain), bound)
+        )
+        closed: list[int] = []
+        released_on: list[str] = []
+        real_close = os.close
+
+        def _close(fd):
+            if fd in chain:
+                closed.append(fd)
+                released_on.append(threading.current_thread().name)
+            else:
+                real_close(fd)
+
+        monkeypatch.setattr(os, "close", _close)
+
+        async def _windows_bind(workspace_path):
+            # No Windows host binds: the internal-sandbox bind echoes the
+            # spelling back and opens nothing (``bind_voice_safe_agent_workspace``
+            # off darwin), so the spawn enters ``cwd`` by name under the held chain.
+            return str(workspace_path), None
+
+        for forced in self._binding_platforms():
+            closed.clear()
+            released_on.clear()
+            fake_process = MagicMock()
+            fake_process.pid = _UNALLOCATABLE_PID
+            fake_process.returncode = None
+            at_spawn: list[tuple[list[int], object]] = []
+
+            async def spawn_then_cancel(*args, **kwargs):
+                # The process is created HERE: the chain must still be whole, and
+                # the cwd is the spelling the held chain pins to the verified
+                # directory.
+                at_spawn.append((list(closed), kwargs.get("cwd")))
+                asyncio.current_task().cancel()
+                return fake_process
+
+            cleanup = AsyncMock()
+            mock_exec = AsyncMock(side_effect=RuntimeError("must not be reached"))
+            with contextlib.ExitStack() as stack:
+                for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                    stack.enter_context(cm)
+                stack.enter_context(
+                    patch.object(
+                        client_module, "bind_voice_safe_agent_workspace_async", _windows_bind
+                    )
+                )
+                stack.enter_context(
+                    patch.object(
+                        client_module, "create_subprocess_limited", side_effect=spawn_then_cancel
+                    )
+                )
+                if forced:
+                    stack.enter_context(pytest.MonkeyPatch.context()).setattr(
+                        sys, "platform", forced
+                    )
+                client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+                monkeypatch.setattr(client, "_cleanup_failed_live_spawn", cleanup)
+                with pytest.raises(asyncio.CancelledError):
+                    await client._spawn()
+                # Drain the default executor so the scheduled release has run.
+                await asyncio.get_running_loop().run_in_executor(None, lambda: None)
+            assert at_spawn == [([], str(workspace))], "the chain was released before the spawn"
+            assert client._pid == _UNALLOCATABLE_PID, "the live child was not recorded"
+            assert closed == [103, 102, 101]  # released after the bookkeeping, leaf-first, once
+            assert released_on and set(released_on) != {threading.main_thread().name}
+
+            # A spawn that fails releases the hold the same way, off-loop.
+            closed.clear()
+            released_on.clear()
+            failing = AsyncMock(side_effect=RuntimeError("spawn failed"))
+            with contextlib.ExitStack() as stack:
+                for cm in self._spawn_harness(client_module, tmp_path, failing):
+                    stack.enter_context(cm)
+                stack.enter_context(
+                    patch.object(
+                        client_module, "bind_voice_safe_agent_workspace_async", _windows_bind
+                    )
+                )
+                if forced:
+                    stack.enter_context(pytest.MonkeyPatch.context()).setattr(
+                        sys, "platform", forced
+                    )
+                client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+                with pytest.raises(RuntimeError, match="spawn failed"):
+                    await client._spawn()
+                await asyncio.get_running_loop().run_in_executor(None, lambda: None)
+            failing.assert_awaited_once()
+            assert failing.await_args.kwargs["cwd"] == str(workspace)
+            assert closed == [103, 102, 101]
+            assert released_on and set(released_on) != {threading.main_thread().name}
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_between_the_live_child_and_its_bookkeeping_reaches_the_cleanup(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancellation that lands once the process exists must never leave it
+        live and unrecorded: no ``await`` sits between the process creation and
+        ``_pid`` (the verified descriptor's close is scheduled off-loop AFTER the
+        bookkeeping). Injected: the spawn factory cancels the running task as it
+        hands the process back; the cancellation must surface inside the guarded
+        window, whose cleanup kills the child. Red-first on the head two back:
+        ``_spawn`` raised ``CancelledError`` from an awaited release with
+        ``_process`` set, ``_pid`` unset and the cleanup never run.
+        """
+        from test_update_provider import _UNALLOCATABLE_PID
+
+        from kiro_crew.acp import client as client_module
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        bound = self._identity(workspace)
+        fake_process = MagicMock()
+        fake_process.pid = _UNALLOCATABLE_PID
+        fake_process.returncode = None
+
+        async def spawn_then_cancel(*args, **kwargs):
+            asyncio.current_task().cancel()
+            return fake_process
+
+        cleanup = AsyncMock()
+        mock_exec = AsyncMock(side_effect=RuntimeError("must not be reached"))
+        with contextlib.ExitStack() as stack:
+            for cm in self._spawn_harness(client_module, tmp_path, mock_exec):
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch.object(
+                    client_module, "create_subprocess_limited", side_effect=spawn_then_cancel
+                )
+            )
+            client = AcpClient(work_dir=workspace, work_dir_identity=bound)
+            monkeypatch.setattr(client, "_cleanup_failed_live_spawn", cleanup)
+            with pytest.raises(asyncio.CancelledError):
+                await client._spawn()
+        assert client._pid == _UNALLOCATABLE_PID, "the live child was not recorded"
+        cleanup.assert_awaited_once()
 
     def test_env_override_ignored_when_missing_file(self, tmp_path):
         # A configured-but-nonexistent path must not be returned; resolution

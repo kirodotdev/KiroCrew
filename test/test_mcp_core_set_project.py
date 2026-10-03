@@ -363,13 +363,96 @@ class TestSetProjectApplier:
         assert "Project set to" in result
 
     @pytest.mark.asyncio
+    async def test_records_the_held_directorys_identity_and_a_clear_drops_it(
+        self, tmp_path, monkeypatch
+    ):
+        """The directive is an AGENT arm: it records the ``(st_dev, st_ino)`` of
+        the directory the fenced resolve HELD on the SLOT (``project_identity``,
+        what the spawn verifies against); clearing the project clears the record.
+        Nothing process-wide. Red on the head before this test: nothing was
+        recorded."""
+        slot = _FakeSlot(project="")
+        state = _FakeState()
+        target = str(tmp_path)
+        real = os.path.realpath(target)
+        info = os.stat(real)
+        await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": target, "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert slot.project == real
+        assert slot.project_identity == (real, info.st_dev, info.st_ino)
+        await apply_session_directive(
+            state, slot, slot.key, "set_project", {"clear": True}, producer_is_user_facing=True
+        )
+        assert slot.project == ""
+        assert slot.project_identity is None
+
+    @pytest.mark.asyncio
+    async def test_a_same_spelling_set_project_of_a_replaced_directory_arms_the_reset(
+        self, tmp_path
+    ):
+        """GPT-caught: the deferred reset was armed on a SPELLING change only while
+        the identity record was refreshed unconditionally, so a same-spelling
+        ``set_project`` of a directory replaced at its name recorded the new
+        ``(st_dev, st_ino)`` and armed nothing -- the live provider kept the old
+        directory. Same spelling, different identity: armed like a spelling change;
+        the same identity read back (an ordinary re-pin): quiet."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        real = os.path.realpath(str(proj))
+        slot = _FakeSlot(project="")
+        state = _FakeState()
+        await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": str(proj), "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert slot.project == real
+        first = slot.project_identity
+        assert first is not None
+        # The re-pin: same spelling, same directory -> no reset armed.
+        slot._pending_reset_history_key = None
+        await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": str(proj), "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert slot.project_identity == first
+        assert slot._pending_reset_history_key is None
+        # Replaced at its name (a sibling made while it stood, renamed over it).
+        other = tmp_path / ".proj.other"
+        other.mkdir()
+        proj.rmdir()
+        other.rename(proj)
+        await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": str(proj), "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert slot.project == real
+        assert slot.project_identity != first  # the replacement's identity, recorded
+        assert slot._pending_reset_history_key == slot.key  # armed, as a spelling change is
+
+    @pytest.mark.asyncio
     async def test_sensitive_path_denied_without_mutating_slot(self, tmp_path, monkeypatch):
         slot = _FakeSlot(project="/existing/project")
         state = _FakeState()
-        # _set_project imports sensitive_path_refusal lazily from kiro_crew.security,
-        # so patch it on the source module.
         monkeypatch.setattr(
-            "kiro_crew.security.sensitive_path_refusal", lambda *a, **k: "Blocked: x"
+            "kiro_crew.dashboard.chat_folders.is_sensitive_resolved_path", lambda p: True
         )
         result = await apply_session_directive(
             state,
@@ -505,7 +588,9 @@ class TestApplierAuditAndFailSoft:
     async def test_denied_path_audits_denied_and_returns_error(self, tmp_path, monkeypatch, sel_spy):
         """A sensitive-path block raises ``_DirectiveDenied`` internally; the
         wrapper audits outcome='denied' and returns the fixed error string."""
-        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: "Blocked: x")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folders.is_sensitive_resolved_path", lambda p: True
+        )
         slot = _FakeSlot(project="/existing")
         state = _FakeState()
         result = await apply_session_directive(
@@ -556,7 +641,9 @@ class TestApplierAuditAndFailSoft:
         """A sensitive path is refused BEFORE it is resolved/stat'ed, so a
         nonexistent sensitive path cannot be probed via the not-a-directory
         error. Still audited denied, and never leaks the isdir outcome."""
-        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: "Blocked: x")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folders.is_sensitive_resolved_path", lambda p: True
+        )
         probed: list[str] = []
 
         def _no_stat(p):
@@ -573,6 +660,39 @@ class TestApplierAuditAndFailSoft:
         )
         assert result == "Error: access denied (sensitive path)."
         assert probed == [], f"sensitive path was stat'ed before the deny gate: {probed!r}"
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
+        assert slot.project == "/existing"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unc", [r"\\evil\share\proj", "//evil/share/proj", r"\\?\UNC\evil\share\proj"]
+    )
+    async def test_a_unc_project_is_refused_before_any_filesystem_probe(
+        self, monkeypatch, sel_spy, unc
+    ):
+        """``set_project`` is agent-authored path text reaching ``realpath``: on a
+        Windows gateway a UNC-shaped value makes that call open an SMB connection
+        to the named host. The directive runs the folder endpoint's own lexical
+        UNC refusal (one helper, every admission site) before ``realpath`` or
+        ``isdir``, on every host; audited denied; the slot is not repointed."""
+        monkeypatch.setattr("kiro_crew.dashboard.chat_folders.unc_probe_allowed", lambda raw: False)
+        probed: list[str] = []
+
+        def _probe(p, **kw):
+            probed.append(p)
+            return p
+
+        monkeypatch.setattr("os.path.realpath", _probe)
+        monkeypatch.setattr("os.path.isdir", lambda p: probed.append(p) or False)
+        slot = _FakeSlot(project="/existing")
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "set_project",
+            {"project": unc, "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert result == "Error: Project directory must not be a network (UNC) path."
+        assert probed == [], f"UNC path reached the filesystem before the refusal: {probed!r}"
         assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
         assert slot.project == "/existing"
 

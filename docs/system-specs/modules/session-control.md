@@ -322,24 +322,133 @@ NOT seed a first message: that would be delivery.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation (#6118). The caller's OWN slot is filed the same way with
-`chat_folder_file_self` (folder tools, same server): it takes no `session`
+part of creation (#6118). A folder's project binding is NOT agent-settable: no
+tool on this server carries `project_dir` (#10432 stays open; the agent bind
+path is a follow-up), and the folder routes refuse a non-person caller's
+`project_dir` whole — a non-empty one at create, a set or clear on the PATCH —
+before the path is looked at (`chat_folders._agent_binding_refusal`, 403
+`folder_project_dir_forbidden`, audited under `app_isolation` against attested
+identity only: the caller's principal, else the token subject the middleware
+validated, else the `X-Session-Key` the AF_UNIX peer check kernel-attested
+(`request["peer_verified"]`), else `unattributable` — a bare header is
+caller-chosen on TCP loopback and never names the row's caller). WHO is the
+person is TWO POSITIVE facts, `chat_folders._is_the_person`:
+`request["is_dashboard_user"] is True`, the stamp the token middleware sets only
+when a non-app dashboard token validated (the person's own cookie or session
+token, the sidebar's Folder settings), AND the repo's owner predicate
+(`handlers.source_providers.is_owner_dashboard_request`: the token's subject is
+the configured owner, or on an install with no owner the machine-local bootstrap
+identity). The stamp alone proves the token's class — an allow-listed messaging
+user's `!dashboard` link is an app-less token stamped exactly like the person's
+— and the owner conjunct is what tells the person from every other holder of
+one; it also denies the operator's own session from before `KIROCREW_OWNER_ID`
+was configured (its subject stays `local-app`/`local-startup` for life), which
+is not admitted but is answered, at every refusal the predicate decides (their
+one tail, `_person_gate_refusal`), with the repo's `401 stale_session_reauth`
+rather than the agent's 403 — the sign-in-again signal every owner gate gives
+that caller, and no second definition of the person; the internal-secret
+transport (the managed MCP set: every agent session's tool call, an ordinary
+dashboard session's included) never sets the stamp, an app's own token sets it
+`False`, and a request that met no middleware is refused rather than admitted —
+the person is the caller the middleware named, never the caller nothing else
+claimed; no caller is sorted by its key. The person's `project_dir` runs the
+folder endpoint's own validator (`_validate_project_dir` — main's own resolution
+by name, a share by its UNC spelling included; the person's, since a non-person
+`project_dir` is refused whole before it runs) and the workspace-overlap guard,
+and a chat the person opens in a bound folder (`POST /api/chat/slots`) inherits
+the nearest ancestor's `project_dir` at creation, before its context is built.
+The UNC rule is scoped to every OTHER principal
+(`screen_and_resolve_project_dir`): the probe it prevents is a caller other than
+the operator steering the gateway onto a host of that caller's choosing, which
+does not exist when the operator picks a path for the operator's own gateway — a
+person could bind a project on a share before this rule and still can. The
+admission's mechanism -- the lexical UNC rule, the pinned open as the only walk
+(a link or non-directory at any component refused with
+`PROJECT_DIR_LINK_REFUSAL`, never followed; no by-name step before the pin), the
+identity recorded off the held descriptor and re-verified at both ACP spawn
+sites with the hold acquired before any pathname probe -- is specified once, in
+`docs/architecture/mcp.md` ("A folder's project directory is the person's to
+bind") and `security.md` ("Bound working directory re-verified at spawn"); this
+module keeps only what the session-control routes decide. Lexical: a UNC-shaped
+`project_dir` (`\\host\share`, `//host/share`, `\\?\UNC\host\share`) from a
+non-person principal is refused before the first filesystem call through the
+repo's one UNC gate (`hooks.is_unc_shape` / `unc_probe_allowed`), on every host
+— at the `set_project` directive, a non-person request at the slot project
+endpoint, a and any folder route a non-person `project_dir` reaches (none does;
+`_agent_binding_refusal` refuses it whole first, and the scaffold routes refuse
+every non-person caller before the root is read). Never on the read path: every
+stored binding is the person's and keeps resolving as it did (refusing it there
+would fail every chat opened in that folder with a 400, a retroactive refusal
+with no migration). The READ path (`_resolve_folder_project_dir`, the
+stored-value reader) is main's by-name resolution for every stored value and
+runs neither half: only the person binds, so a stored binding is the operator's
+own choice, honoured as it always was. A non-person request is refused for any
+cause. A directory bound with no identity spawns by name as it always did. The
+protocol-boundary window `AcpRuntime._session_work_dir` records remains on every
+platform. A session already filed in a folder is not re-scoped by a binding
+change itself: it picks up the folder's current binding on its next agent switch
+(`api_chat_slot_agent` re-resolves the slot's folder chain on every switch to a
+non-project-scope agent) — and immediately through `set_project`. What a binding
+confers is main's, unchanged: the nearest ancestor's binding, for every chat
+filed beneath it. The reparent path is bound by the same bit: an unbound
+folder's subtree inherits its nearest bound ancestor, so a non-person caller's
+`parent_id` change is refused (same 403, decided under the store lock) when the
+stored binding the two places confer differs (`_move_changes_inherited_binding`
+over `_inherited_project_dir`) — moving under a folder that carries a binding,
+or out from under one, would rebind the chats filed inside it; a folder carrying
+its own binding moves freely (nearest wins, so its subtree resolves it wherever
+it sits), and a move between places that confer the same binding lands. The
+ownership fences stay on the folder principal, which is why an ordinary session
+may still reparent the person's folders between places with the same binding. A
+move between places that inherit the same steering lands. Filing is the one way
+a session acquires a folder's binding and steering, so every request-driven
+filing takes ONE decision, `refuse_filing_across_inheritance`, taken in ONE
+section with the write under the folder store lock
+(`file_slot_across_inheritance`) at `PATCH /api/chat/slots/{slot}/folder`
+(behind `chat_folder_move_session` and `chat_folder_file_self`) and at `POST
+/api/chat/slots` with a `folder_id` (a refusal at the write retracts the slot
+the request minted; the filing runs before the route's other writes — the title
+pin, the artifact binding — so a refusal on an existing slot addressed by `name`
+returns it as found); the agent tools `session_create` / `session_fork` apply
+the same comparison (`filing_crosses_inheritance`) from the creator's or the
+source's own placement, before the mint and again adjacent to the child's
+assignment in their synchronous configuration window, refusing while a folder
+write is in flight (`folder_store_busy`) and retracting the child on refusal;
+`session_revive`, which may file the archived session it brings back into a
+named folder, takes the same decision from the placement the session was
+archived in (none reads as the top level) before the revive commits, so a
+refused filing revives nothing, files nothing and unhides no folder — and again
+at the write, under the folder-store lock and in one section with the assignment
+(`hold_folders`), as the other request-driven filings are: a folder mutation
+that commits while the resume awaits (the target acquiring a binding or
+steering) declines the filing there without failing the revive that happened
+(the fork raises because it retracts its child; nothing is retracted here) — the
+call succeeds with `filed: false` and the move rule's code in `filing_refused`,
+the session comes back where it was archived, nothing is filed or unhidden, and
+the revive's one audit row says `filed: false`. The person files anywhere; any
+other principal may not place a session where it would inherit a binding or
+steering it does not have today — the same two comparisons over the committed
+folder tree (`read_folders`, so a binding clear whose write is still in flight
+and about to roll back is never judged), the slot revalidated after that read,
+with the same two codes (`folder_project_dir_forbidden`,
+`steering_dirs_forbidden`) — while a filing between places that confer the same
+binding and steering lands. A structural test enumerates every writer of a
+session's folder or project in the dashboard package and holds the
+request-driven ones to that decision, naming why each other writer (a restore, a
+fork's copy, a channel or cron placement from configuration, a session's own
+project) is not a filing. The `steering_dirs` declaration gate at both of its
+write sites (`_refuse_agent_steering_dirs`, spec'd in `config.md`) keys on the
+same bit: a steering declaration is a gateway host-file read that lands in the
+person's chats, the same gap class as a binding, so every non-person caller is
+refused it with that gate's own 403 (`steering_dirs_forbidden`) -- the person
+alone declares; clearing to `[]` stays allowed for every principal, as it only
+removes reads. `session_create` itself still resolves the child's project from
+the caller's workspace (`default_project_dir`), not from the folder it files
+into; #11680 adds that inheritance. The caller's OWN slot is filed the same way
+with `chat_folder_file_self` (folder tools, same server): it takes no `session`
 argument, resolves the target from the verified caller key, and so can be
 granted where `chat_folder_move_session` is withheld — a conductor files itself
-in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing used to be a second call
-(`chat_folder_move_session`), and the window between the two was a real defect
-path: a folder deleted in between left the session unfiled with the create
-already done. The handler assigns `folder_id` inside the same synchronous window
-that configures the slot, holds `suspend_slots_push` across the whole
-allocation-to-persist span (so the slot's first broadcast frame already shows it
-filed, and a slot whose birth write fails is never broadcast at all), and
-carries the placement in the persist-at-birth metadata, so no caller or client
-ever observes an unfiled session and the placement survives a restart.
-An unresolvable folder refuses the whole create — nothing exists yet, so refusal
-loses nothing — existence is confirmed read-only under the folder-store lock
-(`read_folders`) before the allocation, and the move path's Model-B un-hide runs
-only after the filing has landed, so a refused create leaves no folder-tree
-mutation behind.
+in the goal's folder and then creates its workers under `<goal>/<agent>`.
 
 The path walk itself never leaves an empty or duplicate folder behind. When the
 `folder` path still has segments to create, `session_create` first posts the

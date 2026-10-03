@@ -1180,6 +1180,9 @@ async def fork_slot(
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
+    # The binding's identity travels with the binding: the fork is bound to the
+    # same directory, verified at its spawn the same way.
+    new_slot.project_identity = slot.project_identity
     # Inherit the sidebar folder so the fork appears next to its parent in the UI.
     new_slot.folder_id = slot.folder_id
     # Inherit tags (copied, so later edits to either slot's list stay independent).

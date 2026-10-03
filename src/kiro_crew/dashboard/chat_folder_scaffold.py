@@ -48,13 +48,14 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.dashboard.chat_folders import (
     FolderCreateError,
     FolderOwnershipError,
-    _audit_origin,
+    _agent_audit_caller,
     _effective_request_app,
+    _is_the_person,
+    _person_gate_refusal,
     _refuse_unattributable_caller,
     _validate_project_dir,
     create_folder_record,
 )
-from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.project_scan import (
@@ -126,6 +127,8 @@ def _resolve_root(body: object) -> tuple[str, tuple[int, int]]:
         # project directory at all — so the empty case has to be caught here or a
         # rootless scan would fall through to scanning nothing.
         raise _BadRequest("root required", "folder_scan_root_required")
+    # The person's validator, by construction: both routes refuse every other
+    # principal before this runs (``_refuse_non_person``).
     resolved, err = _validate_project_dir(raw)
     if err:
         raise _BadRequest(err, "folder_scan_root_invalid")
@@ -179,6 +182,58 @@ def _bad_request_response(exc: _BadRequest) -> web.Response:
 
 
 APP_NAME = "project-scaffolder"
+
+
+def _refuse_non_person(
+    state: DashboardState, request: web.Request, *, operation: str, verb: str
+) -> web.Response | None:
+    """The scaffold is the PERSON's verb: refuse every other principal before the root is read.
+
+    Every folder a scaffold creates carries a ``project_dir``, and a binding is
+    the one field the folder routes refuse an agent outright
+    (:func:`~kiro_crew.dashboard.chat_folders._agent_binding_refusal`: the
+    person binds from the sidebar; an agent has no admitted path to a binding).
+    The same rule holds here, keyed on the same one bit
+    (:func:`~kiro_crew.dashboard.chat_folders._is_the_person`), and it runs
+    before the body is parsed: an agent-named root would otherwise be resolved
+    and walked -- an existence oracle -- on the way to a refusal. An enabled
+    scaffolder app posting with its own token is exactly the caller this turns
+    away (review-caught); the person's sidebar call carries the stamp and is
+    unchanged. The refusal is this route's OWN: the audit and the answer name
+    the *verb* the caller asked for -- ``scan`` (a read of a tree, no
+    ``project_dir`` in its body at all) or ``scaffold`` -- and the remedy is the
+    scaffolder the person runs, not the folder binding the sibling routes
+    refuse (review-caught: the shared binding refusal audited a scan as a
+    binding attempt and offered the sidebar's Folder settings as its remedy).
+    Through the same tail every person gate runs
+    (:func:`~kiro_crew.dashboard.chat_folders._person_gate_refusal`: a session
+    signed in before the owner was configured answers ``401
+    stale_session_reauth``), so that relabel applies here without a second
+    spelling.
+    """
+    if _is_the_person(request):
+        return None
+    sel().log_api_access(
+        caller=_agent_audit_caller(state, request),
+        operation=operation,
+        outcome="denied",
+        source="app_isolation",
+        resources="scaffold",
+        error=f"agent cannot {verb} a project tree with the scaffolder",
+    )
+    return _person_gate_refusal(
+        request,
+        web.json_response(
+            {
+                "error": (
+                    f"an agent cannot {verb} a project tree with the scaffolder - the person "
+                    "runs the scaffolder from the dashboard"
+                ),
+                "code": "scaffold_person_only",
+            },
+            status=403,
+        ),
+    )
 
 
 async def _refuse_when_app_disabled(request: web.Request, resource: str) -> web.Response | None:
@@ -359,6 +414,10 @@ async def api_chat_folders_scan(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if (
         refusal := await _refuse_when_app_disabled(request, "/api/project-scaffold/scan")
+    ) is not None:
+        return refusal
+    if (
+        refusal := _refuse_non_person(state, request, operation="chat.folder_scan", verb="scan")
     ) is not None:
         return refusal
     try:
@@ -675,25 +734,21 @@ async def api_chat_folders_scaffold(request: web.Request) -> web.Response:
         refusal := await _refuse_when_app_disabled(request, "/api/project-scaffold/create")
     ) is not None:
         return refusal
-    # A write to the shared folder tree: the same two guards the folder-create
-    # route applies, for the same reasons. A caller naming a popped dashboard
-    # slot cannot be attributed, so handing it the person's authority over the
-    # person's folders is refused. And the rate budget is consumed ONCE per
-    # scaffold call even though the call creates many folders — the limiter
-    # exists to stop an automated loop on an auto-approved verb, and one
-    # scaffold per goal is the legitimate shape; without this check the
-    # scaffold route would be the loophole around the sibling route's limit.
+    # A write to the shared folder tree, of BOUND folders: the person's verb
+    # (``_refuse_non_person``, before the root the caller named is read), then
+    # the guard the folder-create route applies for the same reason -- a caller
+    # naming a popped dashboard slot cannot be attributed, so handing it the
+    # person's authority over the person's folders is refused. No create-rate
+    # limiter here: it would guard an internal caller, and every such caller is
+    # refused above before it could reach this point.
+    if (
+        refusal := _refuse_non_person(
+            state, request, operation="chat.folder_scaffold", verb="scaffold"
+        )
+    ) is not None:
+        return refusal
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
-    rl_source, rl_caller = _audit_origin(request)
-    if rl_source != "dashboard" and not allow_create(FOLDER_CREATE, rl_caller):
-        return web.json_response(
-            {
-                "error": "too many folders created recently; retry shortly",
-                "code": "create_rate_limited",
-            },
-            status=429,
-        )
     try:
         body = await request.json()
     except Exception:

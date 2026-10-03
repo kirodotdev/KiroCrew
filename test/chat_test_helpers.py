@@ -351,8 +351,77 @@ def _make_app(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
-    """Minimal aiohttp app with chat endpoints including agent and create routes."""
+def stamp_the_person(request: web.Request) -> None:
+    """Model the dashboard's own browser on *request* -- the person the folder
+    fences admit (``chat_folders._is_the_person``).
+
+    Three facts the token middleware writes when the OWNER's own credential
+    validates, and the fences read all of them: the positive
+    ``is_dashboard_user`` stamp (a non-app dashboard token validated on this
+    request), the empty app claim, and a subject the repo's owner predicate
+    accepts (``handlers.source_providers.is_owner_dashboard_request``) -- on an
+    install with no configured owner, the machine-local bootstrap identity
+    ``local-app``. The subject and the claim follow ``dashboard_owner_helpers``'
+    header convention: a test that wants ANOTHER holder of a dashboard-user
+    token -- an allow-listed messaging user's ``!dashboard`` link, whose token
+    validates like the person's and carries the same stamp but names that user
+    -- sends ``X-Test-User``; one that wants an app token sends ``X-Test-App``.
+    A field the test set itself is kept.
+    """
+    request["is_dashboard_user"] = True
+    if "app" not in request:
+        request["app"] = request.headers.get("X-Test-App", "")
+    if "user" not in request:
+        request["user"] = request.headers.get("X-Test-User", "local-app")
+
+
+def pin_the_owners_store_step(monkeypatch) -> None:
+    """Neutralize the agent-store step slot create runs for the OWNER alone.
+
+    A new slot created by the owner pins its private agent store and records
+    the selection (``pin_private_agent_store`` / ``resolve_agent_bindings`` /
+    ``_record_explicit_agent_selection`` in ``chat_handlers``), a step the
+    route's tests drive with a real config. A test whose subject is the FILING
+    of the slot -- into a folder that confers a binding, which only the person
+    may do -- runs that create as the owner under a stand-in config, and the
+    step is not its subject: pin the three calls so the create reaches the
+    filing under test.
+    """
+    from types import SimpleNamespace
+
+    async def _no_private_store(*_args, **_kwargs) -> str:
+        return ""
+
+    async def _no_selection_record(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers.pin_private_agent_store", _no_private_store
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+        lambda cfg, name, project_dir=None, **kwargs: SimpleNamespace(
+            selection_kind=kwargs.get("selection_kind") or "template"
+        ),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers._record_explicit_agent_selection",
+        _no_selection_record,
+    )
+
+
+def _make_app_with_agent_routes(state: DashboardState, *, person: bool = True) -> web.Application:
+    """Minimal aiohttp app with chat endpoints including agent and create routes.
+
+    ``person`` stands in for the token middleware's positive ``is_dashboard_user``
+    stamp -- a non-app dashboard token validated, the dashboard's own browser's
+    CLASS of credential, which is what these routes' tests model unless one says
+    otherwise. The stamp alone is not the PERSON the slot-create route admits
+    when a request files a session where it inherits a binding
+    (``chat_folders._is_the_person`` also asks the owner predicate): a test of
+    that filing wraps the app in ``dashboard_owner_helpers.as_owner`` for the
+    owner's claims and pins the owner's store step (:func:`pin_the_owners_store_step`).
+    """
     from kiro_crew.dashboard.chat import (
         api_chat_slot_agent,
         api_chat_slot_approve,
@@ -366,7 +435,13 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
         api_chat_slots,
     )
 
-    app = web.Application()
+    @web.middleware
+    async def _stamp_person(request: web.Request, handler):
+        if person and "is_dashboard_user" not in request:
+            request["is_dashboard_user"] = True
+        return await handler(request)
+
+    app = web.Application(middlewares=[_stamp_person])
     app["state"] = state
     app.router.add_get("/api/chat/slots", api_chat_slots)
     app.router.add_post("/api/chat/slots", api_chat_slot_create)
@@ -381,8 +456,17 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_folder_app(state: DashboardState) -> web.Application:
-    """Minimal aiohttp app with folder endpoints."""
+def _make_folder_app(state: DashboardState, *, dashboard_user: bool = False) -> web.Application:
+    """Minimal aiohttp app with folder endpoints.
+
+    ``dashboard_user=True`` stands in for the token middleware's stamps on the
+    PERSON's own browser (:func:`stamp_the_person`: the positive
+    ``is_dashboard_user`` stamp, the empty app claim, the owner's subject) --
+    never written on the internal-secret transport the MCP tools use -- which
+    are what the folder fences read WHO from (``chat_folders._is_the_person``).
+    Without them a request is any other caller: an ordinary session's tool
+    call, an app's, a member's.
+    """
     from kiro_crew.dashboard.chat import api_chat_slots
     from kiro_crew.dashboard.chat_folders import (
         api_chat_folder_create,
@@ -395,6 +479,14 @@ def _make_folder_app(state: DashboardState) -> web.Application:
 
     app = web.Application()
     app["state"] = state
+    if dashboard_user:
+
+        @web.middleware
+        async def _stamp_person(request: web.Request, handler: web.Handler) -> web.StreamResponse:
+            stamp_the_person(request)
+            return await handler(request)
+
+        app.middlewares.append(_stamp_person)
     app.router.add_get("/api/chat/folders", api_chat_folders)
     app.router.add_post("/api/chat/folders", api_chat_folder_create)
     app.router.add_patch("/api/chat/folders/{id}", api_chat_folder_update)
