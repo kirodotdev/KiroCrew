@@ -8082,7 +8082,8 @@
       "curated_tip_credential_free": "Revisado por el equipo de {{productName}} antes de publicarlo. Las apps se clonan sin tus credenciales de Git.",
       "community_tip_credentialed": "Publicado por colaboradores tras una revisión más ligera. No verificado por el equipo de {{productName}}. Las apps se siguen clonando con tus credenciales de Git, así que instala solo apps que reconozcas.",
       "community_tip_credential_free": "Publicado por colaboradores tras una revisión más ligera. No verificado por el equipo de {{productName}}. Instala solo apps que reconozcas.",
-      "registry_id": "ID: {{id}}"
+      "registry_id": "ID: {{id}}",
+      "trust_hint": "Los repositorios privados de un registro se ven genéricos hasta que lo marcas como de confianza en <trust>Seguridad → Confianza de registros</trust>."
     },
     "rejectDropdown": {
       "reject_all": "Rechazar todo: rechazar las demás sin preguntar",
@@ -15990,6 +15991,33 @@
           "allow_all_confirm_ack": "Entiendo que cada aplicación de terceros que instale podrá ejecutar su propio código con el acceso de {{productName}}.",
           "ineffective_label": "Guardado pero sin efecto",
           "ineffective_description": "Estos nombres se guardaron como de confianza, pero {{productName}} no los acepta, así que las aplicaciones siguen bloqueadas. Quítalos para limpiar la lista."
+        },
+        "trustedRegistries": {
+          "change_failed": "El cambio no se aplicó: {{detail}}",
+          "corrupt_notice": "El archivo de confianza está dañado, así que no se confía en ningún registro hasta que se repare.",
+          "description": "Un registro de apps que has añadido a mano lee su lista de apps sin tus credenciales de Git, así que una app guardada en un repositorio privado no muestra imágenes y no se puede instalar. Dar confianza a un registro permite que {{productName}} use tus propias credenciales de Git para los repositorios que ese registro incluye.",
+          "empty": "No hay registros añadidos a mano. Añade uno en <store>Apps</store>.",
+          "grant": "Confiar en este registro",
+          "grant_confirm_body": "“{{name}}” usará tus propias credenciales de Git al descargar los repositorios que incluye. Quienes escriben ese registro eligen cuáles son esos repositorios, así que eligen cuáles de tus repositorios privados se descargan. Puedes quitar esta confianza en cualquier momento.",
+          "grant_confirm_ok": "Confiar con mis credenciales de Git",
+          "grant_confirm_repo": "Dirección del registro: {{repo}}",
+          "grant_confirm_title": "¿Confiar en “{{name}}” con tus credenciales de Git?",
+          "not_served": "No aparece: este registro no se muestra en la App Store, así que no puede marcarse como de confianza.",
+          "not_served_name_collision": "No aparece: otro registro que añadiste tiene el mismo nombre, así que no se muestra ninguno de los dos.",
+          "not_served_not_configured": "No configurado: este registro ya no está en tu configuración, pero su permiso de confianza sigue guardado.",
+          "not_served_pinned_name": "No aparece: un registro que viene con {{productName}} ya usa este nombre, así que este no se muestra.",
+          "pinned_note": "Los registros que vienen con {{productName}} no aparecen aquí, porque la compilación ya confía en ellos.",
+          "reset": "Restablecer el archivo de confianza",
+          "reset_confirm_body": "Esto borra el archivo de confianza dañado y elimina todos los registros en los que confiaste, así que tendrás que volver a confiar en ellos. No cambia nada más.",
+          "reset_confirm_ok": "Restablecer y quitar toda la confianza",
+          "reset_confirm_title": "¿Restablecer el archivo de confianza de los registros?",
+          "retry": "Reintentar",
+          "revoke": "Quitar la confianza",
+          "row_meta": "{{host}} · rama {{branch}}",
+          "section_title": "Registros de confianza con tus credenciales de Git",
+          "section_title_rail": "Confianza en registros",
+          "trusted_badge": "de confianza",
+          "unavailable": "No se pudo leer qué registros son de confianza."
         },
         "yolo_duration_load_failed": "No se pudo cargar la duración guardada. La opción resaltada es la predeterminada, no la guardada.",
         "tailnet_copy_failed": "No se pudo copiar. Selecciona la dirección y cópiala manualmente.",

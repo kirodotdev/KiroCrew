@@ -170,6 +170,7 @@ class TestKeystonesAreSealedInEveryMode:
         "app_admission.json",
         "profiles",
         "denied_commands.json",
+        "registry_trust.json",
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
@@ -244,6 +245,59 @@ class TestKeystonesAreSealedInEveryMode:
         assert "_pin_mount_path(target, _any_kind)" in loop
         assert "stat.S_ISDIR" not in loop
         assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
+
+
+class TestAbsentRegistryTrustIsSealedByPrecreation:
+    """The read-only seal binds an ABSENT ``registry_trust.json``, not just a present one.
+
+    ``mount(2)`` cannot target a path that does not exist, so the read-only seal
+    skips an absent leaf and leaves the data-home name writable — the state of
+    every install before the operator's first grant. Materialising ``{}`` before
+    the spawn closes it, and that is only sound because the leaf clears both
+    precreation criteria: an empty document reads as no grants, and a stale sealed
+    read fails toward the credential-free tier.
+    """
+
+    def test_the_leaf_is_precreated_read_only(self) -> None:
+        # Membership in the READONLY-file precreation list is what gives the seal a
+        # name to bind on a fresh install; without it the absent leaf is creatable
+        # from inside the namespace, which is the write the ceiling listing denies.
+        assert "registry_trust.json" in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
+        assert "registry_trust.json" in sandbox._CREW_READONLY_LEAVES
+        # Not on the hidden precreation list: hiding a ceiling restores the
+        # permissive default, the wrong direction for a read-only leaf.
+        assert "registry_trust.json" not in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+
+    def test_an_empty_document_reads_as_no_grants(self, tmp_path, monkeypatch) -> None:
+        """Criterion 1: the ``{}`` the launcher materialises means what an absent file means."""
+        from kiro_crew.apps import registry_trust as rt
+        from kiro_crew.apps.registry_pipeline import sources
+        from kiro_crew.config import loader
+
+        path = tmp_path / "registry_trust.json"
+        monkeypatch.setattr(loader, "registry_trust_path", lambda: path)
+        # The tolerant reader reaches the keystone through
+        # ``registry_trust.read_registry_trust_strict``, which binds
+        # ``registry_trust_path`` at its own module scope, so point that binding at
+        # the temp keystone too.
+        monkeypatch.setattr(rt, "registry_trust_path", lambda: path)
+
+        assert sources._granted_owner_repos() == frozenset()  # absent
+        path.write_text(sandbox._EMPTY_CEILING_DOCUMENT.decode("utf-8"), encoding="utf-8")
+        assert sources._granted_owner_repos() == frozenset()  # the sealed ``{}`` stub
+
+        # Negative control: a real grant is honoured, so the empty read above is a
+        # property of the EMPTY document, not of the reader ignoring the file.
+        path.write_text(
+            json.dumps(
+                {
+                    "version": sources._REGISTRY_TRUST_VERSION,
+                    "owner_trusted": ["https://example.com/x/y.git"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert "https://example.com/x/y.git" in sources._granted_owner_repos()
 
 
 class TestSecretsAreMaskedInEveryMode:

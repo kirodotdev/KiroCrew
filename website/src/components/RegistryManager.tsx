@@ -7,6 +7,8 @@
 import type React from 'react'
 import { useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import {
   Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X, ShieldCheck, Pin, Users,
 } from 'lucide-react'
@@ -101,6 +103,36 @@ function reviewTip(reg: Registry): string {
       : i18nT('components.registryManager.community_tip_credential_free')
   }
   return ''
+}
+
+/**
+ * The Security deep link for the registry-trust decision. Path-mode Settings
+ * routes a section as `${settings/security}/<section>`, and the registries rail
+ * key is `registries` (see SecurityPanel's SECURITY_SECTIONS), so this lands the
+ * operator directly on the Registry-trust card. Kept as one constant so the App
+ * Store surfaces that point here cannot drift from the panel's own route.
+ */
+export const REGISTRY_TRUST_PATH = '/settings/security/registries'
+
+/**
+ * One-line muted hint that a hand-added registry's private repositories stay
+ * generic until trusted, with a link to Settings → Security → Registry trust.
+ *
+ * Shared so the per-row hint here and the store-wide hint in the App Store
+ * SourcesPopover render the same sentence and the same link target from one
+ * definition. The `<trust>` run carries the whole clause so every locale keeps
+ * its own word order; a react-router `Link` (not a bare `<a>`) so the navigation
+ * stays inside the SPA, matching the Apps pages' own internal links.
+ */
+export function RegistryTrustHint({ className = '' }: { className?: string } = {}) {
+  return (
+    <div className={`text-[11px] text-muted leading-relaxed ${className}`}>
+      <Trans
+        i18nKey="components.registryManager.trust_hint"
+        components={{ trust: <Link to={REGISTRY_TRUST_PATH} className="text-accent hover:underline" /> }}
+      />
+    </div>
+  )
 }
 
 /**
@@ -396,6 +428,34 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                   <GitBranch size={10} className="shrink-0" />
                   {reg.repo}
                 </div>
+                {/* A row the merge drops is served by neither claimant, so its
+                    apps never list and it can never be trusted — say so plainly,
+                    reusing the Security panel's own copy. `not_served_reason`
+                    distinguishes a build-pinned name contest from a collision
+                    between two config rows; a missing/unknown reason falls back to
+                    the generic note. Present only on GET rows (never pinned). */}
+                {!reg.isPinned && reg.served === false && (
+                  <div className="text-[11px] text-muted leading-relaxed mt-0.5">
+                    {i18nT(
+                      reg.not_served_reason === 'pinned_name'
+                        ? 'pages.settings.securityPanel.trustedRegistries.not_served_pinned_name'
+                        : reg.not_served_reason === 'name_collision'
+                          ? 'pages.settings.securityPanel.trustedRegistries.not_served_name_collision'
+                          : 'pages.settings.securityPanel.trustedRegistries.not_served'
+                    )}
+                  </div>
+                )}
+                {/* Discovery: a hand-added registry at the credential-free `index`
+                    tier serves its private repos art-less and uninstallable, and
+                    nothing on this editor points at where that is fixed. On such a
+                    row (operator, not owner-tier) show the one-line hint linking to
+                    Security → Registry trust. A served=false row already carries
+                    its own "Not listed" note above and is fixed differently (rename
+                    / remove), so the trust hint is suppressed there to avoid two
+                    competing instructions. */}
+                {!reg.isPinned && reg.trust !== 'owner' && reg.served !== false && (
+                  <RegistryTrustHint className="mt-0.5" />
+                )}
               </div>
               {/* Opening the repo is read-only, so a pinned row offers it too —
                   withholding it would make the pinned source harder to inspect

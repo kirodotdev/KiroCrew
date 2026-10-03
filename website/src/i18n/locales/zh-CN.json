@@ -7844,7 +7844,8 @@
       "curated_tip_credential_free": "收录前已由 {{productName}} 团队审核。应用不会使用你的 Git 凭据克隆。",
       "community_tip_credentialed": "由贡献者经较简略的审核后收录，未经 {{productName}} 团队核实。应用仍会使用你的 Git 凭据克隆，因此请只安装你认识的应用。",
       "community_tip_credential_free": "由贡献者经较简略的审核后收录，未经 {{productName}} 团队核实。请只安装你认识的应用。",
-      "registry_id": "ID：{{id}}"
+      "registry_id": "ID：{{id}}",
+      "trust_hint": "注册表中的私有仓库在你于 <trust>安全 → 注册表信任</trust> 中信任它之前会一直显示为通用样式。"
     },
     "rejectDropdown": {
       "reject_all": "拒绝全部 —— 后续不再询问，一并拒绝",
@@ -15526,6 +15527,33 @@
           "allow_all_confirm_ack": "我明白我安装的每个第三方应用都将能够以 {{productName}} 的访问权限运行自身代码。",
           "ineffective_label": "已保存但未生效",
           "ineffective_description": "这些名称已被保存为受信任，但 {{productName}} 不接受它们，因此这些应用仍然被拦截。移除它们可以整理这个列表。"
+        },
+        "trustedRegistries": {
+          "change_failed": "该更改未生效：{{detail}}",
+          "corrupt_notice": "信任文件已损坏，因此在修复之前不信任任何注册表。",
+          "description": "手动添加的应用注册表在读取应用列表时不会用到你的 Git 凭证。因此，存放在私有仓库里的应用既看不到图片，也无法安装。信任某个注册表后，{{productName}} 会用你自己的 Git 凭证去获取该注册表列出的仓库。",
+          "empty": "没有手动添加的注册表。在 <store>应用</store> 下添加一个。",
+          "grant": "信任这个注册表",
+          "grant_confirm_body": "“{{name}}” 在下载它列出的仓库时会使用你自己的 Git 凭证。该注册表列出哪些仓库由编写它的人决定，也就是由他们决定会下载你的哪些私有仓库。你随时可以再次移除这项信任。",
+          "grant_confirm_ok": "用我的 Git 凭证信任它",
+          "grant_confirm_repo": "注册表地址：{{repo}}",
+          "grant_confirm_title": "要让 “{{name}}” 使用你的 Git 凭证吗？",
+          "not_served": "未列出——该注册表未显示在应用商店中，因此无法被标记为受信任。",
+          "not_served_name_collision": "未列出——你添加的另一个注册表与它同名，因此两者都不会显示。",
+          "not_served_not_configured": "未配置——该注册表已不在你的配置中，但它的信任授权仍被保存。",
+          "not_served_pinned_name": "未列出——随 {{productName}} 一起提供的某个注册表已在使用这个名称，因此该注册表不会显示。",
+          "pinned_note": "随 {{productName}} 一起提供的注册表不会出现在这里，因为构建本身已经信任它们。",
+          "reset": "重置信任文件",
+          "reset_confirm_body": "这会清除损坏的信任文件并移除你信任过的所有注册表，因此你需要重新信任它们。其他内容不会改变。",
+          "reset_confirm_ok": "重置并移除所有信任",
+          "reset_confirm_title": "要重置注册表信任文件吗？",
+          "retry": "重试",
+          "revoke": "移除信任",
+          "row_meta": "{{host}} · 分支 {{branch}}",
+          "section_title": "已授权使用你的 Git 凭据的注册表",
+          "section_title_rail": "注册表信任",
+          "trusted_badge": "已信任",
+          "unavailable": "无法读取哪些注册表已被信任。"
         },
         "yolo_duration_load_failed": "无法加载已保存的时长。高亮的选项是默认值，而非已保存的值。",
         "tailnet_copy_failed": "复制失败。请选中地址后手动复制。",

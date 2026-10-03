@@ -8082,7 +8082,8 @@
       "curated_tip_credential_free": "Revisado pela equipe do {{productName}} antes da publicação. Os apps são clonados sem suas credenciais do Git.",
       "community_tip_credentialed": "Publicado por colaboradores após uma revisão mais leve. Não validado pela equipe do {{productName}}. Os apps continuam sendo clonados com suas credenciais do Git, então instale apenas apps que você reconheça.",
       "community_tip_credential_free": "Publicado por colaboradores após uma revisão mais leve. Não validado pela equipe do {{productName}}. Instale apenas apps que você reconheça.",
-      "registry_id": "ID: {{id}}"
+      "registry_id": "ID: {{id}}",
+      "trust_hint": "Repositórios privados de um registro ficam genéricos até você marcá-lo como confiável em <trust>Segurança → Confiança de registros</trust>."
     },
     "rejectDropdown": {
       "reject_all": "Rejeitar tudo — rejeitar as demais sem perguntar",
@@ -15990,6 +15991,33 @@
           "allow_all_confirm_ack": "Entendo que todo app de terceiros que eu instalar vai poder executar o próprio código com o acesso do {{productName}}.",
           "ineffective_label": "Salvo, mas sem efeito",
           "ineffective_description": "Esses nomes foram salvos como confiáveis, mas o {{productName}} não os aceita, então os apps continuam bloqueados. Remova-os para limpar a lista."
+        },
+        "trustedRegistries": {
+          "change_failed": "A alteração não entrou em vigor: {{detail}}",
+          "corrupt_notice": "O arquivo de confiança está danificado, então nenhum registro é confiável até que ele seja corrigido.",
+          "description": "Um registro de apps que você adicionou à mão lê a lista de apps sem as suas credenciais do Git, então um app guardado em um repositório privado não mostra imagens e não pode ser instalado. Confiar em um registro permite que o {{productName}} use as suas próprias credenciais do Git para os repositórios que esse registro lista.",
+          "empty": "Nenhum registro adicionado à mão. Adicione um em <store>Apps</store>.",
+          "grant": "Confiar neste registro",
+          "grant_confirm_body": "O “{{name}}” vai usar as suas próprias credenciais do Git ao baixar os repositórios que ele lista. Quem escreve esse registro escolhe quais repositórios são esses, então escolhe quais dos seus repositórios privados são baixados. Você pode remover essa confiança quando quiser.",
+          "grant_confirm_ok": "Confiar com as minhas credenciais do Git",
+          "grant_confirm_repo": "Endereço do registro: {{repo}}",
+          "grant_confirm_title": "Confiar em “{{name}}” com as suas credenciais do Git?",
+          "not_served": "Não listado: este registro não aparece na App Store, então não pode ser marcado como confiável.",
+          "not_served_name_collision": "Não listado: outro registro que você adicionou tem o mesmo nome, então nenhum dos dois aparece.",
+          "not_served_not_configured": "Não configurado: este registro não está mais na sua configuração, mas a concessão de confiança dele continua guardada.",
+          "not_served_pinned_name": "Não listado: um registro que vem com o {{productName}} já usa este nome, então este não aparece.",
+          "pinned_note": "Os registros que vêm com o {{productName}} não aparecem aqui, porque a compilação já confia neles.",
+          "reset": "Redefinir o arquivo de confiança",
+          "reset_confirm_body": "Isso apaga o arquivo de confiança danificado e remove todos os registros em que você confiou, então você vai precisar confiar neles de novo. Nada mais é alterado.",
+          "reset_confirm_ok": "Redefinir e remover toda a confiança",
+          "reset_confirm_title": "Redefinir o arquivo de confiança dos registros?",
+          "retry": "Tentar de novo",
+          "revoke": "Remover a confiança",
+          "row_meta": "{{host}} · ramo {{branch}}",
+          "section_title": "Registros confiáveis com suas credenciais do Git",
+          "section_title_rail": "Confiança em registros",
+          "trusted_badge": "confiável",
+          "unavailable": "Não foi possível ler quais registros são confiáveis."
         },
         "yolo_duration_load_failed": "Não foi possível carregar a duração salva. A opção destacada é o padrão, não o que está salvo.",
         "tailnet_copy_failed": "Falha ao copiar. Selecione o endereço e copie manualmente.",

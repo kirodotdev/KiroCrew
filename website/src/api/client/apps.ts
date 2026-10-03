@@ -46,6 +46,13 @@ export type ExternalRegistryRow = {
   trust?: string
   label?: string
   review?: string
+  // Present on GET rows only (mirrors the Security panel's snapshot projection):
+  // `served` is false when the merge drops this row — a build-pinned name contest
+  // (`pinned_name`) or a config-key collision with another operator row
+  // (`name_collision`) — so its apps never list and it can never be trusted. The
+  // manager shows the matching "Not listed" note. Absent on the PUT round-trip.
+  served?: boolean
+  not_served_reason?: 'pinned_name' | 'name_collision'
 }
 
 /** The surfaces a contributed file-menu row can appear on. */

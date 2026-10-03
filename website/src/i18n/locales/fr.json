@@ -8082,7 +8082,8 @@
       "curated_tip_credential_free": "Vérifié par l'équipe {{productName}} avant publication. Les apps sont clonées sans vos identifiants Git.",
       "community_tip_credentialed": "Publié par des contributeurs après une vérification allégée. Non validé par l'équipe {{productName}}. Les apps sont tout de même clonées avec vos identifiants Git : n'installez que des apps que vous reconnaissez.",
       "community_tip_credential_free": "Publié par des contributeurs après une vérification allégée. Non validé par l'équipe {{productName}}. N'installez que des apps que vous reconnaissez.",
-      "registry_id": "ID : {{id}}"
+      "registry_id": "ID : {{id}}",
+      "trust_hint": "Les dépôts privés d'un registre restent génériques tant que tu ne l'as pas marqué comme fiable dans <trust>Sécurité → Confiance des registres</trust>."
     },
     "rejectDropdown": {
       "reject_all": "Tout refuser — refuser les autres sans demander",
@@ -15990,6 +15991,33 @@
           "allow_all_confirm_ack": "Je comprends que chaque application tierce que j'installe pourra exécuter son propre code avec les accès de {{productName}}.",
           "ineffective_label": "Enregistré mais sans effet",
           "ineffective_description": "Ces noms ont été enregistrés comme de confiance, mais {{productName}} ne les accepte pas, donc les applications restent bloquées. Retire-les pour nettoyer la liste."
+        },
+        "trustedRegistries": {
+          "change_failed": "Cette modification n'a pas pris effet : {{detail}}",
+          "corrupt_notice": "Le fichier de confiance est endommagé, donc aucun registre n’est approuvé tant qu’il n’est pas réparé.",
+          "description": "Un registre d'applications que tu as ajouté à la main lit sa liste d'applications sans tes identifiants Git, donc une application conservée dans un dépôt privé n'affiche aucune image et ne peut pas être installée. Faire confiance à un registre permet à {{productName}} d'utiliser tes propres identifiants Git pour les dépôts que ce registre référence.",
+          "empty": "Aucun registre ajouté à la main. Ajoutes-en un depuis <store>Applications</store>.",
+          "grant": "Faire confiance à ce registre",
+          "grant_confirm_body": "« {{name}} » utilisera tes propres identifiants Git pour télécharger les dépôts qu'il référence. Les personnes qui écrivent ce registre choisissent lesquels, donc elles choisissent lesquels de tes dépôts privés sont téléchargés. Tu peux retirer cette confiance à tout moment.",
+          "grant_confirm_ok": "Faire confiance avec mes identifiants Git",
+          "grant_confirm_repo": "Adresse du registre : {{repo}}",
+          "grant_confirm_title": "Confier tes identifiants Git à « {{name}} » ?",
+          "not_served": "Non affiché — ce registre n'apparaît pas dans l'App Store, il ne peut donc pas être marqué comme fiable.",
+          "not_served_name_collision": "Non affiché — un autre registre que tu as ajouté porte le même nom, aucun des deux n'apparaît donc.",
+          "not_served_not_configured": "Non configuré — ce registre n'est plus dans ta configuration, mais son autorisation de confiance est toujours enregistrée.",
+          "not_served_pinned_name": "Non affiché — un registre livré avec {{productName}} utilise déjà ce nom, celui-ci n'apparaît donc pas.",
+          "pinned_note": "Les registres livrés avec {{productName}} ne sont pas affichés ici, car la version compilée leur fait déjà confiance.",
+          "reset": "Réinitialiser le fichier de confiance",
+          "reset_confirm_body": "Cela efface le fichier de confiance endommagé et retire tous les registres que tu as approuvés, tu devras donc les approuver à nouveau. Rien d’autre n’est modifié.",
+          "reset_confirm_ok": "Réinitialiser et retirer toute confiance",
+          "reset_confirm_title": "Réinitialiser le fichier de confiance des registres ?",
+          "retry": "Réessayer",
+          "revoke": "Retirer la confiance",
+          "row_meta": "{{host}} · branche {{branch}}",
+          "section_title": "Registres de confiance avec tes identifiants Git",
+          "section_title_rail": "Confiance aux registres",
+          "trusted_badge": "de confiance",
+          "unavailable": "Impossible de lire quels registres sont de confiance."
         },
         "yolo_duration_load_failed": "Impossible de charger la durée enregistrée. L'option en surbrillance est la valeur par défaut, pas celle enregistrée.",
         "tailnet_copy_failed": "Copie impossible. Sélectionnez l'adresse et copiez-la manuellement.",

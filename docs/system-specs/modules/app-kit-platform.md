@@ -1808,18 +1808,146 @@ that already agrees with it. `PUT /api/apps/registries` refuses to create a
 conflicting claim, so the case that reaches this rule is a `config.json` that
 predates the build pin.
 
-**Only the BUILD can grant `owner`.** `_registry_trust_tier` resolves the tier
-solely from `AppsLoader.default_registries()`; a row in `config.json` reads as
-`index` no matter what it declares. The reason is that `config.json` is
-agent-writable — `security.py` says so directly, with the check inline
-(`is_sensitive_bash_command("echo x > …/config.json")` is `None`) — so a tier read
-from there would not be an operator's assertion at all. A prompt-injected shell
-could mint `owner`, and the *same* write also adds its chosen host to
-`_configured_registry_hosts()` and lets it control the index that
+**`owner` has exactly two sources, and `config.json` is not one of them.**
+`_registry_trust_tier` resolves the tier from `AppsLoader.default_registries()`
+for a build-pinned row, and from the operator's keystone grant
+(`registry_trust.json`, `config.registry_trust_path`) for a hand-configured row;
+a row in `config.json` reads as `index` no matter what it declares. The reason
+is that `config.json` is agent-writable — `security.py` says so directly, with
+the check inline (`is_sensitive_bash_command("echo x > …/config.json")` is
+`None`) — so a tier read from there would not be an operator's assertion at all.
+A prompt-injected shell could mint `owner`, and the *same* write also adds its
+chosen host to `_configured_registry_hosts()` and lets it control the index that
 `_owner_tier_confirmed` re-fetches: every layer downstream of that decision would
 already be satisfied by the one write that started it. `default_registries()`
-ships in the wheel, so an `owner` tier is a claim the build makes and the agent
-cannot forge.
+ships in the wheel, so a pinned `owner` tier is a claim the build makes and the
+agent cannot forge.
+
+**The operator grant (`registry_trust.json`).** Settings > Security lists the
+operator's configured registries and lets the operator grant each one `owner`
+trust; the dashboard writes `POST /api/security/trusted-registries` (revoke:
+`…/trusted-registries/revoke`, snapshot: `GET …/trusted-registries`, handlers in
+`dashboard/handlers/security.py`). The grant is on the same read+write keystone
+floor as `denied_commands.json` — `security._CREW_SECRET_LEAVES` (the agent's
+file tools refuse it), `sandbox._CREW_READONLY_LEAVES` and
+`_CREW_CHILD_WITHHELD_LEAVES` (the OS sandbox mounts it read-only / withholds it
+from a child) — and the two write endpoints are owner-gated
+(`require_owner_dashboard_request`), so the agent can reach the grant through no
+leg; the snapshot read stays open to any authenticated dashboard caller, like
+every other read in the module. The keystone read is TOLERANT of the sandbox's
+own pre-creation: the sandbox materialises this leaf as an empty `{}` document
+(`sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES`), so the strict mutation read
+treats an empty object exactly like an absent file — the versioned-empty store —
+and the FIRST grant lands rather than being refused as a wrong-version document.
+A NON-empty document is held to the schema: only a version-2 document whose
+`owner_trusted` is a list parses; an unknown `version`, a dict-shaped
+`owner_trusted`, or any other shape is refused. The read/write core lives in
+`apps/registry_trust.py`, a leaf both `dashboard/handlers/security.py` and
+`apps/routes.py` import (`security.py` top-level imports `apps.routes`, so the
+writer cannot live there without a cycle). Properties that carry the design:
+
+- **Keyed by REPOSITORY, never by name.** `_granted_owner_repos` returns a
+  `frozenset` of credential-free repo URLs and `_operator_granted_owner` matches the
+  config row's `repo` with `_same_git_target`. A grant keyed by name could be
+  redirected at any index by rewriting the row's `repo` in agent-writable
+  `config.json`; keyed by the URL the operator saw when granting, a rewritten row
+  simply stops matching and is `index` again. Renaming the row keeps the grant.
+- **Configured rows only; pinned rows refused.** The grant endpoint accepts a
+  `repo` only when it is one of the operator's own `config.json` rows (a decision
+  about a registry the operator can see, never about an arbitrary URL) and
+  refuses a build-pinned registry's repository, whose tier is the build's to
+  state; the runtime reader ignores such a grant as well. Every malformed shape of
+  the file — not JSON, wrong `version`, a credentialed or unsupported key — reads
+  as no grants.
+- **Grant lifetime equals config-row lifetime.** The snapshot iterates config
+  rows alone, so a grant whose row the operator deletes would otherwise stay alive
+  and invisible — nothing lists it, yet the runtime reader still honours it if the
+  row ever returns under the same repository. So the registries replace-all PUT
+  (`handle_registries` PUT branch) revokes every grant whose repository is not in
+  the list just stored, and SEL-audits each revocation
+  (`registries.grant_revoke`). The revoke sweep and the config write run in ONE
+  transaction under the shared config lock (`_get_config_lock`, the same object
+  the keystone writer takes), reusing the writer's locked core
+  (`registry_trust.revoke_owner_grants_for_absent_repos_locked`), with the revoke
+  landing in the keystone FIRST and the config published only after it succeeds. A
+  crash between the two writes can then leave only a grant whose row is still
+  present (a no-op re-revoked on the next PUT), never an orphan grant that re-arms
+  if the repository is re-added. If the revoke write fails — a corrupt keystone —
+  the PUT is refused and the config is left untouched, so the operator sees the
+  error and nothing was removed. The grant endpoint takes the same lock across its
+  own config re-read and keystone write, so a grant cannot validate against a row
+  this PUT is removing and then write an orphan into the window between the two
+  writes. Every keystone read on both paths runs off the event loop in the
+  executor.
+- **A symlinked or hardlinked keystone confers no trust.** The sandbox's
+  read-only mount seals the one path the keystone was mounted on, not its inode,
+  so a keystone that is a symlink (its name lives in the writable data home) or a
+  regular file carrying a second hardlink (the alias is a different, unsealed
+  path) survives the seal while a sandboxed process can still rewrite the bytes a
+  grant is read from; `sandbox._warn_if_alias_backed` only warns. The alias
+  refusal (`registry_trust._refuse_keystone_alias`) opens through
+  `platform_compat.open_file_no_reparse` — which refuses a symlink or Windows
+  reparse point at the final component in the same operation that opens it — then
+  `fstat`s that descriptor and refuses `st_nlink > 1` or a non-regular file,
+  raising `RegistryTrustCorruptError`, WITHOUT reading any bytes. The decoding
+  reader (`registry_trust._read_keystone_text_no_alias`, reached by every strict
+  read and so by the grant and revoke writers, AND by the clone-time consumer
+  `sources._granted_owner_repos`, which treats the refusal as "no grants in
+  force") calls that alias check and then decodes UTF-8; the `Reset trust file`
+  control calls the alias check ALONE, so undecodable content — the very state a
+  version reader 500s on — does not stand between the reset and the file it
+  overwrites. So a linked keystone reads as corrupt: the
+  Security-page snapshot carries `corrupt`/`corrupt_detail` and the writers refuse
+  to mutate the aliased inode. The `Reset trust file` control refuses an
+  alias-backed keystone specifically (its remedy is removing the alias, not
+  overwriting whatever the link targets), so the operator is told to remove the
+  alias rather than have the reset write through it.
+- **A repository the config claims under two colliding names is served by
+  neither.** `config.json` is agent-writable, so two rows sharing one identity key
+  (`_registry_identity_key`, casefolded) can coexist even though the PUT refuses to
+  create them. `_effective_registries` drops both, mirroring the pinned-vs-pinned
+  dedup and the pinned/config contest, because `_registry_trust_tier` resolves the
+  key the casefolded way while `_owner_tier_confirmed` resolves the exact
+  credential-free name — left unresolved they could land on DIFFERENT rows, so the
+  repository whose grant passes the tier check would not be the one whose fresh
+  index confirms it. Dropping the collision makes that divergence impossible.
+
+A grant or revocation expires the registry's index cache (`_expire_cache_file`),
+so the next store listing re-reads the index under the new tier rather than
+waiting out the TTL. `GET /api/apps/registries` reports the tier in force, so a
+granted operator row shows `owner`. The `GET …/trusted-registries` snapshot
+reports per row `served` (whether the merge lists it) with a `not_served_reason`
+(`pinned_name` / `name_collision` / `not_configured`) when it does not, `granted`
+(whether a stored grant names its repository, independent of `served`), and
+`trusted`; a stored grant whose repository matches no config row is surfaced as
+its own `served: false`, `not_served_reason: not_configured`, `granted: true` row
+so it can be revoked rather than re-arming. A top-level `corrupt` flag is set when
+the keystone will not parse.
+
+**On-disk shape: a version-2 list.** `owner_trusted` is a JSON LIST of
+credential-free repo URLs at `version` 2 (`_REGISTRY_TRUST_VERSION`); the grant
+is the entry itself, because SEL already timestamps each grant, so there is no
+per-repo record body for any reader to consume (`_granted_owner_repos` returns a
+`frozenset[str]`). Version 2 is the only shape a reader accepts: an older-version
+document, or one whose `owner_trusted` is a dict rather than a list, is corrupt
+and reads as no grants (the schema is validated in one place,
+`_owner_trusted_repos_from_record`, which the tolerant runtime read and the strict
+mutation read share). The blast radius is the pinned `owner` tier's: the registry's authors choose which of
+the operator's reachable private repositories are cloned with the machine's git
+identity, which is what the grant dialog says before it writes.
+
+**A corrupt keystone is visible and resettable.** When `registry_trust.json` will
+not parse (bad JSON, an unknown version, the wrong `owner_trusted` shape — the
+alias case too), the grant/revoke writers and the registries PUT refuse to mutate
+it, which would strand the operator on a page that looked healthy. So
+`build_trusted_registries_snapshot` reads it strictly first and carries a
+top-level `corrupt`/`corrupt_detail` with every row `trusted: false`; the Security
+page renders a notice and a `Reset trust file` control that calls
+`POST /api/security/trusted-registries/reset` (owner-gated, SEL-audited), which
+overwrites the file with the empty `{}` document — the same one the sandbox
+pre-creates — through `registry_trust.reset_registry_trust`, so a following grant
+lands. The reset still refuses an alias-backed keystone (whose remedy is removing
+the alias); the grant/revoke/PUT corrupt-error messages name the reset.
 
 **Two axes, kept separate: `trust` and `review`.** `trust` answers "may this
 registry's apps clone with this machine's git credentials?"; `review` answers

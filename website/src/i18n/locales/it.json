@@ -8082,7 +8082,8 @@
       "curated_tip_credential_free": "Verificato dal team {{productName}} prima della pubblicazione. Le app vengono clonate senza le tue credenziali Git.",
       "community_tip_credentialed": "Pubblicato dai contributori dopo una verifica più leggera. Non validato dal team {{productName}}. Le app vengono comunque clonate con le tue credenziali Git, quindi installa solo app che riconosci.",
       "community_tip_credential_free": "Pubblicato dai contributori dopo una verifica più leggera. Non validato dal team {{productName}}. Installa solo app che riconosci.",
-      "registry_id": "ID: {{id}}"
+      "registry_id": "ID: {{id}}",
+      "trust_hint": "I repository privati di un registry restano generici finché non lo consideri attendibile in <trust>Sicurezza → Attendibilità dei registry</trust>."
     },
     "rejectDropdown": {
       "reject_all": "Rifiuta tutto — rifiuta le altre senza chiedere",
@@ -15990,6 +15991,33 @@
           "allow_all_confirm_ack": "Ho capito che ogni app di terze parti che installo potrà eseguire codice proprio con gli accessi di {{productName}}.",
           "ineffective_label": "Salvato ma senza effetto",
           "ineffective_description": "Questi nomi sono stati salvati come attendibili, ma {{productName}} non li accetta, quindi le app restano bloccate. Rimuovili per pulire l'elenco."
+        },
+        "trustedRegistries": {
+          "change_failed": "La modifica non è stata applicata: {{detail}}",
+          "corrupt_notice": "Il file di attendibilità è danneggiato, quindi nessun registro è considerato attendibile finché non viene riparato.",
+          "description": "Un registry di app che hai aggiunto a mano legge il suo elenco di app senza le tue credenziali Git, quindi una app conservata in un repository privato non mostra immagini e non si può installare. Autorizzare un registry permette a {{productName}} di usare le tue credenziali Git per i repository che quel registry elenca.",
+          "empty": "Nessun registry aggiunto a mano. Aggiungine uno da <store>App</store>.",
+          "grant": "Autorizza questo registry",
+          "grant_confirm_body": "«{{name}}» userà le tue credenziali Git per scaricare i repository che elenca. Quali siano lo decidono le persone che scrivono quel registry, quindi sono loro a decidere quali dei tuoi repository privati vengono scaricati. Puoi revocare questa autorizzazione in qualsiasi momento.",
+          "grant_confirm_ok": "Autorizza con le mie credenziali Git",
+          "grant_confirm_repo": "Indirizzo del registry: {{repo}}",
+          "grant_confirm_title": "Affidare le tue credenziali Git a «{{name}}»?",
+          "not_served": "Non elencato: questo registry non viene mostrato nell'App Store, quindi non può essere considerato attendibile.",
+          "not_served_name_collision": "Non elencato: un altro registry che hai aggiunto ha lo stesso nome, quindi non ne viene mostrato nessuno dei due.",
+          "not_served_not_configured": "Non configurato: questo registry non è più nella tua configurazione, ma la sua concessione di attendibilità è ancora salvata.",
+          "not_served_pinned_name": "Non elencato: un registry fornito con {{productName}} usa già questo nome, quindi questo non viene mostrato.",
+          "pinned_note": "I registry forniti con {{productName}} non compaiono qui, perché la versione compilata li considera già attendibili.",
+          "reset": "Reimposta il file di attendibilità",
+          "reset_confirm_body": "Questo cancella il file di attendibilità danneggiato e rimuove ogni registro che hai reso attendibile, quindi dovrai renderli di nuovo attendibili. Nient’altro viene modificato.",
+          "reset_confirm_ok": "Reimposta e rimuovi ogni attendibilità",
+          "reset_confirm_title": "Reimpostare il file di attendibilità dei registri?",
+          "retry": "Riprova",
+          "revoke": "Revoca l'autorizzazione",
+          "row_meta": "{{host}} · ramo {{branch}}",
+          "section_title": "Registry attendibili con le tue credenziali Git",
+          "section_title_rail": "Fiducia nei registry",
+          "trusted_badge": "attendibile",
+          "unavailable": "Non è stato possibile leggere quali registry sono attendibili."
         },
         "yolo_duration_load_failed": "Impossibile caricare la durata salvata. L'opzione evidenziata è quella predefinita, non quella salvata.",
         "tailnet_copy_failed": "Copia non riuscita. Seleziona l'indirizzo e copialo manualmente.",

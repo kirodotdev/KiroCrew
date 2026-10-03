@@ -316,12 +316,19 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   member's private memory, so it sits at the root, masked, rather than
     #:   under the sandbox read-write ``trust/``. Leaf-only for the same reason.
     #:
+    #: One more root-level leaf landed since, three more entries per tier:
+    #:
+    #: * ``registry_trust.json`` -- the operator's grants of ``owner`` trust to a
+    #:   hand-configured app registry, on the same read+write floor as
+    #:   ``denied_commands.json``, so a writable grant cannot clone a registry the
+    #:   agent controls with the machine's git identity.
+    #:
     #: Two directories hold what the MCP gateway launches outside the sandbox,
     #: six entries per tier. ``mcp-launch-approvals`` holds the owner's approved
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

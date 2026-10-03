@@ -7963,7 +7963,8 @@
       "curated_tip_credential_free": "Vor der Aufnahme vom {{productName}}-Team geprüft. Apps werden ohne Ihre Git-Anmeldeinformationen geklont.",
       "community_tip_credentialed": "Von Mitwirkenden nach einer leichteren Prüfung aufgenommen. Nicht vom {{productName}}-Team verifiziert. Apps werden weiterhin mit Ihren Git-Anmeldeinformationen geklont, installieren Sie also nur Apps, die Sie kennen.",
       "community_tip_credential_free": "Von Mitwirkenden nach einer leichteren Prüfung aufgenommen. Nicht vom {{productName}}-Team verifiziert. Installieren Sie nur Apps, die Sie kennen.",
-      "registry_id": "ID: {{id}}"
+      "registry_id": "ID: {{id}}",
+      "trust_hint": "Private Repositorys in einer Registry bleiben generisch, bis du sie unter <trust>Sicherheit → Registry-Vertrauen</trust> als vertrauenswürdig einstufst."
     },
     "rejectDropdown": {
       "reject_all": "Alle ablehnen — die übrigen ohne Rückfrage ablehnen",
@@ -15758,6 +15759,33 @@
           "allow_all_confirm_ack": "Mir ist klar, dass jede App von Drittanbietern, die ich installiere, eigenen Code mit den Zugriffsrechten von {{productName}} ausführen kann.",
           "ineffective_label": "Gespeichert, aber ohne Wirkung",
           "ineffective_description": "Diese Namen wurden als vertrauenswürdig gespeichert, aber {{productName}} akzeptiert sie nicht, deshalb bleiben die Apps blockiert. Entferne sie, um die Liste aufzuräumen."
+        },
+        "trustedRegistries": {
+          "change_failed": "Diese Änderung wurde nicht übernommen: {{detail}}",
+          "corrupt_notice": "Die Vertrauensdatei ist beschädigt, daher wird keiner Registry vertraut, bis sie repariert ist.",
+          "description": "Eine von Hand hinzugefügte App-Registry liest ihre App-Liste ohne deine Git-Anmeldedaten, deshalb zeigt eine App aus einem privaten Repository keine Bilder und lässt sich nicht installieren. Wenn du einer Registry vertraust, verwendet {{productName}} deine eigenen Git-Anmeldedaten für die Repositories, die diese Registry auflistet.",
+          "empty": "Keine von Hand hinzugefügte Registry. Füge eine unter <store>Apps</store> hinzu.",
+          "grant": "Dieser Registry vertrauen",
+          "grant_confirm_body": "„{{name}}“ verwendet deine eigenen Git-Anmeldedaten, um die aufgelisteten Repositories herunterzuladen. Welche das sind, entscheiden die Leute, die diese Registry schreiben — also entscheiden sie, welche deiner privaten Repositories heruntergeladen werden. Du kannst dieses Vertrauen jederzeit wieder entziehen.",
+          "grant_confirm_ok": "Mit meinen Git-Anmeldedaten vertrauen",
+          "grant_confirm_repo": "Registry-Adresse: {{repo}}",
+          "grant_confirm_title": "„{{name}}“ deine Git-Anmeldedaten anvertrauen?",
+          "not_served": "Nicht aufgeführt – diese Registry wird im App Store nicht angezeigt und kann daher nicht als vertrauenswürdig eingestuft werden.",
+          "not_served_name_collision": "Nicht aufgeführt – eine andere von dir hinzugefügte Registry hat denselben Namen, daher wird keine von beiden angezeigt.",
+          "not_served_not_configured": "Nicht konfiguriert – diese Registry ist nicht mehr in deiner Konfiguration, aber ihre Vertrauensfreigabe ist noch gespeichert.",
+          "not_served_pinned_name": "Nicht aufgeführt – eine mit {{productName}} gelieferte Registry nutzt diesen Namen bereits, daher wird diese hier nicht angezeigt.",
+          "pinned_note": "Registries, die mit {{productName}} ausgeliefert werden, erscheinen hier nicht, weil der Build ihnen bereits vertraut.",
+          "reset": "Vertrauensdatei zurücksetzen",
+          "reset_confirm_body": "Das löscht die beschädigte Vertrauensdatei und entfernt jede Registry, der du vertraut hast, du musst ihnen also erneut vertrauen. Sonst ändert sich nichts.",
+          "reset_confirm_ok": "Zurücksetzen und jedes Vertrauen entfernen",
+          "reset_confirm_title": "Die Registry-Vertrauensdatei zurücksetzen?",
+          "retry": "Erneut versuchen",
+          "revoke": "Vertrauen entziehen",
+          "row_meta": "{{host}} · Branch {{branch}}",
+          "section_title": "Mit deinen Git-Anmeldedaten vertraute Registrys",
+          "section_title_rail": "Registry-Vertrauen",
+          "trusted_badge": "vertraut",
+          "unavailable": "Es konnte nicht gelesen werden, welchen Registries vertraut wird."
         },
         "yolo_duration_load_failed": "Die gespeicherte Dauer konnte nicht geladen werden. Die hervorgehobene Option ist der Standardwert, nicht der gespeicherte.",
         "tailnet_copy_failed": "Kopieren fehlgeschlagen. Markieren Sie die Adresse und kopieren Sie sie manuell.",

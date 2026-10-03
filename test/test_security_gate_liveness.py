@@ -158,7 +158,13 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+#:
+#: Raised for the ``registry_trust.json`` leaf added to ``_CREW_SECRET_LEAVES`` in
+#: ``paths.py``: the operator's grants of ``owner`` trust to a hand-configured app
+#: registry live in a keystone file on the same read+write floor as
+#: ``denied_commands.json``, so the leaf and its two-line reason are three lines the gate
+#: cannot avoid.
+_PACKAGE_LINE_BUDGET = 28_402
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -21,8 +21,10 @@ vi.mock('../api/client', () => ({
 }))
 const recordEventMock = vi.fn()
 vi.mock('../rum', () => ({ recordEvent: (...a: unknown[]) => recordEventMock(...a) }))
-// RegistryManager owns its own fetches and its own test file; stub it so the
-// assertions here are about the popover's install flow only.
+// RegistryManager owns its own fetches, the per-row Registry-trust hint, and its
+// own test file; stub it so the assertions here are about the popover's install
+// flow only. The popover carries no store-wide trust hint of its own — the hint
+// is per-row inside the manager — so nothing hint-related is asserted here.
 vi.mock('../components/RegistryManager', () => ({
   default: () => <div data-testid="zzq-registry-stub" />,
 }))
@@ -40,7 +42,9 @@ const installBtn = () => screen.getByRole('button', { name: i18nT('components.ap
 // NB: braces, not a concise arrow body — `mockResolvedValue` RETURNS the mock,
 // and vitest treats a function returned from a hook as a teardown callback,
 // which would invoke the mock (recording a phantom no-arg call) after each test.
-beforeEach(() => { mocks.installApp.mockResolvedValue({ name: 'zzq-app' }) })
+beforeEach(() => {
+  mocks.installApp.mockResolvedValue({ name: 'zzq-app' })
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('SourcesPopover', () => {
@@ -118,5 +122,14 @@ describe('SourcesPopover', () => {
     await waitFor(() => expect(onError).toHaveBeenCalledWith(
       i18nT('components.appstore.sourcesPopover.install_failed'),
     ))
+  })
+
+  it('renders no store-wide trust hint of its own (the hint is per-row in the manager)', async () => {
+    // The popover delegates the trust hint entirely to RegistryManager's per-row
+    // placement, so it renders no popover-wide Registry-trust link itself. The
+    // manager is stubbed, so the whole surface must carry no such link.
+    wrap(<SourcesPopover open onOpenChange={() => {}} onError={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('zzq-registry-stub')).toBeInTheDocument())
+    expect(screen.queryByRole('link', { name: /Registry trust/i })).not.toBeInTheDocument()
   })
 })

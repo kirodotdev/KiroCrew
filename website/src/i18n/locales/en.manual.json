@@ -2960,7 +2960,8 @@
       "curated_tip_credential_free": "Reviewed by the {{productName}} team before listing. Apps clone without your Git credentials.",
       "community_tip_credentialed": "Listed by contributors after a lighter review. Not vetted by the {{productName}} team. Apps still clone with your Git credentials, so install only apps you recognise.",
       "community_tip_credential_free": "Listed by contributors after a lighter review. Not vetted by the {{productName}} team. Install only apps you recognise.",
-      "registry_id": "id: {{id}}"
+      "registry_id": "id: {{id}}",
+      "trust_hint": "Private repositories in a registry stay generic until you <trust>trust it in Security → Registry trust</trust>."
     },
     "remoteArtifactCard": {
       "clone_failed": "Clone failed",
@@ -7169,6 +7170,33 @@
           "allow_all_confirm_ack": "I understand every third-party app I install will be able to run its own code with {{productName}}'s access.",
           "ineffective_label": "Saved but not working",
           "ineffective_description": "These names were saved as trusted, but {{productName}} does not accept them, so the apps are still blocked. Remove them to tidy the list."
+        },
+        "trustedRegistries": {
+          "change_failed": "That change did not take effect: {{detail}}",
+          "corrupt_notice": "The trust file is damaged, so no registry is trusted until it is fixed.",
+          "description": "An app registry you added by hand reads its list of apps without your Git credentials, so an app kept in a private repository shows no pictures and cannot be installed. Trusting a registry lets {{productName}} use your own Git credentials for the repositories that registry lists.",
+          "empty": "No registries added by hand. Add one under <store>Apps</store>.",
+          "grant": "Trust this registry",
+          "grant_confirm_body": "“{{name}}” will use your own Git credentials when it downloads the repositories it lists. The people who write that registry choose which repositories those are, so they choose which of your private repositories get downloaded. You can remove this trust again at any time.",
+          "grant_confirm_ok": "Trust it with my Git credentials",
+          "grant_confirm_repo": "Registry address: {{repo}}",
+          "grant_confirm_title": "Trust “{{name}}” with your Git credentials?",
+          "not_served": "Not listed — this registry is not shown in the App Store, so it cannot be trusted.",
+          "not_served_name_collision": "Not listed — another registry you added has the same name, so neither is shown.",
+          "not_served_not_configured": "Not configured — this registry is not in your config any more, but its trust grant is still stored.",
+          "not_served_pinned_name": "Not listed — a registry that comes with {{productName}} already uses this name, so this one is not shown.",
+          "pinned_note": "Registries that come with {{productName}} are not shown here, because the build already trusts those.",
+          "reset": "Reset trust file",
+          "reset_confirm_body": "This clears the damaged trust file and removes every registry you have trusted, so you will need to trust them again. Nothing else is changed.",
+          "reset_confirm_ok": "Reset and remove all trust",
+          "reset_confirm_title": "Reset the registry trust file?",
+          "retry": "Retry",
+          "revoke": "Remove trust",
+          "row_meta": "{{host}} · branch {{branch}}",
+          "section_title": "Registries trusted with your Git credentials",
+          "section_title_rail": "Registry trust",
+          "trusted_badge": "trusted",
+          "unavailable": "Could not read which registries are trusted."
         },
         "yolo_duration_load_failed": "Could not load the saved duration. The highlighted option is the default, not what is stored.",
         "tailnet_copy_failed": "Copy failed. Select the address and copy it manually.",

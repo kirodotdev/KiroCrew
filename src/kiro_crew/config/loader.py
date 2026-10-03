@@ -770,6 +770,24 @@ def denied_commands_path() -> Path:
     return config_dir() / "denied_commands.json"
 
 
+def registry_trust_path() -> Path:
+    """Return path to registry_trust.json — operator grants of ``owner`` trust to
+    hand-configured app registries.
+
+    This is a KEYSTONE trust-root file (on ``security._SENSITIVE_HOME_DIRS``),
+    for the same reason as :func:`denied_commands_path`: a grant lets the
+    registries it names have their apps cloned with the machine's git identity,
+    so it must be a decision only the operator can make. ``config.json`` is
+    agent-writable (any shell form), which is exactly why the registry rows there
+    can never carry the tier themselves; the grant lives here, out of the agent's
+    reach, and the operator edits it through the dashboard
+    ``/api/security/trusted-registries`` endpoints. Holds
+    ``{"version": 2, "owner_trusted": ["<credential-free repo url>", ...]}``.
+    Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "registry_trust.json"
+
+
 def computer_use_state_path() -> Path:
     """Return path to computer_use.json — the computer-use primary enable.
 

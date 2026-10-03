@@ -224,6 +224,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_registry_app_candidates",
     "_registry_identity_key",
     "_registry_trust_tier",
+    "_registry_trust_tier_of",
     "_remote_controlled_url",
     "_remove_legacy_credential_registry_cache",
     "_remove_legacy_name_keyed_registry_cache",

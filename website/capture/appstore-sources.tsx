@@ -9,6 +9,7 @@ import { api } from '../src/api/client'
 import { ApiError } from '../src/api/apiError'
 import DiscoverPage from '../src/pages/apps/DiscoverPage'
 import AppDetailPage from '../src/pages/AppDetailPage'
+import SourcesPopover from '../src/components/appstore/SourcesPopover'
 import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
 
@@ -38,6 +39,33 @@ api.listRegistry = async () => ({
 })
 api.listRegistries = async () => {
   if (params.has('sourceError')) throw new Error('Source metadata unavailable')
+  // The popover scene needs OPERATOR rows so the RegistryManager renders (a) a
+  // normal index-tier row with its per-row trust hint, (b) a served:false
+  // name_collision row with the "Not listed — …" note, and the store-wide hint
+  // fires because at least one row is not owner-tier. example.test throughout:
+  // these strings are baked into a committed PNG no text scanner can read.
+  if (params.has('popover')) {
+    return {
+      pinned: [],
+      registries: [
+        {
+          name: 'team-apps',
+          repo: 'https://git.example.test/team/apps-index.git',
+          branch: 'main',
+          trust: 'index',
+          served: true,
+        },
+        {
+          name: 'acme',
+          repo: 'https://git.example.test/other/acme-index.git',
+          branch: 'main',
+          trust: 'index',
+          served: false,
+          not_served_reason: 'name_collision',
+        },
+      ],
+    }
+  }
   return {
     pinned: [
       { name: 'team', label: 'Team Apps Registry', review: 'curated', repo: 'https://example.com/team.git', branch: 'main' },
@@ -64,14 +92,26 @@ createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={qc}>
       <ThemeProvider>
-        <MemoryRouter initialEntries={[params.has('detail') ? `/apps/detail/${params.get('detail')}` : '/apps']}>
-          <div className="h-screen flex flex-col bg-bg text-text">
-            <Routes>
-              <Route path="/apps" element={<DiscoverPage />} />
-              <Route path="/apps/detail/:name" element={<AppDetailPage />} />
-            </Routes>
-          </div>
-        </MemoryRouter>
+        {params.has('popover') ? (
+          // The Sources popover, opened, so the shot shows the registry-trust
+          // surfaces this PR changed: the store-wide hint, a per-row hint on an
+          // index-tier row, and the "Not listed — …" note on a dropped row.
+          // Wrapped in a router because RegistryTrustHint uses a react-router Link.
+          <MemoryRouter initialEntries={['/apps']}>
+            <div className="min-h-screen bg-bg text-text">
+              <SourcesPopover open onOpenChange={() => {}} onError={() => {}} />
+            </div>
+          </MemoryRouter>
+        ) : (
+          <MemoryRouter initialEntries={[params.has('detail') ? `/apps/detail/${params.get('detail')}` : '/apps']}>
+            <div className="h-screen flex flex-col bg-bg text-text">
+              <Routes>
+                <Route path="/apps" element={<DiscoverPage />} />
+                <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+              </Routes>
+            </div>
+          </MemoryRouter>
+        )}
       </ThemeProvider>
     </QueryClientProvider>
   </Provider>,

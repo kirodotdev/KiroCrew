@@ -1080,4 +1080,8 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_trusted_app_revoke,
     api_trusted_apps_allow_all,
     api_trusted_apps_list,
+    api_trusted_registries_list,
+    api_trusted_registries_reset,
+    api_trusted_registry_grant,
+    api_trusted_registry_revoke,
 )

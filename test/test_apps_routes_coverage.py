@@ -5069,3 +5069,122 @@ class TestLifecycleRoutesAreOwnerOnly:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert resp.status == 403
         assert routes_mod.get_app(APP)["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /api/apps/registries — served / not_served_reason projection
+#
+# The registries editor is where an operator fixes a name collision, so the GET
+# carries the same served/not_served_reason per row that the Security panel's
+# snapshot computes (build_trusted_registries_snapshot). These mirror the
+# fixtures in test/test_registry_trust_badge.py, driven through the HTTP handler.
+# ---------------------------------------------------------------------------
+
+
+class TestRegistriesGetServedProjection:
+    # Two config rows sharing one identity key (case-folded), and a build-pinned
+    # name contest — the two exclusions the merge applies.
+    _ACME_UPPER = "https://git.example.test/team/acme-index.git"
+    _ACME_LOWER = "https://git.example.test/other/acme-index.git"
+    _CONTENDER = "https://git.example.test/team/contender-index.git"
+    _PINNED_REPO = "https://git.example.test/build/pinned-index.git"
+
+    @staticmethod
+    def _row(rows: list[dict], name: str) -> dict:
+        (match,) = [r for r in rows if r["name"] == name]
+        return match
+
+    @staticmethod
+    def _write_config(home: Path, registries: list[dict]) -> None:
+        from kiro_crew.config.loader import _invalidate_config_cache
+
+        (home / "config.json").write_text(
+            json.dumps({"registries": registries}), encoding="utf-8"
+        )
+        _invalidate_config_cache()
+
+    @pytest.mark.asyncio
+    async def test_name_collision_pair_reports_not_served_on_both_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.registry_pipeline import sources
+
+        home = _setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(sources, "_pinned_registries", lambda: [])
+        self._write_config(
+            home,
+            [
+                {"name": "Acme", "repo": self._ACME_UPPER, "branch": "main"},
+                {"name": "acme", "repo": self._ACME_LOWER, "branch": "main"},
+            ],
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/apps/registries")
+            assert resp.status == 200
+            rows = (await resp.json())["registries"]
+        upper = self._row(rows, "Acme")
+        lower = self._row(rows, "acme")
+        assert upper["served"] is False
+        assert lower["served"] is False
+        assert upper["not_served_reason"] == "name_collision"
+        assert lower["not_served_reason"] == "name_collision"
+
+    @pytest.mark.asyncio
+    async def test_pinned_name_contest_reports_not_served_pinned_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.registry_pipeline import sources
+
+        home = _setup_env(tmp_path, monkeypatch)
+        # Config row "pinned" points at a DIFFERENT repo than the build-pinned
+        # row of the same name, so the merge serves neither.
+        monkeypatch.setattr(
+            sources,
+            "_pinned_registries",
+            lambda: [
+                SimpleNamespace(
+                    name="pinned",
+                    repo=self._PINNED_REPO,
+                    branch="main",
+                    trust="owner",
+                    label="",
+                    review="",
+                )
+            ],
+        )
+        self._write_config(
+            home, [{"name": "pinned", "repo": self._CONTENDER, "branch": "dev"}]
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/apps/registries")
+            assert resp.status == 200
+            rows = (await resp.json())["registries"]
+        row = self._row(rows, "pinned")
+        assert row["served"] is False
+        assert row["not_served_reason"] == "pinned_name"
+
+    @pytest.mark.asyncio
+    async def test_uncontested_row_is_served_with_no_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.registry_pipeline import sources
+
+        home = _setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(sources, "_pinned_registries", lambda: [])
+        self._write_config(
+            home,
+            [
+                {
+                    "name": "mine",
+                    "repo": "https://git.example.test/team/apps-index.git",
+                    "branch": "main",
+                }
+            ],
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/apps/registries")
+            assert resp.status == 200
+            rows = (await resp.json())["registries"]
+        row = self._row(rows, "mine")
+        assert row["served"] is True
+        assert "not_served_reason" not in row

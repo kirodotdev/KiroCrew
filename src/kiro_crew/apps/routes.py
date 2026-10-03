@@ -99,10 +99,13 @@ from kiro_crew.apps.registry import (
     _git_fetch_branch,
     _git_target_is_unsupported,
     _git_url_host,
+    _granted_owner_repos,
     _loggable_git_transport_output,
     _owner_designated_repo_target,
     _pinned_registries,
+    _public_registry_name,
     _registry_identity_key,
+    _registry_trust_tier,
     _same_git_target,
     _sel_credential_grant,
     _strip_git_target_userinfo,
@@ -117,6 +120,10 @@ from kiro_crew.apps.registry import (
     minimal_env,
     registry_name_from_source,
     resolve_installed_trust_repository,
+)
+from kiro_crew.apps.registry_trust import (
+    RegistryTrustCorruptError,
+    revoke_owner_grants_for_absent_repos_locked,
 )
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import forget_app_hooks, teardown_app_runtime
@@ -4565,23 +4572,62 @@ async def handle_registries(request: web.Request) -> web.Response:
     """GET/PUT /api/apps/registries — manage external federated registries."""
     if request.method == "GET":
         config = KiroCrewConfig.load()
-        # Operator rows report `index` as their tier because that is what is in
-        # FORCE for them: `registry._registry_trust_tier` resolves `owner` only
-        # from build-pinned rows, since `config.json` is agent-writable. Echoing a
-        # hand-edited `owner` back would report a grant the runtime does not honour.
-        # `label`/`review` are reported empty for the same reason: they are claims
-        # only the build may make, so an operator row makes neither.
-        registries = [
-            {
-                "name": r.name,
-                "repo": _strip_git_target_userinfo(r.repo),
-                "branch": r.branch,
-                "trust": _TRUST_INDEX,
-                "label": "",
-                "review": "",
-            }
-            for r in config.registries
-        ]
+
+        # Operator rows report the tier in FORCE for them, never the one the row
+        # declares: `registry._registry_trust_tier` reads `owner` only from a
+        # build-pinned row or from the operator's keystone grant
+        # (`registry_trust.json`, written through `/api/security/trusted-registries`),
+        # since `config.json` is agent-writable and a hand-edited `owner` there is
+        # a claim the runtime does not honour. `label`/`review` are reported empty
+        # for the same reason: they are claims only the build may make, so an
+        # operator row makes neither. `served`/`not_served_reason` reuse the
+        # Security panel's own projection so the registries editor can show the
+        # same "Not listed" note on a row the merge drops (a build-pinned name
+        # contest or a config-key collision); they answer the RUNTIME's question,
+        # not the raw config map's. `build_trusted_registries_snapshot` is imported
+        # at call time to keep the apps/-imports-dashboard-only-at-call-time
+        # layering, and it does its own blocking reads, so the whole projection
+        # runs off the event loop here. The tier lookup reads the grant file and
+        # walks config, so it runs off the event loop too.
+        def _operator_rows() -> list[dict[str, Any]]:
+            from kiro_crew.dashboard.handlers.security import (
+                build_trusted_registries_snapshot,
+            )
+
+            # The snapshot iterates the same config.registries in the same order,
+            # so its rows align with ours; a repo appearing twice keeps a queue so
+            # each configured row consumes its own served/not_served_reason rather
+            # than the first match's.
+            snap_by_repo: dict[str, list[dict[str, Any]]] = {}
+            try:
+                for snap_row in build_trusted_registries_snapshot().get("registries", []):
+                    snap_by_repo.setdefault(snap_row.get("repo", ""), []).append(snap_row)
+            except Exception:
+                logger.debug("could not project served state for the registries GET", exc_info=True)
+            rows: list[dict[str, Any]] = []
+            for r in config.registries:
+                public = _strip_git_target_userinfo(r.repo)
+                bucket = snap_by_repo.get(public)
+                snap_row = bucket.pop(0) if bucket else {}
+                entry: dict[str, Any] = {
+                    "name": r.name,
+                    "repo": public,
+                    "branch": r.branch,
+                    "trust": _registry_trust_tier(_public_registry_name(r)),
+                    "label": "",
+                    "review": "",
+                    # A row the merge drops is served by neither claimant, so its
+                    # apps are never listed; the editor shows the "Not listed"
+                    # note keyed on `not_served_reason`. Absent snapshot → assume
+                    # served (the note only appears on a positively-dropped row).
+                    "served": bool(snap_row.get("served", True)),
+                }
+                if not entry["served"] and snap_row.get("not_served_reason"):
+                    entry["not_served_reason"] = snap_row["not_served_reason"]
+                rows.append(entry)
+            return rows
+
+        registries = await asyncio.to_thread(_operator_rows)
         # Edition-pinned registries are reported SEPARATELY and read-only. They
         # are not part of ``registries`` because PUT replaces that list verbatim:
         # a GET→edit→PUT round-trip would persist an edition default into the
@@ -4639,6 +4685,9 @@ async def handle_registries(request: web.Request) -> web.Response:
     # Names whose entry tried to claim `label`/`review`. Recorded, not refused —
     # see the drop comment at the `validated.append` below.
     stripped_claims: list[str] = []
+    # Rows that echoed `trust: owner` back. Their grant is verified in the locked
+    # transaction below, not here on the event loop (see the deferral comment).
+    owner_echo_repos: list[tuple[str, str]] = []
     _blocked_repos = {"KiroCrew"}
     # Keyed the same way `_effective_registries` decides a contest — by the cache
     # file the registry would use, not the raw string. Comparing raw names here
@@ -4680,25 +4729,47 @@ async def handle_registries(request: web.Request) -> web.Response:
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_\-./]*$", branch) or ".." in branch:
             return _deny(f"invalid branch name: {branch!r}", f"branch={branch}")
         # `trust` is accepted only as `index` for an operator row, and that is the
-        # value stored. `registry._registry_trust_tier` resolves `owner` solely
-        # from `default_registries()` — the build — because `config.json` is
-        # agent-writable, so a tier persisted here could never be honoured.
-        # Accepting it would hand back a setting the runtime ignores, and there is
-        # correspondingly no tier to PRESERVE across a replace-all PUT: an omitted
-        # value simply means `index`, which is what an operator row always is.
+        # value stored. `registry._registry_trust_tier` never reads `owner` off a
+        # config row — `config.json` is agent-writable, so a tier persisted here
+        # could never be honoured. The operator lifts a row to `owner` through
+        # Settings > Security (`/api/security/trusted-registries`), which writes
+        # the keystone `registry_trust.json` keyed by the row's repository, so
+        # there is correspondingly no tier to PRESERVE across a replace-all PUT: an
+        # omitted value simply means `index`, which is what a stored row always is.
         raw_trust = entry.get("trust")
         trust = _TRUST_INDEX if raw_trust is None else (str(raw_trust).strip() or _TRUST_INDEX)
         if trust not in _REGISTRY_TRUST_TIERS:
             return _deny(f"invalid registry trust: {trust!r}", f"trust={trust}")
         if trust == _TRUST_OWNER:
-            return _deny(
-                "the trusted tier is supplied by this build, not by configuration",
-                f"owner_trust_refused={name}",
-            )
+            # The GET above reports the tier IN FORCE on each row, so once the
+            # operator has granted this repository the dashboard's replace-all
+            # PUT echoes `owner` back on a row it never edited. An echo of the
+            # tier the keystone already confers changes nothing and is accepted
+            # (stored as `index`, like every row); a caller trying to CONFER the
+            # tier through configuration is still refused.
+            #
+            # The grant check reads the keystone, so it is DEFERRED out of this
+            # loop (which runs on the event loop) into the single locked,
+            # executor-backed transaction below — the same one that reads config,
+            # writes config and runs the revoke sweep. Verifying it there both
+            # keeps the blocking read off the loop and reads the grant on the same
+            # locked state the write sees. Recorded credential-free.
+            owner_echo_repos.append((name, _strip_git_target_userinfo(repo)))
+            trust = _TRUST_INDEX
         # A name an edition-pinned registry already owns is refused rather than
         # persisted: `_effective_registries` drops a same-named operator row, so
         # storing it would leave a registry in config.json that never loads and
         # whose per-row refresh 404s, with nothing telling the operator why.
+        # Two submitted rows sharing one identity key would be dropped as a pair
+        # by `_effective_registries` (neither served), so the state is refused
+        # here rather than created and then silently discarded.
+        if any(
+            _registry_identity_key(name) == _registry_identity_key(v["name"]) for v in validated
+        ):
+            return _deny(
+                f"{name!r} names the same registry as another row in this list — choose another",
+                f"name_collision={name}",
+            )
         if _registry_identity_key(name) in _pinned_names:
             return _deny(
                 f"{name!r} is the name of a registry this build provides — choose another",
@@ -4775,7 +4846,86 @@ async def handle_registries(request: web.Request) -> web.Response:
 
     data["registries"] = validated
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(cfg, json.dumps(data, indent=2) + "\n")
+
+    kept_repos = [r["repo"] for r in validated]
+
+    def _verify_owner_echoes() -> str | None:
+        """The name of the first row that echoed `owner` without a grant, or None.
+
+        Reads the keystone once (off the event loop) and checks each deferred
+        echo against the grants in force. An echo of a tier the operator already
+        granted is a no-op the PUT accepts; an attempt to CONFER the tier through
+        configuration is refused. Runs inside the shared lock, so the grant it
+        reads is the state a concurrent grant/revoke cannot move mid-write.
+        """
+        if not owner_echo_repos:
+            return None
+        granted = {_strip_git_target_userinfo(k) for k in _granted_owner_repos()}
+        for name, public_repo in owner_echo_repos:
+            if not any(_same_git_target(public_repo, g) for g in granted):
+                return name
+        return None
+
+    def _write_config() -> None:
+        atomic_write(cfg, json.dumps(data, indent=2) + "\n")
+
+    # One locked transaction over the keystone-reading echo check, the config
+    # write, and the grant revoke sweep. Holding the shared config lock
+    # (`_get_config_lock`, the same object `write_registry_trust` takes) across
+    # all three closes the race where a grant handler validates against config
+    # this PUT is about to remove and writes an orphan grant into the gap between
+    # the config write and the revoke sweep. Every blocking read/write runs in
+    # the executor, so none touches the event loop.
+    #
+    # Call-time import for the layering reason documented at the other
+    # `_get_config_lock` uses in this module: `apps` sits below `dashboard`.
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+    loop = asyncio.get_running_loop()
+    async with _get_config_lock():
+        echo_deny = await loop.run_in_executor(None, _verify_owner_echoes)
+        if echo_deny is not None:
+            return _deny(
+                "the trusted tier is supplied by this build or granted in "
+                "Settings > Security, not by configuration",
+                f"owner_trust_refused={echo_deny}",
+            )
+
+        # Revoke grants for absent repos BEFORE publishing the config. Grant
+        # lifetime == row lifetime: `build_trusted_registries_snapshot` only ever
+        # iterates config rows, so a repository the operator removes here would
+        # keep its keystone `owner` grant alive AND invisible (nothing lists it,
+        # yet the runtime reader still honours it if the row ever returns). Doing
+        # the keystone revoke first means a crash between the two writes can only
+        # leave a grant with its config row still present (a no-op, re-revoked on
+        # the next PUT), never an orphan grant that silently re-arms if the repo
+        # is re-added. If the revoke write fails, the PUT fails and the config is
+        # left untouched, so the operator sees the error and nothing was removed.
+        # Reuses the shared keystone writer's LOCKED variant: this block already
+        # holds the lock and the asyncio.Lock is not reentrant.
+        try:
+            revoked = await revoke_owner_grants_for_absent_repos_locked(kept_repos)
+        except RegistryTrustCorruptError as exc:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="registries.grant_revoke",
+                outcome="failed",
+                resources=f"registry_trust.json corrupt: {exc}",
+            )
+            return _deny(
+                "the registry trust store is corrupt; reset it in "
+                "Settings > Security > Registry trust before changing registries",
+                f"registry_trust_corrupt={exc}",
+            )
+
+        await loop.run_in_executor(None, _write_config)
+    for gone in revoked:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="registries.grant_revoke",
+            outcome="success",
+            resources=f"repo={_strip_git_target_userinfo(gone)}",
+        )
 
     sel().log_api_access(
         caller="dashboard",

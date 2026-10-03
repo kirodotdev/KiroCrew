@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import RegistryManager from '../components/RegistryManager'
 
 const mockListRegistries = vi.fn()
@@ -16,8 +17,12 @@ vi.mock('../api/client', () => ({
 }))
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+// RegistryManager now renders a react-router <Link> (the Security → Registry
+// trust discovery hint) on index-tier rows, so the tree needs a Router.
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
-  <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  <QueryClientProvider client={qc}>
+    <MemoryRouter>{children}</MemoryRouter>
+  </QueryClientProvider>
 )
 
 // A deferred promise so we can assert pending UI before resolving.
@@ -667,6 +672,73 @@ describe('RegistryManager', () => {
           { name: '', repo: 'https://forge.example.com/me/second.git', branch: '' },
         ])
       })
+    })
+  })
+
+  describe('Security → Registry trust discovery hint', () => {
+    // The hint links to the Security panel's registry-trust section. It renders
+    // on a hand-added (operator, non-pinned) row left at the credential-free
+    // `index` tier, so a shopper meeting art-less/uninstallable tiles is pointed
+    // at where trust is granted.
+    it('renders the hint with a link to Security → Registry trust on an index-tier row', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'team-reg', repo: 'https://forge.example.com/t/r.git', branch: 'main', trust: 'index', served: true }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('team-reg'))
+      const link = screen.getByRole('link', { name: /Registry trust/i })
+      expect(link).toHaveAttribute('href', '/settings/security/registries')
+    })
+
+    it('does not render the hint on an owner-trusted row', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'team-reg', repo: 'https://forge.example.com/t/r.git', branch: 'main', trust: 'owner', served: true }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('team-reg'))
+      expect(screen.queryByRole('link', { name: /Registry trust/i })).not.toBeInTheDocument()
+    })
+
+    it('does not render the hint on a build-pinned row', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [{ name: 'Internal apps', repo: 'https://forge.example.com/org/internal.git', branch: 'main', trust: 'index' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Internal apps'))
+      expect(screen.queryByRole('link', { name: /Registry trust/i })).not.toBeInTheDocument()
+    })
+
+    it('shows the "Not listed" note (and suppresses the hint) on a dropped name_collision row', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'dupe', repo: 'https://forge.example.com/t/r.git', branch: 'main', trust: 'index', served: false, not_served_reason: 'name_collision' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('dupe'))
+      // The collision note appears, opening with the "Not listed" outcome.
+      expect(screen.getByText(/Not listed — another registry you added has the same name/i)).toBeInTheDocument()
+      // The trust hint is suppressed on a not-served row (it is fixed by
+      // renaming/removing, not by granting trust).
+      expect(screen.queryByRole('link', { name: /Registry trust/i })).not.toBeInTheDocument()
+    })
+
+    it('renders exactly one hint per untrusted served row, and none for a served:false row', async () => {
+      // The per-row hint is the ONLY placement (the App Store popover carries no
+      // store-wide copy), so a mix of rows must yield exactly one hint per
+      // untrusted served row and none for the owner-trusted or dropped rows.
+      mockListRegistries.mockResolvedValue({
+        registries: [
+          { name: 'a', repo: 'https://forge.example.com/t/a.git', branch: 'main', trust: 'index', served: true },
+          { name: 'b', repo: 'https://forge.example.com/t/b.git', branch: 'main', trust: 'index', served: true },
+          { name: 'owned', repo: 'https://forge.example.com/t/o.git', branch: 'main', trust: 'owner', served: true },
+          { name: 'dropped', repo: 'https://forge.example.com/t/d.git', branch: 'main', trust: 'index', served: false, not_served_reason: 'name_collision' },
+        ],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('a'))
+      // Two untrusted served rows -> two hint links; the owner row and the
+      // served:false row contribute none.
+      expect(screen.getAllByRole('link', { name: /Registry trust/i })).toHaveLength(2)
     })
   })
 })

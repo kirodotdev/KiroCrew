@@ -543,6 +543,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # defeat the deny gate after a restart; a writable ``computer_use.json`` lets it
     # turn computer use on for itself.
     "denied_commands.json",
+    # The operator's grants of ``owner`` trust to hand-configured app registries.
+    # Same class: a writable grant lets an auto-approved agent have a registry it
+    # controls cloned with the machine's git identity.
+    "registry_trust.json",
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
@@ -864,6 +868,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "security_policy.json",
     "profiles",
     "denied_commands.json",
+    "registry_trust.json",
     "computer_use.json",
     "oauth_endpoints.json",
     "decisions_consent.json",
@@ -1681,6 +1686,18 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # narrower than the truth (criterion 2).
     "credential_redaction.json",
     "settings_seeds.json",
+    # The operator's grants of ``owner`` trust to a hand-configured app registry.
+    # Satisfies both criteria the way ``file_delivery_consent.json`` does:
+    # ``registry._granted_owner_repos`` reads an absent, empty, AND ``{}``-versioned
+    # document alike as NO grants (a ``{}`` carries no matching ``version``), so a
+    # pre-created ``{}`` means exactly "no registry is owner-trusted" (criterion 1);
+    # the writer publishes through ``atomic_write`` (new inode), so a sandboxed reader
+    # frozen at ``{}`` keeps every hand-configured registry at the credential-free
+    # ``index`` tier even after the operator grants one -- narrower than the truth
+    # (criterion 2). Without this entry the Linux mount seal skips the absent leaf --
+    # the DEFAULT before any grant -- leaving it creatable from inside the namespace
+    # sandbox, which is exactly the write the read-only listing exists to deny.
+    "registry_trust.json",
     # The runtime config and its overlay. Criterion 1: ``KiroCrewConfig.load()`` yields
     # the same defaults for ``{}`` as for an absent file, and an empty overlay overrides
     # nothing; the gateway creates ``config.json`` at boot, so in practice only the
