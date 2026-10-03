@@ -5785,22 +5785,15 @@ def reset_dangling_default_agent() -> bool:
 def _edition_agent_names() -> frozenset[str]:
     """Names of the agents the edition contributes beside the on-disk specs.
 
-    Read through the platform seam the agent listing uses
-    (``agent_discovery._with_edition_agents``), failing closed to none. The
-    public edition contributes none.
+    Taken from ``agent_discovery._with_edition_agents``, the one reader of the
+    edition's agent catalog, so the healer and the agent listing agree on which
+    rows exist: its failure handling (none on an adapter error) and its row
+    validation apply here unchanged. The public edition contributes none.
     """
-    from kiro_crew.platform.context import current_context, safe_context_call
+    # Deferred: agent_discovery imports this package's paths at load time.
+    from kiro_crew.agent_discovery import _with_edition_agents
 
-    rows: list[object] = safe_context_call(
-        lambda: list(current_context().agent_catalog.builtin_agents()),
-        fallback_factory=list,
-        log_message="builtin_agents lookup failed; using none",
-    )
-    return frozenset(
-        row["name"]
-        for row in rows
-        if isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]
-    )
+    return frozenset(agent.name for agent in _with_edition_agents([]))
 
 
 def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
