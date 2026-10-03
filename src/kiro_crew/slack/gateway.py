@@ -264,6 +264,7 @@ from kiro_crew.messaging.dispatch import (
     build_tool_gate,
     consume_reinjection,
     rearm_reinjection,
+    rollback_skill_bodies,
     stop_reason_landed,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -4918,6 +4919,9 @@ class GatewayOrchestrator:
                             consumed=_seq_reinjection,
                             landed=_seq_landed,
                         )
+                        rollback_skill_bodies(
+                            self.ctx_builder, agent_session_key, landed=_seq_landed
+                        )
                         if _acq:
                             self.sessions.release(agent_session_key)
                             # Mirror the single-agent finally below: defer the
@@ -5611,6 +5615,17 @@ class GatewayOrchestrator:
                             consumed=_needs_reinjection,
                             landed=_turn_landed,
                         )
+                        # Same reason, for the build-time skill-body dedup: this
+                        # attempt recorded its injected bodies as sent, but a
+                        # transient error discarded the prompt before it landed
+                        # (_turn_landed is False on this arm). Without the
+                        # rollback the retry's build sees them already-sent and
+                        # demotes to a pointer, so the body never reaches the
+                        # window for a run that otherwise succeeds -- the skill
+                        # is lost for that run. Roll back so the retry re-injects
+                        # full bodies, and hand the settle to the retry (the
+                        # finally below would otherwise settle a second time).
+                        rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
                         _needs_reinjection = False
                         await asyncio.sleep(_delay)
                         return await _cron_callback(job)
@@ -5965,6 +5980,7 @@ class GatewayOrchestrator:
                 rearm_reinjection(
                     self.sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
                 )
+                rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
                 if _acquired:
                     self.sessions.release(session_key)
                     # Defer session reset if subagents are still running,

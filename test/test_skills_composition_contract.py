@@ -134,7 +134,7 @@ _LOADER_MEMBERS = {
         _trusted_project_key _user_first _validate_and_redact_candidate _versions_root _vet_unconfined_path
         approve_pending_skill approve_pending_skill_checked approve_pending_update
         approve_pending_update_checked archive_auto_skill catalog_project_skills
-        catalog_status close create_auto_skill create_skill credit_skill_reads
+        catalog_status close confined_triggered create_auto_skill create_skill credit_skill_reads
         delete_skill dismiss_all_pending dismiss_pending_skill dismiss_pending_slugs
         find_similar get_always_skills get_auto_skill_version get_context
         get_pending_skill get_triggered_skills is_auto_generated
@@ -249,6 +249,7 @@ _LOADER_SIGNATURES = {
     "catalog_project_skills": "(self, project_dir: 'str | Path') -> 'list[dict]'",
     "catalog_status": "(self, project_dir: 'str | Path | None' = None) -> 'str'",
     "close": "(self) -> 'None'",
+    "confined_triggered": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'set[str]'",
     "create_auto_skill": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', refusal: 'ClaimRefusal | None' = None) -> 'str | None'",
     "create_skill": "(self, name: 'str', content: 'str') -> 'bool'",
     "credit_skill_reads": "(self, keys: 'list[str]') -> 'None'",

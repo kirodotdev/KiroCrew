@@ -173,6 +173,31 @@ def split_triggered(
     return enforced, pointer_only
 
 
+def confined_triggered(
+    loader: SkillsLoader, names: list[str], project_dir: str | Path | None = None
+) -> set[str]:
+    """Return the subset of *names* that are CONFINED project skills.
+
+    A confined project skill (``within is not None``) has no pointer form:
+    :func:`trigger_hint` omits it defensively, because a live path would let the
+    agent read the file outside the descriptor-confined reader. So a caller that
+    demotes an already-sent body to its pointer — the per-session dedup in
+    ``ContextBuilder`` — must exclude these: demoting one would make it vanish
+    from the prompt entirely (no body, no pointer) rather than fall back to the
+    pointer. They always re-inject the body, which is cheap insurance against a
+    silent miss and matches ``split_triggered``'s own confined-always-body rule.
+    """
+    confined: set[str] = set()
+    for name in names:
+        found = loader._resolve_path_and_root(name, project_dir)
+        if found is None:
+            continue
+        _skill_file, within = found
+        if within is not None:
+            confined.add(name)
+    return confined
+
+
 def trigger_hint(
     loader: SkillsLoader, names: list[str], project_dir: str | Path | None = None
 ) -> str:
