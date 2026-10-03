@@ -259,7 +259,9 @@ def test_mcp_core_resolves_session_key(topo, monkeypatch, view) -> None:
 
 
 @pytest.mark.parametrize("view", VIEWS)
-def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None:
+def test_mcp_shared_policy_walk_resolves_but_fails_closed_without_dialling(
+    topo, monkeypatch, view
+) -> None:
     from kiro_crew import mcp_shared
 
     # Reset the module-lifetime policy caches so a prior test (or the
@@ -284,12 +286,26 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     urlopen = MagicMock(return_value=response)
     monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
-    assert mcp_shared._resolve_tool_policy().excluded == set()
-    # The walk must have RESOLVED a session key and reached the gateway —
-    # under pidns it resolves empty and returns unresolved without the call.
-    assert urlopen.called
-    request = urlopen.call_args[0][0]
-    assert request.get_header("X-session-key") == SESSION_KEY
+    policy = mcp_shared._resolve_tool_policy()
+    # ``tools/list`` stays complete either way (an unresolved policy lists
+    # everything), so the exclusion set is empty, and a walk-resolved key
+    # carries NO attestation -- no signed token on the element, no
+    # gateway-injected ``KIROCREW_SESSION_KEY`` -- so dialling the gateway under
+    # it would be answered ``member_identity_unavailable`` on every call. The
+    # resolver skips that futile dial. True under BOTH views, so it is not the
+    # xfail-sensitive line.
+    assert policy.excluded == set()
+    assert not urlopen.called
+    # Fail CLOSED: a key resolved (host view), so an operator exclusion may
+    # exist and ``tools/call`` must refuse rather than widen it. The reason is
+    # in ``_UNRESOLVED_REFUSES_CALL``. This is the xfail-sensitive line: under
+    # pidns getppid() is ns-local, no file resolves, and the branch returns
+    # ``no_session_key`` instead -- which is what the strict pidns xfail records.
+    assert policy.unresolved == "identity_unattestable"
+    assert policy.unresolved in mcp_shared._UNRESOLVED_REFUSES_CALL
+    # The unsigned ``session_pid`` ancestor walk resolves the HOST key under the
+    # host view; empty under pidns.
+    assert mcp_shared._policy_session_key() == SESSION_KEY
 
 
 # ---------------------------------------------------------------------------

@@ -996,6 +996,36 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
+    def test_identity_unattestable_refuses_without_claiming_a_gateway_read(self, monkeypatch):
+        """A key resolved from a lenient source with no attestation fails closed.
+
+        The resolver skips the futile dial and returns ``identity_unattestable``, so
+        ``tools/call`` refuses (a key resolved, so an operator exclusion may exist)
+        but the text does not claim a gateway read that never happened.
+        """
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "identity_unattestable"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(53, "echo", "dashboard:chat-13"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == []
+            body = json.dumps(harness.responses[0][1])
+            assert "identity_unattestable" in body
+            assert "could not prove which session it acts for" in body
+            assert "the gateway refused the tool-policy read" not in body
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
+            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert kw["outcome"] == "rejected_policy_unresolved"
+            assert kw["session_key"] == "dashboard:chat-13"
+            assert kw["error"] == "managedToolPolicy.unresolved:identity_unattestable"
+        finally:
+            harness.close()
+
     def test_identity_unattested_explains_an_externally_spawned_server(self, monkeypatch):
         """The editor-config report: ``KIROCREW_SESSION_KEY`` copied into an
         editor's own MCP config, no token, no launcher pid, no gateway caller. The

@@ -695,7 +695,49 @@ def _resolve_tool_policy(
         if not _tok:
             _ctx = current_caller()
             _tok = _ctx.session_token if _ctx is not None and _ctx.from_gateway else ""
-        headers: dict[str, str] = {"X-Internal-Secret": secret, **session_token_header(_tok)}
+        token_header = session_token_header(_tok)
+
+        # A key resolved LOCALLY (``not caller_session``) from the lenient tail of
+        # :func:`_policy_session_key` -- the unsigned ``session_pid`` read reached
+        # through ``KIROCREW_HOST_PID`` and the ancestor walk -- carries no
+        # attestation the gateway can check: ``session_token_header`` found no token
+        # to send with it, and the key is not the gateway-injected
+        # ``KIROCREW_SESSION_KEY``. Dialled anyway, that request is answered
+        # ``member_identity_unavailable`` on EVERY call, so the round-trip is futile
+        # and its ``identity_unattested`` refusal text misreports a dial that never
+        # needed to happen. Skip the dial and return a reason WITHOUT the key on the
+        # wire -- but a fail-CLOSED one.
+        #
+        # Fail closed is required, not optional: a session key DID resolve, so an
+        # operator ``managedToolPolicy.exclude`` may exist for it, and an exclusion
+        # this process could not read is an unknown deny, never a permission.
+        # ``identity_unattestable`` is therefore in ``_UNRESOLVED_REFUSES_CALL``
+        # beside ``identity_unattested``: ``tools/list`` still lists everything
+        # (kiro-cli caches one listing, so hiding tools there is unrecoverable) and
+        # ``tools/call`` refuses until a real identity channel (a gateway caller
+        # block, a signed token) makes the key attestable. It is a distinct reason
+        # from ``identity_unattested`` only so the refusal text does not claim a
+        # gateway read that never happened.
+        #
+        # Two sources are deliberately NOT withheld. A gateway-stamped
+        # ``caller_session`` is the gateway's own per-call identity -- it named this
+        # caller, so the key is vouched for even when the per-call block carried no
+        # token. ``KIROCREW_SESSION_KEY`` is the identity the gateway injects into its
+        # own processes, which the attested topologies accept; a bare declared key
+        # that the current transport cannot attest is the gateway's boundary to hold
+        # on the dial, not a resolution this client should pre-empt.
+        _has_env_key = bool(os.environ.get("KIROCREW_SESSION_KEY", ""))
+        if not caller_session and "X-Session-Token" not in token_header and not _has_env_key:
+            sel().log_api_access(
+                caller=session_key,
+                operation="tool_policy.unattestable_key",
+                outcome="unresolved",
+                source="mcp_shared",
+                resources=f"session_key={session_key}",
+            )
+            return ToolPolicy(frozenset(), "identity_unattestable")
+
+        headers: dict[str, str] = {"X-Internal-Secret": secret, **token_header}
         headers["X-Session-Key"] = session_key
 
         req = urllib.request.Request(
@@ -941,7 +983,7 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 #
 # The test is not how bad the reason sounds. It is whether the reason means ONE
 # thing, because a security decision derived from an ambiguous reason is wrong
-# for half the callers it hits. Three reasons qualify, and each means "an operator
+# for half the callers it hits. Four reasons qualify, and each means "an operator
 # exclusion may exist and this system could not read it":
 #
 # * ``policy_unreadable`` -- the gateway found a spec for this session and could
@@ -954,6 +996,14 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 #   separate so the refusal names the missing token, not the agents directory.
 #   A legitimate pooled backend never lands here: it is handed the token per
 #   frame in the caller block and ``_resolve_tool_policy`` sends it.
+# * ``identity_unattestable`` -- a session key resolved from the lenient tail of
+#   ``_policy_session_key`` (the unsigned ``session_pid`` read, the ancestor walk)
+#   with no token to carry it and no gateway-injected ``KIROCREW_SESSION_KEY``.
+#   The dial is skipped because the gateway would refuse it, so the exclusion
+#   list is unread for a key that DID resolve -- the same unknown-deny as
+#   ``identity_unattested``, before the request rather than after it. Kept
+#   separate only so the refusal text does not claim a gateway read that never
+#   happened.
 # * ``resolution_failed`` -- no usable answer reached this process: nothing came
 #   back, the gateway answered ``5xx`` to say it is broken, or the resolve itself
 #   raised. Every ``4xx`` returns before that arm, decided by status CLASS, so this
@@ -987,7 +1037,7 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 # the 404 to distinguish registering from unmappable, which is a change to the
 # endpoint's contract rather than to this read.
 _UNRESOLVED_REFUSES_CALL = frozenset(
-    {"policy_unreadable", "identity_unattested", "resolution_failed"}
+    {"policy_unreadable", "identity_unattested", "identity_unattestable", "resolution_failed"}
 )
 
 
@@ -1746,6 +1796,26 @@ def _run_stdio_dispatch_loop(
                         # missing token; this reader has nowhere to get one, and
                         # the note says so. A server the gateway did spawn keeps
                         # the wording above (token present, or the denial arm).
+                        _refusal += external_client_identity_note(server_name)
+                elif _policy.unresolved == "identity_unattestable":
+                    # The key resolved from a lenient source with no attestation
+                    # to carry it, so the gateway was never dialled -- a dial
+                    # could only be refused. The remedy is the same channel the
+                    # ``identity_unattested`` arm names (a session token on the
+                    # element, or a gateway caller block), stated without claiming
+                    # a gateway read that did not happen.
+                    _refusal = (
+                        f"Error: tool '{tool_name}' is unavailable because this "
+                        f"server could not prove which session it acts for "
+                        f"(identity_unattestable): session {_policy_session} "
+                        f"resolved only from a source the gateway cannot attest "
+                        f"(no session token on this server, no gateway-injected "
+                        f"session key), so the tool policy was not read. Refusing "
+                        f"the call rather than ignoring an operator's exclusion "
+                        f"list; it succeeds once this server is started by a Kiro "
+                        f"Crew session that gives it a signed session token."
+                    )
+                    if _caller_ctx is None and spawned_without_gateway_identity():
                         _refusal += external_client_identity_note(server_name)
                 elif _policy.unresolved == "resolution_failed":
                     # A DIFFERENT diagnosis and a different remedy from the branch
