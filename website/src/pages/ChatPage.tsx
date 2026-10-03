@@ -78,6 +78,7 @@ import { useComposerDraftLifecycle, useComposerDraftStores, useStagedDraftPersis
 import { useComposerStaging, useStagedFolderRefs } from './chat/page/composerStaging'
 import { useFileMentionActions } from './chat/page/composerFileMentions'
 import { useChatEventBridges, useColdFileTabHydration } from './chat/page/eventBridges'
+import { RunInTerminalScope } from '../components/runInTerminalScope'
 import { uniqueNotificationTs } from './chat/page/notificationTs'
 import { useWelcomeState } from './chat/page/welcomeState'
 import { useSessionRosters } from './chat/page/sessionRosters'
@@ -2812,7 +2813,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // Outside events feeding the side panel, the dock terminal and the composer,
   // then the cold file tabs' reads.
-  useChatEventBridges({
+  const { runInTerminalScope } = useChatEventBridges({
     activeSlot,
     activeSlotRef,
     messages,
@@ -5145,6 +5146,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const composerSessionControls = useSessionControlChips({ sessionControls, openSessionControl, activeSlot, sessionControlStatuses })
 
   return (
+    <RunInTerminalScope.Provider value={runInTerminalScope}>
     <RowDisclosureProvider resetKey={activeSlot}>
     <TagPopoverProvider>
     {/* Self-hosted Jira allowlist for every markdown anchor in the page --
@@ -6566,5 +6568,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>
     </RowDisclosureProvider>
+    </RunInTerminalScope.Provider>
   )
 }

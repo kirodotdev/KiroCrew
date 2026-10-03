@@ -11213,6 +11213,7 @@
       "model_auto_jev_description": "让 Jev 判断每一轮的难度，并用该难度对应的模型来回答",
       "run_in_terminal_copy_failed_error": "命令无法复制，因此没有发送到终端。请从代码块中自行复制并粘贴。",
       "run_in_terminal_no_tab_error": "命令无法运行：已打开的终端太多，无法再新开一个。请关闭一个后重试。",
+      "run_in_terminal_cwd_pending_error": "命令无法运行：此聊天的工作目录尚未加载。请稍后重试。",
       "run_in_terminal_config_read_failed_error": "无法读取你的终端设置，因此已跳过“复用当前终端”，命令改为在新终端中打开。请重新加载后重试。"
     },
     "chatSidebar": {
