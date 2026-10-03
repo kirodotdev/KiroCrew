@@ -11109,8 +11109,16 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             slot._dirty = True
             return {"model": legacy_base}
 
-        if slot.reasoning_effort == effort and not legacy_base:
-            return web.json_response({"ok": True, "reasoning_effort": effort})
+        if slot.reasoning_effort == effort:
+            # Re-picking the level already shown is still an explicit user
+            # choice: bump the effort generation so a pending session_set_model
+            # effort yields to it, as the model route bumps its own generation
+            # on a same-value pick. Bumped here rather than on the write below,
+            # which the setter skips as a same-value write, so a codex pin still
+            # carrying a legacy ``[level]`` suffix gets the bump too.
+            slot._effort_pick_gen += 1
+            if not legacy_base:
+                return web.json_response({"ok": True, "reasoning_effort": effort})
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
         _updated_live: bool | None = False

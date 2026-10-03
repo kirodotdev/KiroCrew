@@ -758,15 +758,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "session_set_model",
             "description": (
-                "Change the model another session runs on. Only an IDLE session takes "
-                "the change: if the target has a turn or sub-agents in flight the call "
-                "fails with 'session busy, model not changed' and nothing changes. To "
-                "force it, stop the target with session_stop first, then retry. The "
-                "model is applied when the target's next turn starts, after the same "
-                "permission check runs again; if the target has become channel-linked "
-                "or otherwise out of reach by then, the change is dropped. The "
-                "conversation is kept. 'auto', 'Auto (Jev)' and sessions bound to a "
-                "remote crew are refused."
+                "Change the model and/or reasoning effort another session runs on; "
+                "pass either or both. Only an IDLE session takes the change: if the "
+                "target has a turn or sub-agents in flight the call fails with "
+                "'session busy, model not changed' and nothing changes. To force it, "
+                "stop the target with session_stop first, then retry. The change is "
+                "applied when the target's next turn starts, after the same permission "
+                "check runs again; if the target has become channel-linked or otherwise "
+                "out of reach by then, the change is dropped. A model or effort the "
+                "user picks in the meantime wins. The conversation is kept. 'auto', "
+                "'Auto (Jev)' and sessions bound to a remote crew are refused."
             ),
             "inputSchema": {
                 "type": "object",
@@ -779,11 +780,21 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "Model to switch to: a canonical key or provider id, e.g. "
-                            "'sonnet' or 'opus'. 'auto' is owner-only."
+                            "'sonnet' or 'opus'. 'auto' is owner-only. Omit it to keep "
+                            "the target's model and change only reasoning_effort."
+                        ),
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": (
+                            "Reasoning effort for the target, one of the five standard "
+                            "levels: 'low', 'medium', 'high', 'xhigh', 'max'. Omit it to "
+                            "keep the target's current level. Other levels, and going "
+                            "back to the model's default, are set from the dropdown."
                         ),
                     },
                 },
-                "required": ["target", "model"],
+                "required": ["target"],
             },
         },
         {
@@ -2546,16 +2557,23 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "session_set_model":
         args = validate_tool_args(args, SESSION_SET_MODEL_SCHEMA)
-        resp = _post(
-            "/api/session-control/set-model",
-            {"target": args["target"], "model": args["model"]},
-            session_key=caller_key,
-        )
+        payload = {"target": args["target"]}
+        for key in ("model", "reasoning_effort"):
+            if key in args:
+                payload[key] = args[key]
+        resp = _post("/api/session-control/set-model", payload, session_key=caller_key)
         if resp.get("error"):
             return f"Error: could not change that session's model: {resp['error']}"
         target = resp.get("target", args["target"])
-        model = resp.get("model") or "auto"
-        return redact(f"\U0001f501 `{target}` will switch to `{model}` when its next turn starts.")
+        effort = resp.get("reasoning_effort")
+        effort_text = f"reasoning effort `{effort}`"
+        if "model" in resp:
+            change = f"`{resp.get('model') or 'auto'}`"
+            if effort is not None:
+                change += f" at {effort_text}"
+        else:
+            change = effort_text
+        return redact(f"\U0001f501 `{target}` will switch to {change} when its next turn starts.")
 
     if name == "session_reload":
         args = validate_tool_args(args, SESSION_RELOAD_SCHEMA)
@@ -2871,6 +2889,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             state_line += f", model {redact(str(resp['model']))}"
         if resp.get("pending_model"):
             state_line += f", pending model {redact(str(resp['pending_model']))} for its next turn"
+        if resp.get("reasoning_effort"):
+            state_line += f", reasoning effort {redact(str(resp['reasoning_effort']))}"
+        if resp.get("pending_reasoning_effort"):
+            pending_effort = redact(str(resp["pending_reasoning_effort"]))
+            state_line += f", pending reasoning effort {pending_effort} for its next turn"
         head_line = (
             f"\U0001f4d6 `{resp.get('target', '')}` — {resp.get('title', '')} "
             f"({state_line}; total={resp.get('total', 0)})"

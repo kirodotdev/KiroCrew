@@ -3572,12 +3572,24 @@ SESSION_END_WAIT_SCHEMA = ToolSchema(
     ],
 )
 
+
+def _validate_session_set_model(args: dict[str, Any]) -> None:
+    # Both are optional, but a call naming neither changes nothing. Only
+    # absence counts here; the gateway refuses an empty value for either.
+    if "model" not in args and "reasoning_effort" not in args:
+        raise ValidationError("model", "required unless reasoning_effort is given")
+
+
 SESSION_SET_MODEL_SCHEMA = ToolSchema(
     tool_name="session_set_model",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("model", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("model", str, required=False, max_len=MAX_SHORT_STRING),
+        # The gateway validates the level against the set the effort dropdown
+        # accepts; this cap only keeps an oversized argument off the wire.
+        FieldSpec("reasoning_effort", str, required=False, max_len=32),
     ],
+    custom_validator=_validate_session_set_model,
 )
 
 SESSION_RELOAD_SCHEMA = ToolSchema(

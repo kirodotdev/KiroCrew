@@ -2708,7 +2708,8 @@ class _ChatSlot:
         "_crew_log_previous_undecided",
         "_crew_log_previous_from_mapping",
         "_crew_log_opened_sid",
-        "reasoning_effort",
+        "_reasoning_effort",
+        "_effort_pick_gen",
         "autocompact_pct",
         "mode",
         "workspace",
@@ -3037,7 +3038,11 @@ class _ChatSlot:
         self.served_model: str = ""
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
-        self.reasoning_effort: str = ""
+        # Every write that changes the level bumps ``_effort_pick_gen`` (see the
+        # property), so a queued session_set_model effort can tell that a newer
+        # choice landed even when that choice returned to the level it saw.
+        self._effort_pick_gen: int = 0
+        self._reasoning_effort: str = ""
         # Per-session auto-compact threshold override (percent). None = follow
         # the global session.autocompact_pct. Persisted with the slot and
         # re-seeded into the SessionManager after restore.
@@ -4247,6 +4252,24 @@ class _ChatSlot:
         """
         self.tags_revision = mint_tags_revision()
         return self.tags_revision
+
+    @property
+    def reasoning_effort(self) -> str:
+        """The slot's reasoning effort: "" = provider default, else a level."""
+        return self._reasoning_effort
+
+    @reasoning_effort.setter
+    def reasoning_effort(self, value: str) -> None:
+        # Bumped on every write that changes the level, rollbacks included: a
+        # rollback that lands while a session_set_model effort is pending drops
+        # that pick rather than letting it overwrite a level the user touched.
+        # A same-value write is not a new choice (the dropdown route re-commits
+        # the level it already wrote after awaiting its live push), so it must
+        # not drop a pick queued during that await; the route's explicit
+        # same-level fast path bumps the generation itself.
+        if value != self._reasoning_effort:
+            self._effort_pick_gen += 1
+        self._reasoning_effort = value
 
     @property
     def is_closing(self) -> bool:

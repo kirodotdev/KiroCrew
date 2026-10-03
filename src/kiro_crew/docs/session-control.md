@@ -426,17 +426,35 @@ delivers text the target then acts on. `session_end_wait` does neither.
 | Argument | Required | Meaning |
 |---|---|---|
 | `target` | yes | Session key or exact title |
-| `model` | yes | Model to switch to: a canonical key or provider id, such as `sonnet` or `opus` |
+| `model` | no | Model to switch to: a canonical key or provider id, such as `sonnet` or `opus`. Omit it to keep the target's model |
+| `reasoning_effort` | no | Reasoning effort, one of the five standard levels: `low`, `medium`, `high`, `xhigh`, `max`. Omit it to keep the target's level |
 
-The model is recorded as a pending pick and applied when the target's next turn
+Pass `model`, `reasoning_effort` or both; a call with neither is refused.
+Any other level is refused with `effort_rejected`. Every backend applies the
+five standard levels, so a level checked when you call cannot stop fitting
+before the pick applies. Levels only one backend offers, such as Pi's `minimal`,
+are set from the target's effort dropdown. So is `""` (back to the model's
+default level): on kiro-cli the default only takes once the workspace effort
+file is cleared, which the dropdown does and this tool cannot.
+The change is recorded as a pending pick and applied when the target's next turn
 starts. At that point the same permission check runs again, in the same step
-that sets the model. If the target has become channel-linked, mirrored or
-otherwise out of reach, the pick is dropped and the turn runs on its old model.
-A later call replaces a pick that has not been applied yet, and a model the
-user picks in the meantime wins over it. The conversation is kept.
-`session_read_message` shows the target's current model and any pick still
-pending, so you can tell whether yours took. A pending pick does not survive a
+that sets the model and effort. If the target has become channel-linked, mirrored or
+otherwise out of reach, the pick is dropped and the turn runs on its old settings.
+A later call replaces a pick that has not been applied yet. A model the user
+picks in the meantime wins over the pending model, and an effort level the user
+picks in the meantime wins over the pending level; each is judged on its own.
+On codex, where the level is part of the model id, a model the user picks also
+wins over the pending level.
+The conversation is kept. The target's session restarts on the new settings
+when the model changes, when the level changes, or when a codex model id still
+carrying an old `[level]` is folded.
+`session_read_message` shows the target's current model and reasoning effort
+and any pick still pending, so you can tell whether yours took. A pending pick does not survive a
 gateway restart.
+
+The tool takes no `mode` and no `agent`. A mode switch could turn on Autopilot
+or an auto-approve mode for another session, and an agent switch changes the
+memory store the session reads.
 
 Only an idle session takes a pick. If the target has a turn or sub-agents in
 flight, the call is refused with `target_busy` ("session busy, model not
