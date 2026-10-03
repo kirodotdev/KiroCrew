@@ -958,6 +958,32 @@ def test_the_failed_turn_closer_validates_without_credits_or_tokens():
     validate_data("session", "turn/completed", closer["data"])
 
 
+def test_the_measured_turn_closer_validates_with_credits_and_no_tokens():
+    """A provider that billed credits but reported no token count.
+
+    The declared shape allows ``credits`` without ``tokens``: the parent token field
+    is optional, and the four-member requirement is checked only once the object is
+    there. The writer must therefore omit the block rather than write four zeros,
+    which the fold would count as a report.
+    """
+    emit.on_session_opened(SESSION, agent="kirocrew", owner="default")
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_turn_completed(
+        SESSION,
+        1,
+        credits=0.42,
+        duration_ms=1300,
+        stop_reason="end_turn",
+        model="c",
+        provider="kiro",
+    )
+    assert emit.flush(timeout=5.0)
+    closer = [e for e in _entries()[1:] if e["type"] == "turn/completed"][-1]
+    assert closer["data"]["credits"] == 0.42
+    assert "tokens" not in closer["data"]
+    validate_data("session", "turn/completed", closer["data"])
+
+
 def test_the_crash_repair_closers_validate():
     # WHY four fields of `turn/completed` are optional. The repair knows the turn
     # and that the writer is gone; it does not know the model, the provider, the

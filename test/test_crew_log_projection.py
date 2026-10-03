@@ -519,6 +519,69 @@ def test_usage_sums_every_token_dimension_and_its_total():
     }
 
 
+def test_usage_does_not_count_an_all_zero_tokens_block_as_reported():
+    """A block of four zeros is an absence written as a block.
+
+    Logs on disk carry it on every turn whose provider sent no counts, so the fold --
+    not only the writer -- has to know that a completed turn cannot have cost zero
+    tokens. The credits beside it were genuinely billed and stay counted, which is
+    the difference a reader sees: a real bill beside ``tokens_reported: 0``, and the
+    panel dashes the tokens instead of printing a measured ``0``.
+    """
+    handle = _log()
+    _opened(handle)
+    for turn in range(1, 5):
+        _turn(
+            handle,
+            turn,
+            credits=0.3725,
+            tokens={"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+        )
+    value = crew_log.fold_usage(_entries(handle))
+    assert value["turns"]["completed"] == 4
+    assert value["turns"]["credits_reported"] == 4
+    assert value["credits"] == 1.49
+    assert value["turns"]["tokens_reported"] == 0
+    assert value["tokens"]["total"] == 0
+
+
+def test_usage_counts_a_block_reported_once_any_dimension_is_above_zero():
+    """One measured dimension is a report; the rule is not "input above zero"."""
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, tokens={"input": 0, "output": 0, "cache_read": 7, "cache_write": 0})
+    _turn(handle, 2, tokens={"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
+    _turn(handle, 3, tokens={"input": 5, "output": 1, "cache_read": 0, "cache_write": 0})
+    value = crew_log.fold_usage(_entries(handle))
+    assert value["turns"]["completed"] == 3
+    assert value["turns"]["tokens_reported"] == 2
+    assert value["tokens"]["total"] == 13
+    assert value["by_model"]["opus"] == {
+        "turns": 3,
+        "credits": 1.5,
+        "credits_reported": 3,
+        "tokens": 13,
+    }
+
+
+def test_usage_still_counts_a_recorded_zero_credit_charge_as_reported():
+    """Pins what the token rule deliberately leaves alone.
+
+    ``credits: 0.0`` on a closer is counted as a report, and the fold keeps doing so:
+    the writer omits an unbilled charge, but a zero already on disk cannot be told
+    from a turn a provider genuinely billed at nothing, and ``_bill_credits`` lets a
+    zero through on purpose. Tokens are different -- a completed turn cannot cost
+    zero of them -- which is why only ``tokens_reported`` carries the rule.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=0.0)
+    value = crew_log.fold_usage(_entries(handle))
+    assert value["turns"]["credits_reported"] == 1
+    assert value["credits_by_source"]["turn"]["reported"] == 1
+    assert value["credits"] == 0.0
+
+
 def test_usage_bills_injected_context_per_source():
     handle = _log()
     _opened(handle)

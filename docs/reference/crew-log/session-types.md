@@ -352,23 +352,31 @@ for a turn that was still open.
 | `duration_ms` | int | on a measured or failed close | Measured turn duration. Absent on a crash-repair closer, which has none to report. | |
 | `model` | string | on a measured or failed close | Model the turn served on. Absent on a crash-repair closer. | |
 | `provider` | string | on a measured or failed close | Provider. Absent on a crash-repair closer. | |
-| `credits` | float | optional | Present on the measured close, absent on a synthesized one. | |
-| `tokens` | object | optional | `{input, output, cache_read, cache_write}`, all ints. Present with `credits`, absent on a synthesized close. | |
+| `credits` | float | optional | Present only when the provider billed credits (positive and finite). Absent on a synthesized close, and on a measured one the provider did not bill in credits. | |
+| `tokens` | object | optional | `{input, output, cache_read, cache_write}`, all ints, all four present. Written only when the provider reported a count above zero on some dimension; absent on a synthesized close, and on a measured one that reported no count. | |
 | `error` | string | optional | Exception class name — never its message — on the failed close. | |
 
-**Invariants** — `credits` and `tokens` travel together. An in-process close
-carrying neither is synthesized, and its `duration_ms` is still real. A crash-repair
-closer is narrower than either: it carries `turn` and `stop_reason` and nothing else,
-so a fold must read every other field with a default rather than by subscript. Cost is
-measured per turn and appears only here, never on `message/sent`.
+**Invariants** — `credits` and `tokens` are each present only when measured, and
+independently: a provider can bill a turn in credits without reporting a token
+count, so `credits` beside no `tokens` is a real bill whose token cost nobody
+measured, not a free turn. Neither is ever written as zero -- a block of four zero
+tokens or a `0.0` charge is an absence, and the `usage` fold reads an all-zero block
+already on disk the same way. An in-process close carrying neither is either
+synthesized or measured on a provider that bills in neither; `stop_reason` tells the
+two apart, since a synthesized close is `failed`. A crash-repair closer is narrower
+than either: it carries `turn` and `stop_reason` and nothing else, so a fold must
+read every other field with a default rather than by subscript. Cost is measured
+per turn and appears only here, never on `message/sent`.
 
 ```json
 {"type":"turn/completed","seq":40,"time":1789000001500,"src":"acp","data":{"turn":3,"depth":0,"stop_reason":"end_turn","duration_ms":1300,"credits":0.0021,"model":"claude","provider":"anthropic","tokens":{"input":812,"output":143,"cache_read":0,"cache_write":0}}}
 ```
 
-**Reader hint** — Sum cost over these entries alone. Absent `credits` means
-unmeasured, not free, so a total should carry a count of synthesized closes beside
-it.
+**Reader hint** — Sum cost over these entries alone. Absent `credits` or absent
+`tokens` means unmeasured, not free, so a total should carry the count of closes
+that reported it beside it (`usage` serves `turns.credits_reported` and
+`turns.tokens_reported`). Older logs carry `tokens` as four zeros on a closer whose
+provider reported nothing; read that block as absent, as the fold does.
 
 **Since** — #10091.
 

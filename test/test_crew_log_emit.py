@@ -510,6 +510,102 @@ def test_turn_completed_carries_the_four_token_counts_and_cost():
     assert data["stop_reason"] == "end_turn"
 
 
+def test_turn_completed_omits_tokens_the_provider_never_reported():
+    """An unreported count is ABSENT, not a block of four zeros.
+
+    ``TurnUsage`` zero-fills every dimension a provider does not report, so at this
+    seam four zeros mean "nothing was reported". Written as a block they are a
+    measurement the fold then counts as a reporting turn, and the panel shows a
+    measured ``0 tokens`` beside a real bill. ``credits`` stays: it was billed.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_turn_completed(SESSION, 1, credits=1.49, duration_ms=99, stop_reason="end_turn")
+    data = _body()[-1]["data"]
+    assert "tokens" not in data
+    assert data["credits"] == 1.49
+    assert data["stop_reason"] == "end_turn"
+
+
+def test_turn_completed_keeps_all_four_dimensions_once_any_is_measured():
+    """A reported block answers every billed dimension, zeros included.
+
+    Unlike ``background/completed``, which drops its zero members, the
+    ``turn/completed`` schema requires all four inside a present ``tokens`` -- so
+    a provider that reported cache reads alone still writes the other three as
+    real zeros rather than as a sparse mapping a strict reader would refuse.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_turn_completed(SESSION, 1, cache_read_tokens=7, stop_reason="end_turn")
+    data = _body()[-1]["data"]
+    assert data["tokens"] == {"input": 0, "output": 0, "cache_read": 7, "cache_write": 0}
+
+
+def test_turn_completed_omits_an_unbilled_credits_charge():
+    """The same writer, the same fault, the other field: a zero charge is absent.
+
+    A provider that does not bill in credits reports 0.0 through the shared
+    ``TurnUsage`` contract, indistinguishable at this seam from a free turn -- the
+    posture ``background/completed`` and both subagent closers already take. The
+    token counts beside it are untouched: the two fields are guarded one by one.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_turn_completed(
+        SESSION, 1, input_tokens=11, output_tokens=22, duration_ms=99, stop_reason="end_turn"
+    )
+    data = _body()[-1]["data"]
+    assert "credits" not in data
+    assert data["tokens"] == {"input": 11, "output": 22, "cache_read": 0, "cache_write": 0}
+
+
+def test_turn_completed_drops_a_charge_that_is_not_a_finite_positive_number():
+    """NaN, infinity and a negative are not charges; none of them is written."""
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    for turn, charge in enumerate((float("nan"), float("inf"), -0.5), start=1):
+        emit.on_turn_completed(SESSION, turn, credits=charge, stop_reason="end_turn")
+    closers = [e["data"] for e in _body() if e["type"] == "turn/completed"]
+    assert len(closers) == 3
+    assert all("credits" not in data for data in closers)
+
+
+def test_a_provider_that_bills_in_tokens_alone_folds_as_credits_unreported():
+    """Writer to fold, for the provider shape the credits guard is for.
+
+    ``TurnUsage`` leaves ``credits`` at 0.0 for a provider that bills in tokens
+    (``claude_code``, ``bedrock``: token counts plus ``cost_usd``), and the runner
+    hands that 0.0 to the closer as-is. Written as a charge, the ``usage`` fold
+    counts every such turn in ``credits_reported`` and the panel's credits tile
+    prints a measured ``0`` beside real token counts -- the same shape as the token
+    defect, on the other field. The fold is given the writer's own output, so this
+    holds the writer to what the panel will show.
+    """
+    _open_session()
+    for turn in (1, 2, 3):
+        emit.on_turn_started(SESSION, turn, "user")
+        emit.on_turn_completed(
+            SESSION,
+            turn,
+            input_tokens=400,
+            output_tokens=90,
+            credits=0.0,
+            duration_ms=800,
+            stop_reason="end_turn",
+            model="claude",
+            provider="claude_code",
+        )
+    assert emit.flush()
+    usage = crew_log_projection.read_projection(SESSION, "usage").value
+    assert usage["turns"]["completed"] == 3
+    assert usage["turns"]["tokens_reported"] == 3
+    assert usage["tokens"]["total"] == 3 * 490
+    assert usage["turns"]["credits_reported"] == 0
+    assert usage["credits_by_source"]["turn"] == {"credits": 0.0, "reported": 0}
+    assert usage["by_model"]["claude"]["credits_reported"] == 0
+
+
 def test_an_aborted_turn_leaves_a_started_with_no_completion():
     _open_session()
     emit.on_turn_started(SESSION, 2, "cron")
@@ -4480,7 +4576,9 @@ def test_every_emitted_type_matches_the_documented_shape():
     emit.on_subagent_completed(SESSION, agent_id="ab12", duration_ms=7)
     emit.on_subagent_failed(SESSION, agent_id="cd34", reason="boom", outcome="failed")
     emit.on_background_completed(SESSION, kind="title", model="m", credits=0.1)
-    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
+    # A MEASURED close: credits and tokens are written only when the provider
+    # reported them, so the shape table's row is exercised with a usage to report.
+    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", credits=0.2, input_tokens=5)
     emit.on_message_queued(SESSION, source="slack", size_bytes=3, queued_seq="q1")
     emit.on_turn_refused(SESSION, 2, "not_authorized")
     emit.on_session_closed(SESSION, "reset")

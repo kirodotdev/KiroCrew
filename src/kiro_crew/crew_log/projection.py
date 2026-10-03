@@ -27,11 +27,11 @@ resumes where the last one stopped; this module owns no path and every failure
 over there is answered by folding from seq 1 again.
 
 Absent is never read as zero. ``turn/completed`` carries ``credits`` and
-``tokens`` only on a provider-reported close, so a synthesized closer omits them
--- and a total that counted those turns as costing nothing would state a
-measurement nobody made. Each total therefore rides beside the count of turns
-that contributed to it, and a caller comparing the two learns what the total
-covers.
+``tokens`` only when the provider reported them -- a synthesized closer omits
+both, a measured one omits whichever went unreported -- and a total that counted
+those turns as costing nothing would state a measurement nobody made. Each total
+therefore rides beside the count of turns that contributed to it, and a caller
+comparing the two learns what the total covers.
 
 Nothing here synthesizes history. An interrupted turn and an unmatched tool call
 are reported as OPEN, never closed with an invented outcome: closing them is the
@@ -1772,12 +1772,22 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
             per_model["credits_turns"] += 1
         tokens = data.get("tokens")
         if isinstance(tokens, dict):
-            state["tokens_turns"] += 1
+            # A block counts as a REPORT only when some dimension is above zero. Logs
+            # on disk carry four-zero blocks on closers whose provider sent no
+            # counts; a completed turn cannot have cost zero tokens, so a block of
+            # zeros is an absence written as a measurement, and counting it would
+            # tell a reader beside a real bill that the turn measured 0. The sums
+            # below are unaffected either way -- adding zeros moves nothing.
+            reported = False
             for dimension in TOKEN_DIMENSIONS:
                 measured = _as_int(tokens.get(dimension))
                 state["tokens"][dimension] += measured
                 if per_model is not None:
                     per_model["tokens"] += measured
+                if measured > 0:
+                    reported = True
+            if reported:
+                state["tokens_turns"] += 1
         # The fullest this window got, as the PROVIDER measured it, taken as one pair
         # so the reading and its window always come from the same turn.
         #
@@ -6184,7 +6194,11 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # Moved once more because the memo is now ``context_turn_keys``, one string
         # covering the whole rewindable range; a savepoint holding the old bounded map
         # carries neither the new field nor the turns that map had already evicted.
-        state_version=_FOLD_STATE_VERSION_BASE + 9,
+        # Moved again for a COUNTING fix that keeps every key: ``tokens_turns`` counts
+        # a block of four zeros as unreported, and a savepoint from a build that
+        # counted it as a report would resume onto this logic still carrying the
+        # inflated count for the life of the unit.
+        state_version=_FOLD_STATE_VERSION_BASE + 10,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.
