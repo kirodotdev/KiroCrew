@@ -407,7 +407,7 @@ def member_message_payload(role, content, meta, ts: float, *, sanitize) -> dict:
     return payload
 
 
-def _preview_is_still_at(values: dict, observed: dict) -> bool:
+def _preview_is_still_at(values: dict, observed: dict, slot_key: str = "") -> bool:
     """Does the roster still show the preview the caller decided to correct?
 
     Module level so the reconcile and its tests share ONE definition.
@@ -423,9 +423,15 @@ def _preview_is_still_at(values: dict, observed: dict) -> bool:
     rewrites: the quote and the recency epoch. Only those two, not the whole
     block or the slug's sequence -- an unrelated event (a status change, a slot
     open) must not starve a correction that is still right.
+
+    ``slot_key`` names the thread the quote was READ from, checked by
+    :func:`_fold_still_names_the_thread`: a rotation in the window leaves the
+    fold on a new, empty thread, and the quote belongs to the one before it.
     """
     from kiro_crew.eventlog import types
 
+    if not _fold_still_names_the_thread(values, slot_key):
+        return False
     now = values.get(types.PROJ_ROSTER) or {}
     then = observed.get(types.PROJ_ROSTER) or {}
     return (now.get("last_message"), now.get("last_active_ts")) == (
@@ -434,7 +440,9 @@ def _preview_is_still_at(values: dict, observed: dict) -> bool:
     )
 
 
-def reconcile_member_preview(slug, name, preview, msg_ts, roster_view) -> bool:
+def reconcile_member_preview(
+    slug, name, preview, msg_ts, roster_view, *, slot_key: str = ""
+) -> bool:
     """Append a correcting member/message when the log's roster preview drifts
     from the transcript's speech-only read.
 
@@ -477,12 +485,129 @@ def reconcile_member_preview(slug, name, preview, msg_ts, roster_view) -> bool:
             slug,
             types.MEMBER_MESSAGE,
             {"ts": ts, "preview": wanted},
-            still_applies=_preview_is_still_at,
+            still_applies=lambda values, observed: _preview_is_still_at(values, observed, slot_key),
             observed={types.PROJ_ROSTER: view},
         )
         return appended is not None
     except Exception:
         logger.debug("reconcile_member_preview failed for slug=%r", slug, exc_info=True)
+        return False
+
+
+def _fold_still_names_the_thread(values: dict, slot_key: str) -> bool:
+    """Does the log still bind this member to the thread the caller READ?
+
+    Both roster corrections carry evidence out of ONE transcript, opened at the
+    key the bindings read at the top of the request -- and the fold they are
+    written into can name a different thread by the time they land. A member's
+    DM slot key carries its private memory generation, so a ``member/binding``
+    in that window is a rotation onto a new, EMPTY thread, and the evidence
+    describes the one before it. The log is append-only with no compaction, so
+    stamping the fresh thread with it stands for good.
+
+    The caller's own observation cannot answer this. It is taken AFTER the
+    bindings, so a rotation between those two reads is already in it: the
+    observed key and the current key agree, and comparing them accepts the
+    correction. Only the key the transcript was actually read at separates the
+    two, which is why it is passed in rather than derived here.
+
+    An empty ``slot_key`` means the caller holds no key to vouch for the read,
+    so there is nothing to check and nothing is claimed -- the predicate then
+    answers on the fold alone, as it did before either correction named a key.
+    """
+    from kiro_crew.eventlog import types
+
+    if not slot_key:
+        return True
+    held = (values.get(types.PROJ_ROSTER) or {}).get("slot_key")
+    # A log with no binding event yet has nothing to contradict the read.
+    return held is None or held == slot_key
+
+
+def _has_message_is_still_unrecorded_at(values: dict, observed: dict, slot_key: str = "") -> bool:
+    """Is this member's DM thread still one the log knows no message about?
+
+    Module level so the reconcile and its tests share ONE definition.
+
+    Two ways the answer stops being yes between the caller's snapshot and this
+    write. A live ``member/message`` can land, which records the fact better
+    than this correction would -- so there is nothing left to append. Or the
+    member can be rotated onto another thread, which
+    :func:`_fold_still_names_the_thread` is what detects: ``has_message`` never
+    falls back to false on its own, so a wrongly-stamped empty thread would
+    read as written-to for good.
+    """
+    from kiro_crew.eventlog import types
+
+    now = values.get(types.PROJ_ROSTER) or {}
+    if now.get("has_message"):
+        return False
+    if not _fold_still_names_the_thread(values, slot_key):
+        return False
+    return now.get("slot_key") == (observed.get(types.PROJ_ROSTER) or {}).get("slot_key")
+
+
+def reconcile_member_has_message(slug, name, msg_ts, roster_view, *, slot_key: str = "") -> bool:
+    """Record that this member's DM thread holds a message, when only the
+    transcript knows it.
+
+    ``member/message`` is LOSSY by design: ``_record_member_row`` hands the
+    append to the ordered executor and never reads the result, because keeping
+    a checkpoint would turn one dropped event into a view that never recovers.
+    An install older than the member event log has no events at all for
+    conversations it already holds. So the fold answering "no message" is not
+    the same as there being none, and the roster's listing rule would leave a
+    crewmate the owner has chatted with off the list.
+
+    ``api_members`` has just asked the transcript the narrow question the
+    listing rule asks -- does the thread hold a row past the metadata line --
+    and passes the answer's epoch here so the log learns the fact ONCE instead
+    of every reader re-deriving it from a transcript. Called only while the fold
+    says no, so a member it has already recorded costs nothing.
+
+    The payload carries ``ts`` and no ``preview``: this is the machinery-row
+    shape, which leaves the roster's quote to the transcript's speech-only read
+    and its own reconcile. ``msg_ts`` is the transcript's newest epoch when one
+    is known; ``0`` where it is not (an unreadable thread counts as holding a
+    message, and a file that cannot be stat'd has no epoch to offer), and the
+    fold then records the message without claiming a recency for it.
+
+    The append is conditional, like the preview correction: it goes through
+    ``append_closer_if_still_applies`` with
+    :func:`_has_message_is_still_unrecorded_at`, re-asked under the per-slug
+    write lock against the CURRENT projection. A refusal is a normal outcome.
+
+    Returns True when an event was appended. Best-effort: failures are swallowed.
+    """
+    if not slug:
+        return False
+    try:
+        view = roster_view if isinstance(roster_view, dict) else {}
+        if view.get("has_message"):
+            return False
+        from kiro_crew.eventlog import types
+        from kiro_crew.eventlog.service import get_service
+
+        svc = get_service()
+        svc.ensure(slug, name or slug)
+        try:
+            ts = float(msg_ts) if msg_ts else 0.0
+        except (TypeError, ValueError):
+            ts = 0.0
+        if ts < 0 or ts != ts or ts in (float("inf"), float("-inf")):
+            ts = 0.0
+        appended = svc.append_closer_if_still_applies(
+            slug,
+            types.MEMBER_MESSAGE,
+            {"ts": ts},
+            still_applies=lambda values, observed: _has_message_is_still_unrecorded_at(
+                values, observed, slot_key
+            ),
+            observed={types.PROJ_ROSTER: view},
+        )
+        return appended is not None
+    except Exception:
+        logger.debug("reconcile_member_has_message failed for slug=%r", slug, exc_info=True)
         return False
 
 

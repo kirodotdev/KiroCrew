@@ -91,17 +91,20 @@ def _parse_ts(ts: Any) -> float | None:
 # ---------------------------------------------------------------------------
 class RosterProjection:
     key = types.PROJ_ROSTER
-    #: 2 because `last_active_ts` is MONOTONE (see `apply`), which is bookkeeping
-    #: a savepoint written by a fold WITHOUT that rule can contradict. Such a
-    #: savepoint can hold a recency a preview correction walked backwards, and
-    #: resuming it applies only the events after it -- so the regressed value
-    #: would stand for the life of the store, or until the member next spoke,
-    #: and the Recent order would still be wrong after the upgrade. A bump is
-    #: what discards it (`projection/checkpoint.py`: a `state_version` mismatch
-    #: refuses the payload), after which the member's own log is re-folded from
-    #: the start under the monotone rule. Cheap, and the only lossless answer:
-    #: the events the bad savepoint consumed are the ones that hold the truth.
-    state_version = 2
+    #: Two rules here are bookkeeping a savepoint written WITHOUT them can
+    #: contradict, and a savepoint is resumed by applying only the events after
+    #: it -- so a value it got wrong stands for the life of the store rather
+    #: than being recomputed. `last_active_ts` is MONOTONE, and a savepoint from
+    #: a last-wins fold can hold a recency a preview correction walked backwards,
+    #: leaving the Recent order wrong after the upgrade. `has_message` did not
+    #: exist, so a savepoint from before it answers "no message" for a member
+    #: whose `member/message` events all sit below the watermark -- and the
+    #: roster's listing rule reads that as a crewmate to leave off the list.
+    #: A bump is what discards such a payload (`projection/checkpoint.py`: a
+    #: `state_version` mismatch refuses it), after which the member's own log is
+    #: re-folded from the start under both rules. Cheap, and the only lossless
+    #: answer: the events the stale savepoint consumed hold the truth.
+    state_version = 3
 
     def init(self) -> dict:
         return {}
@@ -120,10 +123,49 @@ class RosterProjection:
             if slot_key is not None and state.get("slot_key") != slot_key:
                 new = dict(state)
                 new["slot_key"] = slot_key
+                # A member's DM slot key carries its private memory GENERATION
+                # (`members.member_slot_key` appends `.memory-<store>`), so a
+                # new generation is a new slot key and a new, empty transcript
+                # under it. `has_message` describes the thread the member is
+                # bound to NOW, so it is cleared with the thread -- otherwise a
+                # rotated crewmate keeps claiming a message that lives in a
+                # conversation nothing opens any more.
+                #
+                # Only when the fold ALREADY held a key, though. A log that has
+                # never recorded a binding gets one from the first thread open
+                # and from the legacy fold (`service._migrate_legacy_locked`),
+                # and the legacy one can land after `member/message` events the
+                # live hook already wrote -- so treating a FIRST binding as a
+                # change would clear a fact about the very thread it names.
+                if state.get("slot_key") is not None:
+                    new["has_message"] = False
                 return new
             return state
         if etype == types.MEMBER_MESSAGE:
             new = dict(state)
+            # Whether this member's DM thread holds a message at all, which is
+            # what the Crewmates roster's listing rule asks (`has_dm_message` in
+            # `dashboard/handlers/members.py`): a crewmate nobody has written to
+            # is reached through the search box rather than listed unasked. Set
+            # once and left alone, so a member who has chatted emits this
+            # transition exactly once per thread instead of on every message.
+            #
+            # An event whose `preview` is present and EMPTY is the exception,
+            # and it is not a message. That shape has one writer --
+            # `reconcile_member_preview` correcting a stale quote down to blank
+            # -- because `member_message_payload` omits the key entirely unless
+            # the preview is non-empty, so no live row produces it. Reading it
+            # as a message is backwards: it says the last thing SAID here is
+            # nothing. Without this, a crewmate whose memory generation rotated
+            # would be listed by the very read that blanks its stale quote --
+            # the binding clears the flag over the new empty thread, and the
+            # correction would re-set it.
+            #
+            # SILENT rather than a clear, though: the correction speaks about
+            # speech, and a thread can hold machinery rows with nothing said in
+            # it, so it is no evidence that the thread is empty either.
+            if not state.get("has_message") and data.get("preview", None) != "":
+                new["has_message"] = True
             # MONOTONE, unlike every other field here. "When was this member last
             # active" is an answer time only ever moves forward, so a fold that
             # took each event's `ts` last-wins could only ever be wrong when it

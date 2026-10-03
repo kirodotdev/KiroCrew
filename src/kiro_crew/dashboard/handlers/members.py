@@ -39,6 +39,7 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.eventlog import types as eventlog_types
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
 
@@ -87,8 +88,6 @@ def _roster_only(snap: dict) -> dict:
     winning, and a key absent from this block leaves whatever the client holds for
     it untouched.
     """
-    from kiro_crew.eventlog import types as eventlog_types
-
     values = snap.get("values", {}) if isinstance(snap, dict) else {}
     roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
     return {
@@ -492,9 +491,13 @@ async def api_members(request: web.Request) -> web.Response:
     # transcript's mtime is the one durable signal that survives restarts and
     # covers live and dormant threads alike. File stats are IO — one thread
     # hop for the whole roster, mirroring the binding reads above.
-    # Slot keys whose DM thread holds at least one message (filled by the tail
-    # read below; see `has_dm_message`).
-    has_message: set[str] = set()
+    # Slot keys whose DM thread holds at least one message ON DISK, and -- kept
+    # apart from them -- those whose transcript could not be read at all. Both
+    # list the row (`_has_dm_message_for_row`); only the first is WRITTEN back
+    # into the member log, because a fail-open guess is the right answer for a
+    # row and the wrong thing to make a durable record of.
+    transcript_has_message: set[str] = set()
+    transcript_unreadable: set[str] = set()
 
     def _read_transcript_tails() -> dict[str, tuple[float, str, bool, bool]]:
         if state is None or state.conversation_log is None:
@@ -515,19 +518,27 @@ async def api_members(request: web.Request) -> web.Response:
             generation = binding.get("memory_store", "") if binding is not None else ""
             log_key = members_mod.member_thread_session_alias(row["slug"], generation)
             # Whether the thread holds a message at all, for the roster's
-            # listing rule. `has_messages` stops at the first non-metadata row
-            # (two lines in practice), so this stays one short read per bound
-            # row -- the same evidence the crewmate prune uses: a metadata-only
-            # transcript (a thread opened, nothing sent) is not a message. A
-            # file that cannot be read counts as holding one, so an unreadable
-            # thread never hides the row. It runs BEFORE the mtime gate below:
-            # a transcript that cannot be stat'd is unreadable, not absent
+            # listing rule. The crew log OWNS that fact (`has_message` on the
+            # `roster` fold) and this read is its floor, written back once by
+            # `reconcile_member_has_message` for a thread the fold records
+            # nothing about. Asked for every bound row rather than only for
+            # those: `last_speech_info` below opens this same file on every one
+            # of them anyway, so skipping it would save a read that stops at the
+            # first non-metadata row (two lines in practice) while costing the
+            # roster its only answer for a member whose later projection read
+            # fails. A metadata-only transcript (a thread opened, nothing sent)
+            # is not a message. It runs BEFORE the mtime gate below: a
+            # transcript that cannot be stat'd is unreadable, not absent
             # (`has_messages` answers an absent file as empty).
             try:
                 if state.conversation_log.has_messages(log_key):
-                    has_message.add(row["slot_key"])
+                    transcript_has_message.add(row["slot_key"])
             except OSError:
-                has_message.add(row["slot_key"])
+                # A guess, and the right one for the ROW -- an unreadable thread
+                # must never hide its crewmate. Kept out of the written set:
+                # appending it would turn one failed read into a permanent
+                # record that this thread holds a message.
+                transcript_unreadable.add(row["slot_key"])
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
                 continue
@@ -572,11 +583,12 @@ async def api_members(request: web.Request) -> web.Response:
         # Observing AFTER the read would let a message in between be read as
         # unchanged and then overwritten by the older transcript answer.
         #
-        # Scoped to the members that correction can REACH: it is attempted only for
+        # Scoped to the members a correction can REACH: it is attempted only for
         # a slug whose row holds a slot key (a row without one never enters
-        # `preview_authoritative`) and whose log already exists (a member with no
-        # log has no folded preview to drift). Observing the rest costs a fold each
-        # to produce a value nothing compares.
+        # `preview_authoritative`, and an unbound member has no DM thread to hold a
+        # message) and whose log already exists (a member with no log has no folded
+        # state to drift, and nothing here may bring a log into being). Observing
+        # the rest costs a fold each to produce a value nothing compares.
         from kiro_crew.eventlog.service import get_service
 
         svc = get_service()
@@ -603,6 +615,10 @@ async def api_members(request: web.Request) -> web.Response:
     # read racing a flush, is left alone -- the row still carries the read here
     # (the client falls back to the folded quote), but nothing is written.
     preview_authoritative: set[str] = set()
+    #: Slot keys whose LIVE slot holds in-memory rows. A greeting that has just
+    #: been appended is a message whether or not it has flushed, and whether or
+    #: not its best-effort `member/message` has landed yet.
+    live_rows_present: set[str] = set()
     for row in rows:
         mt, preview, stopped, exhaustive = tails.get(row["slot_key"], (0.0, "", False, False))
         # The TRANSCRIPT's epoch, which is what `reconcile_member_preview` below
@@ -611,13 +627,10 @@ async def api_members(request: web.Request) -> web.Response:
         # crew log is the recency authority, and this value is its floor.
         row["last_active_ts"] = mt
         row["last_message"] = preview
-        # A live slot's rows count before they reach the disk: a greeting that
-        # has just been appended is a message whether or not it has flushed.
         live = state._slots.get(row["slot_key"]) if (state and row["slot_key"]) else None
         live_rows = getattr(live, "messages", None) if live is not None else None
-        row["has_dm_message"] = row["slot_key"] in has_message or (
-            isinstance(live_rows, (list, tuple)) and len(live_rows) > 0
-        )
+        if isinstance(live_rows, (list, tuple)) and len(live_rows) > 0:
+            live_rows_present.add(row["slot_key"])
         if not (preview or exhaustive) or row["slot_key"] in unflushed_slot_keys:
             continue
         # Re-ask AFTER the awaits: a slot that was clean at the pre-await sample
@@ -666,10 +679,10 @@ async def api_members(request: web.Request) -> web.Response:
         # a lossy fold, so two rows can land on one key. Whichever row is projected
         # last would win it: in one order the log's own member loses its state to a
         # stranger's blank, and in the other the stranger's row renders the owner's
-        # roster, activity, wake and driving state as its own. Counting the rows per
-        # slug FIRST makes the answer independent of iteration order -- a collided
-        # slug is blank for everyone, which is the same visibly-empty row the
-        # header-name guard below already serves, and never somebody else's data.
+        # roster, activity, wake and driving state as its own. Counting the rows
+        # per slug FIRST makes the answer independent of iteration order -- a
+        # collided slug is blank for everyone, which is the same visibly-empty row
+        # the header-name guard below already serves, and never somebody else's.
         slug_rows = Counter(row["slug"] for row in rows)
         for row in rows:
             slug = row["slug"]
@@ -790,9 +803,43 @@ async def api_members(request: web.Request) -> web.Response:
                             row.get("last_message", ""),
                             row.get("last_active_ts"),
                             observed_rosters.get(slug, {}),
+                            slot_key=row["slot_key"],
                         )
                     )
-                if appended or preview_appended:
+                # The listing rule's own fact. `member/message` is written on a
+                # best-effort hook whose result nobody reads, and an install older
+                # than the member event log holds conversations it recorded nothing
+                # about, so a fold answering "no message" is not evidence that there
+                # is none. The transcript's answer is written back HERE rather than
+                # patched over the read, so the fold -- which is what a pushed
+                # `member_projection` frame carries, and the only source left once
+                # a transcript is deleted -- comes to hold it.
+                #
+                # The WRITE is what converges, not the read: the reconcile returns
+                # before appending once the fold holds the fact, while the read above
+                # still runs every poll as this row's floor. Same ownership and
+                # observation guards as the preview correction, plus the slot key the
+                # transcript was read at; no `reconcile_stamp` gate, because this
+                # records a fact about the thread rather than a value copied out of
+                # the config.
+                has_message_appended = False
+                if owned and row["slot_key"] in transcript_has_message:
+                    has_message_appended = bool(
+                        eventlog_hooks.reconcile_member_has_message(
+                            slug,
+                            row["name"],
+                            row.get("last_active_ts"),
+                            observed_rosters.get(slug, {}),
+                            # The key the transcript above was actually READ at,
+                            # which the bindings read before it. A rotation
+                            # landing in between leaves the fold naming the NEW
+                            # thread while this evidence describes the old one,
+                            # and the predicate refuses rather than stamping an
+                            # empty thread with it.
+                            slot_key=row["slot_key"],
+                        )
+                    )
+                if appended or preview_appended or has_message_appended:
                     # Re-snapshot only when a reconcile appended (the roster
                     # fields would otherwise be stale for this response).
                     snap = svc.snapshot(slug)
@@ -820,8 +867,52 @@ async def api_members(request: web.Request) -> web.Response:
         block = projections.get(row["slug"], {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}})
         row["projections"] = _redact_projection_value(_roster_only(block))
         row["last_active_ts"] = _recency_for_row(block, row.get("last_active_ts"))
+        row["has_dm_message"] = _has_dm_message_for_row(
+            block,
+            row["slot_key"] in transcript_has_message,
+            row["slot_key"] in transcript_unreadable,
+            row["slot_key"] in live_rows_present,
+        )
 
     return web.json_response({"members": rows})
+
+
+def _has_dm_message_for_row(
+    block: dict, transcript_says_yes: bool, unreadable: bool, live_rows: bool
+) -> bool:
+    """Whether this member's DM thread holds a message: the crew log's fold,
+    floored by the transcript and by the live slot.
+
+    The **crew log is the authority**, for the same reason it is for recency:
+    ``has_message`` on the ``roster`` fold is set by the ``member/message`` the
+    live row hook emits, and it is the value a pushed ``member_projection``
+    frame carries, so the cold row and the live frame are one reading. It is set
+    once per thread and cleared only by a binding onto a new private memory
+    generation, which is a new and genuinely empty thread.
+
+    Two floors, because the fold lags in two directions that both matter here.
+    The emit is fire-and-forget by contract and an install older than the member
+    event log recorded nothing about threads it already holds, so the TRANSCRIPT
+    still answers for a member the fold has no event for -- and ``api_members``
+    writes that answer back into the log, so a member needs that floor once
+    rather than forever. The LIVE slot answers for rows that exist in memory and
+    nowhere else: appended, not yet flushed, and their event possibly still
+    queued.
+
+    ``unreadable`` is a third yes and deliberately not a third floor: a
+    transcript that cannot be read is no evidence either way, and listing the
+    row is the safe guess where hiding a crewmate is not. It is kept apart from
+    ``transcript_says_yes`` at the call site because only that one is written
+    back into the log -- a guess belongs in a row, never in a record.
+
+    Taking any of these as yes can therefore lose none of them, and because a
+    yes is permanent within a thread no reading can walk a listed row back off
+    the list.
+    """
+    values = block.get("values") if isinstance(block, dict) else None
+    roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
+    folded = bool(roster.get("has_message")) if isinstance(roster, dict) else False
+    return folded or transcript_says_yes or unreadable or live_rows
 
 
 def _recency_for_row(block: dict, transcript_ts: Any) -> float:
@@ -849,8 +940,6 @@ def _recency_for_row(block: dict, transcript_ts: Any) -> float:
     therefore lose neither, and because it is monotone a lagging fold can never
     walk a row's recency backwards.
     """
-    from kiro_crew.eventlog import types as eventlog_types
-
     floor = _as_epoch(transcript_ts)
     values = block.get("values") if isinstance(block, dict) else None
     roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
