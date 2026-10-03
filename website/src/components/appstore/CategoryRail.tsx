@@ -1,9 +1,12 @@
 /**
  * CategoryRail — left rail of the Discover "All apps" section.
  *
- * Two blocks:
+ * Three blocks:
  *  - CATEGORIES: canonical categories with app counts; selecting one filters
  *    the list ("All apps" resets).
+ *  - INSTALL STATE: All / Installed, independent of the category and source
+ *    picks. The Installed count is the number of shelf rows that selecting it
+ *    shows, so the number and the rows cannot disagree.
  *  - SOURCES: where apps come from (trust provenance) — Built-in plus each
  *    configured external registry with its app count. Selecting a source filters
  *    the list; All sources clears only that filter. Add source opens the popover.
@@ -56,11 +59,14 @@ function sourceTier(s: SourceRow): string {
   return ''
 }
 
-export default function CategoryRail({ categories, total, selected, onSelect, sources, selectedSource, onSelectSource, onAddSource }: {
+export default function CategoryRail({ categories, total, selected, onSelect, installedOnly, installedCount, onSelectInstalledOnly, sources, selectedSource, onSelectSource, onAddSource }: {
   categories: { category: Category; count: number }[]
   total: number
   selected: Category | 'all'
   onSelect: (c: Category | 'all') => void
+  installedOnly: boolean
+  installedCount: number
+  onSelectInstalledOnly: (on: boolean) => void
   sources: SourceRow[]
   selectedSource: string | null
   onSelectSource: (source: string | null) => void
@@ -89,6 +95,20 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
         {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'all')}
         {categories.map(({ category, count }) => item(category, count, category))}
+      </div>
+      <div>
+        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.install_state')}</div>
+        {[false, true].map(on => (
+          <Clickable
+            key={String(on)}
+            aria-pressed={installedOnly === on}
+            className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer mb-1.5 ${installedOnly === on ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
+            onClick={() => onSelectInstalledOnly(on)}
+          >
+            {on ? i18nT('components.appstore.categoryRail.installed') : i18nT('components.appstore.categoryRail.all_install_states')}
+            {on && <span className="text-muted text-[11.5px] font-normal">{installedCount}</span>}
+          </Clickable>
+        ))}
       </div>
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>

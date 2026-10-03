@@ -14,6 +14,9 @@ function renderRail(sources: SourceRow[]) {
       total={0}
       selected="all"
       onSelect={vi.fn()}
+      installedOnly={false}
+      installedCount={0}
+      onSelectInstalledOnly={vi.fn()}
       sources={sources}
       selectedSource={null}
       onSelectSource={vi.fn()}

@@ -5907,7 +5907,10 @@
         "first_party": "Erstanbieter",
         "sources": "QUELLEN",
         "curated_reviewed_by_the_kiro_crew_team": "Vom {{productName}}-Team geprüft",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "Von der Community aufgenommen, nicht vom {{productName}}-Team verifiziert"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Von der Community aufgenommen, nicht vom {{productName}}-Team verifiziert",
+        "install_state": "INSTALLATIONSSTATUS",
+        "all_install_states": "Alle",
+        "installed": "Installiert"
       },
       "featuredSpotlight": {
         "collection": "KOLLEKTION",

@@ -5999,7 +5999,10 @@
         "first_party": "Propias",
         "sources": "ORÍGENES",
         "curated_reviewed_by_the_kiro_crew_team": "Revisado por el equipo de {{productName}}",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "Publicado por la comunidad, no verificado por el equipo de {{productName}}"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Publicado por la comunidad, no verificado por el equipo de {{productName}}",
+        "install_state": "ESTADO DE INSTALACIÓN",
+        "all_install_states": "Todas",
+        "installed": "Instaladas"
       },
       "featuredSpotlight": {
         "collection": "COLECCIÓN",

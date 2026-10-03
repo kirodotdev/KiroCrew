@@ -1842,7 +1842,10 @@
       "categoryRail": {
         "all_apps": "All apps",
         "curated_reviewed_by_the_kiro_crew_team": "Reviewed by the {{productName}} team",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "Community-listed, not vetted by the {{productName}} team"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Community-listed, not vetted by the {{productName}} team",
+        "install_state": "INSTALL STATE",
+        "all_install_states": "All",
+        "installed": "Installed"
       },
       "installedAppCard": {
         "app_cannot_be_opened_kirocrew_is_running_in_a_he": "App cannot be opened — {{productName}} is running in a headless environment.",

@@ -6091,7 +6091,10 @@
         "first_party": "Собственные",
         "sources": "ИСТОЧНИКИ",
         "curated_reviewed_by_the_kiro_crew_team": "Проверено командой {{productName}}",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "Опубликовано сообществом, не проверено командой {{productName}}"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Опубликовано сообществом, не проверено командой {{productName}}",
+        "install_state": "СТАТУС УСТАНОВКИ",
+        "all_install_states": "Все",
+        "installed": "Установленные"
       },
       "featuredSpotlight": {
         "collection": "ПОДБОРКА",

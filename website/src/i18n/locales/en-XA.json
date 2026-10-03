@@ -5428,7 +5428,10 @@
         "sources": "[ŞØÙŔÇÈŞ ···········]",
         "all_apps": "[Àĺĺ àþþş ············]",
         "curated_reviewed_by_the_kiro_crew_team": "[Ŕèṽìèẁèð ƀý ţĥè {{productName}} ţèàɱ ···············]",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "[Çøɱɱùñìţý-ĺìşţèð, ñøţ ṽèţţèð ƀý ţĥè {{productName}} ţèàɱ ·····················]"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "[Çøɱɱùñìţý-ĺìşţèð, ñøţ ṽèţţèð ƀý ţĥè {{productName}} ţèàɱ ·····················]",
+        "install_state": "[ÌÑŞŢÀĹĹ ŞŢÀŢÈ ············]",
+        "all_install_states": "[Àĺĺ ·····]",
+        "installed": "[Ìñşţàĺĺèð ··············]"
       },
       "featuredSpotlight": {
         "collection": "[ÇØĹĹÈÇŢÌØÑ ···············]",

@@ -5907,7 +5907,10 @@
         "first_party": "फ़र्स्ट-पार्टी",
         "sources": "स्रोत",
         "curated_reviewed_by_the_kiro_crew_team": "{{productName}} टीम द्वारा समीक्षित",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "कम्युनिटी द्वारा सूचीबद्ध, {{productName}} टीम द्वारा जाँचा नहीं गया"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "कम्युनिटी द्वारा सूचीबद्ध, {{productName}} टीम द्वारा जाँचा नहीं गया",
+        "install_state": "इंस्टॉल की स्थिति",
+        "all_install_states": "सभी",
+        "installed": "इंस्टॉल है"
       },
       "featuredSpotlight": {
         "collection": "संग्रह",

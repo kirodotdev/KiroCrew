@@ -5788,7 +5788,10 @@
         "first_party": "ファーストパーティ",
         "sources": "ソース",
         "curated_reviewed_by_the_kiro_crew_team": "{{productName}} チームが確認済み",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "コミュニティ掲載、{{productName}} チームの検証なし"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "コミュニティ掲載、{{productName}} チームの検証なし",
+        "install_state": "インストール状態",
+        "all_install_states": "すべて",
+        "installed": "インストール済み"
       },
       "featuredSpotlight": {
         "collection": "コレクション",
