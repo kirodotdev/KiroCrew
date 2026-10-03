@@ -1096,7 +1096,21 @@ def _iter_skill_files(
         real = os.path.realpath(directory)
         if exclude_roots and _within_any(real, exclude_roots):
             return real, [], None
-        if not _within_any(real, allowed_roots) or is_sensitive_resolved_path(real):
+        if not _within_any(real, allowed_roots):
+            # On Windows, record the resolved child and the roots it is judged
+            # against whenever the containment gate turns a child of the skills
+            # base away, so a CI run surfaces the exact (candidate, roots) pair
+            # the gate rejects. Windows-only and logging-only: the return is
+            # unchanged, so no platform's behaviour is affected.
+            if os.name == "nt":
+                logger.warning(
+                    "skill discovery: _within_any rejected a child of base "
+                    "(candidate=%r, roots=%r)",
+                    real,
+                    allowed_roots,
+                )
+            return real, [], None
+        if is_sensitive_resolved_path(real):
             return real, [], None
         try:
             with os.scandir(directory) as scan:
