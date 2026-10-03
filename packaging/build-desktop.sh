@@ -71,6 +71,34 @@ esac
 # expensive work (PBS interpreter + pip closure) still happens once.
 LINUX_TARGET_DISTS=( "AppImage:appimage" "deb:deb" "rpm:rpm" )
 
+# Per-target electron-builder overrides for the Linux packaging loop. Two
+# AppImage-only overrides live here, applied to NO other format:
+#   - the spaced display name: the AppImage's bundled .desktop entry is the
+#     template website/electron/linux-desktop-integration.js copies into the
+#     user's launcher, the one place that name is shown;
+#   - the multi-size hicolor icon directory (nightly): the common nightly block
+#     keeps canonical `icon-nightly.png` so deb/rpm are byte-identical to
+#     canonical main, and only the AppImage, whose in-app integration installs
+#     hicolor icons, overrides to the `build/icons-nightly` tree.
+# deb/rpm receive nothing here, so their launcher keeps electron-builder's
+# productName-derived Name and their icon stays the canonical per-channel png.
+# Prints one argument per line; a target with no override prints nothing.
+# Self-contained on purpose (parameters only, no globals) so
+# website/electron/test/packaging.test.js can execute it in isolation.
+linux_target_eb_args() {
+  local target="$1" product_name="$2"
+  case "$target" in
+    AppImage)
+      if [ "$product_name" = "KiroCrew Nightly" ]; then
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew Nightly"
+        printf '%s\n' "-c.linux.icon=build/icons-nightly"
+      else
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew"
+      fi
+      ;;
+  esac
+}
+
 # Universal is the macOS default; Linux has no universal concept (AppImage is
 # per-arch). UNIVERSAL=0 opts a macOS build out.
 if [ "$OS" = "darwin" ]; then
@@ -1524,12 +1552,19 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
     # AppImage and the deb do not both claim the label of whichever was built
     # last. Targets are named explicitly rather than letting package.json's
     # target array drive a single invocation, because a single invocation shares
-    # one stamped backend tree between both artifacts.
+    # one stamped backend tree between both artifacts. Each target also gets its
+    # own overrides from linux_target_eb_args (defined with LINUX_TARGET_DISTS);
+    # deb and rpm get none.
     for pair in "${LINUX_TARGET_DISTS[@]}"; do
       target="${pair%%:*}"; dist="${pair##*:}"
+      TARGET_EB_ARGS=()
+      while IFS= read -r arg; do
+        [ -n "$arg" ] && TARGET_EB_ARGS+=( "$arg" )
+      done < <(linux_target_eb_args "$target" "$PRODUCT_NAME")
       log "Packaging Linux ${target} (dist=${dist})…"
       restamp_backends "$dist"
-      run_electron_builder_with_retry "${EB_ARGS[@]}" --linux "$target"
+      run_electron_builder_with_retry "${EB_ARGS[@]}" \
+        ${TARGET_EB_ARGS[@]+"${TARGET_EB_ARGS[@]}"} --linux "$target"
     done
   fi
 )
