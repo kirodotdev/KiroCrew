@@ -469,6 +469,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
 # ── Side conversation (extracted to handlers/side.py) ──
 from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_close,
+    api_side_interrupt,
     api_side_open,
     api_side_queue_cancel,
     api_side_queue_edit,

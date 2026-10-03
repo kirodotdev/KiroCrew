@@ -77,9 +77,12 @@ describe('SideChat busy-send: steer vs queue', () => {
     const user = userEvent.setup()
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
 
+    // Type first: with an empty composer the busy control is Stop (parity with
+    // the main chat), and the steer/queue split — with its mode caret — appears
+    // only once there is a draft to send.
+    await user.type(screen.getByLabelText('Ask a side question'), 'later please')
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-queue'))
-    await user.type(screen.getByLabelText('Ask a side question'), 'later please')
     await user.click(screen.getByTestId('busy-send-button'))
 
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'later please', undefined))
@@ -450,9 +453,9 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
+    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-steer'))
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 
@@ -489,9 +492,9 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
+    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-steer'))
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 

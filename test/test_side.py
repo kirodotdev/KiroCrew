@@ -30,6 +30,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers.side import (
     _run_side_turn,
     api_side_close,
+    api_side_interrupt,
     api_side_open,
     api_side_turn,
 )
@@ -69,6 +70,7 @@ def _make_side_app(
     app.router.add_post("/api/chat/slots/{slot}/side/open", api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/close", api_side_close)
+    app.router.add_post("/api/chat/slots/{slot}/side/interrupt", api_side_interrupt)
     return app
 
 
@@ -1451,3 +1453,242 @@ async def test_side_turn_on_another_backend_runs_no_tools_and_derives_nothing(
     last = [d for t, d in events if d.get("role") == "assistant" and d.get("final")][-1]
     assert "can't use tools on this agent backend" in last["content"]
     assert parent._side.binding == (created[0]["agent"] or "", "", "reject_all")
+
+
+# ── Interrupt ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_interrupt_cancels_the_in_flight_turn_and_clears_state(tmp_path, monkeypatch):
+    """A running side turn is cancelled and a terminal error frame is broadcast.
+
+    The turn is held inside ``stream_and_collect`` (the hung-answer shape). The
+    interrupt must cancel its task, broadcast ``is_error``+``final`` on the live
+    run_id so the client's streaming/pending clears, and leave the sidecar open.
+    """
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    stub_readonly_spec_publisher(monkeypatch)
+
+    released = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def _hanging_stream(*args, **kwargs):
+        entered.set()
+        try:
+            await released.wait()
+        except asyncio.CancelledError:
+            raise
+        return _SIDE_ANSWER
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _hanging_stream)
+
+    cancel_mock = AsyncMock()
+    provider = MagicMock()
+    provider.cancel = cancel_mock
+
+    async def _fake_get_or_create(key, **kwargs):
+        return provider, True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    # The interrupt handler resolves the provider by the side session key.
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post(
+            "/api/chat/slots/parent/side/turn", json={"question": _SIDE_QUESTION}
+        )
+        body = await turn.json()
+        run_id = body["run_id"]
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        assert parent._side.task is not None and not parent._side.task.done()
+
+        resp = await client.post("/api/chat/slots/parent/side/interrupt", json={})
+        assert resp.status == 200
+        payload = await resp.json()
+        assert payload == {
+            "ok": True,
+            "interrupted": True,
+            "run_id": run_id,
+            "content": "(answer stopped)",
+        }
+
+        # The ACP turn was asked to end, and the task cancelled.
+        assert cancel_mock.await_count == 1
+        for _ in range(100):
+            if parent._side is not None and parent._side.task is None:
+                break
+            await asyncio.sleep(0.01)
+        assert parent._side is not None and parent._side.open
+        # The stopped turn is closed in the transcript, so the next question is
+        # not sent as a first turn that re-states the abandoned one.
+        assert parent._side.messages[-1]["role"] == "assistant"
+        assert parent._side.messages[-1]["content"] == "(answer stopped)"
+
+    # Terminal frame on the interrupted run clears client state.
+    terminal = [
+        d
+        for _t, d in events
+        if d.get("run_id") == run_id and d.get("role") == "assistant" and d.get("final")
+    ]
+    assert terminal, "no terminal side frame broadcast on interrupt"
+    assert terminal[-1].get("is_error") is True
+    released.set()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_does_not_settle_a_turn_that_finished_during_cancel(tmp_path, monkeypatch):
+    """If the turn settles on its own while ``provider.cancel`` is awaited, the
+    interrupt must not broadcast a second terminal frame: the turn's own final
+    frame already landed, and a stale one could clear a newer queued turn."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    stub_readonly_spec_publisher(monkeypatch)
+
+    released = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def _hanging_stream(*args, **kwargs):
+        entered.set()
+        await released.wait()
+        return _SIDE_ANSWER
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _hanging_stream)
+
+    async def _cancel_lets_turn_finish(*args, **kwargs):
+        # The answer arrives while the cancel is in flight.
+        task = parent._side.task
+        released.set()
+        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        return "acked"
+
+    provider = MagicMock()
+    provider.cancel = AsyncMock(side_effect=_cancel_lets_turn_finish)
+
+    async def _fake_get_or_create(key, **kwargs):
+        return provider, True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post(
+            "/api/chat/slots/parent/side/turn", json={"question": _SIDE_QUESTION}
+        )
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+        resp = await client.post("/api/chat/slots/parent/side/interrupt", json={})
+        assert resp.status == 200
+        assert await resp.json() == {"ok": True, "info": "not running"}
+
+    errors = [d for _t, d in events if d.get("run_id") == run_id and d.get("is_error")]
+    assert not errors, "interrupt broadcast a stale error frame for a settled turn: %r" % errors
+
+
+@pytest.mark.asyncio
+async def test_concurrent_interrupts_broadcast_one_stop_frame(tmp_path, monkeypatch):
+    """Two interrupts racing inside the same ``provider.cancel`` round trip: the
+    first claims the run synchronously, the second is a no-op, so the client sees
+    exactly one terminal frame."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    state.get_or_create_slot("parent")
+    stub_readonly_spec_publisher(monkeypatch)
+
+    entered = asyncio.Event()
+    release_cancel = asyncio.Event()
+
+    async def _hanging_stream(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _hanging_stream)
+
+    async def _slow_cancel(*args, **kwargs):
+        await release_cancel.wait()
+        return "acked"
+
+    provider = MagicMock()
+    provider.cancel = AsyncMock(side_effect=_slow_cancel)
+
+    async def _fake_get_or_create(key, **kwargs):
+        return provider, True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    state.sessions.get_provider = MagicMock(return_value=provider)
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        turn = await client.post(
+            "/api/chat/slots/parent/side/turn", json={"question": _SIDE_QUESTION}
+        )
+        run_id = (await turn.json())["run_id"]
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+        first = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/interrupt", json={}))
+        for _ in range(100):
+            if provider.cancel.await_count:
+                break
+            await asyncio.sleep(0.01)
+        second = await client.post("/api/chat/slots/parent/side/interrupt", json={})
+        assert await second.json() == {"ok": True, "info": "not running"}
+
+        release_cancel.set()
+        resp = await first
+        assert (await resp.json())["interrupted"] is True
+
+    errors = [d for _t, d in events if d.get("run_id") == run_id and d.get("is_error")]
+    assert len(errors) == 1, errors
+    assert provider.cancel.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupt_is_a_noop_when_no_turn_is_running(tmp_path):
+    """An interrupt with nothing in flight is a harmless 200 — a double-press
+    must not error."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/chat/slots/parent/side/interrupt", json={})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body == {"ok": True, "info": "not running"}
+
+    assert not [d for _t, d in events if d.get("final")], "no frame on an idle interrupt"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_409_when_side_not_open(tmp_path):
+    """Interrupting a slot with no open sidecar is a 409, like the other
+    side-queue mutations."""
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("parent")
+
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/chat/slots/parent/side/interrupt", json={})
+        assert resp.status == 409
+
+
+@pytest.mark.asyncio
+async def test_interrupt_404_for_unknown_slot(tmp_path):
+    state = _make_state(tmp_path)
+    app = _make_side_app(state)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/chat/slots/ghost/side/interrupt", json={})
+        assert resp.status == 404

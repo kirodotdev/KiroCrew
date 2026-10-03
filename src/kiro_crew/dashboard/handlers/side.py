@@ -108,8 +108,18 @@ def _dispatch_side_turn(
             start_priority=start_priority,
         )
     )
+    side.task = task
     state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
+
+    def _on_done(t: "asyncio.Task[None]") -> None:
+        state._background_tasks.discard(t)
+        # Clear the handle only if it is still THIS task: a drained turn's
+        # callback must never null the handle a newer turn already installed.
+        current = slot._side
+        if current is not None and current.task is t:
+            current.task = None
+
+    task.add_done_callback(_on_done)
     return run_id
 
 
@@ -1379,3 +1389,125 @@ async def api_side_close(request: web.Request) -> web.Response:
         resources=f"slot={slot.key},was_open={was_open}",
     )
     return web.json_response({"ok": True, "was_open": was_open})
+
+
+_SIDE_STOPPED_TEXT = "(answer stopped)"
+
+
+async def api_side_interrupt(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/side/interrupt — stop the in-flight side turn.
+
+    Ends the running turn so a hung or unwanted answer can be abandoned without
+    closing the conversation (the sidecar, its transcript and its queue survive).
+    A 200 no-op when nothing is running, so a double-press is harmless.
+
+    Two levers close the turn deterministically: ``provider.cancel`` ends the ACP
+    turn (unblocking a hung ``stream_and_collect``), and ``task.cancel`` guarantees
+    teardown even if the backend never acks. ``_run_side_turn`` re-raises
+    ``CancelledError`` without broadcasting, so the terminal frame here is the only
+    one — it flips the client's ``streaming``/``pending`` off. The task's ``finally``
+    still releases the session, requeues unconsumed steers and drains the queue.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # Owner identity, then app-vs-dashboard scope — the same two gates as
+    # ``api_side_turn``: interrupting a turn is a write on the owner's own
+    # conversation.
+    if request.get("app") == "":
+        # circular import: ``_shared`` reaches back into sibling handler
+        # modules (same reason as in ``api_side_turn``).
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "chat.side_interrupt")
+        if owner_denied is not None:
+            return owner_denied
+
+    own = _check_slot_ownership(request, slot, "chat.side_interrupt")
+    if own is not None:
+        return own
+
+    side = slot._side
+    if side is None or not side.open:
+        return web.json_response(
+            {"error": "side conversation is not open", "code": "side_not_open"}, status=409
+        )
+    if not side.last_run_id or side.is_complete or side.interrupted_run_id == side.last_run_id:
+        # Nothing in flight, or another interrupt already owns this turn — a
+        # double-press, a second client, or the turn settled under the user.
+        return web.json_response({"ok": True, "info": "not running"})
+
+    # Bind to the sidecar OBJECT and run captured BEFORE any await: a close+reopen
+    # during ``provider.cancel`` swaps in a fresh (also-``open``) sidecar, and the
+    # terminal frame must name the turn that was actually interrupted — never flip
+    # the replacement's own in-flight turn to error. The claim is taken in the same
+    # synchronous stretch, so only one concurrent interrupt can broadcast.
+    side_before = side
+    run_id = side.last_run_id
+    task = side.task
+    side.interrupted_run_id = run_id
+
+    # Best-effort: end the ACP turn so a hung stream unblocks. ``get_provider`` is
+    # keyed by this sidecar's generation, so a stale turn from a replaced sidecar is
+    # never the one cancelled. A missing provider (never acquired, or already torn
+    # down) just means the task cancel below is the whole story.
+    provider = state.sessions.get_provider(_side_session_key(slot.key, side_before.gen))
+    if provider is not None:
+        try:
+            await provider.cancel()
+        except Exception:
+            logger.warning(
+                "Side interrupt: provider cancel failed for slot=%s run_id=%s",
+                slot.key,
+                run_id,
+                exc_info=True,
+            )
+
+    # The cancel above suspended this handler; a close may have landed. Only touch
+    # the turn if the sidecar it belonged to is still the live one.
+    if slot._side is not side_before or not side_before.open:
+        return web.json_response(
+            {"error": "side conversation is not open", "code": "side_not_open"},
+            status=409,
+        )
+    # The same suspension can let the turn settle on its own and the queue drain
+    # into a newer turn. Its own final frame already landed; a second one here
+    # would flip the newer turn's pending/streaming off.
+    if side_before.last_run_id != run_id or side_before.is_complete or side_before.task is not task:
+        return web.json_response({"ok": True, "info": "not running"})
+
+    if task is not None and not task.done():
+        task.cancel()
+
+    # Close the turn in the transcript the way the busy/success arms do, so the
+    # next question is not treated as a first turn that re-sends this one.
+    side_before.append_assistant(_SIDE_STOPPED_TEXT)
+
+    # Settle the client immediately. ``_run_side_turn`` broadcasts nothing on
+    # cancellation (it re-raises ``CancelledError``), so this is the sole terminal
+    # frame — the reducer flips ``streaming``/``pending`` off and shows one error row.
+    broadcast_side_result(
+        state,
+        slot_key=slot.key,
+        run_id=run_id,
+        role="assistant",
+        content=_SIDE_STOPPED_TEXT,
+        is_error=True,
+        final=True,
+    )
+
+    sel().log_api_access(
+        caller=request.get("app", "") or "dashboard",
+        operation="chat.side_interrupt",
+        outcome="allowed",
+        source="dashboard",
+        resources=f"slot={slot.key},run_id={run_id}",
+    )
+    # The reply carries the terminal row too, so a client whose WebSocket dropped
+    # after the POST still settles the panel instead of staying busy.
+    return web.json_response(
+        {"ok": True, "interrupted": True, "run_id": run_id, "content": _SIDE_STOPPED_TEXT}
+    )

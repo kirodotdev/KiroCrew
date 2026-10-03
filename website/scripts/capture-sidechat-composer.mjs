@@ -19,6 +19,8 @@ mkdirSync(OUT, { recursive: true })
 const SCENES = [
   { name: 'idle-dark', scene: 'idle', theme: 'dark', expectSplit: false },
   { name: 'busy-steer-dark', scene: 'busy', theme: 'dark', expectSplit: true },
+  { name: 'busy-stop-dark', scene: 'busy', theme: 'dark', expectStop: true },
+  { name: 'stopped-dark', scene: 'stopped', theme: 'dark', expectStopped: true },
   { name: 'idle-light', scene: 'idle', theme: 'light', expectSplit: false },
 ]
 
@@ -42,7 +44,20 @@ for (const s of SCENES) {
     await composer.fill('actually check the folder filter first')
     await page.getByTestId('busy-send-button').waitFor({ timeout: 3000 })
   }
-  console.log(`${s.name}: real composer mounted${s.expectSplit ? ' + split steer button' : ''}`)
+  // Busy with an EMPTY composer: the control is Stop, so a hung or unwanted
+  // side answer can be abandoned. This is the state issue #15069 is about.
+  if (s.expectStop) {
+    await page.getByTestId('stop-button-armed').waitFor({ timeout: 3000 })
+  }
+  // After Stop: the stopped row is shown and the composer is back at rest.
+  if (s.expectStopped) {
+    await page.getByText('(answer stopped)').waitFor({ timeout: 3000 })
+    if (await page.getByTestId('stop-button-armed').count()) {
+      console.error(`${s.name}: Stop still shown after the turn stopped`)
+      failed = true
+    }
+  }
+  console.log(`${s.name}: real composer mounted${s.expectSplit ? ' + split steer button' : ''}${s.expectStop ? ' + stop button' : ''}`)
   await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/${s.name}.png` })
 }
 

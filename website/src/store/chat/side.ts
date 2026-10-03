@@ -111,6 +111,16 @@ export const sideReducers = {
       side.streaming = true
       return
     }
+    // A terminal error row can arrive twice: once on the WebSocket and once from
+    // the HTTP reply that requested it (Side Chat's Stop applies both, so a
+    // dropped socket cannot strand the panel busy). Drop the second copy BEFORE
+    // touching pending/streaming — it may land after the next queued turn has
+    // started, and must not clear that turn's busy state.
+    if (is_error && final && side.messages.some(m => m.role === 'assistant' && m.is_error && m.run_id === run_id && m.content === content)) return
+    // A late terminal error for an OLDER run (its user row exists, a newer run
+    // has since started) must not settle the newer run's busy state. An unseen
+    // run still passes: its user frame may simply not have arrived yet.
+    if (is_error && final && side.lastRunId && run_id !== side.lastRunId && side.messages.some(m => m.role === 'user' && m.run_id === run_id)) return
     side.pending = false
     side.streaming = !final
     if (is_error) {

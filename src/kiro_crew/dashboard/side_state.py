@@ -6,6 +6,7 @@ JSONL, memory.db, lessons, or preferences. Lifecycle: open → turn(s) → close
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -76,6 +77,19 @@ class SideState:
     #: the old agent, in the old cwd, with the old grants. ``None`` = no live
     #: session has been bound through this sidecar yet.
     binding: tuple[str, str, str] | None = None
+    #: The in-flight turn's background task, so an interrupt can cancel the
+    #: specific task driving THIS sidecar rather than the whole process's task
+    #: set (``state._background_tasks`` is unkeyed). Set in ``_dispatch_side_turn``
+    #: and cleared by the task's own done-callback, identity-guarded so a stale
+    #: callback from a drained turn cannot null a newer turn's handle. Excluded
+    #: from equality/repr: a Task is not identity for a SideState and would make
+    #: the dataclass unhashable to compare. ``None`` = no turn in flight.
+    task: "asyncio.Task[None] | None" = field(default=None, compare=False, repr=False)
+    #: ``run_id`` an interrupt has already claimed, set synchronously before the
+    #: handler awaits so a second concurrent interrupt for the same turn is a
+    #: no-op instead of a second terminal frame. Never cleared: run ids are unique
+    #: per turn, so a newer turn is never mistaken for a claimed one.
+    interrupted_run_id: str = ""
 
     def append_user(self, content: str, ts: str = "", *, steer: bool = False) -> None:
         """Append a user turn. ``steer`` marks it as injected mid-turn, which the
@@ -104,6 +118,7 @@ class SideState:
         self.is_complete = True
         self.queue.clear()
         self.steers.clear()
+        self.task = None
 
     # ── Queue helpers ──
 

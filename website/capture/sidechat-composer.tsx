@@ -9,9 +9,11 @@
  * Scenes mount the REAL SideChat against the real store, stylesheet, theme
  * tokens and live i18n catalog, with only the api module untouched (no side
  * endpoint is hit: state is preloaded). ?scene=idle shows the resting
- * composer; ?scene=busy shows a mid-turn side session where the split
- * Steer/Queue button (previously a SideChat-local fork, now ChatInput's own)
- * is offered.
+ * composer; ?scene=busy shows a mid-turn side session — with a draft the split
+ * Steer/Queue button (previously a SideChat-local fork, now ChatInput's own) is
+ * offered, and with an empty composer the Stop button is, so a hung or unwanted
+ * side answer can be abandoned (issue #15069). ?scene=stopped shows the panel
+ * right after Stop: the "(answer stopped)" row and the composer back at rest.
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
@@ -25,7 +27,8 @@ import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
-const scene = params.get('scene') === 'busy' ? 'busy' : 'idle'
+const sceneParam = params.get('scene')
+const scene = sceneParam === 'busy' || sceneParam === 'stopped' ? sceneParam : 'idle'
 const theme = params.get('theme') === 'light' ? 'light' : 'dark'
 
 document.documentElement.dataset.mode = theme
@@ -48,6 +51,10 @@ const store = createTestStore({
         messages: [
           { role: 'user' as const, content: 'why is the schedule list empty?', ts: '2026-08-22T00:00:00Z', run_id: 'r1' },
           { role: 'assistant' as const, content: 'The cron store answered with zero jobs — checking whether the gateway filter dropped them.', ts: '2026-08-22T00:00:01Z', run_id: 'r1' },
+          // After Stop: the server's terminal frame, as the reducer stores it.
+          ...(scene === 'stopped'
+            ? [{ role: 'assistant' as const, content: '(answer stopped)', ts: '2026-08-22T00:00:02Z', run_id: 'r1', is_error: true }]
+            : []),
         ],
         lastRunId: 'r1',
         pending: false,
