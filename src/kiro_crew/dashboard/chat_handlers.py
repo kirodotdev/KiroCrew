@@ -8,7 +8,6 @@ import json
 import logging
 import math
 import os
-import re
 import tempfile
 import time
 import uuid
@@ -167,6 +166,8 @@ from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
+    MAX_SOURCE_LABEL_LEN,
+    SOURCE_LABEL_CTRL_RE,
     DeferredHoldFull,
     DeferredHoldRebound,
     note_hold_durable,
@@ -14956,9 +14957,10 @@ _UNSET = object()
 # ``[Background context from "{source}"]`` prompt frame at drain, so disallow
 # control chars and newlines to keep a crafted label from breaking out of the
 # frame line, and cap the length. Defense-in-depth: the real free-form surface
-# is ``content``, not ``source``.
-_MAX_SOURCE_LEN = 64
-_SOURCE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# is ``content``, not ``source``. The bound lives once in ``slot_buffers``
+# (admit side here, restore side there read the SAME pair) so they cannot drift.
+_MAX_SOURCE_LEN = MAX_SOURCE_LABEL_LEN
+_SOURCE_CTRL_RE = SOURCE_LABEL_CTRL_RE
 
 
 def _validate_content(content: object) -> web.Response | None:
@@ -15703,6 +15705,32 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # frame reads [Background context from "note"] rather than empty quotes.
     source = _normalize_source(body.get("source")) or "note"
 
+    # The VISIBLE source label (the "Note from ..." pill) is stamped from the
+    # AUTHENTICATED caller, never from the body. ``request_app`` is set by the
+    # app-token auth middleware from the validated token record (an app's
+    # registered slug), so it cannot be spoofed: app A posting
+    # ``source="Kiro"`` or another app's name cannot make the bubble attribute
+    # the note to anyone but A. A dashboard user carries an EMPTY ``request_app``
+    # and gets no author pill — the note is their own and needs no attribution.
+    # Because the label is a trusted, slug-shaped identity and not
+    # caller-controlled free text, it needs no credential/exfil redaction (an
+    # app slug cannot carry a spliced credential span), which is why the
+    # two-pass ``redact_caller_text`` and ``slot_buffers``'s redactor-sink
+    # allowlist entry both drop out with this change. The body's ``source`` is
+    # still read above for the internal drain-frame cap bucket only.
+    #
+    # An app name has no length bound at the single-name contract and the
+    # import path caps it at 120 chars, so a slug longer than
+    # ``MAX_SOURCE_LABEL_LEN`` is admissible. Apply the SAME structural bound
+    # the restore sanitizer applies (length + control char -> "") HERE, so what
+    # the admit path stamps always survives a persist/restore round-trip
+    # unchanged: without it a 65+ char app name would persist verbatim, then be
+    # collapsed to "" on restore, and the flushed note would silently lose its
+    # author pill for that app forever.
+    display_source = request_app
+    if len(display_source) > MAX_SOURCE_LABEL_LEN or SOURCE_LABEL_CTRL_RE.search(display_source):
+        display_source = ""
+
     # Ownership was decided before the body read. Re-decide it here, against the
     # slot as it is NOW, because that await is long enough for a rebind.
     stale = _reauthorize_after_await(state, slot, name, request_app, "note_post")
@@ -15779,8 +15807,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # Caller-controlled content reaching the visible transcript (SSE plus the
     # on-disk JSONL). Redact at this sink so a secret or exfil URL cannot land
     # in user-visible history. The context half stays raw: that is the
-    # trusted-caller boundary inherited from /context. Order matters -- exfil
-    # URLs first, since that pass collapses the whole URL.
+    # trusted-caller boundary inherited from /context. Attribution scope: the
+    # note CONTENT runs through the exfiltration → credential redaction pair and
+    # nothing more — a note carries a source LABEL, not a rewritten body, so no
+    # format-char normalization is layered on the content here.
     visible_content, _ = redact_exfiltration_urls(content)
     visible_content, _ = redact_credentials(visible_content)
     if deferred and len(visible_content) > MAX_DEFERRED_NOTE_CHARS:
@@ -15811,6 +15841,12 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             "content": visible_content,
             "cls": "reconcile-note",
             "context": context_entry,
+            # The AUTHENTICATED caller identity (``request_app``), carried
+            # through the durable hold so the flushed visible row can say which
+            # app wrote the note -- the same spoof-proof value an immediate note
+            # stamps below. Empty for a dashboard user, so the flush renders no
+            # "from ..." pill.
+            "source": display_source,
             # The session this note was authorized against. The gate above
             # only admits a slot that still routes to its own session, but
             # an unbound slot can acquire a foreign binding while the note
@@ -15840,7 +15876,18 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             content=visible_content,
             cls="reconcile-note",
             broadcast=True,
-            meta={"noteSession": effective_session_key(slot)},
+            meta={
+                "noteSession": effective_session_key(slot),
+                # Attribute the note through the SAME app-label pill an app
+                # inject row already uses (``meta.appLabel`` ->
+                # ``components.mcpApp.from_app``): ``display_source`` is the
+                # authenticated caller identity (``request_app``), so a reader
+                # sees "Sent by app {X}" on the note bubble. Omit the key when
+                # the caller gave no identity (a dashboard user), since the
+                # renderer draws the pill only on a truthy value -- a sourceless
+                # note stays unattributed.
+                **({"appLabel": display_source} if display_source else {}),
+            },
         )
 
     sel().log_api_access(

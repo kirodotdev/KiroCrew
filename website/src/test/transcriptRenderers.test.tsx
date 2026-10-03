@@ -525,4 +525,17 @@ describe('the single-chat surface renders from THIS row set', () => {
     const duplicated = pageIds.filter(id => shared.includes(id))
     expect(duplicated).toEqual([])
   })
+
+  // A note's author is shown through the SAME app-label pill an app inject row
+  // uses: the backend stamps the authenticated caller (`request_app`) onto
+  // `meta.appLabel`, and the ChatPage inject branch renders it via
+  // `components.mcpApp.from_app` — there is no note-only `noteSource` meta key
+  // or `from_note` pill. The trust fix is backend-side (the handler stamps
+  // `request_app`, not `body.source`), so the frontend guard is that the inject
+  // branch derives no client-side note author and reuses the app-label pill.
+  it('ChatPage note attribution rides the appLabel pill, with no noteSource/from_note', () => {
+    expect(chatPageSrc).toMatch(/i18nT\('components\.mcpApp\.from_app', \{ app: appLabel\.split\('\/'\)\[0\] \}\)/)
+    expect(chatPageSrc).not.toMatch(/noteSource/)
+    expect(chatPageSrc).not.toMatch(/from_note/)
+  })
 })

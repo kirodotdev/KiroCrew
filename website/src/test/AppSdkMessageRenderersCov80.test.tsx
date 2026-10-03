@@ -299,6 +299,31 @@ describe('messageRenderers — cards, pills and banners', () => {
     expect(screen.getByTestId('md').textContent).toContain('[Cron notification from "x"]')
   })
 
+  // The author rides the SAME app-label pill an app inject row uses: the
+  // backend stamps the authenticated caller onto `meta.appLabel`, and it
+  // survives a rehydrate the same way as the rest of the note provenance.
+  it('labels a note row with its app author', () => {
+    renderRow(msg({
+      role: 'inject',
+      cls: 'reconcile-note',
+      content: 'zzq-note-body',
+      meta: { noteSession: 'chat-1', appLabel: 'board-sync' },
+    }))
+    expect(screen.getByTestId('wrapper').textContent).toContain('board-sync')
+  })
+
+  // A note from a dashboard user carries no app identity, so the backend omits
+  // `appLabel` and the bubble shows no author pill — the note is the user's own.
+  it('shows no author pill on a note row with no app identity', () => {
+    renderRow(msg({
+      role: 'inject',
+      cls: 'reconcile-note',
+      content: 'zzq-dashboard-note',
+      meta: { noteSession: 'chat-1' },
+    }))
+    expect(screen.getByTestId('wrapper').textContent).not.toContain('board-sync')
+  })
+
   // A note's [OPTIONS:] marker is consumed into the pill row, so the bubble must not
   // ALSO print it -- the user would see the same choices twice.
   it('strips the OPTIONS marker from the text a note bubble renders', () => {

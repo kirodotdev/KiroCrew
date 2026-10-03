@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -38,6 +39,18 @@ MAX_DEFERRED_NOTE_CHARS = 4000
 # evicting a retained entry, because every retained entry is the only durable
 # copy of a 200-acknowledged note.
 _MAX_DURABLE_HOLD_ENTRIES = 2 * MAX_DEFERRED_NOTES
+
+# The source label's single bound, defined here and imported by the writer in
+# chat_handlers the way ``MAX_DEFERRED_NOTE_CHARS`` already is, so the admit
+# bound and the restore bound cannot drift. The label is the AUTHENTICATED
+# caller identity (an app slug, or "" for a dashboard user), not caller-
+# controlled free text, so it needs no credential redaction. On the restore
+# trust boundary the sanitizer validates it structurally: a non-string, a value
+# past this length, or one carrying a control character collapses to "" — so a
+# tampered persisted entry never retains, broadcasts, or re-persists a malformed
+# or oversized label.
+MAX_SOURCE_LABEL_LEN = 64
+SOURCE_LABEL_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class NoteEvidence(NamedTuple):
@@ -139,6 +152,9 @@ def serialize_deferred_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]
         session = note.get("session")
         if isinstance(session, str):
             entry["session"] = session
+        source = note.get("source")
+        if isinstance(source, str):
+            entry["source"] = source
         out.append(entry)
     return out
 
@@ -311,7 +327,7 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     ephemeral = raw.get("ephemeral", True)
     if not isinstance(content, str) or not content or len(content) > MAX_DEFERRED_NOTE_CHARS:
         return None
-    if not isinstance(source, str) or not source or len(source) > 64:
+    if not isinstance(source, str) or not source or len(source) > MAX_SOURCE_LABEL_LEN:
         return None
     if isinstance(injected_at, bool) or not isinstance(injected_at, (int, float)):
         return None
@@ -377,10 +393,32 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
         session = item.get("session")
         if not isinstance(content, str) or not content or len(content) > MAX_DEFERRED_NOTE_CHARS:
             continue
+        # Attribution scope: the restored CONTENT is NOT rewritten here. It was
+        # already redacted on the admit path before it was persisted, and the
+        # restore path adds no content rewriting — that would re-normalize every
+        # legitimate note body on every boot. Only the type/length bound is
+        # enforced on the restored copy.
         if not isinstance(session, str) or not session:
             continue
         cls = item.get("cls")
         note_id = item.get("id")
+        # On-disk metadata is a trust boundary, so the source label is
+        # re-sanitized the SAME way the admit path produces it: the shared
+        # The stored source is the AUTHENTICATED caller identity stamped at
+        # admit time (an app's registered slug, or "" for a dashboard user) —
+        # not caller-controlled free text — so it carries no credential/exfil
+        # redaction on the way back in. On-disk metadata is still a trust
+        # boundary, so a tampered entry is validated STRUCTURALLY: a non-string,
+        # a value past the length bound, or one carrying a control character
+        # collapses to "", which renders no "from ..." pill.
+        raw_source = item.get("source")
+        source = (
+            raw_source
+            if isinstance(raw_source, str)
+            and len(raw_source) <= MAX_SOURCE_LABEL_LEN
+            and not SOURCE_LABEL_CTRL_RE.search(raw_source)
+            else ""
+        )
         notes.append(
             {
                 # A missing or invalid id gets a fresh one so the entry stays
@@ -390,6 +428,7 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
                 "cls": cls if isinstance(cls, str) and cls else "reconcile-note",
                 "context": _sanitize_restored_context(item.get("context")),
                 "session": session,
+                "source": source,
             }
         )
     return notes
@@ -763,6 +802,13 @@ class SlotBufferCoordinator:
             context = note.pop("context", None)
             note_id = note.get("id")
             row_meta: dict[str, Any] = {"noteSession": live_session}
+            note_source = note.get("source")
+            if isinstance(note_source, str) and note_source:
+                # Mirror the immediate path's `appLabel` stamp so a held note,
+                # once flushed, is attributed through the same "Sent by app {X}"
+                # pill an app inject row uses -- just like one written outside a
+                # running turn.
+                row_meta["appLabel"] = note_source
             if isinstance(note_id, str) and note_id:
                 # The delivered row carries its note id, and the full save
                 # retires a durable entry exactly when the window it writes
