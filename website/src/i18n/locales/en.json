@@ -6881,7 +6881,7 @@
       "dev_fleet": "Dev Fleet",
       "discovery_error": "Discovery Error",
       "live_state_unknown": "Live state unavailable",
-      "live_state_unknown_help": "The gateway couldn't report which checkout is live or staged, so no row is marked live — this is unknown, not empty. Make live is disabled until the gateway answers; use the Ask the agent link in this notice.",
+      "live_state_unknown_help": "The gateway couldn't report which checkout is live (the checkout the gateway itself runs from) or staged, so no row is marked live — this is unknown, not empty. Ask the agent before making a checkout live.",
       "disk": "Disk:",
       "disk_worktrees": "Disk (worktrees)",
       "dismiss": "Dismiss",
