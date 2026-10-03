@@ -1733,8 +1733,24 @@ async def _restart_gateway(
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports this module), so this
         # must stay inline to avoid an import cycle at module load.
+        from kiro_crew.dashboard import chat_trust_persistence
         from kiro_crew.dashboard.chat import save_all_slots_to_history
         from kiro_crew.executors import subprocess_executor
+
+        # Every caller is an owner action (the Restart button, an applied
+        # update), so this restart is a re-consent point exactly like
+        # ``kirocrew restart``: forget saved chat trust before the exec, which
+        # never reaches the shutdown path that clears it on an owner stop. A
+        # clear that failed (neither the record nor the owner-stop marker could
+        # be written) refuses the restart here, before the drain, rather than
+        # exec into a boot that restores the trust this restart withdrew.
+        if not await chat_trust_persistence.clear_on_shutdown_async(0):
+            state.push_update_progress(
+                "error",
+                "Cannot restart: saved chat trust could not be cleared, so it would "
+                "come back after the restart",
+            )
+            return False
 
         try:
             # Offload the synchronous per-slot save (per-session lock + disk I/O)

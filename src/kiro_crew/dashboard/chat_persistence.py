@@ -1747,6 +1747,17 @@ async def rehydrate_slot_from_history_async(
         _read_mcp_app_claims,
         session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
     )
+    # The owner's remembered trust for this chat, decided in the same awaiting
+    # phase for the same reason as the spool read above: the apply after the
+    # build must not await. Deferred import: the module reaches the handlers
+    # package, which imports this one.
+    from kiro_crew.dashboard import chat_trust_persistence
+
+    _revoke_gen = chat_trust_persistence.revoke_generation()
+    _trust_restored = await asyncio.to_thread(
+        chat_trust_persistence.restore_verdict,
+        session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
+    )
     # Tab-close race. The user can click ✕ while the read above is in flight.
     # The close pops the slot and records a tombstone synchronously on the loop,
     # but persists the ``closed`` flag only after its own awaits — so the
@@ -1815,6 +1826,17 @@ async def rehydrate_slot_from_history_async(
         # read from disk there, its flags are already in memory, and messaging's
         # cache hit would pay a spool scan per lookup.
         _reconcile_mcp_app_claims(_restored, _claims)
+        # Checked against the BUILT slot's key: the verdict was decided for the
+        # key the metadata derived, and a mismatch means the build diverged. And
+        # only when no revoke landed while the verdict was read off-loop: a stale
+        # verdict must never re-trust a chat the owner just revoked.
+        if (
+            _trust_restored
+            and chat_trust_persistence.revoke_generation() == _revoke_gen
+            and effective_session_key(_restored)
+            == session_key_for(slot_name, str(meta.get("linked_session_key") or ""))
+        ):
+            chat_trust_persistence.apply_restored_trust(state, _restored)
     return _restored
 
 

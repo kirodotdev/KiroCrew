@@ -312,6 +312,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # spawned shell's `open()` never routes through this gate.
     "quarantined-clones",
     "vouched-executions",  # member-store vouches; also sandbox-masked
+    # The chats the owner trusted (``dashboard.session_trust_store``), restored
+    # after a gateway crash. Read AND write: a write would trust the agent's own
+    # chat, and only the gateway ever reads it. Also sandbox-masked. Its sibling
+    # holds the owner-stop marker, whose deletion would undo an owner stop.
+    "session-trust",
+    "session-trust-stop",
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is

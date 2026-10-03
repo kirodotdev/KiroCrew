@@ -126,7 +126,7 @@ from kiro_crew.cron import (  # noqa: F401
     effective_wake_budget,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
-from kiro_crew.dashboard import cautious_boot, start_dashboard
+from kiro_crew.dashboard import cautious_boot, chat_trust_persistence, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import (
     _arm_queued_delivery_settlement,
@@ -12971,9 +12971,26 @@ class GatewayOrchestrator:
         # same event used by the authenticated owner shutdown route.
         loop = asyncio.get_running_loop()
         _shutting_down = False
+        _force_exit_deferred = False
 
         def _on_signal(*_args: object) -> None:
-            nonlocal _shutting_down
+            nonlocal _shutting_down, _force_exit_deferred
+            if _shutting_down and not _force_exit_deferred:
+                # The second signal is held once while the first signal's worker
+                # has not yet made this stop durable for saved chat trust: exiting
+                # now could let the next boot restore trust the owner just
+                # withdrew. Read, never waited on; a third signal exits regardless.
+                try:
+                    recorded = chat_trust_persistence.owner_stop_recorded()
+                except Exception:
+                    recorded = True
+                if not recorded:
+                    _force_exit_deferred = True
+                    print(
+                        "\n👻 Still recording the stop for saved chat trust; "
+                        "press Ctrl-C again to force exit anyway."
+                    )
+                    return
             if _shutting_down:
                 print("\n👻 Force exit!")
                 # Synchronous by necessity: a signal handler cannot await.
@@ -12986,6 +13003,13 @@ class GatewayOrchestrator:
                 # for extra work before its os._exit is a handler that may not
                 # get there.
                 cleanup_orphaned_sessions(narrow_with_leaders=False)
+                # A second signal is still an owner stop. The first signal's
+                # worker already wrote the owner-stop marker (or the operator
+                # forced past that); start one more best-effort clear and go.
+                try:
+                    chat_trust_persistence.clear_on_force_exit()
+                except Exception:
+                    pass  # force exit must never be blocked by bookkeeping
                 # Same reason as the log queue below: os._exit skips atexit, so the
                 # member event log's own drain hook never runs. Synchronous because
                 # a signal handler cannot await, and bounded inside the module for
@@ -13008,6 +13032,16 @@ class GatewayOrchestrator:
                     pass  # force exit must never be blocked by logging
                 os._exit(0)
             _shutting_down = True
+            # A signal IS an owner stop, so forget saved chat trust on receipt,
+            # before the graceful path runs: a supervisor (or a host reboot) that
+            # SIGKILLs a shutdown which outran its stop timeout must not leave a
+            # record the next boot would restore. Started on a daemon thread and
+            # not waited on: this callback runs on the event loop, which must not
+            # block, and the graceful path awaits its own bounded clear next.
+            try:
+                chat_trust_persistence.start_clear_on_signal()
+            except Exception:
+                logger.error("session trust clear on signal failed", exc_info=True)
             shutdown_event.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -13066,6 +13100,26 @@ class GatewayOrchestrator:
                 getattr(self.dashboard_state, "_secondary_listener_guard", None)
             )
         )
+
+        # An owner stop (exit 0) is the re-consent checkpoint: forget the saved
+        # per-chat trust FIRST, before any teardown that could outlast the
+        # supervisor's stop timeout, so the next boot starts every chat
+        # untrusted. A self-initiated restart (non-zero) keeps it, as does a
+        # crash or the loop-stall watchdog, which never reach this method.
+        try:
+            if exit_code == 0 and not await chat_trust_persistence.clear_on_shutdown_async(
+                exit_code
+            ):
+                # Neither the clear nor the owner-stop marker landed. Try once
+                # more before giving up, then say so loudly: the next boot may
+                # restore trust this stop withdrew.
+                if not await chat_trust_persistence.clear_on_shutdown_async(exit_code):
+                    logger.critical(
+                        "owner stop could not clear saved chat trust or record the stop; "
+                        "the next boot may restore it"
+                    )
+        except Exception:
+            logger.error("session trust clear on shutdown failed", exc_info=True)
 
         # Drop this gateway's run-marker BEFORE _shutdown() releases the
         # listener: once the port is free a replacement gateway can bind it

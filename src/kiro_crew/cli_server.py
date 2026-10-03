@@ -35,7 +35,7 @@ from kiro_crew.config.loader import (
     read_local_secret,
 )
 from kiro_crew.context import ContextBuilder
-from kiro_crew.dashboard import tailnet_serve
+from kiro_crew.dashboard import session_trust_store, tailnet_serve
 from kiro_crew.dashboard.handlers.core import DASHBOARD_HTML_NOT_FOUND_MARKER
 from kiro_crew.dashboard.origin import (
     dashboard_origin,
@@ -573,6 +573,35 @@ def _stop_expected_pid(port: int, expect_pid: int) -> None:
     _stop_mcp_gateway_daemon()
 
 
+def _mark_owner_stop_for_session_trust() -> bool:
+    """Record an owner stop the gateway itself will not see. True when written; never raises."""
+    try:
+        return session_trust_store.mark_owner_stop()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "could not record the owner stop for saved chat trust", exc_info=True
+        )
+        return False
+
+
+def _lock_holder_pid() -> int | None:
+    """The pid that holds this home's gateway lock right now, or None when unsure."""
+    try:
+        holder = lock_holder(config_dir())
+    except Exception:
+        return None
+    return holder.pid if holder.alive else None
+
+
+def _incumbent_still_serving(incumbent: int | None) -> bool:
+    """Whether *incumbent* -- the lock holder read before the action -- still holds it.
+
+    A replacement that took the lock is a different pid and does not count: the
+    restart did happen, so its mark must stand. False when unsure.
+    """
+    return incumbent is not None and _lock_holder_pid() == incumbent
+
+
 def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None:
     """Stop a running KiroCrew gateway.
 
@@ -751,6 +780,24 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
 
     sent: set[int] = set()
     denied: list[int] = []
+    _windows_marked_here = False
+    if platform_compat.IS_WINDOWS and pids:
+        # The Windows stop below is ``taskkill /F``: the gateway gets no signal and
+        # runs none of the shutdown that forgets saved chat trust on an owner stop.
+        # The owner-stop marker is written BEFORE the kill, so a kill that lands
+        # cannot be followed by a failed write; one that never lands takes it back.
+        # A marker that cannot be written still stops: stopping a gateway that
+        # auto-approves tool calls outranks the bookkeeping, so the owner is warned
+        # that the next start may hand the trust back instead.
+        if not session_trust_store.owner_stop_marked():
+            if _mark_owner_stop_for_session_trust():
+                _windows_marked_here = True
+            elif session_trust_store.store_path().exists():
+                print(
+                    "⚠️ Could not record the stop for saved chat trust. Stopping anyway; "
+                    "the next start may turn trust back on for chats you trusted -- "
+                    "turn it off from the chat's approval menu if so."
+                )
     for pid in pids:
         if platform_compat.IS_WINDOWS:
             # No POSIX signals or graceful shutdown for a detached console-less
@@ -779,6 +826,10 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             pass
         except PermissionError:
             denied.append(pid)
+
+    if platform_compat.IS_WINDOWS and _windows_marked_here and not sent:
+        # No kill landed, so the gateway is still serving and keeps its grants.
+        session_trust_store.withdraw_owner_stop()
 
     # Wait briefly for processes to exit so the port is freed
     if sent:
@@ -1404,7 +1455,55 @@ _RESTART_AUDIT_KIND = {
 }
 
 
+#: The gateway a CLI restart found, by the run-marker pid :func:`_restart_gateway`
+#: already reads before it stops anything. Recorded there rather than read again
+#: in :func:`_restart`, so the restart's own probe sequence is unchanged. Absent
+#: (a service restart, no marker) means unknown, which keeps the owner-stop mark.
+_restart_incumbent: dict[str, int | None] = {}
+
+
 def _restart(cli_port: int | None = None) -> None:
+    """Restart the gateway as an owner stop for saved chat trust; see :func:`_restart_gateway`.
+
+    A restart the owner runs is a re-consent point even when there is no
+    incumbent to clear its own record -- after a crash, or a service unit that
+    crashed and is restarted by the manager -- so the owner-stop marker is
+    written first, and the next boot restores nothing. A marker that cannot be
+    written refuses the restart while there is a saved record to protect. A
+    restart that refuses or fails takes its mark back only when the gateway it
+    found (the one its run marker named before it began) still holds the lock: that one
+    keeps serving and keeps its later grants. A replacement that took the lock, a
+    replacement that died, or an outcome nobody can read keeps the mark, toward
+    re-consent.
+    """
+    already_marked = session_trust_store.owner_stop_marked()
+    _restart_incumbent.clear()
+    if (
+        not already_marked
+        and not _mark_owner_stop_for_session_trust()
+        # Nothing saved means nothing to withdraw: a home that cannot take the
+        # marker still restarts when there is no record to protect.
+        and session_trust_store.store_path().exists()
+    ):
+        print(
+            "❌ Could not record the restart for saved chat trust, so the restarted "
+            "gateway could hand back trust you are restarting to withdraw. Not restarting."
+        )
+        sys.exit(1)
+    try:
+        _restart_gateway(cli_port)
+    except BaseException as exc:
+        failed = not isinstance(exc, SystemExit) or exc.code not in (None, 0)
+        if (
+            failed
+            and not already_marked
+            and _incumbent_still_serving(_restart_incumbent.get("pid"))
+        ):
+            session_trust_store.withdraw_owner_stop()
+        raise
+
+
+def _restart_gateway(cli_port: int | None = None) -> None:
     """Restart a running KiroCrew gateway.
 
     Service-aware, mirroring :func:`_stop`:
@@ -1438,6 +1537,11 @@ def _restart(cli_port: int | None = None) -> None:
     short-circuiting through it would target the wrong gateway.
     """
     port = resolve_client_port(cli_port)
+    # Identity of the gateway this restart may replace, read BEFORE anything is
+    # stopped or restarted -- including the service branch below, so a service
+    # restart that refuses can still recognise its own incumbent (see _restart).
+    prior_marker_pid = run_marker.read_pid(port)
+    _restart_incumbent["pid"] = prior_marker_pid
     if cli_port is None:
         report = service_controller.restart_service()
         if report:
@@ -1553,8 +1657,8 @@ def _restart(cli_port: int | None = None) -> None:
     # left to compare the replacement against. _replacement_is_serving() uses it
     # so a 200 from the OUTGOING gateway can never be mistaken for the new one
     # coming up. None (no marker, e.g. after a crash) simply means there is no
-    # old identity to exclude.
-    prior_marker_pid = run_marker.read_pid(port)
+    # old identity to exclude. It is ``prior_marker_pid``, read at the top of
+    # this function, before the service branch.
     listeners = platform_compat.find_listening_pids(port)
     incumbents = [p for p in listeners if _is_kirocrew_process(p)]
     # argv named no incumbent, so the stop below may go through the

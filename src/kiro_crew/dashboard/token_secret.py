@@ -753,15 +753,35 @@ def _load_or_create_secret() -> bytes:
             key_path,
             _CREATE_MAX_ATTEMPTS,
         )
-        return os.urandom(_MIN_KEY_BYTES)
+        return _ephemeral_secret()
     except OSError:
         # Fall back to an ephemeral secret if the key file is unwritable.
         logger.warning("token signing key not persisted; using ephemeral secret", exc_info=True)
-        return os.urandom(_MIN_KEY_BYTES)
+        return _ephemeral_secret()
 
 
 _SECRET: bytes | None = None
 _SECRET_LOCK = threading.Lock()
+
+
+class _EphemeralSecret(bytes):
+    """The fallback secret: the same bytes, typed as never written to disk."""
+
+
+def _ephemeral_secret() -> bytes:
+    """A process-only secret, typed so :func:`secret_is_persisted` can tell."""
+    return _EphemeralSecret(os.urandom(_MIN_KEY_BYTES))
+
+
+def secret_is_persisted() -> bool:
+    """Whether :func:`_get_secret` is the key on disk, so a later process signs with it.
+
+    False for the ephemeral fallback: anything signed under it verifies in this
+    process only, so a caller that must outlive the process (the session-trust
+    record) refuses to sign with it rather than write what no later boot can read.
+    Read off the memoized value itself, so it can never disagree with it.
+    """
+    return not isinstance(_get_secret(), _EphemeralSecret)
 
 
 def _get_secret() -> bytes:

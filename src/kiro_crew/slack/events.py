@@ -825,6 +825,19 @@ async def _handle_restart(
         session_key="", source="slack", tool_name="/kirocrew restart",
         outcome="approved", resources=f"user={caller_id}",
     )
+    # The owner asked for this restart, so it is a re-consent point for saved
+    # chat trust like `kirocrew restart`; it exits non-zero for the supervisor,
+    # which the shutdown path would read as a crash. A clear that fails refuses
+    # the restart, before anything is torn down.
+    # circular import: the dashboard imports these handlers via orchestrator setup
+    from kiro_crew.dashboard import chat_trust_persistence
+
+    if not await chat_trust_persistence.clear_on_shutdown_async(0):
+        await respond(
+            "⛔ Not restarting: saved chat trust could not be cleared, so it would "
+            "come back after the restart."
+        )
+        return
     try:
         await respond("♻️ Restarting gateway…")
     except Exception:

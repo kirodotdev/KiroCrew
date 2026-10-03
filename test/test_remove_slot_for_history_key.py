@@ -3182,13 +3182,16 @@ class TestUnreadableMetadataAbortsTheDelete:
 
         await api_session_delete(request)
 
-        assert log.calls[0].startswith(f"locked_stems:{history_key},")
-        assert log.calls.index(f"locked:{history_key}") < log.calls.index(
-            f"get_metadata:{history_key}"
+        # Saved session trust reads the row's linked key once BEFORE the lock (it
+        # must be removed before anything is unlinked); the owner-key read this
+        # pins is the one inside the hold.
+        locked_at = next(
+            i for i, c in enumerate(log.calls) if c.startswith(f"locked_stems:{history_key},")
         )
-        assert log.calls.index(f"get_metadata:{history_key}") < log.calls.index(
-            f"delete_session:{history_key}"
-        )
+        assert log.calls.index(f"locked:{history_key}") > locked_at
+        inside = log.calls.index(f"get_metadata:{history_key}", locked_at)
+        assert log.calls.index(f"locked:{history_key}") < inside
+        assert inside < log.calls.index(f"delete_session:{history_key}")
 
 
 class TestSessionLedgerOnPermanentDelete:
