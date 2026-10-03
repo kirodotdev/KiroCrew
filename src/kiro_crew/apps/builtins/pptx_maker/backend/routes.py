@@ -28,11 +28,16 @@ every builtin app uses):
   POST /api/apps/pptx-maker/templates/rename    -> rename a user template
   DELETE /api/apps/pptx-maker/templates         -> delete a user template
 
-Three invariants hold across every handler:
+Four invariants hold across the handlers:
 
 * **Deny by default.** Every route is wrapped in :func:`_require_enabled`, which
   refuses with 403 while the app is disabled. Routes are registered once at
   gateway startup, so a default-disabled app would otherwise stay callable.
+* **Mutations are owner only.** Every PUT, POST and DELETE handler calls
+  :func:`_refuse_non_owner` before it reads the body or starts any work. A
+  dashboard caller that is not the owner, or a request with no app claim, gets
+  the shared 403 ``owner_only``. An app token (this app's own, or one granted
+  ``/api/apps/pptx-maker/*``) is already scoped by the auth middleware and passes.
 * **Nothing blocking on the loop.** Every filesystem walk, engine subprocess and
   file read runs through :func:`off_loop`, which hands the work to
   ``subprocess_executor()``. This is not optional: one blocking call here
@@ -427,6 +432,21 @@ def _require_enabled(
     return _wrapped
 
 
+async def _refuse_non_owner(request: web.Request, operation: str) -> web.Response | None:
+    """Return the shared 403 ``owner_only`` unless an app token or the owner calls.
+
+    A mutating route changes the owner's deck root, style and template library,
+    or starts a download and build. A dashboard subject must be the owner. A
+    request with no app claim is held to the same rule (fail closed). An app
+    token keeps its manifest-scoped access.
+    """
+    if request.get("app"):
+        return None
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    return await require_owner_dashboard_request(request, f"pptx_maker.{operation}")
+
+
 def _audit(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
     """Emit a Security Event Log entry for a mutating action.
 
@@ -631,6 +651,8 @@ async def _handle_engine_provision(request: web.Request) -> web.Response:
     it is a decision the operator makes rather than a side effect of opening a
     page. Idempotent — re-running moves an existing checkout to the pinned tag.
     """
+    if (owner_denied := await _refuse_non_owner(request, "engine_provision")) is not None:
+        return owner_denied
     with _engine_lock:
         if _engine_state.state == "running":
             return web.json_response({"state": "running"}, status=202)
@@ -856,6 +878,8 @@ async def _handle_assets_provision(request: web.Request) -> web.Response:
     Fire-and-forget: presentations work without icon packs, so the UI polls
     ``/assets`` for progress rather than holding a request open for the download.
     """
+    if (owner_denied := await _refuse_non_owner(request, "assets_provision")) is not None:
+        return owner_denied
     with _assets_lock:
         if _assets_state.state == "running":
             return web.json_response({"state": "running"}, status=202)
@@ -978,6 +1002,8 @@ async def _handle_put_config(request: web.Request) -> web.Response:
     equality rather than merged, so this endpoint cannot set an
     arbitrary engine option.
     """
+    if (owner_denied := await _refuse_non_owner(request, "set_deck_root")) is not None:
+        return owner_denied
     body, error = await _json_body(request)
     if error is not None:
         return error
@@ -1292,6 +1318,8 @@ async def _handle_style(request: web.Request) -> web.Response:
 
 async def _handle_style_import(request: web.Request) -> web.Response:
     """POST /styles/import?name=<n> — create a user style from the raw body."""
+    if (owner_denied := await _refuse_non_owner(request, "style_import")) is not None:
+        return owner_denied
     name = _query_name(request)
     body = await _read_body(request)
     if body is None:
@@ -1305,6 +1333,8 @@ async def _handle_style_import(request: web.Request) -> web.Response:
 
 async def _handle_style_rename(request: web.Request) -> web.Response:
     """POST /styles/rename {"name","to"} — rename a user style."""
+    if (owner_denied := await _refuse_non_owner(request, "style_rename")) is not None:
+        return owner_denied
     body, error = await _json_body(request)
     if error is not None:
         return error
@@ -1318,6 +1348,8 @@ async def _handle_style_rename(request: web.Request) -> web.Response:
 
 async def _handle_style_pin(request: web.Request) -> web.Response:
     """POST /styles/pin {"name","pinned"} — pin or unpin a style."""
+    if (owner_denied := await _refuse_non_owner(request, "style_pin")) is not None:
+        return owner_denied
     body, error = await _json_body(request)
     if error is not None:
         return error
@@ -1334,6 +1366,8 @@ async def _handle_style_pin(request: web.Request) -> web.Response:
 
 async def _handle_style_delete(request: web.Request) -> web.Response:
     """DELETE /styles?name=<n> — delete a user style."""
+    if (owner_denied := await _refuse_non_owner(request, "style_delete")) is not None:
+        return owner_denied
     name = _query_name(request)
     status, payload = await off_loop(library.delete_style, name)
     _audit("style_delete", name, "ok" if status == 200 else "failed")
@@ -1350,6 +1384,8 @@ async def _handle_templates(request: web.Request) -> web.Response:
 
 async def _handle_template_import(request: web.Request) -> web.Response:
     """POST /templates/import?name=<n>[&description=] — create a user template."""
+    if (owner_denied := await _refuse_non_owner(request, "template_import")) is not None:
+        return owner_denied
     name = _query_name(request)
     description = (request.query.get("description") or "").strip()
     body = await _read_body(request)
@@ -1364,6 +1400,8 @@ async def _handle_template_import(request: web.Request) -> web.Response:
 
 async def _handle_template_rename(request: web.Request) -> web.Response:
     """POST /templates/rename {"name","to"} — rename a user template."""
+    if (owner_denied := await _refuse_non_owner(request, "template_rename")) is not None:
+        return owner_denied
     body, error = await _json_body(request)
     if error is not None:
         return error
@@ -1377,6 +1415,8 @@ async def _handle_template_rename(request: web.Request) -> web.Response:
 
 async def _handle_template_delete(request: web.Request) -> web.Response:
     """DELETE /templates?name=<n> — delete a user template."""
+    if (owner_denied := await _refuse_non_owner(request, "template_delete")) is not None:
+        return owner_denied
     name = _query_name(request)
     status, payload = await off_loop(library.delete_template, name)
     _audit("template_delete", name, "ok" if status == 200 else "failed")

@@ -33,6 +33,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 from unittest import mock
 
@@ -64,6 +65,21 @@ def _raster_body(size: int) -> bytes:
     return random.Random(_RASTER_SEED).randbytes(size)
 
 
+_OWNER = "owner-user"
+
+
+@web.middleware
+async def _as_owner(request: web.Request, handler):
+    """Stamp the dashboard owner's identity, as the auth middleware would.
+
+    The mutating routes are owner only, so every request in these tests arrives
+    as the configured owner (``user == owner_id`` with an empty app claim).
+    """
+    request["user"] = _OWNER
+    request["app"] = ""
+    return await handler(request)
+
+
 def _enabled(value: bool):
     """Patch the app-enablement gate the ``_require_enabled`` wrapper consults."""
     return mock.patch.object(routes, "is_app_enabled", return_value=value)
@@ -73,7 +89,8 @@ class _RoutesFixture(AioHTTPTestCase):
     """A live aiohttp app with the real routes and a temp deck root."""
 
     async def get_application(self) -> web.Application:
-        app = web.Application()
+        app = web.Application(middlewares=[_as_owner])
+        app["state"] = SimpleNamespace(owner_id=_OWNER)
         routes.register_routes(app)
         return app
 
