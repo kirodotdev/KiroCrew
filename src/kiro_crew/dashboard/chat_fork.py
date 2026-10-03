@@ -14,6 +14,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _coerce_requested_mode,
     save_slot_off_loop,
     session_was_deleted,
+    vouch_backend_pick,
 )
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
@@ -1169,6 +1170,8 @@ async def fork_slot(
             raise
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
+    # A fork keeps the parent's backend pick, as it keeps its model and effort.
+    new_slot.acp_backend = slot.acp_backend
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
     # "Auto (Jev)" session that arrived pinned would run the parent's next turns
@@ -1217,6 +1220,11 @@ async def fork_slot(
             # channel turn keeps the origin it actually had.
             carry_provenance(new_slot.messages[-1], m)
         new_slot.drain()
+        if new_slot.acp_backend is not None:
+            # The child's own record: a restart restores a pick only from it.
+            await asyncio.to_thread(
+                vouch_backend_pick, slot_history_key(new_slot), new_slot.acp_backend
+            )
         await save_slot_off_loop(state, new_slot)
         new_slot._resumed_count = len(new_slot.messages)
     except Exception:

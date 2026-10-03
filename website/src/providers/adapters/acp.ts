@@ -1,6 +1,6 @@
 import { api } from '../../api/client'
 import modelTokensRaw from '../../model_tokens.json'
-import { markModelsDegraded } from '../modelListHealth'
+import { markModelsDegraded, modelHealthKey } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -374,14 +374,20 @@ export class AcpAdapter implements ProviderAdapter {
     return { ok: false as const, error: 'plugin update is not supported' }
   }
 
-  async fetchAvailableModels(): Promise<ModelInfo[]> {
+  async fetchAvailableModels(backend?: string): Promise<ModelInfo[]> {
+    // The last-good cache is ONE slot holding the configured backend's list, so a
+    // chat's own backend pick neither reads it (wrong backend's ids) nor writes it
+    // (it would replace the list every other picker reads).
+    const primary = backend === undefined
     try {
-      const models = await api.models()
+      const models = await api.models(backend)
       if (!Array.isArray(models) || models.length === 0) {
         // Empty/non-array success: NOT a live list — keep polling, serve the
-        // last-good live list if we have one, else auto-only.
-        markModelsDegraded(this.id, true)
-        return readCachedModels() ?? this._defaultModels()
+        // last-good live list if we have one, else auto-only. The degraded flag
+        // is keyed per list (`modelHealthKey`): a chat's own backend pick
+        // failing marks that pick's list, never the configured one.
+        markModelsDegraded(modelHealthKey(this.id, backend), true)
+        return (primary ? readCachedModels() : null) ?? this._defaultModels()
       }
       const result = models.map((m: RawModel) => {
         // Prefer the backend's resolved window over the bundled snapshot: the
@@ -398,15 +404,15 @@ export class AcpAdapter implements ProviderAdapter {
           rateMultiplier: rowMultiplier(m),
         }
       })
-      writeCachedModels(result) // remember this good live list for next hiccup
-      markModelsDegraded(this.id, false) // live success → self-heal can stop polling
+      if (primary) writeCachedModels(result) // remember this good live list for next hiccup
+      markModelsDegraded(modelHealthKey(this.id, backend), false) // live success → self-heal can stop polling
       return result
     } catch {
       // Transient backend failure (503 / network): NOT live — keep polling.
       // Serve the last-good live list if we have one, else auto-only. Never
       // surface canonical registry keys — the ACP CLI rejects them (-32603).
-      markModelsDegraded(this.id, true)
-      return readCachedModels() ?? this._defaultModels()
+      markModelsDegraded(modelHealthKey(this.id, backend), true)
+      return (primary ? readCachedModels() : null) ?? this._defaultModels()
     }
   }
 

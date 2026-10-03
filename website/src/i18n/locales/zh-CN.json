@@ -9231,6 +9231,17 @@
       "moreCols": "增加列",
       "fewerRows": "减少行",
       "moreRows": "增加行"
+    },
+    "backendPicker": {
+      "label": "此聊天的 AI 后端",
+      "locked_while_running": "停止当前回复以切换后端",
+      "default": "默认后端",
+      "default_named": "默认（{{name}}）",
+      "unavailable_using_kiro": "{{name}}（不可用，正在使用 Kiro CLI）",
+      "could_not_load": "无法加载 AI 后端",
+      "could_not_load_default": "无法加载配置的默认后端",
+      "switched_fresh_session": "已切换后端。下一条消息将在其上开启新会话。",
+      "model_pin_cleared": "已切换后端。下一条消息将开启新会话；每个后端有各自的模型，因此已清除固定模型。"
     }
   },
   "hooks": {

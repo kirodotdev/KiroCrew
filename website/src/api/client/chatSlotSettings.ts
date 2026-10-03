@@ -16,7 +16,11 @@ export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 
 export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
   const selection = {
-    models: () => fetch('/api/models').then(j),
+    /** The model list. `backend` asks for that backend's own list -- a chat with
+     *  its own backend pick -- instead of the configured backend's; omitted, the
+     *  request is exactly the one it always was. */
+    models: (backend?: string) =>
+      fetch(backend === undefined ? '/api/models' : '/api/models?backend=' + encodeURIComponent(backend)).then(j),
     chatSlotSelectionCapabilities: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
         known: boolean
@@ -41,6 +45,11 @@ export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
         agent,
         ...(kind ? { agent_kind: kind } : {}),
       }).then(j) as Promise<{ ok?: boolean; agent?: string; agent_kind?: 'member' | 'template' | ''; workspace?: string }>,
+    /** Set (`string`, where `''` is Kiro) or clear (`null`) this chat's own
+     *  backend pick. Refused while a turn runs; the chat's next message starts a
+     *  fresh session on the new backend. */
+    chatSlotBackend: (slot: string, backend: string | null) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/backend', { backend }).then(j) as Promise<{ ok?: boolean; backend?: string | null; changed?: boolean; error?: string; code?: string }>,
     chatSlotModel: (slot: string, model: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
     /** This slot's auto-compact threshold override (null = follows the global). */

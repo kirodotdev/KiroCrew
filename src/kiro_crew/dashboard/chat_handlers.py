@@ -86,6 +86,7 @@ from kiro_crew.dashboard.chat_persistence import (
     register_reasoning_effort_values,
     release_prewarmed_session,
     save_slot_off_loop,
+    vouch_backend_pick,
 )
 from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
@@ -214,6 +215,7 @@ from kiro_crew.safety_override import (
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
     is_sensitive_path,
+    redact,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -3871,6 +3873,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
         )
     model = body.get("model", "")
+    # The chat's own backend pick at creation. Validated before anything is
+    # created, with the same check the composer's switch route applies; absent /
+    # null leaves the chat on the member route / configured default.
+    try:
+        create_backend = validate_backend_pick(body.get("backend"))
+    except BackendSwitchRefused as exc:
+        return exc.response()
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
     # handler returns, so the dashboard renders it at the top level for a frame
@@ -3906,6 +3915,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             status=400,
         )
     request_app = request.get("app", "")
+    if create_backend is not None and instance_id:
+        # Refused, not ignored, like the switch route refuses it: a remote chat
+        # runs on the peer, which chooses its own backend, and a 200 that quietly
+        # dropped the pick would answer for a backend the chat will not run on.
+        # Before the binding gates, so nothing is created on the peer either.
+        return web.json_response(
+            {
+                "error": "a remote crew chooses its own backend",
+                "code": "remote_backend_unsupported",
+            },
+            status=409,
+        )
     if instance_id:
         # (1) Binding a session to a crew is a human act: it comes from the
         # composer's crew picker, which an app credential has no surface for. So
@@ -4437,6 +4458,34 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # would turn this 404 into an existence oracle for slots the caller
             # may not know about. The prose stays in `error` for logs.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        # Stamped only on a genuinely new chat (a remote one was refused above).
+        # A re-open of an existing chat keeps its own pick, changed through the
+        # switch route; asking for a DIFFERENT one here is refused rather than
+        # silently ignored. The birth is before any session exists, so there is
+        # nothing to reset.
+        if create_backend is not None and not is_new_slot and slot.acp_backend != create_backend:
+            return web.json_response(
+                {
+                    "error": "that chat already has a backend; switch it from the composer",
+                    "code": "backend_pick_exists",
+                },
+                status=409,
+            )
+        if create_backend is not None and is_new_slot:
+            try:
+                await asyncio.to_thread(vouch_backend_pick, slot_history_key(slot), create_backend)
+            except Exception:  # noqa: BLE001 - reported to the caller below
+                logger.error(
+                    "Slot %s: backend pick record could not be written", slot.key, exc_info=True
+                )
+                return web.json_response(
+                    {
+                        "error": "the chat was created, but its backend could not be saved",
+                        "code": "backend_persist_failed",
+                    },
+                    status=500,
+                )
+            slot.acp_backend = create_backend
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
         # An adopted session takes the PEER's title, ahead of anything the caller
@@ -4675,7 +4724,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
-        if folder_id or title or remote_slot_key:
+        # A backend pick made at creation persists here too: a chat re-opened onto
+        # a transcript already on disk would otherwise keep the pick in memory
+        # only, and a restart before its next save would restore the default.
+        if folder_id or title or remote_slot_key or create_backend is not None:
             # The create/recreate request has been authorized against this
             # transcript.  Do not let a rebind while the off-loop write waits on
             # the history lock redirect its newly supplied metadata to another
@@ -5172,6 +5224,7 @@ async def _reset_slot_session(
     session_key: str,
     *,
     skip_if_busy: bool = False,
+    expect_session: Any = None,
 ) -> bool:
     """Reset a slot's agent session, releasing anything blocked on the old one.
 
@@ -5212,7 +5265,12 @@ async def _reset_slot_session(
         # put a second in flight over the same key.
         await _test_interleave("reset:pre_pop")
     try:
-        reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
+        # ``expect_session`` makes the pop a compare-and-swap: only the named
+        # session is popped, never a successor registered under the same key.
+        reset_kwargs: dict[str, Any] = {"skip_if_busy": skip_if_busy}
+        if expect_session is not None:
+            reset_kwargs["expect_session"] = expect_session
+        reloaded = await state.sessions.reset(session_key, **reset_kwargs)
     except BaseException:
         # Raised or cancelled mid-teardown: the session is in a state this slot
         # cannot vouch for, so neither is its verdict. Unknown fails open.
@@ -5264,6 +5322,12 @@ async def _reset_slot_session(
 # model, workspace) so a frontend that ever starts reading it never has to
 # match per-handler spellings.
 _TEARDOWN_INCOMPLETE_WARNING = "old session teardown incomplete"
+
+# Advisory for a committed backend switch whose gateway record could be neither
+# narrowed to the new pick nor removed: the record may still vouch the prior one.
+_BACKEND_RECORD_STALE_WARNING = (
+    "backend record could not be updated; it may still name the prior pick"
+)
 
 
 async def _reset_slot_session_or_warn(
@@ -9829,6 +9893,449 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
 
 
+class BackendSwitchRefused(Exception):
+    """A per-chat backend read or switch was refused; carries its wire code and status.
+
+    Raised by :func:`validate_backend_pick` and :func:`switch_slot_backend`, the
+    two halves every caller of the per-chat backend shares: the composer's
+    ``POST /api/chat/slots/{slot}/backend`` maps it to a JSON refusal, and the
+    agent's ``session_backend`` tool (``session_control.set_backend_target``) to
+    a ``SessionControlError`` with the SAME code and status, so the two surfaces
+    refuse identically.
+    """
+
+    def __init__(self, message: str, *, code: str, status: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+    def response(self) -> web.Response:
+        return web.json_response({"error": str(self), "code": self.code}, status=self.status)
+
+
+def _backend_display_id(backend: str) -> str:
+    """The policy-facing name of *backend* (``kiro`` for Kiro's empty wire id)."""
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+
+    return str(POLICY_ID_BY_BACKEND.get(backend, backend))
+
+
+def validate_backend_pick(backend: object) -> str | None:
+    """Validate a per-chat backend pick; ``None`` clears the pick.
+
+    A pick must be a string in the selectable set -- the same set the global
+    ``agent.acp_backend`` PATCH allowlist and ``GET /api/acp-backends`` read
+    (``acp_backends.selectable_backend_values``, already narrowed by the
+    governance ceiling), so there is no second selectability decision here
+    (harness-parity H4). ``""`` is Kiro's own id and a real pick; its policy-facing
+    name ``"kiro"`` -- the spelling the agent tool reports -- is accepted for it.
+    Anything else is refused rather than coerced: the caller asked for a specific
+    backend, and silently running a different one would be the wrong answer.
+    """
+    if backend is None:
+        return None
+    if not isinstance(backend, str):
+        raise BackendSwitchRefused(
+            "backend must be a string or null", code="invalid_backend", status=400
+        )
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KIRO,
+        POLICY_ID_KIRO,
+        selectable_backend_values,
+    )
+
+    if backend == POLICY_ID_KIRO:
+        backend = ACP_BACKEND_KIRO
+
+    selectable = selectable_backend_values()
+    if backend not in selectable:
+        offered = ", ".join(_backend_display_id(b) for b in selectable)
+        raise BackendSwitchRefused(
+            f"backend {redact(backend[:64])!r} is not selectable here; "
+            f"choose one of: {offered}",
+            code="invalid_backend",
+            status=400,
+        )
+    return backend
+
+
+def _registered_session(state: DashboardState, session_key: str) -> Any:
+    """The session object registered under *session_key*, or None.
+
+    Folded the way the registry resolves keys (exact, canonical, then legacy
+    aliases), so a chat whose key is a legacy alias names the same session a
+    send under its canonical spelling registered.
+    """
+    sessions = state.sessions
+    return sessions._sessions.get(sessions._fold_key(session_key))
+
+
+async def _discard_session_started_in_switch(
+    state: DashboardState, slot: _ChatSlot, session_key: str, started: Any
+) -> None:
+    """Tear down the session a concurrent send started on a switch that was rolled back.
+
+    Message dispatch does not take ``slot._lock``, so a send landing between the
+    commit and a refusal cold-starts on the pick that is now rolled back.
+    *started* is that session, captured in the same synchronous step that
+    restored the prior pick, and only it is torn down (``expect_session``): a
+    send that lands after the rollback runs on the restored backend and keeps
+    its turn. The tentative session is torn down even mid-turn
+    (``skip_if_busy=False``), since a busy-decline would leave the refused
+    backend serving that turn and every later one. Never raises, since the
+    caller is already answering a refusal.
+    """
+    if started is None or _registered_session(state, session_key) is not started:
+        return
+    try:
+        await _reset_slot_session(
+            state, slot, session_key, skip_if_busy=False, expect_session=started
+        )
+    except Exception:  # noqa: BLE001 - cleanup on an error path must not mask the refusal
+        logger.warning(
+            "Slot %s: could not discard the session started during a rolled-back backend " "switch",
+            slot.key,
+            exc_info=True,
+        )
+
+
+async def _restore_backend_record(slot: _ChatSlot, history_key: str, prior: str | None) -> bool:
+    """Narrow *history_key*'s gateway record back to the *prior* pick alone.
+
+    Every refusal after the switch recorded both picks runs this, so a refused
+    pick is not one a restart would accept from an edited metadata line. Fails
+    closed: when the prior pick cannot be written back, the record is removed
+    instead, so a restart restores no pick (the configured default) rather than
+    the refused one. Returns False only when neither write landed, which leaves
+    the refused pick restorable and must be reported.
+    """
+    try:
+        await asyncio.to_thread(vouch_backend_pick, history_key, prior)
+        return True
+    except Exception:  # noqa: BLE001 - rollback on an error path must not mask it
+        logger.error("Slot %s: could not restore the prior backend record", slot.key, exc_info=True)
+    try:
+        await asyncio.to_thread(vouch_backend_pick, history_key, None)
+        return True
+    except Exception:  # noqa: BLE001 - same
+        logger.error("Slot %s: could not remove the backend record either", slot.key, exc_info=True)
+        return False
+
+
+async def switch_slot_backend(
+    state: DashboardState,
+    slot: _ChatSlot,
+    backend: str | None,
+    *,
+    gate: Callable[[str], None],
+) -> dict[str, Any]:
+    """Store *backend* as *slot*'s backend pick and start the chat on a fresh session.
+
+    THE switch, shared by the composer route and the agent tool. *backend* must
+    already be validated (:func:`validate_backend_pick`). *gate* is the caller's
+    own synchronous authorization, re-run with the slot's current session key
+    after every lock await and immediately before the commit: the composer
+    route re-checks slot identity and app ownership, the agent tool re-runs
+    ``authorize_target``. Any exception it raises refuses the switch and rolls
+    the pick back.
+
+    A backend is a separate PROCESS, so there is no live in-place switch the way
+    a model has one: the session is reset and the chat's next message starts a
+    fresh session on the new backend through the provider factory, where the
+    pick crosses the single selection gate. The conversation transcript is kept.
+    Refused while a turn or attached sub-agents are in flight (the reset would
+    tear them down), exactly as the model picker is locked during a turn.
+
+    Commit-before-reset, like the model and workspace switches: a send that
+    lands inside the reset window cold-starts on the NEW pick, which is the
+    pick being made. The chat's model pin is cleared with the switch -- a model
+    id belongs to one backend's catalog, and the picker offers the new backend's
+    list -- and the pick generation is bumped so a pending agent model pick
+    cannot re-apply the old backend's id.
+
+    The chat record is saved before success is reported, so the pick survives a
+    gateway restart; a save that does not commit rolls the pick back. The pick is
+    also written to the gateway-owned record a restart restores it from
+    (:func:`~kiro_crew.dashboard.chat_persistence.vouch_backend_pick`), because
+    the transcript's metadata line is agent-editable and is not trusted alone.
+    That record is written FIRST, naming both the prior and the new pick, before
+    the new pick is published in memory; it is narrowed to the new pick only
+    after the metadata line commits, so a crash between the two writes restarts
+    on whichever pick the line holds. Every refusal narrows it back to the prior
+    pick. The gate runs once more after the save; a refusal there restores the
+    prior record, so the refused pick is not what the next restart brings back.
+    """
+    if slot.is_remote or slot.executor == "remote":
+        raise BackendSwitchRefused(
+            "that session runs on a remote crew, which chooses its own backend",
+            code="remote_backend_unsupported",
+            status=409,
+        )
+    async with contextlib.AsyncExitStack() as stack:
+        # Same lock order as the model switch (slot._lock, the session lock keyed
+        # on the in-lock effective key, then _model_pick_lock), so a backend and a
+        # model switch on one chat serialize.
+        await stack.enter_async_context(slot._lock)
+        gate(effective_session_key(slot))
+        session_key = effective_session_key(slot)
+        await stack.enter_async_context(_slot_switch_session_lock(session_key))
+        await stack.enter_async_context(slot._model_pick_lock)
+        gate(session_key)
+        if slot.acp_backend == backend:
+            return {"ok": True, "backend": backend, "changed": False}
+        if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
+            raise BackendSwitchRefused("a turn is in flight", code="turn_in_flight", status=409)
+        if await subagents_attached_async(state, slot, session_key, "slot_backend"):
+            raise BackendSwitchRefused(
+                "sub-agents are running", code="slot_subagents_running", status=409
+            )
+        # The probe above awaited: re-authorize and re-read the idle state
+        # synchronously right before the commit.
+        gate(session_key)
+        if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
+            raise BackendSwitchRefused("a turn is in flight", code="turn_in_flight", status=409)
+        prior_backend, prior_model = slot.acp_backend, slot.model
+        record_stale = False
+        # The session a concurrent send started under the tentative pick, captured
+        # by `_roll_back` once this request's reset has popped the old one. The
+        # discard tears down exactly that session, so a send that lands after the
+        # rollback (on the restored backend) is never cut off mid-turn.
+        tentative: list[Any] = [None]
+        reset_popped = False
+        history_key = slot_history_key(slot)
+
+        async def _undo_record() -> None:
+            """Narrow the record back to the prior pick on a refusal, or say it failed.
+
+            A record left accepting the refused pick lets an edited metadata line
+            restore it after a restart, so a rollback that could neither rewrite
+            nor remove the record is reported as such instead of the refusal.
+            """
+            if await _restore_backend_record(slot, history_key, prior_backend):
+                return
+            await _discard_session_started_in_switch(state, slot, session_key, tentative[0])
+            state.push_slots_update()
+            raise BackendSwitchRefused(
+                "the switch was refused but could not be undone on disk; "
+                "pick the backend again before restarting the gateway",
+                code="backend_rollback_failed",
+                status=500,
+            )
+
+        # Persist before publishing: the gateway record accepts BOTH picks before
+        # the new one is visible in memory or on the metadata line, so a gateway
+        # that dies anywhere between here and the final record write restarts on
+        # whichever pick its metadata line holds rather than on neither.
+        try:
+            await asyncio.to_thread(vouch_backend_pick, history_key, backend, also=prior_backend)
+        except Exception:
+            logger.error("Slot %s: backend record write raised", slot.key, exc_info=True)
+            raise BackendSwitchRefused(
+                "backend selection could not be saved",
+                code="backend_persist_failed",
+                status=500,
+            ) from None
+        # That write awaited: the same synchronous re-check before publishing.
+        try:
+            gate(session_key)
+            if _switch_target_busy(
+                state, slot, session_key, state.sessions.get_provider(session_key)
+            ):
+                raise BackendSwitchRefused("a turn is in flight", code="turn_in_flight", status=409)
+        except Exception:
+            await _undo_record()
+            raise
+        prior_pick_gen = slot._model_pick_gen
+        slot.acp_backend = backend
+        slot.model = ""
+        slot._model_pick_gen += 1
+        logger.info(
+            "Slot %s backend switching to %s, resetting session",
+            slot.key,
+            "(no pick)" if backend is None else repr(_backend_display_id(backend)),
+        )
+
+        def _roll_back() -> None:
+            """Undo this request's commit: backend, model AND pick generation.
+
+            A refused switch changed nothing, so the generation bump goes too --
+            left in place, the next turn would discard a still-valid pending agent
+            model pick as superseded. Compare-and-swap like the model switch's
+            ``_rollback_pick``: only restore when the state is still exactly ours.
+            """
+            if slot._model_pick_gen == prior_pick_gen + 1 and slot.acp_backend == backend:
+                if reset_popped:
+                    # Read in the same synchronous step as the restore: anything
+                    # registered now started while the tentative pick was live.
+                    tentative[0] = _registered_session(state, session_key)
+                slot.acp_backend = prior_backend
+                slot.model = prior_model
+                slot._model_pick_gen = prior_pick_gen
+
+        try:
+            reset_ok = await _reset_slot_session_or_warn(
+                state, slot, session_key, switch_kind="backend"
+            )
+        except Exception:
+            _roll_back()
+            await _undo_record()
+            raise
+        reset_popped = reset_ok is not False
+        if reset_ok is False and state.sessions.get_provider(session_key) is not None:
+            # A live session declined the reset: a turn slipped into the window.
+            # It runs on the old backend, so the pick is rolled back and the
+            # caller retries once the turn ends. (False with NOTHING registered is
+            # a chat with no session yet, e.g. a brand-new one -- nothing to tear
+            # down, and the pick stands.)
+            _roll_back()
+            await _undo_record()
+            raise BackendSwitchRefused("a turn is in flight", code="turn_in_flight", status=409)
+        if effective_session_key(slot) != session_key:
+            _roll_back()
+            await _undo_record()
+            # A send inside the reset await may have cold-started on the refused
+            # pick under the old key; it must not keep serving turns there.
+            await _discard_session_started_in_switch(state, slot, session_key, tentative[0])
+            raise BackendSwitchRefused(
+                "the session was rebound during the switch", code="session_rebound", status=409
+            )
+        # The reset awaited: re-authorize before the pick is persisted. A same-name
+        # replacement or an app-ownership change during that await keeps the same
+        # session key, so the rebind check above cannot see it; the caller's gate can.
+        # ANY refusal rolls back: the agent tool's gate raises its own error type.
+        try:
+            gate(session_key)
+        except Exception:
+            _roll_back()
+            await _undo_record()
+            # A send that landed inside the reset await cold-started on the new
+            # pick; it must not keep serving turns on the refused backend.
+            await _discard_session_started_in_switch(state, slot, session_key, tentative[0])
+            state.push_slots_update()
+            raise
+
+        async def _restore_prior_durably() -> None:
+            """Put the prior pick back on disk after the new one was written.
+
+            The gateway record is what a restart restores from, so rewriting it
+            (or, failing that, removing it) is what undoes the pick durably; the
+            metadata save is best effort. When the record could be neither
+            rewritten nor removed, the refused pick would come back after a
+            restart, so that is reported instead of the refusal itself.
+            """
+            await _undo_record()
+            try:
+                await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=True,
+                    expected_history_key=history_key,
+                    expected_slot_name=slot.key,
+                )
+            except Exception:  # noqa: BLE001 - rollback on an error path must not mask it
+                logger.warning(
+                    "Slot %s: could not re-save the rolled-back backend pick",
+                    slot.key,
+                    exc_info=True,
+                )
+
+        _broadcast_context_reset(state, slot.key, None)
+        try:
+            # Pinned to the transcript and slot authorized above: a same-name close
+            # and reopen during this await must not take this slot's snapshot.
+            committed = await save_slot_off_loop(
+                state,
+                slot,
+                force=True,
+                best_effort=False,
+                expected_history_key=history_key,
+                expected_slot_name=slot.key,
+            )
+        except Exception:
+            logger.error("Slot %s: backend pick save raised; rolled back", slot.key, exc_info=True)
+            committed = False
+        if not committed:
+            _roll_back()
+            await _restore_prior_durably()
+            await _discard_session_started_in_switch(state, slot, session_key, tentative[0])
+            state.push_slots_update()
+            raise BackendSwitchRefused(
+                "backend selection could not be saved",
+                code="backend_persist_failed",
+                status=500,
+            )
+        # The save awaited too: a target that became linked, mirrored or replaced
+        # while it ran must not keep a pick its caller is not allowed to make.
+        try:
+            gate(session_key)
+        except Exception:
+            _roll_back()
+            await _restore_prior_durably()
+            await _discard_session_started_in_switch(state, slot, session_key, tentative[0])
+            state.push_slots_update()
+            raise
+        # Both the metadata line and the record now name the new pick: narrow the
+        # record to it. Fails closed: a record that cannot be narrowed is removed,
+        # so it cannot keep vouching the prior pick for an edited metadata line
+        # (a restart then restores the default). Only when neither write lands is
+        # the stale record left behind, and the answer says so.
+        try:
+            await asyncio.to_thread(vouch_backend_pick, history_key, backend)
+        except Exception:  # noqa: BLE001 - the pick is committed; fall back below
+            logger.warning("Slot %s: could not narrow the backend record", slot.key, exc_info=True)
+            try:
+                await asyncio.to_thread(vouch_backend_pick, history_key, None)
+            except Exception:  # noqa: BLE001 - reported in the answer
+                logger.error(
+                    "Slot %s: backend record could be neither narrowed nor removed",
+                    slot.key,
+                    exc_info=True,
+                )
+                record_stale = True
+    state.push_slots_update()
+    result: dict[str, Any] = {"ok": True, "backend": backend, "changed": True}
+    if reset_ok is None:
+        result["warning"] = _TEARDOWN_INCOMPLETE_WARNING
+    if record_stale:
+        result["warning"] = _BACKEND_RECORD_STALE_WARNING
+    return result
+
+
+async def api_chat_slot_backend(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/backend — set or clear a chat's backend pick.
+
+    Body: ``{"backend": "<id>" | "" | null}``. ``null`` clears the pick (the chat
+    follows the member route / configured default again); a string must be a
+    selectable backend id, and ``""`` is Kiro. See :func:`switch_slot_backend`.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if slot is None:
+        return _slot_not_found()
+    denied = _deny_cross_app_slot_access(request, slot, name, "slot_backend")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+
+    def gate(session_key: str) -> None:
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_backend"):
+            raise BackendSwitchRefused("not found", code="slot_not_found", status=404)
+        if _app_cancel_denied(request, slot, "chat.slot_backend", session_key) is not None:
+            raise BackendSwitchRefused("not found", code="slot_not_found", status=404)
+
+    try:
+        backend = validate_backend_pick(body.get("backend"))
+        result = await switch_slot_backend(state, slot, backend, gate=gate)
+    except BackendSwitchRefused as exc:
+        return exc.response()
+    return web.json_response(result)
+
+
 async def api_chat_slot_model(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/model — set model for a chat slot.
 
@@ -10825,7 +11332,10 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
 
 
 async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
-    """Resolve a cold slot through the same member-aware gate as the provider factory."""
+    """Resolve a cold slot through the same gate as the provider factory.
+
+    The chat's own backend pick first, then the member route, then the default.
+    """
     config = await asyncio.to_thread(KiroCrewConfig.load)
     from kiro_crew.members import select_provider_backend
 
@@ -10833,6 +11343,7 @@ async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
         effective_session_key(slot),
         config.agent.member_acp_backend,
         config.agent.acp_backend,
+        slot.acp_backend,
     )
 
 

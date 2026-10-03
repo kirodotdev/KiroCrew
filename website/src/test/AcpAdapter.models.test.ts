@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { AcpAdapter, clearCachedModels } from '../providers/adapters/acp'
 import {
   markModelsDegraded,
+  modelHealthKey,
   modelsDegraded,
   modelListRefetchInterval,
 } from '../providers/modelListHealth'
@@ -218,5 +219,39 @@ describe('model-list liveness (self-heal signal)', () => {
 
   it('does not poll an unmarked/unknown provider', () => {
     expect(modelListRefetchInterval({ queryKey: ['available-models', 'other'] })).toBe(false)
+  })
+
+  it("leaves the configured list's flag alone when a chat's own backend list fails", async () => {
+    // The flag is keyed per list, so a per-chat `?backend=` failure marks that
+    // pick's list and never reports the configured list degraded.
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels('claude')
+    expect(modelsDegraded('acp')).toBe(false)
+    ;(api.models as ModelsMock).mockResolvedValue([])
+    await adapter.fetchAvailableModels('claude')
+    expect(modelsDegraded('acp')).toBe(false)
+  })
+
+  it("does not clear a degraded configured list on a chat's own backend success", async () => {
+    markModelsDegraded('acp', true)
+    ;(api.models as ModelsMock).mockResolvedValue([{ model_name: 'claude-x', description: 'a' }])
+    await new AcpAdapter().fetchAvailableModels('claude')
+    expect(modelsDegraded('acp')).toBe(true)
+  })
+
+  it("polls a chat's own backend list while it is degraded, and stops on a live success", async () => {
+    // A picked list lives under ['available-models', <provider>, <backend>] with
+    // staleTime Infinity: without its own flag a single failure would leave the
+    // chat on auto-only until a reload.
+    markModelsDegraded(modelHealthKey('acp', 'claude'), false)
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels('claude')
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp', 'claude'] })).toBe(8_000)
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp'] })).toBe(false)
+    ;(api.models as ModelsMock).mockResolvedValue([{ model_name: 'claude-x', description: 'a' }])
+    await adapter.fetchAvailableModels('claude')
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp', 'claude'] })).toBe(false)
   })
 })

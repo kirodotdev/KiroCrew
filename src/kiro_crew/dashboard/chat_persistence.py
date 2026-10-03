@@ -118,6 +118,7 @@ from kiro_crew.history import (  # noqa: F401
     SLOT_OWNED_META_KEYS,
     ConversationLog,
     _archive_lines,
+    _safe_key,
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
@@ -462,6 +463,141 @@ def _restored_mode(raw: object) -> str:
     return raw
 
 
+#: Gateway-owned record of each chat's authorized backend pick, one file per
+#: transcript key. Under ``crew-panels/`` for the reason
+#: :data:`_VALIDATED_EFFORT_DIR` is: that tree is masked from the agent sandbox,
+#: so an agent cannot read or plant a record there.
+_VOUCHED_BACKEND_DIR = "crew-panels/backend_picks"
+#: Longest backend id a record may hold; ids are short registry names.
+_MAX_VOUCHED_BACKEND_LEN = 64
+#: Largest record file read back: a JSON list of at most two such ids.
+_MAX_VOUCHED_RECORD_BYTES = 4 * _MAX_VOUCHED_BACKEND_LEN
+#: Records prefetched by the off-loop restore reads, keyed by transcript key and
+#: consumed by the loop-affine apply half, so the apply never touches the disk.
+#: An entry lives only between its prefetch and its apply.
+_vouched_backend_cache: dict[str, frozenset[str]] = {}
+
+
+def _vouched_backend_path(history_key: str) -> Path:
+    """The record file for *history_key*: a portable hashed basename.
+
+    Hashes the transcript's file stem, so the ``dashboard:chat-1`` form a slot
+    writes and the ``dashboard_chat-1`` form a history delete names reach the same
+    record.
+    """
+    digest = hashlib.sha256(_safe_key(history_key).encode("utf-8")).hexdigest()
+    return config_dir() / _VOUCHED_BACKEND_DIR / digest
+
+
+def vouch_backend_pick(history_key: str, backend: str | None, *, also: str | None = None) -> None:
+    """Durably record the picks a restart may restore for *history_key*.
+
+    Blocking file IO: call it through ``asyncio.to_thread`` from the loop.
+    Called only by the owner-gated paths that set a pick (chat creation, the
+    switch, fork), AFTER their gate passed. The record names *backend* and, when
+    given, *also*; ``None`` names nothing, and a record naming nothing is removed.
+    Raises ``OSError`` when the record cannot be written, so the caller can
+    refuse the pick rather than report one a restart would drop.
+
+    *also* is the switch's crash window. The switch writes this record and the
+    chat's metadata line separately, so it first records BOTH the prior pick and
+    the new one, then saves the metadata line, then records the new pick alone.
+    A gateway that dies between any two of those writes restarts with a metadata
+    line the record still accepts, so the restart keeps whichever pick reached
+    the metadata line instead of dropping both.
+    """
+    accepted = sorted({value for value in (backend, also) if value is not None})
+    path = _vouched_backend_path(history_key)
+    directory = path.parent
+    if directory.parent.is_symlink():
+        raise OSError("vouched backend parent is a symlink")
+    if not accepted:
+        if path.is_symlink():
+            raise OSError("vouched backend record is a symlink")
+        path.unlink(missing_ok=True)
+    else:
+        if any(len(value) > _MAX_VOUCHED_BACKEND_LEN for value in accepted):
+            raise OSError("backend id too long to vouch")
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if directory.is_symlink() or path.is_symlink():
+            raise OSError("vouched backend record is a symlink")
+        atomic_write(path, json.dumps(accepted), fsync=True, restrict_to_owner=True)
+    # A restore prefetched before this write must not apply the old record.
+    _vouched_backend_cache.pop(history_key, None)
+
+
+def forget_backend_pick(history_key: str) -> None:
+    """Remove *history_key*'s record when its transcript is deleted.
+
+    Best effort and blocking: a record left behind is harmless to every other
+    chat (the file is keyed on this transcript alone) but would otherwise sit in
+    the gateway tree forever, and would re-vouch a stale pick if the same key
+    were ever reused.
+    """
+    for attempt in (1, 2):
+        try:
+            vouch_backend_pick(history_key, None)
+            return
+        except OSError:
+            if attempt == 2:
+                logger.error(
+                    "Could not remove the backend record for deleted transcript %s",
+                    history_key,
+                    exc_info=True,
+                )
+
+
+def _read_vouched_backend(history_key: str) -> frozenset[str]:
+    """The picks recorded for *history_key*; empty for no (or an unreadable) record."""
+    path = _vouched_backend_path(history_key)
+    try:
+        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            return frozenset()
+        if path.stat().st_size > _MAX_VOUCHED_RECORD_BYTES:
+            return frozenset()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return frozenset()
+    if not isinstance(raw, list) or len(raw) > 2:
+        return frozenset()
+    return frozenset(v for v in raw if isinstance(v, str) and len(v) <= _MAX_VOUCHED_BACKEND_LEN)
+
+
+def prefetch_vouched_backend(history_key: str) -> None:
+    """Read *history_key*'s record into the cache. Blocking: run off the loop."""
+    _vouched_backend_cache[history_key] = _read_vouched_backend(history_key)
+
+
+def _restored_acp_backend(meta: Mapping[str, object], history_key: str) -> str | None:
+    """The chat's backend pick to restore, or ``None``.
+
+    The metadata line is agent-editable, so its ``acp_backend`` alone is not
+    enough: a prompt-injected agent could rewrite another chat's line and have
+    it come back after a restart on a backend -- another process and account --
+    its owner never picked, without passing session-control authorization. The
+    pick is therefore restored only when the gateway-owned record written by
+    the owner-gated switch (:func:`vouch_backend_pick`) names the SAME value.
+    Any disagreement, or no record, restores no pick, which is the configured
+    default the owner chose. A record left mid-switch names both the prior and
+    the new pick, and either one restores.
+
+    The value is NOT checked for selectability here: the pick crosses the single
+    selection gate (``members.select_provider_backend`` ->
+    ``resolve_selected_backend``) every time a session is built for the chat.
+    """
+    raw = meta.get("acp_backend")
+    if not isinstance(raw, str):
+        return None
+    vouched = _vouched_backend_cache.pop(history_key, frozenset())
+    if raw not in vouched:
+        logger.warning(
+            "Not restoring backend pick for %s: it has no matching gateway record",
+            history_key,
+        )
+        return None
+    return raw
+
+
 def save_all_slots_to_history(state: DashboardState) -> None:
     """Save all active slots to history. Called on gateway shutdown."""
     for slot in list(state._slots.values()):
@@ -528,6 +664,8 @@ def _prefetch_rehydrate_inputs(
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
         return meta or {}, readable, None, None, None, None, False
+    if isinstance(meta.get("acp_backend"), str):
+        prefetch_vouched_backend(history_key)
     return (
         meta,
         readable,
@@ -1183,6 +1321,10 @@ def _rehydrate_slot_from_history(
     # No metadata → session was never persisted. Don't create a phantom slot.
     if not meta:
         return None
+    if _prefetched_meta is None and isinstance(meta.get("acp_backend"), str):
+        # The synchronous callers read inline, so the backend record is read
+        # here too; async callers fetched it in their worker-thread prefetch.
+        prefetch_vouched_backend(history_key)
     if _is_app_owned_channel_row(meta, history_key):
         return None
     # ``adopt_closed`` restores a session that was archived with ``closed``.
@@ -1314,6 +1456,7 @@ def _rehydrate_slot_from_history(
         # gateway-authored lineage. The flag lives in memory only: a restart leaves
         # the slot on its persisted model -- the documented refusal -- and the owner
         # re-picks "Auto (Jev)" to route again.
+        slot.acp_backend = _restored_acp_backend(meta, history_key)
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
@@ -1863,6 +2006,8 @@ def _prefetch_recent_session(
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
             return None, None, None, None, False
+    if isinstance(meta.get("acp_backend"), str):
+        prefetch_vouched_backend(key)
     return (
         meta,
         conv_log.read_messages_chained(key),
@@ -1976,6 +2121,7 @@ def _apply_recent_session(
             slot.model = kiro_model_map.get(kiro_name, "")
         except Exception:
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
+    slot.acp_backend = _restored_acp_backend(meta, key)
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))

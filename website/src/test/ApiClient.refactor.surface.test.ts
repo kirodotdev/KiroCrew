@@ -64,7 +64,7 @@ const API_KEY_ORDER = [
   'memberPanel', 'memberBriefing', 'teams', 'updateKirocrewAgent',
   'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models',
   'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands', 'chatSlotAgent',
-  'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotsModel',
+  'chatSlotBackend', 'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotsModel',
   'chatSlotReasoningEffort', 'chatSlotWorkspace', 'chatSlotReload', 'chatSlotProject',
   'createWorktree', 'recentProjects', 'browseDirs', 'browseDrives',
   'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog',

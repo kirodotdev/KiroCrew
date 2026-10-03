@@ -9483,6 +9483,17 @@
       "moreCols": "plus de colonnes",
       "fewerRows": "moins de lignes",
       "moreRows": "plus de lignes"
+    },
+    "backendPicker": {
+      "label": "Backend d'IA de ce chat",
+      "locked_while_running": "Arrête la réponse en cours pour changer de backend",
+      "default": "Backend par défaut",
+      "default_named": "Par défaut ({{name}})",
+      "unavailable_using_kiro": "{{name}} (indisponible, Kiro CLI est utilisé)",
+      "could_not_load": "Impossible de charger les backends d'IA",
+      "could_not_load_default": "Impossible de charger le backend par défaut configuré",
+      "switched_fresh_session": "Backend changé. Ton prochain message y démarre une nouvelle session.",
+      "model_pin_cleared": "Backend changé. Ton prochain message y démarre une nouvelle session, et le modèle épinglé a été retiré, car chaque backend a ses propres modèles."
     }
   },
   "hooks": {

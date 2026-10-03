@@ -214,6 +214,7 @@ const DRAWER_UNCOVERED_PX = 40
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import WelcomeView from '../components/WelcomeView'
+import BackendPicker, { BackendPickerNotices, switchNoticeKey } from '../components/BackendPicker'
 import { MemoryModeChip, type MemoryMode } from '../components/MemoryModeChip'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -832,7 +833,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     installedAgents, defaultAgent, remoteCrew, effectiveAgents,
     defaultAgentFailed, toggleDefaultAgent,
     agentDropdown, setAgentDropdown, agentFilter, setAgentFilter, agentDropdownRef, agentInputRef, filteredAgents,
-    effectiveModels,
+    effectiveModels, activeSlotBackend,
   } = useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, slots, dispatch })
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', activeSlot],
@@ -2463,6 +2464,45 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // a fresh array on every agents refetch, so naming it would rebuild the
     // callback — and every picker holding it — for no behavioral gain.
   }, [activeSlot, dispatch, setPendingAgent, setPendingModel])
+  // A pick from the composer's backend picker. The gateway resets the chat's
+  // session (a backend is a separate process) and clears its model pin, so both
+  // are written back from the response; a refusal (a turn started, the pick is
+  // no longer selectable) shows beside the picker as an ErrorNotice.
+  const backendMutation = useMutation({
+    mutationFn: async ({ slot, backend }: { slot: string; backend: string | null; priorModel: string }) => {
+      const r = await api.chatSlotBackend(slot, backend)
+      if (!r || r.ok === false || r.error) throw new Error(r?.error || 'backend switch refused')
+      return r
+    },
+    onMutate: () => { dispatch(setAgentSwitchNotice(null)) },
+    onSuccess: (r, { slot, backend, priorModel }) => {
+      dispatch(updateSlot({
+        key: slot,
+        acp_backend: r.backend === undefined ? backend : r.backend,
+        ...(r.changed ? { model: '' } : {}),
+      }))
+      queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slot] })
+      // A switch starts a fresh session (the agent keeps no in-session state) and
+      // clears the chat's model pin (a model id belongs to one backend's
+      // catalog). Say so on every switch, and name the pin when one was lost.
+      const notice = switchNoticeKey(r.changed, priorModel)
+      if (notice) dispatch(setAgentSwitchNotice(i18nT(notice)))
+    },
+    onError: (e) => {
+      // Shown by the picker itself through ErrorNotice (with the ask-agent hand-off),
+      // not on the shared switch banner.
+      // eslint-disable-next-line no-console -- surface switchBackend failures for debugging
+      console.error('switchBackend failed', e)
+    },
+  })
+  const { mutate: mutateBackend, reset: resetBackendMutation } = backendMutation
+  const backendSwitchError = backendMutation.isError ? agentSwitchFailureMessage(backendMutation.error) : null
+  // A refusal belongs to the chat it was made in.
+  useEffect(() => { resetBackendMutation() }, [activeSlot, resetBackendMutation])
+  const switchBackend = useCallback((backend: string | null) => {
+    if (!activeSlot) return
+    mutateBackend({ slot: activeSlot, backend, priorModel: slots.find(s => s.key === activeSlot)?.model ?? '' })
+  }, [activeSlot, slots, mutateBackend])
   const switchModel = useCallback(async (modelName: string) => {
     // 'auto' is stored VERBATIM, not collapsed to ''. Both resolve to the same
     // provider behaviour server-side, but '' is also the "never chosen" state,
@@ -6195,6 +6235,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
               onAgentClick={provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
+              // A peer-bound chat runs on the peer, which picks its own backend.
+              backendPicker={activeSlot && !activeSlotRemoteBound ? (
+                <BackendPicker value={activeSlotBackend} degraded={!!currentSlot?.acp_backend_degraded} disabled={composerBusy} onChange={switchBackend} />
+              ) : undefined}
+              backendPickerNotice={activeSlot && !activeSlotRemoteBound ? (
+                <BackendPickerNotices value={activeSlotBackend} switchError={backendSwitchError} onDismissSwitchError={resetBackendMutation} />
+              ) : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
                 modelPickerReturnsFocusRef.current = !!composerHadFocus
                 anchorModelBtn(rect, trigger); setModelDropdown(!modelDropdown)

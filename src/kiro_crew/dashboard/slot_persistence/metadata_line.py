@@ -383,6 +383,9 @@ def merge_empty_window(
             # so the override is CLEARABLE: written even when None,
             # like the other clearable fields above.
             "autocompact_pct": slot.autocompact_pct,
+            # CLEARABLE for the same reason: ``None`` is "no backend
+            # pick", and the merge cannot delete a key.
+            "acp_backend": slot.acp_backend,
         }
         if slot.title and slot.title != slot.key:
             fields["title"] = slot.title
@@ -734,6 +737,12 @@ def build_full_line(
             meta_line["dismissed_source_links"] = _capped_dismissed_line(
                 slot._dismissed_source_links
             )
+    # The chat's backend pick. Written only when there is one, so a chat
+    # without a pick keeps the line it always had; the key is slot-owned
+    # (``history.SLOT_OWNED_META_KEYS``), so its absence clears an older
+    # line's pick. ``""`` is a Kiro pick and is written.
+    if slot.acp_backend is not None:
+        meta_line["acp_backend"] = slot.acp_backend
     if slot.mode:
         meta_line["mode"] = slot.mode
     if slot.workspace and slot.workspace != "default":

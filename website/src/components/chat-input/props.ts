@@ -176,6 +176,13 @@ export interface ChatInputProps {
    *  uses it to hand focus back to the editor after a pick, and only then: a
    *  user who was not typing does not get the composer focused under them. */
   onModelClick?: (rect: DOMRect, trigger?: HTMLElement, composerHadFocus?: boolean) => void
+  /** The chat's AI backend picker (rendered in its own shelf group beside the
+   *  model chip). Absent when there is nothing to pick. */
+  backendPicker?: React.ReactNode
+  /** Errors from the backend picker (a refused switch, a failed config read),
+   *  rendered on their own full-width row under the shelf: the picker's group is
+   *  width-capped on a narrow pane, which would crush a notice and its controls. */
+  backendPickerNotice?: React.ReactNode
   onProjectClick?: (rect: DOMRect, trigger?: HTMLElement) => void
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {

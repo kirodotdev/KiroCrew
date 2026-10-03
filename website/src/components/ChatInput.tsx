@@ -139,6 +139,8 @@ function ChatInput({
   modelName,
   onAgentClick,
   onModelClick,
+  backendPicker,
+  backendPickerNotice,
   onProjectClick,
   sessionControls,
   onSessionControlClick,
@@ -1196,6 +1198,7 @@ function ChatInput({
         !composerCollapsed &&
         (onProjectClick ||
           (onModelClick && modelName) ||
+          !!backendPicker ||
           // An app-contributed chip is reason enough to draw the shelf. Without
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
@@ -1256,6 +1259,19 @@ function ChatInput({
           </div>
           )}
           </div>
+          {/* Its own separated group, like the app session controls: the chip
+              group beside it is already at `max-two-buttons-per-row`. It
+              shrinks, capped by the shelf's width signal like the chips, so a
+              narrow pane truncates the backend name instead of pushing the
+              context readout and model chip off the shelf. */}
+          {backendPicker && (
+            <div
+              data-testid="composer-backend-group"
+              className={`flex items-center min-w-0 pl-2 border-l border-border ${shelfTiny ? 'max-w-[72px]' : shelfCompact ? 'max-w-[120px]' : ''}`}
+            >
+              {backendPicker}
+            </div>
+          )}
           <div className="flex items-center shrink-0">
           {contextPct != null && (
             <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
@@ -1264,6 +1280,11 @@ function ChatInput({
             <ModelChip modelName={modelName} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfCompact={shelfCompact} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />
           )}
           </div>
+        </div>
+      )}
+      {backendPickerNotice && (
+        <div data-testid="composer-backend-notice-row" className="flex min-w-0 px-2 pb-1">
+          {backendPickerNotice}
         </div>
       )}
     </div>

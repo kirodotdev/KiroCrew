@@ -186,6 +186,10 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "agent",
         "model",
         "reasoning_effort",
+        # The chat's backend pick. Slot-owned so a cleared pick (absent / null)
+        # is not carried forward from an older line by ``carry_unowned_metadata``
+        # and resurrected on the next restart.
+        "acp_backend",
         "autocompact_pct",
         # Source-link dismissals: the slot save is authoritative (it rebuilds the
         # line from ``slot._dismissed_source_links``), so on a FULL save absence
@@ -3581,6 +3585,10 @@ class ConversationLog:
             from kiro_crew._durable_vouch import forget_durable_vouch
 
             forget_durable_vouch(key)
+            # So does the chat's gateway-owned backend-pick record.
+            from kiro_crew.dashboard.chat_persistence import forget_backend_pick
+
+            forget_backend_pick(key)
         return deleted
 
     def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:

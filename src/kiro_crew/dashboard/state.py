@@ -2685,6 +2685,7 @@ class _ChatSlot:
         "agent_kind",
         "model",
         "jev_route",
+        "acp_backend",
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
@@ -2970,6 +2971,15 @@ class _ChatSlot:
         # those, which is one filter per reader and a real breakage the first time
         # one is missed. The flag leaves `model` meaning exactly what it meant.
         self.jev_route: bool = False
+        # The chat's own AI backend pick, stored on the chat record and restored
+        # with it. ``None`` = no pick: the chat resolves through the member route
+        # and the configured default exactly as a chat without the field. A string
+        # is a pick of that backend id, and ``""`` is a REAL pick -- kiro-cli's own
+        # id -- so a chat can hold Kiro under a non-Kiro default. Crosses the
+        # single selection gate (``members.select_provider_backend``) at every
+        # session construction, so an id that stopped being selectable degrades
+        # there the same way the persisted global field does.
+        self.acp_backend: str | None = None
         # Spawn-time withhold verdict for `model`, and the model id it was
         # computed for. Read through the `model_withheld` property, never these
         # two directly: the pairing is what makes the verdict self-invalidating

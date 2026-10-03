@@ -104,6 +104,7 @@
     "session_end_wait": "End session wait",
     "session_set_model": "Set session model",
     "session_reload": "Reload session",
+    "session_backend": "Set session backend",
     "session_status": "Read session roster",
     "session_revive": "Reopen session",
     "session_close": "Close session",

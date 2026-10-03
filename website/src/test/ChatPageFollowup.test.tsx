@@ -38,6 +38,9 @@ vi.mock('../api/client', () => ({
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
     dashboardConfig: vi.fn().mockResolvedValue({}),
     models: vi.fn().mockResolvedValue([]),
+    // The composer's backend picker reads the probe; an unmocked one is a failed
+    // request, which the picker reports as its own alert.
+    acpBackends: vi.fn().mockResolvedValue({ backends: [] }),
     agents: vi.fn().mockResolvedValue([]),
     agentDetail: vi.fn().mockResolvedValue({}),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),

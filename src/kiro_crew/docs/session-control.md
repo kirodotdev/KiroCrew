@@ -1,18 +1,19 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, close and revive another one,
-change its model, reload its agent process, and take another one under itself in
-the sidebar. The tools come from the
+change its model or AI backend, reload its agent process, and take another one
+under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
-  `session_status`, `session_adopt`, `session_release`. These reach another session.
+  `session_set_model`, `session_reload`, `session_backend`, `session_close`,
+  `session_revive`, `session_broadcast`, `session_status`, `session_adopt`,
+  `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -479,6 +480,28 @@ If the old process fails while shutting down after it was removed, the reload
 still counts as done: the notice is written, the process starts again, and the
 reply carries a `warning`. A failure before anything was removed answers
 `reload_failed`, and nothing was torn down.
+
+### `session_backend`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title |
+| `backend` | no | Backend id to switch to, as the read lists it (such as `kiro`, `claude` or `codex`), or `default` to clear the pick. Omit it to only read |
+
+The agent's side of the backend picker in a chat's composer, going through the
+same switch the picker calls. Without `backend` it only reads: the session's own
+pick (or none), the backend its next turn will use, and the backends it may pick
+from. With `backend` it switches: the session's next message starts on that
+backend, the transcript is kept, and the model pin is cleared because model ids
+belong to one backend. `default` drops the pick, so the session follows the
+configured default again. The pick is saved with the session, so it survives a
+gateway restart.
+
+Only an idle session can switch. A turn or sub-agents in flight refuses the call
+with the reason and nothing changes; the tool never stops anything itself. The
+switch runs the same target checks as the other verbs, and runs them again after
+every wait inside it, so a target that becomes channel-linked, mirrored or
+replaced mid-switch is refused before the pick is saved.
 
 ### `session_revive`
 

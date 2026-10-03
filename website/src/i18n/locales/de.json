@@ -9357,6 +9357,17 @@
       "moreCols": "mehr Spalten",
       "fewerRows": "weniger Zeilen",
       "moreRows": "mehr Zeilen"
+    },
+    "backendPicker": {
+      "label": "KI-Backend für diesen Chat",
+      "locked_while_running": "Beende die aktuelle Antwort, um das Backend zu wechseln",
+      "default": "Standard-Backend",
+      "default_named": "Standard ({{name}})",
+      "unavailable_using_kiro": "{{name}} (nicht verfügbar, Kiro CLI wird verwendet)",
+      "could_not_load": "KI-Backends konnten nicht geladen werden",
+      "could_not_load_default": "Das konfigurierte Standard-Backend konnte nicht geladen werden",
+      "switched_fresh_session": "Backend gewechselt. Deine nächste Nachricht startet darauf eine neue Sitzung.",
+      "model_pin_cleared": "Backend gewechselt. Deine nächste Nachricht startet darauf eine neue Sitzung, und das fest gewählte Modell wurde zurückgesetzt, weil jedes Backend eigene Modelle hat."
     }
   },
   "hooks": {

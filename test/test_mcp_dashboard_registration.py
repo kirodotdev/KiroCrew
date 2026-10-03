@@ -368,6 +368,10 @@ class TestWhatThisSetGrants:
         "session_end_wait",
         "session_set_model",
         "session_reload",
+        # The backend picker's agent verb: the same owner-gated switch the
+        # composer's dropdown calls, so it grants nothing the model verb beside
+        # it does not.
+        "session_backend",
         "session_close",
         "session_revive",
         "session_send",

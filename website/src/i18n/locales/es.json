@@ -9483,6 +9483,17 @@
       "moreCols": "más columnas",
       "fewerRows": "menos filas",
       "moreRows": "más filas"
+    },
+    "backendPicker": {
+      "label": "Backend de IA de este chat",
+      "locked_while_running": "Detén la respuesta actual para cambiar de backend",
+      "default": "Backend predeterminado",
+      "default_named": "Predeterminado ({{name}})",
+      "unavailable_using_kiro": "{{name}} (no disponible, se usa Kiro CLI)",
+      "could_not_load": "No se pudieron cargar los backends de IA",
+      "could_not_load_default": "No se pudo cargar el backend predeterminado configurado",
+      "switched_fresh_session": "Backend cambiado. Tu próximo mensaje inicia en él una sesión nueva.",
+      "model_pin_cleared": "Backend cambiado. Tu próximo mensaje inicia en él una sesión nueva, y se quitó el modelo fijado, porque cada backend tiene sus propios modelos."
     }
   },
   "hooks": {

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { useProvider } from '../providers'
-import { modelListRefetchInterval, useModelsDegraded } from '../providers/modelListHealth'
+import { modelHealthKey, modelListRefetchInterval, useModelsDegraded } from '../providers/modelListHealth'
 import { withAutoFirst } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 
@@ -43,14 +43,31 @@ const PLACEHOLDER: ModelInfo[] = [{ name: 'auto', description: '' }]
  * kiro-cli. Other mounted observers still fetch normally — `enabled` gates who
  * *triggers* a fetch, not what lands in the cache.
  */
-type AvailableModelsOptions = { enabled?: boolean }
+type AvailableModelsOptions = { enabled?: boolean; backend?: string | null }
 
-export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}) {
+/** The model-list cache key for a chat: its own backend pick's entry, or the
+ *  configured backend's. Every reader of a chat's list builds the key here, so
+ *  a reader cannot look up one key while the picker fills another. */
+export function modelsQueryKey(providerId: string, backend?: string | null): readonly unknown[] {
+  return typeof backend === 'string' ? ['available-models', providerId, backend] : ['available-models', providerId]
+}
+
+/**
+ * `backend` is a chat's own backend pick (`''` is Kiro). A pick gets its OWN
+ * cache entry, `['available-models', provider.id, backend]`, fetched from that
+ * backend's model source on first mount -- one backend's list must never
+ * overwrite another's for every reader. `null`/omitted keeps the two-part key and
+ * the configured backend's list, exactly as before. The session-spawn refetch
+ * (`useWebSocket`) invalidates by the `['available-models']` prefix, so a
+ * backend whose first session just registered its models refreshes too.
+ */
+export function useAvailableModelsQuery({ enabled, backend }: AvailableModelsOptions = {}) {
   const provider = useProvider()
-  const isDegraded = useModelsDegraded(provider.id)
+  const picked = typeof backend === 'string'
+  const isDegraded = useModelsDegraded(modelHealthKey(provider.id, typeof backend === 'string' ? backend : undefined))
   const query = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels()),
+    queryKey: modelsQueryKey(provider.id, backend),
+    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels(picked ? backend : undefined)),
     refetchInterval: modelListRefetchInterval,
     ...(enabled === undefined ? {} : { enabled }),
   })

@@ -70,7 +70,10 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName
-  const localModels = useAvailableModels()
+  // The active chat's own backend pick keys the model list: a backend serves its
+  // own catalog. No pick keeps the configured backend's list, as before.
+  const activeSlotBackend = slots.find(s => s.key === activeSlot)?.acp_backend ?? null
+  const localModels = useAvailableModels({ backend: activeSlotBackend })
   // A peer-bound session's shelf must offer the PEER's rosters. Both hooks above
   // read THIS machine same-origin, so a remote session left on them would list
   // crews and models that do not exist over there — accepted by the picker, then
@@ -92,6 +95,6 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
     installedAgents, defaultAgent, remoteCrew, effectiveAgents,
     defaultAgentFailed, toggleDefaultAgent,
     agentDropdown, setAgentDropdown, agentFilter, setAgentFilter, agentDropdownRef, agentInputRef, filteredAgents,
-    effectiveModels,
+    effectiveModels, activeSlotBackend,
   }
 }

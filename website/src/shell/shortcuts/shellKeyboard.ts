@@ -16,6 +16,7 @@ import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from '../../hooks/useAutoConnectInstances'
 import { useCommandPalette } from '../../hooks/useCommandPalette'
 import { useProvider } from '../../providers/context'
+import { modelsQueryKey } from '../../hooks/useAvailableModels'
 import { useAgents } from '../../hooks/useAgents'
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -183,7 +184,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCycleModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active chat's own backend pick has its own model-list entry.
+      const pick = store.getState().dashboard.slots.find((s: { key: string }) => s.key === activeSlot)?.acp_backend ?? null
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, pick))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
@@ -215,7 +218,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCyclePrevModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active chat's own backend pick has its own model-list entry.
+      const pick = store.getState().dashboard.slots.find((s: { key: string }) => s.key === activeSlot)?.acp_backend ?? null
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, pick))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)

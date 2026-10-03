@@ -147,13 +147,22 @@ def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
+    chat_backend: str | None = None,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: the member-DM auto-route, then the configured default. The
-    member arm goes through :func:`resolve_selected_backend` — the same
-    governance/selectability gate the persisted field crosses, so a denied or
-    unknown value degrades to kiro and the member thread runs as plain chat.
+    Precedence: the chat's own backend pick, then the member-DM auto-route,
+    then the configured default. ``chat_backend`` is the pick stored on the
+    chat record (``_ChatSlot.acp_backend``): ``None`` is no pick, so the lower
+    tiers decide exactly as they did before the arm existed; any string is a
+    pick, and ``""`` is Kiro's own id rather than "unset".
+
+    The chat and member arms go through :func:`resolve_selected_backend` — the
+    same governance/selectability gate the persisted field crosses, so a denied
+    or unknown value degrades to kiro. A chat pick is validated against the
+    selectable set when it is made; one that stops being selectable later (a
+    governance ceiling narrowed it) degrades here with the reason in the log, the
+    way the global field would, rather than growing a second decision.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
@@ -162,6 +171,15 @@ def select_provider_backend(
     """
     from kiro_crew.acp_backends import resolve_selected_backend
 
+    if chat_backend is not None:
+        backend = resolve_selected_backend(chat_backend)
+        logger.info(
+            "session %s: chat backend pick %r resolved to acp_backend=%r",
+            session_key,
+            chat_backend,
+            backend,
+        )
+        return backend
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)
         logger.info(

@@ -316,6 +316,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_folder_cleanup.py::api_chat_folders_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_backend": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_reasoning_effort": (
         "<default>",

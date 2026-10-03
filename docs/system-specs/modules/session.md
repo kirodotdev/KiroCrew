@@ -232,6 +232,42 @@ cleanup does not read durable session metadata. Tab close retires its nudge loop
 before other asynchronous work. After the last consumer and provider stop, cleanup
 releases only the captured identity, preserving any replacement session carrier.
 
+## Per-chat backend selection
+
+A chat can pick its own AI backend, at creation (`POST /api/chat/slots` with
+`backend`) or between turns from the composer's backend picker
+(`POST /api/chat/slots/{slot}/backend`, `{"backend": "<id>" | "" | null}`, where
+`""` is Kiro and `null` clears the pick). The pick lives on the chat record
+(`_ChatSlot.acp_backend`, written to the transcript metadata line as
+`acp_backend`, slot-owned in `history.SLOT_OWNED_META_KEYS` so a cleared pick is
+not carried forward) and is restored with the chat; there is no separate store.
+
+- **Resolution.** `members.select_provider_backend` takes the pick as its first
+  tier: chat pick, then the member-DM route, then the configured default. A chat
+  with no pick resolves exactly as before. Every tier crosses
+  `resolve_selected_backend`, so a pick that stops being selectable degrades the
+  way the global `agent.acp_backend` does. The factory receives the pick as
+  `backend_override`; the chat runner passes it only when there is one.
+- **Offered set.** A pick must be in `selectable_backend_values()`, the same set
+  the global setting's allowlist reads (harness-parity H4). The picker further
+  hides backends `GET /api/acp-backends` reports as missing or restart-pending.
+- **Switching.** A backend is a separate process, so a switch resets the session
+  and the next message starts fresh on the new backend; the transcript is kept
+  and the model pin is cleared (model ids belong to one backend's catalog). It
+  is refused while a turn or attached sub-agents are in flight, exactly as the
+  model picker is locked, and a pick with a speculative session in flight
+  invalidates it through `_slot_binding`. A pooled warm session is never handed
+  to a chat with a pick (`pool_decision = "bypass_chat_backend"`). The save runs
+  before success is reported; a save that does not commit rolls the pick back.
+- **Model list.** `GET /api/models?backend=<id>` answers for that backend; the
+  composer keys its model query on the chat's pick, so the list comes from that
+  backend's own source on first load and refreshes with every session spawn.
+- **Agent surface.** `session_backend` (MCP, `kirocrew-dashboard`) reads or sets
+  a peer session's pick through `POST /api/session-control/backend`, which calls
+  the same `validate_backend_pick` / `switch_slot_backend` pair as the composer
+  route behind `authorize_target`, so refusals carry the same codes.
+- Selection is independent of the sandbox mode: nothing on this path reads it.
+
 ## Private member session ownership
 
 The section name is retained for existing documentation links. Member memory is

@@ -4670,7 +4670,9 @@ async def set_model_target(
     # resolved through the same member-aware gate the provider factory uses: a
     # member DM routes to agent.member_acp_backend, which can differ from the
     # configured default, and a Claude backend takes canonical keys as wire ids.
-    backend = select_provider_backend(effective_session_key(slot), member_backend, default_backend)
+    backend = select_provider_backend(
+        effective_session_key(slot), member_backend, default_backend, slot.acp_backend
+    )
     target_provider = (
         provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
     )
@@ -4920,6 +4922,125 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
 #: refuses alongside the exact sentinel: its display label and any case of the
 #: sentinel id. Owner-only, like the sentinel itself.
 _JEV_ROUTE_SPELLINGS = frozenset({"auto (jev)", "auto:jev"})
+
+
+async def backend_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    set_backend: bool = False,
+    backend: object = None,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Read, or change, which AI backend *target* runs on -- the agent's ``session_backend``.
+
+    The read reports the chat's own pick (``None`` = none), the backend its next
+    session will actually get through the single selection gate, and the ids it
+    may pick from. With ``set_backend`` the pick is validated and applied by the
+    SAME two functions the composer's ``POST /api/chat/slots/{slot}/backend``
+    calls (``chat_handlers.validate_backend_pick`` and ``switch_slot_backend``),
+    so the two surfaces accept, refuse and apply identically; a refusal keeps
+    its code and status. ``authorize_target`` is this verb's owner/principal gate
+    and is re-run synchronously after every await inside the switch, so a target
+    that becomes linked, mirrored or replaced mid-switch is refused before the
+    pick is committed.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.acp_backends import selectable_backend_values
+    from kiro_crew.dashboard.chat_handlers import (
+        BackendSwitchRefused,
+        _backend_display_id,
+        switch_slot_backend,
+        validate_backend_pick,
+    )
+
+    operation = "set_backend" if set_backend else "read_backend"
+    try:
+        # Validated before any gate, as the model verb does: a malformed pick
+        # needs no target lookup, and refusing it first keeps a bad argument
+        # from reading as an access decision.
+        picked = validate_backend_pick(backend) if set_backend else None
+    except BackendSwitchRefused as exc:
+        raise SessionControlError(str(exc), code=exc.code, status=exc.status) from exc
+    try:
+        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        member_backend, default_backend = agent_cfg.member_acp_backend, agent_cfg.acp_backend
+    except Exception:  # pragma: no cover - config load is resilient
+        member_backend, default_backend = "", ""
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the verb
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation=operation,
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    slot_key = slot.key
+    result: dict[str, Any] = {"target": slot_key}
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation=operation, slot_key=slot_key
+    ):
+        if slot.is_remote or slot.executor == "remote":
+            # A remote crew runs the turn on the peer, which chooses its own
+            # backend, so neither verb can report or change one here. Refused
+            # before any read, exactly as the switch refuses it.
+            raise SessionControlError(
+                "that session runs on a remote crew, which chooses its own backend",
+                code="remote_backend_unsupported",
+                status=409,
+            )
+        if set_backend:
+
+            def gate(_session_key: str) -> None:
+                live = authorize_target(
+                    state,
+                    caller_session_key=caller_session_key,
+                    target=slot_key,
+                    operation=operation,
+                    skip_enabled_check=True,
+                    precomputed_ownership_fenced=caller_fenced,
+                )
+                if live is not slot:
+                    raise SessionControlError(
+                        "the target session was replaced; backend not changed",
+                        code="target_replaced",
+                        status=409,
+                    )
+
+            try:
+                result.update(await switch_slot_backend(state, slot, picked, gate=gate))
+            except BackendSwitchRefused as exc:
+                raise SessionControlError(str(exc), code=exc.code, status=exc.status) from exc
+        effective = select_provider_backend(
+            effective_session_key(slot), member_backend, default_backend, slot.acp_backend
+        )
+        pick = slot.acp_backend
+        result.update(
+            {
+                "backend": None if pick is None else _backend_display_id(pick),
+                "effective_backend": _backend_display_id(effective),
+                "selectable": [_backend_display_id(b) for b in selectable_backend_values()],
+            }
+        )
+    _audit(
+        caller_session_key=caller_session_key,
+        operation=operation,
+        slot_key=slot_key,
+        outcome="allowed",
+        detail={"backend": result["backend"]} if set_backend else None,
+    )
+    return result
 
 
 def _target_busy_error() -> SessionControlError:

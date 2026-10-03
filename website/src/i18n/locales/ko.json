@@ -9231,6 +9231,17 @@
       "moreCols": "열 늘리기",
       "fewerRows": "행 줄이기",
       "moreRows": "행 늘리기"
+    },
+    "backendPicker": {
+      "label": "이 채팅의 AI 백엔드",
+      "locked_while_running": "백엔드를 전환하려면 현재 응답을 중지하세요",
+      "default": "기본 백엔드",
+      "default_named": "기본값 ({{name}})",
+      "unavailable_using_kiro": "{{name}} (사용 불가, Kiro CLI 사용 중)",
+      "could_not_load": "AI 백엔드를 불러오지 못했습니다",
+      "could_not_load_default": "설정된 기본 백엔드를 불러오지 못했습니다",
+      "switched_fresh_session": "백엔드를 전환했습니다. 다음 메시지부터 새 세션으로 시작됩니다.",
+      "model_pin_cleared": "백엔드를 전환했습니다. 다음 메시지부터 새 세션으로 시작되며, 백엔드마다 모델이 다르므로 고정한 모델이 해제되었습니다."
     }
   },
   "hooks": {

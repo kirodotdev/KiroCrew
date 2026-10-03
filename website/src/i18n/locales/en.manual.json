@@ -3785,6 +3785,17 @@
     },
     "runInTerminalBtn": {
       "copied_paste_into_terminal": "Copied — paste it into the terminal"
+    },
+    "backendPicker": {
+      "label": "AI backend for this chat",
+      "locked_while_running": "Stop the current response to switch backend",
+      "default": "Default backend",
+      "default_named": "Default ({{name}})",
+      "unavailable_using_kiro": "{{name}} (unavailable, using Kiro CLI)",
+      "could_not_load": "Couldn't load the AI backends",
+      "could_not_load_default": "Couldn't load the configured default backend",
+      "switched_fresh_session": "Backend switched. Your next message starts a fresh session on it.",
+      "model_pin_cleared": "Backend switched. Your next message starts a fresh session on it, and the pinned model was cleared, because each backend has its own models."
     }
   },
   "hooks": {

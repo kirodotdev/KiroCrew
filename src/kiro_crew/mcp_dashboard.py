@@ -117,6 +117,7 @@ from kiro_crew.validation import (
     MAX_BROADCAST_TARGETS,
     MCP_DASHBOARD_SCHEMAS,
     SESSION_ADOPT_SCHEMA,
+    SESSION_BACKEND_SCHEMA,
     SESSION_BROADCAST_SCHEMA,
     SESSION_CLOSE_SCHEMA,
     SESSION_CREATE_SCHEMA,
@@ -152,6 +153,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_end_wait",
     "session_set_model",
     "session_reload",
+    "session_backend",
     "session_close",
     "session_revive",
     "session_send",
@@ -766,6 +768,40 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "target": {
                         "type": "string",
                         "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_backend",
+            "description": (
+                "Read or change which AI backend another session runs on -- the same "
+                "choice as the backend picker in that chat's composer. Without "
+                "``backend`` it only reads: the session's own pick (or none), the "
+                "backend its next turn will actually use, and the backends it may "
+                "pick from. With ``backend`` it switches: the session's next message "
+                "starts a fresh session on that backend (the transcript is kept, and "
+                "the model pin is cleared because model ids belong to one backend). "
+                "Pass 'default' to drop the pick and follow the configured default "
+                "again. Only an IDLE session can switch: a turn or sub-agents in "
+                "flight refuses with the reason, and nothing changes. Sessions bound "
+                "to a remote crew are refused."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "description": (
+                            "Backend id to switch to, as the read lists it (e.g. 'kiro', "
+                            "'claude', 'codex'), or 'default' to clear the pick. Omit "
+                            "to read."
+                        ),
                     },
                 },
                 "required": ["target"],
@@ -2542,6 +2578,31 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return redact(
             f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
             "kept. Its transcript shows the reload notice."
+        )
+
+    if name == "session_backend":
+        args = validate_tool_args(args, SESSION_BACKEND_SCHEMA)
+        backend_payload: dict[str, Any] = {"target": args["target"]}
+        if "backend" in args:
+            # 'default' is this tool's spelling of "no pick"; every other value
+            # is a backend id the gateway validates.
+            backend_payload["backend"] = None if args["backend"] == "default" else args["backend"]
+        resp = _post("/api/session-control/backend", backend_payload, session_key=caller_key)
+        if resp.get("error"):
+            verb = "change" if "backend" in backend_payload else "read"
+            return redact(f"Error: could not {verb} that session's backend: {resp['error']}")
+        target = resp.get("target", args["target"])
+        pick = resp.get("backend")
+        pick_text = f"`{pick}`" if pick is not None else "none (follows the default)"
+        head = (
+            f"\U0001f501 `{target}` switched backend; its next message starts a fresh session.\n"
+            if resp.get("changed")
+            else ""
+        )
+        return redact(
+            f"{head}`{target}` backend pick: {pick_text}; next turn runs on "
+            f"`{resp.get('effective_backend')}`. Selectable: "
+            + ", ".join(f"`{b}`" for b in resp.get("selectable") or [])
         )
 
     if name == "session_close":

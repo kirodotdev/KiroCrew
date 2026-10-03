@@ -2063,6 +2063,21 @@ describe('Alt+Shift+S/X model cycling via React Query cache', () => {
     })
     expect(api.chatSlotModel).toHaveBeenCalledWith('slot-1', 'auto')
   })
+
+  it("cycles through a picked chat's own backend models, not the configured list", async () => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    ;(api.chatSlotModel as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, model: 'auto', acp_backend: 'claude' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'kiro-model' }])
+    queryClient.setQueryData(['available-models', 'acp', 'claude'], [{ name: 'auto' }, { name: 'claude-x' }])
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'S', code: 'KeyS', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotModel).toHaveBeenCalledWith('slot-1', 'claude-x')
+  })
 })
 
 describe('Kiro credits pill', () => {

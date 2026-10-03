@@ -5149,6 +5149,10 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            # The chat's own backend pick (``_ChatSlot.acp_backend``). NAMED so a
+            # caller passing it is never swallowed by the catch-all: the session
+            # would silently start on the configured default. ``None`` = no pick.
+            backend_override: str | None = None,
             # Per-session opt-in for the claude backend's own permission
             # classifier. NAMED rather than left to ``**_kwargs`` on purpose: a
             # caller passing it into the catch-all would be swallowed here and
@@ -5193,8 +5197,8 @@ class KiroCrewConfig:
             # backend, and why to_acp_id is the non-claude choice, is documented
             # on that method.)
             # Per-session backend selection -- ONE call to the selection gate's
-            # per-session half (members.select_provider_backend: member-DM
-            # auto-route > configured default). The factory body carries no
+            # per-session half (members.select_provider_backend: the chat's own
+            # pick > member-DM auto-route > configured default). The factory body carries no
             # branching of its own, so the kiro construction path gains no
             # second check (harness-parity H3/H13); resolve_selected_backend
             # inside the helper applies the same governance/selectability gate
@@ -5208,6 +5212,7 @@ class KiroCrewConfig:
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
+                chat_backend=backend_override,
             )
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

@@ -336,7 +336,7 @@ def test_the_alias_correction_follows_the_targets_own_backend(tmp_path, monkeypa
     target_key = effective_session_key(target)
     seen: list[str | None] = []
 
-    def _select(session_key, _member_backend, _default):
+    def _select(session_key, _member_backend, _default, _chat_backend=None):
         seen.append(session_key)
         return "member-kiro" if session_key == target_key else "default-other"
 

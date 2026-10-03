@@ -607,7 +607,8 @@ export default function ChatPane({
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
   const agentDD = useFilteredDropdown(agentChoices)
-  const localModels = useAvailableModels()
+  // A chat's own backend pick serves that backend's catalog, as in ChatPage.
+  const localModels = useAvailableModels({ backend: paneSlot?.acp_backend ?? null })
   const effectiveModels = useMemo<ModelInfo[]>(() => {
     if (!paneRemoteCrew.isRemote) return localModels
     return (paneRemoteCrew.capabilities?.models ?? []).map(model => ({

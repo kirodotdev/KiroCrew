@@ -9231,6 +9231,17 @@
       "moreCols": "列を増やす",
       "fewerRows": "行を減らす",
       "moreRows": "行を増やす"
+    },
+    "backendPicker": {
+      "label": "このチャットの AI バックエンド",
+      "locked_while_running": "バックエンドを切り替えるには現在の応答を停止してください",
+      "default": "既定のバックエンド",
+      "default_named": "デフォルト（{{name}}）",
+      "unavailable_using_kiro": "{{name}}（利用不可、Kiro CLI を使用中）",
+      "could_not_load": "AI バックエンドを読み込めませんでした",
+      "could_not_load_default": "設定されたデフォルトのバックエンドを読み込めませんでした",
+      "switched_fresh_session": "バックエンドを切り替えました。次のメッセージから新しいセッションで始まります。",
+      "model_pin_cleared": "バックエンドを切り替えました。次のメッセージから新しいセッションで始まります。モデルはバックエンドごとに異なるため、固定したモデルは解除されました。"
     }
   },
   "hooks": {

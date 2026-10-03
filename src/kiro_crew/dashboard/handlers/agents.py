@@ -28,6 +28,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    POLICY_ID_KIRO,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -2298,15 +2299,40 @@ def _scoped_default(cfg: Any, backend: str) -> str:
     )
 
 
+def models_backend_from_query(requested: str) -> str | None:
+    """The backend id a ``GET /api/models?backend=`` value names, or ``None``.
+
+    ``"kiro"`` is Kiro's policy-facing name -- the spelling the per-chat switch
+    route and the agent tool accept and report -- and names the backend id
+    ``""``. Anything outside the selectable set is ``None`` so an arbitrary
+    string never selects a code path.
+    """
+    if requested == POLICY_ID_KIRO:
+        requested = ACP_BACKEND_KIRO
+    return requested if requested in selectable_backend_values() else None
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — the model list for the configured backend.
 
     kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
     live session's entitlement); advertised-selection backends read their own
     adapter's namespace, because they do not accept ids from that catalog.
+
+    ``?backend=<id>`` asks for another backend's list instead -- the composer's
+    model picker on a chat with its own backend pick. The id must be selectable
+    (a 400 otherwise, so an arbitrary string never selects a code path); without
+    the parameter the answer is exactly the configured backend's, as before.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
+    if "backend" in request.query:
+        requested = models_backend_from_query(request.query["backend"])
+        if requested is None:
+            return web.json_response(
+                {"error": "backend is not selectable", "code": "invalid_backend"}, status=400
+            )
+        backend = requested
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
