@@ -288,7 +288,7 @@ PROJECTIONS: dict[str, McpProjection] = {
         per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
     ACP_BACKEND_PI: McpProjection(
-        kind=ProjectionKind.NO_CHANNEL,
+        kind=ProjectionKind.EXTERNAL,
         reason=(
             "pi-acp ACCEPTS the session/new mcpServers array without error, stores it on "
             "its session state, and never hands it to the pi process: its initialize "
@@ -297,17 +297,13 @@ PROJECTIONS: dict[str, McpProjection] = {
             "in the array produced no error and no tool (verified live). That is worse "
             "than a refused array, because a projection written into it would make the "
             "dashboard report Crew tools as mounted on a session where none can be "
-            "called -- which is why pi is outside ACP_BACKENDS_SESSION_MCP_ARRAY. The "
-            "shared gateway's broker stubs are stdio elements too and land in the same "
-            "inert array. A pi session therefore holds none of Crew's own tools, "
-            "gateway on or off"
+            "called -- which is why pi stays outside ACP_BACKENDS_SESSION_MCP_ARRAY. "
+            "Crew tools reach pi through a sealed MCP bridge extension that Crew loads "
+            "beside the permissions gate; the extension talks to a host-side MCP broker "
+            "over a local IPC endpoint (no secret-bearing servers JSON enters Pi's "
+            "namespace — GPT F1). That bridge+broker path is the projection channel."
         ),
-        channel=(
-            "the adapter forwarding the array to the pi process (an open upstream "
-            "change does this by loading a bridge extension into pi), or an extension "
-            "of Crew's that bridges MCP the way the gate extension bridges permissions "
-            "-- the one channel this harness is shown to read today"
-        ),
+        projection="kiro_crew.acp.client",
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
     ),
     ACP_BACKEND_GOOSE: McpProjection(

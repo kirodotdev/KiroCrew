@@ -722,6 +722,10 @@ class AcpProvider(LLMProvider):
         """True when this ACP provider talks to pi-acp (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_PI
 
+    async def pool_mcp_policy_current(self) -> bool:
+        """Check Pi's prewarmed MCP policy before a pool claim."""
+        return await self._client.pool_mcp_policy_current()
+
     @property
     def is_goose_backend(self) -> bool:
         """True when this ACP provider talks to goose (vs kiro-cli)."""

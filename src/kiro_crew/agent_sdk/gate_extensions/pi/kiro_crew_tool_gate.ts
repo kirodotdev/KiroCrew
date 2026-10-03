@@ -119,7 +119,11 @@ function boundInput(toolName: string, input: unknown): Bounded {
 
 function envelope(toolCallId: unknown, toolName: string, input: unknown): string | null {
   const kind = KIND_BY_TOOL[toolName] ?? "other";
-  const bounded = boundInput(toolName, input);
+  // MCP calls require exact host-side argument binding. The envelope ceiling
+  // below bounds the complete input instead of truncating individual fields.
+  const bounded = toolName.startsWith("mcp__")
+    ? { value: input, truncated: false }
+    : boundInput(toolName, input);
   const rendered = JSON.stringify({
     [ENVELOPE_MARKER]: 1,
     nonce: process.env[NONCE_ENV] ?? "",

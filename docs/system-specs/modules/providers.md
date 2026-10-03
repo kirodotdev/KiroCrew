@@ -12,6 +12,17 @@ and `BASELINE_SELECTABLE_BACKENDS` decides which ids an operator may choose.
 Several are selectable on a plain public build, so "one provider" never meant
 "one backend".
 
+The warm pool calls the declared `LLMProvider.pool_mcp_policy_current` method at
+claim. Its default is current for providers without a separate MCP snapshot;
+`AcpProvider` delegates Pi's answer to its client, and a failed check discards
+the prewarmed provider.
+
+`AcpProvider` constructs `AcpClient` for every backend. The client's pooled
+ACP array is empty for Pi on session creation and restore; Pi's host broker
+reads `_pooled_broker_stubs` directly. Kiro appends pooled stubs, while
+mirrored backends pass them into their projection for restriction-aware
+placement (H13).
+
 ### Architecture
 
 Member execution carries one immutable member/store selection into provider

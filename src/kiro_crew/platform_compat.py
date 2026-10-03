@@ -6685,6 +6685,29 @@ def kill_pid_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> b
         _close_process_handle(handle)
 
 
+def kill_pid_pinned_outside_group(
+    pid: int, expected_start_time: str, original_pgid: int, sig: int = SIGTERM
+) -> bool:
+    """Signal one POSIX survivor only while its identity matches and it left its group.
+
+    The caller owns the process group and handles its group signal separately.
+    A helper that detached needs an individual signal, while an in-group child
+    must not be signalled again after the group cleanup. Recheck the start
+    identity immediately before the primitive signal on POSIX.
+    """
+    if not IS_POSIX:
+        raise RuntimeError("detached process-group cleanup requires POSIX")
+    if (
+        pid <= 1
+        or get_process_start_id(pid) != expected_start_time
+        or pid_is_zombie(pid) is True
+        or pgroup_of(pid) == original_pgid
+        or get_process_start_id(pid) != expected_start_time
+    ):
+        return False
+    return kill_pid_pinned(pid, expected_start_time, sig)
+
+
 async def kill_pid_async(pid: int, sig: int = SIGTERM) -> bool:
     """Async variant of :func:`kill_pid` — offloads Windows ``taskkill`` off the loop.
 
