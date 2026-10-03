@@ -77,9 +77,9 @@ class TestUnattendedApprovalWindow:
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner._run_chat)
-        assert "state.approval_timeout_for(slot)" in src, (
-            "the runner's approval await must take its window from DashboardState"
-        )
+        assert (
+            "state.approval_timeout_for(slot)" in src
+        ), "the runner's approval await must take its window from DashboardState"
         assert "timeout=_approval_window" in src
         assert "timeout=7200.0" not in src, "the hardcoded 2h window is back"
 
@@ -106,9 +106,9 @@ class TestUnattendedApprovalWindow:
         writes = [ln for ln in src.splitlines() if "_human_seen = True" in ln]
         assert len(writes) == 1, "attendance must be recorded in exactly one place"
         gate = src.index("request_app = request.get")
-        assert src.index("_human_seen = True") > gate, (
-            "attendance must be recorded only after the app-ownership gate"
-        )
+        assert (
+            src.index("_human_seen = True") > gate
+        ), "attendance must be recorded only after the app-ownership gate"
 
     def test_trust_is_not_the_detector(self, tmp_path) -> None:
         """Why ``_app`` and not ``_trust``: trust is False wherever this is read.
@@ -518,9 +518,7 @@ class TestIdleCleanupSparesArmedLoops:
         )
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["keys"] == ["worker-2"], "cleanup archived a slot owning an armed loop"
@@ -541,9 +539,9 @@ class TestIdleCleanupSparesArmedLoops:
             patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
         ):
             assert await orch._fire_dashboard_nudge(_Loop("worker-1")) is True
-        assert rehydrate.await_args.kwargs.get("adopt_closed") is True, (
-            "the nudge fire path must reach a session that idle cleanup closed"
-        )
+        assert (
+            rehydrate.await_args.kwargs.get("adopt_closed") is True
+        ), "the nudge fire path must reach a session that idle cleanup closed"
 
     @pytest.mark.asyncio
     async def test_an_inactive_loop_does_not_pin_a_dead_slot_forever(
@@ -563,9 +561,7 @@ class TestIdleCleanupSparesArmedLoops:
         )
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["keys"] == ["worker-1"]
@@ -586,9 +582,7 @@ class TestIdleCleanupSparesArmedLoops:
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", _boom)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["archived"] == 0
@@ -596,8 +590,91 @@ class TestIdleCleanupSparesArmedLoops:
         assert "worker-1" in state._slots
 
     @pytest.mark.asyncio
+    async def test_idle_cleanup_defers_a_slot_mid_regenerate_restore(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """An idle slot with an in-flight regenerate (running turn + stashed
+        variants, restore task not yet scheduled) must be DEFERRED, not archived.
+
+        The regenerate truncation deletes the reply and leaves the old user row
+        as the window tail, so a day-old conversation reads idle the instant it
+        truncates. If cleanup popped the slot and cancelled the turn, the cancel
+        would schedule the restore whose identity guard then refuses (slot gone),
+        and the truncated transcript would be archived — losing the reply. The
+        sweep treats a running turn carrying _pending_variants like a pending
+        guarded write: not idle, defer to the next sweep."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        slot = state.get_or_create_slot("worker-1", app="issue-radar")
+        slot.append("user", "regenerate me", ts=old_ts)
+        slot.drain()
+        monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: _fake_autonudge([]))
+
+        # Model an in-flight regenerate: a running turn (never-resolving task) and
+        # the removed reply stashed as pending variants, with NO restore task yet.
+        async def _never():
+            await asyncio.sleep(3600)
+
+        turn = asyncio.create_task(_never())
+        slot.task = turn
+        slot._pending_variants = [{"content": "ORIGINAL-REPLY", "ts": old_ts}]
+        # The real regenerate endpoint sets this marker at truncation, the moment
+        # it commits to the restore path — before dispatching the turn. It spans
+        # the whole restore-in-flight window with no gap, and the sweep honors it.
+        slot._regenerate_restore_pending = True
+        try:
+            assert slot.running is True
+            assert slot._regenerate_restore_task is None
+
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
+                data = await resp.json()
+
+            # Deferred: not archived, still live, variants intact (not cancelled
+            # out from under the regenerate).
+            assert data["keys"] == [], "cleanup archived a slot mid-regenerate-restore"
+            assert "worker-1" in state._slots
+            assert turn.cancelled() is False and turn.done() is False
+            assert slot._pending_variants
+        finally:
+            turn.cancel()
+
+    @pytest.mark.asyncio
+    async def test_idle_cleanup_defers_in_the_pre_restore_task_gap(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The narrowest window: the empty regenerate turn has FINISHED (so
+        slot.running is False) but its done-callback has not yet created the
+        restore task (so _regenerate_restore_task is None). Only the
+        _regenerate_restore_pending marker — set at truncation, cleared only when
+        the restore settles — reports the slot busy here. Cleanup must honor it,
+        or it archives the truncated transcript in exactly this instant."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        slot = state.get_or_create_slot("worker-1", app="issue-radar")
+        slot.append("user", "regenerate me", ts=old_ts)
+        slot.drain()
+        monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: _fake_autonudge([]))
+
+        # The gap state: no running turn, no restore task yet, but the marker is
+        # up and the removed reply is still stashed.
+        assert slot.running is False
+        assert slot._regenerate_restore_task is None
+        slot._pending_variants = [{"content": "ORIGINAL-REPLY", "ts": old_ts}]
+        slot._regenerate_restore_pending = True
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
+            data = await resp.json()
+
+        assert data["keys"] == [], "cleanup archived a slot in the pre-restore-task gap"
+        assert "worker-1" in state._slots
+
+    @pytest.mark.asyncio
     async def test_the_users_close_still_retires_the_loop(self, tmp_path, monkeypatch) -> None:
-        """"Respect the close" survives adopt_closed=True.
+        """ "Respect the close" survives adopt_closed=True.
 
         The rule is not an emergent property of the fire path's rehydrate
         miss: since the fire path adopts a closed session, the ✕ handler has
@@ -624,9 +701,9 @@ class TestIdleCleanupSparesArmedLoops:
             resp = await client.delete("/api/chat/slots/chat-1-1785")
             assert resp.status == 200
 
-        assert removed == ["chat-1-1785"], (
-            "the user's ✕ must retire the slot's current nudge generation"
-        )
+        assert removed == [
+            "chat-1-1785"
+        ], "the user's ✕ must retire the slot's current nudge generation"
 
     @pytest.mark.asyncio
     async def test_the_users_close_tells_the_owning_app(self, tmp_path, monkeypatch) -> None:
@@ -761,17 +838,17 @@ class TestIdleCleanupSparesArmedLoops:
                 return super().pop(key, *a)
 
         state._slots = _WatchedSlots(state._slots)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop", _retire
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop", _retire)
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/chat/slots/crew-c_1a2b3c4d")
             assert resp.status == 200
 
-        assert order == ["retire", "retire", "pop"], (
-            f"the slot left the registry before both retirement passes finished: {order}"
-        )
+        assert order == [
+            "retire",
+            "retire",
+            "pop",
+        ], f"the slot left the registry before both retirement passes finished: {order}"
 
 
 # ── A SCOPED grant is never cached as a session approval policy ───────────────
@@ -887,7 +964,9 @@ class TestScopedGrantIsNeverPersisted:
         state = _crew_state()
         with patch.object(type(safety_override()), "is_scope_active", return_value=True):
             assert chat_runner._slot_is_trusted(slot) is True
-            assert chat_runner._native_crew_should_auto_approve({"s1": {"done": False}}, state, slot)
+            assert chat_runner._native_crew_should_auto_approve(
+                {"s1": {"done": False}}, state, slot
+            )
 
         src = inspect.getsource(chat_runner._run_chat)
         assert "slot_trusted = _slot_is_trusted(slot)" in src

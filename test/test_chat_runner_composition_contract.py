@@ -571,7 +571,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_attach_turn_stats",
             "function",
-            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, reply_mids: \"'set[str] | None'\" = None) -> 'bool'",
         ),
         (
             "_context_usage_payload",

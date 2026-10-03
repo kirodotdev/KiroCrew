@@ -114,6 +114,7 @@ from kiro_crew.dashboard.chat_regenerate import (  # noqa: F401
     api_chat_slot_edit_resend,
     api_chat_slot_regenerate,
     api_chat_slot_switch_variant,
+    drain_pending_regenerate_recoveries,
 )
 from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind  # noqa: F401
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401

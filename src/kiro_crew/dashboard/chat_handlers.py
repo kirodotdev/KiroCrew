@@ -7487,6 +7487,124 @@ async def _wake_conductor_for_closed_worker(name: str) -> None:
         logger.debug("conductor wake on close failed for %s", name, exc_info=True)
 
 
+async def _await_regenerate_restore(slot: "_ChatSlot", name: str) -> bool:
+    """Let an in-flight regenerate reply-restore finish before the slot is torn down.
+
+    Returns True when there is no restore in flight or it settled cleanly within
+    the ceiling, and False when a turn or restore is STILL pending at the
+    deadline. The caller must refuse the close on False: proceeding would pop and
+    archive the TRUNCATED transcript while the restore has not yet re-attached the
+    previous reply, losing it. A slow or raising cancel is reported as False, not
+    swallowed into "safe to destroy"; only the close handler's OWN cancellation
+    (a BaseException) propagates.
+
+    A regenerate whose turn ends empty schedules ``_restore_previous_reply``
+    (chat_regenerate), which splices the removed reply back onto the live window
+    and persists it. That restore re-validates slot identity
+    (``state._slots.get(name) is slot``) and refuses once the slot is gone, so a
+    close that popped the slot first would make the restore bail — and the close
+    then archives the TRUNCATED transcript, permanently losing the reply the
+    regenerate was meant to preserve (recoverable only from the retention-bounded
+    archive). ``_pending_variants`` survives a cancelled turn (only
+    ``_flush_segment`` clears it), so "regenerate, then close the tab before the
+    reply lands" is exactly the empty-turn branch that schedules the restore.
+
+    The close is itself what makes that turn end empty: it cancels ``slot.task``,
+    whose done-callback then schedules the restore. So this does the cancel HERE
+    instead — while the slot is still in ``_slots`` and before the pop — then
+    lets the done-callback run and awaits the resulting restore, so the reply is
+    re-inserted and persisted before the archival. A regenerate in flight is
+    recognised by ``_pending_variants`` being set (set only by the regenerate
+    endpoint, cleared by ``_flush_segment``); an ordinary turn leaves it empty
+    and is cancelled by the normal teardown below as before.
+
+    Awaited HERE, at the early drain point beside the guarded-write wait and
+    BEFORE the pop, so the restore runs while the slot's identity check passes
+    and its persist (a guarded write the drain right after also waits on)
+    commits before the archival. Placed with the guarded-write drain rather than
+    near the pop deliberately: it adds no suspension between the pre-pop re-check
+    and the retraction, so the retired nudge loop and late channel mirror cannot
+    slip in. The ``begin_close`` fence already refuses a NEW truncating save, so
+    no fresh regenerate can arm while this waits. Bounded by the same ceiling as
+    the guarded-write wait; on timeout the restore's own guard still fails closed
+    (it refuses rather than writing onto a torn-down slot), so the worst case is
+    never a write onto the wrong conversation.
+    """
+    deadline = time.monotonic() + _GUARDED_WRITE_WAIT_SECS
+
+    # Nothing to wait for unless a restore is in flight. The marker spans the
+    # whole window — set at truncation, cleared only when a reply lands or the
+    # restore settles — so it is the authoritative "restore pending" signal,
+    # including the instant between the empty turn finishing and its done-callback
+    # creating the restore task.
+    if not getattr(slot, "_regenerate_restore_pending", False) and not (
+        slot.task is not None and not slot.task.done() and getattr(slot, "_pending_variants", None)
+    ):
+        restore_task = getattr(slot, "_regenerate_restore_task", None)
+        if restore_task is None or restore_task.done():
+            return True
+
+    # A regenerate turn still running will end empty when the teardown cancels
+    # it, and only THEN schedules the restore. Cancel it here instead, so the
+    # restore is scheduled while the slot is still live.
+    turn = slot.task
+    if turn is not None and not turn.done() and getattr(slot, "_pending_variants", None):
+        turn.cancel()
+        # asyncio.wait (not wait_for(shield(...))) so the turn's OWN cancellation
+        # — which is exactly what we asked for — does not surface here as an
+        # exception; we only need it to finish. A cancellation of THIS coroutine
+        # still propagates out of asyncio.wait, so a close-handler cancel is not
+        # swallowed. Bounded by the shared ceiling.
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining > 0:
+            await asyncio.wait({turn}, timeout=remaining)
+
+    # The turn's done-callback (_clear_pending_on_done) runs as a scheduled
+    # callback AFTER the task settles, so there is an instant where the turn is
+    # done, the restore-pending marker is still set, but _regenerate_restore_task
+    # is not assigned yet. Yield until the task appears (or the marker clears
+    # because a reply landed / there was nothing to restore), bounded by the same
+    # ceiling, so the close waits across that pre-task gap rather than racing it.
+    while (
+        getattr(slot, "_regenerate_restore_pending", False)
+        and getattr(slot, "_regenerate_restore_task", None) is None
+        and time.monotonic() < deadline
+    ):
+        await asyncio.sleep(0)
+
+    restore_task = getattr(slot, "_regenerate_restore_task", None)
+    if restore_task is not None and not restore_task.done():
+        logger.debug("Slot %s close waiting for an in-flight regenerate restore", name)
+        # asyncio.wait, not wait_for(shield(...)): the restore task carries its
+        # own exception handling, so its completion (success, failure, or its own
+        # cancellation) must not surface here as an exception — only whether it
+        # SETTLED matters, which the check below reads. A cancel of THIS coroutine
+        # still propagates out of asyncio.wait.
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining > 0:
+            await asyncio.wait({restore_task}, timeout=remaining)
+    # The restore task's completion schedules its marker-clearing done-callback
+    # via call_soon, which runs a tick LATER than the task finishing — so a
+    # settled-check immediately after asyncio.wait would still read the marker
+    # set. Yield once (bounded by the deadline) so that callback runs before the
+    # decision; without it a cleanly-finished restore would be misread as pending
+    # and the close wrongly refused.
+    if time.monotonic() < deadline:
+        await asyncio.sleep(0)
+
+    # Settled only if nothing restore-related is still outstanding. A restore task
+    # that is DONE means the restore ran to completion (its persist committed or
+    # its own guard declined on a torn-down slot) — settled. A task still running,
+    # or the pending-marker still set with no finished task, means it could not be
+    # settled, and the caller must NOT archive the truncated transcript.
+    restore_task = getattr(slot, "_regenerate_restore_task", None)
+    if restore_task is not None and not restore_task.done():
+        return False
+    if getattr(slot, "_regenerate_restore_pending", False) and restore_task is None:
+        return False
+    return True
+
+
 async def close_slot(
     state: DashboardState,
     slot: "_ChatSlot",
@@ -7573,6 +7691,27 @@ async def _close_slot(
     # stays open with every step so far rolled back, and the person can close it
     # again -- and it returns within the ceiling, so a stuck write delays the
     # close rather than hanging it.
+    #
+    # Let an in-flight regenerate reply-restore finish FIRST, while the slot is
+    # still in `_slots` (so its identity guard passes) and before the pop below
+    # archives the transcript. Its persist is a guarded write, so the drain
+    # immediately after waits on whatever save it dispatched. Both sit at this
+    # early drain point, which adds no suspension near the pop.
+    #
+    # REFUSE the close if the restore could not be settled within the ceiling
+    # (slow or raising cancel). The alternative — falling through to the pop +
+    # `closed=True` archive — would commit the TRUNCATED transcript while the
+    # restore has not re-attached the previous reply, losing it with no recovery
+    # beyond the retention-bounded archive. Refusing is recoverable: the tab
+    # stays open with every step so far rolled back, and the person closes it
+    # again once the restore has finished (the next attempt sees it settled).
+    # Same contract as the guarded-write refusal below.
+    if not await _await_regenerate_restore(slot, name):
+        raise SlotCloseError(
+            "a reply restore for this conversation is still finishing; the tab stays "
+            "open, close it again in a moment",
+            code="regenerate_restore_pending",
+        )
     if not await _await_guarded_history_write(slot, name):
         raise SlotCloseError(
             "a history write for this conversation is still running; the tab stays "
@@ -8139,12 +8278,37 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # refuses at admission and again at its dispatch seam), so an empty
         # reading stays empty through the pop below.
         candidate.begin_close()
-        if _pending_guarded_history_writes(candidate) or state._slots.get(name) is not candidate:
+        _restore = getattr(candidate, "_regenerate_restore_task", None)
+        _restore_pending = _restore is not None and not _restore.done()
+        # The restore-pending marker spans the ENTIRE regenerate restore window
+        # with no gap: it is set at truncation (before the turn is dispatched)
+        # and cleared only when a reply lands (_flush_segment) or the restore
+        # task settles. It therefore covers the instant between the empty turn
+        # finishing (slot.running already False) and the done-callback creating
+        # the restore task (_regenerate_restore_task still None) — the window a
+        # running-turn or task-handle check alone would miss, where the sweep's
+        # own pop-then-cancel would schedule a restore that then fails its
+        # identity guard and the truncated transcript gets archived.
+        _restore_in_flight = bool(getattr(candidate, "_regenerate_restore_pending", False))
+        if (
+            _pending_guarded_history_writes(candidate)
+            or _restore_pending
+            or _restore_in_flight
+            or state._slots.get(name) is not candidate
+        ):
             candidate.cancel_close()
             if state._slots.get(name) is candidate:
+                # A restore in flight (marker set, or its task still running) is
+                # treated exactly like a pending guarded write: the slot is NOT
+                # idle (a regenerate's empty-turn reply recovery is, or is about
+                # to be, re-inserting + persisting the previous reply), and
+                # archiving now would pop the slot out from under the restore's
+                # identity guard and commit the TRUNCATED transcript, losing the
+                # reply. Deferring removes the window — the restore completes
+                # on its own and the next sweep archives the restored transcript.
                 logger.info(
-                    "Cleanup: slot %s has a history write in flight, so it is not idle; "
-                    "leaving it for the next sweep",
+                    "Cleanup: slot %s has a history write or reply-restore in flight, so it "
+                    "is not idle; leaving it for the next sweep",
                     name,
                 )
                 failed.append(name)

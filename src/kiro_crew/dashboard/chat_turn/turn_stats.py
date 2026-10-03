@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _ChatSlot,
+        _turn_rows,
+        row_mid,
         turn_stats_meta,
     )
 
@@ -62,8 +64,10 @@ def _attach_turn_stats(
     turn_boundary: int = 0,
     model: str = "",
     ttft_ms: int = 0,
+    turn_start_mid: str | None = None,
+    reply_mids: "set[str] | None" = None,
 ) -> bool:
-    """Attach per-turn stats to the last assistant message's meta.
+    """Attach per-turn stats to this turn's assistant message's meta.
 
     Returns whether a row received them, so a caller can tell a saved row from
     a turn that had none (a denied tool with no text), whose recovery still has
@@ -71,7 +75,9 @@ def _attach_turn_stats(
 
     Mirrors ``_flush_file_changes``: the meta lands on the in-memory message
     BEFORE ``_save_slot_to_history`` persists it, and reaches the live UI via
-    the ``chat_done`` → ``refreshSlot`` re-fetch (no dedicated WS event).
+    the ``chat_done`` → ``refreshSlot`` re-fetch (no dedicated WS event). It
+    also scopes to the turn's own rows the same way, so the two cannot disagree
+    about which message belongs to this turn.
 
     ``elapsed_ms`` is the turn wall clock (or the provider-reported duration
     when available); ``credits`` is kiro-cli's per-turn ``meteringUsage`` sum;
@@ -85,20 +91,50 @@ def _attach_turn_stats(
     Zero/empty fields are omitted so the frontend renders only what the
     provider actually reported.
 
-    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start: only
-    messages appended DURING this turn are candidates. Without it, an
-    error/refusal-only turn (which appends no assistant message) would walk
-    back into the PREVIOUS turn's assistant message and overwrite its stats
-    with the failed turn's numbers. No-op when the turn produced no assistant
-    message or when there is nothing to show.
+    The turn's rows are identified exactly as ``_flush_file_changes`` does, via
+    ``_turn_rows``: ``turn_start_mid`` relocates the turn's first row by
+    identity, falling back to ``turn_boundary`` (``len(slot.messages)`` at turn
+    start) when no id is available. A position stops naming this turn's row the
+    moment another writer shifts the window under it — most sharply when a
+    regenerate whose turn ended empty schedules a restore that SPLICES the
+    removed old reply in ahead of a running follow-up's boundary, so the
+    boundary slice would then also cover that restored reply and a plain reverse
+    scan would land this turn's stats on it. Scoping by ``turn_start_mid``
+    excludes a row spliced before the turn began, and ``reply_mids`` (this
+    turn's own reply ids, ``_turn_reply_mids_all``) pins the attach to the
+    turn's reply BY IDENTITY within that scope — the same identity door
+    ``_flush_file_changes`` anchors its chips to, so an assistant row another
+    writer injected mid-turn is not mistaken for this turn's reply.
+
+    ``reply_mids`` is three-valued, and the empty case is NOT the None case.
+    ``None`` means the caller supplied no identity signal — the backward-compatible
+    path — so the positional reverse scan is the only locator and runs. A SET
+    (even empty) means the caller IS asserting this turn's reply identity: a
+    non-empty set pins by id, and an EMPTY set means the turn produced no reply
+    of its own, so the stats attach to NOTHING. Falling back to the positional
+    scan on an empty set would attach an error/refusal-only turn's stats onto
+    whatever assistant row happens to be newest in scope — a concurrent
+    workflow/sub-agent injection, which is not this turn's output — corrupting a
+    foreign row. So the positional fallback is gated on ``reply_mids is None``.
     """
     stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
     if stats is None:
         return False
     if ttft_ms > 0:
         stats["ttft_ms"] = int(ttft_ms)
-    boundary = max(0, turn_boundary)
-    for m in reversed(slot.messages[boundary:]):
+    turn_rows = _turn_rows(slot, turn_boundary, turn_start_mid)
+    if reply_mids is not None:
+        # The caller asserted this turn's reply identity. Attach ONLY by id — an
+        # empty set means the turn produced no reply, so nothing is attached
+        # rather than falling onto a foreign assistant row.
+        for m in reversed(turn_rows):
+            if m.get("role") == "assistant" and row_mid(m) in reply_mids:
+                m.setdefault("meta", {})["turn_stats"] = stats
+                return True
+        return False
+    # No identity signal (backward-compatible callers): positional reverse scan,
+    # scoped to this turn's rows.
+    for m in reversed(turn_rows):
         if m.get("role") == "assistant":
             m.setdefault("meta", {})["turn_stats"] = stats
             return True

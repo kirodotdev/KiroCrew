@@ -71,6 +71,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots/{slot}/generate-title", chat.api_chat_slot_generate_title)
     app.router.add_patch("/api/chat/slots/{slot}/title", chat.api_chat_slot_rename)
     app.router.add_post("/api/chat/slots/{slot}/regenerate", chat.api_chat_slot_regenerate)
+    # Flush any in-flight regenerate recovery writes (a reply being written back
+    # to its original transcript after a mid-restore rebind) before the loop
+    # stops, so a shutdown landing mid-retry does not abandon the write and lose
+    # the reply.
+    app.on_shutdown.append(chat.drain_pending_regenerate_recoveries)
     app.router.add_post("/api/chat/slots/{slot}/switch-variant", chat.api_chat_slot_switch_variant)
     app.router.add_post("/api/chat/slots/{slot}/edit-resend", chat.api_chat_slot_edit_resend)
     app.router.add_post("/api/chat/slots/{slot}/rewind", chat.api_chat_slot_rewind)

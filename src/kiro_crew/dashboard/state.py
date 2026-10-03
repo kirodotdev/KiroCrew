@@ -2888,6 +2888,8 @@ class _ChatSlot:
         "_human_seen",
         "_origin",
         "_pending_variants",
+        "_regenerate_restore_task",
+        "_regenerate_restore_pending",
         "_lock",
         "forked_from",
         "_fork_lock",
@@ -2906,6 +2908,7 @@ class _ChatSlot:
         "_pending_rewrite",
         "_file_changes",
         "_turn_reply_mids",
+        "_turn_reply_mids_all",
         "linked_session_key",
         # Remote-execution binding: this slot lives in the LOCAL list and local
         # history, but its turns run on a connected peer crew. See
@@ -3890,6 +3893,20 @@ class _ChatSlot:
         self._origin: str = ""
         # Regenerate feature: variants pending attachment to next finalized assistant message
         self._pending_variants: list[dict] = []
+        # Regenerate feature: the in-flight task that restores the previous reply
+        # when a regenerate turn ends without producing one. Awaited by tests and
+        # shutdown; None when no restore is pending.
+        self._regenerate_restore_task: asyncio.Task | None = None
+        # True from the moment a regenerate commits to its restore path (the
+        # eager truncation stashes _pending_variants) until the restore fully
+        # settles (or _flush_segment consumes the variants because a reply
+        # landed, so no restore runs). Spans the WHOLE restore-in-flight window
+        # with NO gap — including the instant between the empty turn finishing
+        # and its done-callback creating the restore task, where neither
+        # slot.running nor _regenerate_restore_task reports the slot busy. Every
+        # teardown fence (_destructive_history_busy, the idle sweep, close)
+        # honors it so none archives the truncated transcript mid-restore.
+        self._regenerate_restore_pending: bool = False
         self._lock = asyncio.Lock()
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
@@ -4001,6 +4018,12 @@ class _ChatSlot:
         # mid-turn (a workflow or sub-agent completion) is never this turn's
         # reply, whatever its position. Reset where the turn's start is captured.
         self._turn_reply_mids: list[str] = []
+        # Same ids as _turn_reply_mids, but NEVER cleared by a mid-turn
+        # consume-point (_flush_segment, _flush_file_changes) — only reset when
+        # the next turn starts. The regenerate restore needs the turn's reply
+        # ids to still be readable after those consumers have run, to tell a
+        # real (possibly partial) reply from an empty turn.
+        self._turn_reply_mids_all: list[str] = []
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
         # Where the turn CURRENTLY in flight actually started, as opposed to
         # where the slot would route a new one. The two diverge whenever the
@@ -4946,41 +4969,7 @@ class _ChatSlot:
             except Exception:
                 logger.debug("slot row hook failed", exc_info=True)
         # Trim old messages to bound memory usage
-        if len(self.messages) > _MAX_SLOT_MESSAGES:
-            excess = len(self.messages) - _MAX_SLOT_MESSAGES
-            # A trimmed leading window message may only join the frozen prefix
-            # once it is actually on disk. Credit _disk_older_count only
-            # for the persisted portion; the unpersisted overflow (should not
-            # happen between 5s flushes) is logged rather than silently counted
-            # as on-disk, which would have stranded those turns.
-            persisted_trim = min(excess, self._disk_window_len)
-            # The durable counter counts the WHOLE evicted slice, including the
-            # unpersisted overflow the disk counter excludes. The two draw
-            # different lines because they answer different questions:
-            # ``_disk_older_count`` claims on-disk lines (its save contract), so
-            # counting a row that never reached disk would corrupt the frozen
-            # prefix. ``_disk_older_durable_count`` is a POSITION base with no
-            # disk contract — if a durable row leaves the window uncounted,
-            # every later absolute position shifts down and a poller's cursor
-            # silently skips rows. Counting the lost rows instead makes a cursor
-            # that pointed at them refuse loudly (``since < base``), which is
-            # the recoverable outcome. Counted BEFORE the ``del`` below —
-            # afterwards the slice is gone.
-            durable_trim = durable_row_count(self.messages[:excess])
-            del self.messages[:excess]
-            self._resumed_count = max(0, self._resumed_count - excess)
-            self._disk_older_count += persisted_trim
-            self._disk_older_durable_count += durable_trim
-            self._disk_window_len = max(0, self._disk_window_len - excess)
-            if persisted_trim < excess:
-                logger.warning(
-                    "Slot %s trimmed %d messages not yet flushed to disk; "
-                    "they will not be recoverable from history",
-                    self.key,
-                    excess - persisted_trim,
-                )
-            # The frozen prefix grew → its cached bytes are stale.
-            self._frozen_prefix_cache = None
+        self._enforce_message_bound()
         # Hand back the row as appended (id included): a dual-writer that also
         # persists this message through ``ConversationLog.append`` needs the
         # ``meta.mid`` minted above so BOTH copies carry the same identity —
@@ -4988,6 +4977,53 @@ class _ChatSlot:
         # ids for one logical message. Read the id off the return with
         # :func:`row_mid`, never an inline ``meta`` poke.
         return msg
+
+    def _enforce_message_bound(self) -> None:
+        """Trim the window back to ``_MAX_SLOT_MESSAGES`` and credit the trim
+        counters, exactly as an ordinary ``append`` does.
+
+        Shared by ``append`` and by any other writer that splices rows straight
+        into ``self.messages`` without going through ``append`` (the regenerate
+        restore does, to keep each row's minted ``meta.mid`` and a reply's
+        variant history that a re-append would drop). Without this, such a
+        writer bypasses the cap and its bookkeeping, so the window can ratchet
+        past the bound.
+        """
+        if len(self.messages) <= _MAX_SLOT_MESSAGES:
+            return
+        excess = len(self.messages) - _MAX_SLOT_MESSAGES
+        # A trimmed leading window message may only join the frozen prefix once
+        # it is actually on disk. Credit _disk_older_count only for the
+        # persisted portion; the unpersisted overflow (should not happen between
+        # 5s flushes) is logged rather than silently counted as on-disk, which
+        # would have stranded those turns.
+        persisted_trim = min(excess, self._disk_window_len)
+        # The durable counter counts the WHOLE evicted slice, including the
+        # unpersisted overflow the disk counter excludes. The two draw different
+        # lines because they answer different questions: ``_disk_older_count``
+        # claims on-disk lines (its save contract), so counting a row that never
+        # reached disk would corrupt the frozen prefix. ``_disk_older_durable_count``
+        # is a POSITION base with no disk contract — if a durable row leaves the
+        # window uncounted, every later absolute position shifts down and a
+        # poller's cursor silently skips rows. Counting the lost rows instead
+        # makes a cursor that pointed at them refuse loudly (``since < base``),
+        # which is the recoverable outcome. Counted BEFORE the ``del`` below —
+        # afterwards the slice is gone.
+        durable_trim = durable_row_count(self.messages[:excess])
+        del self.messages[:excess]
+        self._resumed_count = max(0, self._resumed_count - excess)
+        self._disk_older_count += persisted_trim
+        self._disk_older_durable_count += durable_trim
+        self._disk_window_len = max(0, self._disk_window_len - excess)
+        if persisted_trim < excess:
+            logger.warning(
+                "Slot %s trimmed %d messages not yet flushed to disk; "
+                "they will not be recoverable from history",
+                self.key,
+                excess - persisted_trim,
+            )
+        # The frozen prefix grew → its cached bytes are stale.
+        self._frozen_prefix_cache = None
 
     def push_wire_frame(self, cls: str, content: str) -> None:
         """Queue an ephemeral frame for live SSE readers only."""

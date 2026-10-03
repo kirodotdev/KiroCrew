@@ -158,6 +158,7 @@ from kiro_crew.dashboard.chat_turn.directives import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.file_changes import (  # noqa: F401
     _PATH_TRUNCATION_MARKER,
+    _append_local_command_reply,
     _apply_turn_snapshot_budget,
     _line_change_input,
     _note_reply_row,
@@ -4172,6 +4173,12 @@ def _flush_segment(
         last_msg["variants"] = pending_list
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
+        # A reply landed and adopted the stashed variants, so the regenerate's
+        # restore path will NOT run: release the restore-pending marker the
+        # endpoint set at truncation. Cleared here (not only in the done-callback)
+        # so the marker is down the instant the reply exists, matching the moment
+        # the slot stops being restore-pending.
+        slot._regenerate_restore_pending = False
     # Re-append any stop_event that belongs to this segment's trailing run,
     # placed AFTER the finalized assistant message so the UI shows
     # prose → stop card.
@@ -5956,7 +5963,7 @@ async def _handle_workflow_command(
             )
     text, _ = redact_credentials(text)
     text, _ = redact_exfiltration_urls(text)
-    slot.append("assistant", text, "msg msg-a")
+    _append_local_command_reply(slot, text)
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -6064,7 +6071,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         outcome="ok",
         metadata={"slot": slot.key},
     )
-    slot.append("assistant", body, "msg msg-a")
+    _append_local_command_reply(slot, body)
     state.push_slots_update()
     slot.append("done", "", "done")
 
@@ -7481,6 +7488,11 @@ async def _run_chat(
     # leave its ids behind, and the flush clears the list itself on exit.
     if isinstance(getattr(slot, "_turn_reply_mids", None), list):
         slot._turn_reply_mids.clear()
+    # The consume-safe mirror resets only here, at the start of the next turn —
+    # never by a mid-turn consumer — so the regenerate restore can still read
+    # THIS turn's reply ids after _flush_segment / _flush_file_changes have run.
+    if isinstance(getattr(slot, "_turn_reply_mids_all", None), list):
+        slot._turn_reply_mids_all.clear()
     # The turn's ORDINAL for the crew log, kept separate from the message-slice
     # index above even though both start at the same value. The slice index is
     # reset when a mid-turn clear empties the message list, because the turn-stats
@@ -8437,10 +8449,9 @@ async def _run_chat(
             outcome="blocked",
             metadata={"slot": slot.key},
         )
-        slot.append(
-            "assistant",
+        _append_local_command_reply(
+            slot,
             f"⚠️ `{first_word}` is not available in the dashboard.",
-            "msg msg-a",
         )
         state.push_slots_update()
         slot.append("done", "", "done")
@@ -8504,9 +8515,7 @@ async def _run_chat(
                     outcome="blocked",
                     metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
                 )
-                slot.append(
-                    "assistant", f"🔒 Prompt `{name}` blocked — sensitive path.", "msg msg-a"
-                )
+                _append_local_command_reply(slot, f"🔒 Prompt `{name}` blocked — sensitive path.")
                 state.push_slots_update()
                 slot.append("done", "", "done")
             elif status == "too_large":
@@ -8519,10 +8528,9 @@ async def _run_chat(
                     outcome="too_large",
                     metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
                 )
-                slot.append(
-                    "assistant",
+                _append_local_command_reply(
+                    slot,
                     f"⚠️ Prompt `{name}` exceeds size limit ({MAX_PROMPT_BYTES // 1000}KB).",
-                    "msg msg-a",
                 )
                 state.push_slots_update()
                 slot.append("done", "", "done")
@@ -8536,7 +8544,7 @@ async def _run_chat(
                     outcome="not_found",
                     metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
                 )
-                slot.append("assistant", f"❌ Prompt `{name}` not found.", "msg msg-a")
+                _append_local_command_reply(slot, f"❌ Prompt `{name}` not found.")
                 state.push_slots_update()
                 slot.append("done", "", "done")
             return
@@ -8553,10 +8561,9 @@ async def _run_chat(
         except Exception:
             prompts = []
         if not prompts:
-            slot.append(
-                "assistant",
+            _append_local_command_reply(
+                slot,
                 "No prompts found. Create prompts in `~/.kiro/prompts/` (or `~/.kiro/crew/prompts/`).",
-                "msg msg-a",
             )
             sel().log_tool_invocation(
                 session_key="",
@@ -8583,7 +8590,7 @@ async def _run_chat(
         text = "\n".join(lines)
         text, _ = redact_credentials(text)
         text, _ = redact_exfiltration_urls(text)
-        slot.append("assistant", text, "msg msg-a")
+        _append_local_command_reply(slot, text)
         sel().log_tool_invocation(
             session_key="",
             agent=slot.agent or "kirocrew",
@@ -8656,10 +8663,9 @@ async def _run_chat(
             # outside ``ACP_BACKENDS_COMPACT``, which is true of one of them --
             # and this is the dashboard, where the claim is most visible. The
             # markdown register matches what that helper already emits.
-            slot.append(
-                "assistant",
+            _append_local_command_reply(
+                slot,
                 compact_unsupported_reply(_compact_unsupported),
-                "msg msg-a",
             )
             state.push_slots_update()
             slot.append("done", "", "done")
@@ -15630,7 +15636,12 @@ async def _run_chat(
         if not _retrying_empty:
             # Attach per-turn stats (elapsed / credits) to the last assistant
             # message so the footer can show them (parity with kiro-cli).
-            # Scoped to this turn's messages via _turn_msg_boundary.
+            # Scoped to this turn's messages via _turn_msg_boundary, and pinned
+            # to THIS turn's reply by id so a concurrent regenerate restore
+            # splicing rows ahead of the boundary cannot redirect the attach
+            # onto the restored old reply. _turn_reply_mids_all is the
+            # consume-safe set (_turn_reply_mids is cleared mid-turn by
+            # _flush_segment / _flush_file_changes).
             _stats_attached = _attach_turn_stats(
                 slot,
                 _turn_elapsed_ms,
@@ -15639,6 +15650,8 @@ async def _run_chat(
                 turn_boundary=_turn_msg_boundary,
                 model=_turn_model,
                 ttft_ms=_ttft_visible.ms,
+                turn_start_mid=_turn_start_mid,
+                reply_mids=set(getattr(slot, "_turn_reply_mids_all", None) or []),
             )
             if _prompt_depth == 0 and _stats_attached:
                 slot._carried_ttft_clock = None

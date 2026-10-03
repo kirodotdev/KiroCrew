@@ -478,3 +478,36 @@ def _note_reply_row(slot: "_ChatSlot", row: dict[str, Any]) -> None:
         if len(mids) >= _MAX_SLOT_MESSAGES:
             del mids[0]
         mids.append(mid)
+    # Also record into the consume-safe accumulator, which no mid-turn consumer
+    # clears (only the next turn's start resets it). _turn_reply_mids above is
+    # cleared by _flush_segment and _flush_file_changes, so a reader that runs
+    # after those — the regenerate restore — would miss this turn's reply ids;
+    # this parallel list keeps them readable until the next turn begins.
+    mids_all = getattr(slot, "_turn_reply_mids_all", None)
+    if isinstance(mids_all, list) and mid:
+        if len(mids_all) >= _MAX_SLOT_MESSAGES:
+            del mids_all[0]
+        mids_all.append(mid)
+
+
+def _append_local_command_reply(
+    slot: "_ChatSlot", body: str, cls: str = "msg msg-a"
+) -> dict[str, Any]:
+    """Append a local (slash) command's assistant reply AND record its identity.
+
+    A local command (``/goal``, ``/workflow``, ``/prompts``, a blocked command,
+    ``/compact``) answers inside ``_run_chat`` with a plain assistant row and
+    then returns WITHOUT going through ``_flush_segment`` — so a bare
+    ``slot.append("assistant", ...)`` left the row absent from the turn's reply
+    identity sets. The regenerate restore detects "this turn produced a reply"
+    by membership in those sets (``_turn_reply_mids`` / ``_turn_reply_mids_all``,
+    the ids ``_note_reply_row`` records). A local-command reply missing from
+    them reads as "no reply", so a regenerate landing on it (its row carries no
+    ``meta`` and so is not a system notice) would restore the previous reply on
+    top, persisting ``user → OLD reply → NEW reply``. Routing every
+    local-command append through here keeps the restore's identity gate honest
+    for the whole class, rather than per-site. Returns the appended row.
+    """
+    row = slot.append("assistant", body, cls)
+    _note_reply_row(slot, row)
+    return row

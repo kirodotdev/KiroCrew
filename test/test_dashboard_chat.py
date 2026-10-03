@@ -15079,10 +15079,21 @@ class TestRegenerateAndVariants:
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
                 await asyncio.sleep(0)
-        assert [m["role"] for m in slot.messages] == ["user"]
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+        # The endpoint truncates and stashes the current reply as a pending
+        # variant before dispatching the turn.
         assert len(captured) == 1
         assert captured[0]["content"] == "hello v1"
+        # This stub returns without flushing a segment, so the turn produced no
+        # reply. The done-callback restores the previous reply rather than
+        # leaving it deleted.
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
+        assert slot.messages[-1]["content"] == "hello v1"
+        assert slot._pending_variants == []
 
     @pytest.mark.asyncio
     async def test_regenerate_rejects_when_running(self, tmp_path, monkeypatch):
@@ -15415,6 +15426,1584 @@ class TestRegenerateAndVariants:
                 for _ in range(5):
                     await asyncio.sleep(0)
         assert slot._pending_variants == [], "pending variants must be cleared when task errors"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_empty_turn_preserves_previous_reply(self, tmp_path, monkeypatch):
+        """A regenerate whose new turn ends before producing a reply must keep
+        the previous reply — in memory and on disk."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _empty_turn(*a, **kw):
+            # Mirror _run_chat's early-exit shape: it catches its own exception,
+            # appends a transient error row, and returns normally — never
+            # flushing an assistant segment, so _pending_variants is left set.
+            slot.append("error", "Memory preparation is still running.", "msg msg-err")
+            slot.drain()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                # Await the turn, then the restore task the done-callback tracks.
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)  # let the done-callback schedule the restore
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # In-memory: the previous reply survives, ahead of the transient error.
+        assert any(
+            m.get("role") == "assistant" and "ORIGINAL-REPLY" in (m.get("content") or "")
+            for m in slot.messages
+        ), "previous reply must survive an empty regenerate in memory"
+        assert slot._pending_variants == []
+
+        # On disk: the restore persists before it installs, so once the awaited
+        # restore task has finished the transcript holds the reply. Read it by
+        # its history key (dashboard:s1), not the bare slot key.
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        hkey = slot_history_key(slot)
+        disk = state.conversation_log.read_messages(hkey)
+        assert any(
+            m.get("role") == "assistant" and "ORIGINAL-REPLY" in (m.get("content") or "")
+            for m in disk
+        ), "previous reply must be re-persisted to disk after an empty regenerate"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_producing_reply_still_replaces(self, tmp_path, monkeypatch):
+        """A normal regenerate (new turn produces a reply) still replaces the old
+        reply, keeping the old one only as a variant — the restore path must not
+        change the happy path."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        async def _reply_turn(*a, **kw):
+            # The real runner consumes _pending_variants by flushing a fresh
+            # assistant segment; do exactly that.
+            _flush_segment(state, slot, "NEW-REPLY", broadcast=False)
+            slot.drain()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_reply_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                # Happy path: flush consumed the variants, so no restore is
+                # scheduled; guard in case a future change schedules one.
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # The active reply is the new one; the old reply is retained as a variant.
+        assistant_rows = [m for m in slot.messages if m.get("role") == "assistant"]
+        assert assistant_rows, "a new assistant reply must exist"
+        newest = assistant_rows[-1]
+        assert newest.get("content") == "NEW-REPLY"
+        variant_texts = [v.get("content") for v in (newest.get("variants") or [])]
+        assert "ORIGINAL-REPLY" in variant_texts, "old reply must be kept as a variant"
+        assert "NEW-REPLY" in variant_texts
+        # The old reply is not a standalone active row anymore.
+        assert not any(m.get("content") == "ORIGINAL-REPLY" for m in assistant_rows)
+        assert slot._pending_variants == []
+
+    @pytest.mark.asyncio
+    async def test_regenerate_empty_turn_restores_past_a_compaction_notice(
+        self, tmp_path, monkeypatch
+    ):
+        """A turn that emits only an auto-compaction notice (assistant role, but a
+        status row) produced no reply, so the previous reply must still be
+        restored — the notice must not be mistaken for a reply."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _notice_only_turn(*a, **kw):
+            slot.append("assistant", "auto compacted", meta={"kind": "compaction"})
+            slot.drain()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_notice_only_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # The reply is restored, ahead of the compaction notice.
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == "ORIGINAL-REPLY"
+            for m in slot.messages
+        ), "reply must survive a turn that emitted only a compaction notice"
+        assert any(m.get("content") == "auto compacted" for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_broadcasts_the_reply(self, tmp_path, monkeypatch):
+        """Restoring the reply must reverse the client's optimistic truncation:
+        the rows go out through the canonical _broadcast_chat_message door and a
+        chat_variant_switch is emitted (the client fires refreshSlot on it,
+        re-fetching the authoritative transcript)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+        # _broadcast_chat_message emits through state._broadcast; the
+        # chat_variant_switch refetch trigger goes through state.broadcast_ws.
+        broadcast_rows = []
+        state._broadcast = lambda payload: broadcast_rows.append(payload)
+        variant_switches = []
+        real_bws = state.broadcast_ws
+
+        def _cap_bws(kind, data):
+            if kind == "chat_variant_switch":
+                variant_switches.append(data)
+            return real_bws(kind, data) if callable(real_bws) else None
+
+        state.broadcast_ws = _cap_bws
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # The reply is restored in the window.
+        assert any(m.get("content") == "ORIGINAL-REPLY" for m in slot.messages)
+        # It was broadcast through the canonical door (carries its meta.mid).
+        assert any(
+            p.get("content") == "ORIGINAL-REPLY" and (p.get("meta") or {}).get("mid")
+            for p in broadcast_rows
+        ), "the restored reply must be broadcast through _broadcast_chat_message with its mid"
+        # And a chat_variant_switch fired to trigger the client's refreshSlot.
+        assert any(
+            v.get("slot") == slot.key for v in variant_switches
+        ), "a chat_variant_switch must fire so the client re-fetches the transcript"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_refused_save_does_not_claim_success(
+        self, tmp_path, monkeypatch
+    ):
+        """When the restore's ordinary-merge write is refused (guarded write
+        returns False), no chat_message frames are broadcast (no unsaved restore
+        announced), but the reply is held in the live window with _dirty set for
+        the periodic flush to retry — the window is the source of truth."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+        state.broadcast_ws = MagicMock()
+
+        saves = []
+
+        async def _truncate_ok_then_restore_refused(*a, **kw):
+            # First call is the endpoint's truncating write (allow it); the
+            # second is the restore's ordinary-merge write (refuse it, as a
+            # closing/rebound guarded write would).
+            saves.append(kw)
+            return len(saves) == 1
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_ok_then_restore_refused,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # Two saves: the truncating write (ok) and the refused restore write.
+        assert len(saves) == 2
+        assert saves[1].get("best_effort") is False
+        # The reply is held in the live window (dirty) for the periodic flush to
+        # retry — the window is the source of truth once installed.
+        assert any(m.get("content") == "ORIGINAL-REPLY" for m in slot.messages)
+        assert slot._dirty is True
+        # But NO chat_message frame was broadcast — a refused write must not
+        # announce a restore the client would render as durable.
+        chat_msgs = [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "chat_message"
+        ]
+        assert not any(
+            f.get("content") == "ORIGINAL-REPLY" for f in chat_msgs
+        ), "a refused restore must not broadcast the reply as durable"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_rebind_mid_save_does_not_leak_into_new_conversation(
+        self, tmp_path, monkeypatch
+    ):
+        """A cron binding this (unbound) slot to a DIFFERENT conversation during
+        the restore's save-await must not leave the previous conversation's reply
+        on the slot: the next unpinned periodic flush would then persist it into
+        the newly-linked transcript (cross-conversation corruption). The restore
+        re-checks transcript identity after the (refused) save and, on a rebind
+        to a different transcript, REMOVES the spliced rows."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+        state.broadcast_ws = MagicMock()
+
+        saves = []
+
+        async def _truncate_ok_then_rebind_and_refuse(*a, **kw):
+            saves.append(kw)
+            if len(saves) == 1:
+                return True  # endpoint truncating write
+            # The restore's merge write: model a cron binding the slot to a
+            # DIFFERENT conversation during the await, then the pinned guard
+            # refuses the write (the restore was authorized against the old key).
+            slot.linked_session_key = "dashboard:cron-other-conversation"
+            return False
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_ok_then_rebind_and_refuse,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assert len(saves) == 2
+        # The old conversation's reply was REMOVED from the live window on the
+        # rebind, so the periodic flush cannot persist it into the cron's
+        # newly-linked transcript.
+        assert not any(
+            m.get("content") == "ORIGINAL-REPLY" for m in slot.messages
+        ), "the previous conversation's reply must not ride a rebind into the new transcript"
+        # And it was never broadcast as durable.
+        chat_msgs = [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "chat_message"
+        ]
+        assert not any(f.get("content") == "ORIGINAL-REPLY" for f in chat_msgs)
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_rebind_mid_save_rolls_back_even_on_commit(
+        self, tmp_path, monkeypatch
+    ):
+        """The MIRROR of the refused-save rebind case: a mid-await rebind can
+        leave the restore save committed=True against the OLD transcript while the
+        slot now links a DIFFERENT conversation. The post-await identity check
+        must run on the COMMITTED-success branch too, not just the refused one —
+        otherwise the restored rows stay on the rebound slot and its next flush
+        corrupts the new transcript. On a real rebind the rows are removed
+        regardless of commit outcome."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+        state.broadcast_ws = MagicMock()
+
+        saves = []
+
+        async def _truncate_ok_then_rebind_and_commit(*a, **kw):
+            saves.append(kw)
+            if len(saves) == 1:
+                return True  # endpoint truncating write
+            # The restore's merge write: the slot is rebound to a DIFFERENT
+            # conversation during the await, but the save still COMMITS true
+            # (its pin matched the old key when the write ran).
+            slot.linked_session_key = "dashboard:cron-other-conversation"
+            return True
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_ok_then_rebind_and_commit,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assert len(saves) == 2
+        # Even though the save committed, the rebind rollback removed the old
+        # conversation's reply from the live window.
+        assert not any(
+            m.get("content") == "ORIGINAL-REPLY" for m in slot.messages
+        ), "a committed save plus a rebind must still roll back the restored rows"
+        # And the restored rows were NOT broadcast as durable onto the new slot.
+        chat_msgs = [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "chat_message"
+        ]
+        assert not any(f.get("content") == "ORIGINAL-REPLY" for f in chat_msgs)
+
+    @pytest.mark.asyncio
+    async def test_regenerate_key_respelling_during_truncate_save_keeps_the_reply(
+        self, tmp_path, monkeypatch
+    ):
+        """An unbound channel slot can rebind slack_<ts> -> slack:<ts> during the
+        inline truncating save. Those keys resolve to the SAME transcript file,
+        so the save guard's raw-key refusal is NOT a real conversation change.
+        The endpoint must not treat it as one: it retries on the current key, and
+        the previous reply must SURVIVE (not deleted by the periodic rewrite, not
+        duplicated)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.linked_session_key = "slack_1712793600.1"
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        saves = []
+
+        async def _truncate_respell_refuse_then_retry_ok(*a, **kw):
+            saves.append(kw)
+            if len(saves) == 1:
+                # The inline truncating save: an unbound-slot reconciler respells
+                # the key to an equivalent spelling of the SAME transcript, and
+                # the raw-key guard refuses on the spelling.
+                slot.linked_session_key = "slack:1712793600.1"
+                return False
+            # Any subsequent save (the endpoint's retry on the current key, and
+            # the restore's merge save) commits.
+            return True
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_respell_refuse_then_retry_ok,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                # A same-transcript respelling is NOT a conversation change: the
+                # endpoint retried on the current key and proceeded (200), not a
+                # 409 abort that would strand the truncation.
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # The previous reply survives on the (same) transcript — present exactly
+        # once, not deleted and not duplicated.
+        reply_rows = [m for m in slot.messages if m.get("content") == "ORIGINAL-REPLY"]
+        assert len(reply_rows) == 1, "the previous reply must survive a same-file key respelling"
+        # The truncation flag is not left armed to durably delete it on the next
+        # periodic flush.
+        assert slot._pending_variants == []
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_preserves_a_concurrent_foreign_append(
+        self, tmp_path, monkeypatch
+    ):
+        """A foreign/injected assistant row (a workflow or sub-agent completion)
+        present when the empty turn ends must survive the restore: the reply is
+        inserted BEFORE it, and the restore persists via the ordinary merge path
+        (no explicit-snapshot rewrite that would drop a concurrent disk append)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        from kiro_crew.dashboard import chat_regenerate as _cr
+
+        real_save = _cr.save_slot_off_loop
+        save_calls = []
+
+        async def _tracking_save(*args, **kwargs):
+            save_calls.append(kwargs)
+            return await real_save(*args, **kwargs)
+
+        async def _empty_turn_with_injected_row(*a, **kw):
+            # A workflow/sub-agent completion appended on the event loop during
+            # the failed regenerate: role=assistant, a non-notice kind. It is not
+            # this turn's reply (no segment flushed), so it must be kept.
+            slot.append("assistant", "INJECTED-WORKFLOW-ROW", meta={"kind": "workflow_result"})
+            slot.drain()
+
+        with (
+            patch("kiro_crew.dashboard.chat_regenerate.save_slot_off_loop", new=_tracking_save),
+            patch(
+                "kiro_crew.dashboard.chat_regenerate._run_chat",
+                new=_empty_turn_with_injected_row,
+            ),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        contents = [m.get("content") for m in slot.messages]
+        # Both the restored reply and the injected row survive.
+        assert "ORIGINAL-REPLY" in contents, "restored reply must survive"
+        assert "INJECTED-WORKFLOW-ROW" in contents, "injected foreign row must not be dropped"
+        # The reply is restored ahead of the injected row (its pre-regenerate slot).
+        assert contents.index("ORIGINAL-REPLY") < contents.index("INJECTED-WORKFLOW-ROW")
+        # The restore persisted via the ordinary merge path: no explicit messages
+        # snapshot was passed (which would force the collect_foreign-off rewrite),
+        # and _pending_rewrite was cleared so the next flush also merges.
+        restore_call = save_calls[-1]
+        assert restore_call.get("best_effort") is False
+        assert "messages" not in restore_call or restore_call.get("messages") is None
+        assert slot._pending_rewrite is False
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_survives_a_queued_followup(self, tmp_path, monkeypatch):
+        """A follow-up queued during a Regenerate appends its user row before the
+        done-callback restore runs. The reply must still be restored — at its
+        original position, ahead of the follow-up's user row — not deleted."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _empty_turn_then_queued_followup(*a, **kw):
+            # Model _start_next_queued_turn appending the queued follow-up's user
+            # row from this turn's tail-drain, before the done-callback restore.
+            slot.append("user", "FOLLOW-UP")
+            slot.drain()
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat",
+            new=_empty_turn_then_queued_followup,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        contents = [m.get("content") for m in slot.messages]
+        # The reply survives despite the queued follow-up's user row.
+        assert "ORIGINAL-REPLY" in contents, "reply must survive a queued follow-up"
+        assert "FOLLOW-UP" in contents
+        # The reply is restored at its original position: after its own user
+        # turn, BEFORE the follow-up's user row (chronological order preserved).
+        assert contents.index("ORIGINAL-REPLY") < contents.index("FOLLOW-UP")
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_relocates_after_a_front_trim(self, tmp_path, monkeypatch):
+        """A front-trim during the regenerate turn shifts positions, making the
+        captured u_idx stale. The restore must relocate the user row by its
+        stable mid and insert the reply right after it, not at the stale index
+        (which would land the reply after later rows, corrupting order)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        # A couple of leading rows so a front-trim shifts the user row's index.
+        slot.append("assistant", "OLD-1")
+        slot.append("assistant", "OLD-2")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _empty_turn_with_front_trim(*a, **kw):
+            # The turn appends an error row, then a front-trim evicts leading
+            # rows (as append's cap enforcement would on a near-cap window),
+            # shifting every remaining position down so the captured u_idx is
+            # stale.
+            slot.append("error", "boom", "msg msg-err")
+            del slot.messages[:2]
+            slot.drain()
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn_with_front_trim
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        roles_contents = [(m.get("role"), m.get("content")) for m in slot.messages]
+        contents = [c for _, c in roles_contents]
+        assert "ORIGINAL-REPLY" in contents, "reply must be restored after a front trim"
+        # The reply lands immediately after its own user row, BEFORE the error row
+        # — order preserved despite the stale numeric index.
+        u_pos = next(i for i, (r, c) in enumerate(roles_contents) if r == "user" and c == "hi")
+        assert roles_contents[u_pos + 1] == ("assistant", "ORIGINAL-REPLY")
+        assert contents.index("ORIGINAL-REPLY") < contents.index("boom")
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_enforces_the_message_bound(self, tmp_path, monkeypatch):
+        """The restore splice must not push the window past the message bound:
+        it runs the same bound enforcement as append."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # A small cap so the test is cheap; the endpoint and _enforce_message_bound
+        # read the module global.
+        monkeypatch.setattr("kiro_crew.dashboard.state._MAX_SLOT_MESSAGES", 6)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        # Fill to the (patched) cap so re-inserting the removed rows would exceed
+        # it without bound enforcement.
+        from kiro_crew.dashboard import state as _state_mod
+
+        while len(slot.messages) < _state_mod._MAX_SLOT_MESSAGES:
+            slot.append("assistant", f"filler-{len(slot.messages)}")
+        slot.drain()
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # The window is bounded even after the restore re-inserted rows.
+        assert len(slot.messages) <= _state_mod._MAX_SLOT_MESSAGES
+
+    @pytest.mark.asyncio
+    async def test_destructive_busy_honors_the_restore_pending_flag(self, tmp_path, monkeypatch):
+        """_destructive_history_busy must fence on the _regenerate_restore_pending
+        marker, not only on the restore TASK — so the whole restore window is
+        covered, including the instant between the empty turn finishing and the
+        done-callback creating the task (task is None, marker is set)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat_regenerate import _destructive_history_busy
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        # The gap state: not running, no restore task yet, but restore-pending.
+        assert slot.running is False
+        assert slot._regenerate_restore_task is None
+        assert _destructive_history_busy(slot) is None  # idle before the marker
+
+        slot._regenerate_restore_pending = True
+        busy = _destructive_history_busy(slot)
+        assert busy is not None and busy.status == 409
+        import json as _json
+
+        assert _json.loads(busy.body)["code"] == "slot_restoring"
+
+        # Marker cleared → idle again.
+        slot._regenerate_restore_pending = False
+        assert _destructive_history_busy(slot) is None
+
+    @pytest.mark.asyncio
+    async def test_regenerate_does_not_restore_over_a_partial_reply(self, tmp_path, monkeypatch):
+        """An abnormal-exit path (kiro-cli died mid-stream, user Stop) persists a
+        partial reply via _persist_partial_reply — an assistant 'msg msg-a' row —
+        WITHOUT going through _flush_segment, so _pending_variants stays set. The
+        restore must NOT splice the old reply on top of that partial reply; the
+        turn produced a (partial) reply and the old one is superseded."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _turn_persists_partial(*a, **kw):
+            # Mirror _persist_partial_reply: append a real assistant reply row
+            # AND record its mid via _note_reply_row (the identity door the real
+            # path uses), without consuming _pending_variants.
+            from kiro_crew.dashboard.chat_runner import _note_reply_row
+
+            row = slot.append("assistant", "PARTIAL-NEW-REPLY", "msg msg-a")
+            _note_reply_row(slot, row)
+            slot.drain()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_turn_persists_partial):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assistant_contents = [
+            m.get("content") for m in slot.messages if m.get("role") == "assistant"
+        ]
+        # Exactly one assistant reply for the turn: the partial NEW reply, not
+        # the old one spliced back on top.
+        assert "PARTIAL-NEW-REPLY" in assistant_contents
+        assert (
+            "ORIGINAL-REPLY" not in assistant_contents
+        ), "the old reply must not be restored on top of a persisted partial reply"
+        assert slot._pending_variants == []
+        # The old reply is NOT lost: it is attached to the partial reply as
+        # variant history, so the user can switch back to it. The partial reply
+        # is the active (newest) variant.
+        partial = next(
+            m
+            for m in slot.messages
+            if m.get("role") == "assistant" and m.get("content") == "PARTIAL-NEW-REPLY"
+        )
+        variant_contents = [v.get("content") for v in (partial.get("variants") or [])]
+        assert (
+            "ORIGINAL-REPLY" in variant_contents
+        ), "the previous reply must survive as a variant of the partial reply"
+        assert "PARTIAL-NEW-REPLY" in variant_contents
+        assert partial.get("variant_idx") == len(partial["variants"]) - 1
+
+    @pytest.mark.asyncio
+    async def test_regenerate_partial_reply_found_when_anchor_is_trimmed_out(
+        self, tmp_path, monkeypatch
+    ):
+        """A long streamed regenerate can front-trim the user-row anchor out of
+        the window before the turn persists its partial reply. The partial-reply
+        detection must still find that partial — scanning the whole surviving
+        window once the anchor is gone, not a stale u_idx — so the old reply is
+        NOT restored after the partial rows (which would corrupt order)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        # Leading rows so a front-trim can both evict the user anchor AND leave
+        # the stale u_idx pointing past where the partial reply lands.
+        slot.append("assistant", "OLD-1")
+        slot.append("assistant", "OLD-2")
+        slot.append("assistant", "OLD-3")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _long_stream_trims_anchor_then_persists_partial(*a, **kw):
+            from kiro_crew.dashboard.chat_runner import _note_reply_row
+
+            # The streamed turn front-trims leading rows (as append's cap
+            # enforcement would on a near-cap window), evicting the user-row
+            # anchor the restore keys on. The surviving window is now shorter
+            # than the captured u_idx, so a u_idx-based scan start would begin
+            # PAST the partial reply.
+            del slot.messages[:4]
+            # Then it persists a partial reply (kiro-cli died mid-stream / Stop):
+            # a real assistant row recorded via the identity door, WITHOUT
+            # consuming _pending_variants.
+            row = slot.append("assistant", "PARTIAL-NEW-REPLY", "msg msg-a")
+            _note_reply_row(slot, row)
+            slot.drain()
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat",
+            new=_long_stream_trims_anchor_then_persists_partial,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assistant_contents = [
+            m.get("content") for m in slot.messages if m.get("role") == "assistant"
+        ]
+        # The partial reply is detected despite the trimmed anchor, so the old
+        # reply is NOT spliced back on top of it.
+        assert "PARTIAL-NEW-REPLY" in assistant_contents
+        assert (
+            "ORIGINAL-REPLY" not in assistant_contents
+        ), "a front-trimmed anchor must not defeat partial-reply detection"
+        assert slot._pending_variants == []
+
+    @pytest.mark.asyncio
+    async def test_regenerate_does_not_restore_over_a_local_command_reply(
+        self, tmp_path, monkeypatch
+    ):
+        """A local (slash) command answered inside _run_chat appends a plain
+        assistant reply and returns WITHOUT going through _flush_segment, so
+        _pending_variants stays set and the done-callback schedules the restore.
+        The reply is recorded via _append_local_command_reply (which calls
+        _note_reply_row), so the restore's identity scan recognises it and must
+        NOT splice the old reply on top of it — persisting user -> OLD -> NEW."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _turn_answers_as_local_command(*a, **kw):
+            # Mirror a slash-command handler: append the reply through the
+            # local-command door (records the reply mid in the turn's id sets)
+            # and return, bypassing _flush_segment so _pending_variants stays set.
+            from kiro_crew.dashboard.chat_runner import _append_local_command_reply
+
+            _append_local_command_reply(slot, "LOCAL-COMMAND-REPLY")
+            slot.drain()
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat",
+            new=_turn_answers_as_local_command,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assistant_contents = [
+            m.get("content") for m in slot.messages if m.get("role") == "assistant"
+        ]
+        # The local-command reply is recognised as this turn's reply, so the old
+        # reply is NOT restored on top of it.
+        assert "LOCAL-COMMAND-REPLY" in assistant_contents
+        assert (
+            "ORIGINAL-REPLY" not in assistant_contents
+        ), "a local-command reply must not be mistaken for an empty turn"
+        assert slot._pending_variants == []
+
+    @pytest.mark.asyncio
+    async def test_close_during_regenerate_preserves_the_reply(self, tmp_path, monkeypatch):
+        """Closing the tab while an empty regenerate is in flight must not lose
+        the previous reply. The close is what makes the turn end empty (it
+        cancels it), and the restore re-validates slot identity, so a close that
+        popped the slot first would make the restore bail and then archive the
+        truncated transcript — permanently losing the reply. The close now drains
+        the in-flight regenerate (cancel + restore) BEFORE the pop, while the slot
+        is still live, so the reply is re-inserted and persisted first."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        turn_running = asyncio.Event()
+        release_turn = asyncio.Event()
+
+        async def _blocking_empty_turn(*a, **kw):
+            # The turn is in flight (so _pending_variants stays set) until the
+            # close cancels it; it produces NO reply (bypasses _flush_segment).
+            turn_running.set()
+            await release_turn.wait()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_blocking_empty_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                # The regenerate turn is dispatched and blocked mid-flight, with
+                # _pending_variants holding the removed reply.
+                await asyncio.wait_for(turn_running.wait(), timeout=5)
+                assert slot._pending_variants, "the removed reply is stashed mid-turn"
+
+                # Close the tab while the regenerate is still running. The close's
+                # drain cancels the turn (ending it empty), lets the restore
+                # schedule, and awaits it before popping/archiving the slot.
+                await chat_handlers.close_slot(state, slot, "s1")
+
+        # The slot is gone from the live map (closed), but the previous reply was
+        # restored and persisted before the archival rather than lost.
+        assert state.get_slot("s1") is None
+        persisted = state.conversation_log.read_messages_chained("dashboard:s1")
+        contents = [m.get("content") for m in persisted]
+        assert (
+            "ORIGINAL-REPLY" in contents
+        ), "closing during an empty regenerate must not lose the previous reply"
+
+    @pytest.mark.asyncio
+    async def test_close_during_the_restore_save_window_preserves_the_reply(
+        self, tmp_path, monkeypatch
+    ):
+        """Closing the tab while the restore is already mid-save must not lose the
+        reply either. Here the empty turn has ended and the restore task is
+        scheduled and blocked in its merge save; the close must await that pending
+        _regenerate_restore_task before popping/archiving, so the restore's
+        persist commits first."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        restore_save_entered = asyncio.Event()
+        release_restore_save = asyncio.Event()
+        saves = []
+
+        async def _truncate_ok_then_block_restore_save(*a, **kw):
+            saves.append(kw)
+            # First call is the endpoint's truncating write — allow it. The
+            # second is the restore's merge write — block it so the restore task
+            # is still pending when the close runs.
+            if len(saves) == 1:
+                return True
+            restore_save_entered.set()
+            await release_restore_save.wait()
+            return True
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_ok_then_block_restore_save,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                # The restore task is scheduled and now blocked in its merge save.
+                assert slot._regenerate_restore_task is not None
+                await asyncio.wait_for(restore_save_entered.wait(), timeout=5)
+
+                # Close while the restore save is mid-flight. The close's drain
+                # must await the pending restore task; release the save so it can
+                # commit, and the close then archives the restored transcript.
+                close = asyncio.create_task(chat_handlers.close_slot(state, slot, "s1"))
+                await asyncio.sleep(0)
+                release_restore_save.set()
+                await close
+
+        assert state.get_slot("s1") is None
+        persisted = state.conversation_log.read_messages_chained("dashboard:s1")
+        contents = [m.get("content") for m in persisted]
+        assert (
+            "ORIGINAL-REPLY" in contents
+        ), "closing during the restore save window must not lose the previous reply"
+
+    @pytest.mark.asyncio
+    async def test_close_during_partial_reply_variant_attach_keeps_the_variant(
+        self, tmp_path, monkeypatch
+    ):
+        """Matrix cell: PARTIAL reply × tab-close mid-restore. The turn persisted a
+        partial reply, so the restore attaches the old reply as a VARIANT (F1)
+        rather than splicing a row — and its variant-attach save is blocked when
+        the close lands. The close must await the pending restore task so that
+        attach commits, and the archived transcript must still carry the old
+        reply in the partial reply's variants (invariant: a regenerate never
+        leaves fewer replies/variants than before unless genuinely superseded)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        attach_save_entered = asyncio.Event()
+        release_attach_save = asyncio.Event()
+        saves = []
+
+        async def _truncate_ok_then_block_attach(*a, **kw):
+            saves.append(kw)
+            # First save is the endpoint's truncating write; allow it. The second
+            # is the restore's variant-attach write (F1) — block it so the restore
+            # task is pending when the close lands.
+            if len(saves) == 1:
+                return True
+            attach_save_entered.set()
+            await release_attach_save.wait()
+            return True
+
+        async def _turn_persists_partial(*a, **kw):
+            from kiro_crew.dashboard.chat_runner import _note_reply_row
+
+            row = slot.append("assistant", "PARTIAL-NEW-REPLY", "msg msg-a")
+            _note_reply_row(slot, row)
+            slot.drain()
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_ok_then_block_attach,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_turn_persists_partial),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                assert slot._regenerate_restore_task is not None
+                await asyncio.wait_for(attach_save_entered.wait(), timeout=5)
+
+                close = asyncio.create_task(chat_handlers.close_slot(state, slot, "s1"))
+                await asyncio.sleep(0)
+                release_attach_save.set()
+                await close
+
+        assert state.get_slot("s1") is None
+        persisted = state.conversation_log.read_messages_chained("dashboard:s1")
+        partial = next((m for m in persisted if m.get("content") == "PARTIAL-NEW-REPLY"), None)
+        assert partial is not None, "the partial reply must be in the archived transcript"
+        variant_contents = [v.get("content") for v in (partial.get("variants") or [])]
+        assert (
+            "ORIGINAL-REPLY" in variant_contents
+        ), "closing during the partial-reply variant-attach must not lose the old reply"
+
+    @pytest.mark.asyncio
+    async def test_close_mid_regenerate_keeps_order_and_pops_recovery_with_real_save(
+        self, tmp_path, monkeypatch
+    ):
+        """Close the tab mid-regenerate through the REAL save path (no mock), so the
+        ``is_closing`` fence that ``save_slot_off_loop`` raises during a close is
+        actually exercised. The restore's guarded saves run under that fence; they
+        must still commit the restore in order and settle the pending-recovery
+        entry.
+
+        Before the fix the restore's save was refused by the close fence (it did
+        not pass ``issued_by_the_retraction``), so the partial branch reverted the
+        variant attach and wrote the OLD reply as a TOP-LEVEL row to the original
+        transcript, which the close's archival merge then interleaved by ts into
+        ``user -> OLD reply -> NEW partial reply`` -- and the ``_PENDING_RECOVERIES``
+        entry was never popped, leaking one entry per close toward the 512 cap.
+
+        Asserts: (1) the archived order is ``user -> partial`` with the old reply
+        carried only as the partial reply's VARIANT (never a stray top-level row
+        AFTER the partial), and (2) ``_PENDING_RECOVERIES`` is empty afterward (no
+        leak)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers, chat_regenerate
+        from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+        # Persist the pre-regenerate transcript so the restore has a real file to
+        # recover against through the REAL save path.
+        await save_slot_off_loop(
+            state,
+            slot,
+            best_effort=False,
+            expected_history_key=slot_history_key(slot),
+            expected_slot_name="s1",
+        )
+
+        turn_running = asyncio.Event()
+        release_turn = asyncio.Event()
+
+        async def _turn_persists_partial_then_blocks(*a, **kw):
+            # Append a partial reply the way an abnormal exit (kiro-cli died
+            # mid-stream / Stop) does -- through _persist_partial_reply's door, so
+            # _flush_segment never runs and _pending_variants stays set (the
+            # empty-turn restore branch that attaches the old reply as a variant).
+            from kiro_crew.dashboard.chat_runner import _note_reply_row
+
+            row = slot.append("assistant", "PARTIAL-NEW-REPLY", "msg msg-a")
+            _note_reply_row(slot, row)
+            slot.drain()
+            turn_running.set()
+            await release_turn.wait()
+            return None
+
+        # Record the registry length BEFORE the close so the post-close assertion
+        # measures a true delta rather than an absolute (sibling tests in this
+        # process might have left entries).
+        _pending_before = dict(chat_regenerate._PENDING_RECOVERIES)
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat",
+            new=_turn_persists_partial_then_blocks,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                await asyncio.wait_for(turn_running.wait(), timeout=5)
+
+                # Close the tab while the regenerate turn is still blocked. The
+                # close cancels the turn (ending it empty with a persisted partial
+                # reply), schedules the restore, and awaits it -- all with
+                # is_closing set, so the restore's guarded saves run under the
+                # fence. Release the turn so the cancel can complete.
+                close = asyncio.create_task(chat_handlers.close_slot(state, slot, "s1"))
+                await asyncio.sleep(0)
+                release_turn.set()
+                await asyncio.wait_for(close, timeout=10)
+
+        assert state.get_slot("s1") is None
+        persisted = state.conversation_log.read_messages_chained("dashboard:s1")
+        roles = [m.get("role") for m in persisted]
+        contents = [m.get("content") for m in persisted]
+
+        # The archived transcript must read user -> partial reply, with the old
+        # reply NOT present as a stray top-level row after the partial.
+        assert roles == ["user", "assistant"], roles
+        assert contents[-1] == "PARTIAL-NEW-REPLY", contents
+        assert (
+            "ORIGINAL-REPLY" not in contents
+        ), "the old reply must not be a stray top-level row -- it belongs in the partial's variants"
+        partial = persisted[-1]
+        variant_contents = [v.get("content") for v in (partial.get("variants") or [])]
+        assert (
+            "ORIGINAL-REPLY" in variant_contents
+        ), "the old reply must be preserved as the partial reply's variant"
+
+        # No _PENDING_RECOVERIES leak: the close must settle the entry rather than
+        # leave it for the shutdown drain to re-insert toward the 512 cap.
+        assert chat_regenerate._PENDING_RECOVERIES == _pending_before, (
+            "the pending-recovery entry must be popped on a close-mid-regenerate; "
+            f"leaked: {set(chat_regenerate._PENDING_RECOVERIES) - set(_pending_before)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_refused_when_restore_cannot_settle_in_time(self, tmp_path, monkeypatch):
+        """A SLOW restore cancellation must NOT let the close archive a truncated
+        transcript. The close drain is bounded; when the restore is still pending
+        at the deadline, close must REFUSE (SlotCloseError) — the tab stays open,
+        the slot stays live, nothing is popped or archived — rather than swallow
+        the timeout and destroy the reply. The person retries the close once the
+        restore has finished."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        # Tiny ceiling so the 'slow' restore blows the deadline fast.
+        monkeypatch.setattr(chat_handlers, "_GUARDED_WRITE_WAIT_SECS", 0.2)
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        release_restore_save = asyncio.Event()
+        saves = []
+
+        async def _truncate_ok_then_hang_restore(*a, **kw):
+            saves.append(kw)
+            if len(saves) == 1:
+                return True  # endpoint truncating write
+            # The restore's merge write hangs well past the ceiling.
+            await release_restore_save.wait()
+            return True
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        try:
+            with (
+                patch(
+                    "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                    new=_truncate_ok_then_hang_restore,
+                ),
+                patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+            ):
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    resp = await client.post("/api/chat/slots/s1/regenerate")
+                    assert resp.status == 200
+                    if slot.task is not None:
+                        await slot.task
+                    await asyncio.sleep(0)
+                    assert slot._regenerate_restore_task is not None
+
+                    # Close while the restore is hung. The drain times out and the
+                    # close must be REFUSED, not proceed to archive.
+                    with pytest.raises(chat_handlers.SlotCloseError) as exc:
+                        await chat_handlers.close_slot(state, slot, "s1")
+                    assert exc.value.code == "regenerate_restore_pending"
+
+            # The slot was NOT popped/archived — it stays live for a retry, so the
+            # truncated transcript was never committed as the closed state and the
+            # reply is not lost.
+            assert state.get_slot("s1") is slot
+        finally:
+            release_restore_save.set()
+            rt = slot._regenerate_restore_task
+            if rt is not None:
+                try:
+                    await rt
+                except Exception:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_regenerate_partial_reply_survives_successor_clearing_turn_mids(
+        self, tmp_path, monkeypatch
+    ):
+        """A queued follow-up's turn clears the reply-id accumulator the restore
+        reads (_turn_reply_mids_all; its next-turn-start reset is driven here by
+        the successor). On the re-entrant dispatch paths the successor is
+        scheduled from within this turn and its clear can run after the turn
+        returns but before the restore. The guard must read the set captured
+        synchronously at the _run_chat return boundary, never the live
+        (clearable) attribute — otherwise the old reply is spliced on top of the
+        partial reply. Clearing _turn_reply_mids_all (not the mid-turn-cleared
+        _turn_reply_mids) is what forces the snapshot to be the only thing that
+        can save the guard."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _turn_persists_partial_then_schedules_clear(*a, **kw):
+            from kiro_crew.dashboard.chat_runner import _note_reply_row
+
+            row = slot.append("assistant", "PARTIAL-NEW-REPLY", "msg msg-a")
+            _note_reply_row(slot, row)
+            slot.drain()
+
+            # Model a successor dispatched from within this turn (re-entrant
+            # path): its next-turn-start reset of the accumulator the restore
+            # reads is scheduled now and runs on a later loop step — after this
+            # turn's return-boundary capture but racing the restore. The wrapper
+            # captured the ids before this runs.
+            async def _successor_clears() -> None:
+                if isinstance(getattr(slot, "_turn_reply_mids_all", None), list):
+                    slot._turn_reply_mids_all.clear()
+
+            asyncio.create_task(_successor_clears())
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat",
+            new=_turn_persists_partial_then_schedules_clear,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                # Let the scheduled successor-clear run before the restore.
+                await asyncio.sleep(0)
+                if isinstance(getattr(slot, "_turn_reply_mids_all", None), list):
+                    slot._turn_reply_mids_all.clear()
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assistant_contents = [
+            m.get("content") for m in slot.messages if m.get("role") == "assistant"
+        ]
+        # The snapshot still identifies the partial reply, so the old reply is
+        # not restored on top of it even though the accumulator was cleared.
+        assert "PARTIAL-NEW-REPLY" in assistant_contents
+        assert (
+            "ORIGINAL-REPLY" not in assistant_contents
+        ), "a successor clearing _turn_reply_mids_all must not defeat the partial-reply guard"
+
+    @pytest.mark.asyncio
+    async def test_second_regenerate_during_restore_save_is_refused(self, tmp_path, monkeypatch):
+        """The restore splices the removed rows onto the live window then AWAITS
+        a guarded disk save. The turn task is already done, so the slot looks
+        idle; a second regenerate landing in that await would mutate the
+        half-restored window and the restore's merge save would re-broadcast
+        rows the second mutation removed. _destructive_history_busy must treat a
+        pending restore task as busy (409 slot_restoring) and clear once it
+        settles."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        restore_save_entered = asyncio.Event()
+        release_restore_save = asyncio.Event()
+        saves = []
+
+        async def _truncate_ok_then_block_restore(*a, **kw):
+            saves.append(kw)
+            # First call is the endpoint's truncating write — allow it.
+            if len(saves) == 1:
+                return True
+            # Second call is the restore's merge write — hold it open so a
+            # second regenerate lands while the restore task is pending.
+            restore_save_entered.set()
+            await release_restore_save.wait()
+            return True
+
+        async def _empty_turn(*a, **kw):
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+                new=_truncate_ok_then_block_restore,
+            ),
+            patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                # The restore task exists and its save is now blocked mid-await.
+                assert slot._regenerate_restore_task is not None
+                await asyncio.wait_for(restore_save_entered.wait(), timeout=5)
+
+                # A second regenerate must be refused: the slot is restoring.
+                resp2 = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp2.status == 409
+                body2 = await resp2.json()
+                assert body2.get("code") == "slot_restoring"
+
+                # Release the restore and let it settle.
+                release_restore_save.set()
+                await slot._regenerate_restore_task
+
+        # Once settled, the handle is reset so the slot reads idle again, and
+        # a subsequent destructive mutation would be admitted.
+        from kiro_crew.dashboard.chat_regenerate import _destructive_history_busy
+
+        assert slot._regenerate_restore_task is None
+        assert _destructive_history_busy(slot) is None
+        assert any(m.get("content") == "ORIGINAL-REPLY" for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_turn_stats_pin_to_own_reply_despite_a_restore_splice(self):
+        """_attach_turn_stats must land on THIS turn's own reply by id, not the
+        last assistant row in the boundary slice. A regenerate whose turn ended
+        empty splices the removed old reply in ahead of a running follow-up's
+        boundary; a plain reverse scan could then land this turn's stats on the
+        restored old reply."""
+        from kiro_crew.dashboard.chat_runner import _attach_turn_stats, _note_reply_row
+        from kiro_crew.dashboard.state import _ChatSlot, row_mid
+
+        slot = _ChatSlot("test-stats-splice")
+        slot.append("user", "hi", "msg msg-u", broadcast=False)
+        # The follow-up turn starts here: boundary + start-mid captured, then it
+        # appends its own reply and records that reply's id.
+        boundary = len(slot.messages)
+        start_mid = row_mid(slot.messages[-1])
+        reply_row = slot.append("assistant", "FOLLOWUP-REPLY", "msg msg-a", broadcast=False)
+        _note_reply_row(slot, reply_row)
+        reply_mids = set(slot._turn_reply_mids_all)
+
+        # A concurrent restore splices the OLD reply in ahead of the follow-up's
+        # reply (after the regenerate's user row).
+        old_reply = {
+            "role": "assistant",
+            "content": "OLD-RESTORED-REPLY",
+            "meta": {"mid": "msg-old"},
+        }
+        slot.messages.insert(boundary, old_reply)
+
+        _attach_turn_stats(
+            slot,
+            4000,
+            1.0,
+            0.0,
+            turn_boundary=boundary,
+            turn_start_mid=start_mid,
+            reply_mids=reply_mids,
+        )
+
+        # The stats land on the follow-up's own reply, identified by id.
+        followup = next(m for m in slot.messages if row_mid(m) in reply_mids)
+        assert followup["meta"]["turn_stats"]["elapsed_ms"] == 4000
+        assert "turn_stats" not in old_reply.get(
+            "meta", {}
+        ), "the restored old reply must not receive this turn's stats"
+
+    @pytest.mark.asyncio
+    async def test_turn_stats_error_only_followup_skips_a_spliced_old_reply(self):
+        """An error-only follow-up turn records NO reply id, so the identity pin
+        does not fire. The turn's rows are then scoped by turn_start_mid: a
+        restore that spliced the old reply BEFORE this turn's start row must be
+        excluded, so the error-only turn's stats land on nothing rather than
+        overwriting the restored old reply's stats."""
+        from kiro_crew.dashboard.chat_runner import _attach_turn_stats
+        from kiro_crew.dashboard.state import _ChatSlot, row_mid
+
+        slot = _ChatSlot("test-stats-error-only")
+        slot.append("user", "regen-user", "msg msg-u1", broadcast=False)
+        # A later follow-up user row is this turn's start marker.
+        followup_user = slot.append("user", "followup-user", "msg msg-u2", broadcast=False)
+        start_mid = row_mid(followup_user)
+        boundary = len(slot.messages)
+        # The follow-up produces only an error row (no assistant reply).
+        slot.append("error", "boom", "msg msg-err", broadcast=False)
+
+        # A concurrent restore splices the old reply in after the FIRST user row,
+        # i.e. BEFORE this follow-up turn's start row.
+        old_reply = {
+            "role": "assistant",
+            "content": "OLD-RESTORED-REPLY",
+            "meta": {"mid": "msg-old"},
+        }
+        slot.messages.insert(1, old_reply)
+
+        _attach_turn_stats(
+            slot,
+            9000,
+            1.0,
+            0.0,
+            turn_boundary=boundary,
+            turn_start_mid=start_mid,
+            reply_mids=set(),
+        )
+
+        # The error-only turn attached nothing — the spliced old reply, which
+        # precedes this turn's start row, keeps its (absent) stats.
+        assert "turn_stats" not in old_reply.get(
+            "meta", {}
+        ), "an error-only follow-up must not overwrite a spliced old reply's stats"
+        assert all(
+            "turn_stats" not in m.get("meta", {}) for m in slot.messages
+        ), "an error-only turn produced no assistant row to attach stats to"
+
+    @pytest.mark.asyncio
+    async def test_turn_stats_empty_mids_do_not_land_on_a_foreign_injected_row(self):
+        """An error/refusal-only turn passes an EMPTY reply_mids set (it recorded
+        no reply of its own). That empty set must NOT fall back to the positional
+        reverse scan: a concurrent workflow/sub-agent completion injected into the
+        window during the turn is an assistant row IN scope but is NOT this turn's
+        output, and attaching the turn's stats to it would corrupt the foreign
+        row. An explicit set (even empty) is authoritative; only reply_mids=None
+        (a caller that gave no identity signal) uses the positional fallback."""
+        from kiro_crew.dashboard.chat_runner import _attach_turn_stats
+        from kiro_crew.dashboard.state import _ChatSlot, row_mid
+
+        slot = _ChatSlot("test-stats-empty-mids")
+        slot.append("user", "do a thing", "msg msg-u", broadcast=False)
+        start_mid = row_mid(slot.messages[-1])
+        boundary = len(slot.messages)
+        # During the turn: a foreign workflow completion is injected as an
+        # assistant row by another writer, then the turn ends with only an error.
+        foreign = slot.append("assistant", "WORKFLOW-INJECTION", "msg msg-a", broadcast=False)
+        slot.append("error", "boom", "msg msg-err", broadcast=False)
+
+        # Error-only turn → empty reply_mids SET (not None).
+        _attach_turn_stats(
+            slot, 7000, 1.0, 0.0, turn_boundary=boundary, turn_start_mid=start_mid, reply_mids=set()
+        )
+
+        assert "turn_stats" not in foreign.get(
+            "meta", {}
+        ), "an error-only turn's stats must not land on a concurrent foreign injected row"
+        assert all("turn_stats" not in m.get("meta", {}) for m in slot.messages)
+
+        # Backward-compat: reply_mids=None (no identity signal) keeps the
+        # positional fallback — the newest in-scope assistant row gets the stats.
+        _attach_turn_stats(
+            slot, 7000, 1.0, 0.0, turn_boundary=boundary, turn_start_mid=start_mid, reply_mids=None
+        )
+        assert foreign["meta"]["turn_stats"]["elapsed_ms"] == 7000
+
+    @pytest.mark.asyncio
+    async def test_regenerate_partial_reply_survives_file_changes_flush_clearing_mids(
+        self, tmp_path, monkeypatch
+    ):
+        """_flush_file_changes clears slot._turn_reply_mids on every exit path,
+        inside _run_chat's own finally. A partial reply that wrote files must
+        still be recognised by the restore — the consume-safe accumulator
+        (_turn_reply_mids_all) keeps the id, so the old reply is not spliced on
+        top of the partial reply."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _turn_persists_partial_with_file_changes(*a, **kw):
+            from kiro_crew.dashboard.chat_runner import _note_reply_row
+
+            row = slot.append("assistant", "PARTIAL-NEW-REPLY", "msg msg-a")
+            _note_reply_row(slot, row)
+            slot.drain()
+            # Model _flush_file_changes clearing the live list on exit (it runs
+            # inside _run_chat's finally). The accumulator must retain the id.
+            if isinstance(getattr(slot, "_turn_reply_mids", None), list):
+                slot._turn_reply_mids.clear()
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat",
+            new=_turn_persists_partial_with_file_changes,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assistant_contents = [
+            m.get("content") for m in slot.messages if m.get("role") == "assistant"
+        ]
+        assert "PARTIAL-NEW-REPLY" in assistant_contents
+        assert (
+            "ORIGINAL-REPLY" not in assistant_contents
+        ), "a file-changes flush clearing _turn_reply_mids must not defeat the guard"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restores_despite_a_foreign_injected_reply_row(
+        self, tmp_path, monkeypatch
+    ):
+        """A workflow completion (workflow_inject) or cron result (cron_inject)
+        appended into the shared window during an empty regenerate is an
+        assistant 'msg msg-a' row that is NOT this turn's reply — its mid is not
+        in slot._turn_reply_mids. The restore must not read it as this turn's
+        reply and bail; the previous reply must still be restored."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _turn_injects_foreign_reply(*a, **kw):
+            # A foreign writer appends an assistant 'msg msg-a' row into the
+            # shared window WITHOUT recording it as this turn's reply — exactly
+            # what workflow_inject / cron_inject do. _pending_variants stays set
+            # (no _flush_segment), so the turn produced no reply of its own.
+            slot.append(
+                "assistant",
+                "WORKFLOW-RESULT",
+                "msg msg-a",
+                meta={"kind": "workflow_result"},
+            )
+            slot.drain()
+
+        with patch(
+            "kiro_crew.dashboard.chat_regenerate._run_chat", new=_turn_injects_foreign_reply
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        assistant_contents = [
+            m.get("content") for m in slot.messages if m.get("role") == "assistant"
+        ]
+        # The foreign row is not this turn's reply, so the previous reply is
+        # restored and both coexist (the foreign row is kept, ordered after).
+        assert (
+            "ORIGINAL-REPLY" in assistant_contents
+        ), "a foreign injected msg-a row must not suppress the restore"
+        assert "WORKFLOW-RESULT" in assistant_contents
+
+    @pytest.mark.asyncio
+    async def test_regenerate_restore_survives_a_key_respelling_rebind(self, tmp_path, monkeypatch):
+        """A reconciler that rebinds a channel slot mid-regenerate only respells
+        the key for the SAME transcript file; the restore must not abandon the
+        reply over the spelling change."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        # A channel-origin slot whose transcript resolves via Slack key spellings.
+        slot = state.get_or_create_slot("s1", linked_session_key="slack:1700000000.0001")
+        slot.append("user", "hi")
+        slot.append("assistant", "ORIGINAL-REPLY")
+        slot.drain()
+
+        async def _empty_turn_then_respell(*a, **kw):
+            # The reconciler rebinds the slot to the bare legacy spelling of the
+            # SAME thread — a different key string, same transcript file.
+            slot.linked_session_key = "1700000000.0001"
+            return None
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn_then_respell):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                if slot.task is not None:
+                    await slot.task
+                await asyncio.sleep(0)
+                if slot._regenerate_restore_task is not None:
+                    await slot._regenerate_restore_task
+
+        # The reply is restored despite the key respelling (same transcript file).
+        assert any(
+            m.get("content") == "ORIGINAL-REPLY" for m in slot.messages
+        ), "a key respelling to the same transcript must not abandon the restore"
 
     @pytest.mark.asyncio
     async def test_flush_segment_attaches_pending_variants(self, tmp_path, monkeypatch):

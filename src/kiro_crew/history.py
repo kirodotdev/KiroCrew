@@ -701,6 +701,177 @@ def append_rows_if_absent_off_loop(
     return fut
 
 
+async def restore_full_rows_off_loop(
+    conversation_log: "ConversationLog",
+    key: str,
+    rows: "Sequence[dict]",
+    *,
+    existed_at_truncation: bool = True,
+    deletion_generation_at_truncation: int | None = None,
+) -> bool:
+    """AWAIT a CONFIRMED durable write of FULL rows to one transcript, grouped.
+
+    The regenerate recovery path (slot rebound mid-restore) must write the
+    removed reply BACK to its ORIGINAL transcript before dropping the only
+    in-memory copy. Two properties distinguish this from
+    :func:`append_rows_if_absent_off_loop`:
+
+    * It AWAITS the write and returns whether it COMMITTED. The caller keeps its
+      in-memory recovery state and retries on ``False`` rather than settling —
+      a fire-and-forget write that silently failed would lose the reply, which
+      is the data-loss this exists to prevent.
+    * It preserves each row's variants and metadata
+      (:meth:`ConversationLog.append_full_message_if_absent`), not the lossy
+      ``(role, content, cls, mid)`` tuple shape — the prior-reply variant chain
+      must survive the recovery.
+
+    One ``atomic_appends`` critical section for the whole group, so the rows land
+    as one indivisible, correctly-ordered write (the hazard
+    :func:`append_rows_if_absent_off_loop` documents for a multi-append caller
+    that offloads). Each row keeps its idempotence, so a row the slot save
+    already serialized onto the original transcript is skipped individually.
+
+    Returns ``True`` on a confirmed write (every row either written or already
+    present) OR when the original transcript existed at truncation but has since
+    been DELETED (``existed_at_truncation`` True and the file is gone under the
+    lock) — that deletion is HONORED and nothing is written, because recreating
+    the file would resurrect a session the user deleted. A transcript that NEVER
+    existed at truncation (``existed_at_truncation`` False) and is absent now was
+    never deleted — its truncation simply never persisted — so the rows ARE
+    written to recreate it (the reply's rightful durable home), also returning
+    ``True``. Returns ``False`` only when the durable write could not complete
+    (contention / I/O error) — the caller must then retain its recovery state and
+    retry. ``existed_at_truncation`` defaults True (honor a possible delete) for
+    callers that cannot determine it.
+
+    ``deletion_generation_at_truncation`` is the transcript's deletion generation
+    (:meth:`ConversationLog.deletion_generation`) captured at truncation. Under
+    the write lock the current generation is compared against it: a change means
+    a delete landed in the window — INCLUDING a delete followed by a same-name
+    recreate, which the existence check alone cannot see — so the delete is
+    honored (nothing written, ``True``). ``None`` skips this fence for a caller
+    that cannot capture a generation.
+    """
+    if not rows:
+        return True
+
+    def _do() -> bool:
+        with conversation_log.atomic_appends(key):
+            # DELETION-GENERATION FENCE, checked FIRST under the write lock and
+            # regardless of whether the file exists. The existence check below
+            # catches a delete that left the name absent, but it is BLIND to a
+            # delete FOLLOWED BY A RECREATE under the same name (the user removes
+            # the Slack history, then posts to the same thread, recreating the
+            # transcript): the file is present again, so the existence branch
+            # never runs and the stale reply would be written into the recreated
+            # session. The generation captured at truncation vs. the generation
+            # now closes that: any delete in the window — recreated or not —
+            # bumps the generation, so a mismatch HONORS the delete (write
+            # nothing, settle). None means the caller could not capture a
+            # generation, so this fence is skipped and the existence/tombstone
+            # logic below still applies.
+            if (
+                deletion_generation_at_truncation is not None
+                and conversation_log.deletion_generation(key) != deletion_generation_at_truncation
+            ):
+                logger.warning(
+                    "restore_full_rows_off_loop: transcript key=%s was deleted during the "
+                    "regenerate (deletion generation changed from %s to %s); honoring the delete "
+                    "and settling the recovery without writing the stale reply, even though a "
+                    "same-name transcript may have been recreated",
+                    key,
+                    deletion_generation_at_truncation,
+                    conversation_log.deletion_generation(key),
+                )
+                return True
+            # A transcript absent HERE is one of two things. Disk state alone
+            # cannot tell them apart (a delete removes the file and its archive,
+            # leaving no tombstone), so the recovery record carries the answer:
+            # existed_at_truncation records whether the transcript file existed
+            # when the eager truncation ran.
+            #
+            #   * DELETED mid-regenerate (existed_at_truncation=True, absent
+            #     now) — the user removed the session while the turn ran.
+            #     Recreating the file would resurrect a deleted session, so the
+            #     recovery HONORS the delete: write nothing, settle (return True).
+            #   * NEVER PERSISTED (existed_at_truncation=False, absent now) — the
+            #     eager truncation's own save never committed, so the transcript
+            #     legitimately SHOULD hold the reply and its absence is NOT a user
+            #     delete. Silently settling would discard the reply's only copy.
+            #     Instead, WRITE the rows (append_full_message_if_absent recreates
+            #     the file), making the reply durable where it belongs. This is a
+            #     real recovery, not a resurrection — nothing was ever deleted.
+            if not conversation_log._path(key).exists():
+                # An intervening DELETE is authoritative over the (possibly
+                # stale) existed_at_truncation bit. The bit is captured once at
+                # truncation; a user can delete the session AFTER that — and on a
+                # not-yet-flushed conversation the bit even reads existed=False
+                # while the truncation save created the file and the user then
+                # deleted it. Recreating in that case resurrects a user-deleted
+                # session. So consult the delete tombstone first: a recent delete
+                # is HONORED (settle, do not recreate) whatever the bit says.
+                if conversation_log._was_recently_deleted(key):
+                    logger.warning(
+                        "restore_full_rows_off_loop: transcript key=%s was deleted during the "
+                        "regenerate; honoring the delete and settling the recovery without "
+                        "recreating it",
+                        key,
+                    )
+                    return True
+                if existed_at_truncation:
+                    # Existed at truncation, absent now, no recorded delete in
+                    # the window: still a probable delete (the file was on disk
+                    # post-truncation and only a delete removes it) — honor it
+                    # rather than resurrecting, matching the tombstone case.
+                    logger.warning(
+                        "restore_full_rows_off_loop: transcript key=%s existed at truncation but "
+                        "is absent at recovery time (deleted mid-regenerate); honoring the delete "
+                        "and settling the recovery without recreating it",
+                        key,
+                    )
+                    return True
+                # Never persisted AND no delete recorded: the eager truncation's
+                # save never committed, so the transcript legitimately SHOULD
+                # hold the reply and its absence is NOT a user delete. Recreate it
+                # with the reply rather than discarding the reply's only copy.
+                logger.warning(
+                    "restore_full_rows_off_loop: transcript key=%s never existed at truncation "
+                    "and is absent at recovery time (its truncation never persisted); writing the "
+                    "recovered reply to recreate the transcript rather than discarding it",
+                    key,
+                )
+                for row in rows:
+                    conversation_log.append_full_message_if_absent(key, row)
+                return True
+            for row in rows:
+                conversation_log.append_full_message_if_absent(key, row)
+        return True
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            return _do()
+        except Exception:  # noqa: BLE001 - caller retains recovery and retries
+            logger.warning(
+                "restore_full_rows_off_loop: inline write failed key=%s",
+                key,
+                exc_info=True,
+            )
+            return False
+    try:
+        return await loop.run_in_executor(None, _do)
+    except Exception:  # noqa: BLE001 - caller retains recovery and retries
+        logger.warning(
+            "restore_full_rows_off_loop: offloaded write failed key=%s",
+            key,
+            exc_info=True,
+        )
+        return False
+
+
 def append_if_absent_off_loop(
     conversation_log: "ConversationLog",
     key: str,
@@ -1555,6 +1726,13 @@ _METADATA_READ_ATTEMPTS = 3
 _METADATA_READ_RETRY_SECS = 0.02
 
 
+#: FIFO bound on ConversationLog._recently_deleted. The tombstone only has to
+#: outlast an in-flight regenerate's recovery (seconds), so a modest cap is
+#: ample; it exists so a long-lived gateway deleting many sessions cannot grow
+#: the set without limit.
+_DELETED_KEYS_MAX = 256
+
+
 class ConversationLog:
     """Append-only JSONL conversation store with provenance and rotation."""
 
@@ -1782,9 +1960,79 @@ class ConversationLog:
         self._metadata_projection = SessionMetadataProjection(self)
         self._rewrite_coordinator = HistoryRewriteCoordinator(self)
 
+        #: Bounded FIFO set of recently-deleted session keys. A regenerate's
+        #: recovery captures whether the transcript existed at truncation, but
+        #: that bit goes STALE: a user can delete the session AFTER truncation
+        #: (on a not-yet-flushed conversation the bit even reads existed=False
+        #: while the file was created by the truncation save and then deleted).
+        #: Recovery consults this set to HONOR an intervening delete regardless
+        #: of the stale bit, so it never resurrects a user-deleted session. FIFO-
+        #: bounded (``_DELETED_KEYS_MAX``) so it cannot grow without limit on a
+        #: long-lived gateway; the window only has to outlast an in-flight
+        #: regenerate's recovery, which is seconds. Guarded by ``self._lock``.
+        self._recently_deleted: "dict[str, None]" = {}
+
+        #: Monotonic per-stem DELETION GENERATION. The tombstone set above
+        #: answers "was this deleted" but goes false once a delete falls out of
+        #: the FIFO window, and a delete FOLLOWED BY A RECREATE under the same
+        #: name leaves a file on disk again, so an existence check reads the
+        #: recreated file and never consults the tombstone at all. The generation
+        #: closes that gap: a regenerate recovery captures the current generation
+        #: at truncation and rechecks it under the write lock, so a delete in the
+        #: window — recreated or not — is seen as a generation BUMP and the stale
+        #: reply is NOT written into whatever now occupies the name. Unbounded in
+        #: principle but a plain int per live stem; a stem is only tracked once it
+        #: has been deleted, and the counter rides the same ``_lock``.
+        self._deletion_generations: "dict[str, int]" = {}
+
     @staticmethod
     def _cache_identity(stat: os.stat_result) -> tuple[int, int, int]:
         return _cache_identity(stat)
+
+    def _mark_recently_deleted(self, key: str) -> None:
+        """Record *key* as recently deleted so an in-flight regenerate recovery
+        honors the delete instead of resurrecting the session. FIFO-bounded.
+
+        The key is NORMALIZED through ``transcript_lock_stems`` — the same
+        symmetric alias collapsing ``_path`` relies on — so a delete issued under
+        one spelling (``slack:<ts>`` / ``slack_<ts>`` / bare ``<ts>``) is seen by
+        a recovery that checks under any other spelling. A raw-string tombstone
+        would miss those alias forms and resurrect the deleted session."""
+        with self._lock:
+            for stem in transcript_lock_stems(key):
+                self._recently_deleted.pop(stem, None)
+                self._recently_deleted[stem] = None
+                # Bump the stem's deletion generation so a recovery that captured
+                # the pre-delete generation sees the change even after the
+                # tombstone ages out of the FIFO set OR the name is recreated.
+                self._deletion_generations[stem] = self._deletion_generations.get(stem, 0) + 1
+            while len(self._recently_deleted) > _DELETED_KEYS_MAX:
+                # Evict the oldest (insertion order) — a plain dict is ordered.
+                oldest = next(iter(self._recently_deleted))
+                self._recently_deleted.pop(oldest, None)
+
+    def _was_recently_deleted(self, key: str) -> bool:
+        """Whether *key* (under any alias spelling) was deleted recently. Checked
+        against the SAME ``transcript_lock_stems`` normalization that records it,
+        so an aliased delete spelling matches."""
+        with self._lock:
+            return any(stem in self._recently_deleted for stem in transcript_lock_stems(key))
+
+    def deletion_generation(self, key: str) -> int:
+        """The current DELETION GENERATION for *key* (max across its alias stems).
+
+        Zero until the key's transcript is deleted at least once, then the count
+        of deletes seen for it. A regenerate recovery captures this at truncation
+        and compares it under the write lock: a higher value at recovery time
+        means a delete landed in the window — even one followed by a same-name
+        recreate — and the recovery must NOT write the stale reply into whatever
+        now holds the name. Normalized through ``transcript_lock_stems`` so a
+        delete under one spelling is seen by a capture under any other."""
+        with self._lock:
+            return max(
+                (self._deletion_generations.get(stem, 0) for stem in transcript_lock_stems(key)),
+                default=0,
+            )
 
     def _file_lock(self, key: str) -> threading.RLock:
         """Return the process-wide reentrant lock guarding *key*'s session file.
@@ -2761,6 +3009,267 @@ class ConversationLog:
             )
             return True
 
+    def append_full_message_if_absent(self, key: str, row: dict) -> bool:
+        """Append a FULL message dict (preserving the canonical row) if absent.
+
+        Unlike :meth:`append_if_absent`, which stores only ``(role, content,
+        cls, mid)`` and therefore DROPS a row's ``ts``, provenance, full
+        ``meta``, ``tools`` and ``variants``, this writes the row's persisted
+        fields through verbatim so the recovered copy is byte-equivalent to what
+        the slot save would have written — original timestamp, provenance
+        (``source_thread`` / ``source_user``), the FULL ``meta`` (turn
+        statistics and all), ``tools``, ``cls``, and the variant chain. It
+        exists for the regenerate recovery path, which reopens a removed reply
+        onto its ORIGINAL transcript when the slot rebound mid-restore;
+        synthesizing a fresh ts or a reduced meta there would strand the row's
+        place in time and lose its provenance/statistics. The caller hands a row
+        already shaped like a persisted entry (built via
+        ``chat_persistence._build_message_entry``); only a row missing a ts gets
+        a monotonic one minted so it still orders after what is on disk.
+
+        Idempotent on the SAME ``(role, content)`` plus ``meta.mid`` (when the
+        row carries one), the same contract :meth:`append_if_absent` uses, so a
+        row the slot save already serialized is not duplicated. Runs the
+        existence check and the write together under :meth:`_locked` so it is
+        atomic against a concurrent writer of the same file. Returns ``True``
+        when the row was written, ``False`` when an identical row is already on
+        disk.
+        """
+        role = row.get("role") or "assistant"
+        raw_content = row.get("content", "")
+        supplied_mid = None
+        _meta = row.get("meta")
+        if isinstance(_meta, dict) and isinstance(_meta.get("mid"), str) and _meta.get("mid"):
+            supplied_mid = _meta["mid"]
+        # The row's own ts, preserved through to the write. Used in the id-less
+        # dedup below so two content-identical legacy replies (no meta.mid) with
+        # DIFFERENT timestamps are told apart — matching on content alone would
+        # let a regenerate that removed the LATER of two identical replies get
+        # skipped against the EARLIER one, permanently dropping the removed row.
+        row_ts_for_dedup = row.get("ts") if isinstance(row.get("ts"), str) else None
+        with self._locked(key):
+            content = self._persist_inline_attachments(key, role, raw_content)
+            path = self._path(key)
+            if path.exists():
+                persisted = _redact_at_write_boundary(role, content)
+
+                def _matches_variant_chain(m: dict) -> bool:
+                    # The row may already be persisted NOT as a top-level row but
+                    # as a nested `variants` entry of an on-disk row — a
+                    # regenerate attaches the previous reply as a variant of the
+                    # new reply, so a drain writing that previous reply as a
+                    # top-level row would DUPLICATE it. Treat a content match
+                    # within the variant chain as already persisted. Match on
+                    # content (modulo images); when the written row carries a ts,
+                    # honor it so a distinct re-occurrence with a different ts is
+                    # not conflated, exactly as the top-level id-less branch does.
+                    variants = m.get("variants")
+                    if not isinstance(variants, list):
+                        return False
+                    for v in variants:
+                        if not isinstance(v, dict):
+                            continue
+                        v_content = v.get("content")
+                        content_same = v_content == persisted or (
+                            isinstance(v_content, str)
+                            and same_text_modulo_images(
+                                v_content,
+                                persisted,
+                                sessions_dir=self._path(key).parent,
+                                stem=self._path(key).stem,
+                            )
+                        )
+                        if not content_same:
+                            continue
+                        v_ts = v.get("ts")
+                        if (
+                            row_ts_for_dedup is None
+                            or not isinstance(v_ts, str)
+                            or v_ts == row_ts_for_dedup
+                        ):
+                            return True
+                    return False
+
+                for m in self._read_messages(key):
+                    if m.get("role") != role:
+                        continue
+                    on_disk = m.get("content")
+                    if supplied_mid is None:
+                        # No identity to match on, so content is the primary key
+                        # — but when BOTH rows carry a ts, a differing ts marks a
+                        # distinct occurrence that merely repeats the text, so it
+                        # is NOT the same row and must not be skipped. Only skip
+                        # when content matches AND (the timestamps match, or
+                        # either side lacks a ts so ts cannot distinguish them).
+                        if on_disk == persisted:
+                            on_disk_ts = m.get("ts")
+                            if (
+                                row_ts_for_dedup is None
+                                or not isinstance(on_disk_ts, str)
+                                or on_disk_ts == row_ts_for_dedup
+                            ):
+                                return False
+                        # Already present as a nested variant of this on-disk row.
+                        if _matches_variant_chain(m):
+                            return False
+                        continue
+                    m_meta = m.get("meta")
+                    if not (isinstance(m_meta, dict) and m_meta.get("mid") == supplied_mid):
+                        # The row's mid does not match this on-disk row's — but it
+                        # may still be persisted as one of this row's variants (a
+                        # regenerate attaches the previous reply as a variant of
+                        # the NEW reply, which carries a different mid), so a drain
+                        # must not top-level-duplicate it.
+                        if _matches_variant_chain(m):
+                            return False
+                        continue
+                    if on_disk == persisted or (
+                        isinstance(on_disk, str)
+                        and same_text_modulo_images(
+                            on_disk,
+                            persisted,
+                            sessions_dir=self._path(key).parent,
+                            stem=self._path(key).stem,
+                        )
+                    ):
+                        return False
+                    # The mid matches but the top-level content does not (the row
+                    # was regenerated); the prior content may be in its variants.
+                    if _matches_variant_chain(m):
+                        return False
+            created_now = not path.exists()
+            if created_now:
+                self._dir.mkdir(parents=True, exist_ok=True)
+                meta_line: dict = {
+                    "_type": "metadata",
+                    "created_at": metadata_now_iso(),
+                    "last_consolidated": 0,
+                }
+                path.write_text(json.dumps(meta_line) + "\n", encoding="utf-8")
+            # Preserve the row's CANONICAL representation: its original ts,
+            # provenance (source_thread / source_user), full meta, tools, and
+            # variants — not a stripped, re-timestamped copy. The recovery path
+            # reopens an existing reply onto its original transcript, so it must
+            # land byte-equivalent to what the slot save would have written:
+            # synthesizing a fresh ts or reducing meta to {mid} would lose turn
+            # statistics, provenance, and the row's place in time. The caller
+            # hands a row already shaped like a persisted entry (built via
+            # chat_persistence._build_message_entry), so carry its fields
+            # through; only a row missing a ts gets a monotonic one minted so it
+            # still orders after what is on disk.
+            msg: dict = {
+                "role": role,
+                "content": _redact_at_write_boundary(role, content),
+            }
+            row_ts = row.get("ts")
+            msg["ts"] = (
+                row_ts
+                if isinstance(row_ts, str) and row_ts
+                else monotonic_transcript_ts(
+                    None if created_now else self._last_row_ts(key),
+                    datetime.now().astimezone(),
+                )
+            )
+            # Carry every persisted field the row holds, verbatim, except the
+            # content/ts handled above (content is re-redacted at the write
+            # boundary; ts is resolved above). This keeps provenance
+            # (source_thread/source_user), tools, the FULL meta (turn stats and
+            # all), cls, variants and variant_idx intact through the recovery.
+            for field, value in row.items():
+                if field in ("role", "content", "ts"):
+                    continue
+                if field == "variants":
+                    if isinstance(value, list) and value:
+                        # A variant is an alternate reply the user can switch
+                        # back to, so its inline images must be copied into the
+                        # durable store exactly as the primary content is on the
+                        # call above — a variant that merely redacted would keep
+                        # a reference to the agent scratch dir, whose bytes are
+                        # reclaimed when the agent process dies, and the rebound
+                        # recovery path this exists for has no live window to
+                        # repair it later. Persist the attachments first, then
+                        # redact, matching the save path's own variant loop.
+                        preserved_variants: list[dict] = []
+                        for v in value:
+                            if not isinstance(v, dict):
+                                continue
+                            v_role = v.get("role", role)
+                            v_content = self._persist_inline_attachments(
+                                key, v_role, v.get("content", "")
+                            )
+                            preserved_variants.append(
+                                {
+                                    **v,
+                                    "content": _redact_at_write_boundary(v_role, v_content),
+                                }
+                            )
+                        msg["variants"] = preserved_variants
+                    continue
+                msg[field] = value
+            # Insert at the row's CHRONOLOGICAL position, not blindly at the
+            # tail. A concurrent writer (a channel reply, a cron result) can
+            # append a NEWER row to this transcript between the regenerate's
+            # truncation and this recovery write; appending the recovered reply
+            # after it would file the OLDER reply last, corrupting the
+            # conversation's order on the next read. Compare the row's ts against
+            # the on-disk tail: the common case (recovery ts >= last on-disk ts,
+            # or an empty/new file) is a plain append; only when the row belongs
+            # EARLIER do we rewrite the file with it spliced into ts order. The
+            # whole decision runs inside the _locked critical section already
+            # held, so no writer can move the tail between the check and the
+            # write.
+            line = json.dumps(msg)  # lgtm[py/clear-text-storage-sensitive-data]
+            tail_ts = None if created_now else self._last_row_ts(key)
+            msg_ts = msg["ts"]
+            if (
+                created_now
+                or not isinstance(tail_ts, str)
+                or not isinstance(msg_ts, str)
+                or latest_transcript_ts(tail_ts, msg_ts) == msg_ts
+            ):
+                # Append: the recovered row is at or after the current tail (or
+                # the file is new / the tail ts is unparseable, where appending
+                # is the only safe choice).
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            else:
+                # The recovered row predates the tail: splice it into ts order.
+                # Read every physical line, keep the metadata line first, and
+                # insert before the first DATA row whose ts is strictly newer,
+                # preserving the recovered row's own position relative to equal
+                # timestamps (stable). Rewrite atomically so a reader never sees
+                # a torn file.
+                existing = path.read_text(encoding="utf-8").splitlines()
+                out_lines: list[str] = []
+                inserted = False
+                for i, raw in enumerate(existing):
+                    if i == 0:
+                        # Metadata line always leads.
+                        out_lines.append(raw)
+                        continue
+                    if not inserted:
+                        try:
+                            row_ts_here = json.loads(raw).get("ts")
+                        except (json.JSONDecodeError, AttributeError):
+                            row_ts_here = None
+                        if (
+                            isinstance(row_ts_here, str)
+                            and isinstance(msg_ts, str)
+                            and latest_transcript_ts(row_ts_here, msg_ts) == row_ts_here
+                            and row_ts_here != msg_ts
+                        ):
+                            # row_ts_here is strictly newer than msg_ts: the
+                            # recovered row belongs BEFORE it.
+                            out_lines.append(line)
+                            inserted = True
+                    out_lines.append(raw)
+                if not inserted:
+                    out_lines.append(line)
+                atomic_write(path, "\n".join(out_lines) + "\n")
+            self._invalidate_cache(key)
+            self._maybe_rotate(path, key)
+            return True
+
     def recent(
         self,
         key: str,
@@ -3602,6 +4111,10 @@ class ConversationLog:
         else:
             deleted = self._metadata_projection.delete_session(key, skip_pinned=False)
         if deleted:
+            # Record the delete so an in-flight regenerate recovery honors it
+            # rather than recreating the session from a stale existed-at-
+            # truncation bit (resurrecting a session the user just deleted).
+            self._mark_recently_deleted(key)
             # A deleted session's restart-surviving vouch goes with it, so the
             # vouched-executions/ files track live sessions, not every one ever made.
             from kiro_crew._durable_vouch import forget_durable_vouch
