@@ -1125,6 +1125,22 @@ class _Session:
     # turns. This preserves replay across empty streams, pre-output failures, and
     # soft Stops while surviving loss of the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
+    # Carries the FRESH first-turn history debt that ``first_turn`` cannot: the
+    # ``first_turn`` observation is a one-shot consumed at claim time, so a turn
+    # that assembled Kiro Crew history and then failed BEFORE the provider
+    # accepted it (a pre-output backend 5xx the transient path re-queues onto the
+    # SAME live session) spends the observation while the history never lands —
+    # the re-queued turn then reads ``is_new=False`` and sends the replay bare.
+    # Armed from the FRESH observation at claim, OR'd into ``_context_is_new`` so
+    # the re-queued turn rebuilds history, and consumed once a non-slash
+    # context-bearing turn delivers that history — it assembled the replay AND the
+    # provider accepted the prompt — or a reset explicitly suppressed it. A slash
+    # command bypasses that assembly and must not settle the debt; a turn that
+    # assembled but failed before the provider accepted (a pre-output 5xx) leaves
+    # it armed for the re-queue. A provider switch arms ``provider_switch_replay``
+    # instead and never reaches this; keeping them separate leaves the replay
+    # lease's SID-preservation role (``close_all``) untouched.
+    first_turn_history_owed: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
     # Set after context compaction drops the session-start skill index.
@@ -2824,6 +2840,44 @@ class SessionManager:
         if session is None or not session.provider_switch_replay:
             return False
         session.provider_switch_replay = False
+        return True
+
+    def mark_first_turn_history_owed(self, key: str) -> bool:
+        """Arm the durable FRESH first-turn history debt.
+
+        The ``first_turn`` observation is consumed at claim time, so a turn that
+        assembled Kiro Crew history and then failed before the provider accepted
+        it loses the record that history was still owed. The dashboard runner
+        arms this from the FRESH observation; it is read (not cleared) each turn
+        and settled once a non-slash context-bearing turn delivers its history (the
+        replay is assembled and the provider accepts the prompt) or a reset
+        suppresses it, so a pre-output failure the transient path re-queues onto
+        the same live session rebuilds history instead of replaying bare.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.first_turn_history_owed = True
+        return True
+
+    def first_turn_history_owed_pending(self, key: str) -> bool:
+        """Return whether a live session still owes its FRESH first-turn history.
+
+        Read without clearing, like ``provider_switch_replay_pending``: a slash
+        command bypasses history assembly, so reading-and-clearing here would let
+        it spend the debt the next ordinary prompt must still pay.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        return bool(session is not None and session.first_turn_history_owed)
+
+    def consume_first_turn_history_owed(self, key: str) -> bool:
+        """Settle the FRESH first-turn history debt once a non-slash
+        context-bearing turn delivers its history (assembled and accepted) or a
+        reset suppresses it."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None or not session.first_turn_history_owed:
+            return False
+        session.first_turn_history_owed = False
         return True
 
     def consume_replay_suppression(self, key: str) -> bool:

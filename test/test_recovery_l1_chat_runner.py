@@ -245,6 +245,14 @@ class TestRunnerBranch:
     def src(self) -> str:
         return inspect.getsource(chat_runner)
 
+    @pytest.fixture(scope="class")
+    def acp_src(self) -> str:
+        # The post-token transient recovery arm was extracted into this helper;
+        # the first-turn-history debt consume travels with it.
+        from kiro_crew.dashboard.chat_turn import acp_recovery
+
+        return inspect.getsource(acp_recovery)
+
     def test_reads_the_handles_verdict_not_a_regex(self, src):
         assert 'isinstance(getattr(client, "last_infra_error", None), InfraError)' in src
         assert "default_ladder().observe_failure(" in src
@@ -306,6 +314,76 @@ class TestRunnerBranch:
         # ENDS the turn clears it too — otherwise the slot reads "recovering" on
         # the health panel until some later turn happens to land.
         assert src.count("slot._infra_retries = 0") == src.count("slot._transient_5xx_retries = 0")
+
+    def test_first_turn_history_debt_arms_only_on_a_fresh_non_resumed_claim(self, src):
+        # Armed from the FRESH observation; a natively-resumed session replayed
+        # its own transcript and must never arm (that would duplicate context).
+        # Anchor on the mark call, then look back for its guard — a different
+        # `is_new and not resumed:` block (model-stamp) appears earlier.
+        mark = src.index("mark_first_turn_history_owed(session_key)")
+        guard = src.rindex("if is_new and not resumed:", 0, mark)
+        assert mark - guard < 500, "the FRESH guard must directly gate the arm"
+
+    def test_first_turn_history_debt_clears_only_on_assembled_and_accepted(self, src, acp_src):
+        # The build-arm settle in the finally fires only when BOTH held: a
+        # non-slash context-bearing turn ASSEMBLED its history
+        # (_first_turn_history_assembled, set in the build arm) AND the turn's
+        # TERMINAL was a normal end_turn the provider kept — a non-synthetic
+        # STOP_REASON_END_TURN with no empty-response verdict — OR a COMPLETED
+        # mid-turn compaction. The settle keys on the TERMINAL ITSELF, NOT on
+        # _turn_landed: _turn_landed is a reliability-metric flag left False for
+        # promise-only / leaked-tool / infra-recovery turns, which still ended
+        # normally and were kept, so they MUST settle. A pre-output 5xx (no
+        # terminal), a cancelled Stop (discarded) and an empty-response re-queue
+        # all keep the debt armed; a STARTED-but-not-completed compaction is not
+        # yet durable and also stays armed.
+        delivered = src.index("_first_turn_history_delivered = (")
+        dwin = src[delivered : delivered + 400]
+        # The fix: the predicate must NOT gate on _turn_landed (that excluded the
+        # promise-only / leaked-tool / infra-recovery terminals the reviewer named).
+        assert "_turn_landed" not in dwin
+        assert "_stop_reason == STOP_REASON_END_TURN" in dwin
+        assert "not _terminal_synthetic" in dwin
+        assert "not _had_empty_response_verdict" in dwin
+        # A completed mid-turn compaction keeps the summarized session and the
+        # continuation runs on it, so it settles — the landed test cannot see it
+        # because _recovering_compaction is itself a guard on the landed block.
+        assert "_recovering_compaction and _compaction_completed" in dwin
+        settle = src.index("if _first_turn_history_assembled and _first_turn_history_delivered:")
+        window = src[settle : settle + 400]
+        assert "consume_first_turn_history_owed(session_key)" in window
+        # The rejected imprecise boundaries must be gone entirely.
+        assert "if _turn_landed:" not in window
+        assert "if _first_turn_history_assembled and _turn_emitted:" not in src
+        assert "(_turn_emitted or _saw_terminal_event)" not in src
+        # The assembled flag is raised in BOTH the builder and the builder-less
+        # fallback context-build arms (a standalone dashboard without a builder
+        # must settle too, not re-prepend history every warm turn).
+        branch = src.index("if _context_is_new and not _provider_has_history:")
+        assert "_first_turn_history_assembled = True" in src[branch : branch + 1600]
+        assert src.count("_first_turn_history_assembled = True") >= 2
+        # The suppression arm pays the debt directly (a reset asked to forget).
+        assert "consume_replay_suppression(session_key)" in src
+        # A confirmed native clear retires the debt beside the sibling replay lease
+        # — otherwise a fresh /clear leaves it armed and the next prompt rebuilds
+        # the history the user dropped.
+        clear = src.index("elif event.kind == EVENT_CLEAR_STATUS:")
+        assert "consume_first_turn_history_owed(session_key)" in src[clear : clear + 1200]
+        # Post-token same-session recovery settles the debt, but ONLY when the
+        # turn assembled history (``_first_turn_history_assembled``): a slash first
+        # turn streams native output and can reach this arm, yet it assembled
+        # nothing, so it must not clear a debt it never paid. The arm was extracted
+        # into ``_recover_posttoken_transient``; ``chat_runner`` passes the flag,
+        # and the guarded consume sits BEFORE the recover/suppress branch (so a
+        # follow-up takeover settles it too).
+        assert "_first_turn_history_assembled=_first_turn_history_assembled" in src
+        pt = acp_src.index("_will_recover = not _should_suppress_requeue(slot)")
+        ptwin = acp_src[pt - 900 : pt]
+        assert "if _first_turn_history_assembled:" in ptwin
+        assert "consume_first_turn_history_owed(session_key)" in ptwin
+        # It is read (not cleared) into the context-new composition.
+        assert "first_turn_history_owed_pending(session_key) is True" in src
+        assert "_context_is_new = is_new or _replay_pending or _first_turn_history_owed" in src
 
 
 class TestContinuationPrompt:
@@ -995,3 +1073,638 @@ class TestStructuralTerminalSlotFlag:
         assert (
             slot._last_turn_structural_terminal_loop_gen == 0
         ), "a genuine new turn did not clear the scoped loop generation"
+
+
+class _DurableFirstTurnDebt:
+    """A stand-in for the SessionManager's FRESH first-turn history debt.
+
+    ``_l1_state`` hands the runner a ``MagicMock`` for ``sessions``, whose
+    ``first_turn_history_owed_pending(...) is True`` check is always falsy — so
+    the durable flag never reads back there and these tests must track it for
+    real. One live key is enough: the three methods carry the same read-without-
+    clearing / arm / settle contract the real ``_Session`` field does.
+    """
+
+    def __init__(self) -> None:
+        self.owed = False
+        self.replay_pending = False
+
+    def first_turn_history_owed_pending(self, _key: str) -> bool:
+        return self.owed
+
+    def mark_first_turn_history_owed(self, _key: str) -> bool:
+        self.owed = True
+        return True
+
+    def consume_first_turn_history_owed(self, _key: str) -> bool:
+        if not self.owed:
+            return False
+        self.owed = False
+        return True
+
+    def provider_switch_replay_pending(self, _key: str) -> bool:
+        return self.replay_pending
+
+    def consume_replay_suppression(self, _key: str) -> bool:
+        # No reset armed in these tests: the suppression arm must not fire, so
+        # the build arm's assembled-and-accepted gate is what settles the debt.
+        return False
+
+
+def _context_is_new_per_prompt(cb) -> list[bool]:
+    """``_context_is_new`` as it reached ``build_message`` on each prompt.
+
+    The runner passes it as the second positional argument, so one entry lands
+    per turn that assembled a prompt.
+    """
+    return [call.args[1] for call in cb.build_message.call_args_list]
+
+
+class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
+    """A context-bearing FRESH first turn that fails before the provider
+    accepts it must replay WITH history, not bare.
+
+    The ``is_new`` observation is spent at claim time, so a pre-output backend
+    5xx — which the transient path re-queues onto the SAME live session — would
+    otherwise land the re-queued turn with ``is_new=False`` and no history (a
+    bare replay of the user's message, with no SESSION RESUMED marker, which
+    sends the agent searching workspace-wide and running another tab's work).
+    The durable ``first_turn_history_owed`` debt, armed from the FRESH
+    observation and settled once a non-slash context-bearing turn DELIVERS its
+    history — it assembled the replay (``_first_turn_history_assembled``) AND the
+    provider accepted the prompt (``_turn_emitted``) — carries it across the
+    failure. A Stop, cancel or 5xx-after-output exit where the turn assembled and
+    the provider already emitted must NOT leave the debt armed, or the next turn
+    re-sends history the provider already holds. A slash command (``/help``) emits
+    native output without assembling context, so it must NOT settle the debt.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_requeued_turn_rebuilds_history(self, tmp_path):
+        state, client = _l1_state(tmp_path)
+        # FRESH claim; not an L1 turn (the infra verdict must not claim it).
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        # The real bug: the FRESH ``is_new`` observation is a one-shot consumed
+        # at claim time, so the FIRST claim reports ``is_new=True`` and the
+        # re-queued turn's claim reports ``is_new=False`` on the SAME live
+        # session. Only the durable debt can carry history across that.
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            first = len(prompts) == 1
+
+            async def _gen():
+                if first:
+                    # Pre-output 5xx: the FRESH observation is already spent.
+                    raise _transient_error()
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the answer")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+
+        async def _no_wait(_secs):
+            return None
+
+        slot = _RecordingSlot("chat-1-freshretry")
+        with patch.object(chat_runner, "_recovery_delay", _no_wait):
+            with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+                mock_sel.return_value = MagicMock()
+                await _run_chat(state, slot, "Resume now please")
+                if slot.task:
+                    await slot.task
+
+        assert len(prompts) == 2, "the pre-output failure was not re-queued"
+        assert claims["n"] == 2 and prompts, "the re-queue must claim the session again"
+        built = _context_is_new_per_prompt(state.context_builder)
+        assert built == [True, True], (
+            "the FRESH first turn built history; the re-queued turn (which now "
+            "claims is_new=False) after a pre-output 5xx must rebuild it from the "
+            "durable debt, not replay the message bare"
+        )
+        # The retry emitted a token, so the debt is settled — nothing
+        # re-injects forever.
+        assert debt.owed is False
+
+    @pytest.mark.asyncio
+    async def test_a_landed_first_turn_settles_then_a_warm_turn_is_not_new(self, tmp_path):
+        """No failure: the FRESH turn emits and lands, so the debt is armed then
+        cleared, and a SECOND warm turn on the same live session is NOT treated
+        as context-new (the debt does not keep re-injecting history forever)."""
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        # FRESH only on the first claim; the warm second turn claims is_new=False.
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        def _clean_stream(_message, *_a, **_kw):
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_clean_stream)
+        slot = _RecordingSlot("chat-1-freshland")
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "hello")
+            assert debt.owed is False, "a first turn that emitted must settle the debt"
+            # A genuine warm follow-up on the SAME session.
+            await _run_chat(state, slot, "and again")
+
+        assert debt.owed is False, "the warm turn must not re-arm the debt"
+        assert _context_is_new_per_prompt(state.context_builder) == [True, False], (
+            "the FRESH turn builds history; the warm follow-up must NOT be "
+            "context-new once the debt is settled"
+        )
+
+    @pytest.mark.asyncio
+    async def test_output_then_cancel_keeps_the_debt_armed(self, tmp_path):
+        """A FRESH first turn that EMITS a token then is cancelled mid-stream (a
+        user Stop is common) does NOT land: kiro-cli discards the cancelled turn —
+        the one carrying the assembled replay — so the provider does not durably
+        keep the history. The debt must stay armed and the next prompt must
+        rebuild it. Settling on mere visible output would silently drop history.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            first = len(prompts) == 1
+
+            async def _gen():
+                # Visible output, then a soft Stop: the provider yields a
+                # cancelled terminal (sets _saw_terminal_event) but kiro-cli
+                # discards the turn, so the history is NOT durably kept.
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the first half ")
+                if first:
+                    yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="cancelled")
+                    return
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the rest")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        slot = _RecordingSlot("chat-1-outputcancel")
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "hello")
+            assert debt.owed is True, (
+                "a cancelled first turn is discarded by kiro-cli, so the "
+                "assembled history is not durably kept and the debt must stay armed"
+            )
+            await _run_chat(state, slot, "carry on")
+
+        assert _context_is_new_per_prompt(state.context_builder) == [True, True], (
+            "the cancelled FRESH turn did not durably deliver history; the next "
+            "turn must be context-new so it rebuilds the history that was dropped"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_session_never_arms_the_debt(self, tmp_path):
+        """A natively-resumed session (``resumed=True``) replayed its transcript
+        itself, so it must NEVER arm the first-turn history debt — re-injecting
+        would duplicate the context the native resume already delivered."""
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        # is_new=True AND resumed=True: a FRESH-looking claim that was actually
+        # satisfied by a native transcript replay. The arm guard is
+        # ``is_new and not resumed``, so this must not arm.
+        async def _claim(_key, **_kw):
+            return (client, True, True)
+
+        state.sessions.get_or_create = _claim
+
+        def _clean_stream(_message, *_a, **_kw):
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_clean_stream)
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, _RecordingSlot("chat-1-resumed"), "hello")
+
+        assert debt.owed is False, "a resumed session must never arm the debt"
+
+    @pytest.mark.asyncio
+    async def test_a_slash_first_turn_does_not_settle_the_debt(self, tmp_path):
+        """A FRESH session whose first message is a slash command (``/help``)
+        streams native output through ``stream_command`` — which flips
+        ``_turn_emitted`` — but bypasses ContextBuilder, so it assembles no
+        history and must NOT settle the debt. The next ordinary prompt is the
+        context-bearing turn that pays it; settling on ``_turn_emitted`` alone
+        would clear a debt the slash turn never paid and the next prompt would
+        lose history.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        async def _claim(_key, **_kw):
+            return (client, True, False)
+
+        state.sessions.get_or_create = _claim
+
+        def _stream_command(_message, *_a, **_kw):
+            async def _gen():
+                # Native slash output: /help lists commands. This flips
+                # _turn_emitted, but no context was assembled.
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Available commands: ...")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream_command = MagicMock(side_effect=_stream_command)
+        # stream must not be used on a slash turn; make it fail loudly if it is.
+        client.stream = MagicMock(side_effect=AssertionError("slash turn used stream()"))
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, _RecordingSlot("chat-1-slashfirst"), "/help")
+
+        assert debt.owed is True, (
+            "a slash first turn assembles no history, so it must NOT settle the "
+            "debt even though its native output flips _turn_emitted"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_empty_response_first_turn_keeps_the_debt_armed(self, tmp_path):
+        """A FRESH first turn that reaches ``EVENT_COMPLETE`` with NO text chunk
+        and no tool call produces an empty response: the empty-response rung
+        re-queues the message, so the provider does not durably keep that turn's
+        assembled history. Like the sibling ``provider_switch_replay`` lease
+        (which excludes the empty-response verdict), the debt must stay ARMED so
+        the re-queue rebuilds history rather than replaying it bare."""
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        def _empty_then_clean(_message, *_a, **_kw):
+            async def _gen():
+                # First turn: a terminal completion with NO text and NO tool call
+                # (empty response). The empty-response rung re-queues it, so the
+                # turn is not durably kept.
+                if claims["n"] == 1:
+                    yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+                else:
+                    yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
+                    yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_empty_then_clean)
+        slot = _RecordingSlot("chat-1-emptyfirst")
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "hello")
+            assert debt.owed is True, (
+                "an empty-response FRESH turn is re-queued, not durably kept, so "
+                "the debt must stay armed (mirrors the sibling replay lease)"
+            )
+
+    @pytest.mark.asyncio
+    async def test_posttoken_recovery_settles_the_debt(self, tmp_path):
+        """A FRESH first turn that STREAMS a token (``_turn_emitted``) then hits a
+        transient 5xx recovers via the post-token one-shot: a CONTINUE is re-queued
+        onto the SAME live session, which already holds the assembled prompt and
+        history. The debt must be settled when that recovery is selected, so the
+        continuation does NOT rebuild and re-prepend the full replay the provider
+        already retained. (Distinct from the pre-output 5xx, where nothing reached
+        the provider and the debt stays armed.)"""
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            first = len(prompts) == 1
+
+            async def _gen():
+                # Tokens stream (provider accepts + retains the prompt), then a
+                # transient 5xx on the first turn only -> post-token recovery.
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the first half ")
+                if first:
+                    raise _transient_error()
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the rest")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        slot = _RecordingSlot("chat-1-posttoken")
+
+        async def _no_wait(_secs):
+            return None
+
+        with patch.object(chat_runner, "_recovery_delay", _no_wait):
+            with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+                mock_sel.return_value = MagicMock()
+                await _run_chat(state, slot, "hello")
+                if slot.task:
+                    await slot.task
+
+        assert debt.owed is False, (
+            "post-token recovery re-queues a CONTINUE onto the live session that "
+            "already holds the history, so the debt must be settled when that "
+            "recovery is selected"
+        )
+        assert _context_is_new_per_prompt(state.context_builder) == [True, False], (
+            "the FRESH turn built history; the post-token CONTINUE must NOT be "
+            "context-new, or it re-prepends the replay the provider already has"
+        )
+
+    @pytest.mark.asyncio
+    async def test_posttoken_followup_takeover_still_settles_the_debt(self, tmp_path):
+        """A FRESH first turn STREAMS a token then hits a transient 5xx, but a
+        queued follow-up (``_should_suppress_requeue``) takes over, so the CONTINUE
+        is NOT re-queued. The live session still holds the streamed prompt and
+        history, so the debt must settle BEFORE the recover/suppress branch — the
+        follow-up turn runs on that same session and must not re-prepend. Settling
+        only inside the recover arm would miss this takeover path."""
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            first = len(prompts) == 1
+
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the first half ")
+                if first:
+                    raise _transient_error()
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the rest")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        slot = _RecordingSlot("chat-1-posttoken-takeover")
+
+        async def _seam_queue_followup(_secs):
+            # A follow-up arrives during the backoff: it suppresses the CONTINUE
+            # re-queue, so the post-token recovery is dropped (takeover).
+            slot.queue_insert(0, "never mind — summarise what you have")
+
+        with patch.object(chat_runner, "_recovery_delay", _seam_queue_followup):
+            with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+                mock_sel.return_value = MagicMock()
+                await _run_chat(state, slot, "hello")
+                if slot.task:
+                    await slot.task
+
+        assert debt.owed is False, (
+            "a follow-up that suppresses post-token recovery still runs on the "
+            "same live session that holds the history, so the debt must settle "
+            "before the recover/suppress branch"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_promise_only_first_turn_settles_the_debt(self, tmp_path):
+        """A FRESH first turn recovered as PROMISE-ONLY (the model said it would
+        act, then didn't) ends on a normal ``end_turn`` the provider KEPT, but
+        kiro-cli deliberately does NOT record it as a landed success — so
+        ``_turn_landed`` stays False. The provider still holds the conversation,
+        so re-sending the full fresh history on the next turn duplicates it. The
+        debt MUST settle on the TERMINAL, not on ``_turn_landed``.
+
+        The promise-only arm is forced via ``should_recover_promise_only`` so the
+        turn deterministically takes the un-landed promise path (``_turn_landed``
+        stays False) within a single observed turn — making this a genuine
+        discriminator: re-introducing the ``_turn_landed`` conjunct leaves the
+        debt armed and reds this test.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        async def _claim(_key, **_kw):
+            return (client, True, False)
+
+        state.sessions.get_or_create = _claim
+
+        def _stream(_message, *_a, **_kw):
+            async def _gen():
+                # Visible output ending in a bare promise-to-act, then a normal
+                # end_turn the provider keeps. The forced promise-only gate below
+                # routes it through the un-landed recovery arm.
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="I'll do that now.")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        slot = _RecordingSlot("chat-1-promiseonly")
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch.object(chat_runner, "should_recover_promise_only", return_value=True),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "please do the thing")
+            if slot.task:
+                await slot.task
+
+        assert debt.owed is False, (
+            "a promise-only first turn ended on a normal end_turn the provider "
+            "kept, so the assembled first-turn history IS delivered and the debt "
+            "must settle on the terminal — even though _turn_landed stays False"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_completed_compaction_first_turn_settles_the_debt(self, tmp_path):
+        """A FRESH first turn whose window overflows mid-turn and compacts to
+        COMPLETION keeps the summarized session; the queued continuation runs on
+        it. ``_recovering_compaction`` is itself a guard on the landed-success
+        block so ``_turn_landed`` never fires — the compaction OR-clause in the
+        settle predicate is what retires the debt, so the continuation does not
+        re-prepend the full pre-compaction replay into the just-summarized
+        session.
+        """
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
+
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        debt = _DurableFirstTurnDebt()
+        for name in (
+            "first_turn_history_owed_pending",
+            "mark_first_turn_history_owed",
+            "consume_first_turn_history_owed",
+            "provider_switch_replay_pending",
+            "consume_replay_suppression",
+        ):
+            setattr(state.sessions, name, getattr(debt, name))
+
+        claims = {"n": 0}
+
+        async def _claim(_key, **_kw):
+            claims["n"] += 1
+            return (client, claims["n"] == 1, False)
+
+        state.sessions.get_or_create = _claim
+
+        def _stream(_message, *_a, **_kw):
+            async def _gen():
+                # Visible output, then a mid-turn window overflow that compacts
+                # to COMPLETION: sets _compaction_completed and routes the turn
+                # through the compaction-recovery arm (_recovering_compaction).
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="working on it ")
+                yield LLMEvent(kind=EVENT_COMPACTION_STATUS, text="started")
+                yield LLMEvent(kind=EVENT_COMPACTION_STATUS, text="completed")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        async def _no_wait(*_a, **_kw):
+            return None
+
+        client.stream = MagicMock(side_effect=_stream)
+        slot = _RecordingSlot("chat-1-compaction")
+        with patch.object(chat_runner, "_recovery_delay", _no_wait):
+            with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+                mock_sel.return_value = MagicMock()
+                await _run_chat(state, slot, "a long first turn")
+                if slot.task:
+                    await slot.task
+
+        assert debt.owed is False, (
+            "a completed mid-turn compaction keeps the summarized session the "
+            "continuation runs on, so the first-turn history debt must settle "
+            "via the compaction clause"
+        )

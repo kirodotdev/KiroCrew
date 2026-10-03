@@ -146,6 +146,58 @@ class TestSessionManager:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_first_turn_history_owed_reads_without_clearing(self, cfg):
+        """The FRESH first-turn debt is READ, not consumed, each turn.
+
+        A pre-output failure the transient path re-queues onto the same live
+        session reads it on the next turn too, so a read-and-clear here would let
+        the first (failing) turn spend the debt and the replay would still go out
+        bare. Only ``consume`` clears it, mirroring the replay lease.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+
+        assert mgr.first_turn_history_owed_pending("thread1") is False, "unset by default"
+        assert mgr.mark_first_turn_history_owed("thread1") is True
+        assert mgr.first_turn_history_owed_pending("thread1") is True, "read 1 sees it"
+        assert mgr.first_turn_history_owed_pending("thread1") is True, "read 2 still sees it"
+        assert mgr.consume_first_turn_history_owed("thread1") is True, "consume clears it"
+        assert mgr.first_turn_history_owed_pending("thread1") is False, "cleared"
+        assert mgr.consume_first_turn_history_owed("thread1") is False, "already clear"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_first_turn_history_owed_tolerates_an_unknown_key(self, cfg):
+        """A settle can fire for a session that has since been evicted; the
+        helpers answer the safe default and never raise."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        assert mgr.first_turn_history_owed_pending("never-existed") is False
+        assert mgr.mark_first_turn_history_owed("never-existed") is False
+        assert mgr.consume_first_turn_history_owed("never-existed") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_first_turn_history_owed_is_independent_of_the_replay_lease(self, cfg):
+        """The two debts are separate fields: arming one leaves the other alone.
+
+        The replay lease also drives SID preservation in ``close_all``; keeping
+        the FRESH first-turn debt on its own field is what leaves that role
+        untouched.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+
+        mgr.mark_first_turn_history_owed("thread1")
+        assert mgr.provider_switch_replay_pending("thread1") is False
+        mgr.consume_first_turn_history_owed("thread1")
+
+        mgr.mark_provider_switch_replay("thread1")
+        assert mgr.first_turn_history_owed_pending("thread1") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_compaction_marks_reinjection_without_any_callback(self, cfg):
         """The mark lives at the compaction chokepoint, not in one surface.
 
