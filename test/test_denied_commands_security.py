@@ -804,6 +804,176 @@ class TestSelfProtectionFlagInterposition:
         assert not security._is_self_restart("kirocrew gateway restart")
 
 
+class TestSelfProtectionKillDiagnosticSpans:
+    """The self-protection-kill refusal names the program and target tokens.
+
+    A shape floor reports the whole command as its span, which makes a real kill
+    read identically to a glob-argument false positive. self-protection-kill decides
+    on two specific tokens, so its diagnostic adds ``program=``/``target=`` fields
+    -- offsets and a census, never bytes -- letting a reader tell the two apart
+    without running the classifier. ``span=`` stays the whole command; every other
+    floor's line is byte-identical to before.
+    """
+
+    _PREFIX = "Refusal diagnostic: rule=self-protection-kill component=argv-floor "
+
+    def _diag_line(self, cmd: str) -> str:
+        from kiro_crew import security
+        from kiro_crew.security.diagnostics import REFUSAL_DIAGNOSTIC_PREFIX
+
+        reason = security.is_denied(cmd)
+        assert reason, f"expected {cmd!r} to be denied"
+        lines = [ln for ln in str(reason).splitlines() if ln.startswith(REFUSAL_DIAGNOSTIC_PREFIX)]
+        assert lines, f"no diagnostic line in refusal for {cmd!r}: {reason!r}"
+        return lines[-1]
+
+    @staticmethod
+    def _field(line: str, name: str) -> "tuple[int, int] | None":
+        import re
+
+        m = re.search(rf"\b{name}=(\d+)\.\.(\d+)\b", line)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    def test_pkill_names_program_and_target(self) -> None:
+        # Acceptance criterion 1: program= brackets `pkill`, target= brackets
+        # `kirocrew`.
+        cmd = "pkill -f kirocrew"
+        line = self._diag_line(cmd)
+        program = self._field(line, "program")
+        target = self._field(line, "target")
+        assert program is not None and target is not None, line
+        assert cmd[program[0] : program[1]] == "pkill"
+        assert cmd[target[0] : target[1]] == "kirocrew"
+
+    def test_killall_names_program_and_target(self) -> None:
+        cmd = "killall kirocrew"
+        line = self._diag_line(cmd)
+        program = self._field(line, "program")
+        target = self._field(line, "target")
+        assert program is not None and target is not None, line
+        assert cmd[program[0] : program[1]] == "killall"
+        assert cmd[target[0] : target[1]] == "kirocrew"
+
+    def test_variable_resolved_command_names_the_glob_tokens(self) -> None:
+        # Acceptance criterion 2: the glob-argument false positive that uses a
+        # shell VARIABLE (`$C`). Raw-offset tokenisation aligns the resolved
+        # frame tokens to their RAW word spans by index, so `program=` brackets
+        # a path argument whose basename is `*` and `target=` brackets the token
+        # that carries the (expansion-resolved) product name -- both at their
+        # real source offsets, even though the raw bytes are `"$C"/...` and the
+        # only literal `kirocrew` in the source is the unrelated `C=...export`
+        # ASSIGNMENT. Offsets + census only; no command bytes on the line.
+        cmd = 'C=/tmp/kirocrew-export; grep -c -E "a" "$C"/transcripts/* "$C"/gateway/*'
+        from kiro_crew import security
+
+        assert security.is_denied(cmd), cmd
+        line = self._diag_line(cmd)
+        program = self._field(line, "program")
+        target = self._field(line, "target")
+        assert program is not None and target is not None, line
+        # program brackets a path arg whose basename is `*`
+        assert cmd[program[0] : program[1]].endswith("*"), (cmd[program[0] : program[1]], line)
+        # target brackets the token the floor keyed on (the gateway glob), which
+        # resolves to the product name -- distinct from the program token.
+        assert target != program, line
+        assert cmd[target[0] : target[1]].endswith("*"), (cmd[target[0] : target[1]], line)
+        # span= is still the whole command; no product name leaks onto the line.
+        assert self._field(line, "span") == (0, len(cmd)), line
+        assert "kirocrew" not in line, line
+
+    def test_span_is_still_the_whole_command(self) -> None:
+        # Acceptance boundary: span= is NOT narrowed to one token -- consumers
+        # read it as the region the floor judged, and the additive fields carry
+        # the token detail.
+        cmd = "pkill -f kirocrew"
+        line = self._diag_line(cmd)
+        span = self._field(line, "span")
+        assert span == (0, len(cmd)), line
+
+    def test_no_new_field_contains_a_command_character(self) -> None:
+        # Acceptance criterion 5: program=/target= carry offsets + census only.
+        # The token names never appear anywhere on the line.
+        line = self._diag_line("pkill -f kirocrew")
+        assert "kirocrew" not in line
+        assert "pkill" not in line
+        assert self._field(line, "program") is not None, line
+        assert self._field(line, "target") is not None, line
+
+    def test_bare_kill_substitution_keeps_the_whole_command_span(self) -> None:
+        # The bare-kill leg aims through a substitution BODY, not a single argv
+        # token, so there is no honest pair to point at -> no extra fields, and
+        # the line is the historical whole-span shape.
+        cmd = "kill $(pgrep -f kirocrew)"
+        line = self._diag_line(cmd)
+        assert self._field(line, "program") is None, line
+        assert self._field(line, "target") is None, line
+        assert self._field(line, "span") == (0, len(cmd)), line
+
+    def test_quoted_pattern_target_brackets_the_raw_quoted_region(self) -> None:
+        # A quoted ERE pattern's raw region IS present in the source
+        # (`'[;]*kirocrew'` -> the bytes `[;]*kirocrew` at a literal offset), so
+        # the diagnostic honestly brackets that region -- offsets only, no bytes.
+        from kiro_crew import security
+
+        cmd = "pkill -f '[;]*kirocrew'"
+        assert security.is_denied(cmd), cmd
+        line = self._diag_line(cmd)
+        target = self._field(line, "target")
+        assert target is not None, line
+        assert "kirocrew" in cmd[target[0] : target[1]]
+        assert "kirocrew" not in line  # still no bytes on the line itself
+
+    def test_multiline_with_redirect_keeps_whole_span_not_misaligned_tokens(self) -> None:
+        # A top-level newline is a ``;`` token in the floor's walk, and a
+        # redirect ``>out`` is one walk token but two raw words. When those two
+        # divergences cancel, the word COUNTS match while the slices are shifted
+        # by one, which an index-only alignment would read as ``-f`` the program
+        # and ``>`` the target -- the exact misdiagnosis this feature exists to
+        # prevent. The per-pair re-tokenise check rejects such a shifted pair, so
+        # the diagnostic keeps the honest whole-command span with no
+        # program=/target= fields rather than naming the wrong tokens.
+        for cmd in (
+            "true\npkill -f kirocrew >out",
+            "ls -la\npkill -f kirocrew >/dev/null",
+        ):
+            line = self._diag_line(cmd)
+            assert self._field(line, "program") is None, line
+            assert self._field(line, "target") is None, line
+            assert self._field(line, "span") == (0, len(cmd)), line
+
+    def test_multiline_without_redirect_still_names_the_tokens(self) -> None:
+        # The newline span keeps the common multi-line case (no cancelling
+        # redirect) precise: program=/target= still bracket the real tokens.
+        cmd = "true\npkill -f kirocrew"
+        line = self._diag_line(cmd)
+        program = self._field(line, "program")
+        target = self._field(line, "target")
+        assert program is not None and target is not None, line
+        assert cmd[program[0] : program[1]] == "pkill"
+        assert cmd[target[0] : target[1]] == "kirocrew"
+
+    def test_other_floors_have_no_token_fields(self) -> None:
+        # Acceptance criterion 3: a different floor's diagnostic line is
+        # byte-identical to before -- no program=/target=.
+        from kiro_crew import security
+
+        reason = security.is_denied("kirocrew restart")
+        assert reason
+        line = [ln for ln in str(reason).splitlines() if ln.startswith("Refusal diagnostic:")]
+        assert line, reason
+        assert "program=" not in line[-1] and "target=" not in line[-1], line[-1]
+
+    def test_refusal_diagnostic_id_still_reads_the_rule(self) -> None:
+        # Acceptance criterion 4: extra fields do not disturb the rule-id reader.
+        from kiro_crew import security
+        from kiro_crew.dashboard.handlers.debug import _refusal_diagnostic_id
+
+        # The full refusal text (denied_rule row shape) round-trips through the
+        # reader, which parses only rule= and ignores the new program=/target=.
+        row = {"error": str(security.is_denied("pkill -f kirocrew"))}
+        assert _refusal_diagnostic_id(row) == "self-protection-kill"
+
+
 class TestNoCatalogRowMatchesACredentialPath:
     """A credential-store PATH in command text is not a catalog refusal.
 

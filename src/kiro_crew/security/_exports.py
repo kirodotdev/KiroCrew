@@ -53,6 +53,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "REFUSAL_DIAGNOSTIC_PREFIX",
     "RefusalDiagnostic",
     "RefusalSpanShape",
+    "RefusalTokenSpan",
     "STORE_UNAUDITABLE",
     "SUSPICIOUS_BASH_PATTERNS",
     "SecurityEvent",

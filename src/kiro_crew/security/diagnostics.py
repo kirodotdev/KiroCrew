@@ -90,6 +90,24 @@ class RefusalSpanShape:
 
 
 @dataclass(frozen=True)
+class RefusalTokenSpan:
+    """One token a token-level floor keyed on: its offsets and its census.
+
+    Carries the same no-payload guarantee as :class:`RefusalSpanShape` -- offsets
+    into the subject plus a character-class census of that slice, never the bytes.
+    Used for the additive ``program=``/``target=`` fields of a token-level floor
+    diagnostic.
+    """
+
+    start: int
+    end: int
+    shape: RefusalSpanShape
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class RefusalDiagnostic:
     """Why a refusal fired, in terms a reader can check without the matched bytes.
 
@@ -105,27 +123,45 @@ class RefusalDiagnostic:
     start: int
     end: int
     shape: RefusalSpanShape
+    #: Optional token spans a token-level floor keyed on, rendered as additive
+    #: ``program=``/``target=`` fields AFTER ``span=``. Each carries its
+    #: own offsets and the same character-class census as ``shape=`` -- never a
+    #: byte of the command. ``None`` (the default) renders nothing, so every
+    #: refusal that does not supply them is byte-identical to before.
+    program: "RefusalTokenSpan | None" = None
+    target: "RefusalTokenSpan | None" = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
-    def as_line(self) -> str:
-        """The diagnostic as ONE line, prefixed and free of payload bytes."""
-        shape = (
-            f"len={self.shape.length}"
-            f",seen={self.shape.censused}"
-            f",upper={self.shape.ascii_uppercase}"
-            f",lower={self.shape.ascii_lowercase}"
-            f",digit={self.shape.digits}"
-            f",sep={self.shape.path_separators}"
-            f",space={self.shape.whitespace}"
-            f",symbol={self.shape.symbols}"
-            f",other={self.shape.other}"
-        )
+    @staticmethod
+    def _render_shape(shape: RefusalSpanShape) -> str:
         return (
-            f"{REFUSAL_DIAGNOSTIC_PREFIX}rule={self.rule} component={self.component} "
-            f"span={self.start}..{self.end} shape={shape}"
+            f"len={shape.length}"
+            f",seen={shape.censused}"
+            f",upper={shape.ascii_uppercase}"
+            f",lower={shape.ascii_lowercase}"
+            f",digit={shape.digits}"
+            f",sep={shape.path_separators}"
+            f",space={shape.whitespace}"
+            f",symbol={shape.symbols}"
+            f",other={shape.other}"
         )
+
+    def as_line(self) -> str:
+        """The diagnostic as ONE line, prefixed and free of payload bytes.
+
+        ``program=``/``target=`` are appended ONLY when supplied, so a refusal
+        that names no token spans renders exactly the historical line.
+        """
+        line = (
+            f"{REFUSAL_DIAGNOSTIC_PREFIX}rule={self.rule} component={self.component} "
+            f"span={self.start}..{self.end} shape={self._render_shape(self.shape)}"
+        )
+        for name, span in (("program", self.program), ("target", self.target)):
+            if span is not None:
+                line += f" {name}={span.start}..{span.end} shape={self._render_shape(span.shape)}"
+        return line
 
 
 def _diagnostic_id(value: str) -> str:
@@ -186,6 +222,9 @@ def refusal_diagnostic(
     component: str,
     subject: str,
     span: "tuple[int, int] | None" = None,
+    *,
+    program_span: "tuple[int, int] | None" = None,
+    target_span: "tuple[int, int] | None" = None,
 ) -> RefusalDiagnostic:
     """Build the diagnostic for a refusal of *subject* by *rule* at *span*.
 
@@ -195,7 +234,32 @@ def refusal_diagnostic(
     it would name a cause the reader could disprove. Out-of-range or inverted
     offsets are clamped rather than rejected, because a diagnostic must never be
     the thing that raises inside a gate that has already decided to refuse.
+
+    ``program_span``/``target_span`` are the additive token offsets for a
+    token-level floor: they render ``program=``/``target=`` fields after
+    ``span=``, each with its own census, and NEVER narrow ``span=`` itself. Omit
+    them (the default) and the line is byte-identical to before. They are clamped
+    against *subject* by the same rule as ``span``, so a caller that supplies a
+    stale offset yields a clamped field rather than a raise.
     """
+
+    def _clamp(bounds: "tuple[int, int] | None") -> "tuple[int, int] | None":
+        if bounds is None:
+            return None
+        lo = max(0, min(bounds[0], len(subject)))
+        hi = max(lo, min(bounds[1], len(subject)))
+        return lo, hi
+
+    def _token(bounds: "tuple[int, int] | None") -> "RefusalTokenSpan | None":
+        clamped = _clamp(bounds)
+        if clamped is None:
+            return None
+        return RefusalTokenSpan(
+            start=clamped[0],
+            end=clamped[1],
+            shape=refusal_span_shape(subject[clamped[0] : clamped[1]]),
+        )
+
     if span is None:
         start, end = 0, len(subject)
     else:
@@ -207,6 +271,8 @@ def refusal_diagnostic(
         start=start,
         end=end,
         shape=refusal_span_shape(subject[start:end]),
+        program=_token(program_span),
+        target=_token(target_span),
     )
 
 
