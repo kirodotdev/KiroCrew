@@ -8394,6 +8394,12 @@ class TestSandboxEscapeSshSelf:
         assert note.startswith("Matched structurally on the command's argv")
         assert "(1) PENDING, retry" in note
         assert "retry this exact command" in note
+        # A dotless name refused while a large hosts file is still being parsed
+        # off the event loop is transient, so it belongs under (1), not (2).
+        assert (
+            "outside Windows a dotless name is refused while a hosts file over 64 KiB is "
+            "still being read in the background" in note
+        )
         assert "wait a minute, retry, and retry again a few seconds later" in note
         assert "(2) Still refused after those retries" in note
         # The minute in the note is the own-address worker's retry backoff: a
