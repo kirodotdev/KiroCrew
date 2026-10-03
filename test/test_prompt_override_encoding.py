@@ -34,6 +34,9 @@ from kiro_crew.skills import SkillsLoader
 
 _UTF16_OVERRIDE = b"\xff\xfe" + "You are helpful.".encode("utf-16-le")
 _UTF8_OVERRIDE = "UTF8-OVERRIDE-MARKER: you are the override prompt.\n"
+# The unpinned reader, kept before any fixture replaces it, so a test can show
+# that the cap it moves really reaches the prompt's figure.
+_REAL_LIVE_CAP_FIGURE = ContextBuilder.__dict__["_live_cap_figure"].__func__
 
 
 @pytest.fixture
@@ -47,11 +50,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def builder(tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch) -> ContextBuilder:
-    # The shipped prompt's ``{{MAX_SUBAGENTS}}`` figure is a live reading of
-    # host free memory, and a session start takes a fresh one. These tests
-    # compare a control render with an override render, so an unpinned figure
-    # can move between the two on a busy xdist worker and fail a prompt that did
-    # degrade. Pin it, as the composition contract does.
+    # The shipped prompt's ``{{MAX_SUBAGENTS}}`` figure is the adaptive
+    # controller's cap when a controller runs, else the configured ceiling,
+    # which is sized from host memory only when ``agent.max_subagents`` is the
+    # auto sentinel. A session start takes a fresh reading. These tests compare
+    # a control render with an override render, so an unpinned figure can move
+    # between the two on a busy xdist worker and fail a prompt that did degrade.
+    # Pin it, as the composition contract does.
     monkeypatch.setattr(ContextBuilder, "_live_cap_figure", staticmethod(lambda: "4"))
     return ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -123,13 +128,34 @@ class TestUtf16OverrideDegradesToShippedPrompt:
     def test_control_comparison_holds_while_the_host_cap_moves(
         self, home: Path, builder: ContextBuilder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The auto-sized cap is read from host free memory on every session
-        # start. Make it move between the two renders, as it does on a
-        # loaded worker; the control comparison above must not depend on it.
+        # With no adaptive controller and ``agent.max_subagents`` at the auto
+        # sentinel, every session start sizes the cap from host memory. Make
+        # that size move between the control render and the override render,
+        # as it does on a loaded worker: the degraded override must still
+        # match its control, so the comparison does not depend on the figure.
+        # Set the sentinel explicitly so a future default cannot make the
+        # moving cap a no-op.
+        real_load = ctx_mod.KiroCrewConfig.load
+
+        def _auto_cap_load() -> ctx_mod.KiroCrewConfig:
+            cfg = real_load()
+            cfg.agent.max_subagents = 0
+            return cfg
+
+        monkeypatch.setattr(ctx_mod.KiroCrewConfig, "load", staticmethod(_auto_cap_load))
         sizes = iter(range(15, 0, -1))
         monkeypatch.setattr("kiro_crew.subagent.compute_max_subagents", lambda cfg: next(sizes))
         monkeypatch.setattr("kiro_crew.resource_status.adaptive_exec_cap", lambda: 0)
-        assert _resolve(builder) == _resolve(builder)
+
+        # The drift is live: unpinned, two readings of the figure differ.
+        assert _REAL_LIVE_CAP_FIGURE() != _REAL_LIVE_CAP_FIGURE()
+
+        control = _resolve(builder)
+        (home / "prompt.md").write_bytes(_UTF16_OVERRIDE)
+        resolved = _resolve(builder)
+
+        assert resolved == control
+        assert "You are helpful." not in resolved
 
     def test_valid_utf8_override_is_still_used(
         self, home: Path, builder: ContextBuilder, caplog: pytest.LogCaptureFixture
