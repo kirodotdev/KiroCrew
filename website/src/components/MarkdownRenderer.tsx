@@ -90,6 +90,7 @@ import { MarkdownTable } from './markdown/MarkdownTable'
 import { ImgWithFallback } from './markdown/ImgWithFallback'
 import { DeferredMedia, MdSourceEl } from './markdown/remoteMedia'
 import { MermaidBlock } from './markdown/MermaidBlock'
+import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
 import { rehypeMarkFencedCode, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks } from './markdown/treeTransforms'
 import { GLOW_TAIL_CHARS, REVEAL_IDLE_SETTLE_MS, rehypeStreamingCaret, rehypeStreamingGlow, rehypeStreamingReveal } from './markdown/streamingEffects'
@@ -824,6 +825,13 @@ function isMarkdownLang(lang?: string): boolean {
   return lang != null && MARKDOWN_LANGS.has(lang.toLowerCase())
 }
 
+/** A ```markdown fence, or an untagged / generic one whose content is clearly
+ *  markdown. Any real language (```python, ```bash) is never sniffed. */
+function isMarkdownBlock(lang: string | undefined, content: string): boolean {
+  if (isMarkdownLang(lang)) return true
+  return isGenericLang(lang) && looksLikeMarkdown(content)
+}
+
 /** A markdown content card in the chat transcript: a ```markdown fence with a
  *  Formatted | Raw view toggle in the upper right, matching the segmented
  *  control tool detail cards carry (see pages/chat/ToolDetails.tsx). Formatted
@@ -958,14 +966,15 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
         <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
       )
     case 'code': {
-      // A ```markdown / ```md / ```mdx fence is the "markdown content card":
+      // A ```markdown / ```md / ```mdx fence (or an untagged one that is
+      // clearly markdown, see isMarkdownBlock) is the "markdown content card":
       // today it renders verbatim source with an edit affordance. In the chat
       // transcript (`mdCardToggle`) give it a Formatted | Raw segmented control
       // like tool detail cards carry, so long docs can be read rendered. Raw is
       // the pre-toggle EditableCodeBlock, so the edit affordance stays Raw-only.
       // Only fenced content whose CLOSE has arrived is offered a rendered view:
       // a half-streamed markdown source would flip structure as delimiters land.
-      if (mdCardToggle && block.complete && isMarkdownLang(block.language)) {
+      if (mdCardToggle && block.complete && isMarkdownBlock(block.language, block.content)) {
         const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
         return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
       }
