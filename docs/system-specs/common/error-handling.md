@@ -73,6 +73,7 @@ instead of the row simply disappearing.
 | Config load | Invalid JSON → log warning, return defaults |
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
+| Notes git subprocess (`md_notebook/git_ops.py`) | A non-zero exit reports git's last 3 stderr lines PLUS the first transport-caused line when one sits outside that tail. git ends every fetch/push failure with the same access-rights boilerplate and prints an SSH diagnosis first, so a tail alone reports a permission problem the operator does not have (a host reachable only via `~/.ssh/config` never resolved at all). The extra line widens what the message reports; it does not decide whether the command failed. |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
 ## Dashboard Error Codes
