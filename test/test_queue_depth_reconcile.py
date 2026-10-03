@@ -1365,6 +1365,45 @@ async def test_a_parent_end_stops_its_store_rows_without_reporting_them_home(
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 @PUMP_MODES
+async def test_a_parent_end_sweep_never_names_a_claimed_row(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """A claimed-not-started row is its claimer's, and the teardown refuses to
+    cancel one (``allow_admitted=False``). So the sweep's store read leaves it
+    out, unlike Stop all's: naming it would put it in the delivery gate (the
+    claimer's run would then never report) and in the audit as a stopped row."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    try:
+        mgr._on_done = AsyncMock()
+        claimed, waiting = _defer(mgr, 2)
+        await _settle(mgr)
+        # Claimed past its deferral, as the pump claims it once that lapses; the
+        # clock is put back so the other row stays deferred.
+        store = mgr._taskq
+        real_clock = store._clock
+        monkeypatch.setattr(store, "_clock", lambda: real_clock() + 3600.0)
+        assert store.claim(claimed.id, owner="a-claimer-in-flight") is not None
+        monkeypatch.setattr(store, "_clock", real_clock)
+
+        selected = mgr.snapshot_teardown_children(_PARENT)
+        stopped = await mgr.cancel_for_teardown(
+            selected, parent_session_key=_PARENT, verb="destroy"
+        )
+        await _settle(mgr)
+
+        assert stopped == 1
+        gone = mgr._taskq.get(waiting.id)
+        assert gone is not None and gone.state == model.CANCELLED
+        row = mgr._taskq.get(claimed.id)
+        assert row is not None and row.state == model.ADMITTED
+        assert claimed.id not in mgr._teardown_cancelled_ids
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
 async def test_a_wall_clock_stepped_back_mid_teardown_never_sweeps_the_successors_row(
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
 ) -> None:

@@ -389,7 +389,21 @@ class CancellationCoordinator(ManagerComponent):
         )
         if not info.id:
             return
-        # The row will never start: drop what this process kept for its start.
+        # Never over a REGISTERED run's record. A row the pump claimed and
+        # registered while its stop was still on the way is a live run: a
+        # synthetic ``queued=True`` terminal laid over it leaves the run
+        # executing behind a "stopped before start" card, and every running
+        # sweep skips a queued record, so nothing would ever stop it. The
+        # record stays; the live path (the running sweep, ``cancel``) owns it.
+        registered = self._manager._agents.get(info.id)
+        if registered is not None and not registered.queued:
+            logger.info(
+                "Queued stop for %s skipped: the run is registered; the live stop owns it",
+                info.id,
+            )
+            return
+        # Not registered, so the row will never start: drop what this process
+        # kept for its start. A registered run's holds stay with its own start.
         self._manager._forget_pending_start(info.id)
         # Queued runs have no `_agents` record yet. Register every synthetic
         # terminal before report tasks can run, leaving `done=False` until each
@@ -702,15 +716,12 @@ class CancellationCoordinator(ManagerComponent):
             # ``_report_queued_stop`` below, as it does for every stopped row.
             try:
                 params = await self._manager._admission.taskq_cancel_queued_async(
-                    # A teardown may not cancel a CLAIMED-but-unstarted row. Its claimer
-                    # sits between the claim and the registration, so cancelling here
-                    # leaves that claimer to register and run work this teardown believed
-                    # it had stopped -- and the claimer's own state re-read before
-                    # registering has nothing to catch, because the row is gone rather
-                    # than claimable. A row in that window may also be carrying a person's
-                    # decision (a spawn approval is the visible case), which a teardown has
-                    # no standing to revoke for them. Stop-all keeps the wider behaviour:
-                    # there the user asked for exactly that.
+                    # A teardown may not cancel a CLAIMED-but-unstarted row: a row in
+                    # that window may be carrying a person's decision (a spawn approval
+                    # is the visible case), which a teardown has no standing to revoke
+                    # for them. Stop-all keeps the wider behaviour: there the user asked
+                    # for exactly that, and the claimer's post-claim re-read refuses the
+                    # row it cancelled.
                     agent_id,
                     allow_admitted=False,
                 )
@@ -1185,6 +1196,13 @@ class CancellationCoordinator(ManagerComponent):
         failure: Exception | None = None
         for agent_id in agent_ids:
             if not agent_id:
+                continue
+            registered = self._manager._agents.get(agent_id)
+            if registered is not None and not registered.queued:
+                # Registered after the ids were read (the store read is an
+                # await): a live run, which the running sweep after this pass
+                # reaps. Cancelling its row here would end it under the run
+                # and fence out the run's own settlement.
                 continue
             try:
                 queued = self._manager._unqueue(agent_id)

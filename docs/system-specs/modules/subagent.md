@@ -710,8 +710,17 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    memory-pressure hold (see *Memory guard*): queue (persistent window/store-only
    or restricted memory-only) or proceed. Then the **atomic
    claim** for persistent work (`admitted`, generation++). A row cancelled while it waited fails the
-   claim here and is never started. A boundary-owned claim then revalidates its
-   generation and cancellation authority. If that post-claim store step is
+   claim here and is never started. Every claim the store took then re-reads
+   its row (`taskq_claim_still_current`: still `admitted`, same generation, our
+   lease; a generation-0 claim of a row the store never saw has nothing to
+   re-read and skips it, unless it is boundary-owned:
+   `test_taskq_admission_integration.py::test_a_claim_of_a_row_the_store_never_saw_still_starts`)
+   and checks the loop for a stop recorded while the claim was in flight
+   (`_stopped_while_claimed`: a stopped or ended `_agents` record, which is what a
+   queued-stop report installs). Either one refuses the start, so a row Stop all
+   cancelled between the claim and the registration ends stopped and never
+   starts. A boundary-owned claim also revalidates its cancellation authority.
+   Nothing awaits between these checks and registration. If that post-claim store step is
    unavailable, `_retained_claims` keeps the admitted generation and its reserved
    slot, and the next pump settlement pass retries it before ordinary refill.
    Registration consumes the reservation; a durable refusal releases it.
@@ -1178,8 +1187,12 @@ a queued-stop report with no injection), every one except the rows the snapshot'
 recorded. So a row a successor under the same key queued after the snapshot is never
 swept, even one accepted while the cancel runs, and a row the refill hydrated into the
 window after the snapshot is swept like one on disk (the window's own rows are kept in
-the read, since the teardown's `_unqueue` drops a window entry with its row). The fence
-orders by ACCEPT, never by `created_at`: a wall clock stepped back during the teardown
+the read, since the teardown's `_unqueue` drops a window entry with its row). The read
+leaves `admitted` rows out, where Stop all's includes them: the teardown refuses a
+claimed-not-started row, so naming one would only mark it in the delivery gate and
+count it in the audit line
+(`test_queue_depth_reconcile.py::test_a_parent_end_sweep_never_names_a_claimed_row`).
+The fence orders by ACCEPT, never by `created_at`: a wall clock stepped back during the teardown
 stamps the successor's row earlier than the retired conversation's, and a time cutoff
 would sweep it. It runs after the
 named runs are stopped, so it never delays a live reap behind a store read, and it logs
@@ -1312,6 +1325,24 @@ return the slot because the record it reads is gone. Pinned by
 `test_overload_integration_glue.py::test_stop_all_reaps_a_resident_resumed_run_it_never_treats_as_queued`
 and `::test_stop_all_never_takes_the_queued_stop_path_for_a_claimable_resident_row`. Queue removal happens before the first
 suspending await, so a scheduled drain cannot start work after the stop request.
+The store pass (`taskq_pending_ids_for`) names every accepted row with no run
+yet, the same set the queued count reads: claimable rows and `admitted` rows
+nothing registered (a claim the pump is awaiting, or a retained one; a direct
+`spawn_async` claim is still in `_admitting_ids`, which `taskq_excluded_ids`
+leaves out of this pass). Stop all cancels such a row, and the claimer's
+post-claim re-read (step 5 of `spawn`) then refuses it, so a row stopped
+between its claim and its start never starts. A row the pump registered while the store read was in flight is a
+live run: the queued pass skips it and the running sweep reaps it. The
+queued-stop report never installs its synthetic record over a registered
+run's `_agents` record, since every running sweep skips a `queued` record and
+nothing would stop the run behind it, and it leaves what this process kept for
+that run's start (`_forget_pending_start`: a memory-pressure hold the run may
+still be waiting under) to the run's own start. Pinned by
+`test_taskq_admission_integration.py::test_stop_all_between_claim_and_start_keeps_the_row_stopped`,
+`::test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced`,
+`::test_a_queued_stop_never_replaces_a_registered_record` and, for a cancel that
+reaches the row through the store alone,
+`::test_a_store_only_cancel_between_claim_and_start_refuses_the_start`.
 Each removed queue entry emits a neutral stopped terminal record through the
 normal completion consumer, which closes batch accounting instead of stranding a
 wave. Those synthetic records remain marked as never started while their terminal
