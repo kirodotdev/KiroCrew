@@ -2700,7 +2700,25 @@ measured code (logged as `reaped after an observed exit`, a literal template
 distinct from the kill path's `reaped after kill`, because a log line that says
 "killed" must name who killed), re-probes `pid_exists`, and retires the ROOT's
 lines off the loop (`asyncio.to_thread`, since the untrack takes the file locks
-the sweep contends for). The write is bound to the PROCESS, not the number: the
+the sweep contends for). EOF is not the only confirmed-exit observer: the
+`_exit_watch_loop` task — started beside the reader at spawn and cancelled beside
+it in teardown — polls the root's own `process.returncode` and calls the same
+`_retire_tracking_after_exit` on the exit. It polls rather than awaiting
+`process.wait()` for a load-bearing reason: `wait()`'s waiters are woken only
+from the event loop's `_call_connection_lost`, after every pipe transport
+disconnects, so a descendant holding stdout open parks `wait()` exactly as long
+as it parks the reader — awaiting it would make the watcher inert for the very
+case it exists to catch. `returncode` is set by `_process_exited` (the
+SIGCHLD/`waitpid` path) the instant the root is reaped, independent of the pipes,
+so the poll sees the exit regardless of the still-open stdout.
+It covers the case EOF cannot: a
+descendant that inherited the root's stdout write end holds that pipe open after
+the root dies, so the reader parked on `readuntil` never sees EOF and the death
+would otherwise stay invisible until the survivor exits or idle expiry force-reaps
+(~1h). It keys on a non-`None` returncode, never on a closed pipe, so the "closed
+stdout is NOT an exit" contract holds; `_mark_dead` is idempotent and a yield
+before the mark lets a same-instant EOF drive the reader's path first, so the two
+observers never double-retire. The write is bound to the PROCESS, not the number: the
 reader has no process left to re-check, and the freed number can be handed to a
 replacement root this gateway just tracked before the write lands, so
 `session_pid._untrack_root_by_identity(pid, start_token)` removes, under the

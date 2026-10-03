@@ -33,6 +33,7 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r._spawn_start_token = None
     r._child_pids = {}
     r._reader_task = None
+    r._exit_watch_task = None
     r._stderr_task = None
     r._sandbox_cleanup = None
     r._process_instance = "inst-abc"

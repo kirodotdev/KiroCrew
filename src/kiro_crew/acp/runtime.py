@@ -1183,6 +1183,12 @@ class AcpRuntime:
         # Single reader task — the ONLY coroutine that reads stdout
         self._reader_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        # Watches the root process's OWN exit, independent of the stdout stream.
+        # The reader loop observes a death only as EOF on stdout, which does not
+        # arrive while a descendant holds the root's inherited write end, so a
+        # dead-but-unreaped root is invisible to its waiters for the life of the
+        # survivor. This task fails them on the exit itself.
+        self._exit_watch_task: asyncio.Task | None = None  # type: ignore[type-arg]
 
         # Demux routing
         self._pending_requests: _PendingRequests = _PendingRequests()
@@ -2553,6 +2559,10 @@ class AcpRuntime:
             # Start the single reader task — owns stdout exclusively
             self._reader_task = asyncio.ensure_future(self._reader_loop())
 
+            # Start the process-exit watcher — fails the runtime on the root's
+            # own exit even when stdout stays open behind a surviving descendant.
+            self._exit_watch_task = asyncio.ensure_future(self._exit_watch_loop())
+
             # Protocol handshake ("initialize"); the cold-start budget is
             # _INITIALIZE_TIMEOUT -- see _initialize_handshake. The capabilities
             # were resolved above, before the process existed.
@@ -3072,6 +3082,24 @@ class AcpRuntime:
     # window. Class attributes so tests can shrink them.
     _KILL_TERM_TIMEOUT = 5.0
     _KILL_REAP_TIMEOUT = 2.0
+    # Cadence at which the exit watcher polls process.returncode. returncode is
+    # set by _process_exited (the SIGCHLD/waitpid path) the instant the root is
+    # reaped, independent of pipe disconnection, so a short poll notices the
+    # exit even while a surviving descendant holds stdout open and no EOF or
+    # broken-pipe wakes process.wait(). Small enough to keep the fail-fast
+    # promise, large enough not to busy-spin the loop.
+    _EXIT_WATCH_POLL_INTERVAL = 0.25
+
+    # After the exit is confirmed, give the reader a bounded window to drain any
+    # final frame the backend wrote just before exiting -- a completed turn's
+    # response sitting in the pipe the reader has not pulled yet. The reader
+    # stamps ``_last_activity`` on every frame, so progress is observable: keep
+    # yielding while it keeps draining, stop once it has been quiet for one grace
+    # slice (nothing left to pull) or the total cap is reached. The cap bounds
+    # the fail-fast delay a genuinely-empty pipe adds; the per-slice yield lets
+    # the reader run between checks.
+    _EXIT_DRAIN_GRACE = 0.05
+    _EXIT_DRAIN_MAX = 1.0
 
     async def kill(self, *, expected: bool = False, reason: str = "") -> None:
         """Kill the subprocess and release spawn resources even when cancelled.
@@ -3126,6 +3154,13 @@ class AcpRuntime:
             self._reader_task.cancel()
             try:
                 await self._reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if self._exit_watch_task and not self._exit_watch_task.done():
+            self._exit_watch_task.cancel()
+            try:
+                await self._exit_watch_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -4564,6 +4599,118 @@ class AcpRuntime:
         """
         return self._sandbox_hidden_dirs
 
+    async def _exit_watch_loop(self) -> None:
+        """Fail the runtime on the root process's OWN exit, not on stdout EOF.
+
+        The reader loop observes a death only as EOF on stdout. A descendant
+        that inherited the root's write end holds that pipe open after the root
+        is gone, so EOF does not arrive and the reader -- parked on ``readuntil``
+        while nothing is being written -- cannot notice the broken pipe either.
+        The death is then invisible until the survivor exits (the pipe finally
+        closing) or idle expiry force-reaps the session, on the order of an hour.
+
+        This watcher keys on the exit itself, by polling ``process.returncode``.
+        ``returncode`` is set by the event loop's ``_process_exited`` -- the
+        SIGCHLD/waitpid path -- the instant the root is reaped, independent of
+        whether the pipes have disconnected. ``process.wait()`` cannot serve
+        here: its waiters are woken only from ``_call_connection_lost``, after
+        ALL pipe transports disconnect, so a descendant holding stdout open
+        parks ``wait()`` exactly as long as it parks the reader -- the watcher
+        would never fire for the very case it exists to catch. The poll sees a
+        non-``None`` returncode as soon as the root is gone, whatever the pipes
+        are doing. A still-``None`` returncode is NOT an exit (a closed pipe the
+        module deliberately refuses to treat as death), so the watcher keeps
+        looping rather than marking dead.
+
+        On the confirmed exit it first gives the reader a bounded window to
+        drain any final frame still readable on stdout -- a completed turn's
+        response the backend wrote just before exiting -- then marks the runtime
+        dead, which fails every pending request and poisons every session queue,
+        so a waiting turn surfaces ``AcpProcessDied`` in seconds instead of
+        waiting for a backstop timer. The drain yields in short slices while the
+        reader keeps routing frames (it stamps ``_last_activity`` per frame) and
+        ends the moment the reader goes quiet with an empty buffer, so it costs
+        the fail-fast path at most one idle slice on a pipe with nothing left.
+
+        The reader keeps priority: the drain window lets an EOF that arrives in
+        the same breath (the ordinary same-second close) run the reader's own
+        death+retire path first, and ``_mark_dead`` is idempotent, so the loser
+        of that race is a no-op. The exit reason is read AFTER the returncode is
+        observed, so it carries the real code rather than ``<not reaped>``.
+        """
+        process = self._process
+        if process is None:
+            return
+        try:
+            while process.returncode is None:
+                await asyncio.sleep(self._EXIT_WATCH_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A returncode read that cannot complete (a mock without the
+            # attribute, an OS reap race) leaves death detection to the reader's
+            # EOF path. It must never crash the runtime.
+            logger.debug(
+                "AcpRuntime: exit watcher could not poll the runtime process", exc_info=True
+            )
+            return
+        # Let the reader drain whatever is already readable before the mark.
+        # The backend can write a final response and exit; those bytes sit in
+        # the pipe the reader has not pulled yet. _mark_dead clears pending
+        # routes and poisons the session queues, so marking before that frame is
+        # routed loses a completed turn's response. Yield in short slices while
+        # the reader keeps making progress (it stamps _last_activity per frame),
+        # and stop as soon as it goes quiet for one slice -- nothing left to pull
+        # -- or the total cap is reached. This drains readable frames WITHOUT
+        # waiting for EOF, which the surviving descendant holding stdout open may
+        # never deliver. An EOF observed in the same breath still wins: the
+        # reader's own death+retire path runs during the grace, and _mark_dead is
+        # idempotent so the slower observer here is a no-op.
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + self._EXIT_DRAIN_MAX
+        while not self._dead and loop.time() < deadline:
+            before = self._last_activity
+            await asyncio.sleep(self._EXIT_DRAIN_GRACE)
+            if self._dead:
+                break
+            if self._last_activity == before and not self._reader_has_buffered_input():
+                # The reader processed nothing this slice and nothing is waiting
+                # in its buffer: the pipe is drained, stop waiting.
+                break
+        # Mark dead only once -- a reader-crash, broken-pipe or write-stall path
+        # may already have set it before the root exited. But those paths mark
+        # dead WITHOUT retiring the registry, so the confirmed exit still owes
+        # the retirement: run it whether or not this watcher is the one that
+        # marked. _retire_tracking_after_exit is identity-guarded and idempotent,
+        # so a second call once the reader's EOF branch has already retired is a
+        # no-op, and a stale PID-ledger line a non-retiring death mark left
+        # standing is cleared the moment the exit is confirmed.
+        if not self._dead:
+            rc = process.returncode
+            self._mark_dead(self._exit_reason(rc))
+        # The reader is still parked on a stdout that never reaches EOF, so it
+        # will not run the retire path the EOF branch owns; run it here instead.
+        await self._retire_tracking_after_exit()
+
+    def _reader_has_buffered_input(self) -> bool:
+        """Whether stdout still holds bytes the reader has not consumed.
+
+        ``StreamReader`` keeps already-read bytes in a private ``_buffer`` until
+        a ``readuntil``/``read`` consumes them. A non-empty buffer means a frame
+        (or part of one) is still waiting to be routed, so the exit-drain window
+        must keep yielding to the reader rather than mark the runtime dead. The
+        private attribute is read defensively: any failure reports "nothing
+        buffered" so the drain ends on its cap rather than crashing.
+        """
+        process = self._process
+        stdout = process.stdout if process is not None else None
+        if stdout is None:
+            return False
+        try:
+            return bool(stdout._buffer)  # type: ignore[attr-defined]
+        except Exception:
+            return False
+
     def _exit_reason(self, rc: object) -> str:
         """The death reason for a process that exited: its exit status, and a CAUSE only if proven.
 
@@ -4824,8 +4971,10 @@ class AcpRuntime:
     async def _retire_tracking_after_exit(self) -> None:
         """Drop this root's registry entries once its exit is CONFIRMED, not inferred.
 
-        Called from the reader loop's EOF branch, which is the only death path that
-        observes an exit instead of causing one. ``_kill_inner`` untracks after it
+        Called from the two death paths that observe an exit instead of causing
+        one: the reader loop's EOF branch, and the ``_exit_watch_loop`` that
+        polls ``process.returncode`` so a death with stdout held open by a
+        survivor is still seen. ``_kill_inner`` untracks after it
         reaps; a root killed from outside (an OOM kill, a ``pkill``, an operator)
         reached no such step, so its ``kiro_session_pids.txt`` / ``kiro_pids.txt``
         lines survived until the periodic sweep's next tick, bounded only by
