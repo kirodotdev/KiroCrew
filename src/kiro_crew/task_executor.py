@@ -7,7 +7,9 @@ approval gates, self-review, test verification, and context compaction.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 import time as _time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -173,6 +175,60 @@ async def _end_stalled_step(
     task.status = TaskStatus.FAILED
     task.error = f"{stop.stop_class} ({stop.stop_reason}) — {why} — partial result preserved"
     return False
+
+
+#: Bound for the loop-detection fingerprint when the text is not a test run.
+_ERROR_FINGERPRINT_LINES = 20
+#: A normalized identity longer than this is stored as its digest: two
+#: summaries that share a long prefix but name different failing tests must
+#: still compare unequal, so the whole text counts, not its head.
+_ERROR_FINGERPRINT_LEN = 1000
+#: pytest's short summary names the failing tests. ``run_tests`` trims a failing
+#: run to its last 2000 chars, so the head of the text is not the stable part --
+#: these lines are.
+_TEST_SUMMARY_RE = re.compile(r"^[ \t]*(?:FAILED|ERROR)[ \t]+\S+.*$", re.MULTILINE)
+#: Only a test-run error (see the ``task.error`` assignment after ``run_tests``)
+#: is reduced to its summary lines; a generic exception that happens to carry
+#: ``ERROR ...`` log lines keeps its own first lines as identity.
+_TEST_FAILURE_PREFIX = "Tests failed:"
+#: Volatile runs that legitimately differ between two attempts at the *same*
+#: failure. Bare digit runs and short hex literals are deliberately NOT masked:
+#: ``error variant 1`` vs ``error variant 2`` and ``case[0x1]`` vs ``case[0x2]``
+#: are the next parametrized case, and ``assert 3 == 0`` vs ``assert 1 == 0`` is
+#: a different assertion. Masking those makes steady progress look like a stuck
+#: loop; only address-length hex (6+ digits) is volatile.
+_VOLATILE_PATTERNS = (
+    re.compile(r"0x[0-9a-fA-F]{6,}"),
+    re.compile(r"\b\d+(?:\.\d+)?(?:ms|us|ns|s|m|h)\b"),
+    re.compile(r"\b(?:port|pid)[ \t:=]+\d+\b", re.IGNORECASE),
+    re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b"),
+)
+_VOLATILE_WS_RE = re.compile(r"\s+")
+
+
+def _error_fingerprint(error: str) -> str:
+    """Normalize *error* so a repeated failure compares equal across retries.
+
+    Exact equality misses real loops (timestamps, durations, ports, PIDs, temp
+    paths change every attempt) and never fires on test failures (the full
+    output is embedded). For a test run the identity is the ``FAILED`` /
+    ``ERROR`` summary; otherwise it is the first lines. Only genuinely volatile
+    forms are masked, and whitespace is collapsed. Distinct failures (different
+    missing modules, different test names, a different parametrized case) still
+    differ; only the volatile runs vary. Comparison-only: ``task.error`` keeps
+    the raw text.
+    """
+    summary = _TEST_SUMMARY_RE.findall(error) if error.startswith(_TEST_FAILURE_PREFIX) else []
+    if summary:
+        text = "\n".join(summary)
+    else:
+        text = "\n".join(error.splitlines()[:_ERROR_FINGERPRINT_LINES])
+    for pattern in _VOLATILE_PATTERNS:
+        text = pattern.sub("#", text)
+    text = _VOLATILE_WS_RE.sub(" ", text).strip()
+    if len(text) > _ERROR_FINGERPRINT_LEN:
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    return text
 
 
 async def _check_error_loop(
@@ -501,6 +557,8 @@ async def execute_task(
     # attempts so a retry on that same session is gated by ITS hooks. Only the
     # hook lookup reads it; the claim still asks for the step's own agent.
     switched_agent = ""
+    # Stores _error_fingerprint(task.error), not the raw text, so retries that
+    # differ only in volatile runs still compare equal.
     previous_error = ""
     consecutive_same_error = 0
     result_prefix = ""
@@ -1213,13 +1271,14 @@ async def execute_task(
                 await sessions.reset(session_key)
             except Exception:
                 logger.debug("Session reset between retries failed", exc_info=True)
-            if previous_error and task.error == previous_error:
+            error_fp = _error_fingerprint(task.error)
+            if previous_error and error_fp == previous_error:
                 consecutive_same_error += 1
                 if await _check_error_loop(task, consecutive_same_error, on_notify, run):
                     return False
             else:
                 consecutive_same_error = 0
-            previous_error = task.error
+            previous_error = error_fp
             run.last_task_time = _time.time()
             if attempt < MAX_RETRIES + stop_recoveries:
                 continue
@@ -1283,7 +1342,8 @@ async def execute_task(
             except Exception:
                 logger.debug("Session reset between retries failed", exc_info=True)
 
-            if previous_error and task.error == previous_error:
+            error_fp = _error_fingerprint(task.error)
+            if previous_error and error_fp == previous_error:
                 consecutive_same_error += 1
                 should_fail = await _check_error_loop(
                     task,
@@ -1295,7 +1355,7 @@ async def execute_task(
                     return False
             else:
                 consecutive_same_error = 0
-            previous_error = task.error
+            previous_error = error_fp
             if attempt < MAX_RETRIES + stop_recoveries:
                 continue
             task.status = TaskStatus.FAILED
@@ -1317,7 +1377,8 @@ async def execute_task(
                 task.error = f"Tests failed:\n{test_output}"
                 logger.warning("Task %d tests failed (attempt %d)", task.index, attempt)
                 # Same retry logic as main task failure above
-                if previous_error and task.error == previous_error:
+                error_fp = _error_fingerprint(task.error)
+                if previous_error and error_fp == previous_error:
                     consecutive_same_error += 1
                     should_fail = await _check_error_loop(
                         task, consecutive_same_error, on_notify, run
@@ -1326,7 +1387,7 @@ async def execute_task(
                         return False
                 else:
                     consecutive_same_error = 0
-                previous_error = task.error
+                previous_error = error_fp
                 if attempt < MAX_RETRIES + stop_recoveries:
                     continue
                 task.status = TaskStatus.FAILED
