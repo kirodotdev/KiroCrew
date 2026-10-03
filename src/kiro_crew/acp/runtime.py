@@ -7276,6 +7276,7 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
             session_key=session_key,
+            bound_cwd=str(session_work_dir),
         )
         handle.memory_mode = memory_mode
         # The token this session's stubs carry, so a later claim (warm-pool
@@ -7865,6 +7866,7 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
             session_key=session_key,
+            bound_cwd=str(load_params["cwd"]),
         )
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token
