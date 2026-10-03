@@ -133,6 +133,51 @@ class TestHandleApp:
         assert get_app("cli-test-app") is None
         assert data_file.read_text() == '{"saved": true}'
 
+    def test_uninstall_advances_the_grant_epoch_before_deleting_rows(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The file-only uninstall fences in-flight gateway commits first.
+
+        A gateway in another process can hold a contribution commit whose fence
+        still admits on this app's grant; deleting the app's projection rows
+        without first advancing the durable epoch lets that late commit write a
+        row back AFTER deletion, with no later cleanup. The uninstall must advance
+        the durable epoch (`grants.bump_disable_epoch`) BEFORE retracting rows
+        (`_retract_app_contributions`) so the in-flight commit's captured fence is
+        stale and the barrier denies it.
+        """
+        import argparse
+
+        import kiro_crew.cli_commands as cli
+        from kiro_crew.eventlog import grants as grants_mod
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+
+        order: list[str] = []
+        # `bump_disable_epoch` is imported function-locally in the uninstall
+        # branch, so patch it at its source module; `_retract_app_contributions`
+        # is a module-level name on cli_commands.
+        monkeypatch.setattr(
+            grants_mod, "bump_disable_epoch", lambda name: order.append(f"bump:{name}")
+        )
+        monkeypatch.setattr(
+            cli,
+            "_retract_app_contributions",
+            lambda name: order.append(f"retract:{name}"),
+        )
+
+        ns = argparse.Namespace(
+            app_action="uninstall", name="cli-test-app", purge_data=False
+        )
+        cli._handle_app(ns)
+
+        assert "bump:cli-test-app" in order, "the uninstall must advance the epoch"
+        assert "retract:cli-test-app" in order, "the uninstall still retracts rows"
+        assert order.index("bump:cli-test-app") < order.index(
+            "retract:cli-test-app"
+        ), "the epoch must advance BEFORE the rows are deleted"
+
     def test_uninstall_purge_data_requires_explicit_flag(self, tmp_path, app_env):
         import argparse
 

@@ -148,13 +148,27 @@ class TestAppRateLimiter:
 
 class TestAppTokenPathGrant:
     def test_push_path_allowed_for_app_tokens(self):
-        assert app_token_path_allowed("some-app", "/api/notifications/push")
+        from unittest import mock
+
+        with mock.patch("kiro_crew.apps.manager.app_enabled_state", lambda name: True):
+            assert app_token_path_allowed("some-app", "/api/notifications/push")
 
     def test_notification_read_path_still_denied(self):
-        assert not app_token_path_allowed("some-app", "/api/notifications")
+        from unittest import mock
+
+        with mock.patch("kiro_crew.apps.manager.app_enabled_state", lambda name: True):
+            assert not app_token_path_allowed("some-app", "/api/notifications")
 
     def test_empty_app_name_denied(self):
         assert not app_token_path_allowed("", "/api/notifications/push")
+
+    def test_a_disabled_app_is_denied_even_a_granted_path(self):
+        from unittest import mock
+
+        with mock.patch("kiro_crew.apps.manager.app_enabled_state", lambda name: False):
+            assert not app_token_path_allowed("some-app", "/api/notifications/push")
+        with mock.patch("kiro_crew.apps.manager.app_enabled_state", lambda name: None):
+            assert not app_token_path_allowed("some-app", "/api/notifications/push")
 
 
 # ── Push handler ──

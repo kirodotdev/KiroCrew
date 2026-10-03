@@ -77,7 +77,11 @@ from kiro_crew.apps.hooks_integration import (
 from kiro_crew.apps.lifecycle import app_has_retained_startup, apps_with_retained_startup
 from kiro_crew.apps.manager import app_enabled_state, app_lifecycle_lock, get_app, list_apps
 from kiro_crew.apps.module_loader import unload_app_modules
-from kiro_crew.apps.teardown import forget_app_hooks
+from kiro_crew.apps.teardown import (
+    forget_app_hooks,
+    retract_contribution_authority,
+    teardown_contributions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,16 +230,22 @@ async def _disable_loaded(name: str, app_info: dict[str, Any] | None) -> bool:
     return True
 
 
-async def _enable_app(name: str, app_info: dict[str, Any]) -> None:
+async def _enable_app(name: str, app_info: dict[str, Any], *, transition: str = "reload") -> None:
     """Drive the in-process reimport (routes + on_startup) for a newly-live app.
 
     The CALLER holds ``app_lifecycle_lock(name)``. ``on_app_enable`` records the
     shared loaded-signature itself on success (and re-checks admission), so a
     partial failure leaves no record and the next tick retries.
+
+    ``transition`` distinguishes the lifecycle edge for the grant tombstone (see
+    ``on_app_enable``): a reconciler RELOAD of an already-loaded app retains the
+    revocation, while loading a newly-enabled app is a genuine enable. Defaults to
+    ``"reload"`` -- the safe direction that never over-grants.
     """
     await on_app_enable(
         name,
         app_info,
+        transition=transition,
         cron_service=_cron_service,
         broadcast_fn=_broadcast_fn,
         spawn_impl=_spawn_impl,
@@ -287,6 +297,50 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
         turned_off = current is not None and (
             not current.get("enabled") or not manifest_declares_hooks(current)
         )
+        # Reconcile the CONTRIBUTION grant on an out-of-process disable/uninstall,
+        # regardless of hooks. The gateway answers a contributor's append/publish
+        # authority from a process-memory grant cache (eventlog/grants.py) that
+        # only an in-process lifecycle event dislodges. A CLI `disable`/`uninstall`
+        # run against a LIVE gateway whose owner socket is unreachable (AF_UNIX
+        # absent -- Windows, sandboxed shells) revokes only in the CLI's own
+        # interpreter, so without this the gateway keeps authorizing the disabled
+        # app's token to append and publish until the next restart. The reconciler
+        # is the gateway's own observation of that out-of-process change, so it
+        # revokes here too. Gated on the live tombstone so it acts once, not every
+        # tick; a genuine re-enable lifts it via the enable hook's `unrevoke`. An
+        # UNINSTALL additionally deletes the rows (teardown_contributions); a plain
+        # disable only revokes -- matching the HTTP disable path. Off-loop because
+        # `revoke` drains in-flight commits rather than merely bumping a counter.
+        contribution_gone = gone or (current is not None and not current.get("enabled"))
+        if contribution_gone:
+            from kiro_crew.eventlog import grants as _grants
+
+            if not await asyncio.to_thread(_grants.is_revoked, name):
+                if gone:
+                    # Uninstalled: revoke AND delete the rows, as teardown does.
+                    for warning in await teardown_contributions(name):
+                        logger.info("hook reconcile: %s contribution teardown: %s", name, warning)
+                else:
+                    # Disabled: revoke the grant AND close the app's event-log
+                    # subscription sockets, matching the HTTP disable path. Revoking
+                    # the grant is not the same as closing what the grant opened: a
+                    # bare revoke leaves the app's subscribed socket open, and a
+                    # later re-enable lifts the tombstone (enable hook `unrevoke`),
+                    # so narrowed event-log access would resume over that stale
+                    # subscription. retract_contribution_authority does both halves
+                    # (revoke off-loop -- it drains in-flight commits -- then
+                    # close_app), so the socket a disable closes cannot be reused.
+                    # Rows survive a disable, so this stops SHORT of deleting them
+                    # (that is the uninstall branch's teardown_contributions).
+                    for warning in await retract_contribution_authority(name):
+                        logger.info(
+                            "hook reconcile: %s contribution authority retraction: %s",
+                            name,
+                            warning,
+                        )
+                logger.info(
+                    "hook reconcile: revoked out-of-process contribution grant for %s", name
+                )
         # A degraded/timed-out startup leaves the loaded-signature record CLEARED
         # (so the wiring retries on recovery) yet its detached startup task keeps
         # running. Such an app has ``loaded is None`` but still needs teardown when
@@ -341,7 +395,9 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 return
             # Now admitted with unchanged hooks -> load them (fall through).
             logger.info("hook reconcile: loading now-admitted app %s", name)
-            await _enable_app(name, current)
+            # A now-admitted app that was never loaded is a genuine enable edge,
+            # so its tombstone lifts; a reload retains it (see on_app_enable).
+            await _enable_app(name, current, transition="enable")
             return
         # Re-check admission UNDER the lock before running any app code: an app
         # mid-trust-withdrawal (or already denied) must never be revived here.
@@ -360,7 +416,9 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             # per-tick churn.
             if loaded is not None and not await _disable_loaded(name, current):
                 return
-            await _enable_app(name, current)
+            # Denied: on_app_enable takes its denied path and grants nothing, so
+            # the tombstone must not lift regardless. Name the safe edge.
+            await _enable_app(name, current, transition="reload")
             return
         if loaded is not None:
             # Reinstall of new code under a still-enabled app: evict the stale
@@ -373,7 +431,15 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
         else:
             logger.info("hook reconcile: loading hooks for newly-enabled %s", name)
         try:
-            await _enable_app(name, current)
+            # A RELOAD of an already-loaded app (loaded is not None) retains the
+            # revocation: a narrowing update whose in-flight commit outran the
+            # bounded drain deliberately kept the tombstone, and this reload must
+            # not lift it or the retired-authority write persists under the
+            # narrowed manifest. Loading a NEWLY-enabled app (loaded is None) is a
+            # genuine enable edge and lifts it.
+            await _enable_app(
+                name, current, transition="reload" if loaded is not None else "enable"
+            )
         except Exception:
             # A reimport failure must not wedge the loop. on_app_enable records
             # the shared signature only on healthy wiring, so leaving it unset
@@ -408,6 +474,14 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
     # whose detached startup task is still live -- they must be torn down when they
     # go away, not orphaned (see app_has_retained_startup / the teardown branch).
     candidates_set.update(apps_with_retained_startup())
+    # And every app holding a live contribution grant in THIS process, so an
+    # out-of-process disable/uninstall of a CONTRIBUTOR with no hooks is observed
+    # and its grant revoked -- such an app is in neither set above, so without
+    # this its warm grant would keep authorizing a CLI-disabled token until the
+    # next gateway restart (the finding at cli_commands.py:869).
+    from kiro_crew.eventlog import grants as _grants
+
+    candidates_set.update(_grants.warm_grant_apps())
     # A stable order so the gather arg list and the result zip below line up.
     candidates = sorted(candidates_set)
     # Reconcile every candidate CONCURRENTLY, isolating each app's failure.

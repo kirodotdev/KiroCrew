@@ -3263,6 +3263,7 @@ async def test_app_token_allowed_on_own_namespace(monkeypatch) -> None:
     import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
+    monkeypatch.setattr("kiro_crew.apps.manager.app_enabled_state", lambda name: True)
     mw = token_auth_middleware()
     token = generate_token("file-explorer", ttl_seconds=300, app="file-explorer")
     req = _make_request(path="/apps/file-explorer/api/list", query={"token": token})
@@ -3275,6 +3276,7 @@ async def test_app_token_allowed_on_declared_api(monkeypatch) -> None:
     import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ("/api/widgets/*",))
+    monkeypatch.setattr("kiro_crew.apps.manager.app_enabled_state", lambda name: True)
     mw = token_auth_middleware()
     token = generate_token("file-explorer", ttl_seconds=300, app="file-explorer")
     req = _make_request(path="/api/widgets/abc", query={"token": token})
@@ -3369,6 +3371,8 @@ async def test_url_token_exchanged_for_distinct_session_cookie() -> None:
 async def test_exchanged_cookie_preserves_app_claim() -> None:
     """If an app token ever arrives via the URL flow, the exchanged cookie must
     keep the ``app`` claim so app-scope enforcement continues to apply."""
+    from unittest import mock
+
     import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch_allow = lambda name: ("/api/anything/*",)  # noqa: E731
@@ -3376,20 +3380,21 @@ async def test_exchanged_cookie_preserves_app_claim() -> None:
     orig = _ta._app_api_allowlist
     _ta._app_api_allowlist = monkeypatch_allow  # type: ignore[assignment]
     try:
-        mw = token_auth_middleware()
-        url_token = generate_token("some-app", ttl_seconds=MAX_SESSION_TTL_SECS, app="some-app")
-        req = _make_request(
-            path="/apps/some-app/api/x", query={"token": url_token}, remote="10.0.0.3"
-        )
-        resp = await mw(req, _ok_handler)
-        assert resp.status == 200
-        cookie = resp.cookies.get("mc_token_5476")
-        assert cookie is not None
-        _valid, _uid, _reason, app_name = validate_token_with_app(
-            cookie.value, use_session_exp=True
-        )
-        assert _valid is True
-        assert app_name == "some-app"
+        with mock.patch("kiro_crew.apps.manager.app_enabled_state", lambda name: True):
+            mw = token_auth_middleware()
+            url_token = generate_token("some-app", ttl_seconds=MAX_SESSION_TTL_SECS, app="some-app")
+            req = _make_request(
+                path="/apps/some-app/api/x", query={"token": url_token}, remote="10.0.0.3"
+            )
+            resp = await mw(req, _ok_handler)
+            assert resp.status == 200
+            cookie = resp.cookies.get("mc_token_5476")
+            assert cookie is not None
+            _valid, _uid, _reason, app_name = validate_token_with_app(
+                cookie.value, use_session_exp=True
+            )
+            assert _valid is True
+            assert app_name == "some-app"
     finally:
         _ta._app_api_allowlist = orig  # type: ignore[assignment]
 
@@ -4497,15 +4502,18 @@ def test_app_token_path_allowed_implicit_ws():
     Functional paths must still be declared, so the negative case is asserted
     alongside.
     """
+    from unittest import mock
+
     from kiro_crew.dashboard.token_auth import app_token_path_allowed
 
-    assert app_token_path_allowed("some-app", "/api/ws") is True
-    assert app_token_path_allowed("some-app", "/api/status") is False
-    # Undeclared functional paths stay denied.
-    assert app_token_path_allowed("some-app", "/api/chat") is False
-    assert app_token_path_allowed("some-app", "/api/spawn") is False
-    # An empty app name must never be granted, even for implicit paths.
-    assert app_token_path_allowed("", "/api/ws") is False
+    with mock.patch("kiro_crew.apps.manager.app_enabled_state", lambda name: True):
+        assert app_token_path_allowed("some-app", "/api/ws") is True
+        assert app_token_path_allowed("some-app", "/api/status") is False
+        # Undeclared functional paths stay denied.
+        assert app_token_path_allowed("some-app", "/api/chat") is False
+        assert app_token_path_allowed("some-app", "/api/spawn") is False
+        # An empty app name must never be granted, even for implicit paths.
+        assert app_token_path_allowed("", "/api/ws") is False
 
 
 # -- no_refresh: a link minted for a device we do not control gets no refresh chain --
@@ -4642,3 +4650,63 @@ def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
     (app_dir / ".app_secret").write_text("real", encoding="utf-8")
     assert validate_app_secret("demo", "real") is True
     assert validate_app_secret("demo", bad) is False
+
+
+class TestWarmRechecksAfterItsHop:
+    """A lifecycle event during the hop must not hand the manifest read back.
+
+    Both scope caches key on the grant generation, and an app update or a revoke
+    advances it -- which makes them cold again. If that lands while the warm hop
+    is in flight, warming once and returning leaves the sync scope check to read
+    the manifest on the event loop, the exact I/O this function moves off it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_generation_bump_during_the_hop_is_re_resolved(self, monkeypatch):
+        from kiro_crew.dashboard import token_auth
+
+        cold_reads: list[int] = []
+        resolves: list[int] = []
+
+        def fake_cold(app_name: str) -> bool:
+            cold_reads.append(1)
+            # Cold, then cold again (the bump landed during the hop), then warm.
+            return len(cold_reads) <= 2
+
+        monkeypatch.setattr(token_auth, "_app_scope_is_cold", fake_cold)
+        monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda app: resolves.append(1) or ())
+
+        await token_auth.warm_app_scope("some-app")
+
+        assert len(resolves) >= 2, (
+            "the warm resolved once and returned while the caches were cold again, "
+            f"so the sync read happens on the loop: {len(resolves)} resolve(s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_warm_cache_costs_no_hop(self, monkeypatch):
+        """The fast path is unchanged: no executor hop when nothing is cold."""
+        from kiro_crew.dashboard import token_auth
+
+        resolves: list[int] = []
+        monkeypatch.setattr(token_auth, "_app_scope_is_cold", lambda app: False)
+        monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda app: resolves.append(1) or ())
+
+        await token_auth.warm_app_scope("some-app")
+
+        assert resolves == [], "a warm cache still paid for an executor hop"
+
+    @pytest.mark.asyncio
+    async def test_a_generation_that_never_settles_is_bounded(self, monkeypatch):
+        """Churn must not hold the request open: the attempts are capped."""
+        from kiro_crew.dashboard import token_auth
+
+        resolves: list[int] = []
+        monkeypatch.setattr(token_auth, "_app_scope_is_cold", lambda app: True)
+        monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda app: resolves.append(1) or ())
+
+        await token_auth.warm_app_scope("some-app")
+
+        assert len(resolves) == token_auth._SCOPE_WARM_ATTEMPTS, (
+            "an always-cold cache did not stop at the attempt cap: " f"{len(resolves)} resolve(s)"
+        )

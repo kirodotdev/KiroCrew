@@ -673,6 +673,41 @@ def test_redact_projection_value_scrubs_keys_not_just_values():
     assert "AKIAIOSFODNN7EXAMPLE" not in blob
 
 
+def test_push_projection_redacts_the_schema_not_only_the_value():
+    """The render schema crosses the same live WS boundary as the value and is
+    app-authored, so a credential in a schema ``title`` must be scrubbed too --
+    redacting only the value would leak it to the browser until a reload."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.handlers.eventlog import _push_projection
+    from kiro_crew.eventlog import grants
+
+    sent: dict = {}
+    state = SimpleNamespace(
+        broadcast_ws=lambda frame, payload: sent.update(frame=frame, payload=payload)
+    )
+    request = SimpleNamespace(app={"state": state})
+    unit = SimpleNamespace(id_field="memberId", frame="member_projection")
+
+    secret = "https://evil.example/x?token=AKIAIOSFODNN7EXAMPLE"
+    _push_projection(
+        request,
+        unit,
+        "code-reviewer",
+        "demoapp/count",
+        value=1,
+        seq=1,
+        state_version=1,
+        schema={"kind": "badge", "title": secret},
+        app="schema-redact-probe",
+        fence=grants.grant_fence("schema-redact-probe"),
+    )
+
+    blob = json.dumps(sent["payload"])
+    assert secret not in blob
+    assert "AKIAIOSFODNN7EXAMPLE" not in blob
+
+
 def test_service_broadcast_never_raises(tmp_path, monkeypatch):
     import kiro_crew.members as members
 
@@ -2511,3 +2546,115 @@ def test_a_commit_during_the_read_is_not_hidden_by_the_stamp(tmp_path):
     )
     assert [e["seq"] for e in reader.events] == [1, 2], reader.events
     assert [e["data"]["preview"] for e in reader.events] == ["first", "raced"]
+
+
+class TestTheSinkPublishesEveryCrossProcessSequence:
+    """A committed event that reaches no subscriber is the silent-divergence
+    class: the fan-out sink runs only in the gateway process, and a second
+    writer (``kirocrew-core``) commits with no sink attached. The gateway
+    observes those commits on its OWN next append (the fold replays them), so
+    the sink must publish the whole gap -- every intervening seq in order --
+    not just the event this append returns, or a subscriber holds a stale fold
+    with no later frame to reveal the miss.
+    """
+
+    @staticmethod
+    def _service(tmp_path, monkeypatch) -> MemberEventLogService:
+        import kiro_crew.members as members
+
+        monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+        root = tmp_path / "members"
+        root.mkdir()
+        return MemberEventLogService(root)
+
+    def test_the_gateway_append_republishes_a_foreign_gap(self, tmp_path, monkeypatch):
+        svc = self._service(tmp_path, monkeypatch)
+        svc.ensure("nan", "Nan")
+        # Prime the gateway's fold/publish watermark with one local append.
+        published: list[int] = []
+        svc.attach_event_sink(lambda _kind, _slug, ev: published.append(ev["seq"]))
+        svc.append("nan", types.SLOT_OPENED, {"slot_key": "member-nan"})
+        assert published == [1], published
+
+        # A second process commits TWO events with no sink of its own.
+        other = MemberLog("nan")
+        other.load()
+        other.append(types.SLOT_OPENED, {"slot_key": "worker-a"})
+        other.append(types.SLOT_OPENED, {"slot_key": "worker-b"})
+
+        # The gateway's next append must publish the two foreign seqs (2, 3) in
+        # order AND its own (4) -- the whole gap, not only the returned event.
+        svc.append("nan", types.SLOT_OPENED, {"slot_key": "member-nan-2"})
+        assert published == [1, 2, 3, 4], published
+
+    def test_a_no_gap_append_publishes_only_its_own_event(self, tmp_path, monkeypatch):
+        # CONTROL. With no foreign writer, the append publishes exactly one seq --
+        # so the gap replay above cannot be satisfied by republishing everything.
+        svc = self._service(tmp_path, monkeypatch)
+        svc.ensure("ona", "Ona")
+        published: list[int] = []
+        svc.attach_event_sink(lambda _kind, _slug, ev: published.append(ev["seq"]))
+        svc.append("ona", types.SLOT_OPENED, {"slot_key": "member-ona"})
+        svc.append("ona", types.SLOT_OPENED, {"slot_key": "member-ona-2"})
+        assert published == [1, 2], published
+
+
+class TestTheCeilingCountsTheProspectiveEntry:
+    """The cumulative ceiling exists to bound a cold fold's cost. A check that
+    reads only what is already committed admits any single valid append while
+    under the cap, so one oversized entry crosses it -- the prospective entry
+    size must be in the comparison.
+    """
+
+    def test_an_entry_that_would_cross_the_ceiling_is_refused(self, tmp_path, monkeypatch):
+        from kiro_crew.eventlog import log as log_mod
+
+        log = log_mod.MemberLog("qui")
+        log.create("Qui")
+        # A committed_bytes that sits just under the ceiling, with a payload whose
+        # own size pushes the total past it: the old pre-append-only check admitted
+        # this; the prospective check refuses it.
+        monkeypatch.setattr(
+            type(log),
+            "committed_bytes",
+            property(lambda self: log_mod.MAX_UNIT_LOG_BYTES - 16),
+        )
+        big = {"blob": "x" * 4096}
+        with pytest.raises(log_mod.UnitLogFull):
+            log.append(types.MEMBER_MESSAGE, big)
+
+    def test_an_entry_that_fits_under_the_ceiling_is_admitted(self, tmp_path, monkeypatch):
+        # CONTROL. Comfortably under the ceiling, the same append lands -- so the
+        # refusal above is the prospective size crossing it, not a blanket block.
+        from kiro_crew.eventlog import log as log_mod
+
+        log = log_mod.MemberLog("rex")
+        log.create("Rex")
+        event = log.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "hi"})
+        assert event["seq"] == 1
+
+    def test_append_if_also_refuses_a_crossing_entry(self, tmp_path, monkeypatch):
+        # The conditional-append path (used by the closer / reconcile) must enforce
+        # the SAME ceiling -- enforcing it only in append() lets append_if bypass it
+        # and write past MAX_UNIT_LOG_BYTES.
+        from kiro_crew.eventlog import log as log_mod
+
+        log = log_mod.MemberLog("sam")
+        log.create("Sam")
+        monkeypatch.setattr(
+            type(log),
+            "committed_bytes",
+            property(lambda self: log_mod.MAX_UNIT_LOG_BYTES - 16),
+        )
+        with pytest.raises(log_mod.UnitLogFull):
+            log.append_if(types.MEMBER_MESSAGE, {"blob": "x" * 4096}, max_tail_seq=0)
+
+    def test_append_if_admits_a_fitting_entry(self, tmp_path, monkeypatch):
+        # CONTROL. Under the ceiling, append_if still lands -- the refusal above is
+        # the shared ceiling, not append_if being blocked.
+        from kiro_crew.eventlog import log as log_mod
+
+        log = log_mod.MemberLog("tao")
+        log.create("Tao")
+        event = log.append_if(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "hi"}, max_tail_seq=0)
+        assert event is not None and event["seq"] == 1

@@ -1597,6 +1597,33 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "and returned by dashboard status. Both shared redactors run before storage, "
         "so raw launch values do not enter durable operator-facing state.",
     ),
+    (
+        "Contributor catch-up read",
+        "dashboard/handlers/eventlog.py",
+        "Event envelopes served by `GET /api/eventlog/{kind}/{id}/events`, the "
+        "contribution-protocol catch-up read a granted contributor uses to fold "
+        "the log. `events_after` returns each envelope raw, and an event's `data` "
+        "carries agent-authored free-text (an activity `project`, message "
+        "previews) of the same class the sibling member `/history` and "
+        "`/activity` reads redact. Each event's `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before egress, so a credential or presigned URL smuggled into an event "
+        "does not reach the browser.",
+    ),
+    (
+        "Live event-log frame broadcast",
+        "dashboard/eventlog_ws.py",
+        "The `eventlog_event` WS frame `EventLogHub.publish` fans out to every "
+        "subscriber the instant an event is appended -- the live counterpart of "
+        "the `GET .../events` catch-up read. The event's `data` carries "
+        "agent-authored free-text (an activity `project`, message previews) of "
+        "the same class the sibling reads redact, so `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before serialization. Runs on the appending thread inside the log lock, "
+        "so the pure-string redactor cannot block; a redactor fault FAILS CLOSED -- "
+        "the frame is dropped and the unit's subscribers are closed, each resuming "
+        "by catch-up, whose read redacts on this same path.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -2422,6 +2449,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the keystone and audits the change. The output it produces is that
         # boolean, never agent-authored text, so it is not an egress boundary.
         "dashboard/handlers/credential_redaction.py",
+        # App-contributed projection schema validator. ``normalize_schema`` runs
+        # ``redact_and_truncate`` over the app-authored ``title``/``path`` fields
+        # BEFORE they enter the store -- a defensive redact-then-bound at ingest,
+        # not an egress boundary. The surfaces that actually SEND a projection to
+        # the browser (the contributor catch-up read ``dashboard/handlers/eventlog.py``
+        # and the live frame broadcast ``dashboard/eventlog_ws.py``) are the
+        # registered sinks that own that transport and audience.
+        "eventlog/contrib.py",
     }
 )
 

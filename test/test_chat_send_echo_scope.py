@@ -36,6 +36,11 @@ def echo_state(tmp_path, monkeypatch):
     for name in ("_declared_refreshing", "_exposeto_refreshing"):
         monkeypatch.setattr(ws_event_scope, name, set())
     monkeypatch.setattr(ws_event_scope, "is_app_enabled", lambda _name: True)
+    # The app-token scope gate (app_token_path_allowed) now reads the tri-state
+    # app_enabled_state and denies on False/None; the observer app is a fixture
+    # name absent from this tmp_path installed.json, so pin it enabled to match
+    # the is_app_enabled default above -- otherwise /api/ws is refused for it.
+    monkeypatch.setattr("kiro_crew.apps.manager.app_enabled_state", lambda _name: True)
     stopped = asyncio.Event()
     monkeypatch.setattr(updates, "shutdown_event", stopped)
     monkeypatch.setattr("kiro_crew.dashboard.ws.shutdown_event", stopped)

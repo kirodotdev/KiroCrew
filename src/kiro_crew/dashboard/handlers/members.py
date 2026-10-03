@@ -73,13 +73,23 @@ _SEQ_UNATTRIBUTABLE = -1
 
 
 def _roster_only(snap: dict) -> dict:
-    """*snap* narrowed to the one view a roster ROW renders.
+    """*snap* narrowed to what a roster ROW renders.
 
     The list paints one thing per member -- the roster line -- while the activity,
     wake and driving views belong to the drawer, which opens for a single member at
     a time and reads them from that member's own route. Shipping all four on the
     list makes every row carry three views nothing on it reads, and the cost of
     each is the fold it walks.
+
+    A CONTRIBUTED row is painted on the list row too, so it stays: the protocol puts
+    it in the same ``values`` map as the built-in views precisely so the client needs
+    no second path for it, and narrowing to the built-in roster view alone would drop
+    every card an installed app contributes. ``seqs`` names exactly those keys --
+    a built-in snapshot never writes it and the contributed pass always does -- so
+    which keys to keep is read off the block rather than guessed from a key's shape.
+    Their ``seqs``, ``stateVersions`` and ``schemas`` ride along narrowed to the same
+    keys, because a contributed row orders on (stateVersion, seq) and a client given
+    the value without the pair cannot tell a deletion from a stale frame.
 
     ``asOfSeq`` is carried through unchanged because it is a property of the LOG,
     not of the subset: the client seeds each key at that sequence under its
@@ -89,16 +99,33 @@ def _roster_only(snap: dict) -> dict:
     """
     from kiro_crew.eventlog import types as eventlog_types
 
-    values = snap.get("values", {}) if isinstance(snap, dict) else {}
-    roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
-    return {
-        "asOfSeq": (
-            snap.get("asOfSeq", _SEQ_UNATTRIBUTABLE)
-            if isinstance(snap, dict)
-            else _SEQ_UNATTRIBUTABLE
-        ),
-        "values": {} if roster is None else {eventlog_types.PROJ_ROSTER: roster},
-    }
+    if not isinstance(snap, dict):
+        return {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+
+    values = snap.get("values")
+    values = values if isinstance(values, dict) else {}
+    seqs = snap.get("seqs")
+    seqs = seqs if isinstance(seqs, dict) else {}
+
+    kept: dict = {}
+    roster = values.get(eventlog_types.PROJ_ROSTER)
+    if roster is not None:
+        kept[eventlog_types.PROJ_ROSTER] = roster
+    contributed = [key for key in values if key in seqs]
+    for key in contributed:
+        kept[key] = values[key]
+
+    block: dict = {"asOfSeq": snap.get("asOfSeq", _SEQ_UNATTRIBUTABLE), "values": kept}
+    if contributed:
+        block["seqs"] = {key: seqs[key] for key in contributed}
+        for name in ("stateVersions", "schemas"):
+            sub = snap.get(name)
+            if not isinstance(sub, dict):
+                continue
+            narrowed = {key: sub[key] for key in contributed if key in sub}
+            if narrowed:
+                block[name] = narrowed
+    return block
 
 
 def _logged_slugs(svc) -> set[str]:
@@ -338,6 +365,32 @@ def _slot_has_unflushed_rows(slot: object) -> bool:
     return bool(
         pending or getattr(slot, "_pending_rewrite", False) or getattr(slot, "_dirty_flag", False)
     )
+
+
+def _contributor_may_publish(app: str, key: str) -> bool:
+    """Whether *app* may still publish projection *key*, so its row may render.
+
+    Per KEY, not per app: a manifest narrowed to fewer keys still declares
+    contributions, so an app-level check would keep rendering a key the app no
+    longer owns. This asks the same question the write path asks, so a row cannot
+    be readable on terms the writer would be refused.
+
+    Deferred import: ``eventlog.grants`` pulls in the apps manager and the members
+    layer, and this is called per contributed row on the roster read. ``grants``
+    keeps its own short-lived cache, so this is not a manifest read per row.
+
+    Deny-safe. A lookup that fails HIDES the row rather than showing it: a rendered
+    row is authority the drawer displays, so showing one an app may not own is
+    worse than hiding one that will reappear on the next read.
+    """
+    try:
+        from kiro_crew.eventlog.grants import may_publish
+        from kiro_crew.eventlog.service import UNIT_KIND as _unit_kind
+
+        return may_publish(app, _unit_kind, key)
+    except Exception:
+        logger.debug("contributor publish check failed for %r/%r", app, key, exc_info=True)
+        return False
 
 
 async def api_members(request: web.Request) -> web.Response:
@@ -658,9 +711,11 @@ async def api_members(request: web.Request) -> web.Response:
 
     def _project_rows() -> dict[str, dict]:
         from kiro_crew import eventlog_hooks
-        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.contrib import get_store
+        from kiro_crew.eventlog.service import UNIT_KIND, get_service
 
         svc = get_service()
+        store = get_store()
         out: dict[str, dict] = {}
         # This map is keyed by SLUG while the roster is keyed by row, and a slug is
         # a lossy fold, so two rows can land on one key. Whichever row is projected
@@ -804,6 +859,58 @@ async def api_members(request: web.Request) -> web.Response:
             except Exception:
                 logger.debug("member projections failed for %r", slug, exc_info=True)
                 out[slug] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+            # Contributed rows sit in the SAME `values` map as the built-in keys,
+            # so a client needs no second code path to receive them (contribution
+            # protocol §5). Their seqs go in a sibling `seqs` map because a
+            # contributed row's seq is its OWN fold position, not this response's
+            # `asOfSeq`: seeding one at `asOfSeq` would make the store's
+            # higher-seq-wins rule drop the contributor's next live push.
+            try:
+                external = store.values(UNIT_KIND, slug)
+            except Exception:
+                logger.debug("contributed projections failed for %r", slug, exc_info=True)
+                continue
+            if not external:
+                continue
+            block = out[slug]
+            block.setdefault("values", {})
+            seqs: dict[str, int] = block.setdefault("seqs", {})
+            # A contributed row orders on (stateVersion, seq), which is what the
+            # store already enforces on publish -- a lower stateVersion is refused
+            # outright and an equal one requires the seq to advance. The client has
+            # to compare the same pair or it cannot tell a deletion from a stale
+            # frame, so the version rides beside the seq rather than being folded
+            # into it.
+            state_versions: dict[str, int] = block.setdefault("stateVersions", {})
+            schemas: dict[str, dict] = block.setdefault("schemas", {})
+            for key, ext in external.items():
+                if ext.seq < 0 and ext.value is None:
+                    # A schema published before the first fold: nothing to render.
+                    continue
+                # Serve a row only while its app may still publish THIS key.
+                # Asking whether the app declares contributions at all is too
+                # coarse: a manifest narrowed to fewer keys still declares them, so
+                # a key outside its current declaration would keep rendering. The
+                # teardown that deletes these rows on disable and uninstall is
+                # scheduled rather than awaited -- deliberately, because it has to
+                # run after the lifecycle lock is released to tell a real removal
+                # from a
+                # same-name reinstall -- so a gateway that stops before it runs
+                # would otherwise keep rendering a removed app's cards after a
+                # restart, with nothing later clearing them. Checking here closes
+                # that for any reason the teardown did not run, and reads the same
+                # declaration the write path gates on, so the two cannot disagree
+                # about what an app owns. The rows stay on disk: a reinstall that
+                # declares the same keys shows them again.
+                if not _contributor_may_publish(ext.app, key):
+                    continue
+                block["values"][key] = ext.value
+                seqs[key] = ext.seq
+                state_versions[key] = ext.state_version
+                if ext.schema is not None:
+                    schemas[key] = ext.schema
+            if not schemas:
+                block.pop("schemas", None)
         return out
 
     projections = await asyncio.to_thread(_project_rows)

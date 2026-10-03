@@ -321,7 +321,21 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    #:
+    #: Two more landed with the app contribution protocol, both at the data-home
+    #: root for the same reason -- the record has to sit OUTSIDE any app's own
+    #: directory, because it is what bounds that app -- so leaf-only is again the
+    #: only hold available, and 2 x 3 spellings is a further +6 per tier:
+    #:
+    #: * ``app-unit-approvals.json`` -- the operator's per-app unit-kind
+    #:   approvals. ``approved_unit_kinds`` intersects an app's own runtime
+    #:   declaration with this file, so it is the only thing between that
+    #:   declaration and read/append access to a crew member's whole log;
+    #: * ``app-unit-approvals.json.lock`` -- its advisory lock, sealed because the
+    #:   lock IS an inode: a process that can unlink and recreate it leaves two
+    #:   writers locking different inodes, and the loser's read-modify-write then
+    #:   erases the approval the winner just recorded.
+    EXPECTED: dict[str, int] = {"standard": 268, "cc": 275, "strict": 276}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -148,6 +148,79 @@ async def test_enabled_app_without_hooks_is_ignored(_harness):
 
 
 @pytest.mark.asyncio
+async def test_out_of_process_disable_revokes_the_contribution_grant(_harness, monkeypatch):
+    """GPT cli_commands.py:869 -- the gateway must revoke a contributor's grant
+    when it OBSERVES an out-of-process disable, not only on an in-process one.
+
+    A CLI `disable` against a live gateway whose owner socket is unreachable
+    revokes only in the CLI's interpreter, leaving the gateway's warm grant
+    authorizing the disabled app's token. The reconciler is the gateway's own
+    observation of that change, so it must revoke here -- regardless of hooks.
+    """
+    from kiro_crew.eventlog import grants
+
+    calls, (set_current, _, _) = _harness
+    revoked: list[str] = []
+    monkeypatch.setattr(grants, "is_revoked", lambda name: name in revoked)
+    monkeypatch.setattr(grants, "revoke", lambda name: (revoked.append(name), True)[1])
+    # The app holds a live grant in-process, so the reconciler examines it even
+    # though it has no hooks (this is what makes a hookless contributor a candidate).
+    monkeypatch.setattr(grants, "warm_grant_apps", lambda: ["contributor"])
+
+    # GPT hook_reconcile.py:317 -- a bare revoke leaves the app's event-log
+    # subscription socket OPEN; a later re-enable lifts the tombstone and narrowed
+    # access resumes over that stale subscription. The reconciler's disable path
+    # must ALSO close the sockets (retract_contribution_authority -> close_app), so
+    # spy on the hub's close_app and require it ran for the disabled app.
+    closed: list[str] = []
+
+    class _Hub:
+        async def close_app(self, name):
+            closed.append(name)
+            return 1
+
+    import kiro_crew.dashboard.eventlog_ws as _ws
+
+    monkeypatch.setattr(_ws, "get_hub", lambda: _Hub())
+
+    # A hookless contributor app that is now DISABLED out of process.
+    app = _app_info("contributor", enabled=False, hooks=False)
+    set_current(app)
+    await hr.reconcile_once([app])
+    assert (
+        "contributor" in revoked
+    ), "the reconciler must revoke a disabled contributor's grant even with no hooks"
+    assert closed == ["contributor"], (
+        "the reconciler must also CLOSE the disabled contributor's event-log "
+        "subscription sockets -- revoking the grant is not the same as closing "
+        "what the grant opened, and a stale socket is reusable after a re-enable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_out_of_process_uninstall_tears_down_contributions(_harness, monkeypatch):
+    """An observed uninstall additionally deletes the rows (teardown_contributions),
+    not only revokes -- matching the in-process teardown path."""
+    from kiro_crew.eventlog import grants
+
+    calls, (set_current, _, _) = _harness
+    torn: list[str] = []
+
+    async def fake_teardown(name):
+        torn.append(name)
+        return []
+
+    monkeypatch.setattr(grants, "is_revoked", lambda name: False)
+    monkeypatch.setattr(grants, "warm_grant_apps", lambda: ["ghost"])
+    monkeypatch.setattr(hr, "teardown_contributions", fake_teardown)
+    # gone: get_app returns None AND app_enabled_state confirms absence (False).
+    monkeypatch.setattr(hr, "app_enabled_state", lambda name: False)
+    set_current()  # nothing on disk -> current is None -> gone
+    await hr.reconcile_once([{"name": "ghost", "enabled": True, "version": "1", "manifest": {}}])
+    assert torn == ["ghost"], "an observed uninstall must run teardown_contributions"
+
+
+@pytest.mark.asyncio
 async def test_unchanged_signature_is_a_noop_second_pass(_harness):
     calls, (set_current, _, _) = _harness
     app = _app_info("watchtower")
@@ -974,3 +1047,38 @@ async def test_settled_teardown_unloads_modules_for_clean_reimport(monkeypatch):
     assert unloaded == ["watchtower"], "settled teardown must unload the app's modules"
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
+
+
+@pytest.mark.asyncio
+async def test_on_app_enable_lifts_the_tombstone_only_on_a_genuine_enable(monkeypatch):
+    """GPT hooks_integration.py:384 -- a reload must NOT lift a retained tombstone.
+
+    Disable, reload and re-enable are three transitions; only re-enable restores
+    authority. A NARROWING update whose in-flight commit outran the bounded drain
+    deliberately retains the revocation so that retired-authority write cannot
+    persist under the narrowed manifest. The reconciler's reload path drives the
+    same route+hook wiring (on_app_enable) as a genuine enable, so lifting the
+    tombstone there would negate that retention. This pins: transition='reload'
+    (the default) never calls unrevoke; transition='enable' does.
+    """
+    from kiro_crew.eventlog import grants
+
+    lifted: list[str] = []
+    monkeypatch.setattr(grants, "unrevoke", lambda name: lifted.append(name))
+    # Deny execution so on_app_enable returns right after the tombstone decision,
+    # keeping the pin to the ONE branch under test with no route/hook wiring.
+    monkeypatch.setattr(hi, "app_execution_denied", lambda *a, **k: "denied for test")
+
+    app_info = {"name": "contributor", "enabled": True}
+
+    # A reload retains the revocation.
+    await hi.on_app_enable("contributor", app_info, transition="reload")
+    assert lifted == [], "a reload must RETAIN the grant tombstone, not lift it"
+
+    # The default is the safe reload edge.
+    await hi.on_app_enable("contributor", app_info)
+    assert lifted == [], "the default transition must retain the tombstone"
+
+    # A genuine (re-)enable lifts it.
+    await hi.on_app_enable("contributor", app_info, transition="enable")
+    assert lifted == ["contributor"], "a genuine enable must lift the tombstone"

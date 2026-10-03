@@ -88,6 +88,11 @@ def _clear_ws_scope_module_caches(monkeypatch):
     """
     from kiro_crew.dashboard import ws_event_scope as mod
     monkeypatch.setattr(mod, "is_app_enabled", lambda _name: True)
+    # The app-token scope gate (`token_auth.app_token_path_allowed`) now reads the
+    # tri-state `apps.manager.app_enabled_state` and denies on False/None, so pin
+    # it True as the same DEFAULT world for the synthetic app names, matching the
+    # `is_app_enabled` default above. Revocation tests override it explicitly.
+    monkeypatch.setattr("kiro_crew.apps.manager.app_enabled_state", lambda _name: True)
     for cache in (mod._declared_cache, mod._exposeto_cache, mod._sel_last_audit):
         cache.clear()
     for pending in (mod._declared_refreshing, mod._exposeto_refreshing):

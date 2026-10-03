@@ -367,14 +367,44 @@ async def on_app_enable(
     app_name: str,
     app_info: dict[str, Any],
     *,
+    transition: str = "reload",
     cron_service: Any = None,
     broadcast_fn: Any = None,
     spawn_impl: Any = None,
 ) -> dict[str, Any]:
     """Called after an app is enabled — register routes and invoke startup hook.
 
+    ``transition`` names WHICH lifecycle edge drives this wiring, because the same
+    route+hook wiring serves three distinct edges and only one of them restores
+    authority. Disable, reload and re-enable are three transitions, not one with a
+    flag:
+
+    * ``"enable"`` -- a genuine (re-)enable: the operator re-registered trust, so a
+      teardown tombstone the disable set is lifted and the app is grantable again.
+    * ``"reload"`` (default) -- the reconciler re-imports an already-live app whose
+      hook signature changed. This is NOT a re-enable and must RETAIN the
+      revocation: a NARROWING update whose in-flight commit outran the bounded
+      drain deliberately keeps the tombstone so that retired-authority write cannot
+      persist under the narrowed manifest. Lifting it here on a reload would negate
+      exactly that retention. The tombstone lifts on the next genuine enable.
+
+    Defaults to ``"reload"`` so a caller that does not name its edge retains the
+    revocation -- the safe direction, since a stale tombstone denies rather than
+    over-grants.
+
     Returns dict with hook results to include in the enable response.
     """
+    # Lift the teardown tombstone ONLY on a genuine (re-)enable. A disable set one
+    # to hard-deny the app's grant during the disable window; re-registering trust
+    # is what restores it. A reload is not that edge and retains the revocation
+    # (see ``transition`` above).
+    if transition == "enable":
+        try:
+            from kiro_crew.eventlog.grants import unrevoke
+
+            unrevoke(app_name)
+        except Exception:  # pragma: no cover - defensive; never block enable
+            logger.debug("App %s: could not lift contribution tombstone", app_name, exc_info=True)
     result: dict[str, Any] = {}
     denied = app_execution_denied(
         app_name,
