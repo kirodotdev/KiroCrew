@@ -141,6 +141,13 @@ class TestIngestAttachments:
         assert len(result.image_paths) == 1
         assert result.rejections == []
         assert os.path.exists(result.image_paths[0])
+        # The structured record the turn hands the provider: the temp path the
+        # bytes are read from, the SENDER'S filename (a mkstemp basename would
+        # tell the model nothing).
+        (record,) = result.prompt_attachments()
+        assert record.path == result.image_paths[0]
+        assert record.name == "a.png"
+        assert record.display_name == "a.png"
         cleanup(result.temp_paths)
 
     async def test_size_enforced_on_downloaded_bytes_not_metadata(self):
@@ -184,6 +191,8 @@ class TestIngestAttachments:
         # claim to be a PNG, which defeats the point of retyping.
         assert path.endswith(".jpg")
         assert ".png" not in path
+        # The record carries the retyped path; the builder sniffs the type.
+        assert result.prompt_attachments()[0].path == path
         cleanup(result.temp_paths)
 
     async def test_correctly_labelled_image_keeps_its_path(self):
@@ -194,6 +203,24 @@ class TestIngestAttachments:
             source="test",
         )
         assert result.image_paths[0].endswith(".png")
+        cleanup(result.temp_paths)
+
+    async def test_the_record_bounds_the_senders_filename_at_construction(self):
+        """The sender picks the name; the record must not retain an unbounded
+        or multi-line one -- the same one-line bound the marker applies, held in
+        the stored field so nothing downstream sees the raw value."""
+        from kiro_crew.prompt_attachments import NAME_MAX_CHARS
+
+        huge = "line one\nline two " + "z" * 5000 + ".png"
+        result = await ingest_attachments(
+            [Attachment(name=huge, mimetype="image/png", size=40, url="u", suffix_hint="png")],
+            download=_writer(_PNG),
+            source="test",
+        )
+        (record,) = result.prompt_attachments()
+        assert "\n" not in record.name
+        assert len(record.name) <= NAME_MAX_CHARS
+        assert record.name.startswith("line one line two z")
         cleanup(result.temp_paths)
 
     async def test_text_is_inlined_and_redacted(self):

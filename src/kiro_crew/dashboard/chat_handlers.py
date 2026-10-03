@@ -49,6 +49,7 @@ from kiro_crew.dashboard.chat_delivery import (
     TURN_ACTOR_META_KEY,
     attachment_meta,
     normalize_send_id,
+    prompt_image_paths,
     queue_entry_is_user_origin,
     queue_entry_view,
     queue_for_next_turn,
@@ -173,7 +174,12 @@ from kiro_crew.dashboard.slot_buffers import (
     persist_deferred_notes_sync,
 )
 from kiro_crew.dashboard.slot_projection import resolved_row_identity, stop_declined_armed
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
+from kiro_crew.dashboard.slot_queue_repository import (
+    IMAGE_ATTACHMENT_META_KEY,
+    bounded_attachment_list,
+    image_list_refusal_text,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.state import (
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
@@ -461,6 +467,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # busy-slot queue entry, the sub-agent hold -- is covered by one gate
         # rather than each remembering.
         user_meta = {k: v for k, v in user_meta.items() if k not in RESERVED_ROW_META_KEYS}
+        images = user_meta.get(IMAGE_ATTACHMENT_META_KEY)
+        # Present and non-empty means a list the bound admits, or a refusal: a
+        # value of any other shape under this key would ride the row unbounded.
+        if images not in (None, []) and (
+            not isinstance(images, list)
+            or bounded_attachment_list(IMAGE_ATTACHMENT_META_KEY, images) is None
+        ):
+            return web.json_response(
+                {
+                    "error": image_list_refusal_text(
+                        len(images) if isinstance(images, list) else 0
+                    ),
+                    "code": "images_over_bound",
+                },
+                status=400,
+            )
         if not user_meta:
             user_meta = None
     theme_consent = body.get("theme_consent") is True
@@ -867,7 +889,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # more conjunct on its condition and the receipt it stamps.
         _auto_strip: dict | None = None
         _auto_queues = False
-        if steer_is_auto(body.get("steer")) and not request_app:
+        # The live steer carries text only, so pictures must wait for their own turn.
+        _has_images = bool(prompt_image_paths(user_meta))
+        if steer_is_auto(body.get("steer")) and not request_app and not _has_images:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
             # while it is in flight -- and an answer about a turn that is gone is
@@ -883,7 +907,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             if slot.task is not _turn_before:
                 _auto_queues = False
                 _auto_strip = None
-        if body.get("steer") and not request_app and not _auto_queues:
+        if body.get("steer") and not request_app and not _auto_queues and not _has_images:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -987,7 +1011,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # `user` and files an app's send as a person's.
             turn_actor="app" if request_app else "",
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
-            attachments=attachment_meta(user_meta),
+            attachments=attachment_meta(user_meta, redact=bool(request_app)),
+            prompt_images=prompt_image_paths(user_meta),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1022,7 +1047,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
-        _hold_attachments = attachment_meta(user_meta)
+        _hold_attachments = attachment_meta(user_meta, redact=bool(request_app))
         _hold_meta.update(_hold_attachments)
         if request_app:
             # Same reason as the busy-slot queue above: this entry is drained
@@ -1032,6 +1057,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             message,
             meta=_hold_meta,
             directive_user_origin=not bool(request_app),
+            prompt_images=prompt_image_paths(user_meta),
         )
         _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
         warn_if_not_durable(slot._queue, qid, slot.key)
@@ -1310,17 +1336,38 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
     if request_app:
         _turn_kwargs["_turn_actor"] = "app"
+    # The remote arm gets the same lists: the peer's prompt builder emits image
+    # blocks from ``meta.images`` alone, so a relay that forwarded only the text
+    # would drop the picture the user dropped in (`remote_relay._peer_turn_chunks`
+    # puts them on the peer body as ``meta``). Passed only when there ARE some,
+    # for the same reason as `_run_chat`'s kwargs above.
+    _relay_kwargs: dict = {}
     if _accepted_attachments:
         _turn_kwargs["_attachments"] = _accepted_attachments
         # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
         _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
+        _relay_kwargs["attachments"] = _accepted_attachment_meta
+    # The PROVIDER copy of the image list: the validated raw paths the prompt
+    # builder opens (`prompt_image_paths`). `_attachment_meta` above is the
+    # redacted copy every observer reads (ledger, refusal replay, frames); a
+    # picture whose filename the redactor rewrote would otherwise be probed at
+    # a path that does not exist and silently dropped. The relay body is the
+    # peer's provider input, not a copy anyone reads, so it carries the raw
+    # list too; the peer redacts its own persisted and client copies.
+    _prompt_images = prompt_image_paths(user_meta)
+    if _prompt_images:
+        _turn_kwargs["_prompt_images"] = _prompt_images
+        _relay_kwargs["attachments"] = {
+            **_relay_kwargs.get("attachments", {}),
+            IMAGE_ATTACHMENT_META_KEY: _prompt_images,
+        }
     task = spawn_guarded_turn(
         state,
         slot,
         state.run_background_turn(
             slot,
             (
-                relay_remote_turn(state, slot, message)
+                relay_remote_turn(state, slot, message, **_relay_kwargs)
                 if slot.is_remote
                 else _run_chat(state, slot, message, **_turn_kwargs)
             ),
@@ -6891,6 +6938,7 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        display_text=lambda text: queued_text_for_display(text, user_origin=False),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are
@@ -6902,17 +6950,13 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         content = stored
     _edit_queued_by_id(slot.messages, queue_id, content)
     slot.invalidate_source_links()
-    _redacted = queued_text_for_display(content, user_origin=queue_entry_is_user_origin(entry))
+    _user_origin = queue_entry_is_user_origin(entry)
+    _redacted = queued_text_for_display(content, user_origin=_user_origin)
     frame: dict[str, Any] = {"slot": name, "queue_id": queue_id, "content": _redacted}
-    # The edit prunes and renumbers the entry's attachment lists alongside the
-    # text (`prune_attachment_meta`), so the frame carries the lists the
-    # renumbered markers now index -- the client replaces the row's lists from
-    # it. Same `meta` shape and redaction as `queue_entry_view`, read straight
-    # off the entry so the content is not redacted a second time. Absent when
-    # the entry has none left (or never had any): the client reads absence on
-    # THIS frame as "no lists", so a row whose markers the edit all removed
-    # drops its stale lists too.
-    _edit_attachments = attachment_meta(entry.get("meta")) if entry is not None else {}
+    # Lists must match the edited text's provenance or cancel cannot restore its images.
+    _edit_attachments = (
+        attachment_meta(entry.get("meta"), redact=not _user_origin) if entry is not None else {}
+    )
     if _edit_attachments:
         frame["meta"] = _edit_attachments
     state.broadcast_ws("queue_edit", frame)

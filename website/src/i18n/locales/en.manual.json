@@ -1465,6 +1465,9 @@
       }
     },
     "mochi": {
+      "chat": {
+        "edit_pictures_unrecoverable": "Couldn't resend the edited message. Your text is still in the composer and the message keeps its pictures. Send again to retry."
+      },
       "chatPanel": {
         "open_in_file_explorer": "Open in File Explorer",
         "open_in_finder": "Open in Finder",

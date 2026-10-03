@@ -420,14 +420,17 @@ def _fmt_message(message: dict) -> str:
     """Render one transcript message for a consolidation prompt.
 
     The row's image references are replaced with a content-free marker before
-    the text is quoted. A consolidation prompt is history ABOUT a session, and
-    the prompt builder (``build_prompt_blocks``) inlines every still-readable
-    image path it finds in a prompt as a real image block. Left in, each
-    screenshot the session ever pasted rides along at full base64 size on every
-    extraction turn: one measured span carried 83 attachments and 67 MB of
-    image data around 600 KB of conversation, and the background session's own
-    transcript grew by that whole record on each retry until its KAS process
-    held 1.9 GB. Memory extraction reads text; it has no use for the pixels.
+    the text is quoted. A consolidation prompt is history ABOUT a session: the
+    prompt builder (``build_prompt_blocks``) emits image blocks only from a
+    channel's structured attachment list, which no consolidation prompt has,
+    so a quoted path can never become a picture here -- what it can be is a
+    dead or unreadable path sitting in the prose next to the assistant's own
+    description of what it showed, which the marker keeps out. The stakes of
+    the alternative are measurable: one span carried 83 screenshot references
+    around 600 KB of conversation, and a prompt that re-inlined them shipped
+    67 MB of image data on every extraction turn until the background session's
+    process held 1.9 GB. Memory extraction reads text; it has no use for the
+    pixels.
     """
     tools = f" [tools: {', '.join(message['tools'])}]" if message.get("tools") else ""
     return (

@@ -293,6 +293,48 @@ class TestHandleMessage:
         assert any("42" in u[1]["text"] for u in updates)
 
     @pytest.mark.asyncio
+    async def test_image_attachments_reach_the_provider_as_a_structured_list(self, tmp_path):
+        """The prompt builder emits image blocks from the channel's attachment
+        list alone and never scans the text, so the handler must forward the
+        list ``process_slack_files`` produced -- the path in the text is for
+        agent tools only. A text-only message passes no keyword, so a provider
+        stand-in predating it still takes the turn."""
+        from kiro_crew.prompt_attachments import image_attachments
+
+        class _Recording(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.calls: list[tuple[str, dict]] = []
+
+            async def stream(self, message, **kw):
+                self.calls.append((message, kw))
+                async for event in super().stream(message):
+                    yield event
+
+        shot = str(tmp_path / "shot.png")
+        atts = image_attachments([shot])
+        provider = _Recording()
+        slack = MockSlackClient()
+        await handle_message(
+            slack,
+            FakeSessionManager(provider),
+            "C1",
+            f"what is this?\n{shot}",
+            None,
+            "msg1",
+            "U1",
+            attachments=atts,
+        )
+        assert len(provider.calls) == 1
+        message, kw = provider.calls[0]
+        assert shot in message
+        assert kw == {"attachments": atts}
+
+        provider.calls.clear()
+        await handle_message(slack, FakeSessionManager(provider), "C1", "plain", None, "msg2", "U1")
+        assert provider.calls[0][1] == {}
+
+    @pytest.mark.asyncio
     async def test_channels_deny_drops_slack_inbound(self, tmp_path, monkeypatch):
         # Slack is a GOVERNED transport: a channels policy that allows only
         # non-slack members must drop a Slack inbound message before any turn
@@ -3287,7 +3329,7 @@ class _SequencedProvider(FakeProvider):
     def _is_turn(self, message: str) -> bool:
         return "hello" in message and not message.startswith("You are a session naming agent")
 
-    async def stream(self, message, timeout=120.0):
+    async def stream(self, message, timeout=120.0, *, attachments=()):
         if not self._is_turn(message):
             async for event in super().stream(message, timeout):
                 yield event
@@ -3660,6 +3702,9 @@ class TestTransientCompactionRetry:
         slack = MockSlackClient()
         provider = _SequencedProvider([_abandoned()], transient=True)
         sessions = FakeSessionManager(provider)
+        from kiro_crew.prompt_attachments import image_attachments
+
+        atts = image_attachments(["/tmp/uploads/shot.png"])
 
         await real(
             slack,
@@ -3676,6 +3721,7 @@ class TestTransientCompactionRetry:
             channel_activation="review",
             from_trusted_bot=True,
             had_voice_input=True,
+            attachments=atts,
         )
 
         assert len(seen) == 1
@@ -3688,6 +3734,9 @@ class TestTransientCompactionRetry:
         assert call["channel_activation"] == "review"
         assert call["from_trusted_bot"] is True
         assert call["had_voice_input"] is True
+        # The picture is part of the message: a replay without its structured
+        # list would answer as if no image had been sent.
+        assert call["attachments"] == atts
         assert call["_compaction_replay"].attempt == 1
 
 

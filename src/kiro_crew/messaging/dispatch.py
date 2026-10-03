@@ -76,6 +76,7 @@ from kiro_crew.messaging.renderer import (
     SilentRenderer,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -301,6 +302,13 @@ class ChannelTurn:
     """A :class:`kiro_crew.messaging.renderer.Renderer`."""
 
     approval_mode: str
+    attachments: tuple[PromptAttachment, ...] = ()
+    """The files the user attached to THIS message, as the channel ingested them
+    (``IngestResult.prompt_attachments``). The ONLY way an image reaches the
+    model: the prompt text is never scanned for image paths, so a channel that
+    ingested a photo and wrote only its path into ``user_text`` ships no image.
+    Empty for a text-only message."""
+
     decider: Optional[Any] = None
     """``None`` for channels with no interactive approval affordance
     (deny-by-default for INTERACTIVE mode; ``auto``/``trust`` still work)."""
@@ -1738,7 +1746,14 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                     return
                 # The replay's own completion supersedes the one the guard held.
                 retry_guard.drop_held()
-            accumulated = await driver.run(full_message)
+            # The channel's structured image list rides beside the text; passed
+            # only when there is one, so a driver stand-in predating the keyword
+            # still takes every text-only turn.
+            accumulated = await (
+                driver.run(full_message, attachments=turn.attachments)
+                if turn.attachments
+                else driver.run(full_message)
+            )
 
             # Defensive lookup, like every other attribute read on this seam: the
             # driver is resolved through the module attribute, so a caller (or a

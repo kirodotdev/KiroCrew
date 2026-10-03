@@ -10,7 +10,7 @@ import { appendMessage, clearPendingPermissions, requestStop, selectComposerBusy
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { prepareSendPayload } from '../../../utils/fileTokens'
-import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
+import { type PasteBlock, expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
 import { mintSendId } from '../ChatPageMessageContent'
@@ -27,7 +27,7 @@ interface BusyTurnControlsOptions {
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (ChatPage's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean }) => void }
+  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; images?: string[]; raw?: string; staged?: string[]; pastes?: PasteBlock[] }) => void }
   composerRef: RefObject<ComposerHandle | null>
   composerSlotRef: MutableRefObject<string | null>
   inputRef: MutableRefObject<string>
@@ -167,7 +167,7 @@ export function useBusyTurnControls({
       setInput(''); setPasteBlocks([])
       return
     }
-    const { txt } = prepareSendPayload(raw, files)
+    const { txt, imgPaths: steerImgPaths } = prepareSendPayload(raw, files)
     // Folder tokens deliberately stay in their `@rel/` form on steer: the
     // steer transport is TEXT-ONLY (no meta), so a `[attached_dir N] /abs
     // path` marker would have no meta.dirs index to replay against and the
@@ -175,7 +175,8 @@ export function useBusyTurnControls({
     // chip would then open the wrong directory. The raw token is what the
     // agent resolved before serialization existed, and it stays correct
     // under replay. Serialize on steer only if that transport ever carries
-    // attachment metadata.
+    // attachment metadata. The image list is the one exception: it rides the
+    // POST's meta so a steer the gateway queues instead keeps its pictures.
     const activePastes = pasteBlocksRef.current
     const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
     // Optimistically show the steered text immediately. Steer is the default
@@ -200,12 +201,16 @@ export function useBusyTurnControls({
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, raw, staged: [...new Set(files)], pastes: activePastes, ...(steerImgPaths.length ? { images: steerImgPaths } : {}) })
     // Staged session references are deliberately NOT part of steering: neither
-    // carried into the payload nor cleared. Only the TEXT has a restore path
-    // (steerMutation hands it back on a refused, failed or unconfirmed steer);
-    // attachments and pastes are still discarded, and adding refs to that set
-    // would lose a reference the user cannot recover except by dragging again.
+    // carried into the payload nor cleared. The TEXT, the staged FILES and the
+    // collapsed PASTES have a restore path (steerMutation hands all three back
+    // on a refused, failed or unconfirmed steer, from the snapshot taken here:
+    // a picture rides the POST as `meta.images`, and handing back only its
+    // `![image](dest)` line would leave a composer that ships no picture on
+    // the next send; a paste token without its block would send literally);
+    // adding refs to that set would lose a reference the user cannot recover
+    // except by dragging again.
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a full restore path.
     // Drops only this slot's own token sub-map -- see the same-shaped

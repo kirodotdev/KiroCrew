@@ -839,7 +839,11 @@ export function isDefiniteRefusal(err: unknown): boolean {
   return err instanceof Error && (err as unknown as Record<symbol, unknown>)[SLOT_REFUSAL] === true
 }
 
-export async function sendMessage(text: string, screenshot?: string): Promise<void> {
+export async function sendMessage(
+  text: string,
+  screenshot?: string,
+  images: readonly string[] = [],
+): Promise<void> {
   // Bind the slot to the mochi agent before the first turn (idempotent). A
   // binding refusal is a DEFINITE refusal thrown before any echo, so a slot the
   // pet never got leaves no optimistic bubble behind.
@@ -858,6 +862,15 @@ export async function sendMessage(text: string, screenshot?: string): Promise<vo
   const echoId = echoOwnMessage(text, screenshot)
   // `ws=1` tells the gateway to fan the turn out over the WebSocket instead of
   // holding an SSE response open (matching how the dashboard chat works).
+  // `meta.images` is the STRUCTURED attachment list the gateway builds the
+  // turn's image blocks from (the same key the dashboard composer sends). The
+  // `![image](dest)` lines in `text` render the pictures in the bubble; the
+  // gateway never scans text for image paths, so without this list a dropped
+  // picture would never reach the model.
+  const meta = {
+    ...(screenshot ? { screenshot } : {}),
+    ...(images.length ? { images: [...images] } : {}),
+  }
   let resp: Response
   try {
     resp = await fetch('/api/chat?ws=1', {
@@ -867,7 +880,7 @@ export async function sendMessage(text: string, screenshot?: string): Promise<vo
       body: JSON.stringify({
         message: text,
         slot: MOCHI_SLOT,
-        ...(screenshot ? { meta: { screenshot } } : {}),
+        ...(Object.keys(meta).length ? { meta } : {}),
       }),
     })
   } catch (err) {
@@ -1624,13 +1637,21 @@ export async function setModel(model: string): Promise<SetModelResult> {
 export async function editResend(
   text: string,
   ts: string,
+  images: readonly string[] = [],
 ): Promise<{ ok: boolean; message?: string }> {
   try {
+    // Pictures attached WHILE editing ride `meta.images`, the same structured
+    // list a send carries: the gateway merges them with the ones the original
+    // row kept and builds the turn's image blocks from that list alone.
     const res = await fetch(`/api/chat/slots/${MOCHI_SLOT}/edit-resend`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ts, content: text }),
+      body: JSON.stringify({
+        ts,
+        content: text,
+        ...(images.length ? { meta: { images: [...images] } } : {}),
+      }),
     })
     return { ok: res.ok }
   } catch {

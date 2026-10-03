@@ -90,6 +90,7 @@ from kiro_crew.messaging.queue_receipt import (
 )
 from kiro_crew.messaging.session_resume import refused_resume_is_restricted
 from kiro_crew.messaging.upload_gate import session_is_restricted
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import person_priority
@@ -576,9 +577,14 @@ class TeamsDispatcher:
         # frame that awaits the turn reading them. ``temp_paths`` therefore outlive
         # their only reader and never outlive it.
         temp_paths: list[str] = []
+        # The ingested images as the structured list the turn hands to the
+        # provider -- the ONLY way they reach the model; the paths written into
+        # the text are for agent file tools.
+        prompt_attachments: tuple[PromptAttachment, ...] = ()
         if inbound.attachments and TEAMS_CAPABILITIES.files_inbound:
             result = await process_teams_attachments(self.client, inbound.attachments)
             temp_paths = list(result.temp_paths)
+            prompt_attachments = result.prompt_attachments()
             text = append_attachment_context(text, result)
         try:
             await self._run_turn(
@@ -588,6 +594,7 @@ class TeamsDispatcher:
                 inbound_route=inbound_route,
                 drain=drain,
                 resumed_key=route.resumed_key,
+                attachments=prompt_attachments,
             )
         finally:
             if temp_paths:
@@ -604,6 +611,7 @@ class TeamsDispatcher:
         inbound_route: InboundRoute,
         drain: bool,
         resumed_key: str | None = None,
+        attachments: tuple[PromptAttachment, ...] = (),
     ) -> None:
         """Rotate, build the renderer, drive one turn, then drain what arrived.
 
@@ -687,6 +695,7 @@ class TeamsDispatcher:
                     conversation_id=f"teams:{email}",
                     agent=agent,
                     user_text=text,
+                    attachments=attachments,
                     renderer=renderer,
                     approval_mode=self.approval_mode,
                     decider=decider,

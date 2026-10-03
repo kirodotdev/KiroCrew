@@ -3,19 +3,24 @@
 A LEAF module, for the same reason :mod:`kiro_crew.imaging` is one: two callers
 need this and only one of them may import the ACP package.
 
-* :func:`~kiro_crew.acp.prompt_blocks.build_prompt_blocks` turns a path in the
-  CURRENT request into a real image block, and reads the grammar below to find
-  one.
 * :func:`strip_image_refs` neutralizes a reference in REPLAYED history, and is
   called from ``kiro_crew.context`` -- application code, which the
   agent-sdk-boundary gate forbids from importing ``kiro_crew.acp`` at all
   (``scripts/check_agent_sdk_boundary.py``; there is deliberately no inline
-  opt-out).
+  opt-out). The path grammar below is what it reads.
+* :func:`~kiro_crew.acp.prompt_blocks.build_prompt_blocks` re-exports
+  :data:`STRIPPED_IMAGE_MARKER` for its callers and writes the OPPOSITE marker,
+  ``[image: <name>]``. It reads no path grammar: an image block is built only
+  from the structured attachment list the receiving channel supplies
+  (:mod:`kiro_crew.prompt_attachments`), never from a path found in the text,
+  because a path in text is a mention -- a ledger snapshot line, a nudge body,
+  a quoted reply -- and re-inlining a mention on every automation cycle grows a
+  request until the backend rejects it.
 
-Keeping one grammar for both matters more than which module hosts it: the
-scrubber's whole guarantee is stated against what the builder would inline, so a
-second copy of the pattern would be a path one of them leaves for the other.
-``prompt_blocks`` re-exports the names it and its tests already use.
+Keeping the grammar next to the scrubber matters because the scrubber's
+guarantee is stated against the shapes a history row can hold, and the two
+markers must stay distinct: one says "this picture is attached to this very
+request", the other "this picture was not carried into this context".
 
 IMPORT RULE, and it is load-bearing rather than stylistic: module scope reaches
 nothing that reaches ``kiro_crew.acp``. ``prompt_blocks`` imports this module at
@@ -109,15 +114,15 @@ _PATH_RE = _WINDOWS_PATH_RE if os.name == "nt" else _POSIX_PATH_RE
 #:
 #: It deliberately carries neither the path nor the alt text.
 #:
-#: The path is the harmful half twice over. When the file is still readable,
-#: ``build_prompt_blocks`` re-inlines it -- so a picture an earlier compaction
-#: already dropped comes back at full byte cost, on this turn and on every later
-#: cold start, and the surrounding markdown is left mangled into
-#: ``![alt]([image: name])`` because the substitution rewrites the destination
-#: inside the link. When the file is absent -- a swept temp upload, a pruned
-#: attachment, a sensitive-path refusal, an oversize or an undecodable file,
-#: which are five separate skip branches in that builder -- no image block is
-#: emitted at all and the path is left in the text verbatim.
+#: The path is the harmful half. The builder reads no path out of the text
+#: (image blocks come only from the channel's structured attachment list), so
+#: a path left in a replayed row is one of two things: a file that is gone -- a
+#: swept temp upload, a pruned attachment -- or one the model cannot open,
+#: sitting in the prose verbatim next to the assistant's own earlier
+#: description of what it showed. Were the builder ever to inline a replayed
+#: path, a picture an earlier compaction already dropped would come back at
+#: full byte cost on every cold start, with the surrounding markdown mangled
+#: into ``![alt]([image: name])``; the marker forecloses both readings.
 #:
 #: The alt text goes too, because a caption is indistinguishable from a
 #: description: a model handed ``![the login error](...)`` with no picture has
@@ -137,11 +142,11 @@ _ANY_IMAGE_SUFFIX_RE = re.compile(rf"\.{_SUFFIX_GROUP}", re.IGNORECASE)
 #: forbids starting mid-token, which still admits a path embedded in a URL
 #: query -- ``?src=/tmp/a.png`` is preceded by ``=``, which that guard permits.
 #:
-#: ``build_prompt_blocks`` can afford the looser guard because its rewrite is
-#: CONDITIONAL: it edits the text only after it has actually read a file, so an
-#: unreadable URL-embedded path is left exactly as written. A substitution has
-#: no such condition, and rewriting the inside of a URL is corruption rather
-#: than scrubbing. The consequence is stated in :func:`strip_image_refs`.
+#: The builder never needed the tighter guard: it rewrites only a KNOWN
+#: attachment path, after reading the file, so an unreadable URL-embedded path
+#: was always left exactly as written. A substitution has no such condition,
+#: and rewriting the inside of a URL is corruption rather than scrubbing. The
+#: consequence is stated in :func:`strip_image_refs`.
 _STANDALONE_LEAD_RE = re.compile(r"[\s(\[<\"']")
 
 
@@ -200,8 +205,8 @@ def _bare_path_spans(text: str) -> list[tuple[int, int]]:
         # against, reading a stored UNC attachment as a remote URL. The
         # directions still match the builder's: a destination the predicate
         # calls remote is left in place (nothing answers `is_file()` for it),
-        # and one it calls local is stripped here exactly as the builder would
-        # inline it out of the current turn.
+        # and one it calls local is stripped here, the way the builder marks a
+        # local attachment it inlined out of the current turn.
         if is_remote_destination(match.group(1)):
             continue
         spans.append((start, match.end(1)))
@@ -211,8 +216,10 @@ def _bare_path_spans(text: str) -> list[tuple[int, int]]:
 def strip_image_refs(text: str) -> str:
     """*text* with every local image reference replaced by a content-free marker.
 
-    The inverse of :func:`~kiro_crew.acp.prompt_blocks.build_prompt_blocks`, for
-    text that is replayed or recalled HISTORY rather than the current request: a
+    The counterpart of :func:`~kiro_crew.acp.prompt_blocks.build_prompt_blocks`
+    for text that is replayed or recalled HISTORY rather than the current
+    request: the builder marks a picture that IS attached to this request, this
+    function marks one that is not. A
     history row names a picture that belonged to an earlier turn, and the two
     ways that reference can be read are both wrong (see
     :data:`STRIPPED_IMAGE_MARKER`). Replacing it with a marker is the "fully
@@ -227,11 +234,10 @@ def strip_image_refs(text: str) -> str:
     Doing markdown first means the second pass never sees a destination that
     was already inside a link.
 
-    The bare-path pass is ``_PATH_RE`` -- the same pattern the builder reads, so
-    the two cannot drift into a path this function leaves behind for that one to
-    pick up -- narrowed by two conditions the builder does not need, because its
-    rewrite happens only after a file was actually read while a substitution has
-    no such condition:
+    The bare-path pass is ``_PATH_RE``, the grammar of the paths a channel used
+    to append (and a Slack or Telegram inbound message still appends, for agent
+    tools), narrowed by two conditions a substitution needs because it has no
+    "was a file actually read" gate in front of it:
 
     * code is masked (:func:`_mask_code_spans`), so a fenced or inline-code
       path is documentation and stays readable;
@@ -240,27 +246,24 @@ def strip_image_refs(text: str) -> str:
 
     Those two are corruption when rewritten, which is strictly worse than the
     residue of not rewriting them: a URL-embedded path naming a file that still
-    exists can still be inlined out of a replayed row, exactly as it would be
-    out of the current turn's text without this function. Narrowing here does
-    not change that behaviour in either direction.
+    exists stays in the replayed row as text -- the builder reads no path out of
+    the text, so it is never inlined from there. Narrowing here does not change
+    that behaviour in either direction.
 
     Remote and ``data:`` references are left alone, matching
-    ``iter_local_refs``: neither is a local path, so neither is inlined and a
-    URL stays usable to a tool-capable agent. That agreement is enforced rather
-    than assumed -- the bare-path pass calls the same ``is_remote_destination``
-    predicate, because a protocol-relative ``//cdn/x.png`` is a path shape to
-    BOTH grammars and only the predicate can tell a genuine URL from a stored
-    UNC attachment on a roaming profile's share.
+    ``iter_local_refs``: neither is a local path, and a URL stays usable to a
+    tool-capable agent. That agreement is enforced rather than assumed -- the
+    bare-path pass calls the same ``is_remote_destination`` predicate, because
+    a protocol-relative ``//cdn/x.png`` is a path shape to BOTH grammars and
+    only the predicate can tell a genuine URL from a stored UNC attachment on a
+    roaming profile's share.
 
-    Two residues remain, both inherited and both narrower than the builder's own
-    behaviour rather than wider. ``_PATH_RE`` is platform-gated, so a bare
-    Windows path in a transcript transferred to a POSIX host is not matched --
-    it is not inlined there either, and the markdown shape is matched on both
-    hosts. And escaped ``\\![x](...)`` markup and 4-space-indented code are not
-    treated as code here, so a genuine absolute path inside one is replaced by
-    the marker; the builder rewrites those same spans to ``[image: <name>]``
-    whenever the file is readable, so this is that established rewrite extended
-    to the unreadable case, on a per-build copy, with the on-disk row untouched.
+    Two residues remain, both inherited. ``_PATH_RE`` is platform-gated, so a
+    bare Windows path in a transcript transferred to a POSIX host is not matched
+    -- it is text on either host, and the markdown shape is matched on both.
+    And escaped ``\\![x](...)`` markup and 4-space-indented code are not treated
+    as code here, so a genuine absolute path inside one is replaced by the
+    marker, on a per-build copy, with the on-disk row untouched.
 
     Reads no files and mutates nothing: it returns a new string.
     """

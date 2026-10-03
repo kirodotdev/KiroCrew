@@ -1,18 +1,26 @@
-"""Build ACP ``session/prompt`` content blocks from a plain message string.
+"""Build ACP ``session/prompt`` content blocks from a message and its attachments.
 
-Channels hand the provider ONE string. When that string contains an absolute
-path to a readable image, the image must travel as a real ACP image block --
-a bare path is just text, and the model cannot see it. This module owns that
-conversion so both prompt paths share one implementation:
+Channels hand the provider ONE string plus a STRUCTURED attachment list
+(:class:`kiro_crew.prompt_attachments.PromptAttachment`). Every image block
+this module emits comes from that list; the text is never scanned for image
+paths. A path in the text is a mention -- the session ledger's
+``artifact <name>: <path>.png`` snapshot line, a nudge body, an injected
+envelope, an agent's own ``![shot](...png)`` reply quoted back, a consolidation
+prompt -- and a mention must not become an upload: the backend replays every
+stored image block, so one file re-inlined on every automation cycle grew the
+request by its full encoded size per turn until the backend rejected the body.
+Only the channel that received a file knows the user attached it, so only the
+channel's list says so. This module owns the conversion so both prompt paths
+share one implementation:
 
 * :meth:`kiro_crew.acp.session_handle.AcpSessionHandle.prompt` -- the live path
   for the public Kiro backend (``AcpProvider.start`` swaps ``AcpClient`` out for
   ``AcpSessionProvider``, so this is what actually reaches kiro-cli).
 * :meth:`kiro_crew.acp.client.AcpClient._send_prompt` -- the direct-client path.
 
-Keeping one builder matters: both paths need the same path-to-image
-conversion, so a single implementation stops any channel from shipping a
-filesystem path to the model as text.
+Keeping one builder matters: both paths need the same list-to-image conversion,
+so a single implementation stops any channel from shipping an attachment the
+model never sees -- or one it was never given.
 
 Wire shape (per docs/reference/kiro-cli/acp.md):
 
@@ -29,24 +37,15 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
-from pathlib import Path
+from collections.abc import Sequence
 
-from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes, unc_probe_allowed
-
-# The path grammar and the history scrubber live in the LEAF module
-# kiro_crew.image_refs for the same reason the Pillow machinery lives in
-# kiro_crew.imaging: kiro_crew.context needs the scrubber and the
-# agent-sdk-boundary gate forbids application code from importing
-# kiro_crew.acp. The pattern names are re-exported because this module and
-# its tests are where they have always been read from.
-from kiro_crew.image_refs import (  # noqa: F401 -- re-exported, see comment
-    _PATH_RE,
-    _POSIX_PATH_RE,
-    _WINDOWS_PATH_RE,
-    STRIPPED_IMAGE_MARKER,
-    strip_image_refs,
-)
+# The history scrubber lives in the LEAF module kiro_crew.image_refs for the
+# same reason the Pillow machinery lives in kiro_crew.imaging: kiro_crew.context
+# needs the scrubber and the agent-sdk-boundary gate forbids application code
+# from importing kiro_crew.acp. The name is re-exported because this module is
+# where its callers have always read it from. The path grammar beside it is NOT
+# imported here any more: this builder reads no path out of the text.
+from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER, strip_image_refs  # noqa: F401
 
 # The budget constants and Pillow machinery live in the LEAF module
 # kiro_crew.imaging (shared with the gateway's tool-result rewrite, which must
@@ -57,49 +56,43 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
 )
-from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.prompt_attachments import (  # noqa: F401 -- the two constants are this module's declared surface
+    IMAGE_MEDIA_TYPES,
+    MAX_IMAGE_BYTES,
+    PromptAttachment,
+    inline_image_payload,
+    path_spans,
+)
 
 logger = logging.getLogger(__name__)
-
-#: Raster formats kiro-cli accepts as inline vision input. SVG is deliberately
-#: absent: it is scriptable XML rather than a raster image, and a vision model
-#: gains nothing from it.
-IMAGE_MEDIA_TYPES: dict[str, str] = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-}
-
-#: Raw bytes per image, checked BEFORE base64. Encoding inflates by 4/3 and the
-#: whole request is serialized as a single newline-delimited JSON frame, so an
-#: unbounded image becomes an unbounded write. Matches the Slack producer cap so
-#: a file that passed ingestion is not silently dropped here.
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 def build_prompt_blocks(
     message: str,
     *,
+    attachments: Sequence[PromptAttachment] | None = None,
     allow_image: bool = True,
     max_image_bytes: int = MAX_IMAGE_BYTES,
     max_image_edge: int = MAX_IMAGE_EDGE_PX,
     max_image_b64_bytes: int = MAX_IMAGE_B64_BYTES,
 ) -> list[dict]:
-    """Return ACP prompt blocks for *message*.
+    """Return ACP prompt blocks for *message* and its *attachments*.
 
-    Each readable image path found in *message* becomes an ``image`` block and is
-    replaced in the text by ``[image: <name>]`` so the model still sees where the
-    attachment sat in the sentence.
+    Every readable image in *attachments* -- the structured list the receiving
+    channel supplied -- becomes an ``image`` block. The text is NEVER scanned for
+    image paths: a path that only appears in *message* is a mention, and stays
+    text. For each inlined attachment the model is told what it was given by a
+    ``[image: <name>]`` marker: the attachment's path is rewritten to the marker
+    where the channel also wrote it into the text (Slack appends it as a bare
+    line, the dashboard renders it as ``![image](path)``), and the marker is
+    appended on its own line when the text never named it.
 
     ``allow_image=False`` (the agent did not advertise
-    ``promptCapabilities.image``) leaves the path in the text untouched: the file
-    is still on disk, so a tool-capable agent can open it, which is a strictly
-    better fallback than dropping the reference. The result is always at least
-    one text block, so a caller can pass it straight to ``session/prompt``.
+    ``promptCapabilities.image``) emits no image block and leaves the text
+    untouched: the file is still on disk and the channel's own path text still
+    names it, so a tool-capable agent can open it, which is a strictly better
+    fallback than dropping the reference. The result is always at least one
+    text block, so a caller can pass it straight to ``session/prompt``.
 
     Inlined images are downscaled so their longest edge is at most
     ``max_image_edge`` px -- the server-side backstop for Anthropic's many-image
@@ -111,116 +104,50 @@ def build_prompt_blocks(
     text = message
     images: list[dict] = []
 
-    if allow_image:
+    if allow_image and attachments:
         seen: set[str] = set()
-        for match in _PATH_RE.finditer(message):
-            raw = match.group(1).strip()
-            if raw in seen:
+        for attachment in attachments:
+            raw = (attachment.path or "").strip()
+            if not raw or raw in seen:
                 continue
-            # UNC-shaped candidates name a HOST on Windows: gate them before
-            # any filesystem call, or is_file() below opens an SMB connection
-            # to attacker-controlled text. POSIX has no such semantics (a
-            # doubled leading slash is an ordinary local path), and _PATH_RE
-            # is platform-gated anyway. See kiro_crew.hooks.unc_probe_allowed.
-            if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
-                seen.add(raw)
-                continue
-            path = Path(raw)
-            suffix = path.suffix.lower()
-            suffix_mime = IMAGE_MEDIA_TYPES.get(suffix)
-            if suffix_mime is None:
-                # Unreachable for regex-produced candidates today (_PATH_RE's
-                # suffix group and IMAGE_MEDIA_TYPES share one key set), kept
-                # as the lexical backstop should the two ever drift.
-                continue
-            # A linked ANCESTOR defeats the lexical UNC screen above: the
-            # candidate is not itself UNC-shaped -- only the link's target is
-            # -- and is_file()/stat() below resolve every ancestor, so the
-            # probe itself would traverse the link and open the SMB
-            # connection. Windows-only for the same reason as the UNC gate:
-            # on POSIX stat-ing through a symlink is harmless. Reference
-            # wiring: dashboard/handlers/themes.py::_resolve_local_source.
-            if os.name == "nt" and first_linked_ancestor(path) is not None:
-                seen.add(raw)
-                continue
-            # The LEAF gets the junction-aware check the walk deliberately
-            # excludes: is_file() below FOLLOWS a final-component link, so a
-            # leaf symlink/junction targeting a UNC share is the same probe.
-            # lstat-based, so the link itself is never followed.
-            if os.name == "nt" and is_link_or_junction(path):
-                seen.add(raw)
-                continue
-            if not path.is_file():
-                continue
-            try:
-                size = path.stat().st_size
-            except OSError:
-                logger.debug("acp prompt: could not stat image %s", raw, exc_info=True)
-                continue
-            if size > max_image_bytes:
-                # Leave the path in the text: the turn still carries a usable
-                # reference instead of silently losing the attachment.
-                logger.warning(
-                    "acp prompt: image %s is %d bytes (cap %d) - sending path, not inline",
-                    path.name,
-                    size,
-                    max_image_bytes,
-                )
-                continue
-            try:
-                raw_bytes = safe_read_file_bytes(str(path))
-            except Exception:
-                logger.debug("acp prompt: could not read image %s", raw, exc_info=True)
-                continue
-            if raw_bytes is None:
-                # Refused by the sensitive-path gate (or unreadable). The path
-                # stays in the text; it is NOT inlined.
-                logger.warning("acp prompt: image read refused for %s", path.name)
-                continue
-            # The suffix selects path CANDIDATES; the bytes decide what reaches
-            # the wire. Require a complete sniff window so a truncated header
-            # cannot become a pass-through image when Pillow is unavailable.
-            mime = (
-                sniff_raster_mime(raw_bytes[:SNIFF_BYTES])
-                if len(raw_bytes) >= SNIFF_BYTES
-                else None
-            )
-            if mime is None or mime not in IMAGE_MEDIA_TYPES.values():
-                logger.warning(
-                    "acp prompt: %s is not a supported raster by content - "
-                    "sending path, not inline",
-                    path.name,
-                )
-                continue
-            if mime != suffix_mime:
-                logger.info(
-                    "acp prompt: %s is %s by content, not %s by suffix; using content",
-                    path.name,
-                    mime,
-                    suffix_mime,
-                )
-            downscaled = downscale_image_block(
-                raw_bytes, mime, max_edge=max_image_edge, max_b64_bytes=max_image_b64_bytes
+            seen.add(raw)
+            downscaled = inline_image_payload(
+                attachment,
+                max_image_bytes=max_image_bytes,
+                max_image_edge=max_image_edge,
+                max_image_b64_bytes=max_image_b64_bytes,
             )
             if downscaled is None:
-                # No compliant rendition (decompression-bomb / undecodable /
-                # truncated / over the decode-pixel ceiling / still over the
-                # encoded ceiling at the minimum edge): leave the path as text
-                # rather than inline a payload the backend rejects on this and
-                # every later turn. A tool-capable agent can still open it.
-                logger.warning(
-                    "acp prompt: image %s could not be rendered within the "
-                    "dimension and encoded-size caps - sending path, not inline",
-                    path.name,
-                )
                 continue
             out_bytes, out_mime = downscaled
             data = base64.b64encode(out_bytes).decode("ascii")
-            seen.add(raw)
             images.append({"type": "image", "data": data, "mimeType": out_mime})
-            text = text.replace(raw, f"[image: {path.name}]")
+            text = _mark_attachment(text, raw, attachment.display_name)
 
     return [{"type": "text", "text": text}, *images]
+
+
+def _mark_attachment(text: str, raw_path: str, name: str) -> str:
+    """*text* with the inlined attachment marked as ``[image: <name>]``.
+
+    A substitution of a KNOWN string, not a scan: the path is the one the
+    channel's list named, and every spelling the channel could have written it
+    in is replaced (:func:`~kiro_crew.prompt_attachments.path_spans`: the
+    path itself, its forward-slash form for a Windows path, and the escaped or
+    ``<...>``-wrapped destination the dashboard composer emits inside
+    ``![image](...)``) -- but only where it stands delimited, so
+    ``/tmp/a.png.bak`` beside an attached ``/tmp/a.png`` is another file and
+    stays as written. A text that never named the path gets the marker
+    appended on its own line, so the model is told what it was given either
+    way.
+    """
+    marker = f"[image: {name}]"
+    spans = path_spans(raw_path, text)
+    if not spans:
+        return f"{text}\n{marker}" if text else marker
+    for start, end in reversed(spans):
+        text = text[:start] + marker + text[end:]
+    return text
 
 
 #: Block ``type`` values that get a dedicated counter in the structure summary.

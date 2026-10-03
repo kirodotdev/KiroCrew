@@ -178,7 +178,6 @@ RESOLVER_DEPTH = 1
 #: Modules known to satisfy the condition. The gate must find every one, or its
 #: report on the rest of the tree is UNKNOWN rather than clean.
 CONTROL_MODULES = (
-    "acp/prompt_blocks.py",
     "apps/builtins/auto_improvement/backend/clone_setup.py",
     "apps/builtins/aws_control/backend/backup.py",
     "apps/builtins/issue_radar/backend/crew_store.py",
@@ -188,6 +187,7 @@ CONTROL_MODULES = (
     "member_essential_context.py",
     "memory_files.py",
     "messaging/outbound_files.py",
+    "prompt_attachments.py",
 )
 
 #: Sites whose contract is to hold the chain across the screen AND the use. The

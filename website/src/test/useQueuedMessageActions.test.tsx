@@ -163,6 +163,21 @@ describe('useQueuedMessageActions — cancel', () => {
     expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'], undefined)
   })
 
+  it.each([
+    { name: 'listed', images: ['/tmp/private.png'], text: '', files: ['/tmp/private.png'] },
+    { name: 'missing', images: undefined, text: '![image](/tmp/private.png)', files: [] },
+    { name: 'empty', images: [], text: '![image](/tmp/private.png)', files: [] },
+    { name: 'unlisted', images: ['/tmp/other.png'], text: '![image](/tmp/private.png)', files: [] },
+    { name: 'malformed', images: ['/tmp/private.png', 42], text: '![image](/tmp/private.png)', files: [] },
+  ])('restores a typed image line as text unless structured images are valid and list it: $name', ({ images, text, files }) => {
+    const restoreDraft = vi.fn()
+    const row = queued('q1', '![image](/tmp/private.png)')
+    row.meta = { ...row.meta, ...(images === undefined ? {} : { images }) }
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith(text, files, undefined)
+  })
+
   it('a foreign card carrying the entry\'s attachment list restores a spaced path whole', () => {
     // After a reload (or on another tab) there is no stash, but the row's
     // `meta.files` is the server's echo of the entry's own list — so the

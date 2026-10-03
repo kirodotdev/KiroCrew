@@ -143,14 +143,16 @@ never drift. Notable terminal (non-retryable) classes:
   place with remove-or-re-encode guidance; a dashboard turn with no new
   attachments may discard the native resume SID once and retry from Kiro Crew's
   bounded text transcript, which excludes native binary image blocks.
-  "No new attachment" is read as TWO facts, because empty dashboard attachment
-  lists do not prove the turn shipped no image: a channel turn (and a dashboard
-  turn that types a path) carries its image as a bare path inside the message
-  text, which `build_prompt_blocks` inlines as a CURRENT-turn image block. So the
-  recovery additionally requires that the raw message match none of
-  `image_refs._PATH_RE` — the builder's own scanner on the builder's own
-  haystack — and otherwise falls through to the terminal guidance rather than
-  clearing a healthy conversation and re-inlining the same bytes.
+  "No new image" is the prompt builder's own answer: a picture counts only
+  when the send's image list would inline a block, judged by the same
+  predicate `build_prompt_blocks` uses (`inline_image_payload`), because the
+  builder never scans the message text for a path — a typed or appended path,
+  a file or folder attachment, or a listed file that inlines nothing (an SVG,
+  an unreadable path) ships no picture. So a turn that inlined no image can
+  only have been rejected for an image retained in native history; a turn WITH
+  a new image falls through to
+  the terminal guidance rather than clearing a healthy conversation and
+  re-inlining the same bytes.
   The queued recovery turn is gated at DISPATCH, not only at enqueue: the
   conversation discard and the pending-reset consume are awaited between the two,
   and a soft Stop in that window preserves the queue while `_stopping` snaps back

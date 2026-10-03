@@ -28,11 +28,10 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
-from kiro_crew.dashboard.chat_delivery import (
+from kiro_crew.dashboard.chat_delivery import MAX_PENDING_STEERS, attachment_meta
+from kiro_crew.dashboard.slot_queue_repository import (
     ATTACHMENT_LIST_MAX_ITEMS,
     ATTACHMENT_PATH_MAX_LEN,
-    MAX_PENDING_STEERS,
-    attachment_meta,
 )
 
 _PATH = "/tmp/My Report.pdf"
@@ -286,6 +285,104 @@ class TestDrainedRow:
         ]
         pop = next(p for p in pops if p.get("content") == _WIRE)
         assert pop.get("meta") == {"files": [_PATH], "dirs": [_DIR]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restored", [False, True])
+    async def test_provider_paths_stay_raw_while_wire_lists_follow_origin(
+        self, tmp_path, monkeypatch, restored
+    ):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.slot_queue_repository import (
+            PROMPT_IMAGES_ENTRY_KEY,
+            durable_queue_entries,
+            sanitize_restored_queue,
+        )
+
+        raw = "/tmp/uploads/ab12_ghp_" + "A" * 36 + ".png"
+        state, slot = _busy_state(tmp_path, monkeypatch)
+        await _post_busy(state, "busy-chat", f"look\n\n![image]({raw})", {"images": [raw]})
+
+        entry = next(i for i in slot._queue if i["content"].startswith("look"))
+        assert entry["meta"]["images"] == [raw]
+        assert entry[PROMPT_IMAGES_ENTRY_KEY] == [raw]
+        assert all(PROMPT_IMAGES_ENTRY_KEY not in d for d in durable_queue_entries(slot._queue))
+        (frame,) = _queue_push_frames(state)
+        assert frame["meta"]["images"] == [raw]
+        if restored:
+            slot._queue[:] = sanitize_restored_queue(durable_queue_entries(slot._queue))
+            assert PROMPT_IMAGES_ENTRY_KEY not in slot._queue[0]
+
+        state.subagents = None
+        slot._in_stage_execution = False
+        run_chat = MagicMock()
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", run_chat),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        kwargs = run_chat.call_args.kwargs
+        redacted = attachment_meta(entry["meta"])["images"]
+        assert kwargs.get("_prompt_images") == (redacted if restored else [raw])
+        (pop,) = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_pop"]
+        assert pop["meta"]["images"] == (redacted if restored else [raw])
+        assert kwargs["_attachment_meta"]["images"] != [raw]
+        assert kwargs["_image_text"] == f"look\n\n![image]({raw})"
+        rebuilt = chat_runner._turn_prompt_attachments(
+            kwargs["_attachment_meta"], kwargs["_prompt_images"], text=kwargs["_image_text"]
+        )
+        assert [a.path for a in rebuilt] == [raw]
+        assert "ghp_" not in (_user_rows(slot)[-1].get("meta") or {})["images"][0]
+
+    @pytest.mark.asyncio
+    async def test_a_queued_edit_that_removes_the_picture_removes_it_from_the_provider_copy(
+        self, tmp_path, monkeypatch
+    ):
+        """Removing an image must prune both lists, or the provider would still
+        receive it. An emptied provider copy must stay authoritative so the
+        drain cannot fall back to a list the edit removed."""
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+
+        raw = "/tmp/uploads/ab12_ghp_" + "A" * 36 + ".png"
+        keep = "/tmp/uploads/ab12_keep.png"
+        state, slot = _busy_state(tmp_path, monkeypatch)
+        receipt = await _post_busy(
+            state,
+            "busy-chat",
+            f"two\n\n![image]({raw})\n![image]({keep})",
+            {"images": [raw, keep]},
+        )
+        entry = next(i for i in slot._queue if i["id"] == receipt["queue_id"])
+        assert entry[PROMPT_IMAGES_ENTRY_KEY] == [raw, keep]
+        kept_path = entry["meta"]["images"][1]
+
+        # The user edits the queued message and removes the first picture's line.
+        assert slot.queue_edit_by_id(
+            receipt["queue_id"], f"two\n\n![image]({kept_path})", directive_user_origin=True
+        )
+        assert entry["meta"]["images"] == [kept_path]
+        assert entry[PROMPT_IMAGES_ENTRY_KEY] == [keep]
+
+        # ...and then the second, leaving no picture at all.
+        assert slot.queue_edit_by_id(receipt["queue_id"], "two", directive_user_origin=True)
+        assert "images" not in entry["meta"]
+        assert entry[PROMPT_IMAGES_ENTRY_KEY] == []
+
+        state.subagents = None
+        slot._in_stage_execution = False
+        run_chat = MagicMock()
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", run_chat),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+        kwargs = run_chat.call_args.kwargs
+        assert kwargs.get("_prompt_images") == []
+        assert "images" not in (kwargs.get("_attachment_meta") or {})
+        # A present-but-empty provider copy builds no image list, even beside a
+        # meta that still names one (the copy is authoritative).
+        assert chat_runner._turn_prompt_attachments({"images": [raw]}, []) == ()
 
     @pytest.mark.asyncio
     async def test_queue_pop_frame_without_attachments_has_no_meta_key(self, tmp_path, monkeypatch):
@@ -780,6 +877,44 @@ class TestQueueEditPrunesAttachmentMeta:
         assert frame["meta"] == {"files": [_PATH]}
         row = next(m for m in slot.messages if m.get("role") == "queued")
         assert row["content"] == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("edit", ["remove", "keep_raw", "keep_redacted"])
+    async def test_edit_prunes_redacted_images_without_a_provider_copy(
+        self, tmp_path, monkeypatch, edit
+    ):
+        from kiro_crew.dashboard.chat_delivery import queued_text_for_display
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_queue_edit
+        from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+
+        state, slot = _busy_state(tmp_path, monkeypatch)
+        raw = "/project/diagram_ghp_" + "A" * 36 + ".png"
+        meta = attachment_meta({"images": [raw]})
+        assert meta["images"] != [raw]
+        previous = f"look\n![image]({raw})"
+        content = {
+            "remove": "look again",
+            "keep_raw": previous + " again",
+            "keep_redacted": queued_text_for_display(previous, user_origin=False) + " again",
+        }[edit]
+        qid = slot.queue_append(previous, meta=meta)
+        entry = self._entry(slot, qid)
+        assert PROMPT_IMAGES_ENTRY_KEY not in entry
+        app = _make_app(state)
+        app.router.add_patch("/api/chat/slots/{slot}/queue/{queue_id}", api_chat_slot_queue_edit)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(
+                f"/api/chat/slots/busy-chat/queue/{qid}", json={"content": content}
+            )
+            assert resp.status == 200
+
+        expected = [] if edit == "remove" else meta["images"]
+        assert entry["meta"].get("images", []) == expected
+        assert entry["content"] == content
+        frame = next(
+            c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_edit"
+        )
+        assert frame.get("meta", {}).get("images", []) == expected
 
     @pytest.mark.asyncio
     async def test_edit_frame_carries_no_meta_once_every_marker_is_gone(

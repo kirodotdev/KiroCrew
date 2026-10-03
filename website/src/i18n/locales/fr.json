@@ -3549,6 +3549,7 @@
         "ask_placeholder": "Demander à {{name}}...",
         "edit_cancel": "Annuler",
         "edit_mode": "Modification — envoyez pour remplacer, ou annulez",
+        "edit_pictures_unrecoverable": "Impossible de renvoyer le message modifié. Ton texte est toujours dans le champ de saisie et le message conserve ses images. Renvoie-le pour réessayer.",
         "load_earlier": "Charger les messages précédents",
         "scroll_bottom": "Aller au plus récent",
         "send": "Envoyer",

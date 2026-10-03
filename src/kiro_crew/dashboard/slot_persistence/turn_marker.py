@@ -19,6 +19,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_delivery import ATTACHMENT_LIST_MAX_ITEMS, ATTACHMENT_PATH_MAX_LEN
+from kiro_crew.dashboard.slot_queue_repository import ALL_ATTACHMENT_META_KEYS
 from kiro_crew.dashboard.state import is_stop_event_row, is_turn_interrupted
 
 if TYPE_CHECKING:
@@ -47,22 +48,28 @@ def _local_turn_generation(meta: Mapping[str, object]) -> int:
 
 
 _LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "subagent", "inject"})
-_LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
+#: The row's identity, its attachment lists (every list of
+#: ``ALL_ATTACHMENT_META_KEYS`` -- ``files``, ``dirs`` AND ``images``, since the
+#: picture a send attached rides ``meta.images`` and nothing else, so a
+#: restored opener without it is a row whose later regenerate or edit-resend
+#: cannot replay the image) and the inject kind. Mirrored by
+#: ``chat_runner._LOCAL_TURN_PROMPT_META_KEYS``.
+_LOCAL_TURN_PROMPT_META_KEYS = ("mid", *ALL_ATTACHMENT_META_KEYS, "injectKind")
 #: Bounds on the opening-row copy the marker retains. The attachment bounds are
-#: the send path's own (``chat_delivery.ATTACHMENT_LIST_MAX_ITEMS`` entries of
-#: ``ATTACHMENT_PATH_MAX_LEN`` chars), so every row the send path accepts fits
-#: the copy and a narrower local bound cannot drop an accepted opener. The
-#: total is sized for ``MAX_PROMPT_BYTES`` (100 KB) plus two full attachment
-#: lists plus the identity fields, so it only rejects a line that no writer of
-#: this gateway produced. An out-of-bounds copy is dropped whole, never
-#: truncated: the restore re-appends it as the user's own transcript row, and a
-#: shortened row would misstate what they sent. A dropped copy leaves the
-#: generation alone to flag the turn.
+#: the send path's own (``ATTACHMENT_LIST_MAX_ITEMS`` entries of
+#: ``ATTACHMENT_PATH_MAX_LEN`` chars, applied to each list), so every row the
+#: send path accepts fits the copy and a narrower local bound cannot drop an
+#: accepted opener. The total is sized for ``MAX_PROMPT_BYTES`` (100 KB) plus
+#: one full list per attachment key plus the identity fields, so it only
+#: rejects a line that no writer of this gateway produced. An out-of-bounds
+#: copy is dropped whole, never truncated: the restore re-appends it as the
+#: user's own transcript row, and a shortened row would misstate what they
+#: sent. A dropped copy leaves the generation alone to flag the turn.
 _LOCAL_TURN_PROMPT_MAX_ATTACHMENTS = ATTACHMENT_LIST_MAX_ITEMS
 _LOCAL_TURN_PROMPT_MAX_FIELD_CHARS = ATTACHMENT_PATH_MAX_LEN
-_LOCAL_TURN_PROMPT_MAX_BYTES = 128 * 1024 + 2 * ATTACHMENT_LIST_MAX_ITEMS * (
-    ATTACHMENT_PATH_MAX_LEN + 4
-)
+_LOCAL_TURN_PROMPT_MAX_BYTES = 128 * 1024 + len(
+    ALL_ATTACHMENT_META_KEYS
+) * ATTACHMENT_LIST_MAX_ITEMS * (ATTACHMENT_PATH_MAX_LEN + 4)
 
 
 def local_turn_prompt_within_bounds(prompt: Mapping[str, object]) -> bool:
@@ -83,7 +90,7 @@ def local_turn_prompt_within_bounds(prompt: Mapping[str, object]) -> bool:
             value = meta.get(key)
             if isinstance(value, str) and len(value) > _LOCAL_TURN_PROMPT_MAX_FIELD_CHARS:
                 return False
-        for key in ("files", "dirs"):
+        for key in ALL_ATTACHMENT_META_KEYS:
             value = meta.get(key)
             if isinstance(value, list):
                 if len(value) > _LOCAL_TURN_PROMPT_MAX_ATTACHMENTS:
@@ -123,7 +130,7 @@ def _local_turn_prompt(meta: Mapping[str, object]) -> dict | None:
         mid = raw_meta.get("mid")
         if isinstance(mid, str) and mid:
             kept_meta["mid"] = mid
-        for key in ("files", "dirs"):
+        for key in ALL_ATTACHMENT_META_KEYS:
             value = raw_meta.get(key)
             if isinstance(value, list) and all(isinstance(item, str) for item in value):
                 kept_meta[key] = list(value)

@@ -56,7 +56,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Mapping
 
 from aiohttp import web
 
@@ -725,9 +725,20 @@ async def relay_remote_turn(
     slot: "_ChatSlot",
     message: str,
     *,
+    attachments: Mapping[str, list[str]] | None = None,
     chunks: AsyncIterator[bytes] | None = None,
 ) -> None:
     """Run one turn for *slot* on its bound peer, replaying the result locally.
+
+    *attachments* is the send's validated attachment lists -- the dict
+    ``chat_delivery.attachment_meta`` returns (``files`` / ``dirs`` /
+    ``images``), the same object the local arm hands ``_run_chat`` as
+    ``_attachment_meta``. It crosses the hop as the peer body's ``meta`` (see
+    :func:`_peer_turn_chunks`): the peer's prompt builder emits image blocks
+    from ``meta.images`` ALONE and never scans the text, so a relay that sent the
+    text by itself would leave the peer's model without the picture the user
+    dropped in, while the ``![image](path)`` line in the transcript said it
+    went. Omitted (``None``) for a send that carried none.
 
     *chunks* exists for tests: pass an async byte iterator to drive the replay
     without a tunnel. In production it is ``None`` and the stream comes from the
@@ -779,7 +790,7 @@ async def relay_remote_turn(
     peer_reached = False
     try:
         if chunks is None:
-            chunks = _peer_turn_chunks(state, slot, message)
+            chunks = _peer_turn_chunks(state, slot, message, attachments)
         buffer = bytearray()
         saw_terminator = False
         async for chunk in chunks:
@@ -874,12 +885,32 @@ async def relay_remote_turn(
 
 
 async def _peer_turn_chunks(
-    state: "DashboardState", slot: "_ChatSlot", message: str
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    message: str,
+    attachments: Mapping[str, list[str]] | None = None,
 ) -> AsyncIterator[bytes]:
-    """Stream the peer's SSE response for one turn, chunk by chunk."""
+    """Stream the peer's SSE response for one turn, chunk by chunk.
+
+    The body is ``message`` + ``slot``, plus ``meta`` holding the send's
+    attachment lists when it carried any -- under the SAME key the composer's
+    own send uses, so the peer's ``api_chat`` takes them through the one intake
+    every local send takes: ``attachment_meta`` re-applies the list and path
+    bounds, redacts them, and the peer's turn builds its image blocks from
+    ``meta.images`` exactly as it would for a picture dropped into its own
+    dashboard. The paths are THIS machine's: the peer inlines what resolves on
+    its host and skips what does not (its builder logs the miss and leaves the
+    text's own reference in place as the tool-capable fallback), which is the
+    reach the picture had before the list existed. No bytes cross the hop.
+    Omitted, not emptied, for a send without attachments, so the body a peer
+    read before is the body it still reads.
+    """
     mgr = await _require_manager(state)
     await ensure_version_parity(mgr, slot.instance_id)
-    body = json.dumps({"message": message, "slot": slot.remote_slot}).encode()
+    payload: dict[str, Any] = {"message": message, "slot": slot.remote_slot}
+    if attachments:
+        payload["meta"] = {key: list(paths) for key, paths in attachments.items()}
+    body = json.dumps(payload).encode()
     # ``relay=1`` asks the peer to mirror its WebSocket frames onto this stream;
     # without it the reply carries the prose and none of the tool activity.
     async with mgr.proxy_request(

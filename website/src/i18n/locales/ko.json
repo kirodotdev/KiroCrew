@@ -3427,6 +3427,7 @@
         "ask_placeholder": "{{name}}에게 질문…",
         "edit_cancel": "취소",
         "edit_mode": "편집 중 — 보내서 바꾸거나 취소하세요",
+        "edit_pictures_unrecoverable": "수정한 메시지를 다시 보내지 못했습니다. 입력한 텍스트는 아직 작성창에 있고 메시지의 이미지는 그대로 유지됩니다. 다시 보내서 재시도하세요.",
         "load_earlier": "이전 메시지 불러오기",
         "scroll_bottom": "최신으로 이동",
         "send": "보내기",

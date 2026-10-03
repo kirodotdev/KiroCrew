@@ -284,6 +284,7 @@ from kiro_crew.mcp_gateway.session_servers import (
 )
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
 from kiro_crew.recovery.ladder import LADDER as _LADDER
@@ -11293,7 +11294,11 @@ class AcpClient:
 
     # ── Public API ──
 
-    async def send_message(self, message: str, timeout: float | None = None) -> str:
+    async def send_message(
+        self,
+        message: str,
+        timeout: float | None = None,
+    ) -> str:
         """Send a prompt and return the full response text."""
         timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
@@ -11304,7 +11309,9 @@ class AcpClient:
         return await self._read_prompt_response(req_id, timeout)
 
     async def send_message_stream(
-        self, message: str, timeout: float | None = None
+        self,
+        message: str,
+        timeout: float | None = None,
     ) -> AsyncIterator[str]:
         """Send a prompt and yield text chunks as they arrive."""
         timeout = await _effective_prompt_timeout_async(timeout)
@@ -11420,13 +11427,19 @@ class AcpClient:
         self,
         message: str,
         timeout: float | None = None,
+        *,
+        attachments: Sequence[PromptAttachment] = (),
     ) -> AsyncIterator[AcpEvent]:
-        """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete)."""
+        """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete).
+
+        ``attachments`` is the channel's structured list of the files the user
+        attached to this message -- the only source of image blocks.
+        """
         timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         self._turn_done.clear()
         await self.ensure_ready()
-        req_id = await self._send_prompt(message)
+        req_id = await self._send_prompt(message, attachments)
         async for event in self._dispatch_events(req_id, timeout):
             yield event
 
@@ -12297,16 +12310,19 @@ class AcpClient:
 
     # ── Private Helpers ──
 
-    async def _send_prompt(self, message: str) -> int:
+    async def _send_prompt(self, message: str, attachments: Sequence[PromptAttachment] = ()) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
-        # cannot drift.
+        # cannot drift: image blocks come from the channel's attachment list
+        # alone, never from a path found in the text.
         return await self._send_request(
             METHOD_PROMPT,
             {
                 "sessionId": self._session_id,
                 # Offloaded: see the note in session_handle.prompt -- image
                 # reads and base64 encoding must not block the event loop.
-                "prompt": await asyncio.to_thread(build_prompt_blocks, message),
+                "prompt": await asyncio.to_thread(
+                    build_prompt_blocks, message, attachments=attachments
+                ),
             },
         )
 

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         is_synthetic_payload_item,
         is_system_injection_item,
         logger,
+        prompt_image_paths,
         queued_text_for_display,
         settle_consumed_steers,
     )
@@ -330,6 +331,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             meta=_meta,
             directive_user_origin=_requeue_user_origin,
             directive_channel_origin=_channel,
+            # A channel steer's redacted list must still resolve to the real
+            # image rather than making the provider probe a nonexistent path.
+            prompt_images=prompt_image_paths(_meta),
         )
         try:
             _push: dict = {
@@ -345,7 +349,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             }
             # The requeued steer's attachment lists were folded into `_meta`
             # above; the card drawn from this frame is what a cancel restores.
-            _push_attachments = attachment_meta(_meta)
+            _push_attachments = attachment_meta(
+                _meta, redact=not (_requeue_user_origin and not _channel)
+            )
             if _push_attachments:
                 _push["meta"] = _push_attachments
             state.broadcast_ws("queue_push", _push)

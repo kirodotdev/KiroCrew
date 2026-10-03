@@ -237,6 +237,26 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     expect(bubble?.meta).toMatchObject({ steer: true, files: ['/tmp/uploads/q3 report.pdf'] })
   })
 
+  it('busy member with a picture: the steer carries meta.images, so a steer the gateway queues instead still ships the picture', async () => {
+    // A live steer is text-only, but the gateway may fall through to the
+    // QUEUE, and the queued turn builds its image blocks from `meta.images`
+    // alone -- it never scans the `![image](dest)` line in the text.
+    vi.mocked(api.uploadFiles).mockResolvedValue({ paths: ['/tmp/uploads/shot.png'] })
+    const { container } = renderPane('member-picture', { running: true, busyMode: 'steer-only' })
+    const box = await composer()
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'shot.png', { type: 'image/png' })] })
+    fireEvent.change(fileInput)
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+    fireEvent.change(box, { target: { value: 'what is this' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, , , , meta, steer] = vi.mocked(api.sendChat).mock.calls[0]
+    expect(steer).toBe(true)
+    expect(wireText).toBe('![image](/tmp/uploads/shot.png)\n\nwhat is this')
+    expect(meta).toEqual({ sendId: expect.stringMatching(/^s-/), images: ['/tmp/uploads/shot.png'] })
+  })
+
   it('idle member: a plain send, no steer flag (steer-only changes only the BUSY composer)', async () => {
     renderPane('member-idle', { running: false, busyMode: 'steer-only' })
     const box = await composer()

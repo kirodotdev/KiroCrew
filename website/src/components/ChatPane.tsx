@@ -1047,16 +1047,17 @@ export default function ChatPane({
     // Attachments take the SAME wire/bubble serialization as ChatPage
     // (prepareSendPayload, the single owner of attachment-marker knowledge):
     // every image becomes a producer-form `![image](dest)` line on BOTH the
-    // wire text and the bubble, every other file an `[attached_file N] path`
-    // marker on the wire with the ORDERED non-image list on `meta.files`.
-    // Before this the pane shipped the typed text verbatim and parked every
-    // path (images included) on `meta.files` alone — a shape neither side
-    // reads: the agent's image extraction matches absolute paths in the
-    // PROMPT TEXT, and the bubble renders images only from their markdown.
-    // So a picture attached in a member DM or a split pane never rendered
-    // and never reached the model, while the same send from the main chat
-    // did both (#9433).
-    const { txt, displayTxt, filePaths } = prepareSendPayload(text, files)
+    // wire text and the bubble, with the image list on `meta.images`, every
+    // other file an `[attached_file N] path` marker on the wire with the
+    // ORDERED non-image list on `meta.files`. The bubble renders images only
+    // from their markdown, and the gateway builds the turn's image blocks
+    // only from `meta.images` (it never scans the prompt text for paths), so
+    // both halves are needed. Before this the pane shipped the typed text
+    // verbatim and parked every path (images included) on `meta.files` alone,
+    // so a picture attached in a member DM or a split pane never rendered and
+    // never reached the model, while the same send from the main chat did
+    // both (#9433).
+    const { txt, displayTxt, filePaths, imgPaths } = prepareSendPayload(text, files)
     // Folder tokens take the same wire/bubble split ChatPage uses: the wire
     // text carries `[attached_dir N] path` markers the agent can resolve, the
     // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
@@ -1087,6 +1088,9 @@ export default function ChatPane({
     const meta = {
       ...(filePaths.length ? { files: filePaths } : {}),
       ...(dirPaths.length ? { dirs: dirPaths } : {}),
+      // The STRUCTURED image list the gateway builds the turn's image blocks
+      // from; the `![image](dest)` wire lines are a rendering, never scanned.
+      ...(imgPaths.length ? { images: imgPaths } : {}),
       ...(bubblePastes.length ? { pastes: bubblePastes } : {}),
       sendId,
     }
@@ -1231,7 +1235,7 @@ export default function ChatPane({
     // AFTER the empty-payload check, like doSend: an Enter on an empty composer
     // before the first partial lands sends nothing and must not end the capture.
     composerRef.current?.voice()?.disarmForSend()
-    const { txt: inlined, filePaths } = prepareSendPayload(raw, files)
+    const { txt: inlined, filePaths, imgPaths: steerImgPaths } = prepareSendPayload(raw, files)
     // Same expansion as doSend; the steer channel is text-only and ChatPage's
     // steer shows the expanded text in its bubble too, so this one does.
     const steerPastes = pruneBlocks(inlined, pasteBlocks)
@@ -1242,8 +1246,14 @@ export default function ChatPane({
     // files[N-1]. Without it the renderer falls back to a whitespace-bounded
     // path capture, which truncates a filename containing spaces. The steer
     // channel itself is text-only, but the echo reconciles by merging meta
-    // onto this bubble, so the index rides the row from here.
-    const steerMeta = { sendId, ...(filePaths.length ? { files: filePaths } : {}) }
+    // onto this bubble, so the index rides the row from here. `meta.images`
+    // rides too: a steer the gateway cannot inject falls through to the
+    // queue, and the queued turn builds its image blocks from that list alone.
+    const steerMeta = {
+      sendId,
+      ...(filePaths.length ? { files: filePaths } : {}),
+      ...(steerImgPaths.length ? { images: steerImgPaths } : {}),
+    }
     // Drain the per-frame chunk buffer first, same as ChatPage's steer(): a
     // pre-steer chunk still pending in useWebSocket's buffer would otherwise
     // flush BELOW this card (see lib/pendingChunkDrain.ts).

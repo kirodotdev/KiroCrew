@@ -210,9 +210,10 @@ export function useQueuedMessageActions({
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
       const hit = stashed && stashed.sent === msg.content
+      const attachments = queueEntryAttachments(msg.meta)
       const { text, files } = hit
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content, queueEntryAttachments(msg.meta).files)
+        : restoreQueuedContent(msg.content, attachments.files, attachments.images)
       // The stash also carries the alias map the send-clear dropped; the
       // parser fallback cannot know it, and a restore without aliases falls
       // into the documented reload-limitation class rather than corrupting.

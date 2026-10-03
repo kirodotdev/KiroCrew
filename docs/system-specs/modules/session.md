@@ -117,6 +117,11 @@ A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
 the peer's `POST /api/chat/slots` payload, while agent and model remain sparse
 explicit picks. Omitting the mode would let a local Incognito or Temporary row
 execute as Persistent on the peer and read or write memory the user disabled.
+A turn relayed to that peer (`relay_remote_turn` → `POST /api/chat?relay=1`)
+carries the send's attachment lists as the body's `meta` beside `message` and
+`slot`, omitted when the send had none: the peer builds the turn's image blocks
+from `meta.images` alone (see acp-client.md, "Who supplies the list"), so a body
+of text only would silently drop an uploaded picture.
 
 A slot ADOPTED from a peer row (`POST /api/chat/slots` with `adopt_remote_slot`)
 inherits `agent`, `title`, `memory_mode` and `workspace` from that row
@@ -2338,19 +2343,20 @@ each row out through
 `kiro_crew.image_refs.strip_image_refs`, which replaces every local image
 reference with `[image not carried into this context]`. Markdown references go
 through the attachment store's own `iter_local_refs`; bare paths go through the
-inliner's own `_PATH_RE`, narrowed to paths outside code spans that stand alone
-rather than sit inside a URL query, because the inliner rewrites text only after
-reading a file and an unconditional substitution would corrupt a URL or a code
-snippet instead of scrubbing it. A row's picture belonged
-to an earlier turn and a text vehicle cannot carry bytes, so the reference is
-the only thing that would arrive, and both readings of it are wrong: while the
-file is still readable `build_prompt_blocks` re-inlines it (a picture an earlier
-compaction already dropped returns at full byte cost on every later cold start),
-and once the file is gone the path is left in the prose next to the assistant's
-own earlier description of what it showed. Stripping at the row builders rather
-than at each consumer is what makes the guarantee hold for all three. The
-CURRENT turn is unaffected — it is excluded from the replay by identity, so a
-freshly attached image still becomes a real image block.
+grammar in `image_refs._PATH_RE`, narrowed to paths outside code spans that
+stand alone rather than sit inside a URL query, because an unconditional
+substitution would corrupt a URL or a code snippet instead of scrubbing it. A
+row's picture belonged to an earlier turn and a text vehicle cannot carry bytes,
+so the reference is the only thing that would arrive, and a path left in the
+prose next to the assistant's own earlier description of what it showed is what
+makes a model narrate a screenshot it cannot see. The prompt builder itself
+builds image blocks only from the channel's structured attachment list, which a
+replay never has, so a replayed path can never come back as pixels; the strip is
+what keeps it from coming back as prose. Stripping at the
+row builders rather than at each consumer is what makes the guarantee hold for
+all three. The CURRENT turn is unaffected — it is excluded from the replay by
+identity, and its freshly attached image arrives as a structured attachment, so
+it still becomes a real image block.
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
@@ -2719,9 +2725,10 @@ so absence clears it.
   restart is not that event happening again); an entry carrying a `payload` is a
   synthetic recovery continuation; an entry carrying `_on_consumed` /
   `_on_irreversibly_consumed` acknowledges an automatic payload through a
-  callback that does not survive the process. `meta` rides along verbatim,
-  because it holds the admission-time containment snapshot the drain
-  re-validates against and an entry without one fails closed.
+  callback that does not survive the process.
+  Apart from attachment lists, `meta` rides along verbatim because it holds the admission-time containment snapshot the drain re-validates against and an entry without one fails closed.
+  Attachment lists are redacted in the durable projection: provenance does not survive a restart, so their paths must match the redacted text a restored card displays and edits.
+  Live user-origin entries retain bounded raw lists; their wire lists follow the same as-typed rule as their text.
 - **Provenance does NOT survive the restart, and that is a security property.**
   `_directive_user_origin` / `_directive_channel_origin` record that an entry's
   words came from an authenticated human, and the drain reduces the consumed

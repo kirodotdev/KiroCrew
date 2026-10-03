@@ -128,6 +128,7 @@ from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import (
     redact,
@@ -1002,6 +1003,10 @@ class DiscordDispatcher:
                 return MonitorDispatchResult.BUSY
             raise
         attachment_temp_paths: list[str] = []
+        # The ingested images as the structured list the turn hands to the
+        # provider -- the ONLY way they reach the model; the paths written into
+        # the text below are for agent file tools.
+        prompt_attachments: tuple[PromptAttachment, ...] = ()
         # Post-compaction re-injection bookkeeping for the finally: whether this
         # turn consumed the one-shot flag, and whether it landed (recorded success).
         _needs_reinjection = False
@@ -1092,6 +1097,7 @@ class DiscordDispatcher:
             if msg.attachments:
                 attachment_result = await process_discord_attachments(self.client, msg.attachments)
                 attachment_temp_paths = list(attachment_result.temp_paths)
+                prompt_attachments = attachment_result.prompt_attachments()
                 text = append_attachment_context(text, attachment_result)
             if not text:
                 return monitor_result
@@ -1240,7 +1246,14 @@ class DiscordDispatcher:
                 ),
                 monitor_completion=monitor_completion,
             )
-            accumulated = await driver.run(full_message)
+            # The ingested images ride beside the text as the structured list;
+            # passed only when there are some, so a driver stand-in predating
+            # the keyword still takes every text-only turn.
+            accumulated = await (
+                driver.run(full_message, attachments=prompt_attachments)
+                if prompt_attachments
+                else driver.run(full_message)
+            )
             # Landed is decided by the provider turn alone, the moment run()
             # returns: the prompt (with any re-injected context) is in the
             # conversation iff the completion classifies succeeded. Delivery is
@@ -1609,6 +1622,7 @@ class DiscordDispatcher:
             text,
             mode=mode,
             has_attachments=bool(msg.attachments),
+            prompt_attachments=msg.prompt_attachments,
             # Where a drop notice goes if the drain later refuses a queued entry,
             # and the principal the outbound recipient check needs. Only a DM route
             # supplies one: this user was authorized against ``allowed_user_ids``

@@ -3508,6 +3508,225 @@ class TestRelayCarriesToolRowMeta:
         assert row["meta"].get("mid") != "peer-mid"
 
 
+#: A send's attachment lists as the composer writes them: the picture the user
+#: dropped in (``images``) beside a plain file (``files``). The image path is what
+#: the peer's prompt builder needs -- it builds image blocks from this list alone
+#: and never scans the text -- so a hop that forwards only the text loses the
+#: picture while the ``![image](path)`` line in the text still LOOKS attached.
+_HOP_ATTACHMENTS = {"images": ["/tmp/uploads/shot.png"], "files": ["/tmp/uploads/report.pdf"]}
+_HOP_TEXT = (
+    "look at this\n\n![image](/tmp/uploads/shot.png)\n\n[attached_file 1] /tmp/uploads/report.pdf"
+)
+
+
+def _connected_manager(**overrides):
+    """An instances manager whose tunnel reads CONNECTED, so a send is dispatched."""
+    mgr = MagicMock()
+    mgr.status = lambda _id: SimpleNamespace(state=SimpleNamespace(value="connected"))
+    mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+    for name, value in overrides.items():
+        setattr(mgr, name, value)
+    return mgr
+
+
+class _AcceptingUpstream(_FakeUpstream):
+    """A peer that accepts the turn and ends it at once: one ``[DONE]`` record."""
+
+    def __init__(self):
+        super().__init__(200, b"")
+        self.content = SimpleNamespace(iter_any=self._iter)
+
+    async def _iter(self):
+        yield b"data: [DONE]\n\n"
+
+
+class TestRelayCarriesTheAttachmentLists:
+    """A picture dropped into a remote-bound session must reach the peer's model.
+
+    The prompt builder emits image blocks from the channel's STRUCTURED list and
+    never from the text, so the hop has to carry that list: a relay body of
+    ``message`` + ``slot`` alone leaves the peer's builder with nothing, and the
+    upload is silently dropped -- no error row, and a transcript whose
+    ``![image](path)`` line says the picture went. The lists cross under
+    ``meta``, the same key the composer's own send uses, so the peer's
+    ``api_chat`` bounds and redacts them with the same ``attachment_meta`` and
+    its turn reads ``meta.images`` exactly as a local send's does. The paths are
+    the sender's: the peer inlines what resolves on its host and skips what does
+    not (the text's own reference stays as the tool-capable fallback), which is
+    the reach the old text scan had on a peer -- no bytes cross the hop.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_dispatch_arm_hands_the_lists_to_the_relay(self, tmp_path, monkeypatch):
+        """``api_chat``'s remote arm passes the accepted lists, as the local arm does."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        state.instances_manager = _connected_manager()
+
+        relayed: list[dict] = []
+
+        async def _record(_state, _slot, message, **kwargs):
+            relayed.append({"message": message, **kwargs})
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.relay_remote_turn", _record)
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?ws=1",
+                json={"slot": slot.key, "message": _HOP_TEXT, "meta": dict(_HOP_ATTACHMENTS)},
+            )
+            assert resp.status == 200
+            assert slot.task is not None
+            await slot.task
+
+        assert len(relayed) == 1
+        assert relayed[0]["message"] == _HOP_TEXT
+        # The same validated dict the local arm hands `_run_chat` as
+        # `_attachment_meta`: every list, in the composer's order.
+        assert relayed[0].get("attachments") == _HOP_ATTACHMENTS
+
+    @pytest.mark.asyncio
+    async def test_the_lists_ride_the_peers_body_under_meta(self, tmp_path):
+        """The relay posts the lists as ``meta`` beside ``message`` and ``slot``."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        mgr = _connected_manager(proxy_request=MagicMock(return_value=_AcceptingUpstream()))
+        state.instances_manager = mgr
+        slot = _remote_slot()
+
+        await relay_remote_turn(state, slot, _HOP_TEXT, attachments=dict(_HOP_ATTACHMENTS))
+
+        mgr.proxy_request.assert_called_once()
+        args, kwargs = mgr.proxy_request.call_args
+        assert args[1:] == ("POST", "api/chat")
+        assert kwargs["params"] == {"relay": "1"}
+        assert json.loads(kwargs["data"]) == {
+            "message": _HOP_TEXT,
+            "slot": "peer-chat-9",
+            "meta": _HOP_ATTACHMENTS,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_send_without_attachments_keeps_the_wire_shape(self, tmp_path):
+        """No lists, no ``meta`` key: the body a peer read before is the body it reads."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        mgr = _connected_manager(proxy_request=MagicMock(return_value=_AcceptingUpstream()))
+        state.instances_manager = mgr
+        slot = _remote_slot()
+
+        await relay_remote_turn(state, slot, "hi")
+
+        assert json.loads(mgr.proxy_request.call_args.kwargs["data"]) == {
+            "message": "hi",
+            "slot": "peer-chat-9",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_peer_hands_a_relayed_list_to_its_own_runner(self, tmp_path, monkeypatch):
+        """On the peer, ``relay=1`` + ``meta.images`` reaches ``_run_chat`` typed.
+
+        The peer's slot is an ordinary LOCAL slot, so the forwarded ``meta`` takes
+        the same path a composer send takes there: ``attachment_meta`` bounds it
+        and the local arm passes it as ``_attachment_meta`` -- the one input the
+        runner's ``_turn_prompt_attachments`` builds the turn's image list from.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("chat-peer-1")  # as it is on the peer
+        state._slots[slot.key] = slot
+
+        ran: list[dict] = []
+
+        async def _reply(_state, run_slot, message, **kwargs):
+            ran.append({"message": message, **kwargs})
+            run_slot.append("assistant", "seen")
+            run_slot.append("done", "", "done", broadcast=False)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", _reply)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?relay=1",
+                json={"slot": slot.key, "message": _HOP_TEXT, "meta": dict(_HOP_ATTACHMENTS)},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+            assert "[DONE]" in body
+
+        assert len(ran) == 1
+        assert ran[0].get("_attachment_meta") == _HOP_ATTACHMENTS
+        assert sorted(ran[0].get("_attachments") or []) == sorted(
+            path for paths in _HOP_ATTACHMENTS.values() for path in paths
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shaped_upload_name_reaches_both_providers_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """The redactor rewrites a credential-shaped filename on every copy a
+        person reads; the copy the prompt builder OPENS must keep the real
+        path -- for the local runner (`_prompt_images`) and for the peer, whose
+        body is its provider input and who redacts its own copies."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        raw = "/tmp/uploads/ab12_ghp_" + "A" * 36 + ".png"
+        text = f"look\n\n![image]({raw})"
+
+        # Local arm.
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        local = _ChatSlot("chat-local-9")
+        state._slots[local.key] = local
+        ran: list[dict] = []
+
+        async def _reply(_state, run_slot, message, **kwargs):
+            ran.append(kwargs)
+            run_slot.append("done", "", "done", broadcast=False)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", _reply)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?ws=1",
+                json={"slot": local.key, "message": text, "meta": {"images": [raw]}},
+            )
+            assert resp.status == 200
+            assert local.task is not None
+            await local.task
+        assert ran[0].get("_prompt_images") == [raw]
+        assert ran[0]["_attachment_meta"]["images"] != [raw]
+        assert "ghp_" not in local.messages[-2]["meta"]["images"][0]  # the appended user row
+
+        # Remote arm.
+        remote = _remote_slot("chat-remote-9")
+        state._slots[remote.key] = remote
+        state.instances_manager = _connected_manager()
+        relayed: list[dict] = []
+
+        async def _record(_state, _slot, message, **kwargs):
+            relayed.append(kwargs)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.relay_remote_turn", _record)
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?ws=1",
+                json={"slot": remote.key, "message": text, "meta": {"images": [raw]}},
+            )
+            assert resp.status == 200
+            assert remote.task is not None
+            await remote.task
+        assert relayed[0]["attachments"]["images"] == [raw]
+
+
 class TestRelayedSendToBusyPeerSlotIsRefused:
     """F2: on the peer, a busy slot must 409 a ``relay=1`` send, not queue it.
 

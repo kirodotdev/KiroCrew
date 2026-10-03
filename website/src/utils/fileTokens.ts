@@ -623,11 +623,11 @@ export function prepareSendPayload(raw: string, pendingFiles: string[]): SendPay
   // on every surface that replays stored content — dashboard re-render after a
   // turn, gateway restart, Slack replay, exports — not just the in-memory
   // optimistic bubble. The extra blank line is safe for image attachment: the
-  // ACP path (kiro-cli) extracts images in AcpClient._send_prompt by matching
-  // the absolute file path and inlines them as a base64 `image` content block.
-  // It is newline-agnostic and pulls the image into its own content block, so
-  // the surrounding whitespace never changes what the model receives. The
-  // caption keeps a single '\n' to its appended [attached_file N] tokens.
+  // picture reaches the model through the send's `meta.images` list (the
+  // gateway builds one image block per entry and never scans the text for
+  // paths), so the surrounding whitespace never changes what the model
+  // receives. The caption keeps a single '\n' to its appended
+  // [attached_file N] tokens.
   const textBody = [llmRaw, unreferencedTokens].filter(Boolean).join('\n')
   return {
     txt: [imgMd, textBody].filter(Boolean).join('\n\n'),
@@ -646,13 +646,77 @@ export function prepareSendPayload(raw: string, pendingFiles: string[]): SendPay
 const IMG_LINE_INNER = /!\[image\]\(((?:<(?:\\.|[^\\>])*>)|[\w/.@:~-]+)\)/
 /** One producer image line, anchored to the whole string (per-line re-exec). */
 const IMG_LINE_RE = new RegExp(`^${IMG_LINE_INNER.source}$`)
-/** The producer's whole image block: `txt = [imgMd, textBody].join('\n\n')`
+/** Any own-line `![image](dest)`, whatever the destination spells. Counting
+ *  visible pictures with IMG_LINE_RE instead would read a destination the
+ *  server redacted (brackets and a space) as no picture at all. */
+const IMG_LINE_ANY_RE = /^!\[image\]\(.+\)$/
+
+/** The pictures a user row's content shows as own-line `![image](dest)` lines,
+ *  in content order. The dashboard composer writes them as a leading block and
+ *  Mochi's composer appends them after the text, so a position check would
+ *  miss one of the two. */
+export interface RowImageLines {
+  paths: string[]
+  /** Image lines the producer grammar cannot decode (a destination the server
+   *  redacted). Folded into `paths` they would be indistinguishable from a row
+   *  that never had a picture. */
+  unreadable: number
+}
+
+export function parseImageLines(content: string): RowImageLines {
+  const paths: string[] = []
+  let unreadable = 0
+  for (const line of content.split('\n')) {
+    if (!IMG_LINE_ANY_RE.test(line)) continue
+    const dest = IMG_LINE_RE.exec(line)?.[1]
+    if (dest === undefined) unreadable += 1
+    else paths.push(mdImageDestToPath(dest))
+  }
+  return { paths, unreadable }
+}
+
+/** The leading image block of a queued entry, claimed by EXACT composition
+ *  against the entry's own `images` list: a line is an image line when it is
+ *  `![image](path)` or `![image](mdImageDest(path))` for a listed path. The
+ *  grammar alone would reject a destination the server redacted into a spelling
+ *  with brackets and a space, yet the server resolves that spelling back to the
+ *  upload, so staging the listed string is what lets the resend carry the
+ *  picture. The block is the producer's: `txt = [imgMd, textBody].join('\n\n')`
  *  puts every image line at the very START of the content, one per line,
  *  terminated by the join's blank line (or end of content when the body is
- *  empty). The terminator is consumed by the match so removing the block
- *  leaves the body byte-exact — including a body that itself begins with a
- *  newline (an expanded paste). */
-const IMG_BLOCK_RE = new RegExp(`^(?:${IMG_LINE_INNER.source})(?:\n(?:${IMG_LINE_INNER.source}))*(?:\n\n|$)`)
+ *  empty). The terminator is part of `length`, so removing the block leaves the
+ *  body byte-exact, including a body that itself begins with a newline (an
+ *  expanded paste). `canonical` is the same block as the producer spells it,
+ *  which is what the round-trip arbiter must compare against: a listed spelling
+ *  the producer `<…>`-wraps re-serialises wrapped, and the list, not the
+ *  grammar, is what says it names the same picture. */
+function claimImageBlock(
+  content: string, images: readonly string[],
+): { paths: string[]; length: number; canonical: string } | null {
+  const spellings = new Map<string, string>()
+  for (const image of images) {
+    const path = normalizeWindowsPath(image)
+    spellings.set(`![image](${image})`, path)
+    spellings.set(`![image](${mdImageDest(image)})`, path)
+  }
+  const paths: string[] = []
+  let end = 0
+  for (const line of content.split('\n')) {
+    const path = spellings.get(line)
+    if (path === undefined) break
+    paths.push(path)
+    end += line.length + 1
+  }
+  if (!paths.length) return null
+  end -= 1
+  const terminator = end === content.length ? '' : content.startsWith('\n\n', end) ? '\n\n' : null
+  if (terminator === null || !paths.every((p) => IMG_EXT.test(p) && RESTORABLE_PATH_RE.test(p))) return null
+  return {
+    paths,
+    length: end + terminator.length,
+    canonical: paths.map((p) => `![image](${mdImageDest(p)})`).join('\n') + terminator,
+  }
+}
 
 /** A path shape the send path could actually have serialized: absolute POSIX
  *  (which also covers the producer's forward-slashed UNC form) or a Windows
@@ -683,14 +747,12 @@ export interface RestoredComposerState {
  * behavior was).
  *
  * Provably lossless claims, and nothing more:
- *  - The producer's LEADING image block — `![image](dest)` lines at the very
- *    start of the content, one per line, ending at the `\n\n` paragraph
- *    break `prepareSendPayload` joins with (or at end of content). Claimed
- *    all-or-nothing: every line must recover an absolute image path, since
- *    the producer never emits anything else there. mdImageDest's `<…>` wrap
- *    makes each destination boundary exact, spaces included. An own-line
- *    image ANYWHERE ELSE is the user's own markdown and stays verbatim —
- *    position alone distinguishes producer output from user content.
+ *  - The producer's LEADING `![image](dest)` block, and only when `images`
+ *    (the structured list the send carried as `meta.images`) composes every
+ *    line in it — each line is a listed path in its raw or its mdImageDest
+ *    spelling (`claimImageBlock`). Image-shaped prose alone is not evidence
+ *    of a staged picture: a typed image line stays verbatim, as the gateway
+ *    treats it.
  *  - An own-line `[attached_file N] <token>` whose remainder is a single
  *    whitespace-free token, with N ≥ 1 (the producer indexes from 1) and N
  *    unclaimed (the producer emits each index once) and the path absolute.
@@ -733,24 +795,18 @@ export interface RestoredComposerState {
  * entry without a list (a legacy entry, an older gateway) takes the shape
  * rules above unchanged. The round-trip arbiter gates both paths.
  */
-export function restoreQueuedContent(content: string, files?: readonly string[]): RestoredComposerState {
+export function restoreQueuedContent(
+  content: string, files?: readonly string[], images?: readonly string[],
+): RestoredComposerState {
   const staged: string[] = []
   let text = content
+  let expected = content
 
-  // Image lines are claimed ONLY as the producer's leading block, and only
-  // all-or-nothing: prepareSendPayload never emits an image line anywhere
-  // else, and never emits one with a relative or non-image path — so a block
-  // failing either test is foreign text (the user's own markdown) and stays
-  // verbatim, as does an own-line image later in the content. The block match
-  // consumes its own `\n\n` terminator, so nothing is stripped afterwards.
-  const block = IMG_BLOCK_RE.exec(content)
+  const block = images?.length ? claimImageBlock(content, images) : null
   if (block) {
-    const lines = block[0].replace(/\n+$/, '').split('\n')
-    const paths = lines.map((l) => mdImageDestToPath(IMG_LINE_RE.exec(l)?.[1] ?? ''))
-    if (paths.every((p) => IMG_EXT.test(p) && RESTORABLE_PATH_RE.test(p))) {
-      staged.push(...paths)
-      text = content.slice(block[0].length)
-    }
+    staged.push(...block.paths)
+    text = content.slice(block.length)
+    expected = block.canonical + text
   }
 
   const claims: Array<{ path: string; matched: string }> = []
@@ -785,18 +841,45 @@ export function restoreQueuedContent(content: string, files?: readonly string[])
 
   // FINAL ARBITER — the definition of lossless, applied literally: a claim
   // stands only if re-serializing the restored state reproduces the original
-  // content BYTE-FOR-BYTE. Shape rules above are only candidate generators;
-  // this gate is what actually proves the round trip. It rejects what no
-  // shape rule can see locally: a marker the producer put mid-text (an
-  // own-line @-mention) re-serializes as an APPENDED token, reordering the
-  // user's words around the attachment; an index that cannot renumber
-  // identically; any residue the removals left. Anything that fails the
-  // round trip stays fully verbatim — never worse than the base behaviour.
+  // content BYTE-FOR-BYTE, the one exception being a claimed image line whose
+  // listed spelling the producer `<…>`-wraps (`expected` carries the wrapped
+  // form). Shape rules above are only candidate generators; this gate is what
+  // actually proves the round trip. It rejects what no shape rule can see
+  // locally: a marker the producer put mid-text (an own-line @-mention)
+  // re-serializes as an APPENDED token, reordering the user's words around the
+  // attachment; an index that cannot renumber identically; any residue the
+  // removals left. Anything that fails the round trip stays fully verbatim —
+  // never worse than the base behaviour.
   const dedupedFiles = [...new Set(staged)]
-  if (dedupedFiles.length && prepareSendPayload(text, dedupedFiles).txt !== content) {
-    return { text: content, files: [] }
+  if (dedupedFiles.length) {
+    const reserialized = prepareSendPayload(text, dedupedFiles).txt
+    // With the send's own list naming each marker, a marker the user placed
+    // mid-text re-serializes appended: only the marker moved, never the words,
+    // so the claim stands when the texts agree with those markers removed.
+    const claimedPaths = files?.length ? claims.map((c) => c.path) : []
+    if (
+      reserialized !== expected
+      && (!claimedPaths.length
+        || withoutMarkerLines(reserialized, claimedPaths) !== withoutMarkerLines(expected, claimedPaths))
+    ) {
+      return { text: content, files: [] }
+    }
   }
   return { text, files: dedupedFiles }
+}
+
+// An own-line attachment marker and the path it names, any index.
+const MARKER_LINE_RE = /^\[attached_file \d+\] (.+?)[ \t]*$/
+
+function withoutMarkerLines(content: string, paths: readonly string[]): string {
+  const owned = new Set(paths)
+  return content
+    .split('\n')
+    .filter((line) => {
+      const m = MARKER_LINE_RE.exec(line)
+      return !(m && owned.has(m[1]))
+    })
+    .join('\n')
 }
 
 /* ------------------------------------------------------------------------- */

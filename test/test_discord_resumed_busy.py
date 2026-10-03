@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
-from test_discord import _prime_live
+from test_discord import _PNG, _prime_live
 from test_discord_sessions import _bind_to_chat1, _dispatcher, _log, _message
 
 from kiro_crew.dashboard import channel_handoff as ch
@@ -363,6 +363,140 @@ async def test_a_message_with_attachments_is_never_steered(tmp_path) -> None:
     assert enqueued == []
     assert any("attachment" in t for t in _sent_texts(client)), _sent_texts(client)
     assert any("busy" in t for t in _sent_texts(client)), _sent_texts(client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_raw_attachments", [False, True])
+async def test_a_structured_picture_queues_instead_of_steering(
+    tmp_path, monkeypatch, has_raw_attachments
+) -> None:
+    from kiro_crew.dashboard.chat_delivery import attachment_meta
+    from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+    from kiro_crew.prompt_attachments import image_attachments
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", tmp_path / "uploads")
+    picture = tmp_path / "picture.png"
+    picture.write_bytes(_PNG)
+    steer_client = _steerable()
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=steer_client
+    )
+    msg = _message(f"look at this\n{picture}")
+    msg.prompt_attachments = image_attachments([str(picture)])
+    if has_raw_attachments:
+        msg.attachments = [str(picture)]
+
+    await dispatcher.handle_message(msg)
+
+    steer_client.steer.assert_not_awaited()
+    (entry,) = slot._queue
+    (path,) = entry[PROMPT_IMAGES_ENTRY_KEY]
+    assert entry["meta"]["images"] == attachment_meta({"images": [path]})["images"]
+    assert entry["_directive_user_origin"] is True
+    assert entry["_directive_channel_origin"] is True
+    assert slot._pending_steers == []
+    assert slot._steer_attachment_meta == {}
+    assert slot._steer_audience_fences == {}
+    assert enqueued == []
+    assert sessions.last_key == ""
+    assert any("Queued" in text for text in _sent_texts(client))
+
+
+@pytest.mark.asyncio
+async def test_a_queued_structured_picture_outlives_transport_cleanup(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+    from kiro_crew.messaging.attachments import cleanup
+    from kiro_crew.prompt_attachments import image_attachments
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    picture = tmp_path / "download.png"
+    payload = _PNG
+    picture.write_bytes(payload)
+    steer_client = _steerable()
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=steer_client
+    )
+    msg = _message(f"!queue look at this\n{picture}")
+    msg.prompt_attachments = image_attachments([str(picture)])
+
+    await dispatcher.handle_message(msg)
+    cleanup([str(picture)])
+
+    assert not picture.exists()
+    steer_client.steer.assert_not_awaited()
+    (entry,) = slot._queue
+    (adopted,) = entry[PROMPT_IMAGES_ENTRY_KEY]
+    assert Path(adopted).parent == uploads
+    assert Path(adopted).read_bytes() == payload
+    assert str(picture) not in entry["content"]
+    state.subagents = None
+    slot.task = None
+    run_chat = MagicMock()
+    monkeypatch.setattr(cr, "_run_chat", run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", MagicMock(return_value=MagicMock()))
+
+    assert await cr._start_next_queued_turn(state, slot) is True
+    assert run_chat.call_args.kwargs["_prompt_images"] == [adopted]
+    assert Path(adopted).read_bytes() == payload
+    assert slot._queue == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_change", ["moved", "idle", "closing", "full"])
+async def test_picture_adoption_rechecks_the_target(tmp_path, monkeypatch, target_change):
+    from kiro_crew.prompt_attachments import image_attachments
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    picture = tmp_path / "download.png"
+    picture.write_bytes(_PNG)
+    state = _make_state(tmp_path)
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    slot._acp_client = _steerable()
+    adopt = ch.adopt_attachment_copies
+
+    async def adopt_then_change(attachments):
+        copies = await adopt(attachments)
+        if target_change == "moved":
+            state._slots.pop(slot.key)
+        elif target_change == "idle":
+            slot.task = None
+        elif target_change == "closing":
+            slot.begin_close()
+        else:
+            slot._queue[:] = [
+                {"id": str(index), "content": "waiting"}
+                for index in range(ch.MAX_LIVE_QUEUE_ENTRIES)
+            ]
+        return copies
+
+    monkeypatch.setattr(ch, "adopt_attachment_copies", adopt_then_change)
+    outcome = await ch.hand_to_resumed_slot(
+        state,
+        "dashboard:chat-1",
+        "look at the picture",
+        mode="steer",
+        has_attachments=True,
+        prompt_attachments=image_attachments([str(picture)]),
+    )
+
+    assert outcome.kind == ch.HANDOFF_REFUSED
+    assert (
+        outcome.reason
+        == {
+            "moved": ch.REFUSED_MOVED,
+            "idle": ch.REFUSED_IDLE,
+            "closing": ch.REFUSED_CLOSING,
+            "full": ch.REFUSED_QUEUE_FULL,
+        }[target_change]
+    )
+    assert list(uploads.iterdir()) == []
+    assert picture.read_bytes() == _PNG
+    assert all(entry["content"] == "waiting" for entry in slot._queue)
+    slot._acp_client.steer.assert_not_awaited()
 
 
 @pytest.mark.asyncio

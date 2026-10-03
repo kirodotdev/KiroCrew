@@ -97,6 +97,7 @@ from kiro_crew.messaging.queue_drain import (
     tag_entry,
 )
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.session_lifecycle import (
@@ -659,9 +660,14 @@ class WebexDispatcher:
         # files is never steered (steer forwards TEXT ONLY and would drop every
         # file), which the busy path above already guarantees by queueing it.
         temp_paths: list[str] = []
+        # The ingested images as the structured list the turn hands to the
+        # provider -- the ONLY way they reach the model; the paths written into
+        # the text are for agent file tools.
+        prompt_attachments: tuple[PromptAttachment, ...] = ()
         if inbound.file_urls:
             ingested = await process_webex_attachments(self.client, inbound)
             temp_paths = list(ingested.temp_paths)
+            prompt_attachments = ingested.prompt_attachments()
             body = append_attachment_context(body, ingested)
 
         renderer = WebexRenderer(
@@ -715,6 +721,7 @@ class WebexDispatcher:
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=body,
+                    attachments=prompt_attachments,
                     renderer=renderer,
                     # A GROUP space is a shared audience: the sender is allow-listed
                     # but the other members are not, and the operator's memory,

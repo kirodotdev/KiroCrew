@@ -650,7 +650,7 @@ class TestIngestMedia:
     @pytest.mark.asyncio
     async def test_no_attachments_passes_the_text_through_untouched(self) -> None:
         d = _dispatcher(FakeSessions(), FakeClient())
-        assert await d._ingest_media(_inbound("hi"), "hi", "Wei") == ("hi", [])
+        assert await d._ingest_media(_inbound("hi"), "hi", "Wei") == ("hi", [], ())
 
     @pytest.mark.asyncio
     async def test_ingested_material_is_appended_and_temp_paths_returned(
@@ -668,10 +668,12 @@ class TestIngestMedia:
         inbound = _inbound("what is this?", attachments=[_pair()])
         d = _dispatcher(FakeSessions(), FakeClient())
 
-        text, temps = await d._ingest_media(inbound, "what is this?", "Wei")
+        text, temps, attachments = await d._ingest_media(inbound, "what is this?", "Wei")
 
         assert text is not None and "what is this?" in text
         assert temps == [str(shot)]
+        # The picture reaches the model through this list, not the text.
+        assert [a.path for a in attachments] == [str(shot)]
         assert inbound.attachments == [], "consumed attachments must be cleared"
 
     @pytest.mark.asyncio
@@ -686,7 +688,7 @@ class TestIngestMedia:
         inbound = _inbound("look", attachments=[_pair()])
         d = _dispatcher(FakeSessions(), FakeClient())
 
-        text, temps = await d._ingest_media(inbound, "look", "Wei")
+        text, temps, _ = await d._ingest_media(inbound, "look", "Wei")
 
         assert text is not None
         assert "look" in text and "附件无法读取" in text
@@ -702,7 +704,7 @@ class TestIngestMedia:
 
         monkeypatch.setattr("kiro_crew.wecom.transport_dispatch.process_wecom_attachments", boom)
         d = _dispatcher(FakeSessions(), FakeClient())
-        text, _ = await d._ingest_media(_inbound("", attachments=[_pair()]), "", "Wei")
+        text, _, _ = await d._ingest_media(_inbound("", attachments=[_pair()]), "", "Wei")
         assert text == "[附件无法读取]"
 
     @pytest.mark.asyncio
@@ -711,7 +713,7 @@ class TestIngestMedia:
         d = _dispatcher(FakeSessions(busy=True), client)
         inbound = _inbound("look", attachments=[_pair()])
 
-        text, temps = await d._ingest_media(inbound, "look", "Wei")
+        text, temps, _ = await d._ingest_media(inbound, "look", "Wei")
 
         assert text == "look", "the caption still runs; only the attachment is declined"
         assert temps == []
@@ -723,7 +725,7 @@ class TestIngestMedia:
     ) -> None:
         client = FakeClient()
         d = _dispatcher(FakeSessions(busy=True), client)
-        text, _ = await d._ingest_media(_inbound("", attachments=[_pair()]), "", "Wei")
+        text, _, _ = await d._ingest_media(_inbound("", attachments=[_pair()]), "", "Wei")
         assert text is None, "nothing to run, so no turn"
         assert any("重新发送附件" in s for s in client.said)
 
@@ -748,7 +750,9 @@ class TestIngestMedia:
         client = FakeClient()
         d = _dispatcher(sessions, client)
 
-        text, temps = await d._ingest_media(_inbound("look", attachments=[_pair()]), "look", "Wei")
+        text, temps, _ = await d._ingest_media(
+            _inbound("look", attachments=[_pair()]), "look", "Wei"
+        )
 
         assert temps == [], "the caller must not be handed files this frame deleted"
         assert not shot.exists(), "the decrypted plaintext must not be left on disk"
@@ -771,7 +775,9 @@ class TestIngestMedia:
         )
         d = _dispatcher(FakeSessions(), FakeClient())
 
-        text, temps = await d._ingest_media(_inbound("look", attachments=[_pair()]), "look", "Wei")
+        text, temps, _ = await d._ingest_media(
+            _inbound("look", attachments=[_pair()]), "look", "Wei"
+        )
 
         assert text is not None
         assert "look" in text, "the caption must survive"
@@ -787,7 +793,7 @@ class TestIngestMedia:
             "kiro_crew.wecom.transport_dispatch.process_wecom_attachments", fake_process
         )
         d = _dispatcher(FakeSessions(), FakeClient())
-        text, _ = await d._ingest_media(_inbound("", attachments=[_pair()]), "", "Wei")
+        text, _, _ = await d._ingest_media(_inbound("", attachments=[_pair()]), "", "Wei")
         assert text and "too large" in text
 
 

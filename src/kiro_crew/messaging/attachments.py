@@ -12,7 +12,9 @@ the model differently:
 ===========  =========================================================
 class        becomes
 ===========  =========================================================
-IMAGE        a local path the ACP prompt path inlines as an image block
+IMAGE        a local path the channel hands to the provider as a STRUCTURED
+             attachment (:meth:`IngestResult.prompt_attachments`); the ACP
+             prompt path inlines it as an image block from that list alone
              (see :mod:`kiro_crew.acp.prompt_blocks`)
 TEXT         redacted, truncated text inlined into the prompt
 DOCUMENT     text extracted via :mod:`kiro_crew.doc_parser`, then as TEXT
@@ -45,6 +47,7 @@ from dataclasses import dataclass, field
 from kiro_crew import transcribe
 from kiro_crew.doc_parser import extract_text, is_parseable_document
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+from kiro_crew.prompt_attachments import PromptAttachment, bounded_name, image_attachments
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -123,11 +126,32 @@ class IngestResult:
     rejections: list[str] = field(default_factory=list)
     #: Byte-identical opaque files for agent tools. Caller deletes after the turn.
     file_paths: list[str] = field(default_factory=list)
+    #: The images as the structured records the provider seam takes, one per
+    #: entry of ``image_paths`` in the same order: the temp path and the
+    #: sender's ORIGINAL filename (what the model is told it was given -- a
+    #: ``mkstemp`` basename says nothing). Last, so positional construction of
+    #: the older fields is unchanged.
+    image_attachments: list[PromptAttachment] = field(default_factory=list)
 
     @property
     def temp_paths(self) -> list[str]:
         """Every path the caller is responsible for cleaning up."""
         return [*self.image_paths, *self.audio_paths, *self.file_paths]
+
+    def prompt_attachments(self) -> tuple[PromptAttachment, ...]:
+        """The ingested images as the structured list the provider seam takes.
+
+        This list, not the path text :func:`append_attachment_context` writes,
+        is what makes an image reach the model: the prompt builder emits image
+        blocks from the channel's attachment list alone and never scans the
+        text. Opaque files stay out of it -- they are for agent tools. The
+        records ingestion built (original filename) are handed out as they
+        are; a result assembled from paths alone gets records carrying the
+        path's basename.
+        """
+        if self.image_attachments:
+            return tuple(self.image_attachments)
+        return image_attachments(self.image_paths)
 
 
 def safe_suffix(hint: str, default: str = "bin") -> str:
@@ -196,12 +220,14 @@ _MIME_SUFFIX = {
     "image/bmp": ".bmp",
 }
 
-#: Suffixes the ACP encoder inlines as an image, deriving mimeType from the
-#: suffix alone. An opaque file must never keep one: the sender picks name and
-#: mimetype independently, so ``photo.png`` declared ``application/octet-stream``
-#: would reach the image sink without passing :func:`sniff_image_mime`. Kept in
-#: sync with ``acp.prompt_blocks.IMAGE_MEDIA_TYPES`` by a contract test rather
-#: than an import, so this module's dependency surface stays unchanged.
+#: Suffixes of the raster types the ACP encoder can inline. An opaque file is
+#: kept out of the image sink by never entering ``image_paths`` -- the encoder
+#: reads no path out of the text -- and, as a second fence, never keeps one of
+#: these suffixes on its temp path: the sender picks name and mimetype
+#: independently, so ``photo.png`` declared ``application/octet-stream`` must not
+#: look like an image to any suffix-typed reader. Kept in sync with
+#: ``acp.prompt_blocks.IMAGE_MEDIA_TYPES`` by a contract test rather than an
+#: import, so this module's dependency surface stays unchanged.
 _INLINEABLE_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 
@@ -408,6 +434,14 @@ async def ingest_attachments(
                         except OSError:
                             logger.debug("%s: could not retype %s", source, dest, exc_info=True)
                     out.image_paths.append(dest)
+                    # The record the turn hands the provider: the temp path the
+                    # bytes are read from and the sender's own filename as what
+                    # the model is told it was given -- bounded to one line HERE,
+                    # so the stored field never retains the raw sender value. It
+                    # carries no declared type; the prompt builder sniffs it.
+                    out.image_attachments.append(
+                        PromptAttachment(path=dest, name=bounded_name(att.name))
+                    )
                     dest = ""  # ownership transferred to the caller
                     _audit(source, f"{source}.attachment_download", "success", att.name)
 
@@ -623,10 +657,14 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
 def append_attachment_context(text: str, result: IngestResult) -> str:
     """Append prompt-ready attachment material to the user's message text.
 
-    Image and opaque-file paths are appended as bare lines. The ACP encoder
-    inlines recognized image paths as image content blocks; every other path remains
-    text for agent file tools. Text, metadata and rejection blocks follow, separated
-    by blank lines for prompt readability.
+    Image and opaque-file paths are appended as bare lines so agent file tools
+    can open them. The path text is NOT what puts an image in front of the
+    model: the ACP encoder builds image blocks from the channel's structured
+    list (:meth:`IngestResult.prompt_attachments`) alone and never scans the
+    text, so a transport must hand that list to the turn as well. Where it
+    does, the encoder rewrites each inlined path here to ``[image: <name>]``.
+    Text, metadata and rejection blocks follow, separated by blank lines for
+    prompt readability.
 
     Channel-neutral: every transport that ingests attachments uses this same
     layout, so the model sees a consistent attachment presentation regardless

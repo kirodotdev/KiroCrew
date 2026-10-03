@@ -3341,6 +3341,7 @@
         "ask_placeholder": "问问{{name}}…",
         "edit_cancel": "取消",
         "edit_mode": "编辑中 — 发送以替换原消息，或取消",
+        "edit_pictures_unrecoverable": "未能重新发送编辑后的消息。你输入的文字仍在输入框中，消息的图片也保留着。再次发送即可重试。",
         "load_earlier": "加载更早的消息",
         "scroll_bottom": "滚动到最新",
         "send": "发送",

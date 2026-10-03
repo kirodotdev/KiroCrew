@@ -1341,7 +1341,7 @@ names:
 | Owner | Responsibility |
 |---|---|
 | `turn_context` | memory-mode fold into the execution context, pending context drain and detach, folder steering gate |
-| `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync |
+| `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync, the turn's structured image list |
 | `model_fallback` | session model default and settle, served-model sync, fallback chain, swap and restore probe, refusal fallback hop |
 | `tool_approval` | PreToolUse block reasons, spec-hook notices, credential hints, trust and auto-approve policy, name-grant refusals |
 | `mcp_session` | session MCP report and the session-init OAuth drain |
@@ -1534,6 +1534,8 @@ Contract:
 Rationale for each choice is in the three docstrings, not repeated here.
 
 ### Mid-Turn Steer (dashboard transcript contract)
+
+Image attachments force the queue path for a busy dashboard send, including manual Steer and Auto without consulting the decision oracle: `_session/steer` carries text only, so a mid-turn message with pictures would lose them.
 
 A steer (`POST /api/chat` with `steer: true` while the slot is running) injects
 the message into the in-flight turn via kiro-cli `_session/steer`. kiro-cli does

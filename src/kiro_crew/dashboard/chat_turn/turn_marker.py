@@ -6,6 +6,8 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.slot_queue_repository import ALL_ATTACHMENT_META_KEYS
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
@@ -34,10 +36,14 @@ def _local_turn_generation_for(slot: _ChatSlot) -> int:
 
 
 # Keys of the opening row copied into the marker: the row's identity, its
-# attachment lists and, for an inject, the kind that makes the classifier
-# count it as a turn opener. Everything else about the row is recomputed by
-# ``_ChatSlot.append`` or belongs to the process that wrote it.
-_LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
+# attachment lists -- every list of ``ALL_ATTACHMENT_META_KEYS``, ``images``
+# included, since the picture a send attached rides ``meta.images`` and nothing
+# else, and a restored opener without it is a row whose later regenerate or
+# edit-resend cannot replay the image -- and, for an inject, the kind that
+# makes the classifier count it as a turn opener. Everything else about the row
+# is recomputed by ``_ChatSlot.append`` or belongs to the process that wrote
+# it. Mirrors ``chat_persistence._LOCAL_TURN_PROMPT_META_KEYS``.
+_LOCAL_TURN_PROMPT_META_KEYS = ("mid", *ALL_ATTACHMENT_META_KEYS, "injectKind")
 
 
 #: Roles whose row opens a turn by itself. ``inject`` opens one only with a

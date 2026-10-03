@@ -24,19 +24,29 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.chat_attachments import (
+    AttachmentAdoptionError,
+    adopt_attachment_copies,
+    rewrite_adopted_paths,
+)
 from kiro_crew.dashboard.chat_delivery import (
     MAX_PENDING_STEERS,
     STEER_REQUEUED,
     STEER_STEERED,
     _queued_entry_id,
     _row_has_delivery_id,
+    attachment_meta,
     queue_for_next_turn,
     steer_into_running_turn,
 )
 from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
+
+if TYPE_CHECKING:
+    from kiro_crew.prompt_attachments import PromptAttachment
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +66,7 @@ REFUSED_CLOSING = "closing"
 REFUSED_REMOTE = "remote"
 #: The lease is held, but not by the dashboard turn loop: the slot itself is idle.
 REFUSED_IDLE = "idle"
-#: The message carries attachments, which neither arm can carry.
+#: Attachments without owned copies cannot survive queued delivery.
 REFUSED_ATTACHMENTS = "attachments"
 #: The key stopped resolving to the slot the steer was handed to while the RPC
 #: was suspended: the slot was closed, or closed and recreated under the same key.
@@ -261,6 +271,7 @@ async def hand_to_resumed_slot(
     *,
     mode: str,
     has_attachments: bool,
+    prompt_attachments: tuple[PromptAttachment, ...] = (),
     channel_type: str = "",
     conversation_id: str = "",
     principal: str = "",
@@ -364,10 +375,7 @@ async def hand_to_resumed_slot(
     channel is told why. It is the one refusal left once the slot has taken the
     message past the admission gate.
 
-    Attachments are refused rather than queued without: ``_session/steer`` carries
-    text only, and the slot's queue cannot carry channel attachment material -- it
-    is downloaded into temp files owned by the consuming turn, and the dashboard
-    drain has no hook to own them. Refusing keeps the files with the user.
+    Only pre-ingested pictures can become owned uploads that survive transport cleanup.
 
     The whole hand-off -- gate, steer RPC, reconciliation, queue fallback -- runs
     as ONE task, held by a strong reference (``_HANDOFFS_IN_FLIGHT``) and awaited
@@ -399,6 +407,7 @@ async def hand_to_resumed_slot(
             text,
             mode=mode,
             has_attachments=has_attachments,
+            prompt_attachments=prompt_attachments,
             channel_type=channel_type,
             conversation_id=conversation_id,
             principal=principal,
@@ -417,6 +426,7 @@ async def _run_handoff(
     *,
     mode: str,
     has_attachments: bool,
+    prompt_attachments: tuple[PromptAttachment, ...],
     channel_type: str,
     conversation_id: str,
     principal: str,
@@ -428,13 +438,15 @@ async def _run_handoff(
         # ``slot is None`` is already ``REFUSED_NO_SLOT`` above; restated so the
         # slot reads as present from here on.
         return _refused(blocked or REFUSED_NO_SLOT)
-    if has_attachments:
+    if has_attachments and not prompt_attachments:
         return _refused(REFUSED_ATTACHMENTS)
 
     # circular import: session_control imports this package's modules at module level.
     from kiro_crew.dashboard.session_control import channel_recipient_meta, containment_meta
 
     recipient = channel_recipient_meta(channel_type, conversation_id, principal)
+    if prompt_attachments:
+        return await _queue_images(state, session_key, slot, text, recipient, prompt_attachments)
     # The identity this hand-off's text carries through every record the steer
     # leaves (see ``standing_after_move``). Minted here, not inside the steer, so
     # it is known on this side of the RPC.
@@ -551,7 +563,50 @@ async def _run_handoff(
     return _queue_arm(state, slot, text, recipient)
 
 
-def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> ResumedBusyOutcome:
+async def _queue_images(
+    state: Any,
+    session_key: str,
+    slot: Any,
+    text: str,
+    recipient: dict[str, Any],
+    attachments: tuple[PromptAttachment, ...],
+) -> ResumedBusyOutcome:
+    """Copies must outlive transport cleanup and stay available for transcript replay."""
+    if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
+        return _refused(REFUSED_QUEUE_FULL)
+    try:
+        adopted = await adopt_attachment_copies(attachments)
+    except AttachmentAdoptionError:
+        return _refused(REFUSED_ATTACHMENTS)
+    queued = False
+    try:
+        if live_dashboard_slot(state, session_key) is not slot:
+            return _refused(REFUSED_MOVED)
+        blocked = slot_unable_to_take(slot)
+        if blocked:
+            return _refused(blocked)
+        outcome = _queue_arm(
+            state,
+            slot,
+            rewrite_adopted_paths(text, adopted),
+            recipient,
+            prompt_images=[copy for _temp, copy in adopted],
+        )
+        queued = outcome.kind == HANDOFF_QUEUED
+        return outcome
+    finally:
+        if not queued:
+            await asyncio.to_thread(cleanup, [copy for _temp, copy in adopted])
+
+
+def _queue_arm(
+    state: Any,
+    slot: Any,
+    text: str,
+    recipient: dict[str, Any],
+    *,
+    prompt_images: list[str] | None = None,
+) -> ResumedBusyOutcome:
     """Append *text* to the slot's queue, refusing at the live queue's bound.
 
     The bound is read on the object the entry would land on, immediately before
@@ -576,5 +631,7 @@ def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> R
         directive_user_origin=True,
         directive_channel_origin=True,
         channel_recipient=recipient.get(CHANNEL_RECIPIENT_META_KEY),
+        attachments=attachment_meta({"images": prompt_images}) if prompt_images else None,
+        prompt_images=prompt_images,
     )
     return ResumedBusyOutcome(HANDOFF_QUEUED)

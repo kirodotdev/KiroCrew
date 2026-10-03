@@ -7,7 +7,7 @@ import functools
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any, AsyncContextManager
@@ -91,6 +91,7 @@ from kiro_crew.effort import (
 )
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.providers.base import (
     CancelOutcome,
     LLMEvent,
@@ -2418,15 +2419,23 @@ class AcpProvider(LLMProvider):
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
+    async def stream(
+        self, message: str, *, attachments: Sequence[PromptAttachment] = ()
+    ) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient):
             await self._client.ensure_ready()
+        # The channel's attachment list rides beside the text: bound onto the
+        # send callable so the essential-delivery seam, which only rewrites
+        # text, stays unchanged. Both client shapes accept the keyword.
+        send = (
+            functools.partial(self._client.stream_events, attachments=tuple(attachments))
+            if attachments
+            else self._client.stream_events
+        )
         async with aclosing(
-            self.essential_delivery.stream(
-                message, self._client.stream_events, lambda: self.context_incarnation
-            )
+            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)
