@@ -75,6 +75,20 @@ instead of the row simply disappearing.
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
+## Code Review Sage consolidation refusal
+
+`consolidate_apply` validates the merge before any catalog write, backup,
+candidate clearing, or audit append. The worker's text must parse as a ruleset;
+it is then redacted, and the redacted text must still parse and must contain no
+repeated `pattern_id(title, scope)` — uniqueness is judged on the text that
+would actually be stored, because redaction can erase the only difference
+between two titles. Any refusal returns `ok: false`; duplicate refusal also
+returns `duplicate_ids` and the colliding `duplicate_titles`, and names those
+titles in `error`, so the caller can merge each repeated title and scope into one
+rule before retrying. The existing rules and staged candidates remain intact.
+Different scopes may carry the same title. This guard does not identify semantic
+near-duplicates or choose between conflicting guidance.
+
 ## Dashboard Error Codes
 
 Dashboard JSON errors include a stable lower-snake `code` alongside advisory

@@ -486,8 +486,8 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
                       namespace: str | None = None,
                       candidate_ids: Sequence[str] | None = None) -> dict:
     """Atomically replace learned-patterns.md with the AI-merged content, then
-    clear the candidate. Refuses to write empty content (never wipes the ruleset
-    on a bad merge).
+    clear the candidate. Refuses to write empty, unparseable or duplicate-ID
+    content (never wipes the ruleset on a bad merge).
 
     The content is redacted here rather than at the caller because THIS is the
     persistence chokepoint. ``merged_md`` is written by the merge worker, which
@@ -500,6 +500,9 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
     """
     if not merged_md or not merged_md.strip():
         return {"ok": False, "error": "merged content is empty; refusing to overwrite learned-patterns.md"}
+    # Shape is judged on the worker's text as written: redaction is a storage
+    # transformation, and scrubbing a credential out of a heading must not be what
+    # decides whether the merge is a ruleset at all.
     if not parse_patterns(merged_md):
         # Non-empty prose is not a ruleset. Writing it would replace every pattern
         # with commentary and clear the candidate file in the same call, so the
@@ -507,7 +510,30 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
         return {"ok": False,
                 "error": "merged content has no recognizable patterns; "
                          "refusing to overwrite learned-patterns.md"}
-    merged_md = _redact(merged_md)
+    stored_md = _redact(merged_md)
+    stored_patterns = parse_patterns(stored_md)
+    if not stored_patterns:
+        # The redacted text is what gets stored, so a scrub that leaves no
+        # recognizable pattern is refused here rather than written and cleared.
+        return {"ok": False,
+                "error": "redaction left no recognizable patterns; "
+                         "refusing to overwrite learned-patterns.md"}
+    # Uniqueness is judged on the STORED text, not the worker's: redaction can erase
+    # the only difference between two titles (two distinct credentials both become
+    # the same tag), so a pre-redaction count can pass two patterns that land as one
+    # duplicate pair on disk.
+    counts = collections.Counter(p["id"] for p in stored_patterns)
+    duplicate_ids = sorted(pid for pid, count in counts.items() if count > 1)
+    if duplicate_ids:
+        # Titles, not just the content hashes: the caller's retry prompt and a human
+        # both need to know WHICH rules collided before they can merge them.
+        duplicate_set = set(duplicate_ids)
+        duplicate_titles = sorted({p["title"] for p in stored_patterns if p["id"] in duplicate_set})
+        named = "; ".join(duplicate_titles) if duplicate_titles else "see duplicate_ids"
+        return {"ok": False, "duplicate_ids": duplicate_ids,
+                "duplicate_titles": duplicate_titles,
+                "error": "merged content has duplicate pattern IDs; merge each "
+                         f"repeated title and scope into one rule and retry ({named})"}
     store.ensure_layout(root)
     staged = candidate_count(root, namespace)
     # Which candidates this merge is entitled to clear. The caller passes the set
@@ -515,7 +541,7 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
     # which still protects anything staged after this instant.
     if candidate_ids is None:
         candidate_ids = [p["id"] for p in list_candidate(root, namespace)]
-    body = merged_md if merged_md.endswith("\n") else merged_md + "\n"
+    body = stored_md if stored_md.endswith("\n") else stored_md + "\n"
     # The guards above check the merged text's shape, not that it kept every rule, so
     # keep the pre-merge ruleset: a merge that parses and still loses lessons is
     # recoverable from this copy and from nowhere else.
