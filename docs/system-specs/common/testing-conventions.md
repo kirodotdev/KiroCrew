@@ -4009,6 +4009,14 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+**An append-only log with two writers has no "last row".** The decision gate stops
+waiting for its own call row after a 50 ms write budget and lets the append finish in
+the background, so on a slow Windows runner the gate's row for a turn commits after the
+outcome row the runner awaited, and `_rows(tmp_path)[-1]` reads the wrong row
+(`KeyError: 'model_chosen'`). Select the row by a field only it carries, assert how many
+there are, and pin the reversed order with events: hold the early writer until the late
+one has committed (`test_the_outcome_row_is_read_when_the_call_row_lands_after_it`).
+
 **`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
 cancelled before its first tool call takes the one-shot auto-continue branch: it returns
 normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`
