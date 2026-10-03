@@ -165,6 +165,31 @@ class TestIsSensitiveResolvedPath:
         # here until it is read for both halves of that contract and added.
         assert _gate_call_sites() == _EXPECTED_GATE_CALL_SITES
 
+    def test_the_containment_gate_is_exported_on_the_facade(self) -> None:
+        from kiro_crew.security import _exports
+
+        assert "contains_sensitive_resolved_path" in _exports.EXPORTED_NAMES
+        assert (
+            security.contains_sensitive_resolved_path
+            is security.paths.contains_sensitive_resolved_path
+        )
+
+    def test_every_caller_of_the_containment_gate_is_enumerated(self) -> None:
+        # Same precondition, same reviewed list: this gate reads the OTHER
+        # direction (does a store lie beneath this directory) off anchors it
+        # resolves inline, so a caller on the event loop forfeits the same bound.
+        assert _containment_call_sites() == _EXPECTED_CONTAINMENT_CALL_SITES
+
+    def test_the_containment_gate_answers_the_bounded_gate(self, tmp_path) -> None:
+        # The pre-resolved route differs from the bounded one only in WHERE the
+        # anchors resolve, so the two must agree -- otherwise the walk's
+        # shortcut would admit what a bulk operation's gate refuses.
+        home = os.path.realpath(os.path.expanduser("~"))
+        for candidate in (home, os.path.realpath(tmp_path), os.path.realpath(os.sep)):
+            assert security.contains_sensitive_resolved_path(
+                candidate
+            ) is security.paths.path_contains_sensitive(candidate)
+
 
 # path relative to ``src`` -> number of ``is_sensitive_resolved_path`` calls.
 _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
@@ -181,11 +206,12 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # on the dashboard's path-probe pool worker, never the event loop -- resolving
     # the candidate there is what this endpoint must not do at all, since on Windows
     # it would follow a junction aimed at a share.
-    # ``_project_tree_entries``: every dot-name and every entry under a
-    # dot-directory in the non-git project-tree walk, each handed the
+    # ``_project_tree_entries``: the walk's own directory, and every entry of
+    # that directory the directory-level answers do not settle -- a link, or any
+    # entry when a store sits at or beneath the directory. Each is handed the
     # ``os.path.realpath`` computed on the line itself. The walk runs inside
     # ``api_project_tree``'s ``asyncio.to_thread`` worker, never the event loop.
-    "kiro_crew/dashboard/handlers/files.py": 4,
+    "kiro_crew/dashboard/handlers/files.py": 5,
     # ``_validate_spec_path``: ``validate_file_path`` has already rejected the
     # candidate without following a UNC/link-laundered target.  This call only
     # recovers the 403 classification for a lexically named sensitive path; an
@@ -218,8 +244,19 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     "kiro_crew/security/paths.py": 1,
 }
 
+# path relative to ``src`` -> number of ``contains_sensitive_resolved_path`` calls.
+_EXPECTED_CONTAINMENT_CALL_SITES: dict[str, int] = {
+    # ``_project_tree_entries``: once per directory the non-git project-tree
+    # walk visits, on the ``os.path.realpath`` of that directory. It is what
+    # lets the walk settle a whole directory of entries without a gate call per
+    # entry, and it runs inside ``api_project_tree``'s ``asyncio.to_thread``
+    # worker, never the event loop.
+    "kiro_crew/dashboard/handlers/files.py": 1,
+}
 
-def _gate_call_sites() -> dict[str, int]:
+
+def _call_sites(gate: str) -> dict[str, int]:
+    """Every call of *gate* under ``src``, by module, counting hand-offs by name."""
     import ast
 
     src = Path(skills_mod.__file__).resolve().parents[1]
@@ -235,14 +272,19 @@ def _gate_call_sites() -> dict[str, int]:
                 if isinstance(func, ast.Name)
                 else func.attr if isinstance(func, ast.Attribute) else ""
             )
-            handed_off = any(
-                isinstance(arg, ast.Name) and arg.id == "is_sensitive_resolved_path"
-                for arg in node.args
-            )
-            if name == "is_sensitive_resolved_path" or handed_off:
+            handed_off = any(isinstance(arg, ast.Name) and arg.id == gate for arg in node.args)
+            if name == gate or handed_off:
                 rel = path.relative_to(src).as_posix()
                 sites[rel] = sites.get(rel, 0) + 1
     return sites
+
+
+def _gate_call_sites() -> dict[str, int]:
+    return _call_sites("is_sensitive_resolved_path")
+
+
+def _containment_call_sites() -> dict[str, int]:
+    return _call_sites("contains_sensitive_resolved_path")
 
 
 class TestSkillWalkStaysOffThePool:
