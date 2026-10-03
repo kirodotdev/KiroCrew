@@ -532,7 +532,7 @@ async def test_interrupted_provider_switch_restores_selection(
     rollback_started, release_rollback, rollback_finished = (threading.Event() for _ in range(3))
     retired_after_writer = []
     publish = chat_runner.record_provider_agent_switch
-    restore = chat_runner.restore_agent_selection
+    restore = chat_runner.restore_session_binding
 
     def gated_publication(*args):
         try:
@@ -554,7 +554,7 @@ async def test_interrupted_provider_switch_restores_selection(
         finally:
             rollback_finished.set()
 
-    monkeypatch.setattr(chat_runner, "restore_agent_selection", observed_restore)
+    monkeypatch.setattr(chat_runner, "restore_session_binding", observed_restore)
 
     async def switch(*args, **kwargs):
         yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=later_agent)
@@ -1661,7 +1661,7 @@ async def test_cancelled_rebound_cleanup_finishes_before_later_owner(
     cancel_results = []
     later_task = None
     record_owner = chat_handlers._record_explicit_agent_selection
-    restore_selection = chat_handlers.restore_agent_selection
+    restore_selection = chat_handlers.restore_session_binding
     update_metadata = state.conversation_log.update_metadata
 
     class ObservedSlotLock(asyncio.Lock):
@@ -1688,12 +1688,12 @@ async def test_cancelled_rebound_cleanup_finishes_before_later_owner(
             cleanup_started.set()
             assert release_cleanup.wait(15), "Rollback worker was not released"
 
-    def restore_protected(key, change):
-        if key != history_key or change is None:
-            return restore_selection(key, change)
+    def restore_protected(snapshot):
+        if snapshot is None or snapshot.session_key != history_key:
+            return restore_selection(snapshot)
         try:
             pause_cleanup("selection")
-            return restore_selection(key, change)
+            return restore_selection(snapshot)
         finally:
             selection_finished.set()
 
@@ -1707,7 +1707,7 @@ async def test_cancelled_rebound_cleanup_finishes_before_later_owner(
             history_finished.set()
 
     monkeypatch.setattr(chat_handlers, "_record_explicit_agent_selection", rebind_after_publication)
-    monkeypatch.setattr(chat_handlers, "restore_agent_selection", restore_protected)
+    monkeypatch.setattr(chat_handlers, "restore_session_binding", restore_protected)
     monkeypatch.setattr(state.conversation_log, "update_metadata", restore_history)
 
     def owner_request(agent):

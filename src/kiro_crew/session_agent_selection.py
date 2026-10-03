@@ -5,6 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from dataclasses import replace as dataclass_replace
 from typing import Any
 
@@ -22,6 +26,13 @@ from kiro_crew.execution_context import (
     member_config_for_id,
     read_session_execution,
     resolve_member_execution,
+    restore_live_session_execution,
+)
+from kiro_crew.history import (
+    BINDING_FIELDS,
+    METADATA_LINE_CORRUPT,
+    METADATA_LINE_READABLE,
+    ConversationLog,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 
@@ -215,39 +226,170 @@ def record_agent_selection(
     return prior.to_record() if prior else None, execution.to_record()
 
 
-def restore_agent_selection(session_key: str, change: SelectionChange | None) -> None:
-    if change is None:
-        return
-    from kiro_crew.atomic_write import atomic_write
-    from kiro_crew.history import ConversationLog
+@dataclass
+class BindingSnapshot:
+    """A session's binding as it was before a sequence of selection writes.
 
-    prior, published = change
-    from kiro_crew.execution_context import restore_live_session_execution
+    ``fields`` holds the raw values of :data:`BINDING_FIELDS` that the metadata
+    line carried, absent ones omitted, so a legacy record with ``memory_store``
+    and ``memory_mode`` but no ``execution_context`` is restored as that record.
+    ``durable`` is False when the line was corrupt: whatever write follows heals
+    it, and the unknown original cannot be put back. ``published`` collects every execution
+    record the writes are known to have committed, the compare-and-set set for
+    the restore, and ``in_flight`` is set while a publishing write runs, so one
+    that raised after committing is accounted for. ``owns_stub`` is cleared once
+    the session key may belong to another writer (a slot that replaced the one
+    the writes ran for): a transcript that did not exist before is then theirs
+    as much as these writes', and the restore leaves it.
+    """
 
-    if restore_live_session_execution(session_key, prior, published):
-        return
+    session_key: str
+    fields: dict[str, Any]
+    execution: dict[str, Any] | None
+    had_log: bool
+    durable: bool = True
+    published: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    in_flight: bool = False
+    owns_stub: bool = True
+
+    @contextmanager
+    def publishing(self) -> Iterator[None]:
+        """Mark a publishing write as running for the duration of the block.
+
+        Cleared only when the block completes: a write that raised may have
+        committed first, so ``in_flight`` stays set and the restore counts the
+        record current then as that write's.
+        """
+        self.in_flight = True
+        yield
+        self.in_flight = False
+
+
+def current_execution_record(session_key: str) -> dict[str, Any] | None:
+    """The session's current execution record, or None when it has none."""
+    current = read_session_execution(session_key)
+    return current.to_record() if current is not None else None
+
+
+def snapshot_session_binding(session_key: str) -> BindingSnapshot:
+    """Read the binding later selection writes may overwrite. Blocking.
+
+    A line that cannot be read right now (``METADATA_LINE_TRANSIENT``) is
+    refused before anything is published. A corrupt line, which no retry will
+    read, is not: a pick that publishes nothing must still open the session, and
+    one that does publish is refused by its own ``read_session_execution``. Such a
+    snapshot is marked not durably restorable, so the restore leaves the line to
+    whatever healed it.
+    """
     log = ConversationLog()
     with log._locked(session_key):
-        metadata, readable = log._read_metadata_status(session_key)
-        if not readable or metadata.get("execution_context") != published:
-            return
-        if prior is not None:
-            log._update_metadata_locked(
-                session_key,
-                {
-                    "execution_context": prior,
-                    "memory_store": (
-                        ""
-                        if prior["store"]["store_id"] == "default"
-                        else prior["store"]["store_id"]
-                    ),
-                    "memory_mode": prior["memory_mode"],
-                },
-            )
-            return
-        path = log._path(session_key)
-        rows = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        for field in ("execution_context", "memory_store", "memory_mode"):
-            metadata.pop(field, None)
-        rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
-        atomic_write(path, "".join(rows))
+        had_log = log.has_log(session_key)
+        # One read for both: a second read could answer READABLE for a line the
+        # first read failed on, leaving ``metadata`` empty for a line that holds
+        # a binding.
+        metadata, state = (
+            log._read_metadata_state(session_key) if had_log else ({}, METADATA_LINE_READABLE)
+        )
+    if state == METADATA_LINE_CORRUPT:
+        return BindingSnapshot(session_key, {}, None, had_log, durable=False)
+    if state != METADATA_LINE_READABLE:
+        raise OSError(f"session record for {session_key} cannot be read right now")
+    fields = {name: metadata[name] for name in BINDING_FIELDS if name in metadata}
+    return BindingSnapshot(session_key, fields, current_execution_record(session_key), had_log)
+
+
+def note_published(snapshot: BindingSnapshot, record: dict[str, Any] | None) -> None:
+    """Record that a selection write committed *record*."""
+    if record is not None and record != snapshot.execution and record not in snapshot.published:
+        snapshot.published.append(record)
+
+
+def _record_left_by_raised_write(snapshot: BindingSnapshot) -> dict[str, Any] | None:
+    """The execution record a publishing write that raised may have committed.
+
+    For a snapshot taken of a corrupt line (``durable`` False), a write that
+    committed replaced the whole metadata line, so a line that is still corrupt
+    was never written: that write published nothing, and the restore goes on
+    with the rest. Any other read failure is raised, since whether the write
+    landed cannot be told.
+    """
+    key = snapshot.session_key
+    try:
+        return current_execution_record(key)
+    except Exception:
+        if (
+            not snapshot.durable
+            and ConversationLog().metadata_line_state(key) == METADATA_LINE_CORRUPT
+        ):
+            return None
+        raise
+
+
+def snapshot_from_selection_change(
+    session_key: str, change: SelectionChange | None
+) -> BindingSnapshot | None:
+    """The snapshot one ``record_agent_selection`` write implies, for its restore.
+
+    For a caller that took no :func:`snapshot_session_binding` before its write:
+    the binding fields come from the ``prior`` execution record the write
+    replaced, and the write's own record is the only one published. The
+    transcript is treated as pre-existing, so the restore never deletes it.
+    None when the write published nothing.
+    """
+    if change is None:
+        return None
+    prior, published = change
+    fields: dict[str, Any] = {}
+    if prior is not None:
+        store = prior["store"]["store_id"]
+        fields = {
+            "execution_context": prior,
+            "memory_store": "" if store == "default" else store,
+            "memory_mode": prior["memory_mode"],
+        }
+    return BindingSnapshot(session_key, fields, prior, had_log=True, published=[published])
+
+
+def restore_session_binding(snapshot: BindingSnapshot | None) -> None:
+    """Put back the binding a snapshot recorded. Blocking. The one binding restore.
+
+    *snapshot* comes from :func:`snapshot_session_binding` (taken before the
+    writes) or :func:`snapshot_from_selection_change` (built from one write's
+    change); None restores nothing. Compare-and-set: the durable record is
+    restored only while its ``execution_context`` is one the snapshotted writes
+    published, so a binding someone else wrote since is left alone. A publishing
+    write that raised may have committed before it failed; the record current
+    now counts as its write, which holds for a caller that keeps the session's
+    switch lock across the writes and this restore. On a snapshot of a corrupt
+    line, a line still corrupt means that write published nothing. The restored
+    metadata line carries exactly the snapshot's values of :data:`BINDING_FIELDS`,
+    so a legacy record keeps its ``memory_store`` and ``memory_mode``. A
+    restricted session's live carrier and any vouch for a published record are
+    rolled back by ``restore_live_session_execution``. When the transcript did
+    not exist before and the snapshot still owns it, the metadata-only stub the
+    writes created is removed, provided it still holds no messages. Both durable
+    parts run through :meth:`ConversationLog.restore_binding_fields`, the
+    history module's own writer for the metadata line, under one transcript hold.
+    """
+    if snapshot is None:
+        return
+    key = snapshot.session_key
+    if snapshot.in_flight:
+        note_published(snapshot, _record_left_by_raised_write(snapshot))
+    published = list(snapshot.published)
+    live = False
+    for record in published:
+        # Every candidate, not the first match: each one withdraws its own vouch.
+        live = restore_live_session_execution(key, snapshot.execution, record) or live
+    restore = bool(published) and not live and snapshot.durable
+    remove_stub = not snapshot.had_log and snapshot.owns_stub
+    if not restore and not remove_stub:
+        return
+    # A refused stub delete raises, so the rollback keeps the reservation
+    # rather than reporting success.
+    ConversationLog().restore_binding_fields(
+        key,
+        snapshot.fields,
+        published=published if restore else (),
+        remove_empty_stub=remove_stub,
+    )

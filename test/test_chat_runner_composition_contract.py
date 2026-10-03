@@ -263,7 +263,7 @@ _BASE_NAMES = frozenset("""
         resolve_agent_bindings resolve_board_tags resolve_credential_tool_hint
         resolve_effective_model resolve_linked_approval resolve_pin_spelling
         resolve_session_agent_bindings resolve_substitute_set_model resource_status
-        restore_agent_selection restore_replacement_if_handover_did_not_land
+        restore_replacement_if_handover_did_not_land restore_session_binding
         resume_takes_tool_search_replay row_mid
         run_bg_oneliner run_in_embed_pool run_to_completion runtime_death safe_read_file
         safe_read_file_bytes_nolink safety_override sanitized_oauth_endpoint save_slot_off_loop
@@ -275,7 +275,8 @@ _BASE_NAMES = frozenset("""
         should_notice_mixed_turn_leak should_queue_hook_continuation
         should_queue_refusal_recovery should_recover_promise_only shutdown_event
         slack_mirror_is_paused slot_history_key slot_steering_principal
-        slot_switch_session_lock spawn_guarded_turn split_blocks stage_boundary_for stat_module
+        slot_switch_session_lock snapshot_from_selection_change spawn_guarded_turn split_blocks
+        stage_boundary_for stat_module
         stricter_memory_mode strip_control_comments subagents_attached_async
         subprocess_executor synthesis_fire_verdict
         telemetry_channel_of tighten_live_session_execution

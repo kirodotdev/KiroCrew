@@ -355,7 +355,7 @@ def test_cancelled_persistent_selection_withdraws_the_vouched_identity(members):
     # half of the agreement, which is the forgery the agreement exists to refuse
     # reached through a rollback rather than a fresh claim.
     #
-    # `restore_agent_selection` routes every rollback through this one seam before
+    # `restore_session_binding` routes every rollback through this one seam before
     # it touches the record, so the seam is where the withdrawal belongs. The cost
     # is that own-store dispatch waits for the owner to re-select the agent, which
     # binds afresh through the durable path -- the recovery the spec documents.

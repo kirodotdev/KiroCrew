@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
     apply_pending_slot_memory_mode,
     effective_session_key,
+    refuse_write_to_unsettled_create,
     restore_replacement_if_handover_did_not_land,
     slot_history_key,
     tighten_replacement_to_restricted_original,
@@ -1413,6 +1414,8 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     title = body.get("title", "").strip()[:200]
     if not title:
         return web.json_response({"error": "title required", "code": "title_required"}, status=400)
+    if (refusal := await refuse_write_to_unsettled_create(state, name, slot)) is not None:
+        return refusal
     slot.title = title
     slot._titled = True
     # A manual rename is final: origin "user" locks the background refresh out

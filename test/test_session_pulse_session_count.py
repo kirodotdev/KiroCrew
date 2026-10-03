@@ -163,16 +163,38 @@ def _opted_in_call_counts() -> dict[str, int]:
 
 
 def test_only_human_request_paths_opt_in() -> None:
-    # Exactly the three human request-layer paths carry the flag: the chat-send
-    # auto-create and the new-chat tab (chat_handlers.py), and fork
-    # (chat_fork.py). This sweeps every module under src/kiro_crew, so an
-    # opt-in appearing anywhere else -- most importantly the session-control
-    # create verb, whose absence is required -- or disappearing from
-    # these two files is a deliberate decision: update this pin alongside it.
+    # Exactly two human request-layer mints carry the flag: the chat-send
+    # auto-create (chat_handlers.py) and fork (chat_fork.py). The third human
+    # path, the new-chat tab, counts from its create transaction's publish step
+    # instead (pinned below), because a count made at the mint cannot be taken
+    # back when that create rolls back. This sweeps every module under
+    # src/kiro_crew, so an opt-in appearing anywhere else -- most importantly
+    # the session-control create verb, whose absence is required -- or
+    # disappearing from these files is a deliberate decision: update this pin
+    # alongside it.
     assert _opted_in_call_counts() == {
-        "dashboard/chat_handlers.py": 2,
+        "dashboard/chat_handlers.py": 1,
         "dashboard/chat_fork.py": 1,
     }
+
+
+def test_the_new_chat_tab_counts_from_its_publish_step() -> None:
+    # The new-chat tab's create registers the count as a publish step, which
+    # runs only once the create has committed, and the helper keeps the mint's
+    # USER-origin floor. Behaviour is covered end to end in
+    # test_slot_create_default_agent.py; this pins the wiring.
+    tree = ast.parse((_SRC / "dashboard" / "chat_handlers.py").read_text(encoding="utf-8"))
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    create_source = ast.unparse(functions["api_chat_slot_create"])
+    assert "on_publish('count user session'" in create_source
+    assert "_count_user_session_if_kept" in create_source
+    helper_source = ast.unparse(functions["_count_user_session_if_kept"])
+    assert "SlotOrigin.USER" in helper_source
+    assert "increment_user_session_count_off_loop()" in helper_source
 
 
 def test_session_control_create_does_not_opt_in() -> None:

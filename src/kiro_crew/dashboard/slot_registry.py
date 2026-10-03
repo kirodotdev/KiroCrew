@@ -93,6 +93,32 @@ class SlotRegistry:
         owner._slots_under_construction.discard(key)
 
     @staticmethod
+    def _creates_settling(owner: Any) -> dict[str, tuple[Any, Any]]:
+        settling = getattr(owner, "_slot_creates_settling", None)
+        if settling is None:
+            settling = owner._slot_creates_settling = {}
+        return settling
+
+    @staticmethod
+    def begin_slot_create(owner: Any, slot: Any, settled: Any) -> None:
+        """Mark *slot*'s create as unsettled until *settled* (an event) is set."""
+        SlotRegistry._creates_settling(owner)[slot.key] = (slot, settled)
+
+    @staticmethod
+    def end_slot_create(owner: Any, slot: Any, settled: Any) -> None:
+        """Settle *slot*'s create: forget its mark and set *settled*."""
+        settling = SlotRegistry._creates_settling(owner)
+        if settling.get(slot.key, (None, None))[0] is slot:
+            del settling[slot.key]
+        settled.set()
+
+    @staticmethod
+    def unsettled_slot_create(owner: Any, slot: Any) -> Any | None:
+        """The event of the create that minted *slot*, while it has not settled."""
+        pending = SlotRegistry._creates_settling(owner).get(slot.key)
+        return pending[1] if pending is not None and pending[0] is slot else None
+
+    @staticmethod
     def running_session_keys(
         owner: Any,
         effective_session_key: Callable[[Any], str],

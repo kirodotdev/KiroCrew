@@ -104,6 +104,44 @@ logger = logging.getLogger(__name__)
 _CHUNK_GENERATION: str = uuid.uuid4().hex[:8]
 
 
+def slot_create_pending_response() -> web.Response:
+    """409 for a write that named a newborn whose create did not settle in time.
+
+    See :meth:`DashboardState.slot_create_settled`. The create may still commit,
+    so the caller is told to retry rather than that the slot is gone.
+    """
+    return web.json_response(
+        {
+            "error": "The conversation is still being created. Try again.",
+            "code": "slot_create_pending",
+        },
+        status=409,
+    )
+
+
+async def refuse_write_to_unsettled_create(
+    state: DashboardState, name: str, slot: _ChatSlot
+) -> web.Response | None:
+    """The one settle step every slot-metadata write takes before it writes.
+
+    A newborn whose create later rolls back takes the slot and its transcript
+    stub away, and any edit written to it with them. So a write that looked
+    *slot* up under *name* waits, bounded, for the create that minted it to
+    settle (:meth:`DashboardState.slot_create_settled`), then checks that the
+    same slot object is still registered under *name*. Returns the refusal to
+    answer with, or None when the write may go ahead: 409
+    ``slot_create_pending`` when the create did not settle in time, 409
+    ``session_gone`` when the slot went away or was replaced meanwhile.
+    """
+    if not await state.slot_create_settled(slot):
+        return slot_create_pending_response()
+    if state._slots.get(name) is not slot:
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
+    return None
+
+
 def chunk_generation() -> str:
     """The ``gen`` stamped on every chat_chunk frame and window row this process
     emits: one random value per gateway process.

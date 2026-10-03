@@ -35,7 +35,7 @@ from kiro_crew.dashboard.chat_tag_grants import (
     revoke_grant,
     store_write_blocked,
 )
-from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_utils import refuse_write_to_unsettled_create, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import TAG_COLUMN_CREATE, TAG_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -1454,6 +1454,10 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     # Only agent callers consult it, so skip the thread hop for the browser.
     if is_internal_caller:
         await asyncio.to_thread(refresh_cache)
+    # A newborn's create settles first; the lock below re-checks after it.
+    settle_refusal = await refuse_write_to_unsettled_create(state, name, slot)
+    if settle_refusal is not None:
+        return settle_refusal
 
     async with _tags_write_lock(state):
         valid_ids = {t.get("id") for t in state._tags}
