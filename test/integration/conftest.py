@@ -125,9 +125,10 @@ cross-home flake three tests later.
    * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
      from the boot's config and home.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
-     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_AGENTS_READY``) -- the declared
-     names and file-name map of the home's ``kiro/agents`` directory, which the
-     next boot would read as its own until its first refresh lands.
+     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_AGENTS_READY``)
+     -- the declared names, file-name map and removal evidence of the home's
+     ``kiro/agents`` directory, which the next boot would read as its own until
+     its first refresh lands.
    * ``dashboard.handlers.updates._auto_effect`` -- the update loop's derived
      ``auto_update_effect``, read from the boot's install root and policy; a
      stale one is served on the next boot's status frames, and it is also what
@@ -722,6 +723,7 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     config_loader._MATERIALIZED_AGENTS = frozenset()
     config_loader._MATERIALIZED_STEMS.clear()
+    config_loader._MATERIALIZED_SEEN.clear()
     config_loader._MATERIALIZED_AGENTS_READY = False
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
@@ -752,6 +754,7 @@ def home_bound_globals_are_clear() -> bool:
         and not sandbox._SHIM_ARGV_CACHE
         and not config_loader._MATERIALIZED_AGENTS
         and not config_loader._MATERIALIZED_STEMS
+        and not config_loader._MATERIALIZED_SEEN
         and not config_loader._MATERIALIZED_AGENTS_READY
         and dashboard_updates._auto_effect is None
         and not browser_launch._warned_lifecycle_losses

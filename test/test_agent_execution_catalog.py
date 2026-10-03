@@ -118,7 +118,7 @@ async def test_catalog_fetch_refreshes_the_snapshot_before_reading_the_default(
 
     order: list[str] = []
     loop_thread = threading.get_ident()
-    catalog.refresh.side_effect = lambda: order.append(
+    catalog.refresh.side_effect = lambda **_: order.append(
         "refresh-off-loop" if threading.get_ident() != loop_thread else "refresh-on-loop"
     )
     catalog.discovery.side_effect = lambda **kwargs: order.append("templates") or [
@@ -354,6 +354,33 @@ async def test_redacted_catalog_neither_reads_nor_emits_runtime_policy(catalog, 
         rows = (await response.json())["agents"]
     assert all("runtime_policy" not in row for row in rows)
     policy_getter.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["other-user", "anonymous", "app", "missing-state"])
+async def test_only_the_owner_s_catalog_fetch_may_reset_the_default(catalog, caller):
+    # The refresh may write the owner's ``default_agent``. A caller who is not the
+    # owner still gets a fresh template list, but its fetch never writes config.
+    if caller == "other-user":
+        catalog.caller.user = "another-user"
+    elif caller == "anonymous":
+        catalog.caller.user = ""
+    elif caller == "app":
+        catalog.caller.app = "caller-app"
+    else:
+        del catalog.app["state"]
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+    catalog.refresh.assert_called_once_with(heal_default=False)
+
+
+@pytest.mark.asyncio
+async def test_the_owner_s_catalog_fetch_resets_a_dangling_default(catalog):
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+    catalog.refresh.assert_called_once_with(heal_default=True)
 
 
 @pytest.mark.asyncio

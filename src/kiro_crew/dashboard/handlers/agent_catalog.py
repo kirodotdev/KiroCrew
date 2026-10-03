@@ -125,6 +125,9 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # that only a different conversation's working directory can resolve.
         project_dir = requesting_slot_project(state, session_key)
 
+    # The reset below writes the owner's config, so only the owner's own fetch
+    # may run it; anyone else's still gets a freshly scanned template list.
+    owner = state is not None and is_owner_dashboard_request(request)
     try:
         # The picker's fetch is the one moment, after boot, that an agent removed
         # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is
@@ -134,7 +137,7 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # executor call, and the config is read AFTER it so the response names
         # the default the user will actually get.
         def _refreshed_templates() -> list[AgentInfo]:
-            refresh_materialized_agents()
+            refresh_materialized_agents(heal_default=owner)
             return _templates(project_dir)
 
         templates = await asyncio.get_running_loop().run_in_executor(
@@ -151,7 +154,7 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             status=503,
         )
 
-    redact = state is None or not is_owner_dashboard_request(request)
+    redact = not owner
     rows = []
     for name, member in config.agents.items():
         row = _agent_roster_row(name, "global", member, redact=redact)

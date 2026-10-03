@@ -5432,6 +5432,13 @@ _MATERIALIZED_AGENTS: frozenset[str] = frozenset()
 # residue witness compares a dict by identity. See :func:`dispatch_kiro_agent`.
 _MATERIALIZED_STEMS: dict[str, str] = {}
 _MATERIALIZED_AGENTS_READY = False
+# Every name a landed snapshot or a publish has let a binding dispatch in this
+# process: declared names and the file names mapped to one. Grown in place, never
+# rebound or shrunk. A name in it that the current snapshot does not declare
+# was REMOVED, which is the evidence :func:`reset_dangling_default_agent` needs;
+# keeping it here rather than diffing two consecutive scans means a refresh that
+# does not heal cannot use the evidence up before one that does.
+_MATERIALIZED_SEEN: set[str] = set()
 # Bumped by every publish. A refresh samples it before scanning and, if it moved
 # while the scan was in flight, unions instead of replacing — otherwise a scan
 # that globbed the directory BEFORE a registration wrote into it would assign its
@@ -5544,11 +5551,12 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
     does zero filesystem work. Never raises.
 
     A scan that lands is the one moment the snapshot is known to be whole, so
-    it also runs :func:`reset_dangling_default_agent`. ``heal_default=False``
-    is for the LAZY build a lookup performs in a synchronous context: that
-    lookup can run inside a caller's own locked config write (the default-agent
-    PUT reaches :func:`dispatch_kiro_agent` from its mutate), and the reset's
-    write would then wait on the lock that caller holds.
+    it also runs :func:`reset_dangling_default_agent`. ``heal_default=False`` is for the LAZY build a lookup
+    performs in a synchronous context: that lookup can run inside a caller's
+    own locked config write (the default-agent PUT reaches
+    :func:`dispatch_kiro_agent` from its mutate), and the reset's write would
+    then wait on the lock that caller holds. It is also for a caller acting for
+    someone other than the owner, since the reset writes the owner's config.
 
     Consequence worth stating plainly: editing an existing config IN PLACE — say
     renaming its ``name`` field by hand — refreshes nothing, so that new name
@@ -5591,6 +5599,8 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
         _MATERIALIZED_STEMS.update(stems)
         for stale in [stem for stem in _MATERIALIZED_STEMS if stem not in stems]:
             del _MATERIALIZED_STEMS[stale]
+        _MATERIALIZED_SEEN.update(snapshot)
+        _MATERIALIZED_SEEN.update(stems)
         _MATERIALIZED_AGENTS_READY = True
         _MATERIALIZED_REFRESH_APPLIED = my_ticket
     # An app install/upgrade that rewrote agent JSON just landed in the snapshot;
@@ -5620,11 +5630,19 @@ def reset_dangling_default_agent() -> bool:
     The alias row is left alone: it is the owner's record, and the template may
     come back.
 
+    "Gone" is a REMOVED name: one an earlier landed snapshot (or a publish) in
+    this process let a binding dispatch, and the current snapshot does not.
+    Absence alone is not evidence. A
+    binding can name an agent this directory never declared and still
+    dispatch: a project checkout's own spec (kiro-cli resolves ``--agent``
+    against the session's directory first) or an agent the edition contributes.
+    For the same reason a removed name the edition still supplies is kept.
+
     Decides against the materialized snapshot only, so it is a pure in-memory
     check between the config load and the write, and it never acts on
-    uncertainty -- a cold or empty snapshot, an unreadable or degraded config, a
-    missing ``default`` alias, or a default already ``default`` all leave the
-    file untouched. The managed ``kirocrew`` template is exempt: a missing one is
+    uncertainty -- a cold or empty snapshot, nothing removed, an unreadable or
+    degraded config, a missing ``default`` alias, or a default already
+    ``default`` all leave the file untouched. The managed ``kirocrew`` template is exempt: a missing one is
     regenerated before spawn (``agent.ensure_agent_materialized``), not a loss.
     The write is the same locked read-modify-write the default-agent PUT uses,
     and both conditions are re-derived inside the lock, so a PUT that repointed
@@ -5634,7 +5652,8 @@ def reset_dangling_default_agent() -> bool:
     """
     with _MATERIALIZED_AGENTS_LOCK:
         names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
-    if not names:
+        removed = frozenset(_MATERIALIZED_SEEN - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys())
+    if not names or not removed:
         return False
     try:
         cfg = KiroCrewConfig.load()
@@ -5648,7 +5667,7 @@ def reset_dangling_default_agent() -> bool:
     if current == "default" or row is None or "default" not in cfg.agents:
         return False
     template = _dangling_template(row.kiro_agent, names)
-    if template is None:
+    if template is None or template not in removed or template in _edition_agent_names():
         return False
     reset = False
 
@@ -5660,7 +5679,7 @@ def reset_dangling_default_agent() -> bool:
         row = agents.get(current)
         if "default" not in agents or not isinstance(row, dict):
             return None
-        if _dangling_template(row.get("kiro_agent"), _MATERIALIZED_AGENTS) is None:
+        if _dangling_template(row.get("kiro_agent"), _MATERIALIZED_AGENTS) != template:
             return None
         data["default_agent"] = "default"
         reset = True
@@ -5682,6 +5701,27 @@ def reset_dangling_default_agent() -> bool:
     )
     _log_default_agent_reset(current, template)
     return True
+
+
+def _edition_agent_names() -> frozenset[str]:
+    """Names of the agents the edition contributes beside the on-disk specs.
+
+    Read through the platform seam the agent listing uses
+    (``agent_discovery._with_edition_agents``), failing closed to none. The
+    public edition contributes none.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    rows: list[object] = safe_context_call(
+        lambda: list(current_context().agent_catalog.builtin_agents()),
+        fallback_factory=list,
+        log_message="builtin_agents lookup failed; using none",
+    )
+    return frozenset(
+        row["name"]
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]
+    )
 
 
 def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
@@ -5744,6 +5784,7 @@ def publish_materialized_agents(names: Iterable[str]) -> None:
         return
     with _MATERIALIZED_AGENTS_LOCK:
         _MATERIALIZED_AGENTS = frozenset(_MATERIALIZED_AGENTS | fresh)
+        _MATERIALIZED_SEEN.update(fresh)
         _MATERIALIZED_AGENTS_READY = True
         # Signals any in-flight refresh that its view predates this write, so it
         # unions rather than replacing (see refresh_materialized_agents).
