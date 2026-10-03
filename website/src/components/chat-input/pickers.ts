@@ -1,20 +1,22 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { skillsCacheStaleTime } from '../../lib/skillsCache'
 import { matchFileToken, matchPathToken, matchSkillToken, replaceTokenAtCaret } from '../composerTokens'
 import type { ComposerControl } from '../composerControl'
 import type { ChatInputProps } from './props'
+import { terminalCommand } from '../../hooks/useTerminalCommand'
 
 /* The in-input trigger pickers: `/` commands, `@` files, `$` skills and
    shell-style `./` paths. One rule decides which menu the text at the caret
    opens, for the textarea and the Lexical editor alike; the menus themselves
    render in `PickerMenus.tsx`. */
 
-export function useComposerPickers({ project, onFileSelect, typedCommandMenus, value, onChange, composerControl, queryClient, slotId, agentName }: {
+export function useComposerPickers({ project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName }: {
   project?: string
   onFileSelect: ChatInputProps['onFileSelect']
   typedCommandMenus: boolean
+  terminalCommands?: ChatInputProps['terminalCommands']
   value: string
   onChange: (v: string) => void
   composerControl: () => ComposerControl | null
@@ -53,16 +55,20 @@ export function useComposerPickers({ project, onFileSelect, typedCommandMenus, v
   /** Any picker is open. The pickers own ↑/↓ and Escape while they are, so the
    *  prompt-history keys and the dictation Escape both yield to it. */
   const anyPickerOpenRef = useRef(false)
-  anyPickerOpenRef.current = slashMenuOpen || filePickerOpen || skillPickerOpen || pathPickerOpen
+  const terminalActive = !!terminalCommands && terminalCommand(value) !== null
+  anyPickerOpenRef.current = !terminalActive && (slashMenuOpen || filePickerOpen || skillPickerOpen || pathPickerOpen)
   const closePickers = useCallback(() => {
     setSlashMenuOpen(false)
     setFilePickerOpen(false); setFileQuery('')
     setSkillPickerOpen(false); setSkillQuery('')
     setPathPickerOpen(false); setPathQuery('')
   }, [])
+  useEffect(() => { if (terminalActive) closePickers() }, [terminalActive, closePickers])
   /** Open whichever picker the edited text calls for. `text` is the whole
    *  value; `before` is the text up to the caret. */
   const openPickersForText = useCallback((text: string, before: string) => {
+    // This is the incoming edit, which can enter terminal mode before render.
+    if (terminalCommands && terminalCommand(text) !== null) { closePickers(); return }
     setSlashMenuOpen(typedCommandMenus && text.startsWith('/'))
     // Anchor @/$ detection to the token being edited AT THE CARET, not the
     // end of the whole input. `before` ends at the caret, so a match means
@@ -79,7 +85,7 @@ export function useComposerPickers({ project, onFileSelect, typedCommandMenus, v
     const pathQ = pathTokenAt(before)
     if (pathQ !== null) { setPathPickerOpen(true); setPathQuery(pathQ) }
     else { setPathPickerOpen(false); setPathQuery('') }
-  }, [typedCommandMenus, onFileSelect, pathTokenAt])
+  }, [typedCommandMenus, onFileSelect, pathTokenAt, terminalCommands, closePickers])
   // Warm the per-slot-and-project skills cache when the input gains focus so the first
   // `$` trigger renders the picker instantly (the fetch is the only latency).
   // prefetchQuery is a no-op if the cache is already fresh (staleTime), so it's

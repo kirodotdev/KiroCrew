@@ -14,10 +14,14 @@ import { i18nT } from '../i18n/t'
  * confirmation.
  */
 export default function RunInTerminalConfirm(
-  { open, command, warnReason, willCopy, onConfirm, onCancel }: {
+  { open, command, workspaceLabel, usesDefaultDirectory = false, warnReason, willCopy, onConfirm, onCancel }: {
     open: boolean
     /** The exact string that will be sent to the terminal (prompt chars already stripped). */
     command: string
+    /** Captured destination for a composer command; code-block callers omit it. */
+    workspaceLabel?: string
+    /** Use starting-directory copy when the composer has no captured project. */
+    usesDefaultDirectory?: boolean
     /** Non-empty when the command tripped a sensitive-command pattern. */
     warnReason?: string
     /**
@@ -33,16 +37,15 @@ export default function RunInTerminalConfirm(
 ) {
   const lines = command.split('\n')
   const sensitive = !!warnReason
-  const confirmRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
 
-  // Focus the safe choice for a flagged command, the primary action otherwise —
-  // so a stray Enter can never confirm a sensitive command.
+  // Composer submission and the native code-block button can both open via Enter.
+  // Focus Cancel so held/repeated Enter cannot also approve; Run needs a focus move.
   useEffect(() => {
     if (!open) return
-    const t = setTimeout(() => (sensitive ? cancelRef : confirmRef).current?.focus(), 0)
+    const t = setTimeout(() => cancelRef.current?.focus(), 0)
     return () => clearTimeout(t)
-  }, [open, sensitive])
+  }, [open])
 
   return (
     <Modal
@@ -67,7 +70,6 @@ export default function RunInTerminalConfirm(
             {i18nT('components.runInTerminalConfirm.cancel')}
           </button>
           <button
-            ref={confirmRef}
             className={`px-3 py-1.5 rounded-md text-[13px] font-medium border-none cursor-pointer ${
               sensitive
                 ? 'bg-warn text-warn-fg hover:bg-warn/90'
@@ -87,10 +89,15 @@ export default function RunInTerminalConfirm(
       <p className="text-[12px] text-muted mb-2.5">
         {willCopy
           ? i18nT('components.runInTerminalConfirm.body_copy')
-          : lines.length > 1
-            ? i18nT('components.runInTerminalConfirm.body_multi', { lines: lines.length })
-            : i18nT('components.runInTerminalConfirm.body_single')}
+          : usesDefaultDirectory
+            ? (lines.length > 1
+                ? i18nT('components.runInTerminalConfirm.body_default_multi', { lines: lines.length })
+                : i18nT('components.runInTerminalConfirm.body_default_single'))
+            : (lines.length > 1
+                ? i18nT('components.runInTerminalConfirm.body_multi', { lines: lines.length })
+                : i18nT('components.runInTerminalConfirm.body_single'))}
       </p>
+      {workspaceLabel && <p className="text-[12px] text-muted mb-2.5 whitespace-pre-wrap [overflow-wrap:anywhere]">{workspaceLabel}</p>}
 
       {sensitive && (
         <div className="flex items-start gap-2 mb-2.5 px-2.5 py-2 rounded-md bg-warn/10 border border-warn/30">

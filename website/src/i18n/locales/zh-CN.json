@@ -6061,6 +6061,7 @@
       "let_the_agent_read_one_of_your_files": "让代理读取你的某个文件",
       "message_input": "消息输入",
       "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
+      "message_placeholder_terminal": "给 {{bot}} 发消息… (/command · @file · $skill · ! shell 命令)",
       "model": "模型",
       "model_2": "模型：{{name}}",
       "open_preview_of": "打开 {{name}} 的预览",
@@ -6148,7 +6149,23 @@
       "agent_inherited_default": "此会话跟随默认代理（{{name}}）。它没有自己的代理，因此默认代理变化时它也会变化。点击可固定一个。",
       "compacting_context_stop_unavailable": "正在压缩上下文，完成前无法停止",
       "click_again_to_force_stop_resets_session": "再次点击强制停止（会重启会话；你的消息会保留，助手保留最近的一段摘录）",
-      "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。"
+      "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。",
+      "terminal_attachments": "运行终端命令前，请移除附件。",
+      "terminal_folder_attachments": "运行前先移除文件夹附件。移除文件夹也会移除命令中对应的 {{folderRef}} 引用。",
+      "terminal_default_directory": "终端启动目录",
+      "terminal_empty": "请在 ! 后输入命令。运行前你会先确认它。",
+      "terminal_failed": "命令未发送。草稿已保留；查看终端面板。",
+      "terminal_hint": "终端面板 · {{workspace}}",
+      "terminal_panel": "终端面板",
+      "terminal_review_at_capacity": "检查命令。点击“运行”会打开终端面板；如果仍已达到上限，请关闭不用的标签页后重试。命令不会加入队列。",
+      "terminal_limit": "已达到终端数量上限。请关闭一个未使用的终端标签页，然后重试。",
+      "terminal_main_window": "请在主窗口中打开此会话以运行终端命令。",
+      "terminal_remote": "其他服务器上的会话不支持终端命令。移除开头的 ! 即可返回聊天。",
+      "terminal_unavailable": "终端已关闭。在服务器配置中启用 dashboard.terminal.enabled。移除开头的 ! 即可返回聊天。",
+      "terminal_review": "检查并在终端中运行",
+      "terminal_force_stop": "停止智能体",
+      "terminal_pending": "请等待会话详情加载，或选择其他会话。",
+      "terminal_run_review": "审阅终端命令"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -6178,6 +6195,7 @@
       "disconnected_message": "终端已断开连接",
       "displaced_message": "另一个窗口已接管此终端",
       "failed_retry": "失败 — 重试",
+      "invalid_cwd_message": "终端工作目录“{{cwd}}”不可用。请恢复该目录后重新连接，或使用终端的起始目录。",
       "reconnect": "重新连接",
       "reconnecting": "正在重新连接…",
       "redaction_failed_retry": "脱敏失败 — 重试",
@@ -6186,7 +6204,9 @@
       "sending": "发送中…",
       "touch_select_anchor": "已设第一点 — 点按另一端",
       "touch_select_done": "已选择范围 — 点按复制",
-      "use_here": "在此窗口使用终端"
+      "use_here": "在此窗口使用终端",
+      "use_starting_directory": "使用终端起始目录",
+      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。"
     },
     "codeBlock": {
       "copied": "已复制！",
@@ -7903,6 +7923,8 @@
     },
     "runInTerminalConfirm": {
       "body_copy": "命令已为你复制，可粘贴到终端中。",
+      "body_default_multi": "未选择工作区。下方 {{lines}} 行将在新终端标签页中运行，使用终端启动目录。",
+      "body_default_single": "未选择工作区。下方命令将在新终端标签页中运行，使用终端启动目录。",
       "body_multi": "将在本对话工作目录下的新终端标签页中运行 {{lines}} 行命令。",
       "body_single": "将在本对话工作目录下的新终端标签页中运行。",
       "cancel": "取消",

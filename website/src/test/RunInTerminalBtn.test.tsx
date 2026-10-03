@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, act, waitFor, render } from '@testing-library/react'
+import { screen, fireEvent, act, waitFor, render, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
 import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
@@ -48,6 +49,31 @@ describe('RunInTerminalBtn', () => {
     expect(requests).toHaveLength(0)
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument()
+  })
+
+  it.each(['{Enter>2/}', '{Enter}{Enter}'])('cancels native keyboard opening with %s and requires Tab to run', async (keys) => {
+    vi.useRealTimers()
+    const user = userEvent.setup()
+    renderWithProviders(<RunInTerminalBtn code="echo hello" lang="bash" />)
+    const trigger = screen.getByRole('button', { name: 'Run in terminal' })
+    await user.tab()
+    expect(trigger).toHaveFocus()
+
+    // Native Enter activation opens the dialog and activates its focused action.
+    await user.keyboard(keys)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(requests).toHaveLength(0)
+    expect(trigger).toHaveFocus()
+
+    await user.keyboard('{Enter}')
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus())
+    expect(requests).toHaveLength(0)
+    await user.tab()
+    expect(within(dialog).getByRole('button', { name: 'Run' })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(requests).toEqual([{ code: 'echo hello', lang: 'bash', reqId: expect.any(String) }])
+    act(() => { replyLast(true) })
   })
 
   it('shows the full command in the dialog, including text the code block would clip', () => {

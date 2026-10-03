@@ -6255,6 +6255,7 @@
       "let_the_agent_read_one_of_your_files": "Permite que o agente leia um dos seus arquivos",
       "message_input": "Entrada de mensagem",
       "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_terminal": "Enviar mensagem para {{bot}}… (/command · @file · $skill · ! comando de shell)",
       "model": "Modelo",
       "model_2": "Modelo: {{name}}",
       "open_preview_of": "Abrir a pré-visualização de {{name}}",
@@ -6346,7 +6347,23 @@
       "agent_inherited_default": "Esta sessão segue o agente padrão ({{name}}). Não tem um agente próprio, então muda se o padrão mudar. Clique para fixar um.",
       "compacting_context_stop_unavailable": "Compactando o contexto — não é possível parar até terminar",
       "click_again_to_force_stop_resets_session": "Clique novamente para forçar a parada (reinicia a sessão; suas mensagens ficam, o agente mantém um trecho recente)",
-      "model_inherited_default": "Esta sessão usa o modelo padrão ({{name}}). Não tem um modelo próprio, então muda se o padrão mudar. Clique para fixar um."
+      "model_inherited_default": "Esta sessão usa o modelo padrão ({{name}}). Não tem um modelo próprio, então muda se o padrão mudar. Clique para fixar um.",
+      "terminal_attachments": "Remova os anexos antes de executar um comando de terminal.",
+      "terminal_folder_attachments": "Remova as pastas anexadas antes de executar o comando. Ao remover uma pasta, a referência {{folderRef}} dela também é removida do comando.",
+      "terminal_default_directory": "Diretório inicial do terminal",
+      "terminal_empty": "Digite um comando após !. Você vai revisá-lo antes de ele ser executado.",
+      "terminal_failed": "O comando não foi enviado. Seu rascunho foi mantido; veja o painel do terminal.",
+      "terminal_hint": "Painel do terminal · {{workspace}}",
+      "terminal_panel": "Painel do terminal",
+      "terminal_review_at_capacity": "Revise o comando. Executar abre o painel do terminal; se ainda estiver cheio, feche uma aba sem uso e tente novamente. Nada é colocado na fila.",
+      "terminal_limit": "Limite de terminais atingido. Feche uma aba de terminal que não esteja usando e tente novamente.",
+      "terminal_main_window": "Abra esta sessão na janela principal para executar comandos no terminal.",
+      "terminal_remote": "Os comandos de terminal não estão disponíveis para sessões em outro servidor. Remova o ! inicial para voltar ao chat.",
+      "terminal_unavailable": "O terminal está desativado. Ative dashboard.terminal.enabled na configuração do servidor. Remova o ! inicial para voltar ao chat.",
+      "terminal_review": "Revisar e executar no terminal",
+      "terminal_force_stop": "Parar agente",
+      "terminal_pending": "Aguarde o carregamento dos detalhes da sessão ou selecione outra sessão.",
+      "terminal_run_review": "Revisar comando do terminal"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -6376,6 +6393,7 @@
       "disconnected_message": "Terminal desconectado",
       "displaced_message": "Outra janela assumiu este terminal",
       "failed_retry": "Falhou — tentar novamente",
+      "invalid_cwd_message": "O diretório de trabalho do terminal “{{cwd}}” está indisponível. Restaure-o e reconecte-se, ou use o diretório inicial do terminal.",
       "reconnect": "Reconectar",
       "reconnecting": "Reconectando…",
       "redaction_failed_retry": "Falha ao ocultar dados sensíveis — tentar novamente",
@@ -6384,7 +6402,9 @@
       "sending": "Enviando…",
       "touch_select_anchor": "Primeiro ponto definido — toque na outra extremidade",
       "touch_select_done": "Intervalo selecionado — toque em Copiar",
-      "use_here": "Usar o terminal aqui"
+      "use_here": "Usar o terminal aqui",
+      "use_starting_directory": "Usar o diretório inicial do terminal",
+      "use_starting_directory_hint": "Abre um novo shell no diretório de terminal configurado no servidor (dashboard.terminal.cwd ou, se não houver, o diretório pessoal do servidor). O comando que falhou não é reenviado."
     },
     "codeBlock": {
       "copied": "Copiado!",
@@ -8141,6 +8161,8 @@
     },
     "runInTerminalConfirm": {
       "body_copy": "O comando é copiado para você colar no terminal.",
+      "body_default_multi": "Nenhum espaço de trabalho selecionado. As {{lines}} linhas abaixo serão executadas em uma nova aba de terminal, usando o diretório inicial do terminal.",
+      "body_default_single": "Nenhum espaço de trabalho selecionado. O comando abaixo será executado em uma nova aba de terminal, usando o diretório inicial do terminal.",
       "body_multi": "{{lines}} linhas serão executadas em uma nova aba de terminal, no diretório de trabalho deste chat.",
       "body_single": "Será executado em uma nova aba de terminal, no diretório de trabalho deste chat.",
       "cancel": "Cancelar",

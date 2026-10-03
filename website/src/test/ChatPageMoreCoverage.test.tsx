@@ -34,7 +34,9 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
 import { useBottomTerminal, __resetBottomTerminal, removeTab, addTab, MAX_TERMINALS } from '../hooks/useBottomTerminal'
-import { registerTerminalWs, unregisterTerminalWs } from '../utils/terminalRegistry'
+import { unregisterTerminalWs } from '../utils/terminalRegistry'
+import * as terminalRegistry from '../utils/terminalRegistry'
+import { i18nT } from '../i18n/t'
 
 // The run-in-terminal rollback consults the popout probe to avoid tearing a
 // session out of a popped-out panel; the flag lets each test pick the state.
@@ -781,6 +783,37 @@ describe('ChatPage window-event listeners', () => {
 })
 
 describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
+  /** Drive the real registry through upgrade/error/reconnect without a PTY. */
+  const terminalSockets = () => {
+    const sockets: Socket[] = []
+    class Socket {
+      static OPEN = 1
+      static CONNECTING = 0
+      static CLOSING = 2
+      static CLOSED = 3
+      readyState = Socket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+      send = vi.fn()
+      constructor() { sockets.push(this) }
+      open() { this.readyState = Socket.OPEN; this.onopen?.() }
+      message(payload: unknown) { this.onmessage?.({ data: JSON.stringify(payload) }) }
+      close() { this.readyState = Socket.CLOSED; this.onclose?.({ code: 1006 }) }
+    }
+    vi.stubGlobal('WebSocket', Socket)
+    const connect = (sessionId: string) => {
+      const term = { reset: vi.fn(), onData: vi.fn(), onResize: vi.fn() }
+      terminalRegistry.ensureTerminalConnection(
+        sessionId,
+        term as unknown as Parameters<typeof terminalRegistry.ensureTerminalConnection>[1],
+        { fit: vi.fn() } as unknown as Parameters<typeof terminalRegistry.ensureTerminalConnection>[2],
+      )
+      sockets.at(-1)!.open()
+    }
+    return { sockets, connect }
+  }
+
   const collect = () => {
     const results: { reqId?: string; ok?: boolean }[] = []
     const onResult = (e: Event) => { results.push((e as CustomEvent).detail) }
@@ -789,6 +822,127 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
   }
 
   beforeEach(() => { __resetBottomTerminal(); mockTerminalPopoutOpen = false })
+
+  it('keeps a generic startup failure visible past the button hint and deadline without replay on reconnect', async () => {
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { sockets, connect } = terminalSockets()
+    const { results, stop } = collect()
+    const jitter = vi.spyOn(Math, 'random').mockReturnValue(0)
+    let sessionId = ''
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'npm test', reqId: 'generic-startup' },
+        }))
+      })
+      sessionId = dock.result.current.tabs[0].id
+      act(() => {
+        connect(sessionId)
+        sockets[0].message({ type: 'error', message: 'Shell startup failed' })
+      })
+      expect(results).toEqual([{ reqId: 'generic-startup', ok: false }])
+      await act(async () => {})
+      const notice = screen.getByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent(i18nT('pages.chatPage.run_in_terminal_liveness_probe_failed_error'))
+      expect(within(notice).getAllByRole('button', { name: /ask the agent/i })).toHaveLength(1)
+
+      // Each upgrade resets the registry retry count. Repeated generic errors
+      // need not exhaust it, so the page's persistent notice must carry them.
+      act(() => sockets[0].close())
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_001) })
+      expect(sockets).toHaveLength(2)
+      act(() => {
+        sockets[1].open()
+        sockets[1].message({ type: 'error', message: 'Shell startup failed again' })
+        sockets[1].close()
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_001) })
+      expect(sockets).toHaveLength(3)
+      expect(screen.getByTestId('action-error')).toBe(notice)
+      act(() => {
+        sockets[2].open()
+        sockets[2].message({ type: 'ready', shell: '/bin/bash' })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_IN_TERMINAL_READY_DEADLINE_MS + RUN_IN_TERMINAL_OPENING_GRACE_MS)
+      })
+      expect(screen.getByTestId('action-error')).toBe(notice)
+      expect(results).toEqual([{ reqId: 'generic-startup', ok: false }])
+      for (const socket of sockets) expect(socket.send).not.toHaveBeenCalled()
+      expect(dock.result.current.tabs).toEqual([expect.objectContaining({ id: sessionId })])
+      expect(fetchSpy).not.toHaveBeenCalledWith('/api/terminal/sessions')
+      expect(fetchSpy).not.toHaveBeenCalledWith(
+        `/api/terminal/sessions/${sessionId}`, expect.objectContaining({ method: 'DELETE' }),
+      )
+      expect(disposeTerminalSessionSpy).not.toHaveBeenCalled()
+      fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+      expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+    } finally {
+      stop()
+      if (sessionId) terminalRegistry.disposeTerminalConnection(sessionId)
+      jitter.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each([
+    ['close', false], ['popout', false], ['close', true], ['popout', true],
+  ] as const)('suppresses a startup notice on %s (error before release: %s)', async (ownership, errorFirst) => {
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { sockets, connect } = terminalSockets()
+    const { results, stop } = collect()
+    let sessionId = ''
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'npm test', reqId: 'ownership-lost' },
+        }))
+      })
+      sessionId = dock.result.current.tabs[0].id
+      act(() => {
+        connect(sessionId)
+        if (errorFirst) sockets[0].message({ type: 'error', message: 'Shell startup failed' })
+        if (ownership === 'popout') mockTerminalPopoutOpen = true
+        // Match the real close caller: dispose notifies failure while its tab
+        // is still present, then removeTab commits the ownership change.
+        terminalRegistry.disposeTerminalConnection(sessionId)
+        expect(dock.result.current.tabs).toHaveLength(1)
+        if (ownership === 'close') removeTab(sessionId)
+      })
+      expect(results).toEqual([{ reqId: 'ownership-lost', ok: false }])
+      await act(async () => {})
+      expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+      const send = vi.fn()
+      act(() => terminalRegistry.registerTerminalWs(
+        sessionId, { readyState: WebSocket.OPEN, send } as unknown as WebSocket,
+      ))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_IN_TERMINAL_READY_DEADLINE_MS + RUN_IN_TERMINAL_OPENING_GRACE_MS)
+      })
+      expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+      expect(results).toEqual([{ reqId: 'ownership-lost', ok: false }])
+      expect(send).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalledWith('/api/terminal/sessions')
+      expect(fetchSpy).not.toHaveBeenCalledWith(
+        `/api/terminal/sessions/${sessionId}`, expect.objectContaining({ method: 'DELETE' }),
+      )
+      expect(dock.result.current.tabs).toHaveLength(ownership === 'close' ? 0 : 1)
+    } finally {
+      stop()
+      if (sessionId) {
+        terminalRegistry.disposeTerminalConnection(sessionId)
+        terminalRegistry.unregisterTerminalWs(sessionId)
+      }
+      vi.unstubAllGlobals()
+    }
+  })
 
   it('leaves a tab the user already closed alone — no second PTY delete, no store write', async () => {
     await renderTurn()
@@ -854,6 +1008,111 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       expect(dock.result.current.tabs.length).toBe(1)
     } finally {
       stop()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('settles a released local terminal handoff without a later probe, delete or replay', async () => {
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { results, stop } = collect()
+    let sessionId = ''
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'npm test', reqId: 'disposed-local' },
+        }))
+      })
+      expect(dock.result.current.tabs).toHaveLength(1)
+      sessionId = dock.result.current.tabs[0].id
+      expect(results).toEqual([])
+
+      // Local ownership can end before CliPanel creates its connection.
+      act(() => { terminalRegistry.disposeTerminalConnection(sessionId) })
+      expect(results).toEqual([{ reqId: 'disposed-local', ok: false }])
+      const send = vi.fn()
+      const ws = { readyState: WebSocket.OPEN, send } as unknown as WebSocket
+      act(() => { terminalRegistry.registerTerminalWs(sessionId, ws) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_IN_TERMINAL_READY_DEADLINE_MS + RUN_IN_TERMINAL_OPENING_GRACE_MS + 1_000)
+      })
+      expect(results).toEqual([{ reqId: 'disposed-local', ok: false }])
+      expect(send).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalledWith('/api/terminal/sessions')
+      expect(fetchSpy).not.toHaveBeenCalledWith(
+        `/api/terminal/sessions/${sessionId}`, expect.objectContaining({ method: 'DELETE' }),
+      )
+      expect(disposeTerminalSessionSpy).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+      // Releasing a local socket must leave a popout's shared tab intact.
+      expect(dock.result.current.tabs).toEqual([expect.objectContaining({ id: sessionId })])
+    } finally {
+      stop()
+      if (sessionId) {
+        terminalRegistry.disposeTerminalConnection(sessionId)
+        terminalRegistry.unregisterTerminalWs(sessionId)
+      }
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each(['already known', 'reported later'] as const)('settles a directory refusal %s without losing its diagnostic tab', async timing => {
+    const project = '/missing/code-block-workspace'
+    const slot = { ...SLOT, project }
+    await renderTurn({ slots: [slot] })
+    const dock = renderHook(() => useBottomTerminal())
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { results, stop } = collect()
+    const onTerminalReady = terminalRegistry.onTerminalReady
+    let refuse: (() => void) | undefined
+    const readySpy = vi.spyOn(terminalRegistry, 'onTerminalReady').mockImplementation((id, onReady, onFailure) => {
+      const unsubscribe = onTerminalReady(id, onReady, onFailure)
+      // Model the registry's refusal contract: consume the ready listener before
+      // reporting failure, including a known failure before subscription returns.
+      refuse = () => { unsubscribe(); onFailure?.() }
+      if (timing === 'already known') refuse()
+      return unsubscribe
+    })
+    let sessionId = ''
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'npm test', reqId: 'invalid-cwd' },
+        }))
+      })
+      expect(dock.result.current.tabs).toHaveLength(1)
+      sessionId = dock.result.current.tabs[0].id
+      if (timing === 'reported later') {
+        expect(results).toEqual([])
+        act(() => refuse?.())
+      }
+      // Failure is acknowledged before the readiness deadline, not at it.
+      expect(results).toEqual([{ reqId: 'invalid-cwd', ok: false }])
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_IN_TERMINAL_READY_DEADLINE_MS + RUN_IN_TERMINAL_OPENING_GRACE_MS + 1_000)
+      })
+      expect(dock.result.current.tabs).toEqual([expect.objectContaining({ id: sessionId, cwd: project })])
+      expect(fetchSpy).not.toHaveBeenCalledWith('/api/terminal/sessions')
+      expect(fetchSpy).not.toHaveBeenCalledWith(
+        `/api/terminal/sessions/${sessionId}`, expect.objectContaining({ method: 'DELETE' }),
+      )
+      expect(disposeTerminalSessionSpy).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+
+      // A later successful reconnect cannot replay the refused command.
+      const send = vi.fn()
+      const ws = { readyState: WebSocket.OPEN, send } as unknown as WebSocket
+      act(() => { terminalRegistry.registerTerminalWs(sessionId, ws) })
+      expect(send).not.toHaveBeenCalled()
+      expect(results).toEqual([{ reqId: 'invalid-cwd', ok: false }])
+    } finally {
+      stop()
+      readySpy.mockRestore()
+      if (sessionId) terminalRegistry.unregisterTerminalWs(sessionId)
       vi.unstubAllGlobals()
     }
   })
@@ -1120,7 +1379,7 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       // The PTY reports ready: registering the socket drains the ready
       // listener synchronously and the command goes out on it.
       const ws = { readyState: WebSocket.OPEN, send: (d: Uint8Array) => { sent.push(d) } } as unknown as WebSocket
-      act(() => { registerTerminalWs(sessionId, ws) })
+      act(() => { terminalRegistry.registerTerminalWs(sessionId, ws) })
 
       await waitFor(() => expect(results.length).toBe(1))
       expect(results[0]).toMatchObject({ reqId: 'rb2', ok: true })
@@ -1134,7 +1393,7 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       )
     } finally {
       stop()
-      if (sessionId) unregisterTerminalWs(sessionId)
+      if (sessionId) terminalRegistry.unregisterTerminalWs(sessionId)
       vi.unstubAllGlobals()
     }
   })

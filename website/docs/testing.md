@@ -279,6 +279,8 @@ one is a rule:
   chunk. When the element you query sits behind a dynamic import, pass an explicit
   timeout (`{ timeout: 5000 }`) **and say which lazy boundary it is waiting for** in a
   comment, so the next reader knows the wait is a chunk load and not a guess.
+  `ChatInput.lexical.test.tsx` uses `LEXICAL_READY` for the
+  `LexicalComposerInput` chunk; its caret checks start only after that editor mounts.
 - **Expensive engines built per test hit the 15s `testTimeout`.**
   `approvalOneShotDecisionRule.test.ts` constructed a new `ESLint` instance — which
   re-parses `eslint.config.js` and the whole plugin graph — inside `lint()`, for 17

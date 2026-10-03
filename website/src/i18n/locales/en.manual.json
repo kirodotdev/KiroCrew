@@ -1969,6 +1969,10 @@
       "maximum_terminals": "Maximum {{n}} terminals",
       "terminal": "Terminal"
     },
+    "runInTerminalConfirm": {
+      "body_default_multi": "No workspace selected. The {{lines}} lines below will run in a new terminal tab, using the terminal’s starting directory.",
+      "body_default_single": "No workspace selected. The command below will run in a new terminal tab, using the terminal’s starting directory."
+    },
     "chatInput": {
       "cancel_upload": "Cancel upload",
       "auto_jev": "Auto (Jev)",
@@ -1989,6 +1993,7 @@
       "branch": "Branch: {{branch}}",
       "detached_head_at": "Detached HEAD at {{branch}}",
       "message_placeholder": "Message {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_terminal": "Message {{bot}}… (/command · @file · $skill · ! shell command)",
       "approve": "Approve",
       "approve_all": "Approve all",
       "could_not_submit_that_decision_see_the_console_f": "Could not submit that decision — see the console for details.",
@@ -2043,7 +2048,23 @@
       "optimize_failed_elsewhere": "Couldn't optimize the prompt you started in another session. Its original text was restored there.",
       "session_control_needs_attention": "Needs attention",
       "session_control_ready": "Ready",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "terminal_hint": "Terminal panel · {{workspace}}",
+      "terminal_panel": "Terminal panel",
+      "terminal_review_at_capacity": "Review the command. Run opens the terminal panel; if it is still full, close an unused tab and try again. Nothing is queued.",
+      "terminal_default_directory": "Terminal starting directory",
+      "terminal_failed": "Command not sent. Your draft is kept; see the terminal panel.",
+      "terminal_unavailable": "Terminal is turned off. Enable dashboard.terminal.enabled in the server configuration. Remove the leading ! to return to chat.",
+      "terminal_limit": "Terminal limit reached. Close an unused terminal tab, then try again.",
+      "terminal_main_window": "Open this session in the main window to run terminal commands.",
+      "terminal_remote": "Terminal commands are unavailable for sessions on another server. Remove the leading ! to return to chat.",
+      "terminal_attachments": "Remove attachments before running a terminal command.",
+      "terminal_folder_attachments": "Remove folder attachments before running. Removing a folder also removes its {{folderRef}} reference from the command.",
+      "terminal_empty": "Type a command after !. You'll review it before it runs.",
+      "terminal_review": "Review and run in terminal",
+      "terminal_run_review": "Review terminal command",
+      "terminal_force_stop": "Stop agent",
+      "terminal_pending": "Wait for session details to load, or select another session."
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
@@ -2064,6 +2085,7 @@
       "disconnected_message": "Terminal disconnected",
       "displaced_message": "Another window took over this terminal",
       "failed_retry": "Failed — retry",
+      "invalid_cwd_message": "The terminal working directory “{{cwd}}” is unavailable. Restore it and reconnect, or use the terminal’s starting directory.",
       "reconnect": "Reconnect",
       "reconnecting": "Reconnecting…",
       "redaction_failed_retry": "Redaction failed — retry",
@@ -2072,7 +2094,9 @@
       "sending": "Sending…",
       "touch_select_anchor": "First point set — tap the other end",
       "touch_select_done": "Range selected — tap Copy",
-      "use_here": "Use terminal here"
+      "use_here": "Use terminal here",
+      "use_starting_directory": "Use terminal starting directory",
+      "use_starting_directory_hint": "Opens a new shell in the server's configured terminal directory (dashboard.terminal.cwd, otherwise the server's home directory). The failed command is not sent again."
     },
     "codeBlock": {
       "copied": "Copied!",

@@ -117,7 +117,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
 
 /** The send slot while a turn runs or a stop is in progress. Stop escalates
  *  from a soft stop to a force kill; a draft offers steer or queue. */
-export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, connected, effectiveBusyMode, setBusySendMode, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false }: {
+export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, connected, effectiveBusyMode, setBusySendMode, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false }: {
   stopState?: 'idle' | 'soft_pending' | 'killing'
   /** The press before this one was declined (compaction); the backend treats
    *  the next press as the force stop, and the armed Stop's hint says so. */
@@ -137,11 +137,12 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
   sendOnEnter: SendMode
   jevAutoAvailable: boolean
   onStop?: () => void
+  terminalActive?: boolean
 }) {
   return (
     stopState === 'killing' ? (
       killingEscaped ? (
-        <div className="flex items-center gap-1.5">
+        <div className={`flex items-center gap-1.5${terminalActive ? ' min-w-0 [&>button]:shrink-0' : ''}`}>
           <button
             className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-all"
             onClick={stopWithTap}
@@ -151,7 +152,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
           >
             <Square size={18} fill="currentColor" />
           </button>
-          <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-escape-hint">{i18nT('components.chatInput.taking_longer_than_expected')}</span>
+          <span className={`text-xs text-muted${terminalActive ? ' min-w-0 whitespace-normal [overflow-wrap:anywhere]' : ' whitespace-nowrap'}`} data-testid="stop-escape-hint">{i18nT('components.chatInput.taking_longer_than_expected')}</span>
         </div>
       ) : (
         <button className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-not-allowed transition-all" disabled title={i18nT('components.chatInput.killing')} aria-label={i18nT('components.chatInput.killing_session')} data-testid="stop-button-killing">
@@ -159,7 +160,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
         </button>
       )
     ) : stopState === 'soft_pending' ? (
-      <div className="flex items-center gap-1.5">
+      <div className={`flex items-center gap-1.5${terminalActive ? ' min-w-0 [&>button]:shrink-0' : ''}`}>
         {/* Pulse floor 0.8 with a faint danger fill: at 0.6 on a
             transparent background the light-theme button bottomed
             out near white-on-white mid-pulse, and this is the only
@@ -175,7 +176,8 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
         >
           <Square size={18} fill="currentColor" />
         </motion.button>
-        <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-force-hint">{i18nT('components.chatInput.click_again_to_force_stop')}</span>
+        {terminalActive && <span aria-hidden="true" className="text-xs text-muted min-w-0 [overflow-wrap:anywhere] @min-[400px]/composer:hidden">{i18nT('components.chatInput.terminal_force_stop')}</span>}
+        <span className={`text-xs text-muted whitespace-nowrap${terminalActive ? ' sr-only @min-[400px]/composer:not-sr-only @min-[400px]/composer:whitespace-normal' : ''}`} data-testid="stop-force-hint">{i18nT('components.chatInput.click_again_to_force_stop')}</span>
       </div>
     ) : isQueued ? (
       <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={stopWithTap} title={i18nT('components.chatInput.stopping')} aria-label={i18nT('components.chatInput.stopping_2')}>

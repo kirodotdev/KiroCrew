@@ -16,7 +16,7 @@ import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_O
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../../utils/fileReadQuery'
 import { safeSetItem } from '../../../utils/safeStorage'
 import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout } from '../../../utils/terminalPopout'
-import { onTerminalReady, sendToTerminalSession, sendRawToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../../../utils/terminalRegistry'
+import { onTerminalReady, sendToTerminalSession, sendRawToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../../../utils/terminalRegistry'
 import { errMessage } from '../../../utils/thunkError'
 
 type PanelTabs = ReturnType<typeof usePanelTabs>
@@ -279,6 +279,20 @@ export function useChatEventBridges({
           code, lang, getTerminalShell(sessionId), getTerminalFenceShells(sessionId),
         )
         emit(sendToTerminalSession(sessionId, text))
+      }, () => {
+        if (settled) return
+        // Local disposal removes the socket before notifying failure, but the
+        // tab-close caller removes the tab afterwards. Socket ownership here
+        // distinguishes that release from an error on an upgraded connection;
+        // it says nothing about whether the shell is alive.
+        const ownsSocket = Boolean(getTerminalInputWs(sessionId))
+        emit(false)
+        if (!ownsSocket) return
+        queueMicrotask(() => {
+          // Let synchronous tab close / popout transfer finish before reporting.
+          if (!hasDockTerminal(sessionId) || isTerminalPopoutOpen()) return
+          showActionError(i18nT('pages.chatPage.run_in_terminal_liveness_probe_failed_error'))
+        })
       })
       // Give the PTY time to connect. A missing `ready` frame is not enough to
       // prove the dispatch died because a shell profile can replace the

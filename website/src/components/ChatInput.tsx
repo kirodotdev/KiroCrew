@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo, useCallback, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal } from 'lucide-react'
+import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
@@ -21,6 +21,10 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import ErrorNotice from './ErrorNotice'
 import PromptLengthNotice from './PromptLengthNotice'
+import RunInTerminalConfirm from './RunInTerminalConfirm'
+import { useTerminalCommand } from '../hooks/useTerminalCommand'
+import { expandAll as expandPasteTokens } from '../utils/pasteTokens'
+import { Btn } from './ui'
 import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
@@ -107,6 +111,7 @@ function ChatInput({
   value: valueProp,
   onChange,
   onSend,
+  terminalCommands,
   canSteer,
   onSteer,
   jevAutoAvailable = false,
@@ -251,6 +256,21 @@ function ChatInput({
   // each streamed frame. useAppStore returns the Provider-injected store, the
   // same pattern ChatPane uses for its at-send reads.
   const chatStore = useAppStore()
+  const terminal = useTerminalCommand({
+    value, slotId, project, target: terminalCommands,
+    hasAttachments: pendingFiles.length > 0 || pendingDirs.length > 0 || pendingSessions.length > 0 || !!knowledgeChip,
+    expand: text => expandPasteTokens(text, pasteBlocks),
+  })
+  const { run: runTerminalCommand } = terminal
+  const terminalRefusal = terminal.blocked || terminal.failure
+  const terminalValidation = terminalRefusal === 'unavailable' ? i18nT('components.chatInput.terminal_unavailable')
+    : terminalRefusal === 'host' ? i18nT('components.chatInput.terminal_main_window')
+      : terminalRefusal === 'remote' ? i18nT('components.chatInput.terminal_remote')
+        : terminalRefusal === 'attachments' ? (pendingDirs.length > 0
+          ? i18nT('components.chatInput.terminal_folder_attachments', { folderRef: '@path' })
+          : i18nT('components.chatInput.terminal_attachments'))
+          : terminalRefusal === 'pending' ? i18nT('components.chatInput.terminal_pending')
+            : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
   const {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
@@ -311,7 +331,7 @@ function ChatInput({
     return () => ro.disconnect()
   }, [lexicalComposer, lexicalLoadFailed, lexicalControlRevision, lexicalControlRef])
   const queryClient = useQueryClient()
-  const pickers = useComposerPickers({ project, onFileSelect, typedCommandMenus, value, onChange, composerControl, queryClient, slotId, agentName })
+  const pickers = useComposerPickers({ project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
   const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
@@ -345,10 +365,30 @@ function ChatInput({
     el.click()
     setPlusOpen(false)
   }
-  const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer, stopWithTap, sendFollowUp } = useComposerSend({
+  const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
     slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
     pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, onSend, onStop, onFollowUpSend,
   })
+  // All terminal draft sends enter here before agent routing or prompt-length
+  // confirmation. A terminal draft never queues or steers.
+  const fireComposer = useCallback((alternate?: unknown) => {
+    if (terminal.active) {
+      if (!disabled && !voiceTranscribing && connected && !optimizingRef.current) {
+        composerVoice?.controls?.disarmForSend()
+        runTerminalCommand()
+      }
+      return
+    }
+    fireAgentComposer(alternate)
+  }, [terminal.active, disabled, voiceTranscribing, connected, composerVoice, runTerminalCommand, fireAgentComposer])
+  const fireFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
+    // Both chat parents consume the current draft for missing or empty text.
+    if (!text && terminal.active) {
+      fireComposer()
+      return
+    }
+    sendFollowUp(text, sourceKeyAtClick)
+  }, [terminal.active, fireComposer, sendFollowUp])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const directFilePicker = isMobile || isTouchDevice()
@@ -362,7 +402,9 @@ function ChatInput({
   const hasAutomation = !!onAutomationClick
   useEffect(() => { remeasureControlRow() }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
-  const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
+  const resolvedPlaceholder = placeholder || i18nT(terminal.canAdvertise
+    ? 'components.chatInput.message_placeholder_terminal'
+    : 'components.chatInput.message_placeholder', { bot: botName })
   // An icon swap alone announces nothing, so the empty-state placeholder carries
   // the explanation — and it names typing as the other way out, so the morph
   // never feels like a trap.
@@ -446,7 +488,7 @@ function ChatInput({
   }, [setTextareaRef, attachListContinuation])
   const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt } = usePromptOptimizer({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
-    valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary,
+    valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands,
   })
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
   // OS file and text drags fall through to the host's handlers.
@@ -466,7 +508,7 @@ function ChatInput({
     handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut, handleFileInputChange,
   } = usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime })
   const handleKeyDown = useComposerKeyDown({
-    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef,
+    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef,
     fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef,
   })
   const { handleTextareaChange, handleLexicalChange } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef })
@@ -516,10 +558,51 @@ function ChatInput({
 
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}
+      <RunInTerminalConfirm
+        open={!!terminal.confirmation}
+        command={terminal.confirmation?.code ?? ''}
+        workspaceLabel={terminal.confirmation?.project}
+        usesDefaultDirectory={!!terminal.confirmation && !terminal.confirmation.project}
+        warnReason={terminal.confirmation?.warnReason}
+        onConfirm={terminal.confirm}
+        onCancel={terminal.cancelConfirmation}
+      />
+      {/* No hand-off: the command draft must survive a failed terminal startup. */}
+      <ErrorNotice message={terminal.failure === 'limit' ? i18nT('components.chatInput.terminal_limit')
+        : terminal.failure === 'failed' ? i18nT('components.chatInput.terminal_failed') : undefined}
+        variant={terminal.failure === 'failed' ? 'inline' : 'block'}
+        onDismiss={terminal.dismissFailure} />
+      {terminal.active && (
+        <div className="flex flex-col gap-1.5" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
+          <div className="text-sm text-muted flex items-center gap-1.5" role="status">
+            <Terminal className="lucide-inline shrink-0" />
+            {/* The folder name, as on the project chip; the review dialog shows the full path. */}
+            <span className="min-w-0 [overflow-wrap:anywhere]" title={terminalValidation ? undefined : project || undefined}>
+              {terminalValidation || (project && onProjectClick && !shelfCompact
+                ? i18nT('components.chatInput.terminal_panel')
+                : i18nT('components.chatInput.terminal_hint', { workspace: project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.terminal_default_directory') }))}
+            </span>
+          </div>
+          {!showGhost && !composerCollapsed && (
+            <Btn
+              primary
+              className="self-end max-w-full"
+              onClick={fireComposer}
+              disabled={!!terminal.blocked || terminal.pending || disabled || optimizing || voiceTranscribing || !connected}
+              title={i18nT(terminal.failure === 'limit'
+                ? 'components.chatInput.terminal_review_at_capacity'
+                : 'components.chatInput.terminal_review')}
+            >
+              {terminal.pending ? <Loader2 className="lucide-inline shrink-0 animate-spin" /> : <Terminal className="lucide-inline shrink-0" />}
+              <span className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere]">{i18nT('components.chatInput.terminal_run_review')}</span>
+            </Btn>
+          )}
+        </div>
+      )}
 
       {/* Ghost follow-up bubbles floating above input */}
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={fireFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always
@@ -759,7 +842,7 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />
+      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),
@@ -801,7 +884,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
+        className={`@container/composer ${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
 
         data-tree-drop-active={treeDrop.state === 'accept' ? 'true' : undefined}
         data-tree-drop-refused={treeDrop.state === 'refuse' ? 'true' : undefined}
@@ -950,9 +1033,9 @@ function ChatInput({
         <PromptLengthNotice value={value} blocks={pasteBlocks} contextWindowTokens={contextWindowTokens} confirmPending={overLimitPending} />
 
         {/* Bottom icon row */}
-        <div className="flex items-center justify-between px-2.5 pb-2 pt-0.5">
+        <div className={`flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           <div className="flex items-center gap-0.5 min-w-0">
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus} onFileSelect={onFileSelect} />
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
@@ -1076,7 +1159,7 @@ function ChatInput({
               <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
           </div>
-          <div className="flex items-center gap-1 shrink-0">
+          <div className={`flex items-center gap-1 shrink-0${terminal.active ? ' ml-auto max-w-full justify-end [&>button]:shrink-0' : ''}`}>
             {onVoiceToggle && (
               <MicButton voiceHoldMode={voiceHoldMode} voiceRecording={voiceRecording} micIsModeSwitch={micIsModeSwitch} transcribeInFlight={transcribeInFlight} micHeldElsewhere={micHeldElsewhere} micBlocked={micBlocked} toggleVoiceMode={toggleVoiceMode} onVoiceToggle={onVoiceToggle} onVoicePrewarm={onVoicePrewarm} disabled={disabled} optimizing={optimizing} micLabel={micLabel} />
             )}
@@ -1095,9 +1178,9 @@ function ChatInput({
               // the idle Send queues the message behind the compaction, so a
               // user with something to say is never left without a send.
               <CompactingIndicator />
-            ) : (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (canSteer && onSteer)) ? (
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued} composerHasDraft={composerHasDraft} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} stopDeclinedArmed={stopDeclinedArmed} />
-            ) : (<>
+            ) : (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (!terminal.active && canSteer && onSteer)) ? (
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
+            ) : !terminal.active && (<>
               {promptOptimizer && <button
                 className={`w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all disabled:cursor-not-allowed ${optimizing ? 'bg-accent/20 text-accent animate-pulse' : 'bg-transparent text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent'}`}
                 onClick={(e) => { e.stopPropagation(); e.preventDefault(); optimizePrompt() }}

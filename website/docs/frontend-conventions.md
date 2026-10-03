@@ -67,6 +67,13 @@ translated label.
 
 Other shared modules:
 
+- `ErrorNotice.tsx` (error text and its opt-in agent hand-off). In a
+  height-constrained block notice, `scrollMessage` makes only the message
+  scroll, keeping the built-in hand-off outside that scroller. Use
+  `actionPlacement="below"` to keep the hand-off on its own line; the host owns
+  the height constraint and any separate recovery controls. The option defaults
+  to false and has no effect on inline notices. `messageClassName` alone cannot
+  constrain the text column's height while reserving room for the hand-off.
 - `Clickable.tsx` (accessible clickable div; see below)
 - `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below
 - `ui/tabs.tsx`, `Tablist.tsx`, `ui/tabsPill.ts` (the other two switchers and their

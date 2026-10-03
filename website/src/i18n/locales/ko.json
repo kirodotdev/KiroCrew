@@ -6061,6 +6061,7 @@
       "let_the_agent_read_one_of_your_files": "에이전트가 내 파일을 읽도록 허용",
       "message_input": "메시지 입력",
       "message_placeholder": "{{bot}}에게 메시지… (/command · @file · $skill)",
+      "message_placeholder_terminal": "{{bot}}에게 메시지… (/command · @file · $skill · ! 셸 명령어)",
       "model": "모델",
       "model_2": "모델: {{name}}",
       "open_preview_of": "{{name}} 미리보기 열기",
@@ -6148,7 +6149,23 @@
       "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
       "compacting_context_stop_unavailable": "컨텍스트 압축 중 — 완료될 때까지 중지할 수 없습니다",
       "click_again_to_force_stop_resets_session": "다시 클릭하면 강제 중지됩니다 (세션이 재시작됩니다. 메시지는 남고 에이전트는 최근 발췌를 유지합니다)",
-      "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
+      "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
+      "terminal_attachments": "터미널 명령을 실행하기 전에 첨부 파일을 제거하세요.",
+      "terminal_folder_attachments": "실행하기 전에 첨부된 폴더를 제거하세요. 폴더를 제거하면 명령에서도 해당 {{folderRef}} 참조가 제거됩니다.",
+      "terminal_default_directory": "터미널 시작 디렉터리",
+      "terminal_empty": "! 뒤에 명령을 입력하세요. 실행하기 전에 검토할 수 있습니다.",
+      "terminal_failed": "명령이 전송되지 않았습니다. 초안은 유지됩니다. 터미널 패널을 확인하세요.",
+      "terminal_hint": "터미널 패널 · {{workspace}}",
+      "terminal_panel": "터미널 패널",
+      "terminal_review_at_capacity": "명령을 검토하세요. 실행을 누르면 터미널 패널이 열립니다. 여전히 가득 차 있으면 사용하지 않는 탭을 닫고 다시 시도하세요. 명령은 대기열에 추가되지 않습니다.",
+      "terminal_limit": "터미널 개수 제한에 도달했습니다. 사용하지 않는 터미널 탭을 닫은 후 다시 시도하세요.",
+      "terminal_main_window": "터미널 명령을 실행하려면 이 세션을 기본 창에서 여세요.",
+      "terminal_remote": "다른 서버의 세션에서는 터미널 명령을 사용할 수 없습니다. 채팅으로 돌아가려면 맨 앞의 !를 삭제하세요.",
+      "terminal_unavailable": "터미널이 꺼져 있습니다. 서버 설정에서 dashboard.terminal.enabled 옵션을 켜세요. 채팅으로 돌아가려면 맨 앞의 !를 삭제하세요.",
+      "terminal_review": "검토 후 터미널에서 실행",
+      "terminal_force_stop": "에이전트 중지",
+      "terminal_pending": "세션 정보가 로드될 때까지 기다리거나 다른 세션을 선택하세요.",
+      "terminal_run_review": "터미널 명령 검토"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -6178,6 +6195,7 @@
       "disconnected_message": "터미널 연결이 끊겼습니다",
       "displaced_message": "다른 창이 이 터미널을 가져갔습니다",
       "failed_retry": "실패 — 다시 시도",
+      "invalid_cwd_message": "터미널 작업 디렉터리 ‘{{cwd}}’을(를) 사용할 수 없습니다. 복원한 후 다시 연결하거나 터미널 시작 디렉터리를 사용하세요.",
       "reconnect": "다시 연결",
       "reconnecting": "다시 연결하는 중…",
       "redaction_failed_retry": "마스킹 실패 — 다시 시도",
@@ -6186,7 +6204,9 @@
       "sending": "전송 중…",
       "touch_select_anchor": "첫 지점 설정됨 — 반대쪽 끝을 탭하세요",
       "touch_select_done": "범위 선택됨 — 복사를 탭하세요",
-      "use_here": "여기에서 터미널 사용"
+      "use_here": "여기에서 터미널 사용",
+      "use_starting_directory": "터미널 시작 디렉터리 사용",
+      "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다."
     },
     "codeBlock": {
       "copied": "복사했습니다!",
@@ -7903,6 +7923,8 @@
     },
     "runInTerminalConfirm": {
       "body_copy": "명령이 복사되므로 터미널에 붙여넣으세요.",
+      "body_default_multi": "선택된 작업 공간이 없습니다. 아래 {{lines}}줄을 터미널 시작 디렉터리를 사용해 새 터미널 탭에서 실행합니다.",
+      "body_default_single": "선택된 작업 공간이 없습니다. 아래 명령을 터미널 시작 디렉터리를 사용해 새 터미널 탭에서 실행합니다.",
       "body_multi": "새 터미널 탭에서 이 채팅의 작업 디렉터리로 {{lines}}줄이 실행됩니다.",
       "body_single": "새 터미널 탭에서 이 채팅의 작업 디렉터리로 실행됩니다.",
       "cancel": "취소",

@@ -8,8 +8,8 @@
  * variants -- and the default keeps every existing consumer's shape byte for
  * byte (the block variant's bare text node included).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ErrorNotice from '../components/ErrorNotice'
 import {
@@ -83,5 +83,50 @@ describe('ErrorNotice messagePlacement', () => {
     expect(staged).toContain(RAW)
     expect(staged).toContain('config_store_unavailable')
     expect(staged).toContain('/api/config/kirocrew')
+  })
+
+  it('scrollMessage keeps one built-in hand-off outside the message and preserves its report and callbacks', () => {
+    const onHandoff = vi.fn()
+    const onDismiss = vi.fn()
+    const report = recordError({
+      source: 'api', message: RAW, status: 503,
+      code: 'config_store_unavailable', endpoint: '/api/config/kirocrew',
+    })
+    render(
+      <ErrorNotice
+        message="The workspace could not be opened."
+        report={report}
+        scrollMessage
+        askAgent
+        actionPlacement="below"
+        onHandoff={onHandoff}
+        onDismiss={onDismiss}
+      />,
+    )
+    const notice = screen.getByRole('alert')
+    const text = within(notice).getByText('The workspace could not be opened.')
+    const handoff = within(notice).getByRole('button', { name: /ask the agent/i })
+    expect(text.contains(handoff)).toBe(false)
+    expect(within(notice).getAllByRole('button', { name: /ask the agent/i })).toHaveLength(1)
+    fireEvent.click(handoff)
+    expect(navigated).toEqual(['/chat'])
+    expect(onHandoff).toHaveBeenCalledOnce()
+    const staged = consumeChatHandoff() ?? ''
+    expect(staged).toContain(RAW)
+    expect(staged).toContain('config_store_unavailable')
+    expect(staged).toContain('/api/config/kirocrew')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    expect(onDismiss).toHaveBeenCalledOnce()
+  })
+
+  it.each(['beside', 'below'] as const)('scrollMessage leaves inline notices unchanged with %s actions', actionPlacement => {
+    const props = {
+      message: RAW, title: 'Save failed', askAgent: true, actionPlacement,
+      onDismiss: () => {}, footer: 'Try again later',
+    }
+    const { rerender } = render(<ErrorNotice {...props} variant="inline" />)
+    const before = screen.getByRole('alert').outerHTML
+    rerender(<ErrorNotice {...props} variant="inline" scrollMessage />)
+    expect(screen.getByRole('alert').outerHTML).toBe(before)
   })
 })
