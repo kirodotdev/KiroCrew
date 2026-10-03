@@ -982,6 +982,10 @@ kirocrew config set --local agent.yolo true
 kirocrew config set agent.yolo true
 ```
 
+A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON array
+(`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
+written. Details: [cli](cli.md) (`config set`).
+
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 

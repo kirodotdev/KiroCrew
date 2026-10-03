@@ -209,7 +209,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 print("       kirocrew config set --local <key> <value>", file=sys.stderr)
                 print("       kirocrew config set --file <path.json>", file=sys.stderr)
                 sys.exit(1)
-            parsed = _parse_value(value)
+            # A list-typed key takes a list or is refused: the generic parser
+            # answers an unparsable word with the STRING itself, and a string
+            # stored under a list key is replaced by the default at load.
+            parsed: object
+            try:
+                if _is_list_key(key):
+                    parsed = _parse_list_value(key, value)
+                else:
+                    parsed = _parse_value(value)
+            except ValueError as list_error:
+                print(f"❌ {key}: {list_error}", file=sys.stderr)
+                sys.exit(1)
             # A declared enum is checked on EVERY write, stored or not, and what is
             # written is the enum's own spelling. The type check below runs only on
             # a first write, because a stored value's type stands in for the
@@ -814,6 +825,71 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
     return None
+
+
+def _is_list_key(key: str) -> bool:
+    """True when *key* holds a list: declared ``array``, else a list already stored.
+
+    The declaration is the authority (a wildcard path such as
+    ``telegram.accounts.*.allowed_user_ids`` matches segment by segment). A key the
+    registry does not know falls back to the type of the value the config holds
+    today, so a stored list is never overwritten with a string either.
+    """
+    from kiro_crew.config.schema import SCHEMA_REGISTRY
+
+    parts = key.split(".")
+    for entry in SCHEMA_REGISTRY:
+        e_parts = entry.path.split(".")
+        if len(e_parts) == len(parts) and all(
+            e == "*" or e == p for e, p in zip(e_parts, parts, strict=True)
+        ):
+            return entry.type == "array"
+    try:
+        return isinstance(_dict_get(KiroCrewConfig.load().to_dict(), key), list)
+    except (ConfigReadError, OSError, ValueError):
+        return False
+
+
+def _parse_list_value(key: str, raw: str) -> list:
+    """Parse *raw* as the value of the list-typed *key*, or raise ``ValueError``.
+
+    Only a JSON array is accepted. The case that matters is the array whose quotes
+    a shell removed (Windows PowerShell 5.1 delivers ``'["a","b"]'`` as ``[a,b]``):
+    it is not JSON, so the scalar parser stored it as a string and the loader then
+    dropped the whole field back to its default, un-trusting whatever the list
+    held. No other spelling is guessed at: a list field's item type (``list[int]``
+    for a Telegram user id, ``list[str]`` for a Slack one) is not known here, and a
+    wrongly typed list is dropped the same way.
+    """
+    text = raw.strip()
+    try:
+        loaded = json.loads(text)
+    except ValueError:
+        guess: list[str] = []
+        if text.startswith("[") and text.endswith("]"):
+            guess = [i.strip().strip("'\"") for i in text[1:-1].split(",") if i.strip()]
+        raise ValueError(f"expected a JSON array, got {raw!r}\n" + _list_hint(key, guess)) from None
+    if isinstance(loaded, list):
+        return loaded
+    raise ValueError(
+        f"expected a JSON array, got a JSON {type(loaded).__name__}\n" + _list_hint(key, [])
+    )
+
+
+def _list_hint(key: str, items: list[str]) -> str:
+    """The retry lines for a refused list value: the forms that survive PowerShell."""
+    items = items or ["a", "b"]
+    as_json = json.dumps(items, separators=(",", ":"))
+    escaped = as_json.replace('"', '\\"')
+    prefix = f"kirocrew config set {key}"
+    return "\n".join(
+        [
+            "   Nothing was written. A shell may have stripped the quotes of a JSON array",
+            "   (Windows PowerShell 5.1 does), leaving [a,b], which is not JSON. Retry with:",
+            f"     PowerShell 7.3+, sh:    {prefix} '{as_json}'",
+            f"     Windows PowerShell 5.1: {prefix} '{escaped}'",
+        ]
+    )
 
 
 def _parse_value(raw: str) -> object:
