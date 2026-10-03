@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import select
+import signal
 import sys
 import threading
 import time
@@ -1196,6 +1197,35 @@ def _read_message(stdin) -> dict[str, Any] | None:
             continue
 
 
+def _hard_exit_on_signal(_signum: int, _frame: Any) -> None:
+    """Exit at once on SIGTERM/SIGINT, skipping interpreter finalization.
+
+    Tool work runs on a daemon thread, so a normal exit finalizes the stdio
+    streams under it and can abort with ``_enter_buffered_busy`` (SIGABRT, a
+    crash dialog on macOS) during a provider's group teardown. Same fix as the
+    gateway stub's ``_hard_exit``: drain logging, flush stderr, ``os._exit``.
+    stdout is NOT flushed: another thread may hold its lock, and waiting on it
+    here would keep the process from ever exiting.
+    """
+    try:
+        logging.shutdown()
+    except Exception:  # pragma: no cover - never block exit on log teardown
+        pass
+    try:
+        sys.stderr.flush()
+    except (OSError, ValueError, RuntimeError):  # RuntimeError: reentrant flush
+        pass
+    os._exit(0)
+
+
+def _install_hard_exit_handlers() -> dict[int, Any]:
+    """Install the handler for SIGTERM/SIGINT; return the ones it replaced."""
+    if threading.current_thread() is not threading.main_thread():
+        return {}  # signal.signal only works on the main thread
+    sigs = (signal.SIGTERM, signal.SIGINT)
+    return {sig: signal.signal(sig, _hard_exit_on_signal) for sig in sigs}
+
+
 def run_mcp_stdio_loop(
     server_name: str,
     server_version: str,
@@ -1236,6 +1266,7 @@ def run_mcp_stdio_loop(
     _prior_caller = internal_caller()
     set_internal_caller(server_name)
     snapshot_stdout_fd()
+    prior_handlers = _install_hard_exit_handlers()
     pruned = False
     try:
         pruned = _run_stdio_dispatch_loop(
@@ -1249,6 +1280,10 @@ def run_mcp_stdio_loop(
     finally:
         set_internal_caller(_prior_caller)
         release_stdout_fd()
+        # Restore, so repeated loops in one process (the test suite) do not
+        # leave a later Ctrl-C or SIGTERM exiting 0 through this handler.
+        for sig, handler in prior_handlers.items():
+            signal.signal(sig, signal.SIG_DFL if handler is None else handler)
     if pruned:
         # Non-zero so the pool records a death and the next call respawns this
         # server from the current install's launch command.
