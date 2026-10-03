@@ -1,0 +1,93 @@
+{
+  "label": "after",
+  "theme": "light",
+  "stepPx": 6,
+  "steps": 230,
+  "handoffs": [
+    {
+      "row": 1,
+      "frame": 23,
+      "scrollTop": 138,
+      "bubbleTopBefore": -48,
+      "bubbleH": 72,
+      "cardTop": 4,
+      "cardHAtHandoff": 48,
+      "cardHSettled": 48,
+      "snapBackPx": 52
+    },
+    {
+      "row": 6,
+      "frame": 155,
+      "scrollTop": 930,
+      "bubbleTopBefore": -408,
+      "bubbleH": 432,
+      "cardTop": 4,
+      "cardHAtHandoff": 48,
+      "cardHSettled": 48,
+      "snapBackPx": 412
+    }
+  ],
+  "blankFrameCount": 69,
+  "blankFrames": [
+    {
+      "frame": 86,
+      "card": null,
+      "scrollTop": 516
+    },
+    {
+      "frame": 87,
+      "card": null,
+      "scrollTop": 522
+    },
+    {
+      "frame": 88,
+      "card": null,
+      "scrollTop": 528
+    },
+    {
+      "frame": 89,
+      "card": null,
+      "scrollTop": 534
+    },
+    {
+      "frame": 90,
+      "card": null,
+      "scrollTop": 540
+    },
+    {
+      "frame": 91,
+      "card": null,
+      "scrollTop": 546
+    },
+    {
+      "frame": 92,
+      "card": null,
+      "scrollTop": 552
+    },
+    {
+      "frame": 93,
+      "card": null,
+      "scrollTop": 558
+    },
+    {
+      "frame": 94,
+      "card": null,
+      "scrollTop": 564
+    },
+    {
+      "frame": 95,
+      "card": null,
+      "scrollTop": 570
+    },
+    {
+      "frame": 96,
+      "card": null,
+      "scrollTop": 576
+    },
+    {
+      "frame": 97,
+      "card": null,
+      "scrollTop": 582
+    }
+  ]
+}

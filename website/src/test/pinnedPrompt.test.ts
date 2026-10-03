@@ -8,6 +8,8 @@ import {
   promptBody,
   pinnedImageUrl,
   pinHandoffY,
+  pinHandoffBottomY,
+  pinHandoffProgress,
   pinPushTravel,
   computeLiveCardH,
   computePinnedCardMaxH,
@@ -39,6 +41,16 @@ describe('promptPreview around inline markers', () => {
 })
 
 describe('pinHandoffY', () => {
+  it('preserves the tail at hand-off and retraces the settle when scrolling back', () => {
+    const bottom = pinHandoffBottomY(100)
+    const positions = [0, 0.25, 0.5, 0.75, 1]
+    const progress = positions.map(p => pinHandoffProgress(bottom, bottom - ROW_PAD_Y - p * 3 * DEFAULT_PINNED_CARD_H))
+    expect(progress).toEqual([0, 0.15625, 0.5, 0.84375, 1])
+    expect(positions.toReversed().map(p => pinHandoffProgress(bottom, bottom - ROW_PAD_Y - p * 3 * DEFAULT_PINNED_CARD_H))).toEqual(progress.toReversed())
+    expect(pinHandoffProgress(bottom, bottom + 500)).toBe(0)
+    expect(pinHandoffProgress(bottom, bottom - 1000)).toBe(1)
+  })
+
   it('is the fold line itself — the card\'s own resting top', () => {
     expect(pinHandoffY(100)).toBe(100)
   })
@@ -47,21 +59,9 @@ describe('pinHandoffY', () => {
     expect(DEFAULT_PINNED_CARD_H).toBeCloseTo(46.75, 2)
   })
 
-  it('hands over as the bubble top reaches the card top, at ANY prompt height', () => {
-    // The row is ROW_PAD_Y + bubble + ROW_PAD_Y and the band puts the card the
-    // same ROW_PAD_Y below the fold, so a row whose TOP is on the hand-off line
-    // has its bubble on the card's top — for every bubble height, which is the
-    // property the bottom-edge rule only had for a one-liner.
-    const foldY = 100
-    const handoffY = pinHandoffY(foldY)
-    for (const bubbleH of [22.75, 46.75, 96, 400]) {
-      const rowTopAtHandoff = handoffY
-      const bubbleTop = rowTopAtHandoff + ROW_PAD_Y
-      expect(bubbleTop).toBe(foldY + ROW_PAD_Y)
-      // Stated explicitly: the bubble's own height never enters the line.
-      expect(pinHandoffY(foldY)).toBe(handoffY)
-      expect(bubbleH).toBeGreaterThan(0)
-    }
+  it('uses a fixed resting band for bottom-edge hand-off', () => {
+    expect(pinHandoffBottomY(100)).toBe(154.75)
+    expect(pinHandoffBottomY(200) - pinHandoffBottomY(100)).toBe(100)
   })
 })
 

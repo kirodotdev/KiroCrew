@@ -49,6 +49,30 @@ function paragraphOf(over: Partial<Parameters<typeof PinnedPrompt>[0]> = {}) {
 // while the card is grown, or they do not. The pixel claim (an 816px card filled with
 // the prompt rather than one ellipsized line) is held by the capture harness instead.
 describe('PinnedPrompt — the fold-grown card must not hide unread lines', () => {
+  it('retraces the full text tail without narrowing it for the chevron', () => {
+    const props = {
+      text: PREVIEW, fullText: FULL, images: [], bodyBeyondPreview: true,
+      pushUp: 0, bannerH: 48, expanded: false, onToggleExpanded() {}, onJump() {},
+      cardRef() {},
+    }
+    const { rerender } = render(<PinnedPrompt {...props} handoffProgress={0} />)
+    const p = screen.getByTestId('pinned-prompt').querySelector('p')!
+    Object.defineProperties(p, {
+      scrollHeight: { configurable: true, value: 720 },
+      clientHeight: { configurable: true, value: 24 },
+    })
+    for (const progress of [0.1, 0.5, 0.9, 0.5, 0]) {
+      rerender(<PinnedPrompt {...props} handoffProgress={progress} />)
+      expect(p.scrollTop).toBeCloseTo(696 * (1 - progress))
+      expect(p.textContent).toContain(UNREAD)
+      expect(screen.queryByLabelText(/expand/i)).toBeNull()
+    }
+    rerender(<PinnedPrompt {...props} handoffProgress={1} />)
+    expect(p.scrollTop).toBe(0)
+    expect(p.textContent).toBe(PREVIEW)
+    expect(screen.getByLabelText(/expand/i)).toBeTruthy()
+  })
+
   it('shows only the preview at rest', () => {
     const { p } = paragraphOf()
     expect(p.textContent).toContain(PREVIEW)

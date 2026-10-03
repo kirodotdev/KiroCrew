@@ -8,26 +8,15 @@ import { type PasteBlock, expandAll } from './pasteTokens'
  * user prompt that has scrolled up to the chat fold, shown as a sticky band
  * under the session title).
  *
- * The hand-off is **top-edge driven**: a prompt scrolls with the transcript
- * until its bubble's TOP edge reaches the card's own resting top, and hands over
- * there. That line is where the card sits, so the bubble stops travelling at the
- * exact pixel the card occupies — which is the whole point. It is then pushed out
- * by the NEXT prompt as that prompt's top border meets it (`computePinPush`).
+ * A row hands over once its bottom clears a fixed resting band below the
+ * fold. The real prompt therefore scrolls through the viewport before the
+ * overlay replaces it; a tall prompt cannot be hidden behind a static card.
+ * The band uses DEFAULT_PINNED_CARD_H, never a height the current card reports:
+ * consecutive cards can differ in height, and feeding that back into selection
+ * makes the pin oscillate without any scroll input.
  *
- * Why the top edge and not the bottom (the rule this replaced): the bottom-edge
- * rule waited until the row was entirely behind the band, so any prompt TALLER
- * than the card kept scrolling after it had passed the card's position, went out
- * of sight behind the header, and the card then appeared back down at the fold —
- * content jumping down the screen after having scrolled past its own resting
- * place (measured at 78px for a four-line prompt against a one-line card). The
- * top edge cannot do that: `snapBackPx` is 0 by construction.
- *
- * The hand-off line therefore does NOT depend on the card's height, and must not:
- * the clamp (`PINNED_RESTING_LINES`) is a presentation choice that may change, and
- * a hand-off derived from it moves the swap point with it. A prompt no taller than
- * the clamp hands over with no size change at all; a taller one FOLDS in place at
- * the line, animated by the card's own height morph (see PinnedPrompt), instead of
- * being swapped after a journey. Both fall out of the same rule at any clamp value.
+ * The next prompt still pushes the outgoing card away at its top edge. While
+ * that prompt scrolls through the band, the prompt itself remains visible.
  *
  * The banner cannot be a real sticky element because the transcript is
  * virtualized — a row scrolled far above the window unmounts, so the sticky node
@@ -52,24 +41,24 @@ export const ROW_PAD_Y = 4
 export const DEFAULT_PINNED_CARD_H = 46.75
 
 /**
- * Viewport Y of the hand-off line: the card's own resting TOP edge. A prompt pins
- * once its row top has reached this line, and un-pins the moment it drops back
- * below it.
- *
- * The row and the band both put `ROW_PAD_Y` above their bubble, so a row whose TOP
- * is on the fold has its bubble on the card's top: handing over there is a swap
- * between two boxes that start at the same pixel, whatever either one's height is.
- *
- * Takes no card height ON PURPOSE. The previous rule added the card's measured
- * height to this line, which coupled the swap point to the clamp: change
- * `PINNED_RESTING_LINES` and the hand-off moved, and any prompt taller than the
- * clamp overshot the line by exactly the difference. Keeping the clamp out of the
- * line is what makes the fix hold at every clamp value.
- *
- * @param foldY viewport Y of the fold sentinel = the band's top edge
+ * Viewport Y of the fold, the fixed origin for pin selection and push-out.
+ * pinHandoffBottomY adds row padding and DEFAULT_PINNED_CARD_H;
+ * neither the origin nor that offset depends on a card's measured height.
  */
 export function pinHandoffY(foldY: number): number {
   return foldY
+}
+
+/** Card measurements cannot move the boundary that selects that card. */
+export function pinHandoffBottomY(foldY: number): number {
+  return pinHandoffY(foldY) + ROW_PAD_Y * 2 + DEFAULT_PINNED_CARD_H
+}
+
+/** Scroll-owned settle: the departing tail meets the card at zero; the normal
+ * preview returns over three resting-card heights. Reversing scroll retraces it. */
+export function pinHandoffProgress(handoffBottom: number, bubbleBottom: number): number {
+  const progress = Math.max(0, Math.min(1, (handoffBottom - bubbleBottom - ROW_PAD_Y) / (3 * DEFAULT_PINNED_CARD_H)))
+  return progress * progress * (3 - 2 * progress)
 }
 
 /**
@@ -598,6 +587,8 @@ export interface PinnedPromptState {
    * role alone.
    */
   liveH?: number
+  /** Reversible transition from the departing tail to the resting preview. */
+  handoffProgress?: number
   /**
    * Ceiling on the card's height this frame — the distance from the card's top
    * to the transcript floor (see computePinnedCardMaxH). Both the fold's `liveH`
@@ -631,6 +622,8 @@ export interface PinnedPromptInput {
   bannerH: number
   /** See `PinnedPromptState.liveH`. Recomputed every scroll frame. */
   liveH?: number
+  /** Reversible transition from the departing tail to the resting preview. */
+  handoffProgress?: number
   /** See `PinnedPromptState.maxH`. Recomputed every scroll frame. */
   maxH?: number
   /** See `PinnedPromptState.stripUncovered`. Recomputed every scroll frame. */
@@ -654,16 +647,16 @@ export function nextPinnedPromptState(
   prev: PinnedPromptState | null,
   input: PinnedPromptInput,
 ): PinnedPromptState {
-  const { idx, ts, raw, pastes, push, bannerH, liveH, maxH, stripUncovered } = input
+  const { idx, ts, raw, pastes, push, bannerH, liveH, maxH, stripUncovered, handoffProgress } = input
   const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
   if (sameMsg && prev.push === push && prev.bannerH === bannerH && prev.liveH === liveH
-    && prev.maxH === maxH && prev.stripUncovered === stripUncovered) return prev
+    && prev.maxH === maxH && prev.stripUncovered === stripUncovered && prev.handoffProgress === handoffProgress) return prev
   // `liveH` DOES move every frame — that is the fold. It is carried on the
   // same-message path for exactly that reason, unlike `push`/`bannerH` which only
   // change when the geometry does. `stripUncovered` flips on a later frame of
   // the same pin (the strip slides under the resting card), so it rides here too,
   // as does `maxH`, which moves when the pane or the dock does.
-  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered }
+  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered, handoffProgress }
   const { text, body: full, images } = derivePinnedPromptText(raw, pastes)
   return {
     idx,
@@ -678,6 +671,7 @@ export function nextPinnedPromptState(
     push,
     bannerH,
     liveH,
+    handoffProgress,
     maxH,
     stripUncovered,
   }

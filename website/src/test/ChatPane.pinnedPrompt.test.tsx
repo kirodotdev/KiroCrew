@@ -133,7 +133,13 @@ function layOut(container: HTMLElement) {
   // Hand-off line = fold(0) + 2*ROW_PAD_Y(4) + DEFAULT_PINNED_CARD_H(46.75) = 54.75;
   // no push while the next prompt's top is at least ROW_PAD_Y + card = 50.75.
   const tops = [-200, -150, -100, -40, 52]
-  rows.forEach((row, i) => setRect(row, tops[i] ?? 300 + i * 100, i === 4 ? 400 : 40))
+  rows.forEach((row, i) => {
+    const top = tops[i] ?? 300 + i * 100
+    const height = i === 4 ? 400 : 40
+    setRect(row, top, height)
+    const bubble = row.querySelector('.message-bubble')
+    if (bubble) setRect(bubble, top + 4, height - 8)
+  })
   return { scroller, rows, get scrollTop() { return scrollTop } }
 }
 

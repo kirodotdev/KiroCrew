@@ -1,0 +1,32 @@
+{
+  "label": "before",
+  "theme": "light",
+  "stepPx": 6,
+  "steps": 230,
+  "handoffs": [
+    {
+      "row": 1,
+      "frame": 14,
+      "scrollTop": 84,
+      "bubbleTopBefore": 6,
+      "bubbleH": 72,
+      "cardTop": 4,
+      "cardHAtHandoff": 68,
+      "cardHSettled": 48,
+      "snapBackPx": -2
+    },
+    {
+      "row": 6,
+      "frame": 86,
+      "scrollTop": 516,
+      "bubbleTopBefore": 6,
+      "bubbleH": 432,
+      "cardTop": 4,
+      "cardHAtHandoff": 428,
+      "cardHSettled": 368,
+      "snapBackPx": -2
+    }
+  ],
+  "blankFrameCount": 0,
+  "blankFrames": []
+}

@@ -37,6 +37,8 @@ interface PinnedPromptProps {
    * chasing it would lag behind the row it is supposed to track.
    */
   liveH?: number
+  /** Scroll progress from the departing tail to the normal resting preview. */
+  handoffProgress?: number
   /**
    * The tallest the card may be, in px — from its top to the transcript floor
    * (`computePinnedCardMaxH`). Set as the box's `max-height`, which outranks
@@ -123,19 +125,16 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * The most recent prompt that has scrolled fully behind the band, pinned under
  * the session title.
  *
- * The card is a pixel-for-pixel copy of the user bubble's own box — same
+ * The card shares the user bubble's text geometry — same
  * `px-4 mx-auto` content column, right-aligned, the bubble's own `max-w-full`
  * cap (so both follow Settings → Chat → Content Width, #8398), `px-4 py-2
  * rounded-xl bg-card text-sm` with an inner `my-1 leading-6` paragraph —
  * because the transcript row it represents is hidden while it is pinned (see
  * ChatPage's row `visibility`; the row's action strip beneath the bubble is
  * re-shown in place by index.css's `[data-pinned-standin]` rule, since this card
- * copies the bubble and nothing below it). For a one-line prompt the two are the
- * same size at the same place at the moment of hand-off, so the bubble appears to
- * stop travelling and stick rather than being replaced. A taller prompt hands
- * over at the same line — its row top on the fold (`pinHandoffY`) — and the card
- * then folds down the bubble's remaining height (`liveH`), so the swap is still a
- * box replaced by an identical box. The
+ * copies the bubble and nothing below it). A tall prompt stays in the transcript
+ * until its tail reaches the resting band. The card starts on that tail, with
+ * the full text width, before scrolling back to the normal preview. The
  * box also carries the bubble's `user-bubble` theme hook, so a theme that tints
  * the bubble (kiro-light) tints the card identically and the swap stays
  * invisible there too. Keep
@@ -191,7 +190,7 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * size and the band it slides through is sized for it.
  */
 export default function PinnedPrompt({
-  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy,
+  text, fullText, images, bodyBeyondPreview, pushUp, handoffProgress = 1, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -225,6 +224,19 @@ export default function PinnedPrompt({
   // `overflow: hidden` at exactly `liveH` is what trims it: the bottom edge
   // consumes a line at a time as the row leaves, which IS the fold.
   const folding = liveH != null
+  const settling = !expanded && !peek && !folding && handoffProgress < 1
+  useLayoutEffect(() => {
+    const el = textRef.current
+    if (!el || expanded) return
+    const alignText = () => {
+      el.scrollTop = settling ? (el.scrollHeight - el.clientHeight) * (1 - handoffProgress) : 0
+    }
+    alignText()
+    if (!settling || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(alignText)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [settling, handoffProgress, fullText, expanded])
   // Native listeners on the box rather than JSX handlers: the box is a plain
   // container (its two buttons are the interactive elements), and `pointerenter`
   // / `pointerleave` do not bubble, which is exactly the "over the card as a
@@ -570,7 +582,7 @@ export default function PinnedPrompt({
   // and the only visible effect would arrive later, as a snap to the 40vh cap once
   // the fold ends. A control whose feedback is deferred and displaced like that is
   // worse than no control, and the thing it offers is already on screen.
-  const showChevron = !folding && (clamped || images.length > 0 || bodyBeyondPreview || expanded)
+  const showChevron = !folding && !settling && (clamped || images.length > 0 || bodyBeyondPreview || expanded)
 
   return (
     <div
@@ -681,13 +693,13 @@ export default function PinnedPrompt({
               // nothing. A cut line with nothing to say "more" read as a rendering
               // defect, not a scroll region — the scrollbar is overlay-hidden on
               // macOS and absent from a headless capture.
-              className={`my-1 leading-6 min-h-0 ${folding
+              className={`my-1 leading-6 min-h-0 ${folding || settling
                 ? 'whitespace-pre-wrap break-words overflow-hidden'
                 : expanded
                   ? `whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto${moreBelow ? ' pinned-scroll-more' : ''}`
                   : 'overflow-hidden'}`}
               onScroll={expanded ? measureMoreBelow : undefined}
-              style={expanded || folding ? { overflowWrap: 'anywhere' } : {
+              style={settling ? { overflowWrap: 'anywhere', height: '1lh', flexShrink: 0 } : expanded || folding ? { overflowWrap: 'anywhere' } : {
                 // Tailwind ships `line-clamp-<n>` only for a literal n, and the
                 // line counts are shared with the geometry module — so set the
                 // clamp from the constants rather than duplicating them in a class
@@ -753,7 +765,7 @@ export default function PinnedPrompt({
                   <ImageOff size={28} aria-hidden className="text-muted" />
                 </span>
               )}
-              {expanded || folding ? fullText : text}
+              {expanded || folding || settling ? fullText : text}
             </p>
           </button>
           {showChevron && (

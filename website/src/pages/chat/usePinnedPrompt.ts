@@ -13,6 +13,8 @@ import {
   jumpAnchorIdx,
   nextPinnedPromptState,
   pinHandoffY,
+  pinHandoffBottomY,
+  pinHandoffProgress,
   pinPushTravel,
   type PinnedPromptState,
 } from '../../utils/pinnedPrompt'
@@ -88,39 +90,32 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     const items = el.querySelectorAll('[data-display-index]')
     const foldY = pinFoldRef.current?.getBoundingClientRect().top
       ?? el.getBoundingClientRect().top
-    // A prompt hands over to the banner once its row TOP has risen above the
-    // card's own resting top, so the bubble stops travelling at the pixel the
-    // card occupies. Independent of the card's height — see pinHandoffY.
+    // A prompt stays readable until its bubble bottom crosses a fixed resting band.
+    // Measured card heights vary by prompt and would feed pin selection back
+    // into itself, oscillating between consecutive cards without a scroll.
     const handoffY = pinHandoffY(foldY)
-    // First row whose top has NOT yet reached that line = the topmost row still
-    // below it. STRICT `>`, and that is load-bearing rather than a taste: the
-    // outgoing card is dropped the moment the incoming row's top reaches the fold
-    // (`push >= pinPushTravel`, below), so a row sitting exactly ON the line must
-    // already be pinnable. With `>=` it was not, and the banner disappeared
-    // entirely for the frames where the gap was zero — one hand-off replaced by a
-    // blink. The two predicates are the same instant by construction.
-    //
-    // The row must also REACH the line: a far jump or fast upward fling can leave
-    // unmounted spacer between the viewport and the first mounted row for one
-    // commit, and treating that later row as the hand-off would select a prompt
-    // below what the reader can see. With a top-edge rule that shows up as the
-    // FIRST mounted row already sitting below the line — every contiguous case has
-    // a mounted row above the boundary.
+    const handoffBottomY = pinHandoffBottomY(foldY)
+    const list = displayItemsRef.current
     let handoffIdx = -1
     let first = true
     for (const item of items) {
       const htmlItem = item as HTMLElement
       const rect = htmlItem.getBoundingClientRect()
-      if (rect.top > handoffY) {
-        if (requiresMountedHandoff && first) { setPinned(null); return }
-        handoffIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
+      const index = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
+      const entry = list[index]
+      const bubble = entry?.kind === 'single' && entry.msg.role === 'user'
+        ? htmlItem.querySelector('.message-bubble') : null
+      const bottom = bubble?.closest('[data-role="user"]')
+        ? bubble.getBoundingClientRect().bottom + ROW_PAD_Y : rect.bottom
+      if (bottom > handoffBottomY) {
+        if (requiresMountedHandoff && first && rect.top > handoffY) { setPinned(null); return }
+        handoffIdx = index
         break
       }
       first = false
     }
 
     if (!pinEnabledRef.current || handoffIdx < 0) { setPinned(null); return }
-    const list = displayItemsRef.current
     const pinIdx = findPinnedPromptIdx(list, handoffIdx)
     const pinItem = pinIdx >= 0 ? list[pinIdx] : undefined
     if (!pinItem || pinItem.kind !== 'single') { setPinned(null); return }
@@ -312,6 +307,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       liveH,
       maxH,
       stripUncovered,
+      handoffProgress: bubbleBottom == null ? 1 : pinHandoffProgress(handoffBottomY, bubbleBottom),
     }))
   }, [requiresMountedHandoff, scrollerRef])
   // The card grows at rest with no scroll to run the recompute — the hover peek

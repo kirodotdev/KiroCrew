@@ -34,6 +34,7 @@ import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
 import PinnedPrompt from '../src/pages/chat/PinnedPrompt'
 import UserMessage from '../src/pages/chat/UserMessage'
+import { renderUserContent } from '../src/pages/chat/ChatPageMessageContent'
 import { usePinnedPrompt } from '../src/pages/chat/usePinnedPrompt'
 import type { DisplayItem } from '../src/pages/chat/types'
 import type { ChatMessage } from '../src/types'
@@ -157,6 +158,7 @@ function PinnedHost() {
             bodyBeyondPreview={pinned.bodyBeyondPreview}
             pushUp={pinned.push}
             liveH={pinned.liveH}
+            handoffProgress={pinned.handoffProgress}
             bannerH={pinned.bannerH}
             expanded={pinExpanded}
             onToggleExpanded={() => setPinExpanded(p => !p)}
@@ -199,7 +201,7 @@ function PinnedHost() {
               }}
             >
               {msg.role === 'user' ? (
-                <UserMessage content={msg.content} renderContent={c => <p className="my-1 leading-6">{c}</p>} />
+                <UserMessage content={msg.content} renderContent={content => renderUserContent({ content })} />
               ) : (
                 <div className="text-sm leading-6 text-text">{msg.content}</div>
               )}

@@ -5683,10 +5683,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <EdgeFade side="top" anchor="below" />
               </div>
               )}
-              {titleInTopbar && <EdgeFade side="top" anchor="below" />}
               {/* Fold sentinel — zero-height, always mounted. Its top edge is the
                   line the pinned prompt sticks to (see updatePinnedPrompt). */}
               <div ref={pinFoldRef} aria-hidden className="h-0" />
+              {/* The phone header fade hangs from the FOLD, not from the bottom of
+                  the pinned band. Hung below the band (EdgeFade's `below` anchor on
+                  this container) it sat just under a one-line card, and its opaque
+                  top edge — the page colour — read as the card's bottom failing to
+                  render, hiding the line beneath it. At the fold it is behind the
+                  card, which paints above it; with nothing pinned the band is empty
+                  and the fold is where it always was. */}
+              {titleInTopbar && (
+                <div className="relative h-0">
+                  <EdgeFade side="top" />
+                </div>
+              )}
               {pinned && (
                 <PinnedPrompt
                   text={pinned.text}
@@ -5695,6 +5706,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   bodyBeyondPreview={pinned.bodyBeyondPreview}
                   pushUp={pinned.push}
                   liveH={pinned.liveH}
+                  handoffProgress={pinned.handoffProgress}
                   maxH={pinned.maxH}
                   bannerH={pinned.bannerH}
                   expanded={pinExpanded}

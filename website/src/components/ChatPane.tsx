@@ -1621,6 +1621,7 @@ export default function ChatPane({
                 bodyBeyondPreview={pinnedState.bodyBeyondPreview}
                 pushUp={pinnedState.push}
                 liveH={pinnedState.liveH}
+                handoffProgress={pinnedState.handoffProgress}
                 maxH={pinnedState.maxH}
                 bannerH={pinnedState.bannerH}
                 expanded={pin.pinExpanded}
