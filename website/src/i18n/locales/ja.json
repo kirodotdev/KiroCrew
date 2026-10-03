@@ -9240,6 +9240,12 @@
       "moreCols": "列を増やす",
       "fewerRows": "行を減らす",
       "moreRows": "行を増やす"
+    },
+    "panelToggles": {
+      "show_side_panel": "サイドパネルを表示",
+      "hide_side_panel": "サイドパネルを非表示",
+      "show_terminal": "ターミナルを表示",
+      "hide_terminal": "ターミナルを非表示"
     }
   },
   "hooks": {

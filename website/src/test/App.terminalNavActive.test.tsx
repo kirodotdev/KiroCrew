@@ -18,16 +18,30 @@ import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
-import { renderWithProviders } from './helpers'
+import { createTestStore, renderWithProviders } from './helpers'
 import App from '../App'
+import { openActivityPanel } from '../store/chatSlice'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
-import { __resetBottomTerminal, openBottomTerminal } from '../hooks/useBottomTerminal'
+import { __resetBottomTerminal, isBottomTerminalOpen, openBottomTerminal } from '../hooks/useBottomTerminal'
 
 // Same isolation as App.terminalEnabledFlag.test.tsx: stub the routed pages and
 // the api client so App mounts without real network, and additionally stub
 // CliPanel — the docked panel mounts a real xterm instance, which jsdom has no
 // canvas/WebGL for. The test only cares about the NAV ROW, not the shell.
-vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
+vi.mock('../pages/ChatPage', async () => {
+  const { useContext } = await import('react')
+  const { WorkspaceFullscreenContext } = await import('../components/WorkspacePanelContext')
+  return {
+    default: function ChatPageStub() {
+      const workspace = useContext(WorkspaceFullscreenContext)
+      return (
+        <div data-testid="chat-page" data-workspace-fullscreen-state={workspace?.fullscreen ? 'on' : 'off'}>
+          <button type="button" onClick={() => workspace?.toggle()}>Enter workspace fullscreen</button>
+        </div>
+      )
+    },
+  }
+})
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => null }))
@@ -145,5 +159,44 @@ describe('App nav rail — Terminal row reflects the docked panel state', () => 
     act(() => { openBottomTerminal() })
 
     await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
+  })
+
+  it('exits workspace fullscreen before opening the docked panel', async () => {
+    // Fullscreen covers the docked panel, so a row that opened it without
+    // exiting first would light up over a panel nobody can see.
+    const user = userEvent.setup()
+    const store = createTestStore()
+    store.dispatch(openActivityPanel())
+    renderWithProviders(<App />, { route: '/chat', store })
+    await waitFor(() => expect(terminalRow()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Enter workspace fullscreen' }))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toHaveAttribute('data-workspace-fullscreen-state', 'on'))
+
+    await user.click(terminalRow())
+
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toHaveAttribute('data-workspace-fullscreen-state', 'off'))
+    await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
+  })
+
+  it('reads a terminal covered by fullscreen as hidden and reveals it on click', async () => {
+    // A row that toggled here would close the terminal the user meant to bring back.
+    const user = userEvent.setup()
+    const store = createTestStore()
+    store.dispatch(openActivityPanel())
+    renderWithProviders(<App />, { route: '/chat', store })
+    await waitFor(() => expect(terminalRow()).toBeInTheDocument())
+    act(() => { openBottomTerminal() })
+    await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
+
+    await user.click(screen.getByRole('button', { name: 'Enter workspace fullscreen' }))
+    await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'false'))
+    expect(terminalRow().className).not.toContain('nav-active')
+
+    await user.click(terminalRow())
+
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toHaveAttribute('data-workspace-fullscreen-state', 'off'))
+    await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
+    expect(isBottomTerminalOpen()).toBe(true)
   })
 })

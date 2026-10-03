@@ -9492,6 +9492,12 @@
       "moreCols": "plus de colonnes",
       "fewerRows": "moins de lignes",
       "moreRows": "plus de lignes"
+    },
+    "panelToggles": {
+      "show_side_panel": "Afficher le panneau latéral",
+      "hide_side_panel": "Masquer le panneau latéral",
+      "show_terminal": "Afficher le terminal",
+      "hide_terminal": "Masquer le terminal"
     }
   },
   "hooks": {

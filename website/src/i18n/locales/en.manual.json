@@ -3794,6 +3794,12 @@
     },
     "runInTerminalBtn": {
       "copied_paste_into_terminal": "Copied — paste it into the terminal"
+    },
+    "panelToggles": {
+      "show_side_panel": "Show side panel",
+      "hide_side_panel": "Hide side panel",
+      "show_terminal": "Show terminal",
+      "hide_terminal": "Hide terminal"
     }
   },
   "hooks": {

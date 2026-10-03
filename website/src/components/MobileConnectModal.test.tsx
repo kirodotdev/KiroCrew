@@ -22,6 +22,7 @@ import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
+import { TOPBAR_FOCUS_Z } from '../lib/themeDecorLayer'
 
 const mocks = vi.hoisted(() => ({
   tailnetMobile: vi.fn(),
@@ -295,7 +296,7 @@ describe('MobileConnectModal — paints above the chat chrome, below the takeove
   // The dialog opens from the sidebar while the chat page's sessions flyout can
   // be expanded. That flyout and its drawer morph sit above the chat pane
   // (`SessionFlyout.tsx`, z-[59]/z-[60]), the focus-peek rail toggle above them
-  // (z-[61]) and the focus-mode rail above that (inline zIndex 62), so a panel
+  // (z-[61]) and the focus-mode rail above that (inline TOPBAR_FOCUS_Z), so a panel
   // on the chat-pane ceiling (z-50) paints UNDER them. The component therefore
   // splits into two sibling layers, the same split Modal.tsx uses: a z-50
   // BACKDROP, which the desktop nav rail — a DOM-later z-50 sibling in the
@@ -338,13 +339,15 @@ describe('MobileConnectModal — paints above the chat chrome, below the takeove
       .flatMap(zLayers)
     expect(peek.length).toBeGreaterThan(0)
     // The focus-mode rail's INLINE zIndex — a style prop, invisible to the
-    // z-[N] scan, so read it from the rail's own style block and fail loudly
-    // if the block stops declaring one.
+    // z-[N] scan, so read it from the rail's own style block (a literal or the
+    // shared TOPBAR_FOCUS_Z layer) and fail loudly if the block stops
+    // declaring one.
     const railAt = appSrc.indexOf('focus-chrome-rail')
     expect(railAt).toBeGreaterThan(-1)
-    const railInline = appSrc.slice(railAt, railAt + 2000).match(/zIndex:\s*(\d+)/)
+    const railInline = appSrc.slice(railAt, railAt + 2000).match(/zIndex:\s*(\d+|TOPBAR_FOCUS_Z)\b/)
     expect(railInline).not.toBeNull()
-    const chrome = [...flyout, ...peek, Number(railInline![1])]
+    const railZ = railInline![1] === 'TOPBAR_FOCUS_Z' ? TOPBAR_FOCUS_Z : Number(railInline![1])
+    const chrome = [...flyout, ...peek, railZ]
     expect(dialogLayerZ()).toBeGreaterThan(Math.max(...chrome))
   })
 

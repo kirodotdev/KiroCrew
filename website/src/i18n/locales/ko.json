@@ -9240,6 +9240,12 @@
       "moreCols": "열 늘리기",
       "fewerRows": "행 줄이기",
       "moreRows": "행 늘리기"
+    },
+    "panelToggles": {
+      "show_side_panel": "사이드 패널 표시",
+      "hide_side_panel": "사이드 패널 숨기기",
+      "show_terminal": "터미널 표시",
+      "hide_terminal": "터미널 숨기기"
     }
   },
   "hooks": {

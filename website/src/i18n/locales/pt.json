@@ -9492,6 +9492,12 @@
       "moreCols": "mais colunas",
       "fewerRows": "menos linhas",
       "moreRows": "mais linhas"
+    },
+    "panelToggles": {
+      "show_side_panel": "Mostrar painel lateral",
+      "hide_side_panel": "Ocultar painel lateral",
+      "show_terminal": "Mostrar terminal",
+      "hide_terminal": "Ocultar terminal"
     }
   },
   "hooks": {

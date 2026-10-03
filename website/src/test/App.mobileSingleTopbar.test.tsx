@@ -20,16 +20,22 @@
  * ChatPage.mobileSingleTopbar.test.tsx) and renders whatever rail it is handed.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { useContext } from 'react'
 import { act, fireEvent, screen, within } from '@testing-library/react'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { renderWithProviders } from './helpers'
 import App from '../App'
 import { useMobileNavRail } from '../components/MobileNavRailContext'
+import { WorkspaceFullscreenContext } from '../components/WorkspacePanelContext'
 
 function ChatPageStub() {
   const rail = useMobileNavRail()
+  // The phone renders no #activity-bar-slot for workspace fullscreen to expand,
+  // so the shell must not hand the page controls that would hide a file's own
+  // full-screen action.
+  const workspaceFullscreen = useContext(WorkspaceFullscreenContext)
   return (
-    <div data-testid="chat-page">
+    <div data-testid="chat-page" data-workspace-fullscreen-controls={workspaceFullscreen ? 'provided' : 'none'}>
       {rail ? rail({ onActivate: () => {} }) : <span data-testid="no-rail" />}
     </div>
   )
@@ -95,6 +101,7 @@ describe('phone chat page: one top bar', () => {
     localStorage.setItem('mc-onboarded', '1')
     renderWithProviders(<App />, { route: '/chat' })
     await screen.findByTestId('chat-page')
+    expect(screen.getByTestId('chat-page')).toHaveAttribute('data-workspace-fullscreen-controls', 'none')
     const h = header()
     expect(h).toHaveClass('topbar-single')
     // The two hand-off points the chat page fills: title slot in the centre

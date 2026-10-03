@@ -9366,6 +9366,12 @@
       "moreCols": "mehr Spalten",
       "fewerRows": "weniger Zeilen",
       "moreRows": "mehr Zeilen"
+    },
+    "panelToggles": {
+      "show_side_panel": "Seitenpanel anzeigen",
+      "hide_side_panel": "Seitenpanel ausblenden",
+      "show_terminal": "Terminal anzeigen",
+      "hide_terminal": "Terminal ausblenden"
     }
   },
   "hooks": {

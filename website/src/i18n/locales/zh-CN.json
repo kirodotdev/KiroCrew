@@ -9240,6 +9240,12 @@
       "moreCols": "增加列",
       "fewerRows": "减少行",
       "moreRows": "增加行"
+    },
+    "panelToggles": {
+      "show_side_panel": "显示侧边面板",
+      "hide_side_panel": "隐藏侧边面板",
+      "show_terminal": "显示终端",
+      "hide_terminal": "隐藏终端"
     }
   },
   "hooks": {

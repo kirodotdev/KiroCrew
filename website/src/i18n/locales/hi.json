@@ -9366,6 +9366,12 @@
       "moreCols": "अधिक कॉलम",
       "fewerRows": "कम पंक्तियाँ",
       "moreRows": "अधिक पंक्तियाँ"
+    },
+    "panelToggles": {
+      "show_side_panel": "साइड पैनल दिखाएँ",
+      "hide_side_panel": "साइड पैनल छिपाएँ",
+      "show_terminal": "टर्मिनल दिखाएँ",
+      "hide_terminal": "टर्मिनल छिपाएँ"
     }
   },
   "hooks": {

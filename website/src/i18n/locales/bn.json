@@ -9366,6 +9366,12 @@
       "moreCols": "বেশি কলাম",
       "fewerRows": "কম সারি",
       "moreRows": "বেশি সারি"
+    },
+    "panelToggles": {
+      "show_side_panel": "সাইড প্যানেল দেখাও",
+      "hide_side_panel": "সাইড প্যানেল লুকাও",
+      "show_terminal": "টার্মিনাল দেখাও",
+      "hide_terminal": "টার্মিনাল লুকাও"
     }
   },
   "hooks": {

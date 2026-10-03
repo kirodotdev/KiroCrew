@@ -9618,6 +9618,12 @@
       "moreCols": "больше столбцов",
       "fewerRows": "меньше строк",
       "moreRows": "больше строк"
+    },
+    "panelToggles": {
+      "show_side_panel": "Показать боковую панель",
+      "hide_side_panel": "Скрыть боковую панель",
+      "show_terminal": "Показать терминал",
+      "hide_terminal": "Скрыть терминал"
     }
   },
   "hooks": {
