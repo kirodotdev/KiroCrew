@@ -844,11 +844,17 @@ async def collect_evidence(
                     continue
                 cursor = int((cursors or {}).get(target, 0))
                 behind = False
-                for _page in range(MAX_PAGES_PER_TARGET):
+                skipped = False
+                for page in range(MAX_PAGES_PER_TARGET):
                     rows, next_cursor, total = await read_session(target, cursor)
                     evidence.extend(session_evidence(rows, target, now_ts=clock))
                     if not isinstance(next_cursor, int) or next_cursor < 0:
                         break
+                    # With no stored cursor the reader serves the TAIL, so the rows
+                    # before its first row are skipped, not read. They count as a drop:
+                    # the cursor moves past them and no later tick offers them again.
+                    if page == 0 and cursor == 0 and next_cursor - len(rows) > 0:
+                        skipped = True
                     # Stored after EACH page, so a later page that refuses keeps the
                     # rows the earlier pages already read instead of replaying them.
                     if cursors is not None:
@@ -858,7 +864,7 @@ async def collect_evidence(
                     behind = isinstance(total, int) and total > cursor
                     if not behind or not advanced:
                         break
-                if behind:
+                if behind or skipped:
                     dropped += 1
             else:
                 if read_pr is None:

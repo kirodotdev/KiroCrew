@@ -842,8 +842,8 @@ async def judge_tick(
         # ``shed_fresh`` is the same loss caused by a BOUND instead of the scrub: a fresh
         # item the item cap or the char budget could not carry, after every already-seen
         # item was given up first. A session row past the read cursor is never offered
-        # again, so a quiet here would be a quiet about rows that were thrown away
-        # (#16151). One rule for every cause: nothing new may be lost and judged calm.
+        # again, so a quiet here would be a quiet about rows that were thrown away.
+        # One rule for every cause: nothing new may be lost and judged calm.
         return irq.Verdict(
             irq.Outcome.FALLBACK, body="wake judge could not send every evidence item"
         )

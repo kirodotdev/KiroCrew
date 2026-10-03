@@ -1153,7 +1153,7 @@ def _session_row(age: float, text: str, *, seen: bool | None = None) -> dict[str
 
 
 class TestNothingNewIsLostAndJudgedCalm:
-    """#16151: a bound that sheds a FRESH item makes the tick fire.
+    """A bound that sheds a FRESH item makes the tick fire.
 
     Already-seen items are context and go first; a fresh item is the delta, and a
     session row past the read cursor is never offered again.
@@ -1620,7 +1620,7 @@ class TestCollectors:
         return rows
 
     def test_a_busy_target_is_paged_to_its_end_so_the_last_line_is_read(self) -> None:
-        """More new rows than one page must not leave the cursor behind (#16151).
+        """More new rows than one page must not leave the cursor behind.
 
         A worker that writes 13+ rows per interval must still have its final
         ``DONE:`` line screened on that tick, not when the quiet-streak floor
@@ -1651,6 +1651,44 @@ class TestCollectors:
         assert cursors == {"chat-2-2": budget}, "the cursor keeps every page it read"
         verdict = asyncio.run(point.judge_tick("watch", evidence=items, dropped=dropped))
         assert verdict.outcome is Outcome.FALLBACK
+
+    def test_a_tail_read_with_no_cursor_drops_the_rows_it_skipped(self) -> None:
+        """No stored cursor means the reader serves the tail and skips the rest.
+
+        The gateway reads ``since or None``, so cursor 0 returns only the newest
+        page and moves the cursor to the end. A ``BLOCKED:`` row before that page
+        is never offered again, so the tick must fire rather than judge it calm.
+        """
+        rows = [{"role": "assistant", "content": "BLOCKED: need a token", "ts": 1.0}]
+        rows += self._busy_transcript(judge.MAX_ROWS_PER_TARGET)
+
+        async def tail(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            start = since if since else max(0, len(rows) - judge.MAX_ROWS_PER_TARGET)
+            page = rows[start : start + judge.MAX_ROWS_PER_TARGET]
+            return page, start + len(page), len(rows)
+
+        cursors: dict[str, int] = {}
+        items, dropped = asyncio.run(
+            judge.collect_evidence(["chat-2-2"], read_session=tail, cursors=cursors)
+        )
+        assert cursors == {"chat-2-2": len(rows)}
+        assert not any(item["text"].startswith("BLOCKED:") for item in items)
+        assert dropped == 1
+        verdict = asyncio.run(point.judge_tick("watch", evidence=items, dropped=dropped))
+        assert verdict.outcome is Outcome.FALLBACK
+
+    def test_a_tail_read_that_covers_the_whole_transcript_drops_nothing(self) -> None:
+        rows = self._busy_transcript(judge.MAX_ROWS_PER_TARGET)
+
+        async def tail(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            start = since if since else max(0, len(rows) - judge.MAX_ROWS_PER_TARGET)
+            page = rows[start : start + judge.MAX_ROWS_PER_TARGET]
+            return page, start + len(page), len(rows)
+
+        _, dropped = asyncio.run(
+            judge.collect_evidence(["chat-2-2"], read_session=tail, cursors={})
+        )
+        assert dropped == 0
 
     def test_a_page_that_refuses_keeps_the_pages_already_read(self) -> None:
         rows = self._busy_transcript(judge.MAX_ROWS_PER_TARGET * 3)
