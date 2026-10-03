@@ -469,12 +469,98 @@ def write_task_snapshot(public_path: Path, payload: str, *, writer: Any = atomic
     writer(public_path, json.dumps(persistent), fsync=True)
 
 
-def read_task_snapshot(public_path: Path, *, public_payload=None) -> str:
+def _is_legacy_task_reference(row: dict) -> bool:
+    """The exact row 0.7.0-insider.1 to .5 wrote for a member task: an id and the marker."""
+    return (
+        set(row) == {"task_id", "private_payload"}
+        and row["private_payload"] is True
+        and isinstance(row["task_id"], str)
+        and bool(row["task_id"])
+    )
+
+
+def read_task_snapshot(
+    public_path: Path, *, public_payload=None, legacy_references: list[dict] | None = None
+) -> str:
+    """Return the restorable rows; a legacy ``private_payload`` row is never one.
+
+    0.7.0-insider.1 to .5 kept a member task's payload in a hidden sidecar and
+    left only ``{"task_id": ..., "private_payload": true}`` here. That row is
+    never hydrated and never run under Global. With *legacy_references* the
+    caller collects rows of exactly that shape to set aside instead of refusing
+    the registry; any other ``private_payload`` row still refuses it.
+    """
     rows = json.loads(read_task_registry(public_path) if public_payload is None else public_payload)
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError("Task registry must contain records")
+    restorable = []
     for row in rows:
         if row.get("private_payload"):
-            raise TaskSnapshotError("Unsupported task record; Global was not used")
+            if legacy_references is None or not _is_legacy_task_reference(row):
+                raise TaskSnapshotError("Unsupported task record; Global was not used")
+            legacy_references.append(row)
+            continue
         execution_from_record(row, required=False)
-    return json.dumps(rows)
+        restorable.append(row)
+    return json.dumps(restorable)
+
+
+LEGACY_TASK_REFERENCES_SUFFIX = ".legacy-private-tasks.json"
+
+
+def _read_legacy_task_references(aside: Path) -> list[dict]:
+    """The rows already set aside, read without following a link at that name.
+
+    The file sits in the TaskRunner work directory, where task sessions write,
+    and its rows are republished on every merge. So only a single-link regular
+    file is read: a link or a hard link would copy another file's records here.
+    """
+    try:
+        fd = os.open(
+            aside, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise TaskSnapshotError("Legacy task references are not a regular file") from exc
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or not os.path.samestat(info, aside.lstat())
+        ):
+            raise TaskSnapshotError("Legacy task references are not a regular file")
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            raw = handle.read()
+    finally:
+        os.close(fd)
+    try:
+        prior = json.loads(raw)
+    except ValueError as exc:
+        raise TaskSnapshotError("Legacy task references are unreadable") from exc
+    if not isinstance(prior, list) or any(
+        not isinstance(row, dict) or not isinstance(row.get("task_id"), str) for row in prior
+    ):
+        raise TaskSnapshotError("Legacy task references are unreadable")
+    return prior
+
+
+def quarantine_legacy_task_references(public_path: Path, rows: list[dict]) -> tuple[Path, bool]:
+    """Keep legacy ``private_payload`` rows beside the registry.
+
+    Returns the file and whether this call changed it. The rows hold only a task
+    id and the marker, so the file is no more private than the registry it came
+    from. Rows already set aside are kept, a row is replaced by task id, and a
+    merge that changes nothing writes nothing, so a restart that finds the same
+    rows again costs one read. A file that cannot be read raises, so the caller
+    keeps the registry untouched rather than lose the references.
+    """
+    aside = public_path.with_name(public_path.name + LEGACY_TASK_REFERENCES_SUFFIX)
+    prior = _read_legacy_task_references(aside)
+    incoming = {row["task_id"] for row in rows}
+    merged = [row for row in prior if row["task_id"] not in incoming] + rows
+    if merged == prior:
+        return aside, False
+    atomic_write(aside, json.dumps(merged), fsync=True)
+    return aside, True

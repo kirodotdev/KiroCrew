@@ -197,6 +197,48 @@ errors retain their separate recovery guidance. At execution, the job's captured
 context reaches the runtime and every worker before provider startup. Continuation
 keeps that member. Ordinary jobs without a member retain their existing V1 behavior.
 
+A member schedule written by 0.7.0-insider.1 to .5 carries `{member_id: <alias>,
+memory_store}` and no `execution_context`. The gateway's memory worker captures it
+once, right after the start-of-process store upgrade gives that store its
+`owner_member_id` and before the scheduler arms:
+`cron_service.identity.migrate_legacy_member_schedules` rewrites, under the cron
+store lock and only while the record still has no `execution_context`, that field
+and `member_id` (to the member's permanent id). Every reader then sees an ordinary
+captured schedule: dispatch, the dashboard's session registry for `cron:<id>`, and
+the crewmate pages that compare `member_id` with that id. Attribution
+(`legacy_member_cron_execution`) is the one a member chat of that shape is
+backfilled with: the store's `owner_member_id` names exactly one configured member,
+the schedule's `member_id` names that member by alias or by id, and the member still
+resolves to the store. The result is the member's own execution. An `agent_id` the
+old schedule named is not honored, because the session record the old build left
+under `cron:<id>` already carries the member's own template; the capture logs that
+it was dropped and rewrites `agent_id` to the captured template, as
+`bind_cron_memory` does for a schedule that names an agent today, so `GET
+/api/crons`, `cron_list` and `dispatched_agents_from_disk` all report the template
+the job runs. A record that named no agent keeps an empty `agent_id`. A member
+schedule on a V1 store keeps its V1 dispatch.
+
+Dispatch never runs an uncaptured pre-identity member schedule. `resolve_cron_memory`
+refuses it with a `LegacyScheduleRefused` (`memory_unavailable:`) naming its repair:
+`LEGACY_MEMBER_STORE_REMEDY` then restart when the store has no attributed owner;
+"delete this schedule" when the store's member was deleted; restore the store's
+entry in `config.json`, then restart the gateway, or delete the schedule when the
+store declaration is gone; "recreate it from the member's chat" when it names someone else; and
+"restart the gateway" when it is attributable but was not captured (a capture that
+could not take the store lock, or an older `crons.json` brought in later). That
+refusal is a run the state PREVENTED, not a failed run. The gateway sets
+`run_never_started` and never calls `record_failure`, so the job is not walked
+toward auto-pause, a pause that would outlive the repair and the restart its remedy
+names. A past-due one-shot is also parked disabled the way a fire-time denial is,
+and its remedy says it stays paused until resumed. A message job keeps its
+carried `last_result`; a command or script job's is cleared when the run closes,
+as `close_run` does for every result-less run of those kinds, fire-time denials
+included. Each distinct refusal of a job is alerted once per gateway process, so a
+repair that surfaces the next refusal (a restored declaration that still needs the
+restart which captures it) alerts that one too. Every other refusal
+before dispatch (no canonical execution context, a malformed identity) still raises
+to the scheduler unchanged.
+
 `member_id` is the only per-crewmate GROUPING key the dashboard has, and it is the
 one the surfaces group by. `GET /api/crons` returns it (`null` for a job with no
 member), and the server offers no member filter or server-side grouping, so every
@@ -324,7 +366,9 @@ A failure reports **where the results report**. Both failure surfaces run the
 channel-first ladder above and keep Slack as the fallback:
 
 - `_alert_cron_failure` — the script/command arms, which signal failure by mutating
-  the job and returning normally, plus fire-time policy denials;
+  the job and returning normally, plus fire-time policy denials and the refusal of a
+  pre-identity member schedule before dispatch (any job kind, once per refusal per
+  process);
 - the `message` arm's own `except` branch, which alerts and then re-raises.
 
 An alert reaching only the dashboard bell while the results reach a chat is worse

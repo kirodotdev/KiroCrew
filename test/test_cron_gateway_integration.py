@@ -1012,11 +1012,14 @@ def _make_gw_for_llm():
     return gw
 
 
-async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
+async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None, fires=1):
     """Run the cron callback for an LLM-based job through _init_cron.
 
     get_or_create_side_effect: if provided, set as the side_effect on
     sessions.get_or_create (for simulating model errors / fallback).
+    fires: how many times to run the ONE callback the gateway built, as one
+    gateway process fires a job on successive schedule slots; the last result
+    is returned.
     """
     captured_cb = None
 
@@ -1050,7 +1053,8 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
         mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
         await gw._init_cron()
         assert captured_cb is not None
-        result = await captured_cb(job)
+        for _ in range(fires):
+            result = await captured_cb(job)
         return result, _stream_mock
 
 
@@ -1108,6 +1112,102 @@ class TestLlmCronAdmission:
         assert job.last_result == ""
         assert job.consecutive_failures == 2
         stream.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_legacy_member_schedule_is_prevented_not_failed(self, monkeypatch):
+        """A pre-identity schedule refused before dispatch waits on a repair.
+
+        So it is never counted toward auto-pause (a pause would outlive the
+        repair and the restart its remedy names), keeps its carried result, and
+        alerts once per process, not once per fire.
+        """
+        from kiro_crew import cron
+        from kiro_crew.cron_service.identity import LegacyScheduleRefused
+
+        def refuse(job, **_kwargs):
+            raise LegacyScheduleRefused(
+                "cannot be attributed", "recreate it from the member's chat"
+            )
+
+        monkeypatch.setattr(cron, "resolve_cron_memory", refuse)
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(member_id="alice", memory_store="member-alice", last_result="A, B")
+        result, stream = await _run_llm_callback(gw, job, fires=6)
+        assert result is None
+        stream.assert_not_awaited()
+        gw.sessions.get_or_create.assert_not_awaited()
+        assert job.last_status == "error"
+        assert "recreate it from the member's chat" in job.last_error
+        assert job.consecutive_failures == 0
+        assert job.auto_paused is False
+        assert job.run_never_started is True
+        assert job.fire_time_denied is False
+        assert job.last_result == "A, B"
+        alerts = [call.args for call in gw.dashboard_state.notify.call_args_list]
+        assert len([args for args in alerts if "recreate it from the member" in args[2]]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_refusal_a_repair_surfaces_is_alerted_too(self, monkeypatch):
+        """Each distinct refusal alerts once, so the remedy after a repair is not hidden.
+
+        A restored store declaration reloads live, and the next fire is then refused
+        for the restart that captures the schedule; that remedy must reach the user.
+        """
+        from kiro_crew import cron
+        from kiro_crew.cron_service.identity import LegacyScheduleRefused
+
+        refusals = iter(
+            [("its memory store declaration is unavailable", "restore the store's entry")] * 2
+            + [("its member execution has not been captured yet", "restart the gateway")] * 2
+        )
+
+        def refuse(job, **_kwargs):
+            raise LegacyScheduleRefused(*next(refusals))
+
+        monkeypatch.setattr(cron, "resolve_cron_memory", refuse)
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(member_id="alice", memory_store="member-alice")
+        await _run_llm_callback(gw, job, fires=4)
+        alerts = [call.args[2] for call in gw.dashboard_state.notify.call_args_list]
+        assert len([text for text in alerts if "restore the store's entry" in text]) == 1
+        assert len([text for text in alerts if "restart the gateway" in text]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_legacy_member_one_shot_is_kept_and_parked(self, monkeypatch):
+        """A past-due one-shot is retained, and parked instead of due on every tick."""
+        from kiro_crew import cron
+        from kiro_crew.cron_service.identity import LegacyScheduleRefused
+
+        def refuse(job, **_kwargs):
+            raise LegacyScheduleRefused("its store's member was deleted", "delete this schedule")
+
+        monkeypatch.setattr(cron, "resolve_cron_memory", refuse)
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(
+            member_id="alice",
+            memory_store="member-alice",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        result, _ = await _run_llm_callback(gw, job)
+        assert result is None
+        assert job.run_never_started is True
+        assert job.fire_time_denied is True
+        assert "stays paused until resumed" in job.last_error
+        assert job.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_other_refusals_before_dispatch_still_raise(self, monkeypatch):
+        from kiro_crew import cron
+
+        def refuse(job, **_kwargs):
+            raise ValueError("memory_unavailable: schedule has no canonical execution context")
+
+        monkeypatch.setattr(cron, "resolve_cron_memory", refuse)
+        gw = _make_gw_for_llm()
+        with pytest.raises(ValueError, match="no canonical execution context"):
+            await _run_llm_callback(gw, _make_llm_job(member_id="deleted"))
+        gw.dashboard_state.notify.assert_not_called()
 
 
 class TestModelFallback:

@@ -38,7 +38,9 @@ if TYPE_CHECKING:
 
 def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
     """Restore and open the already-wired memory objects after readiness."""
+    from kiro_crew.config.loader import data_home
     from kiro_crew.context import reset_memory_caches
+    from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
     from kiro_crew.memory_backup import apply_pending_member_restores
     from kiro_crew.memory_stores import repair_legacy_member_stores
 
@@ -60,6 +62,15 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                 upgraded = repair_legacy_member_stores()
                 if upgraded:
                     logger.info("Upgraded member memory stores: %s", ", ".join(upgraded))
+                # Then the schedules those stores' members own, once, before
+                # the scheduler arms (it waits on this barrier). Same store
+                # directory the gateway's CronService uses; never raises.
+                captured = migrate_legacy_member_schedules(data_home())
+                if captured:
+                    logger.info(
+                        "Captured the member execution of %d pre-identity schedule(s)",
+                        len(captured),
+                    )
                 if startup.stopped:
                     return False
                 restored = apply_pending_member_restores(

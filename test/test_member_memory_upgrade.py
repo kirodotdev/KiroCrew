@@ -645,3 +645,14 @@ class TestTheHookIsWiredOnBothSurfaces:
         assert source.index("repair_legacy_member_stores()") < source.index(
             "apply_pending_member_restores("
         )
+
+
+def test_the_gateway_memory_worker_captures_schedules_after_the_store_upgrade() -> None:
+    """The capture reads the identities the store upgrade just published, and the
+    scheduler arms only after this worker, so no fire sees an uncaptured record."""
+    source = inspect.getsource(slack_gateway.GatewayOrchestrator._initialize_memory_worker)
+    assert (
+        source.index("repair_legacy_member_stores()")
+        < source.index("migrate_legacy_member_schedules(data_home())")
+        < source.index("apply_pending_member_restores(")
+    )

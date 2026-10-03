@@ -57,23 +57,26 @@ class CronJob:
     created_ts: float = 0.0
     delete_after_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was
-    # refused by the fire-time governance gate. A denied run is a policy
-    # state, not a completed run: a one-shot delete_after_run job is RETAINED
-    # instead of deleted, and a denied "at" job is parked DISABLED (a past-due
-    # at-job left enabled would be due again on every timer tick — a
-    # zero-delay refire loop) so an operator can re-enable it after a policy
+    # refused in a way only an operator can clear: a fire-time or claim-time
+    # governance denial, or the pre-dispatch refusal of a pre-identity member
+    # one-shot (cron_service.identity.LegacyScheduleRefused). A refused run is
+    # not a completed run: a one-shot delete_after_run job is RETAINED instead
+    # of deleted, and a refused "at" job is parked DISABLED (a past-due at-job
+    # left enabled would be due again on every timer tick — a zero-delay
+    # refire loop) so an operator can re-enable it after the repair or policy
     # loosening. Recurring jobs need neither: they wait for their next slot.
+    # Retention and parking key on "needs operator action", not on policy.
     # Reset at the start of every run.
     fire_time_denied: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run never
-    # started because every pool worker was busy for the whole queue budget.
-    # Deliberately NOT fire_time_denied, even though both must retain a one-shot:
-    # that flag ALSO forces an "at" job disabled and is documented as a *policy*
-    # refusal, so reusing it would park a starved job needing an operator to
-    # re-enable it and would mislabel pool saturation as a governance denial in
-    # history. Starvation clears on its own, so this field is retention-only --
-    # read solely where a one-shot would otherwise be consumed by a run it never
-    # had. Reset at the start of every run.
+    # started: every pool worker was busy for the whole queue budget, or a
+    # pre-identity member schedule was refused before dispatch. Deliberately
+    # NOT fire_time_denied for pool starvation, even though both must retain a
+    # one-shot: that flag ALSO forces an "at" job disabled, so reusing it would
+    # park a starved job needing an operator to re-enable it, and starvation
+    # clears on its own. So this field is retention-only -- read solely where a
+    # one-shot would otherwise be consumed by a run it never had. Reset at the
+    # start of every run.
     run_never_started: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by

@@ -3066,13 +3066,44 @@ class TaskRunner:
                 logger.warning("Failed to preserve corrupt runs registry", exc_info=True)
             return
         try:
-            from kiro_crew.workflow_memory import read_task_snapshot
+            from kiro_crew.workflow_memory import (
+                quarantine_legacy_task_references,
+                read_task_snapshot,
+            )
 
-            items = json.loads(read_task_snapshot(path, public_payload=raw))
+            legacy: list[dict] = []
+            items = json.loads(
+                read_task_snapshot(path, public_payload=raw, legacy_references=legacy)
+            )
         except Exception as exc:
             self._snapshot_recovery_incomplete = True
             logger.error("Failed to read task snapshot (%s)", type(exc).__name__)
             return
+        if legacy:
+            # Refuse the row, never the runner: a fence on it would hold forever,
+            # since nothing rewrites the registry until a run changes. A set-aside
+            # that fails fences writes so the references are not lost, but the
+            # other runs still restore.
+            try:
+                aside, changed = quarantine_legacy_task_references(path, legacy)
+            except Exception as exc:
+                self._snapshot_recovery_incomplete = True
+                logger.error(
+                    "Could not set aside %d task record(s) from a 0.7.0 pre-release beside "
+                    "%s (%s); task snapshot writes stay fenced until it can be",
+                    len(legacy),
+                    path,
+                    type(exc).__name__,
+                )
+            else:
+                if changed:
+                    logger.warning(
+                        "Set aside %d task record(s) from a 0.7.0 pre-release in %s; their "
+                        "private payloads were not read and those tasks cannot resume. "
+                        "Re-create them to run them again.",
+                        len(legacy),
+                        aside,
+                    )
         for item in items:
             try:
                 execution_context = execution_from_record(item, required=False)
