@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import base64
 import bisect
+import functools
 import hashlib
 import hmac
 import json
 import math
+import os
 import posixpath
 import re
 import secrets
@@ -542,6 +544,45 @@ _VOWELS: frozenset[str] = frozenset("aeiouAEIOU")
 # an AWS secret key (which uses the full base64 alphabet). Reject them outright.
 _HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
 
+# The macOS per-user directory id: ``confstr`` names the temp and cache roots
+# ``/var/folders/<2>/<30>/T`` and ``.../C``, the two variable components an
+# OS-generated lowercase encoding of the user's UUID and uid. ``/`` is in the run
+# alphabet, so a path under them is one run whose window straddling the id and
+# the ``T`` clears every gate, and every temp path -- a computer-use screenshot
+# echoed as ``![](path)`` among them -- would read as a key. Pass 3 therefore
+# scans the original run, exempting only windows that share at least
+# ``_HOST_ID_EXEMPT_OVERLAP`` bytes IN PLACE with THIS host's OS-reported id. Any
+# other positive window overlapping the id is still a hit, and pass 3 redacts
+# every uncovered piece such a window touches; the id and the prefix stay
+# plaintext because they are withheld from the scan, not redacted. Fast paths,
+# the fragment separator ceiling and printable-base64 exclusion use whole-run
+# context. In free text a writer picks an id's bytes and could fill most of a
+# key-shaped window, while the host's id is chosen by nobody who writes text. The
+# prefix must start a path (no run-alphabet byte, ``/`` included, before it) and
+# the byte after the directory letter must not continue the run: ``/`` starts the
+# next component, and any byte outside the run alphabet ends the run there, so a
+# bare root printed, quoted, or followed by a newline is the same two-byte ``/T``
+# piece as one that ends the text. ``/Tevil`` is a chosen name and gets no
+# exemption. A key after ``/T_evil`` sits in the next run and is judged there;
+# the pieces the exemption leaves in this run are the prefix and the ``/T``, both
+# shorter than one key, so no key-shaped window survives in them.
+#: Least overlap at which a key-shaped window is exempted from the bare-secret
+#: scan: a key can occupy an exempt window only by sharing this many of its bytes
+#: IN PLACE with an id the OS chose, which no writer controls. 24 exempts the
+#: screenshot spooler path (32), the bare root (33) and an ``mkdtemp`` ``tmpXXXXXXXX``
+#: dir with a one-character leaf (24); a temp path whose run goes 15 or more run-alphabet
+#: bytes past the directory letter can still yield a positive window below 24 and stays
+#: redacted, as without the exemption. A key glued across the id with less overlap is judged.
+_HOST_ID_EXEMPT_OVERLAP = 24
+_DARWIN_USER_DIR_PREFIX_RE = r"(?<![A-Za-z0-9+/])(?:/private)?/var/folders/"
+_DARWIN_USER_DIR_SUFFIX_RE = r"/[CT](?![A-Za-z0-9+])"
+# ``_CS_DARWIN_USER_TEMP_DIR`` in Darwin's ``<unistd.h>``; Python has no name for
+# it, and its answer is the temp root with a trailing separator.
+_CS_DARWIN_USER_TEMP_DIR = 65537
+_DARWIN_USER_TEMP_DIR_RE = re.compile(
+    r"\A(?:/private)?/var/folders/(?P<id>[a-z0-9_]{2}/[a-z0-9_]{30})/T/?\Z"
+)
+
 # The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
 # the character count ``c``. Element 0 is a ``0.0`` placeholder that keeps ``c``
 # usable as a direct index; it is never read, because a count of zero cannot appear
@@ -830,8 +871,15 @@ def _contains_bare_secret(run: str) -> bool:
     to it), and only AFTER :func:`_looks_like_secret_key` has answered, so every
     offset is still classified and a glued key is still found at its own offset.
     """
+    return next(_bare_secret_window_starts(run), None) is not None
+
+
+def _bare_secret_window_starts(
+    run: str, skip_spans: tuple[tuple[int, int], ...] = ()
+) -> Iterator[int]:
+    """Omit windows with >= _HOST_ID_EXEMPT_OVERLAP bytes in a run-relative *skip_spans* entry."""
     if len(run) < _SECRET_KEY_LEN:
-        return False
+        return
     # RUN-LEVEL FAST PATH. Two of the per-window gates reject on a property that
     # is closed under substring, so asking about the whole run once can retire
     # every window without classifying any of them:
@@ -847,20 +895,24 @@ def _contains_bare_secret(run: str) -> bool:
     is_fragment = len(run) > _SECRET_KEY_LEN
     if is_fragment:
         if not _has_all_three_char_classes(run):
-            return False
+            return
         if _HEX_ONLY_RE.match(run):
-            return False
+            return
     if _decodes_to_printable_text(run):
-        return False
+        return
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
+        if skip_spans and any(
+            min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
+            for begin, end in skip_spans
+        ):
+            continue
         window = run[start : start + _SECRET_KEY_LEN]
         if not _looks_like_secret_key(window):
             continue
         if is_fragment and window.count("/") > _SECRET_MAX_SLASHES:
             # Key-shaped, but a fragment carrying a path's separator density.
             continue
-        return True
-    return False
+        yield start
 
 
 def _decode_b64_chunk(chunk: str) -> str:
@@ -1484,6 +1536,41 @@ def _uncovered(start: int, end: int, taken: list[_RedactionSpan]) -> list[tuple[
     return gaps
 
 
+@functools.lru_cache(maxsize=1)
+def _host_darwin_user_dir_id() -> str | None:
+    """This user's ``<2>/<30>`` directory id as the OS reports it, asked once.
+
+    ``confstr``, not ``tempfile.gettempdir()``, which follows ``$TMPDIR``. Windows
+    has no ``os.confstr`` and other POSIX systems refuse the name; either, or an
+    answer outside the grammar, means None and nothing withheld.
+    """
+    confstr = getattr(os, "confstr", None)
+    if confstr is None:
+        return None
+    try:
+        match = _DARWIN_USER_TEMP_DIR_RE.match(confstr(_CS_DARWIN_USER_TEMP_DIR) or "")
+    except (OSError, ValueError):
+        return None
+    return match.group("id") if match else None
+
+
+@functools.lru_cache(maxsize=4)
+def _darwin_user_dir_id_re(host_id: str) -> re.Pattern[str]:
+    return re.compile(
+        _DARWIN_USER_DIR_PREFIX_RE + f"(?P<id>{re.escape(host_id)})" + _DARWIN_USER_DIR_SUFFIX_RE
+    )
+
+
+def _darwin_user_dir_ids(text: str) -> list[_RedactionSpan]:
+    """This host's directory id in *text*, as spans for :func:`_uncovered` to subtract."""
+    host_id = _host_darwin_user_dir_id()
+    # The substring check keeps the regex off the almost-every text that does not
+    # carry this host's id.
+    if host_id is None or f"folders/{host_id}/" not in text:
+        return []
+    return [(*m.span("id"), "") for m in _darwin_user_dir_id_re(host_id).finditer(text)]
+
+
 def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     """Apply *spans* (sorted, disjoint) to *text* in one left-to-right pass."""
     parts: list[str] = []
@@ -1703,32 +1790,58 @@ def _credential_redaction_plan(
     # word of a `aws_secret_access_key=` label, say — has the part still in
     # plaintext redacted, because the run as a whole was judged to hold a key
     # and the earlier pass consumed only its label.
+    #
+    # Only windows sharing >= _HOST_ID_EXEMPT_OVERLAP bytes with this host's id are exempt;
+    # whole-run context preserves every other base verdict, including smaller overlaps.
+    withheld = _darwin_user_dir_ids(text)
     pass3: list[_RedactionSpan] = []
     link_spans: list[tuple[int, int]] | None = None
     for m in b64_matches:
-        run = m.group().rstrip("=")
-        # Slide a 40-char window across the run rather than gating the whole run
-        # on len == 40: a real secret glued to an adjacent base64 char (no
-        # delimiter) yields a 41+ char run that the exact-40 shape check would
-        # miss, leaking the key verbatim. Redact the whole run if ANY window is a
-        # secret.
-        if not _contains_bare_secret(run):
-            continue
+        run_end = m.start() + len(m.group().rstrip("="))
+        run = text[m.start() : run_end]
+        pieces = _uncovered(m.start(), run_end, withheld)
+        if pieces == [(m.start(), run_end)]:
+            if not _contains_bare_secret(run):
+                continue
+        else:
+            first = bisect.bisect_right(withheld, m.start(), key=_span_end)
+            last = bisect.bisect_left(withheld, run_end, key=lambda span: span[0])
+            skip_spans = tuple(
+                (start - m.start(), end - m.start()) for start, end, _ in withheld[first:last]
+            )
+            # A non-skipped positive window overlaps the id by < the exempt
+            # bound, so it falls wholly inside one piece or spans a piece
+            # boundary where the id sits; either way it keys every piece it
+            # touches. Windows ascend, so per piece advance past windows ending
+            # at or before its start, then it is keyed if the current window
+            # starts before its end.
+            windows = _bare_secret_window_starts(run, skip_spans)
+            hit = next(windows, None)
+            keyed_pieces = []
+            for start, end in pieces:
+                while hit is not None and m.start() + hit + _SECRET_KEY_LEN <= start:
+                    hit = next(windows, None)
+                if hit is not None and m.start() + hit < end:
+                    keyed_pieces.append((start, end))
+            pieces = keyed_pieces
+            if not pieces:
+                continue
         # A run wholly inside a validated document link is its host and route,
         # not a key (see `_DOCUMENT_LINK_RE`). Scanned only after a run fires,
         # so text with no key-shaped run never pays for it.
         if link_spans is None:
             link_spans = _document_link_spans(text)
-        run_end = m.start() + len(run)
         if any(start <= m.start() and run_end <= end for start, end in link_spans):
             continue
-        gaps = _uncovered(m.start(), m.start() + len(run), taken)
-        if not gaps:
-            continue
-        for start, end in gaps:
-            pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
-            rules[start] = ("bare_aws_secret", "")
-        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
+        for piece_start, piece_end in pieces:
+            piece = text[piece_start:piece_end]
+            gaps = _uncovered(piece_start, piece_end, taken)
+            if not gaps:
+                continue
+            for start, end in gaps:
+                pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
+                rules[start] = ("bare_aws_secret", "")
+            warnings.append(f"Redacted bare secret key ({len(piece)} chars)")
     taken = sorted(taken + pass3)
 
     # 4. `?token=` / `&token=` URL parameter VALUES, keyed on the parameter
