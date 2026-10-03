@@ -18,13 +18,14 @@ import sys
 import threading
 import time
 import unittest.mock
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from kiro_crew import crew_log as lg
 from kiro_crew import executors, session_map
-from kiro_crew.crew_log import crew_log_path, crew_log_root, emit
+from kiro_crew.crew_log import crew_log_path, crew_log_root, eager, emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.dashboard import server as server_module
@@ -95,6 +96,22 @@ def test_the_retry_schedule_doubles_from_its_floor_to_its_ceiling():
 def _log_path(session_id: str = SESSION) -> Path:
     """Ask the storage library where it puts things; never pin its layout."""
     return crew_log_path("session", session_id)
+
+
+def _remove_as_retention_does(remove: Callable[[], object]) -> None:
+    """Run *remove* with the eager folder settled and held between batches.
+
+    Retention removes a unit inside ``eager.paused()``, so no fold has the unit
+    open while its files go. A test that removes a crew log's files itself must do
+    the same: the folder reads the unit on its own thread after every entry, and a
+    fold that listed the segments before a bare removal then recreates the unit's
+    lock file inside the directory being removed (``Directory not empty`` on POSIX,
+    ``WinError 32`` on Windows for a segment it holds open).
+    """
+    assert eager.drain(timeout=10.0), "the eager folder never settled"
+    with eager.paused() as held:
+        assert held, "the eager folder could not be held between batches"
+        remove()
 
 
 def _store_root() -> Path:
@@ -5372,7 +5389,7 @@ def test_a_resume_of_the_same_store_writes_no_previous_edge():
     assert emit.flush()
 
     # Retention's effect on this unit, without waiting for retention.
-    _log_path(SESSION).unlink()
+    _remove_as_retention_does(_log_path(SESSION).unlink)
     emit.reset_caches()
     assert not lg.CrewLog.exists(lg.KIND_SESSION, SESSION)
 
@@ -5812,7 +5829,7 @@ def test_a_predecessor_collected_during_the_deferral_costs_no_dropped_write():
     _dangling_predecessor()
     emit.reset_caches()
     before = emit.dropped_writes()
-    shutil.rmtree(_log_path(SESSION).parent)
+    _remove_as_retention_does(lambda: shutil.rmtree(_log_path(SESSION).parent))
 
     emit._submit(
         lambda: emit._repair_superseded(SESSION, "chat-7"),
@@ -6837,7 +6854,7 @@ def test_a_store_whose_front_retention_removed_reports_no_edge():
     assert emit.flush()
     assert crew_log_projection.read_projection(SUCCESSOR, "status").value["previous"] == SESSION
 
-    _log_path(SUCCESSOR).unlink()
+    _remove_as_retention_does(_log_path(SUCCESSOR).unlink)
     folded = crew_log_projection.read_projection(SUCCESSOR, "status").value
     assert folded["previous"] is None
     assert folded["lifecycle"] == "unknown", "and the fold says it could not read an opener"

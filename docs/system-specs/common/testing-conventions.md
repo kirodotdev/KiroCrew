@@ -280,8 +280,11 @@ pins the import for every module that spawns the fake, because co-location alone
 not stop a second consumer from hand-rolling the read.
 
 **Delete a file a background thread may have open the way the product deletes it.**
-Windows refuses to unlink a file while any handle holds it (`[WinError 32]`), and a
-test that removes crew-log segments with a bare `path.unlink()` races the eager folder,
+Windows refuses to unlink a file while any handle holds it (`[WinError 32]`), and on
+every platform a fold that listed a unit's segments before a bare `shutil.rmtree` of its
+folder recreates the unit's `.lock` inside it (`[Errno 39] Directory not empty`). A
+test that removes crew-log segments or a unit folder with a bare `path.unlink()` or
+`shutil.rmtree` races the eager folder,
 which reads the unit on its own thread after every entry. Retention removes them inside
 `crew_log.eager.paused()`, which holds the folder between batches; a test does the same
 after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
