@@ -220,8 +220,8 @@ while the loop that fired it is still its own: the wake carries that loop's id,
 and `apply_session_directive` reads the row back before the authorizer runs. A
 row that is gone (a prompt-loop Stop removes it) or that a person stopped (a
 retained `USER_STOP` record, a manual pause, an empty reason) refuses the arm; a
-row that is active, or that its own cycle cap, runtime budget, terminal subject
-or dropped sentinel deactivated, admits it, and the create-only and
+row that is active, or that its own cycle cap, runtime budget, terminal subject,
+stop file or dropped sentinel deactivated, admits it, and the create-only and
 `replace_stopped` rules then decide as for any other arm. The self-arm tests in
 `test_autonudge_member_self_arm.py` and `test_monitor_directive_apply.py` pin
 the four answers. When the wake carries a loop id, its `monitor_update`,

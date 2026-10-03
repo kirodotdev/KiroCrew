@@ -71,6 +71,7 @@ from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
+    FINISHED_LOOP_REASONS,
     MONITOR_TERMINAL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
@@ -81,6 +82,7 @@ from kiro_crew.autonudge import (
     is_channel_key,
     is_structured_monitor_loop,
     nudge_cycle_header,
+    reason_in,
     runtime_budget_exceeded,
     terminal_notification_delivery_matches,
 )
@@ -7541,6 +7543,30 @@ class GatewayOrchestrator:
                     # REST list already.
                     "next_due_ts": loop.next_due_ts,
                     "stopped_reason": loop.stopped_reason,
+                    # The settled outcome of the loop's own watch ("success" for a
+                    # merged subject or an accepted work ledger, "blocked" for one
+                    # closed without merging or rejected), "" while none has settled,
+                    # and the KIND of subject it watched ("gh-pr", "work-ledger"; ""
+                    # with no watch). On every loop for the reason the two above are:
+                    # a GATED prompt loop whose subject finished reads Done in the
+                    # popover, worded by these two, and this frame withholds its
+                    # ``monitor`` record (the frame is broadcast ungated, and the
+                    # record names the subject) -- so the two scalars the wording
+                    # needs ride alone. They say in what state the automation is and
+                    # what class of thing it watched, never which one. The outcome
+                    # is an enum's value; the kind is a stored string, and this
+                    # frame goes to every dashboard socket, so it passes through
+                    # the same redaction as the structured record below -- every
+                    # writer checks a kind against the registry, but a state file
+                    # edited by hand is read back as written.
+                    "monitor_outcome": (
+                        loop.monitor.outcome.value
+                        if loop.monitor is not None and loop.monitor.outcome is not None
+                        else ""
+                    ),
+                    "monitor_kind": (
+                        _redact_monitor_value(loop.monitor.kind) if loop.monitor is not None else ""
+                    ),
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
@@ -7597,7 +7623,16 @@ class GatewayOrchestrator:
                     _edata: dict = {}
                     if event == "added":
                         _etype2, _edata = PATROL_STARTED, {"slot_key": loop.slot_key}
-                    elif event in ("removed", "expired"):
+                    elif event in ("removed", "expired") or (
+                        # A loop FINISHED by its stop file is kept and deactivated,
+                        # so it arrives as ``updated``; the patrol is over all the
+                        # same, and a log left reading ``armed`` would never close --
+                        # the boot closer closes only a log whose row is gone. A
+                        # plain pause stays a pause: not a stop, not recorded.
+                        event == "updated"
+                        and not loop.active
+                        and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
+                    ):
                         _reason = getattr(loop, "stopped_reason", None) or event
                         _etype2, _edata = (
                             PATROL_STOPPED,

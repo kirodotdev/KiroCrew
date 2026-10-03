@@ -34,7 +34,12 @@ import pytest
 from kiro_crew import session_directive
 from kiro_crew import subagent as _sa
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TOOL_CALL, EVENT_TOOL_RESULT, AcpEvent
-from kiro_crew.autonudge import MANUAL_STOP_REASON, AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge import (
+    MANUAL_STOP_REASON,
+    MONITOR_TERMINAL_REASON,
+    AutoNudgeService,
+    NudgeLoop,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.completion import MonitorCompletionHook
@@ -1174,6 +1179,8 @@ class TestAutonudgeRouterAndObserver:
         _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
         assert payload["loop"]["stopped_reason"] == ""
         assert payload["loop"]["next_due_ts"] == 1_800_000_300.0
+        assert payload["loop"]["monitor_outcome"] == ""
+        assert payload["loop"]["monitor_kind"] == ""
 
         paused = _loop("chat-1-1721", active=False, stopped_reason=MANUAL_STOP_REASON)
         observer("updated", paused)
@@ -1182,6 +1189,91 @@ class TestAutonudgeRouterAndObserver:
         assert payload["loop"]["stopped_reason"] == MANUAL_STOP_REASON
         assert payload["loop"]["next_due_ts"] == 0.0
         assert "monitor" not in payload["loop"]
+
+        # A GATED prompt loop whose watch finished: the popover words Done by the
+        # settled outcome, so that one scalar rides the frame while the monitor
+        # record -- which names the subject -- stays withheld from this ungated
+        # broadcast.
+        finished = _loop(
+            "chat-1-1721", active=False, stopped_reason=MONITOR_TERMINAL_REASON, gate=True
+        )
+        finished.monitor = MonitorState(
+            kind="gh-pr",
+            target="acme/widgets#7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.BLOCKED,
+        )
+        observer("expired", finished)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_reason"] == MONITOR_TERMINAL_REASON
+        assert payload["loop"]["monitor_outcome"] == "blocked"
+        assert payload["loop"]["monitor_kind"] == "gh-pr"
+        assert "monitor" not in payload["loop"]
+
+    @pytest.mark.asyncio
+    async def test_observer_frame_redacts_the_watch_kind_it_broadcasts(self, monkeypatch):
+        """The kind is a stored string a hand-edited state file reads back as
+        written, and this frame reaches every dashboard socket, so the scalar
+        goes through the redaction the structured record goes through."""
+        from kiro_crew.slack import gateway as gateway_module
+
+        seen: list[object] = []
+
+        def _redactor(value):
+            seen.append(value)
+            return "[redacted]" if value == "ghp_not-a-registry-kind" else value
+
+        monkeypatch.setattr(gateway_module, "_redact_monitor_value", _redactor)
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        finished = _loop(
+            "chat-1-1721", active=False, stopped_reason=MONITOR_TERMINAL_REASON, gate=True
+        )
+        finished.monitor = MonitorState(
+            kind="ghp_not-a-registry-kind",
+            target="acme/widgets#7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+        )
+        observer("expired", finished)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert "ghp_not-a-registry-kind" in seen
+        assert payload["loop"]["monitor_kind"] == "[redacted]"
+        assert payload["loop"]["monitor_outcome"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_observer_logs_a_member_patrol_finished_by_its_stop_file_as_stopped(self):
+        """A finish by the stop file arrives as an ``updated`` frame on a kept,
+        inactive row, and the member event log has to record it as a patrol stop
+        -- a plain pause is not one -- or the drawer reads ``armed`` for good,
+        since the boot closer closes only a log whose row is gone."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        appended: list[tuple[str, str, dict]] = []
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(
+                eventlog_hooks,
+                "emit",
+                lambda slug, _actor, etype, data: (appended.append((slug, etype, data)), True)[1],
+            ),
+        ):
+            paused = _loop("member-crew-x", active=False, stopped_reason=MANUAL_STOP_REASON)
+            observer("updated", paused)
+            assert appended == [], "a pause is not a patrol stop"
+            finished = _loop("member-crew-x", active=False, stopped_reason="stop_sentinel")
+            observer("updated", finished)
+        assert appended == [
+            ("crew-x", PATROL_STOPPED, {"slot_key": "member-crew-x", "reason": "stop_sentinel"})
+        ]
 
     @pytest.mark.asyncio
     async def test_observer_broadcasts_structured_state_to_owners_only(self):

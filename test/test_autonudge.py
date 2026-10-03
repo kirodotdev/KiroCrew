@@ -4058,7 +4058,91 @@ async def test_load_keeps_an_active_structured_monitor_with_an_over_ceiling_budg
 
 
 @pytest.mark.asyncio
-async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
+async def test_stop_sentinel_keeps_the_record_finished(svc, tmp_path, monkeypatch, caplog):
+    """The stop file FINISHES the loop: the record stays, inactive, under its own
+    reason, so the goal popover can say the goal was met instead of falling back
+    to its empty form. Every other effect of the old removal is kept: the timer
+    is gone, the stop line names the reason, the file is left where the agent
+    wrote it, and nothing announces a stop-short (``expired``)."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    await svc.start()
+    sentinel = tmp_path / "STOP"
+    loop = await svc.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, stop_sentinel_path=str(sentinel)
+    )
+    sentinel.write_text("halt")
+    svc._cancel_timer(loop.id)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.autonudge"):
+        await svc._timer(loop)
+    kept = svc.get_by_slot("chat-1-123")
+    assert kept is not None and kept.id == loop.id
+    assert kept.active is False
+    assert kept.stopped_reason == _an.STOP_SENTINEL_REASON
+    assert kept.next_due_ts == 0.0
+    assert loop.id not in svc._timers
+    assert sentinel.exists(), "the stop file is the agent's; the service leaves it"
+    assert "expired" not in events, "a finish is not a stop-short"
+    assert "updated" in events
+    rows = json.loads((tmp_path / _an._NUDGES_FILE).read_text(encoding="utf-8"))["loops"]
+    assert [(r["active"], r["stopped_reason"]) for r in rows] == [(False, "stop_sentinel")]
+    stop_lines = [r.getMessage() for r in caplog.records if "stop_sentinel" in r.getMessage()]
+    assert stop_lines, "the WARNING stop line must still name the reason"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["stop_sentinel", "monitor_terminal"])
+async def test_a_finished_loop_is_not_revived_and_keeps_its_reason(svc, reason):
+    """Done is a dead end. The popover's Play (``fresh_run``), ``monitor_update``
+    and the app reconcilers all reach ``update(active=True)``, and every one is
+    declined: there is nothing to resume. A later reasonless pause or a bound
+    landing on the finished row keeps the reason too, because the reason is what
+    refuses the revival."""
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_cycles=5)
+    loop.cycle_count = 3
+    created = loop.created_ts
+    await svc.update(loop.id, active=False, stopped_reason=reason)
+    assert svc._loops[loop.id].stopped_reason == reason
+
+    writes: list[dict] = []
+    real_write = svc._write_state
+    svc._write_state = lambda payload: (writes.append(payload), real_write(payload))[1]
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    revived = await svc.update(loop.id, active=True, fresh_run=True)
+    assert revived is not None and revived.active is False
+    assert revived.stopped_reason == reason
+    assert revived.cycle_count == 3 and revived.created_ts == created, "no fresh budget either"
+    assert loop.id not in svc._timers
+    # Declined with nothing else asked: no store write and no frame, so a
+    # reconciler polling the finished row every few seconds costs nothing.
+    assert writes == [] and events == []
+    # A revival asked WITH a field change still applies the change (and persists).
+    patched = await svc.update(loop.id, active=True, max_cycles=9)
+    assert patched is not None and patched.active is False and patched.max_cycles == 9
+    assert len(writes) == 1 and events == ["updated"]
+
+    await svc.update(loop.id, active=False)  # the popover's Pause off a stale reading
+    assert svc._loops[loop.id].stopped_reason == reason
+    await svc.update(loop.id, active=False, stopped_reason="cycle_cap")
+    assert svc._loops[loop.id].stopped_reason == reason
+
+
+@pytest.mark.asyncio
+async def test_a_stop_file_finish_is_revived_only_once_the_file_is_gone(svc, tmp_path, monkeypatch):
+    """The operator's kill switch. Issue Radar and Research Lab arm the stop
+    file as a brake and their reconcilers re-arm every inactive loop with
+    ``update(active=True)``: while the file stands the row stays Done and the
+    re-arm is declined (and writes nothing); once the operator deletes the file
+    the same re-arm runs the loop again. A finished watch has no file to lift
+    and stays finished."""
     import kiro_crew.autonudge as _an
 
     async def _nosleep(_secs):
@@ -4073,7 +4157,46 @@ async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
     sentinel.write_text("halt")
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
-    assert svc.get_by_slot("chat-1-123") is None
+    assert svc._loops[loop.id].stopped_reason == _an.STOP_SENTINEL_REASON
+    refused = await svc.update(loop.id, active=True)
+    assert refused is not None and refused.active is False
+    assert refused.stopped_reason == _an.STOP_SENTINEL_REASON
+    sentinel.unlink()
+    revived = await svc.update(loop.id, active=True)
+    assert revived is not None and revived.active is True and revived.stopped_reason == ""
+    assert loop.id in svc._timers
+    svc._cancel_timer(loop.id)
+    # A finished watch is not a kill switch: nothing to lift, so nothing revives it.
+    await svc.update(loop.id, active=False, stopped_reason=_an.MONITOR_TERMINAL_REASON)
+    still = await svc.update(loop.id, active=True)
+    assert still is not None and still.active is False
+    assert still.stopped_reason == _an.MONITOR_TERMINAL_REASON
+
+
+@pytest.mark.asyncio
+async def test_a_finished_loop_is_displaced_by_a_new_arm_not_by_a_create(svc, tmp_path):
+    """The two ways on from Done. A directive re-arm (``monitor_start``, which opts
+    into ``replace_stopped``) may displace the finished row -- the agent that
+    stopped one goal through its stop file can arm the next, as it could when
+    the row was removed. The popover's create-only POST still meets the row and
+    refuses, so Clear stays the person's step."""
+    import kiro_crew.autonudge as _an
+
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    await svc.update(loop.id, active=False, stopped_reason=_an.STOP_SENTINEL_REASON)
+    assert _an._stopped_row_is_replaceable(svc._loops[loop.id])
+    with pytest.raises(_an.MonitorUpdateConflict):
+        await svc.add(slot_key="chat-1-123", message="again", idle_secs=15, replace_existing=False)
+    replacement = await svc.add(
+        slot_key="chat-1-123",
+        message="next goal",
+        idle_secs=15,
+        replace_existing=False,
+        replace_stopped=True,
+    )
+    assert replacement.id != loop.id and replacement.active
+    assert [lp.id for lp in svc.list_all()] == [replacement.id]
 
 
 @pytest.mark.asyncio
@@ -6501,7 +6624,9 @@ class TestSentinelPathRepair:
             (current / "workspace" / ".stop-chat-27").write_text("stop", encoding="utf-8")
             await svc._timers["abc123"]
             assert fired == [], "loop fired despite the sentinel being present"
-            assert "abc123" not in svc._loops, "sentinel did not remove the loop"
+            halted = svc._loops["abc123"]
+            assert halted.active is False, "sentinel did not halt the loop"
+            assert halted.stopped_reason == _an.STOP_SENTINEL_REASON
         finally:
             svc.stop()
 

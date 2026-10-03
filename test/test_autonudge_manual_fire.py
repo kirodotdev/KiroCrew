@@ -241,7 +241,12 @@ async def test_a_manual_trigger_still_honours_the_stop_sentinel(tmp_path, svc_ba
     await _run_armed_cycle(svc, loop.id)
 
     assert fired == []
-    assert loop.id not in svc._loops
+    # The stop file FINISHES the loop: the record is kept, inactive, under its
+    # own reason, and a manual press cannot buy a turn past it (``fire_now``
+    # refuses an inactive loop).
+    kept = svc._loops[loop.id]
+    assert kept.active is False and kept.stopped_reason == "stop_sentinel"
+    assert (await svc.fire_now(loop.id))[2] == 409
     svc.stop()
 
 
@@ -249,7 +254,7 @@ async def test_a_manual_trigger_still_honours_the_stop_sentinel(tmp_path, svc_ba
 async def test_fire_now_refuses_an_inactive_loop(svc_base_dir) -> None:
     """One condition covers every terminal bound, so none is restated.
 
-    A cap, a spent runtime budget, an approval stall and a sentinel removal all
+    A cap, a spent runtime budget, an approval stall and the stop file all
     leave the loop inactive, so refusing on ``active`` refuses all of them
     without a second copy of the list to drift.
     """

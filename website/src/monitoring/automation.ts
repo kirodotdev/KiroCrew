@@ -98,6 +98,13 @@ export interface LegacyGoalLoop {
   nextDueAt?: number
   maxRuntimeSecs?: number
   stoppedReason: string
+  /** The settled outcome of the loop's own watch (`success` / `blocked`, '' while
+   *  none), from the frame's `monitor_outcome`. The popover words a finished
+   *  watch by it: merged, or closed without merging. */
+  monitorOutcome: string
+  /** The kind of subject that watch observed (`gh-pr`, `work-ledger`), from the
+   *  frame's `monitor_kind`; '' with no watch. */
+  monitorKind: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
    *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
@@ -351,7 +358,14 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
   const slotKey = dashboardAutomationSlotKey(text(loop.slot_key, text(envelope.slot)))
   if (!id || !slotKey) return null
 
-  if (!owns(loop, 'monitor')) {
+  /* A GATED prompt loop is a goal loop with a watch, never a bounded monitor:
+     the `autonudge_state` frame withholds its `monitor` record and carries the
+     two scalars the Done wording needs, but the REST row (`GET /api/autonudge`,
+     the cold seed and the popover's cold read) ships the nested record and no
+     scalars. Read by `monitor` alone, that row was a structured monitor the
+     seed then dropped, so a finished goal reloaded as no goal at all. */
+  const gatedRecord = loop.gate === true ? object(loop.monitor) : null
+  if (!owns(loop, 'monitor') || loop.gate === true) {
     return {
       kind: 'legacy_goal_loop',
       id,
@@ -365,6 +379,8 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       nextDueAt: finite(loop.next_due_ts),
       maxRuntimeSecs: count(loop.max_runtime_secs),
       stoppedReason: text(loop.stopped_reason),
+      monitorOutcome: text(loop.monitor_outcome, text(gatedRecord?.outcome)),
+      monitorKind: text(loop.monitor_kind, text(gatedRecord?.kind)),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),

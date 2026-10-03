@@ -8,6 +8,7 @@
  */
 import { i18nT } from '../i18n/t'
 import { fmtDuration, fmtTimeNumeric } from '../i18n/format'
+import monitorContract from '../monitoring/contract.json'
 
 export interface AutoNudgeLoop {
   id: string
@@ -24,10 +25,22 @@ export interface AutoNudgeLoop {
   next_due_ts: number
   /** Why the loop last went inactive: '' while active or never stopped,
    *  otherwise one of the service's terminal codes (`cycle_cap`,
-   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Carried
+   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`, and the
+   *  two FINISHED codes in `FINISHED_STOP_REASONS`). Carried
    *  by the REST list and by the `autonudge_state` frame alike. `undefined`
    *  means the source did not carry it -- "not known here". */
   stopped_reason?: string
+  /** The settled outcome of the loop's own watch: `success` when the watched
+   *  pull request merged, `blocked` when it was closed without merging, '' while
+   *  none has settled. Carried by the `autonudge_state` frame for every loop; it
+   *  is the one scalar the Done wording needs, and the frame withholds the
+   *  monitor record that holds it. `undefined` means the source did not carry it. */
+  monitor_outcome?: string
+  /** The kind of subject the loop's own watch observed: `gh-pr` for a pull
+   *  request, `work-ledger` for a conductor's work ledger, '' with no watch.
+   *  Carried by the frame beside `monitor_outcome`; the Done wording is chosen
+   *  by the pair. `undefined` means the source did not carry it. */
+  monitor_kind?: string
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
@@ -68,6 +81,24 @@ export interface AutoNudgeListResponse {
  *  websocket hook invalidates it on every `autonudge_state` frame and on every
  *  (re)connect, so any reader of this key is live without its own listener. */
 export const AUTONUDGE_LOOPS_QUERY_KEY = ['autonudge-loops'] as const
+
+/** The service's two FINISHED stop codes (`FINISHED_LOOP_REASONS` on the
+ *  backend): the agent created the loop's stop file, or the watched pull
+ *  request merged or closed. A finished loop is Done, not paused: the service
+ *  refuses to revive it, so no surface may offer to. */
+export const FINISHED_STOP_REASONS = new Set(['stop_sentinel', 'monitor_terminal'])
+
+/** Whether this inactive loop is finished (Done) rather than paused. An active
+ *  loop is never finished, whatever its reason field still says. */
+export function loopFinished(loop: Pick<AutoNudgeLoop, 'active' | 'stopped_reason'> | null | undefined): boolean {
+  return !!loop && !loop.active && FINISHED_STOP_REASONS.has(loop.stopped_reason ?? '')
+}
+
+/** The watch kinds whose subject is a pull or merge request: the gated prompt
+ *  loop's own `gh-pr`, plus the structured provider kinds. A finished watch of
+ *  any other kind (a conductor's work ledger) is worded as a subject, not as a
+ *  pull request, because its finish is neither a merge nor a close. */
+export const PULL_REQUEST_WATCH_KINDS = new Set<string>(['gh-pr', ...monitorContract.pullRequestMonitorKinds])
 
 /** Cycle readout: "3/24" when a finite cap is armed, and a bare "3" when
  *  max_cycles is 0, which means infinite -- a loop with no backstop has no

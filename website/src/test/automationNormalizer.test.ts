@@ -45,8 +45,48 @@ describe('automation transport normalizer', () => {
       kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1',
       message: 'Keep going', idleSecs: 60, maxCycles: 0, cycleCount: 7,
       active: true, lastFireAt: 123, nextDueAt: 0, maxRuntimeSecs: 0,
-      stoppedReason: '',
+      stoppedReason: '', monitorOutcome: '', monitorKind: '',
     })
+  })
+
+  it('carries the settled watch outcome of a finished loop, so Done can read merged or closed', () => {
+    const finished = normalizeAutomationRecord({
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: false, last_fire_ts: 123,
+      stopped_reason: 'monitor_terminal', monitor_outcome: 'blocked', monitor_kind: 'gh-pr',
+    })
+    expect(finished).toMatchObject({ kind: 'legacy_goal_loop', stoppedReason: 'monitor_terminal', monitorOutcome: 'blocked', monitorKind: 'gh-pr' })
+  })
+
+  it('reads a gated REST row as the goal loop it is, with the watch outcome and kind off its nested record', () => {
+    // The cold read: GET /api/autonudge/slot ships a gated loop WITH its redacted
+    // monitor record and without the frame's two scalars. Read as a structured
+    // monitor it is dropped (the seed keeps only goal loops, /api/monitors/slot
+    // answers null for a gated loop), so a finished goal reloaded as no goal.
+    const rest = normalizeAutomationRecord({
+      id: 'loop-7', slot_key: 'chat-7-700', message: 'watch the pull request', idle_secs: 300,
+      max_cycles: 24, cycle_count: 3, active: false, last_fire_ts: 1, next_due_ts: 0,
+      max_runtime_secs: 14_400, stopped_reason: 'monitor_terminal', gate: true,
+      monitor: { kind: 'gh-pr', outcome: 'success', target: '[redacted]', objective: 'review_ready', version: 1 },
+    })
+    expect(rest).toMatchObject({
+      kind: 'legacy_goal_loop', stoppedReason: 'monitor_terminal', monitorOutcome: 'success', monitorKind: 'gh-pr',
+    })
+    // The frame's scalars win when both are present; a running gated loop has no outcome yet.
+    const frame = normalizeAutomationRecord({
+      loop: { id: 'loop-7', slot_key: 'chat-7-700', message: 'watch', idle_secs: 300, max_cycles: 24, cycle_count: 1,
+        active: true, gate: true, stopped_reason: '', monitor_outcome: '', monitor_kind: 'gh-pr' },
+    })
+    expect(frame).toMatchObject({ kind: 'legacy_goal_loop', active: true, monitorOutcome: '', monitorKind: 'gh-pr' })
+    // An ungated loop carrying a monitor record is still the structured monitor it always was.
+    const structured = normalizeAutomationRecord({
+      id: 'mon-1', slot_key: 'chat-8-800', message: '', active: true, gate: false,
+      monitor: { kind: 'github_pull_request', objective: 'review_ready', target: 'https://github.com/o/r/pull/1',
+        version: 1, cadence_secs: 300, budgets: { max_runtime_secs: 3600, max_agent_turns: 10, max_tokens: 100000 },
+        wake_count: 0, agent_turns: 0, input_tokens: 0, output_tokens: 0, probe_count: 0, provider_error_count: 0,
+        consecutive_provider_errors: 0 },
+    })
+    expect(structured?.kind).toBe('structured_monitor')
   })
 
   it('carries the REST sentinel path through, and leaves it absent when the frame withholds it (#10458)', () => {

@@ -130,6 +130,10 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     // The goal editor words a paused loop by this field; dropping it rendered
     // every inactive loop, a fresh pause included, as a bare stop.
     stopped_reason: loop.stoppedReason,
+    // Done is worded by the pair: a finished pull-request watch reads merged or
+    // closed without merging, any other finished watch reads as a subject.
+    monitor_outcome: loop.monitorOutcome,
+    monitor_kind: loop.monitorKind,
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
     ...(loop.judge !== undefined ? { judge: loop.judge } : {}),
     ...(loop.judge_last_verdict !== undefined

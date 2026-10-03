@@ -77,7 +77,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
-from kiro_crew.autonudge import get_instance
+from kiro_crew.autonudge import FINISHED_LOOP_REASONS, get_instance, reason_in
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
@@ -6038,9 +6038,20 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         )
     elif _rest in ("", "status"):
         _loop = _goal_svc.get_by_slot(slot.key)
-        if _loop is not None:
+        if _loop is not None and getattr(_loop, "active", True):
             _cap = _loop.max_cycles or "∞"
             body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
+        elif _loop is not None:
+            # The slot holds a record the service KEPT after it stopped -- a goal
+            # its stop file finished, a paused one, a bound reached -- which is
+            # not an active goal and must not read as one. The reason is the
+            # service's own code; ``/goal clear`` removes the record either way.
+            _why = getattr(_loop, "stopped_reason", "") or "stopped"
+            _ended = "finished" if reason_in(_why, FINISHED_LOOP_REASONS) else "stopped"
+            body = (
+                f"🎯 Goal {_ended} ({_why}); it is not running. "
+                "Use `/goal clear` to clear it, or `/goal <objective>` to set a new one."
+            )
         else:
             body = (
                 "No active goal. Set one with `/goal <objective>` "
