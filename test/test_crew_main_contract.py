@@ -793,7 +793,9 @@ async def test_the_model_is_told_which_tools_the_log_recorded(_real_log, monkeyp
     # The note once said no stop call was made while the log held one: transcript rows
     # the model reads carry no tool calls. The tool names must come from the fold.
     emit = _real_log
-    emit.on_session_opened("unit-t", slot="root", agent="default", memory="global")
+    emit.on_session_opened(
+        "unit-t", slot="root", agent="default", memory="global", previous_undecided=False
+    )
     emit.on_turn_started("unit-t", 1)
     emit.on_tool_called("unit-t", 1, name="monitor_start", call_id="c1")
     emit.on_tool_completed("unit-t", 1, name="monitor_start", call_id="c1", status="ok")
@@ -810,14 +812,172 @@ async def test_the_model_is_told_which_tools_the_log_recorded(_real_log, monkeyp
     context = json.loads(prompts[0][len(_ROOT_PROMPT) :])
     assert set(context["tools_called"]) == {"monitor_start", "autonudge_stop"}
     assert context["tools_omitted"] == 0
+    assert context["tools_whole"] is True
     assert not any("autonudge_stop" in row["text"] for row in context["recent_messages"])
-    assert 'Never say a tool was or was not called unless "tools_called"' in _ROOT_PROMPT
+    assert 'Never say a tool was or was not called unless\n"tools_called" says so' in _ROOT_PROMPT
+    assert 'unless\n"tools_whole" is true' in _ROOT_PROMPT
+
+
+def test_a_tool_called_in_an_earlier_unit_of_the_slot_is_listed(_real_log) -> None:
+    # A slot that resumed into a successor unit: the stop call is in the OLDER unit,
+    # while recent_messages can still show that unit's turns. Folding the newest unit
+    # alone gives a complete-looking list with no stop call in it.
+    emit = _real_log
+    emit.on_session_opened(
+        "unit-old", slot="root", agent="default", memory="global", previous_undecided=False
+    )
+    emit.on_turn_started("unit-old", 1)
+    emit.on_tool_called("unit-old", 1, name="autonudge_stop", call_id="c1")
+    emit.on_tool_completed("unit-old", 1, name="autonudge_stop", call_id="c1", status="ok")
+    emit.on_turn_completed("unit-old", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    emit.on_session_opened(
+        "unit-new", slot="root", agent="default", memory="global", previous_sid="unit-old"
+    )
+    emit.on_turn_started("unit-new", 1)
+    emit.on_tool_called("unit-new", 1, name="monitor_start", call_id="c2")
+    emit.on_tool_completed("unit-new", 1, name="monitor_start", call_id="c2", status="ok")
+    emit.on_turn_completed("unit-new", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    reads = card_lifecycle._read_card_folds("root")
+    # The card's own numbers still come from the unit the slot writes now.
+    assert reads["status"]["previous"] == "unit-old"
+    record = card_lifecycle._tool_record(card_lifecycle._read_card_tools("root", reads))
+    assert record["tools_called"] == ["monitor_start", "autonudge_stop"]
+    assert record["tools_omitted"] == 0
+    assert record["tools_whole"] is True
+
+
+@pytest.mark.parametrize(
+    ("ended", "incomplete"),
+    [
+        ("missing", False),  # retention took the cited unit
+        ("foreign", False),  # the cited unit is another slot's
+        ("cycle", False),
+        ("cap", False),
+        ("unknown", False),  # the newest unit answered no record: fold it alone
+        ("first", True),  # the scan that walked it did not see the whole store
+    ],
+)
+def test_a_chain_cut_short_never_licenses_a_never_called_claim(
+    _real_log, monkeypatch, ended: str, incomplete: bool
+) -> None:
+    from kiro_crew.crew_log import read
+    from kiro_crew.crew_log.session_tree import ChainReading, SlotChain
+
+    emit = _real_log
+    emit.on_session_opened("unit-new", slot="root", agent="default", memory="global")
+    emit.on_turn_started("unit-new", 1)
+    emit.on_tool_called("unit-new", 1, name="monitor_start", call_id="c1")
+    emit.on_turn_completed("unit-new", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    sids = () if ended == "unknown" else ("unit-new",)
+    chain = ChainReading(SlotChain("root", sids, ended), incomplete=incomplete)
+    monkeypatch.setattr(read, "slot_chain", lambda unit: chain)
+    tools = card_lifecycle._read_card_tools("root", {"unit": "unit-new"})
+    assert tools["units_whole"] is False
+    record = card_lifecycle._tool_record(tools)
+    assert record == {"tools_called": ["monitor_start"], "tools_omitted": 0, "tools_whole": False}
+
+
+def test_a_slot_with_no_unit_has_a_whole_empty_list_and_an_unranked_one_has_none(
+    monkeypatch,
+) -> None:
+    from kiro_crew.crew_log import projection as projections
+    from kiro_crew.crew_log import read
+    from kiro_crew.crew_log.session_tree import ChainReading, SlotChain
+
+    no_unit = card_lifecycle._read_card_tools("root", {"no_unit": True})
+    assert card_lifecycle._tool_record(no_unit)["tools_whole"] is True
+    unranked = card_lifecycle._read_card_tools("root", {})
+    assert unranked == FOLD_UNREADABLE
+
+    chain = ChainReading(SlotChain("root", ("new", "old"), "first"), incomplete=False)
+    monkeypatch.setattr(read, "slot_chain", lambda unit: chain)
+
+    def broken(name, units, *, slot):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(projections, "fold_slot_warm", broken)
+    assert card_lifecycle._read_card_tools("root", {"unit": "new"}) == FOLD_UNREADABLE
+    monkeypatch.setattr(projections, "fold_slot_warm", lambda name, units, *, slot: None)
+    monkeypatch.setattr(
+        projections, "projection_of", lambda checkpoint: SimpleNamespace(value=None)
+    )
+    assert card_lifecycle._read_card_tools("root", {"unit": "new"}) == FOLD_UNREADABLE
+
+
+def test_a_unit_off_the_chain_is_not_listed_as_this_conversations(_real_log) -> None:
+    # Every unit whose header names the slot is not the conversation the card shows:
+    # an orphan unit (no edge to or from the chain) is another conversation, and its
+    # stop call must not be reported as this one's. The chain decides the units.
+    emit = _real_log
+    emit.on_session_opened(
+        "unit-orphan", slot="root", agent="default", memory="global", previous_undecided=False
+    )
+    emit.on_turn_started("unit-orphan", 1)
+    emit.on_tool_called("unit-orphan", 1, name="autonudge_stop", call_id="c0")
+    emit.on_turn_completed("unit-orphan", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    emit.on_session_opened(
+        "unit-a", slot="root", agent="default", memory="global", previous_undecided=False
+    )
+    assert emit.flush(10.0)
+    emit.on_session_opened(
+        "unit-b", slot="root", agent="default", memory="global", previous_sid="unit-a"
+    )
+    emit.on_turn_started("unit-b", 1)
+    emit.on_tool_called("unit-b", 1, name="monitor_start", call_id="c1")
+    emit.on_turn_completed("unit-b", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    reads = card_lifecycle._read_card_folds("root")
+    assert reads["unit"] == "unit-b"
+    record = card_lifecycle._tool_record(card_lifecycle._read_card_tools("root", reads))
+    assert record["tools_called"] == ["monitor_start"]
+    assert record["tools_whole"] is True
+
+
+@pytest.mark.parametrize("flags", [{"previous_undecided": True}, {}])
+def test_an_oldest_unit_that_does_not_state_it_is_first_is_a_gap(_real_log, flags) -> None:
+    # A cold-started successor whose writer could not name its predecessor, or a log
+    # from before the edge keys, cites nothing -- but that is not a statement that the
+    # conversation began there, so the list may miss the unit before it.
+    emit = _real_log
+    emit.on_session_opened("unit-g", slot="root", agent="default", memory="global", **flags)
+    emit.on_turn_started("unit-g", 1)
+    emit.on_tool_called("unit-g", 1, name="monitor_start", call_id="c1")
+    emit.on_turn_completed("unit-g", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    reads = card_lifecycle._read_card_folds("root")
+    assert reads["unit"] == "unit-g"
+    record = card_lifecycle._tool_record(card_lifecycle._read_card_tools("root", reads))
+    assert record["tools_called"] == ["monitor_start"]
+    assert record["tools_whole"] is False
+
+
+def test_the_refresh_path_never_reads_the_tool_chain(_real_log, monkeypatch) -> None:
+    # Numbers are re-bound on every log growth with no model call; tool names are
+    # for the prompt only, so the chain walk must stay off that path.
+    from kiro_crew.crew_log import read
+
+    emit = _real_log
+    emit.on_session_opened("unit-r", slot="root", agent="default", memory="global")
+    assert emit.flush(10.0)
+
+    def forbidden(unit):
+        raise AssertionError("the card fold read walked the slot chain")
+
+    monkeypatch.setattr(read, "slot_chain", forbidden)
+    reads = card_lifecycle._read_card_folds("root")
+    assert reads["unit"] == "unit-r"
+    assert "tools" not in reads
 
 
 def test_an_unreadable_or_cut_tool_list_never_reads_as_the_whole_one(monkeypatch) -> None:
     assert card_lifecycle._tool_record(FOLD_UNREADABLE) == {
         "tools_called": None,
         "tools_omitted": 0,
+        "tools_whole": False,
     }
     rows = {f"tool_{i:03d}": {"calls": 1, "last_time": i} for i in range(300)}
     record = card_lifecycle._tool_record({"by_name": rows, "names_omitted": 4})
@@ -826,9 +986,12 @@ def test_an_unreadable_or_cut_tool_list_never_reads_as_the_whole_one(monkeypatch
     shown = len(record["tools_called"])
     assert 0 < shown < 300
     assert record["tools_omitted"] == 300 - shown + 4
+    assert record["tools_whole"] is False
     # A name the fold holds with no call (a completion with no call) was not called.
     only = card_lifecycle._tool_record({"by_name": {"x": {"calls": 0, "completed": 1}}})
-    assert only == {"tools_called": [], "tools_omitted": 0}
+    assert only == {"tools_called": [], "tools_omitted": 0, "tools_whole": False}
+    whole = card_lifecycle._tool_record({"by_name": {}, "units_whole": True})
+    assert whole == {"tools_called": [], "tools_omitted": 0, "tools_whole": True}
 
 
 @pytest.mark.asyncio

@@ -651,6 +651,13 @@ class SlotChain:
     sids: tuple[str, ...]
     ended: str
     cited: str | None = None
+    #: The oldest log's own ``previous_edge``, set for :data:`CHAIN_END_FIRST` and
+    #: ``None`` otherwise. :data:`CHAIN_END_FIRST` means only that the oldest log
+    #: cites no predecessor; whether it STATES it starts the slot's chain
+    #: (:data:`EDGE_NONE`) or left a gap (:data:`EDGE_UNDECIDED`, :data:`EDGE_LEGACY`,
+    #: :data:`EDGE_UNREAD`) is this field, and a reader claiming the slot's whole life
+    #: must require :data:`EDGE_NONE`.
+    root_edge: str | None = None
 
 
 def fold_slot_chain(records: Iterable[OpenedRecord], head_sid: str) -> SlotChain:
@@ -700,7 +707,9 @@ def fold_slot_chain(records: Iterable[OpenedRecord], head_sid: str) -> SlotChain
     while True:
         cited = cursor.previous_sid
         if cited is None:
-            return SlotChain(slot=slot, sids=tuple(sids), ended=CHAIN_END_FIRST)
+            return SlotChain(
+                slot=slot, sids=tuple(sids), ended=CHAIN_END_FIRST, root_edge=cursor.previous_edge
+            )
         if cited in seen:
             return SlotChain(slot, tuple(sids), CHAIN_END_CYCLE, cited)
         if len(sids) >= SLOT_CHAIN_CAP:

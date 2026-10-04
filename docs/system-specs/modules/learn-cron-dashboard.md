@@ -2142,12 +2142,22 @@ evidence window is the newest 32 user/assistant/error/tool-result/inject rows,
 filtered before the slice so tool rows cannot crowd them out; an injected automation
 envelope, and an `inject` breadcrumb (a cron result, a `/note`), reach the model as
 role `automation`, never as the user. Those rows carry no tool calls, so the
-model also gets `tools_called`: the tool names the session's `tools` fold recorded
-a call to, newest first and capped at a quarter of the evidence budget, with
-`tools_omitted` counting every name left out (`tools_called` is `null` when the
-fold cannot be read). The prompt forbids saying a tool was or was not called
-unless that list says so, and forbids any "never called" claim from a partial
-list, because a note once said no stop call was made while the log held one.
+model also gets `tools_called`: the tool names the `tools` fold recorded a call to
+in every crew log unit of the conversation the card shows: the slot's succession
+chain (`crew_log.read.slot_chain`, the session tree's own `previous`-edge walk),
+folded oldest first through the warm slot-keyed fold (`fold_slot_warm`), on the
+prompt path only, never on the number refresh. The chain rather than every unit
+whose header names the slot, because a unit off the chain is another conversation
+and its calls are not this one's. Names go newest first, capped at a quarter of
+the evidence budget, with `tools_omitted` counting every name left out
+(`tools_called` is `null` when the fold cannot be read). `tools_whole` is true
+only when nothing was cut and that same chain ended at a unit with no predecessor
+in a scan that saw the whole store (or the slot has no unit at all); any other
+chain end leaves it false. The prompt forbids saying
+a tool was or was not called unless that list says so, and forbids any "never
+called" claim unless `tools_whole` is true, because a note once said no stop call
+was made while the log held one, and a resumed slot's stop call can sit in the unit
+before the one it writes now.
 Building the
 evidence and checking the returned card run in a worker thread, not on the
 gateway loop. The projection that scan reads ends a comment with the browser's

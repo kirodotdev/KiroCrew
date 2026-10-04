@@ -62,13 +62,15 @@ _TOOL_NAMES_CHARS = _EVIDENCE_CHARS // 4
 
 
 class _CardReads(CrewMainReads, total=False):
-    """The fold reads one card generation takes: the card's four, and ``tools``.
+    """The fold reads one card generation takes: the card's four, and the unit answer.
 
-    ``tools`` feeds no card field. It is what the model is told about tool calls,
-    because the transcript rows it sees carry none.
+    ``unit`` is the crew log unit the slot writes now, ``""`` when there is none, and
+    ``no_unit`` says the store holds no unit of the slot at all. They feed no card field:
+    :func:`_read_card_tools` reads the slot's tool calls from them.
     """
 
-    tools: Any
+    unit: str
+    no_unit: bool
 
 
 _ROOT_PROMPT = f"""Create this session's concise status card.
@@ -94,11 +96,11 @@ container, once per fact; the host binds the value. A layout that leaves any fac
 is REFUSED. Label facts in words. Do not restate, round, total or compare them yourself.
 
 recent_messages hold no tool calls, and they are only the newest part of the session.
-"tools_called" lists the tools the session's crew log recorded a call to, newest first.
-Never say a tool was or was not called unless "tools_called" says so. When it is null,
-or "tools_omitted" is above zero, it is not the whole list: make no claim that a tool
-was never called. Never say something did not happen just because recent_messages do
-not show it.
+"tools_called" lists the tools the crew log recorded a call to across every log this
+session ran under, newest first. Never say a tool was or was not called unless
+"tools_called" says so. Make no claim that a tool was never called unless
+"tools_whole" is true: when it is false the list may be cut short or miss an earlier
+log. Never say something did not happen just because recent_messages do not show it.
 
 NO DIGITS anywhere you write: not in data, and not in any text the HTML shows. A card
 containing a digit is REFUSED whole. Write numbers in no form at all.
@@ -446,7 +448,7 @@ def _card_language(rows: list[dict], ui_language: str) -> dict[str, str] | None:
 
 
 def _read_card_folds(slot_key: str) -> _CardReads:
-    """The four fold renders a root card's numbers come from, and ``tools``. Blocking.
+    """The four fold renders a root card's numbers come from. Blocking.
 
     Each fold is read in its OWN try, and a failure answers
     :data:`~kiro_crew.crew_main_contract.FOLD_UNREADABLE` for that fold alone, so one
@@ -462,7 +464,8 @@ def _read_card_folds(slot_key: str) -> _CardReads:
 
     Those folds come in one pass over one file, because that is what
     ``fold_session`` is. ``work`` is slot-keyed and eager, so this is usually a memo
-    lookup rather than a walk.
+    lookup rather than a walk. ``unit`` and ``no_unit`` carry that answer to
+    :func:`_read_card_tools`, which only the prompt path calls.
     """
     from kiro_crew.crew_log import projection as projections
     from kiro_crew.crew_log.emit import slot_previous_store
@@ -473,15 +476,17 @@ def _read_card_folds(slot_key: str) -> _CardReads:
         "usage": FOLD_UNREADABLE,
         "approvals": FOLD_UNREADABLE,
         "work": FOLD_UNREADABLE,
-        "tools": FOLD_UNREADABLE,
+        "unit": "",
+        "no_unit": False,
     }
-    session_folds = ("status", "usage", "approvals", "tools")
+    session_folds = ("status", "usage", "approvals")
     try:
         unit, decided, complete = slot_previous_store(slot_key)
     except Exception:
         logger.debug("root card: no unit answer for %s", slot_key, exc_info=True)
         unit, decided, complete = "", False, False
     if unit:
+        reads["unit"] = unit
         try:
             bundle = projections.fold_session(unit, session_folds)
         except Exception:
@@ -493,6 +498,7 @@ def _read_card_folds(slot_key: str) -> _CardReads:
                 except Exception:
                     logger.debug("root card: fold %s unreadable", name, exc_info=True)
     elif decided and complete:
+        reads["no_unit"] = True
         for name in session_folds:
             reads[name] = {}  # type: ignore[literal-required]
     try:
@@ -504,6 +510,61 @@ def _read_card_folds(slot_key: str) -> _CardReads:
     return reads
 
 
+def _read_card_tools(slot_key: str, reads: _CardReads) -> Any:
+    """The ``tools`` render over the crew log units this conversation ran under. Blocking.
+
+    A slot that resumed into a successor unit keeps the earlier unit's turns in its
+    transcript, so a list from the newest unit alone looks whole while the call the
+    model is asked about sits in the unit before it. So the units are the slot's
+    succession chain (:func:`~kiro_crew.crew_log.read.slot_chain`, the one walk over
+    ``previous`` edges), and the ``tools`` fold runs over them oldest first through
+    :func:`~kiro_crew.crew_log.projection.fold_slot_warm`, kept warm so a later read
+    folds only the newest unit's new entries.
+
+    The chain, not every unit whose header names the slot: a slot that was reset opens
+    a unit with no ``previous`` edge, and the units before it belong to an earlier
+    conversation. Listing their tool calls would let the card say a stop call was made
+    in a conversation that never made one. One unit list then answers both the names
+    and whether they are whole.
+
+    ``units_whole`` is added to the render: true only when the chain reached a unit with
+    no predecessor (:data:`~kiro_crew.crew_log.session_tree.CHAIN_END_FIRST`) whose own
+    announce STATES it starts the slot's chain
+    (:data:`~kiro_crew.crew_log.session_tree.EDGE_NONE`), in a scan that saw the whole
+    store, or when the slot has no unit at all. A unit that cites nothing because its
+    writer could not name the predecessor, or that predates the edge keys, is a gap. Any other end -- a
+    unit retention took, another slot's unit, a loop, the cap -- leaves it false, and a
+    list that is not whole must never license a "never called" claim. A fold that
+    cannot be read, or units the store cannot rank, are ``FOLD_UNREADABLE``.
+
+    Called on the prompt path only: the refresh path binds numbers and has no use for
+    tool names.
+    """
+    from kiro_crew.crew_log import projection as projections
+    from kiro_crew.crew_log.read import slot_chain
+    from kiro_crew.crew_log.session_tree import CHAIN_END_FIRST, EDGE_NONE
+
+    unit = reads.get("unit", "")
+    if not unit:
+        return {"by_name": {}, "units_whole": True} if reads.get("no_unit") else FOLD_UNREADABLE
+    reading = slot_chain(unit)
+    units = tuple(reversed(reading.chain.sids)) or (unit,)
+    try:
+        checkpoint = projections.fold_slot_warm("tools", units, slot=slot_key)
+        render = projections.projection_of(checkpoint).value
+    except Exception:
+        logger.debug("root card: tools fold unreadable for %s", slot_key, exc_info=True)
+        return FOLD_UNREADABLE
+    if not isinstance(render, dict):
+        return FOLD_UNREADABLE
+    whole = (
+        reading.chain.ended == CHAIN_END_FIRST
+        and reading.chain.root_edge == EDGE_NONE
+        and not reading.incomplete
+    )
+    return {**render, "units_whole": whole}
+
+
 def _tool_record(tools: Any) -> dict[str, Any]:
     """What the model is told about tool calls, from the ``tools`` fold render.
 
@@ -512,9 +573,13 @@ def _tool_record(tools: Any) -> dict[str, Any]:
     go newest first and stop at :data:`_TOOL_NAMES_CHARS`; ``tools_omitted`` counts
     every name left out, the fold's own omitted names included, so a short list never
     reads as the whole one. An unreadable fold is ``None``: nothing is known.
+
+    ``tools_whole`` is true only when nothing was cut AND the render covers every unit
+    of the slot (:func:`_read_card_tools`'s ``units_whole``). It is the one field
+    the prompt lets a "never called" claim rest on.
     """
     if not isinstance(tools, dict):
-        return {"tools_called": None, "tools_omitted": 0}
+        return {"tools_called": None, "tools_omitted": 0, "tools_whole": False}
     by_name = tools.get("by_name")
     rows = by_name if isinstance(by_name, dict) else {}
     called = [name for name, row in rows.items() if isinstance(row, dict) and row.get("calls")]
@@ -531,7 +596,12 @@ def _tool_record(tools: Any) -> dict[str, Any]:
         names.append(name)
     omitted = tools.get("names_omitted")
     extra = omitted if isinstance(omitted, int) and omitted > 0 else 0
-    return {"tools_called": names, "tools_omitted": len(called) - len(names) + extra}
+    left_out = len(called) - len(names) + extra
+    return {
+        "tools_called": names,
+        "tools_omitted": left_out,
+        "tools_whole": left_out == 0 and tools.get("units_whole") is True,
+    }
 
 
 def _bound_workers(reads: CrewMainReads) -> frozenset[str]:
@@ -1099,7 +1169,7 @@ class CardLifecycle:
         evidence: dict[str, Any] = {
             "event": entry.reason,
             "facts": facts,
-            **_tool_record(reads.get("tools", FOLD_UNREADABLE)),
+            **_tool_record(await asyncio.to_thread(_read_card_tools, entry.key, reads)),
             # The model gets back its own layout and its own three sentences, never the
             # folded values bound into that layout: those are under "facts", read-only.
             "previous": (

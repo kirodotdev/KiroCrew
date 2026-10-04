@@ -353,6 +353,16 @@ def dispatch_view(preferred: Iterable[str] = ()) -> DispatchView:
     return DispatchView(slot_of_unit=slots, nodes=reading.nodes, incomplete=reading.incomplete)
 
 
+def slot_chain(head_sid: str) -> session_tree.ChainReading:
+    """*head_sid*'s slot succession chain, newest first, from the shared scanner.
+
+    Through the same :data:`_TREE` the dispatch view scans with, so its per-unit head
+    cache is paid once for both. BLOCKING; never raises
+    (:meth:`~kiro_crew.crew_log.session_tree.SessionTree.chain`).
+    """
+    return _TREE.chain(head_sid)
+
+
 def read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
     """One range of entries with their refs resolved. Blocking; runs off the loop."""
     handle = projections.open_session_log(session_id)
