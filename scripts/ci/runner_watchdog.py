@@ -373,6 +373,16 @@ SUPERSEDED_WITHOUT_SUCCESSOR = -2
 SUPERSEDED_SUCCESSOR_UNIDENTIFIED = -3
 # The watchdog's own workflow, never watched: its comment names the fleet label.
 WATCHDOG_WORKFLOW = "ci-runner-watchdog.yml"
+
+# The event that KICKS a tick between scheduled ones: `fast-gate.yml` completing
+# (`workflow_run`, declared in `ci-runner-watchdog.yml`). GitHub's `schedule` is
+# best-effort and was measured at ~100 minutes between `*/10` ticks on a quiet
+# Sunday, so an orphan that aged past the threshold just after one tick waited
+# ninety minutes for the next while `main` sat red behind it. A completed Fast
+# Gate is the cheapest heartbeat the repository already emits -- one per head,
+# PR and `main` alike -- and a kicked tick is identical to a scheduled one except
+# for the debounce in `kick_is_redundant`, which keeps the schedule's quota shape.
+KICK_EVENT = "workflow_run"
 # A rate-limited call whose window resets within this many seconds, and inside
 # the tick's remaining budget, is waited out and retried once; a further-off
 # reset aborts the gather instead of burning budget on a sleep.
@@ -3835,6 +3845,113 @@ def run_watchdog(
     return verdicts, outcomes
 
 
+def kick_is_redundant(
+    api: Api,
+    repo: str,
+    *,
+    now: datetime,
+    self_run_id: int,
+    interval: timedelta,
+    log: Callable[[str], None] = print,
+) -> str | None:
+    """Whether a KICKED tick should stand down because a tick already covers this moment.
+
+    One read of this workflow's own recent runs. A tick other than this one that
+    STARTED (`in_progress` or `completed`, any conclusion) within ``interval`` of
+    now means the schedule, or an earlier kick, has classified the fleet within the
+    cadence the schedule promises; this kick adds nothing but its full read cost.
+    Only started ticks count: a `queued`/`pending`/`waiting` sibling is the kick
+    that arrived behind this one and is held by the concurrency group -- counting
+    it would make the two stand down for each other and nobody run.
+
+    Returns the reason to skip, or None to run the full tick. A failed read runs
+    the tick (None): the schedule runs it unconditionally, and starving on a
+    transient error would re-create the gap the kick exists to fill. The caller
+    decides what a rate limit here means for the tick.
+    """
+    page = api.get(f"{_runs_path(repo, WATCHDOG_WORKFLOW)}?per_page=10")
+    newest: datetime | None = None
+    for run in page.get("workflow_runs", []) if isinstance(page, dict) else []:
+        try:
+            if int(run.get("id", 0)) == self_run_id:
+                continue
+            status = run.get("status")
+            if status not in ("in_progress", "completed"):
+                continue
+            # A `cancelled` row never ran a tick: it is a kick the concurrency
+            # group evicted while queued, or a kick that stood down and cancelled
+            # itself (`stand_down`). Counting either as a tick would let a chain of
+            # kicks less than one interval apart stand down for each other, each
+            # seeing the one before, while no full tick ran since the last cron.
+            if status == "completed" and run.get("conclusion") in ("cancelled", "skipped"):
+                continue
+            started = parse_timestamp(run.get("run_started_at") or run["created_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if newest is None or started > newest:
+            newest = started
+    if newest is None:
+        return None
+    age = now - newest
+    if timedelta(0) <= age < interval:
+        return (
+            f"a tick started {_fmt_delta(age)} ago, inside the {_fmt_delta(interval)} "
+            f"schedule interval; this kick adds nothing and stands down"
+        )
+    log(f"the newest other tick started {_fmt_delta(age)} ago; the schedule is late, running")
+    return None
+
+
+# How long a stood-down kick waits for its own cancel to land before giving up
+# and exiting on its own. The cancel is what marks the row `cancelled` so later
+# kicks do not count it as a tick; a row that completes `success` first is
+# indistinguishable from a full tick in the listing.
+STAND_DOWN_CANCEL_WAIT_SECONDS = 60.0
+
+
+def stand_down(
+    api: Api,
+    repo: str,
+    *,
+    self_run_id: int,
+    reason: str,
+    summary_path: str = "",
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    log: Callable[[str], None] = print,
+) -> None:
+    """Record why a kicked tick is not running, then cancel this run so the row reads `cancelled`.
+
+    The listing `kick_is_redundant` reads cannot tell a kick that stood down from a
+    kick that ran: both are `completed`. The one field this run can set on its own
+    row from inside is its conclusion, by cancelling itself (one POST). The runner
+    then stops this step; the wait below is for that stop, bounded so a cancel the
+    API accepted but never delivered cannot hang the job. A cancel that is refused
+    is logged and the run completes `success` -- it then counts as one tick for one
+    interval, which is the degraded case, not a wrong heal.
+    """
+    log(f"kicked tick: {reason}")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as handle:
+            handle.write(f"## CI runner watchdog\n\nKicked tick stood down: {reason}.\n")
+    if self_run_id <= 0:
+        log(
+            "kicked tick: no GITHUB_RUN_ID, so this row cannot be cancelled and will count as a tick"
+        )
+        return
+    try:
+        api.post(f"repos/{repo}/actions/runs/{self_run_id}/cancel")
+    except ApiError as exc:
+        log(
+            f"kicked tick: self-cancel refused ({exc}); this row will count as a tick for one interval"
+        )
+        return
+    deadline = clock() + STAND_DOWN_CANCEL_WAIT_SECONDS
+    while clock() < deadline:
+        sleep(5.0)
+    log("kicked tick: the self-cancel was accepted but has not stopped this step; exiting")
+
+
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
@@ -3863,6 +3980,33 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     api = GitHubApi(token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     policy = Policy(repo=args.repo, now=datetime.now(timezone.utc), dry_run=args.dry_run)
+    if os.environ.get("GITHUB_EVENT_NAME", "") == KICK_EVENT:
+        try:
+            self_run_id = int(os.environ.get("GITHUB_RUN_ID", "0") or 0)
+        except ValueError:
+            self_run_id = 0
+        try:
+            reason = kick_is_redundant(
+                api,
+                args.repo,
+                now=policy.now,
+                self_run_id=self_run_id,
+                interval=policy.schedule_interval,
+            )
+        except ApiError as exc:
+            # The one read that decides the debounce failed. A rate limit means the
+            # full tick would abort red on its first listing for nothing; anything
+            # else is the schedule's own posture, which runs unconditionally.
+            if exc.rate_limited:
+                reason = f"the debounce read was rate limited ({exc})"
+            else:
+                print(f"kicked tick: the debounce read failed ({exc}); running the full tick")
+                reason = None
+        if reason is not None:
+            stand_down(
+                api, args.repo, self_run_id=self_run_id, reason=reason, summary_path=args.summary
+            )
+            return 0
     verdicts, outcomes = run_watchdog(api, policy)
     summary = render_summary(verdicts, outcomes, policy)
     # Its own footprint against the quota whose exhaustion started all this. Logged

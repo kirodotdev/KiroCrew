@@ -5765,6 +5765,275 @@ def test_the_scheduled_tick_is_armed() -> None:
     assert "github.event_name == 'workflow_dispatch' && inputs.dry_run" in text
 
 
+class _TickListing:
+    """A GitHub fake that serves only the watchdog's own run listing."""
+
+    def __init__(
+        self,
+        runs: list[dict[str, Any]] | BaseException,
+        *,
+        refuse_post: BaseException | None = None,
+    ) -> None:
+        self.runs = runs
+        self.gets: list[str] = []
+        self.posts: list[str] = []
+        self.calls = 0
+        self.rate_limit_remaining: str | None = None
+        self._refuse_post = refuse_post
+
+    def get(self, path: str) -> Any:
+        self.gets.append(path)
+        self.calls += 1
+        assert path.startswith(f"repos/{REPO}/actions/workflows/{wd.WATCHDOG_WORKFLOW}/runs"), path
+        if isinstance(self.runs, BaseException):
+            raise self.runs
+        return {"workflow_runs": self.runs}
+
+    def post(self, path: str) -> None:
+        self.posts.append(path)
+        self.calls += 1
+        if self._refuse_post is not None:
+            raise self._refuse_post
+
+
+def _tick_row(
+    run_id: int,
+    minutes_ago: float,
+    status: str = "completed",
+    *,
+    conclusion: str | None = None,
+    now: datetime = NOW,
+) -> dict[str, Any]:
+    created = (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if conclusion is None and status == "completed":
+        conclusion = "success"
+    return {"id": run_id, "status": status, "conclusion": conclusion, "created_at": created}
+
+
+def _live_row(run_id: int, minutes_ago: float) -> dict[str, Any]:
+    """A row for the main() tests, whose Policy.now is the real clock."""
+    return _tick_row(run_id, minutes_ago, now=datetime.now(timezone.utc))
+
+
+_INTERVAL = timedelta(minutes=10)
+
+
+def _redundant(api: Any) -> str | None:
+    return wd.kick_is_redundant(
+        api, REPO, now=NOW, self_run_id=99, interval=_INTERVAL, log=lambda _m: None
+    )
+
+
+def test_a_kick_stands_down_when_another_tick_started_inside_the_schedule_interval() -> None:
+    """The kick exists to fill the schedule's GAPS, not to multiply its ticks.
+
+    On a day the schedule keeps its `*/10` cadence every Fast Gate completion
+    would otherwise buy a full tick -- four repo-wide indexes and up to fifty job
+    reads -- against the quota whose exhaustion started all this. A started tick
+    inside the interval means this moment is covered; the kick costs its one read.
+    """
+    api = _TickListing([_tick_row(1, 3), _tick_row(2, 40)])
+    reason = _redundant(api)
+    assert reason is not None and "3 min ago" in reason and "stands down" in reason
+    assert api.calls == 1
+
+
+def test_a_kick_runs_when_the_newest_other_tick_is_older_than_the_interval() -> None:
+    """The late-schedule shape: ticks an hour or more apart, an orphan ageing between them."""
+    assert _redundant(_TickListing([_tick_row(1, 11), _tick_row(2, 100)])) is None
+
+
+def test_the_kick_ignores_itself_and_ticks_that_have_not_started() -> None:
+    """Two kicks must not stand down for each other.
+
+    The concurrency group holds the later kick `queued` behind this one. Were a
+    not-yet-started sibling counted, this kick would see it (seconds old) and stand
+    down, then the sibling would see this one and stand down too: nobody runs. Only
+    `in_progress` / `completed` ticks are evidence that a tick happened; this run's
+    own row is never evidence.
+    """
+    api = _TickListing(
+        [
+            _tick_row(99, 0.5),  # self
+            _tick_row(98, 0.2, status="queued"),
+            _tick_row(97, 1, status="pending"),
+            _tick_row(96, 1, status="waiting"),
+            _tick_row(1, 45),
+        ]
+    )
+    assert _redundant(api) is None
+    # ...and an in_progress other tick inside the interval does count.
+    assert _redundant(_TickListing([_tick_row(98, 2, status="in_progress")])) is not None
+
+
+def test_an_empty_or_malformed_tick_listing_runs_the_kick() -> None:
+    for runs in ([], [{"id": "x"}], [{"id": 5, "status": "completed"}]):
+        assert _redundant(_TickListing(runs)) is None, runs
+
+
+def test_a_chain_of_stood_down_kicks_does_not_debounce_the_next_one() -> None:
+    """Busy day: Fast Gates finish every few minutes, the cron is late.
+
+    K1 stood down (a tick 5 min before it), K2 stood down seeing K1, K3 ... If a
+    stood-down kick counted as a tick, this chain would never end: every kick sees
+    the one before it, inside the interval, and no full tick runs between crons --
+    the kick would be off on exactly the days it is for. A stood-down kick cancels
+    itself (`stand_down`), so its row is `cancelled` and does not count; the chain
+    is judged against the last tick that RAN, 15 minutes ago, and this kick runs.
+    A kick the concurrency group evicted while queued is `cancelled` too, and a
+    `skipped` row never ran either.
+    """
+    rows = [
+        _tick_row(1, 15),  # the last full tick (cron)
+        _tick_row(2, 7, conclusion="cancelled"),  # K1 stood down
+        _tick_row(3, 3, conclusion="cancelled"),  # K2 stood down
+        _tick_row(4, 2, conclusion="cancelled"),  # a kick evicted while queued
+        _tick_row(5, 1, conclusion="skipped"),
+    ]
+    assert _redundant(_TickListing(rows)) is None
+    # The same chain with a full tick 7 minutes ago stands down -- it is the tick
+    # that ran, not the kicks around it, that the debounce measures from.
+    rows[1] = _tick_row(2, 7, conclusion="failure")  # ran, and found something red
+    assert _redundant(_TickListing(rows)) is not None
+
+
+def test_the_debounce_measures_from_run_start_not_queue_time() -> None:
+    """A tick that sat queued 20 minutes behind a saturated hosted pool and started
+    3 minutes ago covers this moment; its `created_at` alone would say it did not."""
+    row = _tick_row(1, 23)
+    row["run_started_at"] = (NOW - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert _redundant(_TickListing([row])) is not None
+
+
+def test_a_stood_down_kick_cancels_itself_and_waits_for_the_stop() -> None:
+    api = _TickListing([])
+    waited: list[float] = []
+    clock = iter([0.0, 10.0, 70.0])
+    wd.stand_down(
+        api,
+        REPO,
+        self_run_id=99,
+        reason="r",
+        sleep=waited.append,
+        clock=lambda: next(clock),
+        log=lambda _m: None,
+    )
+    assert api.posts == [f"repos/{REPO}/actions/runs/99/cancel"]
+    assert waited == [5.0]  # kept waiting while the clock was inside the bound, then gave up
+
+
+def test_a_stood_down_kick_without_a_run_id_or_with_a_refused_cancel_still_exits_cleanly() -> None:
+    api = _TickListing([])
+    wd.stand_down(api, REPO, self_run_id=0, reason="r", sleep=pytest.fail, log=lambda _m: None)
+    assert api.posts == []
+    api = _TickListing([], refuse_post=wd.ApiError(403, "forbidden"))
+    wd.stand_down(api, REPO, self_run_id=99, reason="r", sleep=pytest.fail, log=lambda _m: None)
+    assert api.posts == [f"repos/{REPO}/actions/runs/99/cancel"]
+
+
+def _main_with(
+    monkeypatch: pytest.MonkeyPatch, api: Any, *, event: str, run_id: str = "99"
+) -> tuple[int, list[Any]]:
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    # `main()` defaults `--summary` to GITHUB_STEP_SUMMARY and APPENDS to it. Under
+    # Actions that is the real job summary, so a helper-driven run must not inherit
+    # it: cleared here, the summary goes to captured stdout and nothing is written.
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(wd, "GitHubApi", lambda *_a, **_k: api)
+    # A stood-down kick waits for its own cancel to stop the step; nothing stops a
+    # test, so the wait is zeroed and the stand-down is read from the fake's posts.
+    monkeypatch.setattr(wd, "STAND_DOWN_CANCEL_WAIT_SECONDS", 0.0)
+    ran: list[Any] = []
+
+    def fake_run(_api: Any, policy: Any, **_k: Any) -> tuple[list[Any], dict[int, str]]:
+        ran.append(policy)
+        return [], {1: wd.OUTCOME_HEALED}
+
+    monkeypatch.setattr(wd, "run_watchdog", fake_run)
+    return wd.main(["--repo", REPO]), ran
+
+
+def test_main_on_a_kick_debounces_before_any_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    cancel_self = f"repos/{REPO}/actions/runs/99/cancel"
+    api = _TickListing([_live_row(1, 3)])
+    code, ran = _main_with(monkeypatch, api, event=wd.KICK_EVENT)
+    assert code == 0 and ran == [] and api.gets and api.posts == [cancel_self]
+
+    api = _TickListing([_live_row(1, 30)])
+    code, ran = _main_with(monkeypatch, api, event=wd.KICK_EVENT)
+    assert code == 0 and len(ran) == 1 and api.calls == 1 and api.posts == []
+
+
+def test_main_on_a_schedule_or_dispatch_never_reads_the_debounce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduled tick is the contract; the kick is additive and must not reshape it."""
+    for event in ("schedule", "workflow_dispatch", ""):
+        api = _TickListing([_live_row(1, 1)])
+        code, ran = _main_with(monkeypatch, api, event=event)
+        assert code == 0 and len(ran) == 1 and api.calls == 0 and api.posts == [], event
+
+
+def test_a_rate_limited_debounce_read_stands_the_kick_down_and_any_other_error_runs_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rate-limited debounce read means the full tick's first listing would abort
+    red for nothing; standing down costs no quota and the next heartbeat retries.
+    A transient 5xx is the schedule's own posture: run."""
+    api = _TickListing(wd.ApiError(403, "API rate limit exceeded for installation"))
+    code, ran = _main_with(monkeypatch, api, event=wd.KICK_EVENT)
+    assert code == 0 and ran == [] and api.posts == [f"repos/{REPO}/actions/runs/99/cancel"]
+
+    api = _TickListing(wd.ApiError(502, "bad gateway"))
+    code, ran = _main_with(monkeypatch, api, event=wd.KICK_EVENT)
+    assert code == 0 and len(ran) == 1
+
+
+def test_a_kicked_tick_writes_its_stand_down_to_the_step_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", wd.KICK_EVENT)
+    monkeypatch.setenv("GITHUB_RUN_ID", "99")
+    monkeypatch.setattr(wd, "GitHubApi", lambda *_a, **_k: _TickListing([_live_row(1, 2)]))
+    monkeypatch.setattr(wd, "STAND_DOWN_CANCEL_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(wd, "run_watchdog", lambda *_a, **_k: pytest.fail("must not list"))
+    summary = tmp_path / "summary.md"
+    assert wd.main(["--repo", REPO, "--summary", str(summary)]) == 0
+    text = summary.read_text(encoding="utf-8")
+    assert text.startswith("## CI runner watchdog") and "stood down" in text
+
+
+def test_the_workflow_is_kicked_by_a_completed_fast_gate_and_its_kick_cannot_red_a_pull_request() -> (
+    None
+):
+    """Two pins, one trigger.
+
+    `workflow_run` on `Fast Gate` completing is the heartbeat the schedule lacks;
+    the event name the workflow declares must be the one the script debounces on.
+    And a `workflow_run` run carries the TRIGGERING run's head, so a kicked tick
+    that reds would attach a red check to an unrelated pull request (what a hand
+    dispatch on a PR branch once did): the step must swallow its own
+    status on that event, and ONLY on that event, so scheduled ticks stay loud.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    entries = {
+        keys: value.partition("#")[0].strip() for keys, value in wd._yaml_mapping_entries(text)
+    }
+    assert entries.get(("on", "workflow_run", "workflows")) == '["Fast Gate"]', entries
+    assert entries.get(("on", "workflow_run", "types")) == "[completed]", entries
+    assert wd.KICK_EVENT == "workflow_run"
+    body = wd._workflow_without_full_line_comments(text)
+    assert "continue-on-error: ${{ github.event_name == 'workflow_run' }}" in body
+    assert body.count("continue-on-error:") == 1
+    # The debounce window is the schedule's own interval, so the cron the
+    # workflow declares and the interval the script debounces on must agree.
+    assert '- cron: "*/10 * * * *"' in body
+    assert wd.Policy.schedule_interval == _INTERVAL
+
+
 def test_a_live_tick_under_the_read_bound_reads_every_run() -> None:
     runs = [_run(i, minutes_ago=100 - i, status="queued") for i in range(1, 4)]
     api = FakeApi({"queued": list(reversed(runs))}, {i: [] for i in range(1, 4)}, evidence=False)

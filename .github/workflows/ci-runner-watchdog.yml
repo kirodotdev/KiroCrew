@@ -24,7 +24,8 @@ name: CI Runner Watchdog
 # orphaned frontend shard held the group for ten hours and cost eleven `main`
 # verdicts before a human cancelled it.
 #
-# What this workflow does, every 10 minutes: run `scripts/ci/runner_watchdog.py`,
+# What this workflow does, every 10 minutes and whenever a `fast-gate.yml` run
+# completes (the kick, see `on:` below): run `scripts/ci/runner_watchdog.py`,
 # which lists queued / in-progress runs REPO-WIDE — one paginated
 # `GET /repos/{repo}/actions/runs?status=…` per status returns runs of every
 # workflow at once — and keeps only those whose `path` names a workflow that
@@ -275,8 +276,32 @@ name: CI Runner Watchdog
 on:
   schedule:
     # Every 10 minutes. The orphan threshold is 15 minutes, so a stuck job is
-    # healed within roughly 15-25 minutes of being orphaned.
+    # healed within roughly 15-25 minutes of being orphaned -- when the schedule
+    # keeps its cadence. It does not always: GitHub's `schedule` is best-effort,
+    # and on 2026-10-04 the `*/10` ticks landed about 100 minutes apart, so a
+    # `fast-gate.yml` job orphaned on `main` nine minutes before one tick (too
+    # young to act on) waited ninety minutes for the next while two later `main`
+    # pushes went red behind it.
     - cron: "*/10 * * * *"
+  # The kick between ticks. A completed Fast Gate is a heartbeat the repository
+  # already emits once per head, PR and `main` alike, and every orphan so far
+  # lived in a window where OTHER heads' Fast Gates kept completing. A kicked
+  # tick is the scheduled tick: same script, same arming, same reads. It differs
+  # in one step, before any listing: it reads this workflow's own recent runs
+  # (one call) and stands down when a tick started within the last schedule
+  # interval (`kick_is_redundant`), so on a day the schedule keeps its cadence
+  # the kicks cost one read each and the quota shape is the schedule's; only
+  # when the schedule is late does a kick turn into a full tick. A kick that
+  # stands down CANCELS ITSELF (`stand_down`), so its row reads `cancelled` and
+  # the next kick does not count it as a tick -- otherwise kicks arriving less
+  # than one interval apart would stand down for each other and the chain would
+  # never run a full tick between crons. Bursts collapse
+  # on the concurrency group below: while a tick runs, every further completion
+  # folds into the one pending run GitHub keeps per group. Any conclusion kicks,
+  # a cancelled Fast Gate included: the heartbeat is that the run ENDED.
+  workflow_run:
+    workflows: ["Fast Gate"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -340,3 +365,13 @@ jobs:
           # and the summary, and a test pins that ordering.
           DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name != 'workflow_dispatch' && env.WATCHDOG_ARMED != 'true') }}
         run: python3 scripts/ci/runner_watchdog.py
+        # A `workflow_run` run carries the TRIGGERING run's head: GitHub lists it
+        # under that branch and attaches its check to that commit, so a kicked
+        # tick that reds (a rate-limited listing, a heal out of budget) would show
+        # as a red "Unstick orphaned CodeBuild-routed jobs" check on whichever
+        # pull request's Fast Gate happened to complete -- a PR that did nothing
+        # wrong, exactly what a hand dispatch on a PR branch did on 2026-09-25.
+        # The kick's job stays green whatever the step did; the step's own status,
+        # its log and its summary still carry the verdict, and the scheduled
+        # ticks, which run on the default branch, keep failing loudly.
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}

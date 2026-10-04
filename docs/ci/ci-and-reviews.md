@@ -904,7 +904,26 @@ Details worth knowing:
     carries a watchdog rather than waiting for it:
     `.github/workflows/ci-runner-watchdog.yml` runs `scripts/ci/runner_watchdog.py`
     every ten minutes on `ubuntu-latest` (never on CodeBuild — a watchdog for a
-    path cannot depend on that path). It lists the queued and in-progress runs
+    path cannot depend on that path), and again whenever a `fast-gate.yml` run
+    completes (`workflow_run`, any conclusion). The second trigger is the kick:
+    GitHub's `schedule` is best-effort, and on 2026-10-04 the `*/10` ticks landed
+    about 100 minutes apart, so a `main` Fast Gate job orphaned nine minutes
+    before one tick (too young to act on) waited ninety minutes for the next while
+    two later `main` pushes went red behind it. A completed Fast Gate is a
+    heartbeat the repository already emits once per head, so a kicked tick runs
+    the same script with the same arming — except that before any listing it
+    reads the watchdog's own recent runs (one call, `kick_is_redundant`) and
+    stands down when a tick already STARTED within the last schedule interval;
+    only a late schedule turns a kick into a full tick, so the quota shape stays
+    the schedule's. Only a tick that RAN counts: a kick that stands down cancels
+    itself so its row reads `cancelled`, and `cancelled`/`skipped` rows and
+    `queued` siblings (held by the concurrency group) are ignored -- otherwise
+    kicks arriving less than an interval apart would stand down for each other
+    and no full tick would run between crons. A `workflow_run`
+    run carries the triggering run's head, so the kick's step runs with
+    `continue-on-error` and never reds an unrelated pull request's checks; its
+    verdict is in the step log and summary, and the scheduled ticks stay loud.
+    It lists the queued and in-progress runs
     REPO-WIDE — one paginated `GET /repos/{repo}/actions/runs?status=…` per
     status returns runs of every workflow at once — and keeps only those whose
     `path` names a workflow that routes jobs to the CodeBuild fleet — `ci.yml`,
