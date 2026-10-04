@@ -1581,3 +1581,70 @@ describe('state chip honours the rewriter, not just the allowlist', () => {
     expect(panel.className).toContain('space-y-4')
   })
 })
+
+
+describe('responsive layout', () => {
+  it('stacks setting cards and exposes table labels below md', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        {
+          ...server({ name: 'alpha-mcp' }),
+          recommendation: {
+            strength: 'no_objection',
+            recommendShare: false,
+            reasons: [{ code: 'no_objection_found', detail: '' }],
+          },
+        },
+      ],
+    } as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue({
+      running: false,
+      done: 0,
+      total: 0,
+    } as never)
+
+    mount()
+
+    // happy-dom does not compute responsive geometry. Pin the narrow-first
+    // layout contract and the labels that replace hidden table headings.
+    const sharingTitle = await screen.findByText('Share backends across sessions')
+    const sharingLayout = sharingTitle.closest('section')?.firstElementChild as HTMLElement
+    expect(sharingLayout.className).toContain('flex-col')
+    expect(sharingLayout.className).toContain('md:flex-row')
+
+    await screen.findByText('alpha-mcp')
+    const count = screen.getByText('0 of 1 opted in to stubbing')
+    expect(count.className).toContain('break-words')
+    expect(count.className).toContain('[overflow-wrap:anywhere]')
+    expect(count.className).toContain('md:whitespace-nowrap')
+
+    const updateButton = screen.getByRole('button', { name: 'Update now' })
+    const resolveLayout = updateButton.closest('section')?.firstElementChild as HTMLElement
+    expect(resolveLayout.className).toContain('flex-col')
+    expect(resolveLayout.className).toContain('md:flex-row')
+
+    const serversTable = screen.getByText('alpha-mcp').closest('table') as HTMLTableElement
+    const serversRow = screen.getByText('alpha-mcp').closest('tr') as HTMLTableRowElement
+    expect(serversTable.className).toContain('block')
+    expect(serversTable.className).toContain('md:table')
+    expect(serversRow.className).toContain('grid')
+    expect(serversRow.className).toContain('md:table-row')
+    expect(screen.getAllByText('Used by')).toHaveLength(2)
+    expect(screen.getAllByText('State')).toHaveLength(2)
+    expect(screen.getAllByText('Stub')).toHaveLength(2)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /sharing assessment/i }))
+    await screen.findByRole('columnheader', { name: 'Assessment' })
+
+    const assessmentTable = screen.getByText('alpha-mcp').closest('table') as HTMLTableElement
+    const assessmentRow = screen.getByText('alpha-mcp').closest('tr') as HTMLTableRowElement
+    expect(assessmentTable.className).toContain('block')
+    expect(assessmentTable.className).toContain('md:table')
+    expect(assessmentRow.className).toContain('grid')
+    expect(assessmentRow.className).toContain('md:table-row')
+    expect(screen.getAllByText('Assessment')).toHaveLength(2)
+    expect(screen.getAllByText('Evidence')).toHaveLength(2)
+    expect(screen.getAllByText('Running as')).toHaveLength(2)
+  })
+})

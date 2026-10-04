@@ -777,12 +777,12 @@ function RefusalPanel({
 function ReasonLine({ reason }: { reason: McpShareReason }) {
   const key = REASON_LABEL_KEY[reason.code]
   return (
-    <li className="leading-relaxed">
+    <li className="min-w-0 leading-relaxed">
       {/* An unknown code still has to say something, and its raw code is more
           use to whoever has to look it up than a blank cell. */}
       <span>{key ? i18nT(key) : reason.code}</span>
       {reason.detail && (
-        <span className="mt-0.5 block w-fit rounded border border-[var(--border)] px-1 font-mono text-[11px] text-[var(--text)]">
+        <span className="mt-0.5 block w-fit max-w-full break-words rounded border border-[var(--border)] px-1 font-mono text-[11px] text-[var(--text)] [overflow-wrap:anywhere]">
           {reason.detail}
         </span>
       )}
@@ -810,11 +810,14 @@ function AssessmentRow({
   )
   const unsupported = sharedWithoutSupport(server, sharingOn, refused)
   return (
-    <tr className="border-t border-[var(--border)]">
-      <td className="px-4 py-3 align-top font-mono text-[13px] text-[var(--text)]">
+    <tr className="grid min-w-0 grid-cols-1 gap-3 border-t border-[var(--border)] px-3 py-3 md:table-row md:px-0 md:py-0">
+      <td className="min-w-0 break-words p-0 align-top font-mono text-[13px] text-[var(--text)] [overflow-wrap:anywhere] md:table-cell md:px-4 md:py-3">
         {server.name}
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="min-w-0 p-0 align-top md:table-cell md:px-4 md:py-3">
+        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)] md:hidden">
+          {i18nT('pages.mcpManagement.assessment.col_assessment')}
+        </span>
         <span
           className={[
             'inline-block rounded-full px-2 py-0.5 font-mono text-[11px]',
@@ -826,9 +829,12 @@ function AssessmentRow({
           {i18nT(strengthKey || 'pages.mcpManagement.assessment.strength_unknown')}
         </span>
       </td>
-      <td className="px-4 py-3 align-top text-[12.5px] text-[var(--muted)]">
+      <td className="min-w-0 p-0 align-top text-[12.5px] text-[var(--muted)] [overflow-wrap:anywhere] md:table-cell md:px-4 md:py-3">
+        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)] md:hidden">
+          {i18nT('pages.mcpManagement.assessment.col_evidence')}
+        </span>
         {reasons.length > 0 ? (
-          <ul className="list-none space-y-0.5">
+          <ul className="min-w-0 list-none space-y-0.5">
             {reasons.map((r, i) => (
               <ReasonLine key={`${r.code}-${i}`} reason={r} />
             ))}
@@ -837,7 +843,10 @@ function AssessmentRow({
           <span aria-hidden="true">{'\u2014'}</span>
         )}
       </td>
-      <td className="px-4 py-3 align-top text-right">
+      <td className="min-w-0 p-0 align-top text-left md:table-cell md:px-4 md:py-3 md:text-right">
+        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)] md:hidden">
+          {i18nT('pages.mcpManagement.assessment.col_running_as')}
+        </span>
         <span
           className={[
             'inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 font-mono text-[11px]',
@@ -1047,10 +1056,10 @@ function AssessmentView({
       {unsupportedCount > 0 && (
         <div
           role="status"
-          className="flex items-start gap-2 rounded-lg border border-[var(--danger)] bg-[var(--danger-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
+          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-2 rounded-lg border border-[var(--danger)] bg-[var(--danger-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)] md:grid-cols-[auto_minmax(0,1fr)_auto]"
         >
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--danger)]" />
-          <span className="flex-1">
+          <span className="min-w-0">
             {i18nT('pages.mcpManagement.assessment.shared_without_support', {
               count: unsupportedCount,
             })}
@@ -1061,7 +1070,7 @@ function AssessmentView({
           <button
             type="button"
             onClick={onOpenServers}
-            className="shrink-0 rounded-md border border-[var(--border)] px-2 py-0.5 text-[12.5px] text-[var(--text)] hover:border-[var(--accent)]"
+            className="col-start-2 justify-self-start rounded-md border border-[var(--border)] px-2 py-0.5 text-[12.5px] text-[var(--text)] hover:border-[var(--accent)] md:col-start-3 md:row-start-1"
           >
             {i18nT('pages.mcpManagement.assessment.open_servers')}
           </button>
@@ -1069,8 +1078,8 @@ function AssessmentView({
       )}
 
       <section className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
-        <table className="w-full border-collapse">
-          <thead>
+        <table className="block w-full border-collapse md:table">
+          <thead className="hidden md:table-header-group">
             <tr>
               <th className="w-[26%] px-4 pb-2.5 pt-3.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
                 {i18nT('pages.mcpManagement.col_server')}
@@ -1086,20 +1095,20 @@ function AssessmentView({
               </th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block md:table-row-group">
             {servers.map(s => (
               <AssessmentRow key={s.name} server={s} sharingOn={sharingOn} refused={refused} />
             ))}
             {isError && (
-              <tr className="border-t border-[var(--border)]">
-                <td colSpan={4} className="px-4 py-4">
+              <tr className="block border-t border-[var(--border)] md:table-row">
+                <td colSpan={4} className="block px-4 py-4 md:table-cell">
                   <ErrorNotice message={i18nT('pages.mcpManagement.servers_failed')} askAgent />
                 </td>
               </tr>
             )}
             {servers.length === 0 && !loading && !isError && (
-              <tr className="border-t border-[var(--border)]">
-                <td colSpan={4} className="px-4 py-6 text-center text-[13px] text-[var(--muted)]">
+              <tr className="block border-t border-[var(--border)] md:table-row">
+                <td colSpan={4} className="block px-4 py-6 text-center text-[13px] text-[var(--muted)] md:table-cell">
                   {i18nT('pages.mcpManagement.no_servers')}
                 </td>
               </tr>
@@ -1582,7 +1591,7 @@ export function McpManagement() {
       value={view}
       onValueChange={v => setView(v as McpView)}
       layoutId="mcp-management-view"
-      className="space-y-4"
+      className="min-w-0 space-y-4"
     >
       <div className={TABS_RAIL_ROW_CLASS}>
         <TabsList aria-label={i18nT('pages.mcpManagement.views_aria')}>
@@ -1604,7 +1613,7 @@ export function McpManagement() {
         askAgent
       />
 
-      <TabsContent value="assessment">
+      <TabsContent value="assessment" className="min-w-0">
         <AssessmentView
           servers={servers}
           sharingOn={!!status?.enabled}
@@ -1622,7 +1631,7 @@ export function McpManagement() {
           without a gap class here the cards render flush against each other,
           unlike the assessment view (which wraps its body in `space-y-4`) and
           every other settings panel. Match that rhythm on the panel itself. */}
-      <TabsContent value="servers" className="space-y-4">
+      <TabsContent value="servers" className="min-w-0 space-y-4">
       {/* No <h2> here: the Developer tab header already names this surface, and a
           second copy of the title read as two stacked headings. */}
       <header>
@@ -1668,14 +1677,14 @@ export function McpManagement() {
 
       {/* Global: route every stub to one shared backend. */}
       <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
-        <div className="flex items-start gap-5">
-          <div className="flex-1">
+        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:gap-5">
+          <div className="min-w-0 flex-1">
             <div className="text-[15px] font-semibold text-[var(--text)]">
               {i18nT('pages.mcpManagement.sharing_label')}
             </div>
             <p
               id="mcp-sharing-desc"
-              className="mt-1.5 max-w-[64ch] text-[13px] leading-relaxed text-[var(--muted)]"
+              className="mt-1.5 max-w-[64ch] break-words text-[13px] leading-relaxed text-[var(--muted)] [overflow-wrap:anywhere]"
             >
               {i18nT('pages.mcpManagement.sharing_description')}
             </p>
@@ -1703,44 +1712,46 @@ export function McpManagement() {
               </p>
             )}
           </div>
-          <span className="shrink-0 whitespace-nowrap pt-1 font-mono text-[12px] text-[var(--muted)]">
-            {i18nT('pages.mcpManagement.stubbed_of_total', {
-              stubbed: switchedOnCount,
-              total: eligibleCount,
-            })}
-            {waitingCount > 0
-              && ` · ${i18nT('pages.mcpManagement.stub_count_waiting', { count: waitingCount })}`}
-          </span>
-          <Switch
-            on={!!status?.enabled}
-            disabled={
-              busy || statusQ.isLoading || (!status?.enabled && !canEnableSharing)
-            }
-            label={i18nT('pages.mcpManagement.sharing_label')}
-            describedBy="mcp-sharing-desc"
-            onClick={() => {
-              setError(null)
-              // Turning sharing ON changes the topology of every stubbed server
-              // at once, so it asks first. Turning it OFF only ever narrows,
-              // and a confirm on the safe direction trains people to click
-              // through the dangerous one.
-              if (!status?.enabled) setConfirmSharing(true)
-              else setSharing.mutate(false)
-            }}
-          />
+          <div className="flex min-w-0 items-start justify-between gap-3 md:shrink-0 md:gap-5">
+            <span className="min-w-0 break-words font-mono text-[12px] text-[var(--muted)] [overflow-wrap:anywhere] md:whitespace-nowrap md:pt-1">
+              {i18nT('pages.mcpManagement.stubbed_of_total', {
+                stubbed: switchedOnCount,
+                total: eligibleCount,
+              })}
+              {waitingCount > 0
+                && ` · ${i18nT('pages.mcpManagement.stub_count_waiting', { count: waitingCount })}`}
+            </span>
+            <Switch
+              on={!!status?.enabled}
+              disabled={
+                busy || statusQ.isLoading || (!status?.enabled && !canEnableSharing)
+              }
+              label={i18nT('pages.mcpManagement.sharing_label')}
+              describedBy="mcp-sharing-desc"
+              onClick={() => {
+                setError(null)
+                // Turning sharing ON changes the topology of every stubbed server
+                // at once, so it asks first. Turning it OFF only ever narrows,
+                // and a confirm on the safe direction trains people to click
+                // through the dangerous one.
+                if (!status?.enabled) setConfirmSharing(true)
+                else setSharing.mutate(false)
+              }}
+            />
+          </div>
         </div>
       </section>
 
       {/* Global: pre-resolve npm-launcher servers so launches skip resolution. */}
       <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
-        <div className="flex items-start gap-5">
-          <div className="flex-1">
+        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:gap-5">
+          <div className="min-w-0 flex-1">
             <div className="text-[15px] font-semibold text-[var(--text)]">
               {i18nT('pages.mcpManagement.resolve_label')}
             </div>
             <p
               id="mcp-resolve-desc"
-              className="mt-1.5 max-w-[64ch] text-[13px] leading-relaxed text-[var(--muted)]"
+              className="mt-1.5 max-w-[64ch] break-words text-[13px] leading-relaxed text-[var(--muted)] [overflow-wrap:anywhere]"
             >
               {i18nT('pages.mcpManagement.resolve_description')}
             </p>
@@ -1770,7 +1781,7 @@ export function McpManagement() {
               setResolveError(null)
               resolveRefresh.mutate()
             }}
-            className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            className="self-start shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {resolveRefresh.isPending
               ? i18nT('pages.mcpManagement.resolve_updating')
@@ -1886,8 +1897,8 @@ export function McpManagement() {
             </div>
           )}
         </div>
-        <table className="w-full border-collapse">
-          <thead>
+        <table className="block w-full border-collapse md:table">
+          <thead className="hidden md:table-header-group">
             <tr>
               <th className="w-[34%] px-4 pb-2.5 pt-3.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
                 {i18nT('pages.mcpManagement.col_server')}
@@ -1907,7 +1918,7 @@ export function McpManagement() {
               </th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block md:table-row-group">
             {servers.map(s => {
               // `rowState` is the ONE derivation of this row's state, and the
               // colour and the reason line read its answer rather than recomputing
@@ -1930,19 +1941,25 @@ export function McpManagement() {
               const loadingReview = previewLaunch.isPending && previewLaunch.variables === s.name
               return (
                 <Fragment key={s.name}>
-                <tr className="border-t border-[var(--border)]">
+                <tr className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-3 border-t border-[var(--border)] px-3 py-3 md:table-row md:px-0 md:py-0">
                   <td
                     className={[
-                      'px-4 py-3 font-mono text-[13px]',
+                      'col-start-1 row-start-1 min-w-0 break-words p-0 font-mono text-[13px] [overflow-wrap:anywhere] md:table-cell md:px-4 md:py-3',
                       s.stub ? 'text-[var(--text)]' : 'text-[var(--muted)]',
                     ].join(' ')}
                   >
                     {s.name}
                   </td>
-                  <td className="px-4 py-3 text-[12.5px] text-[var(--muted)]">
+                  <td className="col-start-1 row-start-2 min-w-0 break-words p-0 text-[12.5px] text-[var(--muted)] [overflow-wrap:anywhere] md:table-cell md:px-4 md:py-3">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)] md:hidden">
+                      {i18nT('pages.mcpManagement.col_used_by')}
+                    </span>
                     {s.agents.join(', ')}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="col-start-1 row-start-3 min-w-0 p-0 md:table-cell md:px-4 md:py-3">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)] md:hidden">
+                      {i18nT('pages.mcpManagement.col_state')}
+                    </span>
                     <span
                       className={[
                         // A state is a term, not a sentence: breaking `not shared
@@ -1980,7 +1997,10 @@ export function McpManagement() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="col-start-2 row-start-1 p-0 text-right md:table-cell md:px-4 md:py-3">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)] md:hidden">
+                      {i18nT('pages.mcpManagement.col_stub')}
+                    </span>
                     <Switch
                       on={state !== 'needs_reapproval' && s.stub}
                       disabled={!s.can_stub || busy || (!s.stub && !supported)}
@@ -2035,8 +2055,8 @@ export function McpManagement() {
                     something already settled. The pill stays in STATE, because a
                     state IS a column value. */}
                 {(loadingReview || reviewing || refusal) && (
-                  <tr>
-                    <td colSpan={4} className="px-4 pb-3.5">
+                  <tr className="block border-t border-[var(--border)] md:table-row md:border-0">
+                    <td colSpan={4} className="block px-3 pb-3.5 pt-0 md:table-cell md:px-4">
                       {loadingReview && (
                         <p role="status" className="text-[12.5px] text-[var(--muted)]">
                           {i18nT('pages.mcpManagement.launch_review_loading', { name: s.name })}
@@ -2084,8 +2104,8 @@ export function McpManagement() {
               )
             })}
             {serversQ.isError && (
-              <tr className="border-t border-[var(--border)]">
-                <td colSpan={4} className="px-4 py-4">
+              <tr className="block border-t border-[var(--border)] md:table-row">
+                <td colSpan={4} className="block px-4 py-4 md:table-cell">
                   {/* Distinct from the empty state on purpose: a failed request
                       knows nothing about the operator's servers, and saying
                       "none are configured" would be a claim we cannot make. */}
@@ -2094,8 +2114,8 @@ export function McpManagement() {
               </tr>
             )}
             {servers.length === 0 && !serversQ.isLoading && !serversQ.isError && (
-              <tr className="border-t border-[var(--border)]">
-                <td colSpan={4} className="px-4 py-6 text-center text-[13px] text-[var(--muted)]">
+              <tr className="block border-t border-[var(--border)] md:table-row">
+                <td colSpan={4} className="block px-4 py-6 text-center text-[13px] text-[var(--muted)] md:table-cell">
                   {i18nT('pages.mcpManagement.no_servers')}
                 </td>
               </tr>
