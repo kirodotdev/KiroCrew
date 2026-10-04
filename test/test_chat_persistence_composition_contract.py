@@ -407,7 +407,7 @@ _SIGNATURES: dict[str, str] = {
     "_member_restore_identity": "(slot_name: 'str') -> 'tuple[str, str] | None'",
     "_newest_human_turn_ts": "(rows: \"'list[dict] | tuple[dict, ...]'\") -> 'str'",
     "_on_config_change": "(change: 'object') -> 'None'",
-    "_pin_private_agent_assignment": "(session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, conversation_log=None, native_context: 'bool' = False, authorized_store: 'str | None' = None, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False) -> 'str'",
+    "_pin_private_agent_assignment": "(session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, conversation_log=None, native_context: 'bool' = False, authorized_store: 'str | None' = None, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False, selection_changes: 'list[SelectionChange] | None' = None) -> 'str'",
     "_prefetch_recent_session": "(conv_log: 'ConversationLog', key: 'str', session: 'dict', *, folders_only: 'bool', cutoff: 'float | None') -> 'tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool]'",
     "_prefetch_rehydrate_inputs": "(conv_log: 'ConversationLog', history_key: 'str', *, adopt_closed: 'bool' = False, kiro_model_map: 'dict[str, str] | None' = None, with_status: 'bool' = False) -> 'tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool]'",
     "_queue_snapshot_is_stale": "(slot: '_ChatSlot', queue_write_basis: 'str') -> 'bool'",
@@ -445,7 +445,7 @@ _SIGNATURES: dict[str, str] = {
     "local_turn_prompt_within_bounds": "(prompt: 'Mapping[str, object]') -> 'bool'",
     "member_store_ownership_holds": "(config: 'KiroCrewConfig', member: 'str', entry_store: 'str') -> 'bool'",
     "pending_slot_memory_mode": "(slot: '_ChatSlot') -> 'str | None'",
-    "pin_private_agent_store": "(state: 'DashboardState', session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False) -> 'str'",
+    "pin_private_agent_store": "(state: 'DashboardState', session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False, selection_changes: 'list[SelectionChange] | None' = None, expected_member: 'MemberChoice | None' = None) -> 'str'",
     "register_guarded_history_write": "(slot: '_ChatSlot', save: \"'asyncio.Future[bool]'\") -> 'None'",
     "register_reasoning_effort_values": "(acp_levels: 'list[str]') -> 'list[str]'",
     "rehydrate_slot_from_history_async": "(state: 'DashboardState', slot_name: 'str', *, kiro_model_map: 'dict[str, str] | None' = None, adopt_closed: 'bool' = False) -> '_ChatSlot | None'",
@@ -1311,7 +1311,7 @@ _GOLDEN: dict[str, dict] = {
     },
     "empty_window_merge": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "member_choice": {}, "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
         ),
         "ok": True,
     },

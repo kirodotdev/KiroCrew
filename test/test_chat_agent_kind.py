@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_app_with_agent_routes
+from chat_test_helpers import _make_app_with_agent_routes, drain_background_tasks
 from dashboard_owner_helpers import as_owner
 from test_chat_agent_selection import TEMPLATE, _template_chat, _turn_state
 
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard import chat_handlers
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.member_memory_auth import read_private_session_store
 
@@ -45,9 +50,62 @@ async def test_explicit_template_create_never_pins_the_same_name_member(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_explicit_member_create_pins_the_member(tmp_path, monkeypatch):
+@pytest.mark.parametrize("memory_mode", ["persistent", "incognito"])
+async def test_agentless_template_kind_create_keeps_shared_memory_through_the_first_send(
+    tmp_path, monkeypatch, memory_mode
+):
+    """A stated template kind on the default name is a template pick, not the member."""
+    from kiro_crew.execution_context import _LIVE_EXECUTIONS, _live_key
+
     state, private_store = await _same_name_state(tmp_path, monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.default_agent = TEMPLATE
+    cfg.save()
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
     app = _make_app_with_agent_routes(state)
+    app.router.add_post("/api/chat", chat_handlers.api_chat)
+    key = "dashboard:kind-default"
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat/slots",
+            json={
+                "name": "kind-default",
+                "agent_kind": "template",
+                "memory_mode": memory_mode,
+            },
+        )
+        assert response.status == 200, await response.text()
+        slot = state._slots["kind-default"]
+        assert slot.agent == TEMPLATE
+        if memory_mode == "incognito":
+            _LIVE_EXECUTIONS.pop(_live_key(key), None)
+            assert read_session_execution(key) is None
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "kind-default", "message": "hello"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(slot.task, timeout=5)
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+    assert slot.memory_store != private_store
+    assert read_private_session_store(key) is None
+    execution = read_session_execution(key)
+    assert execution is not None
+    assert execution.selection_kind == "template"
+    assert execution.member_id is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_member_create_binds_the_member_on_the_first_send(tmp_path, monkeypatch):
+    state, private_store = await _same_name_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_run_chat", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    app = _make_app_with_agent_routes(state)
+    app.router.add_post("/api/chat", chat_handlers.api_chat)
     async with TestClient(TestServer(as_owner(app))) as client:
         response = await client.post(
             "/api/chat/slots",
@@ -55,6 +113,12 @@ async def test_explicit_member_create_pins_the_member(tmp_path, monkeypatch):
         )
         assert response.status == 200, await response.text()
         body = await response.json()
+        assert read_session_execution("dashboard:kind-member") is None
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "kind-member", "message": "hello"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
     assert body["agent_kind"] == "member"
     assert state._slots["kind-member"].agent_kind == "member"
     execution = read_session_execution("dashboard:kind-member")
@@ -87,7 +151,7 @@ async def test_explicit_template_switch_on_empty_chat_keeps_shared_memory(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_explicit_member_switch_on_empty_chat_pins_the_member(tmp_path, monkeypatch):
+async def test_explicit_member_switch_on_empty_chat_leaves_it_unbound(tmp_path, monkeypatch):
     state, private_store = await _same_name_state(tmp_path, monkeypatch)
     app = _make_app_with_agent_routes(state)
     async with TestClient(TestServer(as_owner(app))) as client:
@@ -99,10 +163,121 @@ async def test_explicit_member_switch_on_empty_chat_pins_the_member(tmp_path, mo
         )
         assert response.status == 200, await response.text()
         assert (await response.json())["agent_kind"] == "member"
-    execution = read_session_execution("dashboard:switch-member")
-    assert execution is not None
-    assert execution.selection_kind == "member"
-    assert execution.store.store_id == private_store
+    assert state._slots["switch-member"].memory_store != private_store
+    assert read_session_execution("dashboard:switch-member") is None
+
+
+@pytest.mark.asyncio
+async def test_member_switch_after_a_template_pick_binds_the_member_after_a_restart(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, restore_open_slots
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    state, private_store = await _same_name_state(tmp_path, monkeypatch)
+    key = "dashboard:rekind"
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+        response = await client.post("/api/chat/slots", json={"name": "rekind"})
+        assert response.status == 200, await response.text()
+        response = await client.post(
+            "/api/chat/slots/rekind/agent", json={"agent": TEMPLATE, "agent_kind": "template"}
+        )
+        assert response.status == 200, await response.text()
+        slot = state._slots["rekind"]
+        _save_slot_to_history(state, slot, force=True)
+        history = slot_history_key(slot)
+        assert state.conversation_log.get_metadata(history).get("agent_kind") == "template"
+        response = await client.post(
+            "/api/chat/slots/rekind/agent", json={"agent": TEMPLATE, "agent_kind": "member"}
+        )
+        assert response.status == 200, await response.text()
+        assert (await response.json())["agent_kind"] == "member"
+    assert read_session_execution(key) is None
+    assert state.conversation_log.get_metadata(history).get("agent_kind") == "member"
+    state._persist_open_slots()
+
+    restarted = _turn_state(tmp_path, monkeypatch)
+    assert restore_open_slots(restarted) == 1
+    slot = restarted._slots["rekind"]
+    assert slot.agent_kind == "member"
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    app = _make_app_with_agent_routes(restarted)
+    app.router.add_post("/api/chat", chat_handlers.api_chat)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post("/api/chat?ws=1", json={"slot": "rekind", "message": "hello"})
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(slot.task, timeout=5)
+        await asyncio.wait_for(drain_background_tasks(restarted), timeout=5)
+    assert read_private_session_store(key) == private_store
+    execution = read_session_execution(key)
+    assert execution is not None and execution.selection_kind == "member"
+
+
+@pytest.mark.asyncio
+async def test_member_recreate_after_a_template_pick_binds_the_member_after_a_restart(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard.chat_persistence import restore_open_slots
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    state, private_store = await _same_name_state(tmp_path, monkeypatch)
+    key = "dashboard:recreated-kind"
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+        response = await client.post(
+            "/api/chat/slots",
+            json={
+                "name": "recreated-kind",
+                "agent": TEMPLATE,
+                "agent_kind": "template",
+            },
+        )
+        assert response.status == 200, await response.text()
+        stale = state._slots.pop("recreated-kind")
+        history = slot_history_key(stale)
+        await asyncio.to_thread(
+            state.conversation_log.update_metadata,
+            history,
+            {"agent": TEMPLATE, "agent_kind": "template"},
+        )
+        assert state.conversation_log.get_metadata(history).get("agent_kind") == "template"
+        assert read_session_execution(key).selection_kind == "template"
+        response = await client.post(
+            "/api/chat/slots",
+            json={
+                "name": "recreated-kind",
+                "agent": TEMPLATE,
+                "agent_kind": "member",
+            },
+        )
+        assert response.status == 200, await response.text()
+        assert (await response.json())["agent_kind"] == "member"
+    assert read_session_execution(key) is None
+    assert state.conversation_log.get_metadata(history).get("agent_kind") == "member"
+    state._persist_open_slots()
+
+    restarted = _turn_state(tmp_path, monkeypatch)
+    assert restore_open_slots(restarted) == 1
+    slot = restarted._slots["recreated-kind"]
+    assert slot.agent_kind == "member"
+    monkeypatch.setattr(live, "snapshot", KiroCrewConfig.load)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    app = _make_app_with_agent_routes(restarted)
+    app.router.add_post("/api/chat", chat_handlers.api_chat)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "recreated-kind", "message": "hello"}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(slot.task, timeout=5)
+        await asyncio.wait_for(drain_background_tasks(restarted), timeout=5)
+    assert read_private_session_store(key) == private_store
+    execution = read_session_execution(key)
+    assert execution is not None and execution.selection_kind == "member"
 
 
 @pytest.mark.asyncio

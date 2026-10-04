@@ -120,9 +120,7 @@ class TestCreateInFolder:
     async def test_create_with_folder_files_the_slot(self, tmp_path):
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID}
-            )
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
             assert resp.status == 200
             assert (await resp.json())["folder_id"] == FOLDER_ID
         assert state._slots["s1"].folder_id == FOLDER_ID
@@ -131,9 +129,7 @@ class TestCreateInFolder:
     async def test_unknown_folder_is_rejected(self, tmp_path):
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots", json={"name": "s1", "folder_id": "nope"}
-            )
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": "nope"})
             assert resp.status == 400
             # The client switches on `code`; the prose is advisory and localizable.
             assert (await resp.json())["code"] == "folder_not_found"
@@ -146,9 +142,7 @@ class TestCreateInFolder:
         state = _make_state(tmp_path)
         seen = _record_broadcasts(state)
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID}
-            )
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
             assert resp.status == 200
 
         # Exactly one coalesced broadcast, not create-then-correct.
@@ -165,9 +159,7 @@ class TestCreateInFolder:
             )
 
     @pytest.mark.asyncio
-    async def test_create_without_folder_defers_one_complete_broadcast(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_create_without_folder_defers_one_complete_broadcast(self, tmp_path, monkeypatch):
         """The ordinary response wins the race with its full-list announcement."""
         state = _make_state(tmp_path)
         seen = _record_broadcasts(state)
@@ -236,9 +228,7 @@ class TestCreateInFolder:
         assert any(s["key"] == "private" for s in seen[0])
 
     @pytest.mark.asyncio
-    async def test_unknown_create_field_publishes_synchronously(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_unknown_create_field_publishes_synchronously(self, tmp_path, monkeypatch):
         state = _make_state(tmp_path)
         seen = _record_broadcasts(state)
         scheduled: list[tuple[float, object, tuple[object, ...]]] = []
@@ -291,9 +281,7 @@ class TestCreateInFolder:
         assert state._slots_push_pending is False
 
     @pytest.mark.asyncio
-    async def test_overlapping_suspension_disables_outer_deferral(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_overlapping_suspension_disables_outer_deferral(self, tmp_path, monkeypatch):
         state = _make_state(tmp_path)
         seen = _record_broadcasts(state)
         scheduled: list[tuple[float, object, tuple[object, ...]]] = []
@@ -321,9 +309,7 @@ class TestCreateInFolder:
         assert state._slots_push_overlapped is False
 
     @pytest.mark.asyncio
-    async def test_successful_deferred_flush_starts_coalescing_window(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_successful_deferred_flush_starts_coalescing_window(self, tmp_path, monkeypatch):
         state = _make_state(tmp_path)
         broadcasts: list[str] = []
         scheduled: list[tuple[float, object, tuple[object, ...]]] = []
@@ -332,9 +318,7 @@ class TestCreateInFolder:
         trailing_timer = MagicMock()
         state._slots_broadcast_timer = armed_timer
 
-        monkeypatch.setattr(
-            state, "_do_slots_broadcast", lambda: broadcasts.append("published")
-        )
+        monkeypatch.setattr(state, "_do_slots_broadcast", lambda: broadcasts.append("published"))
         monkeypatch.setattr("kiro_crew.dashboard.state.time.monotonic", lambda: 100.0)
 
         def capture_callback(delay, callback, *args, **kwargs):
@@ -477,9 +461,7 @@ class TestCreateInFolder:
             # Simulate a slot that has already run a turn: the flag is consumed.
             state._slots["s1"]._folder_changed = False
 
-            resp = await client.post(
-                "/api/chat/slots", json={"name": "s1", "folder_id": "f-other"}
-            )
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": "f-other"})
             assert resp.status == 200
         assert state._slots["s1"].folder_id == "f-other"
         assert state._slots["s1"]._folder_changed is True
@@ -492,9 +474,7 @@ class TestCreateInFolder:
             await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
             state._slots["s1"]._folder_changed = False
 
-            resp = await client.post(
-                "/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID}
-            )
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
             assert resp.status == 200
         assert state._slots["s1"]._folder_changed is False
 
@@ -672,9 +652,7 @@ class TestFolderTagInheritance:
         assert state._slots["reused"].tags == []
 
     @pytest.mark.asyncio
-    async def test_moving_an_existing_slot_into_a_tagged_folder_does_not_retro_tag(
-        self, tmp_path
-    ):
+    async def test_moving_an_existing_slot_into_a_tagged_folder_does_not_retro_tag(self, tmp_path):
         """(e) PATCH /slots/{slot}/folder moves without inheriting the folder's tags."""
         state = self._tagged_state(tmp_path, ["t1", "t2"])
         async with TestClient(TestServer(self._app_with_folder_patch(state))) as client:
@@ -894,18 +872,20 @@ class TestFreshFolderCreateStaysOffTheExecutor:
 class TestOwnerFolderCreatePersistsTheFiling:
     """A fresh owner-dashboard create in a folder has a durable writer for its filing.
 
-    On the owner path the member assignment publishes the newborn's execution
-    context through ``bind_session_execution``, whose ``update_metadata_if``
-    UPSERTS the session's metadata line. From then on the forced birth save has
-    a line to merge into, and it is the only writer of ``folder_id`` (and the
+    The owner path publishes the newborn's metadata line before the forced birth
+    save. A private member, named or stamped from the default, stays unbound
+    until the first message, so the create writes that line itself rather than
+    through ``bind_session_execution``. From then on the forced birth save has a
+    line to merge into, and it is the only writer of ``folder_id`` (and the
     inherited tags, pinned title, project and colour) before the first message:
     ``slot._dirty`` stays False, so no periodic flush would write them later. A
     restart before the first message must rehydrate the tab filed, not at root.
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", ["", "local-only-crew"])
     async def test_owner_folder_create_writes_folder_id_to_the_metadata_line(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, agent
     ):
         from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
         from kiro_crew.dashboard.chat import api_chat_slot_create
@@ -925,9 +905,8 @@ class TestOwnerFolderCreatePersistsTheFiling:
         # would answer "yes" to both and read as V1 history the member cannot take.
         state.sessions.get_provider = MagicMock(return_value=None)
         state.sessions.resumable_sid = MagicMock(return_value=None)
-        # `bind_session_execution` publishes through ``ConversationLog()`` at the
-        # default sessions dir, so the state's log must be that same log for the
-        # birth save to see the line the assignment created.
+        # The execution reads go through ``ConversationLog()`` at the default
+        # sessions dir, so the state's log must be that same log.
         state.conversation_log = ConversationLog(base_dir=_sessions_dir())
 
         async def owner_handler(request: web.Request) -> web.Response:
@@ -939,14 +918,16 @@ class TestOwnerFolderCreatePersistsTheFiling:
         app["state"] = state
         app.router.add_post("/api/chat/slots", owner_handler)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/api/chat/slots", json={"folder_id": FOLDER_ID})
+            payload = {"folder_id": FOLDER_ID, **({"agent": agent} if agent else {})}
+            resp = await client.post("/api/chat/slots", json=payload)
             assert resp.status == 200, await resp.text()
             body = await resp.json()
         assert body["folder_id"] == FOLDER_ID
         slot = state._slots[body["key"]]
         assert not slot.messages
         meta = state.conversation_log._read_metadata(slot_history_key(slot)) or {}
-        assert meta.get("memory_store"), f"the owner assignment must have published a line: {meta}"
+        assert meta, "the owner create must have published a line"
+        assert not meta.get("memory_store")
         assert meta.get("folder_id") == FOLDER_ID, (
             "the folder filing never reached the metadata line -- a restart before "
             "the first message rehydrates the tab unfiled"

@@ -251,7 +251,7 @@ async def _template_chat(tmp_path, monkeypatch, *, first_turn=True):
 
 @pytest.mark.asyncio
 async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, monkeypatch):
-    """A delayed template create cannot replace an explicit member selection."""
+    """A delayed template create cannot outlive a later member pick on the empty chat."""
     cfg = KiroCrewConfig.load()
     assert TEMPLATE not in cfg.agents
     cfg.save()
@@ -347,27 +347,29 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
                 assert slot.agent == creation_agent
                 assert slot.agent is not creation_agent
                 assert slot.project == creation_project
-                assert (
-                    await asyncio.to_thread(session_agent_selection_kind, key, TEMPLATE) == "member"
-                )
+                assert await asyncio.to_thread(read_session_execution, key) is None
             release_writer.set()
             responses = await asyncio.wait_for(asyncio.gather(create_task, later_task), 15)
             assert [response.status for response in responses] == [200, 200]
             assert await asyncio.wait_for(asyncio.to_thread(writer_finished.wait, 10), 11)
             assert slot.agent == creation_agent == TEMPLATE
+            assert slot.agent_kind == "member"
             assert slot.project == creation_project
-            assert slot.memory_store == private_store
-
-            def final_selection():
-                return read_session_execution(key).to_record()
-
-            selected = await asyncio.wait_for(asyncio.to_thread(final_selection), 10)
-            assert selected == publications["member"], {
+            assert slot.memory_store == ""
+            assert list(publications) == ["template"]
+            selected = await asyncio.wait_for(asyncio.to_thread(read_session_execution, key), 10)
+            assert selected is None, {
                 "selected": selected,
                 "publications": publications,
                 "create_status": responses[0].status,
                 "later_status": responses[1].status,
             }
+            assert (
+                await chat_handlers.pin_private_agent_store(
+                    state, key, TEMPLATE, KiroCrewConfig.load()
+                )
+                == private_store
+            )
         finally:
             release_writer.set()
             tasks = [task for task in (create_task, later_task) if task is not None]
@@ -1421,7 +1423,9 @@ async def test_cancelled_agent_switch_with_failed_history_restore(tmp_path, monk
 async def test_rebound_owner_switch_restores_selection_provenance(
     tmp_path, monkeypatch, interleaving
 ):
+    """A channel-born tab publishes a member pick, and a rebound unwinds it."""
     state, slot, _ = await _template_chat(tmp_path, monkeypatch, first_turn=False)
+    slot.channel_origin = True
     key = "dashboard:template-chat"
     state.sessions.reset = AsyncMock(return_value=True)
     to_thread = asyncio.to_thread
@@ -1460,10 +1464,14 @@ async def test_rebound_owner_switch_restores_selection_provenance(
 async def test_cancelled_owner_writer_cannot_overwrite_later_choice(
     tmp_path, monkeypatch, later_choice, cancel_count
 ):
-    """A cancelled owner still owns its running publication until it settles."""
+    """A cancelled owner still owns its running publication until it settles.
+
+    The tab is channel-born, where a member pick publishes its selection.
+    """
     state, slot, _ = await asyncio.wait_for(
         _template_chat(tmp_path, monkeypatch, first_turn=False), 20
     )
+    slot.channel_origin = True
     key = "dashboard:template-chat"
     later_agent = TEMPLATE if later_choice == "same_name_template" else "kirocrew-worker"
     monkeypatch.setattr(
@@ -1637,10 +1645,14 @@ async def test_cancelled_owner_writer_cannot_overwrite_later_choice(
 async def test_cancelled_rebound_cleanup_finishes_before_later_owner(
     tmp_path, monkeypatch, cleanup_phase, cancel_count
 ):
-    """Neither rollback write may outlive the handler or skip the other write."""
+    """Neither rollback write may outlive the handler or skip the other write.
+
+    The tab is channel-born, where a member pick publishes its selection.
+    """
     state, slot, _ = await asyncio.wait_for(
         _template_chat(tmp_path, monkeypatch, first_turn=False), 20
     )
+    slot.channel_origin = True
     history_key = "dashboard:template-chat"
     rebound_key = "task:rebound-cleanup"
     later_agent = "kirocrew-worker"
@@ -1875,15 +1887,16 @@ def _prewarmed_member_state(tmp_path, monkeypatch, *, sid: str | None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sid", [None, "acp-prewarm-sid"])
-async def test_new_chat_member_pick_binds_private_memory_over_a_prewarm(tmp_path, monkeypatch, sid):
-    """ "+ New conversation" then picking a member must bind its private store.
+async def test_new_chat_member_pick_drops_a_prewarm_and_binds_on_the_first_send(
+    tmp_path, monkeypatch, sid
+):
+    """ "+ New conversation" then picking a member leaves nothing a first send would refuse.
 
-    Regression test. A pre-warm's surviving resume pointer is not V1 context:
-    the chat has never been sent a message, so the pick is granted and the turn
-    runs on the member's private store instead of reporting no verified private
-    assignment while the member's name is displayed. Both parametrizations
-    assert the same outcome, so the pre-warm is what varies and the binding is
-    what does not.
+    A pre-warm's surviving resume pointer is not V1 context: the chat has never
+    been sent a message, so the pick drops the pointer and the chat stays
+    unbound until the first send binds the member's private store. Both
+    parametrizations assert the same outcome, so the pre-warm is what varies
+    and the binding is what does not.
     """
     state, store = await asyncio.to_thread(_prewarmed_member_state, tmp_path, monkeypatch, sid=sid)
     async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
@@ -1897,12 +1910,15 @@ async def test_new_chat_member_pick_binds_private_memory_over_a_prewarm(tmp_path
         )
         assert response.status == 200, await response.text()
     assert slot.agent == "reviewer"
-    assert slot.memory_store == store
-    assert await asyncio.to_thread(read_private_session_store, key) == store
-    # Nothing can resume the default agent's pre-warmed process into the
-    # member's private store: the pointer is dropped, not merely ignored.
+    assert slot.memory_store == ""
+    assert await asyncio.to_thread(read_session_execution, key) is None
     assert state.sessions.resumable_sid(key) is None
     assert state.sessions.forget_conversation.called is bool(sid)
+    assert (
+        await chat_handlers.pin_private_agent_store(state, key, "reviewer", KiroCrewConfig.load())
+        == store
+    )
+    assert await asyncio.to_thread(read_private_session_store, key) == store
 
 
 @pytest.mark.asyncio
@@ -1924,6 +1940,59 @@ async def test_new_chat_v1_pick_keeps_its_prewarmed_session(tmp_path, monkeypatc
         assert response.status == 200, await response.text()
     state.sessions.forget_conversation.assert_not_called()
     assert state.sessions.resumable_sid(f"dashboard:{slot.key}") == "acp-prewarm-sid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("default_at_send", ["reviewer", "writer"])
+async def test_new_chat_on_a_default_member_binds_it_on_the_first_send(
+    tmp_path, monkeypatch, default_at_send
+):
+    """A chat that inherited a member default runs its first turn in that member's store."""
+    from chat_test_helpers import _make_app
+
+    cfg = KiroCrewConfig.load()
+    cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    store = provision_member_memory(cfg, "reviewer")
+    provision_member_memory(cfg, "writer")
+    cfg.default_agent = "reviewer"
+    cfg.save()
+    state = _turn_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(chat_handlers, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_handlers, "maybe_auto_tag", AsyncMock())
+    app = _make_app(state)
+    app.router.add_post("/api/chat/slots", chat_handlers.api_chat_slot_create)
+    key = "dashboard:inherited"
+    allocate = state.sessions.get_or_create
+    stores_at_allocation = []
+
+    async def observed_allocation(*args, **kwargs):
+        stores_at_allocation.append(read_private_session_store(key))
+        return await allocate(*args, **kwargs)
+
+    state.sessions.get_or_create = AsyncMock(side_effect=observed_allocation)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/chat/slots", json={"name": "inherited"})
+        assert response.status == 200, await response.text()
+        slot = state._slots["inherited"]
+        assert read_session_execution(key) is None
+        cfg = KiroCrewConfig.load()
+        cfg.default_agent = default_at_send
+        cfg.save()
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "inherited", "message": "Remember this task."}
+        )
+        assert response.status == 200, await response.text()
+        await asyncio.wait_for(slot.task, 10)
+        await asyncio.wait_for(drain_background_tasks(state), 10)
+    state.sessions.get_or_create.assert_awaited_once()
+    assert stores_at_allocation == [store]
+    assert slot.agent == "reviewer"
+    assert slot.memory_store == store
+    assert read_private_session_store(key) == store
+    assert (
+        read_session_execution(key).member_id == KiroCrewConfig.load().agents["reviewer"].member_id
+    )
 
 
 @pytest.mark.asyncio
@@ -1958,7 +2027,7 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
 ):
     """A restricted member chat keeps its transcript and survives a restart.
 
-    The line records the restricted mode and the member's name, and NO memory
+    The pick binds nothing; the first turn binds the member live-only. The line records the restricted mode and the member's name, and NO memory
     store: with no execution carrier written for a restricted session, a store
     name would read back as a legacy owner claim and the restart would refuse
     the chat as a member record with no identity. Left out, the restart reads
@@ -1983,13 +2052,14 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
         response = await client.post("/api/chat/slots/restricted/agent", json={"agent": "writer"})
         assert response.status == 200, await response.text()
     key = "dashboard:restricted"
-    captured = read_session_execution(key)
-    assert captured.memory_mode == mode
-    assert captured.store.store_id == member_store
+    assert read_session_execution(key) is None
     slot.append("user", "restricted body sentinel")
     await asyncio.wait_for(chat_runner._run_chat(state, slot, "restricted body sentinel"), 10)
     await asyncio.wait_for(drain_background_tasks(state), 10)
     state.sessions.get_or_create.assert_awaited_once()
+    captured = read_session_execution(key)
+    assert captured.memory_mode == mode
+    assert captured.store.store_id == member_store
     if mode == "temporary":
         state.context_builder.ensure_store.assert_not_awaited()
 

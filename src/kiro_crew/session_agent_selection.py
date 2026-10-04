@@ -9,23 +9,46 @@ from dataclasses import replace as dataclass_replace
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     ResolvedBindings,
     dispatch_kiro_agent,
     resolve_agent_bindings,
 )
 from kiro_crew.execution_context import (
+    EXECUTION_CONTEXT_KEY,
     ExecutionContext,
     MemoryStoreRef,
     adopt_removed_synced_crewmate,
     bind_session_execution,
+    execution_from_record,
     member_config_for_id,
     read_session_execution,
     resolve_member_execution,
+    restore_live_session_execution,
 )
+from kiro_crew.history import ConversationLog
 from kiro_crew.memory_stores import UnknownMemoryStore
 
-SelectionChange = tuple[dict[str, Any] | None, dict[str, Any]]
+SelectionChange = tuple[dict[str, Any] | None, dict[str, Any] | None]
+MemberChoice = tuple[str, str]
+
+
+def member_choice_record(choice: MemberChoice | None) -> dict[str, str]:
+    """The metadata spelling of an unbound member choice; empty when there is none."""
+    if choice is None:
+        return {}
+    return {"member_id": choice[0], "store": choice[1]}
+
+
+def member_choice_from_record(value: object) -> MemberChoice | None:
+    """Read a persisted member choice, ``None`` unless both fields are present."""
+    if not isinstance(value, dict):
+        return None
+    member_id, store = value.get("member_id"), value.get("store")
+    if isinstance(member_id, str) and member_id and isinstance(store, str) and store:
+        return member_id, store
+    return None
 
 
 def _revision(execution: ExecutionContext | None) -> str:
@@ -76,7 +99,12 @@ def _source_of_view(name: str) -> str:
 
 
 def resolve_session_agent_bindings(
-    resolver, config, session_key: str, agent_name: str | None, *project_dir
+    resolver,
+    config,
+    session_key: str,
+    agent_name: str | None,
+    *project_dir,
+    selection_kind: str = "",
 ) -> ResolvedBindings:
     execution = read_session_execution(session_key)
     selected = agent_name or config.default_agent
@@ -102,9 +130,12 @@ def resolve_session_agent_bindings(
             *project_dir,
             validate_memory_files=False,
             **(
-                {"selection_kind": execution.selection_kind, "execution_context": execution}
+                {
+                    "selection_kind": execution.selection_kind,
+                    "execution_context": execution,
+                }
                 if execution
-                else {}
+                else {"selection_kind": selection_kind} if selection_kind else {}
             ),
         )
     except StopIteration as exc:
@@ -218,10 +249,20 @@ def record_agent_selection(
 def restore_agent_selection(session_key: str, change: SelectionChange | None) -> None:
     if change is None:
         return
-    from kiro_crew.atomic_write import atomic_write
     from kiro_crew.history import ConversationLog
 
     prior, published = change
+    if published is None:
+        if prior is not None:
+            try:
+                bind_session_execution(
+                    session_key,
+                    execution_from_record({EXECUTION_CONTEXT_KEY: prior}),
+                    expected=None,
+                )
+            except UnknownMemoryStore:
+                return
+        return
     from kiro_crew.execution_context import restore_live_session_execution
 
     if restore_live_session_execution(session_key, prior, published):
@@ -245,9 +286,40 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
                 },
             )
             return
-        path = log._path(session_key)
-        rows = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        for field in ("execution_context", "memory_store", "memory_mode"):
-            metadata.pop(field, None)
-        rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
-        atomic_write(path, "".join(rows))
+        _drop_metadata_fields(
+            log, session_key, metadata, ("execution_context", "memory_store", "memory_mode")
+        )
+
+
+def withdraw_agent_selection(session_key: str, expected: ExecutionContext) -> None:
+    if expected.member_id is not None:
+        raise UnknownMemoryStore("This conversation belongs to its original member")
+    _withdraw_selection(session_key, expected)
+
+
+def withdraw_new_agent_selection(session_key: str, expected: ExecutionContext) -> None:
+    """Withdraw a newly published selection by exact identity."""
+    _withdraw_selection(session_key, expected)
+
+
+def _withdraw_selection(session_key: str, expected: ExecutionContext) -> None:
+    published = expected.to_record()
+    if not restore_live_session_execution(session_key, None, published):
+        log = ConversationLog()
+        with log._locked(session_key):
+            metadata, readable = log._read_metadata_status(session_key)
+            if readable and metadata.get("execution_context") == published:
+                _drop_metadata_fields(
+                    log, session_key, metadata, ("execution_context", "memory_store")
+                )
+    if read_session_execution(session_key) is not None:
+        raise UnknownMemoryStore("Conversation selection changed during preparation")
+
+
+def _drop_metadata_fields(log, session_key: str, metadata: dict, fields: tuple[str, ...]) -> None:
+    path = log._path(session_key)
+    rows = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for field in fields:
+        metadata.pop(field, None)
+    rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
+    atomic_write(path, "".join(rows))

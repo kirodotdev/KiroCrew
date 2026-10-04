@@ -1831,9 +1831,14 @@ class TestLinkedSlotSessionKey:
             assert resp.status == 409
             assert data["code"] == "session_rebound"
             assert slot.agent == "old-agent"
+            assert slot.agent_kind == ""
             # The restore wrote the rolled-back agent back into the
             # transcript metadata (last call).
-            assert log.update_metadata.call_args.args[1] == {"agent": "old-agent"}
+            assert log.update_metadata.call_args.args[1] == {
+                "agent": "old-agent",
+                "agent_kind": "",
+                "member_choice": {},
+            }
 
     @pytest.mark.asyncio
     async def test_concurrent_same_agent_write_survives_the_rollback(self, monkeypatch):

@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         effective_session_key,
         is_channel_session_key,
         logger,
+        member_choice_from_record,
         members_mod,
         normalize_theme_consent_sha,
         note_crew_log_class,
@@ -677,6 +678,7 @@ def _hydrate_slot_from_history(
     # recorded namespace from disk.
     if meta.get("agent_kind") in ("member", "template"):
         slot.agent_kind = meta["agent_kind"]
+    slot.member_choice = member_choice_from_record(meta.get("member_choice"))
     if meta.get("project"):
         slot.project = meta["project"]
     if meta.get("channel_folder_filed"):
