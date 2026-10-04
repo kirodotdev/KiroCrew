@@ -1052,17 +1052,22 @@ window and discarded all but one slot's rows. It returns each composition in
 chronological order plus per-block `totals`, `injected_chars`, `user_chars` (the
 `your_message` label), and the occupancy pair `peak_context_used` / `context_window`
 — the provider's own reading and the window it was measured against, both taken from
-the single `turn/completed` inside the requested window that reported the largest
-occupancy, which the Session Breakdown tree turns into a fill ratio. The pair travels
-together because a reading over a window from another turn describes no turn that ran,
-and a model switch moves the window; neither is derived from the turn's token counts,
-which are billing summed over every model call. Block sizes are characters and
-occupancy is tokens; the trace carries both as recorded and derives nothing across
-that unit boundary — there is no chars-per-token estimate of the un-instrumented
-remainder on the wire, because a number that mixed fixed kiro-cli overhead with the
-growing conversation had no honest reader. Two bounds apply: `days`, as before, and
-the fold's own newest-200 window, which needs no count on the wire because every
-row carries the `ordinal` it was assigned before the trim. A session whose
+the single `turn/completed` inside the requested window that is the FULLEST: the one
+with the highest `used` / `used_window` ratio, which the Session Breakdown tree turns
+into a fill ratio. Fullest is the ratio and not the largest absolute `used`, because a
+model switch moves the window: a turn reading 90k against a 100k window is fuller than
+a later turn reading 200k against a 1M one, and ranking by `used` alone would crown the
+emptier turn and then draw it as the session's peak. The comparison is integer-exact
+by cross-multiplication, so a reading whose window the provider never stated has no
+ratio and is not a candidate at all. The pair travels together because a reading over
+a window from another turn describes no turn that ran; neither half is derived from the
+turn's token counts, which are billing summed over every model call. Block sizes are
+characters and the occupancy pair is tokens; the trace carries both as recorded and
+derives nothing across that unit boundary — there is no chars-per-token estimate of
+the un-instrumented remainder on the wire, because a number that mixed fixed kiro-cli
+overhead with the growing conversation had no honest reader. Two bounds apply: `days`,
+as before, and the fold's own newest-200 window, which needs no count on the wire
+because every row carries the `ordinal` it was assigned before the trim. A session whose
 compositions predate the fold reads with an unstated `phase` and no occupancy, and one
 recorded with the crew log switched off reads empty — this surface depends on that
 switch, which is the one thing it is not independent of. Billing is not on this payload:
