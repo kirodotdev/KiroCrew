@@ -14,6 +14,7 @@ import re
 import stat as stat_module  # noqa: F401
 import time
 import uuid
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, NamedTuple  # noqa: F401
@@ -6307,6 +6308,115 @@ def _clear_session_not_found_replay(slot: Any) -> None:
 
 SESSION_NOT_FOUND_CANCELLED_TEXT = "ℹ️ Session reconnect cancelled — nothing was run."
 
+MEMORY_PREPARATION_PARKED_TEXT = (
+    "ℹ️ Memory is still being prepared after the gateway restart. "
+    "Queued messages will run when it is ready."
+)
+
+# One entry per gateway memory-preparation task that has parked at least one
+# slot's queue. The value maps each parked slot key to whether that slot has
+# already been shown the notice; the presence of the task key is what says the
+# drain callback is armed. Weak so a finished task (and the state its callback
+# closes over) is not kept alive by this table.
+_PARKED_FOR_MEMORY: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = weakref.WeakKeyDictionary()
+
+
+def _memory_preparation_pending(state: DashboardState) -> bool:
+    """Whether the gateway's shared memory preparation is still running.
+
+    A finished task (completed, failed or cancelled) is not pending: a failed
+    or cancelled preparation is refused by the turn itself with its own error,
+    which is a permanent answer rather than a wait.
+    """
+    task = getattr(state, "memory_startup_task", None)
+    return task is not None and not task.done()
+
+
+def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: bool) -> None:
+    """Record *slot* as parked on memory preparation and arm the drain.
+
+    The first call per task adds the done-callback; later calls only record
+    the slot. Only recorded slots are drained, so a queue this mechanism did
+    not park (one restored from disk at boot, say) waits for its user's
+    next send. With *notice*, the slot gets one notice row per
+    task so the user can see why its queued cards are not running.
+    """
+    task = getattr(state, "memory_startup_task", None)
+    if task is None or task.done():
+        return
+    parked = _PARKED_FOR_MEMORY.get(task)
+    if parked is None:
+        parked = {}
+        _PARKED_FOR_MEMORY[task] = parked
+
+        def _on_prepared(_done: Any) -> None:
+            if not _parked_queue_drain_admitted():
+                return
+            drain = asyncio.ensure_future(_drain_parked_queues(state, list(parked)))
+            state._background_tasks.add(drain)
+            drain.add_done_callback(state._background_tasks.discard)
+
+        task.add_done_callback(_on_prepared)
+    noticed = parked.get(slot.key, False)
+    parked[slot.key] = noticed or notice
+    if notice and not noticed:
+        slot.append("notice", MEMORY_PREPARATION_PARKED_TEXT, "msg msg-info")
+        state.push_slots_update()
+
+
+def _parked_queue_drain_admitted() -> bool:
+    """Whether a parked queue may be dequeued now that preparation has ended.
+
+    The task ending is not the same as memory being ready: a shutdown, a
+    stopped startup or a recorded recovery failure all end it too, and each
+    makes `_run_chat` refuse the turn after it has been popped. In those cases
+    the queue stays as it is, so the history save keeps it for the next start.
+    """
+    if shutdown_event.is_set():
+        return False
+    from kiro_crew.memory_startup import MemoryStartupUnavailable, require_memory_prepared
+
+    try:
+        require_memory_prepared()
+    except MemoryStartupUnavailable:
+        return False
+    return True
+
+
+async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> None:
+    """Start the next queued turn on each parked slot that is still idle.
+
+    Runs once when memory preparation finishes. Each slot is re-checked under
+    its own lock, the same guard the dispatch routes take, so a send or a
+    Continue that landed in the meantime is never doubled: a running slot
+    drains its own queue at its turn end.
+    """
+    for key in slot_keys:
+        slot = state._slots.get(key)
+        if slot is None or not slot._queue or slot.is_remote:
+            continue
+        try:
+            async with slot._lock:
+                if (
+                    state._slots.get(slot.key) is not slot
+                    or not slot._queue
+                    or slot.running
+                    or slot._in_stage_execution
+                    or slot._stop_state != "idle"
+                ):
+                    continue
+                if not _parked_queue_drain_admitted():
+                    return
+                started = await _start_next_queued_turn(state, slot)
+            if started:
+                state.push_slots_update()
+        except Exception:
+            logger.warning(
+                "Could not drain the parked queue for slot %s after memory preparation",
+                slot.key,
+                exc_info=True,
+            )
+
 
 def _mark_turn_end(slot: _ChatSlot) -> None:
     """Mark on ``slot._pending`` that the turn that just ended is over.
@@ -6372,6 +6482,16 @@ async def _start_next_queued_turn(
     ):
         _mark_turn_end(slot)
         turn_ended = True
+
+    # Ahead of any dequeue: while the gateway's memory preparation is still
+    # running, a dispatched turn only waits at `_run_chat`'s admission seam and,
+    # past its grace period, is refused. Popping the entry and writing its row
+    # first would consume input that never runs, so leave the queue as it is
+    # (cards stay visible, order unchanged) and let the preparation task's
+    # completion drain it (`_arm_parked_queue_drain`).
+    if slot._queue and _memory_preparation_pending(state):
+        _arm_parked_queue_drain(state, slot, notice=True)
+        return False
 
     # FIRST, before anything reads the queue: re-assert each entry's
     # admission-time containment and drop every entry that has stopped
@@ -18091,6 +18211,11 @@ async def _run_chat(
             )
 
         if not next_turn_started:
+            if slot._queue and not _memory_preparation_admitted:
+                # Refused or stopped at the admission seam: the queue behind
+                # this turn is retained, so make sure preparation's completion
+                # starts it rather than waiting for the user's next send.
+                _arm_parked_queue_drain(state, slot, notice=False)
             await _finish_queue_cycle(
                 state,
                 slot,

@@ -242,6 +242,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_handlers.py", "api_chat_slots_model"),
                 ("chat_handlers.py", "stop_slot_turn"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
+                # The memory-ready queue drain starts a turn only on a slot no
+                # dispatch has reserved, the same guard the dispatch routes take.
+                ("chat_runner.py", "_drain_parked_queues"),
                 ("chat_runner.py", "_eager_spawn"),
                 ("chat_runner.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
