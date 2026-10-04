@@ -156,7 +156,11 @@ from kiro_crew.acp.types import (
     backends_retired_by_host_logout,
     overlay_project_scope,
 )
-from kiro_crew.agent import ensure_agent_materialized, markdown_spec_for_agent
+from kiro_crew.agent import (
+    _project_shadow_of,
+    ensure_agent_materialized,
+    markdown_spec_for_agent,
+)
 from kiro_crew.agent_sdk.tool_search import (
     ToolSearchSettings,
     kas_client_meta_settings,
@@ -6034,6 +6038,52 @@ class AcpRuntime:
             "started. Start it again; if it keeps failing, restart the gateway."
         )
 
+    async def _served_default_after_mode(
+        self, handle: AcpSessionHandle, mode_agent: str, work_dir: str | Path | None
+    ) -> None:
+        """Re-run the served-default check for the model ``set_mode`` just applied.
+
+        Both session-start paths check the served default right after storing the
+        ``session/new`` / ``session/load`` response, which is BEFORE the mode is
+        activated. On kiro-cli, ``set_mode`` loads the agent's spec from disk and
+        puts the session on the model that spec pins, undoing that earlier switch.
+        A spec pinning a model the account cannot run (``config.json``
+        ``agent.model`` is copied into it) then fails the first prompt with "no
+        access to model" -- a cron has no retry, so the run dies.
+
+        The spec judged is the one kiro-cli activates: the session's checkout
+        ``<work_dir>/.kiro/agents`` spec when one dispatchably declares
+        *mode_agent*, else the user-level spec. Judging the user-level file while
+        a checkout spec pins a different model would leave an unserved checkout
+        model in place, or move the session off a served one.
+
+        Reads the spec off-loop. An unreadable spec, or one pinning no model, is no
+        evidence of what ``set_mode`` applied, so the session is left as it is.
+        """
+        if self.acp_backend == ACP_BACKEND_KIRO:
+            try:
+                spec = await asyncio.to_thread(self._activated_spec, mode_agent, work_dir)
+            except Exception:
+                logger.debug("served-default re-check: spec for %s unreadable", mode_agent)
+                return
+            model = spec.get("model") if isinstance(spec, dict) else None
+            if isinstance(model, str) and model.strip():
+                await handle.ensure_served_default(activated_model=model)
+
+    def _activated_spec(self, mode_agent: str, work_dir: str | Path | None) -> dict[str, Any]:
+        """The spec kiro-cli loads for *mode_agent* in *work_dir*: checkout first.
+
+        Blocking (a directory scan and a file read); callers run it off the loop.
+        """
+        shadow = _project_shadow_of(
+            mode_agent,
+            work_dir,
+            markdown_specs=self._harness.reads_markdown_agent_specs,
+            dispatchable_only=True,
+        )
+        agents_dir = shadow.parent if shadow is not None else kiro_agents_dir()
+        return load_agent_spec(agents_dir, mode_agent)
+
     async def _activate_mode_bracketed(
         self,
         session_id: str,
@@ -7531,6 +7581,7 @@ class AcpRuntime:
                 wire_registered=kas_agents is not None,
             )
             handle.active_agent = mode_agent
+            await self._served_default_after_mode(handle, mode_agent, session_work_dir)
             # Whether set_mode actually SWITCHED modes: the servers that
             # initialized during session/new belong to the mode kiro-cli
             # started the session on. If the requested agent differs, those
@@ -8088,6 +8139,7 @@ class AcpRuntime:
                 wire_registered=kas_agents is not None,
             )
             handle.active_agent = mode_agent
+            await self._served_default_after_mode(handle, mode_agent, session_work_dir)
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
             _ids, _current, _adv = parse_session_modes(resp)
