@@ -28,6 +28,12 @@ an error. Until #12042 removes the compatibility fallback, a non-slot object
 receives an ephemeral boundary and that swallowed assignment failure emits one
 unconditional WARNING naming the object's type.
 
+Continue and Project requests retain the slot object they originally authorized.
+They reject a same-name replacement after lock acquisition and each pre-commit
+suspension: Continue's child probe, and Project's body read, workspace validation
+and recent-project save. A refused save rolls back only its own project token
+and cannot arm a deferred reset or eager spawn for the replacement.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary
