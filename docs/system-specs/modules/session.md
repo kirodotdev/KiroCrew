@@ -28,6 +28,12 @@ an error. Until #12042 removes the compatibility fallback, a non-slot object
 receives an ephemeral boundary and that swallowed assignment failure emits one
 unconditional WARNING naming the object's type.
 
+Eager spawn loads its agent-binding configuration in a worker thread. Slot and
+session state stay on the loop; existing binding and ownership checks before
+allocation discard work superseded while configuration or resolution awaits.
+Configuration migrations retain their fresh-document delta persistence and
+writer-lock ordering, including when this speculative load is the first load.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary
