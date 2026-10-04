@@ -769,26 +769,22 @@ This is the only thing that closes the issue on merge — `Related: #<n>`, `Part
 in the body means the keyword is missing or malformed, and `pr_status.py` prints a
 `NOTICE:`. The reference may be `#<n>`, `owner/repo#<n>`, or a full URL.
 
-On Kiro Crew the link is **a gate, not advice** -- currently PAUSED
-(`GATE_ENFORCED: "false"` in `.github/workflows/issue-gate.yml`), so an issue-less
-PR is not red today, but write the trailer anyway: the gate is switched on once
-the Captain's scan is running. When on, the `Issue Gate` lane of
-`PR Readiness` fails a PR whose visible body declares no issue of the repository,
-or declares one that does not carry exactly one tier label (`tier:T1`, `tier:T2`,
-`tier:T3`, `tier:T4`), or is `tier:T3` / `tier:T4` and not yet flipped from
-`pending-triage` to `triaged` by a person. The gate reads the body
-with `pr_status.py`'s `declared_issue_numbers()` (through
+On Kiro Crew the link is **a gate, not advice**, though it is PAUSED today
+(`GATE_ENFORCED: "false"` in `.github/workflows/issue-gate.yml`): write the
+trailer anyway. Once on, the `Issue Gate` lane of `PR Readiness` fails a PR whose
+visible body declares no issue of the repository, or whose issue lacks exactly one
+`tier:T1`..`tier:T4` label, or is `tier:T3`/`tier:T4` and not yet flipped from
+`pending-triage` to `triaged` by a person. The gate reads the body with
+`pr_status.py`'s `declared_issue_numbers()` (through
 `.github/scripts/issue_gate_refs.py`): a declaration STARTS a line and the rest
-of the line is free, and the non-closing `Refs #<n>` / `Part of #<n>` count as
-declarations even though they close nothing. That is a wider reading than the
-whole-line, closing-verbs-only trailer this section describes and the `NOTICE:`
-below classifies with -- so a body can pass the gate and still earn a `NOTICE:`
-(`Fixes #123 (the Windows half)`, or `Part of #123` alone). Write the trailer as
-a whole line of its own and both are satisfied. Open the issue and let triage
-reach it BEFORE Phase 1. There is no body-side opt-out: once the gate is on, an issue-less PR is red
-until a maintainer applies the `issue-gate: waived` label (production fire,
-release PR), and `pr_status.py` prints its `NOTICE:` for the missing link every
-round rather than accepting a line the gate rejects.
+of the line is free, and the non-closing `Refs #<n>` / `Part of #<n>` count too.
+That is wider than the whole-line, closing-verbs-only trailer this section
+describes and the `NOTICE:` below classifies with, so a body can pass the gate and
+still earn a `NOTICE:` (`Fixes #123 (the Windows half)`, or `Part of #123` alone).
+Write the trailer as a whole line of its own and both are satisfied. Open the
+issue BEFORE Phase 1. There is no body-side opt-out: an issue-less PR is red once
+the gate is on, until a maintainer applies `issue-gate: waived`, and
+`pr_status.py` prints its `NOTICE:` for the missing link every round.
 
 `pr_status.py` masks fenced blocks and indented examples and reconciles closures
 on repository *and* number, so just read the `NOTICE:` lines it prints.
