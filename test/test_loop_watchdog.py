@@ -824,13 +824,23 @@ def _run_child(script: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _child_script(dump: Path, blocker: str) -> str:
+    """A child whose only exit path is the alarm, with its daemon thread parked.
+
+    The alarm dump walks every thread's frames from inside the signal handler,
+    with no GIL. A daemon thread that is running Python at that instant can have
+    a frame change under the walk, and the child then dies by ``SIGSEGV`` part
+    way through the dump instead of by ``SIGALRM`` after it. ``stall_after`` is
+    longer than any child lives, so no poll here can ever act; a poll interval
+    longer than that keeps the daemon thread blocked in ``Event.wait`` for the
+    child's whole life, and the dump only ever walks stable frames.
+    """
     return textwrap.dedent(f"""
         import logging, re, signal, sys, time
         from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
         f = open({str(dump)!r}, "w", encoding="utf-8")
         f.write("# header\\n\\n")
         wd = LoopStallWatchdog(
-            stall_after=30.0, exit_after=0.2, poll_interval=0.05, enrich_after=10.0,
+            stall_after=30.0, exit_after=0.2, poll_interval=60.0, enrich_after=10.0,
             dump_file=f, log=logging.getLogger("t"),
         )
         wd.start()
