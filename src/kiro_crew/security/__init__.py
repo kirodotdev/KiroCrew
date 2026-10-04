@@ -1445,6 +1445,24 @@ def is_denied(
                 component="argv-floor",
             )
 
+    # ── World-rwx chmod floor (argv-structural, gated on its catalog row) ──
+    # The ``chmod 777.*`` row names one spelling; the floor reads the argv of every
+    # command and nested payload for a ``chmod`` whose mode operand, after options
+    # in any position or packing, is world-rwx.  Union with the regex row, which
+    # stays in ``regex_patterns``: the floor only ADDS denials, and it runs only
+    # while the row is in the effective set so an operator opt-out disables both.
+    # Reported under the row's own pattern, exactly as the self-protection floors
+    # report theirs, so the refusal and its SEL event map back to the rule id.
+    chmod_pattern = _rules._CHMOD_WORLD_RWX_FLOOR_PATTERN
+    if chmod_pattern in regex_patterns and _submodule("chmod_floor")._is_chmod_world_rwx(lower):
+        _emit_deny_event(tool_name, chmod_pattern, lower)
+        return _reason(
+            chmod_pattern,
+            _rules._CHMOD_WORLD_RWX_FLOOR_NOTE,
+            rule=_rules._CHMOD_WORLD_RWX_FLOOR_RULE_ID,
+            component="argv-floor",
+        )
+
     # Memoizes the argv-structural mention walk per view: the same view is asked
     # about once per matching pattern, and every opted-in pattern can match.
     mention_cache: dict[str, bool] = {}
