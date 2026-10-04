@@ -436,6 +436,7 @@ class _FakeResponse:
 class _FakeSession:
     def __init__(self, response):
         self._response = response
+        self.get_kwargs: dict | None = None
 
     async def __aenter__(self):
         return self
@@ -443,16 +444,23 @@ class _FakeSession:
     async def __aexit__(self, *exc):
         return False
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, proxy=None):
+        self.get_kwargs = {"url": url, "headers": headers, "proxy": proxy}
         return self._response
 
 
 def _serve(monkeypatch, *chunks, status: int = 200) -> _FakeResponse:
     """Route ``_fetch_json``'s HTTP call at a response yielding *chunks*."""
     response = _FakeResponse(status, chunks)
-    monkeypatch.setattr(
-        official_mod.aiohttp, "ClientSession", lambda *a, **kw: _FakeSession(response)
-    )
+    sessions: list[_FakeSession] = []
+
+    def _make(*a, **kw):
+        session = _FakeSession(response)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(official_mod.aiohttp, "ClientSession", _make)
+    response.sessions = sessions
     return response
 
 
@@ -516,6 +524,37 @@ class TestFetchJsonRead:
 
         with pytest.raises(ProviderUnavailableError):
             await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+    @pytest.mark.asyncio
+    async def test_env_proxy_is_passed_to_request(self, monkeypatch):
+        """Behind an HTTP(S) proxy, the request is sent through it.
+
+        aiohttp does not read HTTP(S)_PROXY unless trust_env=True (which also
+        enables the ~/.netrc Basic-auth path), so the provider resolves the
+        proxy from the environment itself and passes it as ``proxy=``.
+        """
+        raw = json.dumps({"servers": []}).encode("utf-8")
+        response = _serve(monkeypatch, raw)
+        monkeypatch.setattr(
+            official_mod.urllib.request,
+            "getproxies",
+            lambda: {"https": "http://proxy.example:3128"},
+        )
+
+        await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+        assert response.sessions[0].get_kwargs["proxy"] == "http://proxy.example:3128"
+
+    @pytest.mark.asyncio
+    async def test_no_env_proxy_passes_none(self, monkeypatch):
+        """With no proxy configured, nothing changes — a direct request."""
+        raw = json.dumps({"servers": []}).encode("utf-8")
+        response = _serve(monkeypatch, raw)
+        monkeypatch.setattr(official_mod.urllib.request, "getproxies", lambda: {})
+
+        await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+        assert response.sessions[0].get_kwargs["proxy"] is None
 
 
 # ---------------------------------------------------------------------------

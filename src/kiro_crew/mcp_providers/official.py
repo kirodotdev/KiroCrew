@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import urllib.parse
+import urllib.request
 from typing import Any
 
 import aiohttp
@@ -83,9 +84,17 @@ async def _fetch_json(url: str) -> Any | None:
     so callers can distinguish "not found" from "registry unreachable".
     """
     timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_SECS)
+    # Resolve the HTTPS proxy from the environment explicitly and pass it to
+    # the request, so discovery works behind an HTTP(S) proxy. We deliberately
+    # keep the session at the default trust_env=False: setting trust_env=True
+    # would also enable aiohttp's ~/.netrc Basic-auth path, attaching netrc
+    # credentials to outbound registry requests (a credential file on the
+    # sensitive-path floor). Explicit proxy= gets the egress without that read.
+    proxies = urllib.request.getproxies()
+    proxy = proxies.get("https") or proxies.get("http")
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers={"User-Agent": _USER_AGENT}) as resp:
+            async with session.get(url, headers={"User-Agent": _USER_AGENT}, proxy=proxy) as resp:
                 if resp.status == 404:
                     return None
                 if resp.status != 200:
