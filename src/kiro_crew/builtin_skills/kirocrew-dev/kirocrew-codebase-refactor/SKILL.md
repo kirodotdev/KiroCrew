@@ -26,7 +26,7 @@ Infer the narrowest mode supported by the request:
 - **RECOVER**: rescue local-only, stale, conflicted, interrupted, or partially
   superseded Kiro Crew refactor work.
 - **INTEGRATE**: reconcile a completed scope with current upstream, then hand
-  publication and PR-to-green work to `prepare-pr` when authorized.
+  publication and PR-to-green work to `kirocrew-prepare-pr` when authorized.
 
 Planning or audit authority does not authorize edits. Edit authority does not
 authorize commits, pushes, PR mutations, force-pushes, merges, or cleanup.
@@ -39,7 +39,7 @@ Do not restate or approximate these contracts:
 |---|---|
 | Create a Kiro Crew implementation checkout, build, or run the repository gate | [kirocrew-worktree-dev](../kirocrew-worktree-dev/SKILL.md) |
 | Add, edit, diagnose, or speed up tests | [writing-tests](../writing-tests/SKILL.md) |
-| Commit, sync, squash, publish, review, or drive a PR to green | [prepare-pr](../prepare-pr/SKILL.md) |
+| Commit, sync, squash, publish, review, or drive a PR to green | [kirocrew-prepare-pr](../kirocrew-prepare-pr/SKILL.md) |
 | Monitor an already-published PR when the requested objective fits its provider contract | [babysit](../babysit/SKILL.md) |
 
 Before touching a subsystem, read root `AGENTS.md` and every owning spec it
@@ -196,7 +196,7 @@ On PowerShell:
   upstream before replaying it.
 
 Read [recovery-and-integration.md](references/recovery-and-integration.md).
-When publication is authorized, load `prepare-pr` and follow its complete loop;
+When publication is authorized, load `kirocrew-prepare-pr` and follow its complete loop;
 this skill never substitutes a lighter PR process.
 
 ## Measure the structural outcome

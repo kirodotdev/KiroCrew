@@ -343,7 +343,7 @@ class TestFamilyLine:
         groups = _namespace_groups(
             [
                 {"key": "kirocrew-dev/babysit"},
-                {"key": "kirocrew-dev/prepare-pr"},
+                {"key": "kirocrew-dev/kirocrew-prepare-pr"},
                 {"key": "web-verify"},
                 {"key": "web-browse"},
                 {"key": "web-preview"},

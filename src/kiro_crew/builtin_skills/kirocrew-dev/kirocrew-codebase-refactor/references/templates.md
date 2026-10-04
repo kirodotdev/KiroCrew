@@ -94,7 +94,7 @@ Compute ahead/behind, owned-path changes, active intent overlap and semantic ris
 Classify the work as clean replay, bounded manual integration, fresh-base residual
 rebuild, superseded, or unrecoverable. If implementation is authorized, preserve
 the compatible residual only and run target plus integration gates. Load
-prepare-pr for every publication step. Never force a stale diff through broad
+kirocrew-prepare-pr for every publication step. Never force a stale diff through broad
 conflicts merely to preserve the original branch.
 ```
 

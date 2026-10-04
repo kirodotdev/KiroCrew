@@ -489,7 +489,7 @@ answers were tried first and are worth naming: force-adding the files into
 `temp-screenshots/` puts binaries in this repository's history forever past a
 `.gitignore` rule that exists to prevent exactly that -- the force-add is reserved for
 a fork contributor whom GitHub's upload endpoint refuses, never for this repository's
-own agents (prepare-pr's `references/rationale.md` records the exception and its
+own agents (kirocrew-prepare-pr's `references/rationale.md` records the exception and its
 merge-time cost) -- and hosting them on a side branch leaves the evidence outside the
 PR with no tie to its head, which the design lane rejects as unevaluable. For an
 author with write access the attachment path is the only one that satisfies both.

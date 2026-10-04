@@ -2,7 +2,7 @@
 
 This reference belongs to `kirocrew-codebase-refactor` and applies only to the
 Kiro Crew source repository or one of its worktrees. Repository-native commands,
-the owning specs, `writing-tests`, and `prepare-pr` outrank generic examples.
+the owning specs, `writing-tests`, and `kirocrew-prepare-pr` outrank generic examples.
 
 Read this reference before claiming a scope is green, review-ready, or complete.
 

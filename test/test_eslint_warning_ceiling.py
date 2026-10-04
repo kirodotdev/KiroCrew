@@ -88,7 +88,7 @@ def test_no_other_workflow_transcribes_the_ceiling() -> None:
     `ci.yml` reds. That is a false all-clear on `main`, which is exactly what a
     lane auditing `main`'s ratchets exists to prevent. Read the value instead --
     `main-ratchet-audit.yml` greps it out of `ci.yml` at run time, the same way
-    the prepare-pr profile does.
+    the kirocrew-prepare-pr profile does.
 
     Checked at every value, including zero: the early return in
     `test_the_ceiling_is_not_transcribed_into_prose` turns on a doc quoting the

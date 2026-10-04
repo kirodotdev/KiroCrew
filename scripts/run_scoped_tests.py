@@ -3,7 +3,7 @@
 
 What this buys
 --------------
-The ``prepare-pr`` loop runs its gate up to ten times per PR, and the full local
+The ``kirocrew-prepare-pr`` loop runs its gate up to ten times per PR, and the full local
 suites are enormous: 62,108 collected backend tests (collection alone takes ~100s
 before a single test runs) and ~1,444 frontend spec files. CI runs the touched
 surface's full suite on ``refs/pull/<N>/merge`` regardless of what ran here, and
@@ -1117,9 +1117,9 @@ def _self_test() -> int:
     check("python tokens carry the stem", "session" in py_tokens)
     check("python tokens carry the dotted path", "kiro_crew.session" in py_tokens)
     check("python tokens carry the repo path", "src/kiro_crew/session.py" in py_tokens)
-    md_tokens = reference_tokens("src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md")
+    md_tokens = reference_tokens("src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md")
     check("a non-python file does not contribute a bare basename", "SKILL.md" not in md_tokens)
-    check("a non-python file contributes its last two components", "prepare-pr/SKILL.md" in md_tokens)
+    check("a non-python file contributes its last two components", "kirocrew-prepare-pr/SKILL.md" in md_tokens)
     check(
         "a bare stem is word-bounded, not a substring",
         not _reference_matcher({"session"}).search("sessions_view"),

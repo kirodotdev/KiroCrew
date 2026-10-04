@@ -33,7 +33,7 @@ PROFILE = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "profiles"
     / "kirocrew.json"
 )

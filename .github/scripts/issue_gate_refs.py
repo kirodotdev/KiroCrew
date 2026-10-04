@@ -4,8 +4,8 @@
 The gate (`.github/workflows/issue-gate.yml`) needs one answer from a PR body:
 which issues of THIS repository does it declare it closes? That question
 already has an in-tree answer -- the closing-reference grammar in
-`prepare-pr/scripts/pr_status.py`, exported as `declared_issue_numbers()`,
-which is what the local prepare-pr loop prints its `NOTICE:` from. This
+`kirocrew-prepare-pr/scripts/pr_status.py`, exported as `declared_issue_numbers()`,
+which is what the local kirocrew-prepare-pr loop prints its `NOTICE:` from. This
 script is the gate's adapter onto that one entry point, so the
 same body gets the same answer from both surfaces; a grammar re-derived in
 the workflow drifts from it (a different keyword set, a different mask).
@@ -60,7 +60,7 @@ _PR_STATUS = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "pr_status.py"
 )

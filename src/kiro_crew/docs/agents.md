@@ -110,7 +110,7 @@ Under the hood a mapped skill is a `skill://` entry in the agent's `resources`, 
   "name": "code-reviewer",
   "resources": [
     "file://.kiro/steering/**/*.md",
-    "skill://~/.kiro/skills/prepare-pr/SKILL.md"
+    "skill://~/.kiro/skills/kirocrew-prepare-pr/SKILL.md"
   ]
 }
 ```

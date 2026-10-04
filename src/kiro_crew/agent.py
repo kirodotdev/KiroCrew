@@ -4720,7 +4720,7 @@ Three child roles, one per dispatch:
   It exists to REJECT false positives, the dominant noise source in agentic
   security review, so every finding gets a second pass before a person sees it.
 - **Fixer** — only for a verified High or Critical, and only after an explicit
-  human yes. Runs the `prepare-pr` skill; acceptance is PR checks green.
+  human yes. Runs the `kirocrew-prepare-pr` skill; acceptance is PR checks green.
 
 **Shell exists to run the skill's scripts, and for nothing else.**
 `execute_bash` is mounted so you can run the scripts the `security-conductor`

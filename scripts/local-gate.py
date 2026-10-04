@@ -12,7 +12,7 @@ produces anyway on ``refs/pull/<N>/merge``.
 
 This gate never does that on its own. It runs the RELATED set on each surface,
 computed by ``scripts/run_scoped_tests.py`` (the same module the ``gates[]`` in
-the prepare-pr profile call one surface at a time), with a bounded worker count.
+the kirocrew-prepare-pr profile call one surface at a time), with a bounded worker count.
 The full suite is CI's job.
 
 Contract
@@ -64,7 +64,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # One selection module for the whole local gate. The per-surface `gates[]`
-# entries in the prepare-pr profile call `run_scoped_tests.py --surface X`
+# entries in the kirocrew-prepare-pr profile call `run_scoped_tests.py --surface X`
 # directly; this driver runs the same selection for both surfaces in one go so
 # an iteration pass has one command to type and one verdict to read.
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))

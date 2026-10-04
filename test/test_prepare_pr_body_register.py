@@ -1,13 +1,13 @@
 """The PR body has to read as plain language, and the rule has to stay anchored.
 
-`prepare-pr` writes the PR description, and its "What changed" section is what a
+`kirocrew-prepare-pr` writes the PR description, and its "What changed" section is what a
 reviewer reads first. Left unconstrained it grows into layered clauses and
 decorative jargon that hide the actual change. The skill now pins that prose to
 the Age 5 row of the `explain-for` skill (Age 10 was tried first and still let
 dense prose through).
 
 Two joints can break silently. The register rule can be dropped from
-`prepare-pr` (bodies drift back to dense prose with no test failing), or the
+`kirocrew-prepare-pr` (bodies drift back to dense prose with no test failing), or the
 `explain-for` row it points at can be renamed away (the reference still reads
 fine but resolves to nothing). One assertion each.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
-PREPARE_PR = SKILLS / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
+PREPARE_PR = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "SKILL.md"
 EXPLAIN_FOR = SKILLS / "explain-for" / "SKILL.md"
 
 
@@ -46,7 +46,7 @@ def test_prepare_pr_pins_the_pr_body_to_the_age_5_register() -> None:
 
 
 def test_explain_for_still_carries_the_age_5_row() -> None:
-    """The row `prepare-pr` points at must exist, or the reference is dead."""
+    """The row `kirocrew-prepare-pr` points at must exist, or the reference is dead."""
     assert "| Age 5 |" in _flat(EXPLAIN_FOR)
 
 
@@ -129,7 +129,7 @@ def test_the_new_section_is_not_added_to_the_fork_description_gate() -> None:
             / "kiro_crew"
             / "builtin_skills"
             / "kirocrew-dev"
-            / "prepare-pr"
+            / "kirocrew-prepare-pr"
             / "references"
             / "rationale.md"
         )

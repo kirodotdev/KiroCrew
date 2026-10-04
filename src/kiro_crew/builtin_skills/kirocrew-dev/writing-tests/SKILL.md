@@ -27,7 +27,7 @@ neighbouring steps, and none of them restates what is here:
 |---|---|
 | Writing, fixing, or speeding up a test | **this skill** |
 | Running the build gate in a worktree, and deciding whether a red is yours | **kirocrew-worktree-dev** |
-| Driving a branch to a review-ready PR and through CI | **prepare-pr** |
+| Driving a branch to a review-ready PR and through CI | **kirocrew-prepare-pr** |
 | Polling that PR until it is green | **babysit** |
 
 The line that matters most in practice: **kirocrew-worktree-dev** tells you whether a

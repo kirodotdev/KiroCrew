@@ -115,7 +115,7 @@ class TestSecurityConductorInstaller:
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         for role in ("Auditor", "Verifier", "Fixer"):
             assert role in prompt, role
-        assert "prepare-pr" in prompt  # the fixer's own procedure
+        assert "kirocrew-prepare-pr" in prompt  # the fixer's own procedure
 
     def test_prompt_closes_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):
         """Four child roles reach a terminal verdict and the loop is stopped for each

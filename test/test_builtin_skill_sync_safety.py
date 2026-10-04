@@ -358,7 +358,7 @@ class TestLegitimateUpdatesStillHappen:
         # only touches a bundled script leaves SKILL.md byte-identical with its
         # packaged mtime, and a manifest-only update gate then reports "up to
         # date" forever -- the install keeps executing superseded code. Broke
-        # prepare-pr in practice: its extractor was fixed in the package while
+        # kirocrew-prepare-pr in practice: its extractor was fixed in the package while
         # every install kept the previous copy and failed against CI's current
         # workflow.
         src = _make_skill(builtin_root, "helper", "v1", {"scripts/tool.py": "# v1"})

@@ -1,8 +1,8 @@
-"""Tests for the prepare-pr monitor_armed.py loop-arming check.
+"""Tests for the kirocrew-prepare-pr monitor_armed.py loop-arming check.
 
 ``monitor_start`` is a stateless session directive: the MCP tool returns "Monitor
 loop requested" and the loop is armed later, when the turn's tool result is
-consumed. Every drop on that path is silent to the model, so prepare-pr Phase 3
+consumed. Every drop on that path is silent to the model, so kirocrew-prepare-pr Phase 3
 verifies arming against the loop store instead of the reply text -- and these
 tests pin the two properties that verification depends on:
 
@@ -29,7 +29,7 @@ MONITOR_ARMED = str(
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "monitor_armed.py"
 )

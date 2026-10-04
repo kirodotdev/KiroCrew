@@ -1,6 +1,6 @@
 """Tests for local_review.py - local/server reviewer CONTRACT PARITY.
 
-The prepare-pr skill's Phase-2 local review is only a real gate if it judges a
+The kirocrew-prepare-pr skill's Phase-2 local review is only a real gate if it judges a
 commit against the same contract the server reviewers use. ``local_review.py``
 gets that by EXTRACTING the contract from the reviewer workflows instead of
 restating it, so these tests hold two properties:
@@ -36,7 +36,7 @@ from skill_script_helpers import load_skill_script
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr"
+SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 PROFILES_DIR = SKILL_DIR / "profiles"
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -1098,7 +1098,7 @@ def test_malformed_profile_is_an_environment_error_not_a_traceback(
         local_review.assemble(
             str(parity_repo), "main", str(tmp_path / "out"), str(tmp_path / "stage")
         )
-    assert "cannot read the prepare-pr profile" in str(exc.value)
+    assert "cannot read the kirocrew-prepare-pr profile" in str(exc.value)
     assert "TypeError" in str(exc.value)
 
 

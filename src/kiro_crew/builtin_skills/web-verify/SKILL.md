@@ -150,7 +150,7 @@ endpoint in the isolated harness rather than accepting it as evidence.
 ## Screenshots for the PR
 
 The frames you captured here are the ones a user-visible UI change needs on its PR:
-see the `prepare-pr` skill for how they get attached, and the repo's constraint
+see the `kirocrew-prepare-pr` skill for how they get attached, and the repo's constraint
 against committing binaries. Capture once, use twice.
 
 ## Not this skill

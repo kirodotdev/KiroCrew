@@ -1,7 +1,7 @@
-"""Tests for the prepare-pr push_guard.py stale-base detection.
+"""Tests for the kirocrew-prepare-pr push_guard.py stale-base detection.
 
 Verifies that the push_guard script (src/kiro_crew/builtin_skills/kirocrew-dev/
-prepare-pr/scripts/push_guard.py) correctly refuses to push when:
+kirocrew-prepare-pr/scripts/push_guard.py) correctly refuses to push when:
 - The branch has no common history with origin/<base> (orphan / disconnected)
 - The commit count exceeds --max-ahead (implausibly many commits for a PR)
 - The fetch of origin/<base> fails (network error → fail closed)
@@ -36,7 +36,13 @@ from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 # Resolve the push_guard.py script path relative to the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PUSH_GUARD_DIR = (
-    REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts"
+    REPO_ROOT
+    / "src"
+    / "kiro_crew"
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "kirocrew-prepare-pr"
+    / "scripts"
 )
 PUSH_GUARD = str(PUSH_GUARD_DIR / "push_guard.py")
 

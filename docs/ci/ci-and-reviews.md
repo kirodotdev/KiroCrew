@@ -4,8 +4,8 @@ What runs on a pull request, what each gate is for, and how they fold into one
 verdict. The source of truth is `.github/workflows/`; this doc explains the
 shape and the rationale.
 
-The `prepare-pr` skill
-(`src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md`) is the agent
+The `kirocrew-prepare-pr` skill
+(`src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md`) is the agent
 side of this: it drives a working tree to review-ready by working with these
 gates. Its phase flow, exit-code contract and PR-description contract live in
 that skill, not here. Its portability design is
@@ -15,12 +15,12 @@ is [CONTRIBUTING.md](../../CONTRIBUTING.md).
 ### Agent repair routing
 
 For Kiro Crew PR CI AI comments, agents MUST load and execute
-[prepare-pr's Review repair routing](../../src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md#review-repair-routing).
+[kirocrew-prepare-pr's Review repair routing](../../src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md#review-repair-routing).
 That section is the one canonical contract, and its table is the only place the
 repair-family preference order is written; this doc does not restate it, and
 `test/test_review_repair_routing_skill.py` pins that table on purpose because it
 records a requested execution policy. The reason for the policy lives in
-prepare-pr's `references/rationale.md`.
+kirocrew-prepare-pr's `references/rationale.md`.
 
 The boundaries that matter here: the preferences are prose, not CI models, config
 defaults or profile fields; the delegate implements, tests and self-reviews the
@@ -30,7 +30,7 @@ parent self-fix presented as delegation; a catalogue entry or accepted pin is no
 proof of service, so an unverified served model is reported as such. The CI
 workflows and the base-ref profile's read-only local reviewer semantics stay
 unchanged. Worktree-dev and babysit point to this contract; general monitoring
-does not depend on the Kiro Crew repository or on prepare-pr being installed.
+does not depend on the Kiro Crew repository or on kirocrew-prepare-pr being installed.
 
 ## Shape
 
@@ -338,7 +338,7 @@ The pin selects the minor series, not one patch release. Stdlib-only gates still
 need the project's supported grammar: Comment History, Loop-Bound Locks and Memory
 Store Seam parse repository source, including Python 3.12 f-strings. An older
 parser can reject valid source or silently miss findings. The repository-owned
-prepare-pr profile starts its repeated checks with a pure runtime preflight that
+kirocrew-prepare-pr profile starts its repeated checks with a pure runtime preflight that
 prints the active Python version and executable and rejects versions below the
 project's `>=3.12` floor. It does not install or replace an interpreter; activate a
 supported environment before running the checks. Local checks do not establish
@@ -377,7 +377,7 @@ See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md).
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
 | `testpaths-coverage` | `scripts/check_testpaths_coverage.py`, self-test first. Fails on a `test_*.py` file outside the roots `setup.cfg` pins in `testpaths` — such a file is never collected, so it is green by omission and rots against the code it claims to cover (#6577 found twelve). Whole-tree, since the backlog is zero |
 | `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
-| `memory-store-seam` | `scripts/check_memory_store_seam.py`, self-test first, with `MEMSTORE_BASE_REF` resolved to the diff base. Enforces explicit store selection on added memory-context calls. The prepare-pr floor runs both commands; the main ratchet lane classifies this as a diff-only gate because its whole-tree backlog is a non-failing report |
+| `memory-store-seam` | `scripts/check_memory_store_seam.py`, self-test first, with `MEMSTORE_BASE_REF` resolved to the diff base. Enforces explicit store selection on added memory-context calls. The kirocrew-prepare-pr floor runs both commands; the main ratchet lane classifies this as a diff-only gate because its whole-tree backlog is a non-failing report |
 | `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, every bare harness `H<n>` ID in a source comment names a row in `harness-parity.md`, and no doc whose filename is hardcoded in code has been renamed out from under its consumer. Four trees are walked: `docs/`, the packaged `src/kiro_crew/docs/`, `website/docs/`, and the markdown a builtin app ships under `src/kiro_crew/apps/builtins/`. Plus the fact checks below, behind a shrink-only baseline |
 
 Each of these runs its own self-test in the same step, ahead of the real check. A
@@ -617,7 +617,7 @@ local macOS and Windows retain recycling without that Linux-only ceiling. Incomp
 reports, cancellation, worker failures and launcher exceptions return 123, never
 a partial formatting verdict. Per-process limits do not bound the whole job's
 cgroup usage or guarantee that every future input fits. The repository-owned
-prepare-pr profile keeps the bounded local path and diagnostic command. Ratchet
+kirocrew-prepare-pr profile keeps the bounded local path and diagnostic command. Ratchet
 scope, graduates and prune-only baseline refresh remain unchanged.
 `bundle-size` uses large for its 6 GiB heap.
 Shard ownership, coverage selectors and floors stay unchanged. Five stale Windows
@@ -1509,9 +1509,9 @@ the crew itself, so a change to the label set is a change in both places.
 
 **One grammar.** Which issues a body declares is decided by
 `.github/scripts/issue_gate_refs.py`, an adapter onto the declaration grammar
-`prepare-pr/scripts/pr_status.py` exports as its one public entry point
+`kirocrew-prepare-pr/scripts/pr_status.py` exports as its one public entry point
 `declared_issue_numbers(body, repo)` -- the masking and the issue targets the
-local prepare-pr loop uses too, so a change there reaches the gate and nothing is
+local kirocrew-prepare-pr loop uses too, so a change there reaches the gate and nothing is
 re-derived in the workflow (a hand-rolled grep there, or an adapter rewrapping a
 private pattern, drifts unnoticed). By reference to that grammar: a line that
 starts (three columns of indent at most, an optional bullet) with a closing verb
@@ -1631,9 +1631,8 @@ here.
 
 **Issue-less PR shapes this repository produces, and their path through the
 gate.** A `deferred-finding` issue filed from an accept-and-defer disposition
-still carries `needs-triage` (the prepare-pr deferral contract says so), which is
-the Issue Radar intake label; once the gate is on, the Captain tiers it like any
-other issue and the follow-up PR can pass. The three pull requests scheduled workflows
+needs no extra label: once the gate is on, the Captain tiers it like any other
+untiered issue and the follow-up PR can pass. The three pull requests scheduled workflows
 generate -- `test-durations.yml` (`chore(test): refresh .test_durations`),
 `add-contributor.yml` (`docs: add new contributors to README`) and
 `memory-benchmark.yml` (`chore(bench): accept new memory-benchmark baseline`) --
@@ -1975,11 +1974,11 @@ supersedes the earlier ... pill spec" plus its pin tests, said nothing, and drew
 punchline that opens with the problem, a `### Not justified as shipped` list, the
 collapsed inventory, and -- on `BLOCK` only -- `### Blockers`. Every item that is not
 `justified` gets exactly one entry in that list, carrying a `Subtraction:` line where
-one exists and its own `Clears when:` line last (the prepare-pr extractor reads from
+one exists and its own `Clears when:` line last (the kirocrew-prepare-pr extractor reads from
 `Clears when:` to the end of the item as the clearance); there is no `### Watch` and
 no `### Subtractions`. Those two sections used to restate the same items a second and
 third time (on #10119: three items, three sections, ~600 words against a 180-word
-cap), which is what buried the finding under the text around it. The prepare-pr
+cap), which is what buried the finding under the text around it. The kirocrew-prepare-pr
 extractor already reads `Not justified as shipped` as an item-bearing section, so
 the local loop's per-item dispositions are unchanged; the check-run summary and the
 `::warning` annotation publish that section in place of `Watch`.
@@ -2031,7 +2030,7 @@ so the lanes cannot drift apart on them (#5852). The same-repo lane's remaining
 inline chunks (its system rules, repo context, and round-convergence sections)
 moved into that directory too (#3697), so its whole prompt is now assembled by
 splicing staged prompt files in a fixed order — which is also what lets the
-prepare-pr skill's `local_review.py` mirror the contract by reading the same
+kirocrew-prepare-pr skill's `local_review.py` mirror the contract by reading the same
 files instead of scraping shell heredocs. The same-repo lane stages them
 from the PR's **base** commit like the Opus lanes; unlike those lanes it falls
 back to the checked-out copy (with a warning) when a block is absent on the base,
@@ -2524,7 +2523,7 @@ file over its size ceiling, and the guidance asks for two or three shots. The
 evidence stays readable at the squash commit
 (`https://github.com/<owner>/<repo>/blob/<sha>/temp-screenshots/...`) after the
 removal, so the removal PR names that SHA. The why lives with the rule it excepts, in
-prepare-pr's `references/rationale.md`.
+kirocrew-prepare-pr's `references/rationale.md`.
 
 The PR identity (number, repository, shas, data-file paths) is passed to both passes
 in `--append-system-prompt`, not in `prompt:`. GitHub rejects a workflow file
@@ -2540,12 +2539,20 @@ silently (zero jobs, nothing on the PR) when any expression-bearing string excee
 /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-head-sha>: <one-sentence reason>
 ```
 
+A writer's agent running the `kirocrew-prepare-pr` loop may post this command for
+a finding it judged a false positive or over-engineering, and must report it
+afterwards; it never posts one for a security, data-loss, corruption, crash or
+removed-guard finding, which goes to a person. Its reason starts with `agent:`, so
+the record still names the writer whose account posted it and accountable for it,
+while a reader can tell the agent's call from a person's ruling.
+
 `scope` targets the [Security Scope Review](#security-scope-review-what-a-tightening-newly-refuses) lanes. Each target names a lane by its command spelling, and `pr_status.py` resolves that spelling to a reviewer through the lane's comment key — so `gpt` is the `codex-ai-review` lane's reviewer `GPT`, and `fable` is the `claude-ai-review` lane's reviewer `OPUS`. `scope` is the exception: its lane consumes the record like any other, but it has no reviewer binding, so the script has no row to report it under.
 
 `pr_status.py` reads the marker too, and reports an accepted record as its own row —
 `GPT: OVERRIDDEN by @<actor>` — rather than as a fresh stamp. The two markers prove
 different things: `[<NAME>-REVIEWED] <sha>` is proof a **model** produced a verdict for
-this commit, and the override record is proof a **human** adjudicated it on a path where
+this commit, and the override record is proof a **writer** adjudicated it (in person, or
+through their agent with an `agent:` reason) on a path where
 the model is deliberately not re-run, so no stamp exists to find. Without that, an
 accepted override turns the lane's check green while the canonical script still reports
 `stale reviewer stamp(s)` for it. The record must name the head **exactly**: it is written
@@ -2773,7 +2780,7 @@ status plus one `readiness:` label**.
   from the PR head — this workflow is `pull_request_target` and holds write
   tokens) and folds each violation of the one-lane / one-rationale-per-finding
   rule into its blocking list. That is the only enforcement point that binds a
-  writer who never runs the prepare-pr loop, which is what a blanket
+  writer who never runs the kirocrew-prepare-pr loop, which is what a blanket
   single-rationale record used to escape through (#6658). The rule keeps ONE
   implementation: the readiness step calls the same script the local gate does
   rather than re-reading the marker grammar in shell. A record set it cannot read
@@ -3316,7 +3323,10 @@ The command grammar and the marker contract are in [Human override](#human-overr
 Human judgment is the final authority over the Opus 5.5 and GPT 6.1
 AI-review results. A repository member with `write`, `maintain`, or `admin`
 permission can record a false-positive, not-applicable, or accepted-risk
-decision with:
+decision with the command below. A writer's agent may post it on that writer's
+behalf only under the [Human override](#human-override) rule: never for a
+security, data-loss, corruption, crash or removed-guard finding, always with an
+`agent:` reason, and the writer whose account posted it stays accountable.
 
 ```text
 /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-sha>: <reason>
@@ -3422,7 +3432,7 @@ readiness; same-repository model execution failures also remain blocking until a
 successful re-run or authorized override. Mergeability, behind-base state,
 and human review decisions are not part of this event-driven aggregate because
 they can change without an aggregate refresh event; branch protection and the
-live `prepare-pr` status check own them.
+live `kirocrew-prepare-pr` status check own them.
 
 Every event resolves the PR's current head through the GitHub API. An event
 carrying an older expected SHA is ignored, so a late
@@ -3437,14 +3447,14 @@ Readiness-label events cannot recursively rerun or cancel a review: ignored labe
 events use a per-run concurrency key, so they cannot cancel an
 active review or replace a pending authoritative reviewer event.
 
-The bundled `prepare-pr` skill owns the local pre-push procedure. It resolves
+The bundled `kirocrew-prepare-pr` skill owns the local pre-push procedure. It resolves
 read-only reviewers and gates from the base-ref profile, extracts each reviewer's
 own CI contract, and binds publication to the verifier-cleared SHA. AI-comment
 repair delegation follows [Agent repair routing](#agent-repair-routing), not a
 replacement of that profile. Dispositions retain the prior judged SHA, finding
 identity and evidence; they never carry a human override onto a new head.
 
-`prepare-pr/scripts/pr_status.py` folds the aggregate status in as one signal,
+`kirocrew-prepare-pr/scripts/pr_status.py` folds the aggregate status in as one signal,
 never an override of the rows: its FAILURE blocks and its PENDING waits, but its
 green does not clear an observed failing or pending duplicate check in GitHub's
 rollup, because the aggregate's `context` is a forgeable display string a status
@@ -3483,7 +3493,7 @@ resists this:
 - **Design and UX suggestions must be proportionate,** and Design carries the
   simpler-alternative ethos: actively flag when a materially simpler solution exists,
   but always advisory.
-- **`prepare-pr`'s severity gate closes the loop:** validate each finding's
+- **`kirocrew-prepare-pr`'s severity gate closes the loop:** validate each finding's
   legitimacy first, fix the true Critical and High ones, **rebut a false positive with
   evidence rather than appeasing it by changing correct code**, and defer the low ones.
   Combined with the single-commit rule and description reconciliation, that keeps a PR

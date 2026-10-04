@@ -106,9 +106,9 @@ class TestScriptHookMatcherMode:
         assert d["matcher_mode"] == "regex"
 
     def test_to_dict_includes_skills(self):
-        hook = ScriptHook(name="test", skills=["kirocrew-dev/prepare-pr", "dev-fleet/pod-e2e"])
+        hook = ScriptHook(name="test", skills=["kirocrew-dev/kirocrew-prepare-pr", "dev-fleet/pod-e2e"])
         d = hook.to_dict()
-        assert d["skills"] == ["kirocrew-dev/prepare-pr", "dev-fleet/pod-e2e"]
+        assert d["skills"] == ["kirocrew-dev/kirocrew-prepare-pr", "dev-fleet/pod-e2e"]
 
 
 class TestScriptHookSkills:
@@ -150,13 +150,13 @@ class TestSkillsOnlyFire:
                 "command": "",
                 "matcher": r"\bPR\b|worktree",
                 "matcher_mode": "regex",
-                "skills": ["kirocrew-dev/prepare-pr", "dev-fleet/pod-e2e"],
+                "skills": ["kirocrew-dev/kirocrew-prepare-pr", "dev-fleet/pod-e2e"],
             }
         )
         results = await store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, "open a PR")
         assert len(results) == 1
         assert results[0].exit_code == 0
-        assert "$prepare-pr" in results[0].stdout
+        assert "$kirocrew-prepare-pr" in results[0].stdout
         assert "$pod-e2e" in results[0].stdout
         assert results[0].duration_ms == 0  # no subprocess
 
@@ -170,7 +170,7 @@ class TestSkillsOnlyFire:
                 "command": "",
                 "matcher": r"\bPR\b|worktree",
                 "matcher_mode": "regex",
-                "skills": ["kirocrew-dev/prepare-pr"],
+                "skills": ["kirocrew-dev/kirocrew-prepare-pr"],
             }
         )
         results = await store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, "hello world")
@@ -248,11 +248,11 @@ def test_hook_create_requires_command_or_skills():
     _validate_hook_has_action({"command": "echo hi", "skills": []})
     # Valid: skills only (on a skills-capable event)
     _validate_hook_has_action(
-        {"command": "", "skills": ["prepare-pr"], "event": "UserPromptSubmit"}
+        {"command": "", "skills": ["kirocrew-prepare-pr"], "event": "UserPromptSubmit"}
     )
     # Invalid: both command and skills (skills would be inert)
     with pytest.raises(ValidationError, match="cannot be combined with a command"):
-        _validate_hook_has_action({"command": "echo hi", "skills": ["prepare-pr"]})
+        _validate_hook_has_action({"command": "echo hi", "skills": ["kirocrew-prepare-pr"]})
     # Invalid: neither
     with pytest.raises(ValidationError, match="either command or skills must be provided"):
         _validate_hook_has_action({"command": "", "skills": []})
@@ -323,14 +323,14 @@ class TestSkillsOnlyDeadConfigValidation:
         from kiro_crew.validation import _validate_hook_has_action
 
         _validate_hook_has_action(
-            {"command": "", "skills": ["prepare-pr"], "event": "UserPromptSubmit"}
+            {"command": "", "skills": ["kirocrew-prepare-pr"], "event": "UserPromptSubmit"}
         )
 
     def test_skills_only_on_agent_spawn_allowed(self):
         from kiro_crew.validation import _validate_hook_has_action
 
         _validate_hook_has_action(
-            {"command": "", "skills": ["prepare-pr"], "event": "AgentSpawn"}
+            {"command": "", "skills": ["kirocrew-prepare-pr"], "event": "AgentSpawn"}
         )
 
     def test_skills_only_on_pre_tool_use_rejected(self):
@@ -338,7 +338,7 @@ class TestSkillsOnlyDeadConfigValidation:
 
         with pytest.raises(ValidationError, match="cannot fire on PreToolUse"):
             _validate_hook_has_action(
-                {"command": "", "skills": ["prepare-pr"], "event": "PreToolUse"}
+                {"command": "", "skills": ["kirocrew-prepare-pr"], "event": "PreToolUse"}
             )
 
     def test_skills_only_on_stop_rejected(self):
@@ -346,7 +346,7 @@ class TestSkillsOnlyDeadConfigValidation:
 
         with pytest.raises(ValidationError, match="cannot fire on Stop"):
             _validate_hook_has_action(
-                {"command": "", "skills": ["prepare-pr"], "event": "Stop"}
+                {"command": "", "skills": ["kirocrew-prepare-pr"], "event": "Stop"}
             )
 
     def test_skills_with_command_rejected(self):
@@ -355,12 +355,12 @@ class TestSkillsOnlyDeadConfigValidation:
 
         with pytest.raises(ValidationError, match="cannot be combined with a command"):
             _validate_hook_has_action(
-                {"command": "echo hi", "skills": ["prepare-pr"], "event": "UserPromptSubmit"}
+                {"command": "echo hi", "skills": ["kirocrew-prepare-pr"], "event": "UserPromptSubmit"}
             )
         # Rejected on Stop too (the command+skills check fires before the event check)
         with pytest.raises(ValidationError, match="cannot be combined with a command"):
             _validate_hook_has_action(
-                {"command": "echo hi", "skills": ["prepare-pr"], "event": "Stop"}
+                {"command": "echo hi", "skills": ["kirocrew-prepare-pr"], "event": "Stop"}
             )
 
     def test_command_only_on_stop_allowed(self):

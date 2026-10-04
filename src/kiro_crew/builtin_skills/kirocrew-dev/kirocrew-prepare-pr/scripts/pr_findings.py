@@ -195,7 +195,7 @@ def _load_sibling(filename):
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
-        raise RuntimeError("cannot import prepare-pr sibling: " + path)
+        raise RuntimeError("cannot import kirocrew-prepare-pr sibling: " + path)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
@@ -807,7 +807,7 @@ def main(argv):
     print("=== Reviewer findings on current head ({}) ===".format(head_sha[:12] or "?"))
     print("(span=<id> is the stable per-finding span identity -- path +")
     print(" reviewer/kind, line-number independent. The same span id")
-    print(" recurring across >=3 rounds is the prepare-pr same-span stall trigger:")
+    print(" recurring across >=3 rounds is the kirocrew-prepare-pr same-span stall trigger:")
     print(" stop patching instances and open a restructure round.)")
     findings: list = []
     bot_comments = None

@@ -1,4 +1,4 @@
-"""Tests for the prepare-pr preflight.py write-permission gate.
+"""Tests for the kirocrew-prepare-pr preflight.py write-permission gate.
 
 The gate closes a stranding failure mode: a comment/issue-triggered agent run
 does all its work (clone, plan, implement, test, review, commit) and only
@@ -55,7 +55,7 @@ PREFLIGHT = str(
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "preflight.py"
 )

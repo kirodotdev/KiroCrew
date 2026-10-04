@@ -181,7 +181,7 @@ while IFS= read -r -d '' status; do
   lower="$(printf '%s' "$path" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
   # SVG gets its own reason, the one its author acts on: the Read tool opens
   # it as markup, not pixels, so a blind reader would be shown text -- the
-  # same reason the mime table at stage 7 omits it. prepare-pr/SKILL.md states
+  # same reason the mime table at stage 7 omits it. kirocrew-prepare-pr/SKILL.md states
   # the same exclusion beside its format list. The final arm is the
   # extensionless tier (README, LICENSE): silent, like the sidecars.
   refuse=""

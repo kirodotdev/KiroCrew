@@ -1,6 +1,6 @@
-"""Shared reviewer-finding and disposition contract for prepare-pr scripts.
+"""Shared reviewer-finding and disposition contract for kirocrew-prepare-pr scripts.
 
-The prepare-pr skill is distributed as a directory, so its executable scripts can
+The kirocrew-prepare-pr skill is distributed as a directory, so its executable scripts can
 share this stdlib-only module while remaining runnable by absolute path from any
 working directory.
 """
@@ -979,7 +979,7 @@ def extract_design_items(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES)
 def unanswered_concern_lanes(verdicts, records, head_sha):
     """Whole-design lanes at CONCERNS for this head with no disposition yet.
 
-    LOCAL ONLY -- the prepare-pr loop's own stop condition. SKILL.md says a
+    LOCAL ONLY -- the kirocrew-prepare-pr loop's own stop condition. SKILL.md says a
     green rollup with an unanswered CONCERNS is not converged, and nothing
     enforced it: the loop armed auto-merge straight past a fresh CONCERNS. The
     server-side required status is deliberately NOT changed, because CONCERNS

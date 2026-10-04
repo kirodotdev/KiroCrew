@@ -1,4 +1,4 @@
-"""Tests for `pr_findings.py --rounds`, the prepare-pr loop's cross-round memory.
+"""Tests for `pr_findings.py --rounds`, the kirocrew-prepare-pr loop's cross-round memory.
 
 The view is rebuilt from the PR's own writer-authored disposition comments, so
 nothing lives on disk and the record outlives the loop. Three properties are
@@ -27,7 +27,7 @@ SCRIPT = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "pr_findings.py"
 )

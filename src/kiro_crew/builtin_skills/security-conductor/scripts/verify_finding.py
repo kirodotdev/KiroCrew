@@ -170,7 +170,7 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
 def load_ledger() -> Any:
     """Load the sibling ledger without cwd, sys.path, or bytecode side effects.
 
-    Mirrors ``prepare-pr/scripts/pr_status.py``: a skill's scripts are synced out
+    Mirrors ``kirocrew-prepare-pr/scripts/pr_status.py``: a skill's scripts are synced out
     of the package tree and run as bare files, so ``ledger`` is a file beside
     this one rather than an importable module, and importing it the ordinary way
     would drop a ``__pycache__`` entry into the checked-out tree.

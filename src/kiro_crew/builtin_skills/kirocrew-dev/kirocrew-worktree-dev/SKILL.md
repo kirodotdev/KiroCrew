@@ -1,6 +1,6 @@
 ---
 name: kirocrew-worktree-dev
-description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers env setup, main-clone sync, build/dist ordering, flags, previews, cleanup, publish authorization; prepare-pr owns the PR workflow."
+description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers env setup, main-clone sync, build/dist ordering, flags, previews, cleanup, publish authorization; kirocrew-prepare-pr owns PRs."
 triggers: kirocrew worktree, kirocrew main clone sync, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
 repo_scope: src/kiro_crew
 ---
@@ -88,7 +88,7 @@ and never escalates to a full suite -- meta, mixed and large diffs all get a
 related set; an unreadable diff exits 2 and runs nothing. The full suite is CI's
 job; `--full` exists for a human who asks. `--dry-run` prints the plan,
 `--base REF` selects a base. Before publication, MUST load
-[prepare-pr](../prepare-pr/SKILL.md) and run its complete resolved `gates[]`
+[kirocrew-prepare-pr](../kirocrew-prepare-pr/SKILL.md) and run its complete resolved `gates[]`
 floor from the base-ref profile. That skill alone owns PR preparation, local
 reviewers, history, dispositions and push-to-green steps.
 
@@ -236,7 +236,7 @@ a complete preview-isolation switch.
 ## Review repair and publication authorization
 
 For Kiro Crew PR CI AI comments, MUST load
-[prepare-pr: Review repair routing](../prepare-pr/SKILL.md#review-repair-routing)
+[kirocrew-prepare-pr: Review repair routing](../kirocrew-prepare-pr/SKILL.md#review-repair-routing)
 BEFORE any repair. Follow that canonical model-pinned delegation procedure;
 parent self-fixing is not a substitute. This pointer does not change the profile's
 read-only local-review gate.
@@ -245,10 +245,11 @@ Committing, pushing and opening a PR each require explicit user authorization.
 Permission to commit is not permission to push, and green gates grant neither.
 A fix-and-push monitoring scope must be explicit; absent it, confirm each push.
 Never push to a protected base branch. For authorized publication, follow
-prepare-pr's SHA-pinned force-with-lease protocol and `single_commit` handling,
+kirocrew-prepare-pr's SHA-pinned force-with-lease protocol and `single_commit` handling,
 and AGENTS.md's at-most-two-commit limit; never use an implicit lease or interactive
 git. No direct merge: hand back
-review-ready work; only explicit ship intent permits prepare-pr's auto-merge path.
+review-ready work, or let kirocrew-prepare-pr's Phase 4 arm auto-merge, which still
+waits for the required approval and every check.
 
 ## Cleanup and comments
 
@@ -256,7 +257,7 @@ Keep scratch, PR bodies, logs and QA media under `$KIROCREW_SCRATCH`, not the
 worktree. Capture scripts' gitignored `temp-screenshots/` is also permitted;
 evidence is uploaded as attachments, never committed — with write access, which
 this agent has. (A fork contributor, whose `--attach` upload GitHub refuses, may
-instead `git add -f` the media there; see prepare-pr's *Screenshots*.) A directory
+instead `git add -f` the media there; see kirocrew-prepare-pr's *Screenshots*.) A directory
 that must survive your own processes so a later run can advance it is not scratch
 and not `/tmp`: report that you need one instead of choosing a path. Before
 ending:

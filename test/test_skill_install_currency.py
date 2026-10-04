@@ -395,7 +395,7 @@ def test_a_linked_directory_above_a_nested_install_is_never_stated_through(
 ) -> None:
     """A nested name's INTERMEDIATE directory is a link nothing else screens.
 
-    Packaged names are nested today (``kirocrew-dev/prepare-pr``), so the
+    Packaged names are nested today (``kirocrew-dev/kirocrew-prepare-pr``), so the
     install path has a middle component that is neither the skills directory nor
     the leaf. Screening only those two leaves it unscreened, and then every
     probe of the leaf -- including the link test on the leaf itself -- resolves

@@ -193,21 +193,21 @@
     {
       "kind": "shell",
       "surface": "git-write",
-      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py --commit -m 'fix: example' -- src/example.py",
+      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py --commit -m 'fix: example' -- src/example.py",
       "platform": "any",
-      "reason": "The prepare-pr flow commits only through the guard, by name, so a path another session staged cannot enter the commit; refusing it leaves no sanctioned way to commit."
+      "reason": "The kirocrew-prepare-pr flow commits only through the guard, by name, so a path another session staged cannot enter the commit; refusing it leaves no sanctioned way to commit."
     },
     {
       "kind": "shell",
       "surface": "git-write",
-      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py --commit -F /tmp/commit-message.txt -- src/example.py",
+      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py --commit -F /tmp/commit-message.txt -- src/example.py",
       "platform": "any",
       "reason": "The guard's commit with the message passed by file, so a subject whose prose a text-matching fence would read as a command still has a sanctioned way to commit."
     },
     {
       "kind": "shell",
       "surface": "git-write",
-      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py --base main --squash",
+      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py --base main --squash",
       "platform": "any",
       "reason": "The only sanctioned squash: it builds the commit from the branch's own tree, never an index, so refusing it pushes every worker back to the soft-reset squash that reverted 5607 files."
     },
@@ -277,7 +277,7 @@
     {
       "kind": "shell",
       "surface": "gates",
-      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py --base main --require-single-on-base",
+      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py --base main --require-single-on-base",
       "platform": "any",
       "reason": "The publish preflight every branch runs before pushing; refusing it removes the check that keeps a multi-commit branch off a single-commit base."
     },

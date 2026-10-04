@@ -3,7 +3,7 @@
 Local backlog f-20260818-08. Everything under ``src/kiro_crew/builtin_skills/``
 installs on every machine that installs Kiro Crew, so a skill body naming THIS
 repository resolves for exactly one reader and points an agent at a path that does
-not exist for anyone else. ``prepare-pr`` already solved it -- repository
+not exist for anyone else. ``kirocrew-prepare-pr`` already solved it -- repository
 specifics live in a profile keyed by repository -- and this gate keeps the rest of
 the tree from regressing.
 
@@ -139,14 +139,16 @@ class TestTheMarkerSet:
 class TestTheExemptionIsNotInheritable:
     def test_the_family_is_exempt(self, gate, tmp_path: Path) -> None:
         """This repository is that family's subject matter, not a leak in it."""
-        _write(tmp_path, "kirocrew-dev/prepare-pr/SKILL.md", "Edit `src/kiro_crew/x.py`.\n")
+        _write(
+            tmp_path, "kirocrew-dev/kirocrew-prepare-pr/SKILL.md", "Edit `src/kiro_crew/x.py`.\n"
+        )
         found, unscannable = gate.scan_tree(tmp_path)
         assert found == {} and unscannable == []
 
     def test_a_nested_reference_file_is_exempt_too(self, gate, tmp_path: Path) -> None:
         _write(
             tmp_path,
-            "kirocrew-dev/prepare-pr/references/gate-floor.md",
+            "kirocrew-dev/kirocrew-prepare-pr/references/gate-floor.md",
             "Run `test/test_prepare_pr_profiles.py`.\n",
         )
         assert gate.scan_tree(tmp_path)[0] == {}
@@ -272,7 +274,7 @@ class TestTheGateFailsOnAMarker:
         assert gate._report(current, []) == 1
         err = capsys.readouterr().err
         assert "1 marker(s) in 1 file(s)" in err
-        assert "prepare-pr/profiles" in err, "the remedy must name the profile pattern"
+        assert "kirocrew-prepare-pr/profiles" in err, "the remedy must name the profile pattern"
 
     def test_a_clean_tree_passes(self, gate) -> None:
         assert gate._report({}, []) == 0
@@ -299,7 +301,7 @@ class TestTheCommittedTreeAgrees:
         assert "FAIL" not in capsys.readouterr().out
 
     def test_the_gate_is_wired_into_ci(self) -> None:
-        """A scanner nothing runs is documentation. Also pinned in the prepare-pr
+        """A scanner nothing runs is documentation. Also pinned in the kirocrew-prepare-pr
         gate floor by test_prepare_pr_profiles.py.
 
         The gate lives in fast-gate.yml, not ci.yml: the eleven cheap blocking

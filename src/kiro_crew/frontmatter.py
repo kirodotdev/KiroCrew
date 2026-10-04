@@ -51,7 +51,7 @@ A YAML parser rejects that document whole ("mapping values are not allowed
 here"), not just the field. Two skills this repo SHIPS are written that way and
 are read correctly only because of it:
 
-- ``builtin_skills/kirocrew-dev/prepare-pr/SKILL.md``
+- ``builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md``
 - ``builtin_skills/web-verify/SKILL.md``
 
 So the two accepted-input surfaces CROSS rather than nest, and swapping this

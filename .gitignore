@@ -119,7 +119,7 @@ kirocrew-data.tar.gz
 # ignore rule stays so that nobody else's capture run dirties `git status`.
 temp-screenshots/
 .github/screenshots/
-# Staged blind-review artifacts (prepare-pr review lanes point subagents at
+# Staged blind-review artifacts (kirocrew-prepare-pr review lanes point subagents at
 # .review-<n>.diff files) and the autofix work-dir heartbeat — scratch, never
 # a deliverable, and a `git add -A` would otherwise sweep them into the PR.
 .review-*.diff

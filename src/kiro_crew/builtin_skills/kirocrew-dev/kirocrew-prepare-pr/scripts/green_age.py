@@ -14,7 +14,7 @@ the verdict: **did the base move in files this PR also touches?**
 
 * ``moved``  - ``git diff --name-only <merge-base> origin/<base>``, the files the
   base gained or changed since the commit this head was tested on top of.
-  prepare-pr rebases before every push, so the merge base of HEAD and
+  kirocrew-prepare-pr rebases before every push, so the merge base of HEAD and
   ``origin/<base>`` IS the base tip the green was measured on.
 * ``mine``   - the PR's own changed files, from ``gh pr view --json files`` with
   ``--pr``, otherwise ``git diff --name-only origin/<base>...HEAD``.
@@ -515,7 +515,7 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
         base_ref = "origin/{}".format(base)
         base_head = _rev_parse(base_ref, _run)
         head_sha = _rev_parse(head, _run)
-        # The base this head was tested on top of. prepare-pr rebases before
+        # The base this head was tested on top of. kirocrew-prepare-pr rebases before
         # every push, so the merge base IS the base tip at trigger time.
         rc, out, _ = _run(["git", "merge-base", head_sha, base_ref])
         if rc != 0 or not out:

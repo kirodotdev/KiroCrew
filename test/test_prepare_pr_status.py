@@ -1,4 +1,4 @@
-"""Regression tests for the prepare-pr aggregate readiness policy."""
+"""Regression tests for the kirocrew-prepare-pr aggregate readiness policy."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from types import ModuleType
 from skill_script_helpers import is_rollup_graphql_read, load_skill_script, rollup_graphql_response
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_status.py"
+SCRIPT = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts" / "pr_status.py"
 
 
 def _load_script() -> ModuleType:
@@ -1899,7 +1899,7 @@ class TestShaMatches:
 
 def test_elided_design_stamp_no_longer_reads_as_stale() -> None:
     """The reported harm: the Design lane mangled its own stamp and every
-    prepare-pr/babysit loop read exit 20 BLOCKED while PR Readiness was green."""
+    kirocrew-prepare-pr/babysit loop read exit 20 BLOCKED while PR Readiness was green."""
     module = _load_script()
     comments = json.dumps(
         [
@@ -2775,7 +2775,7 @@ def _gate_argv() -> list[str]:
 
 
 def test_disposition_gate_reports_a_blanket_record_as_a_violation(capsys) -> None:
-    """The gap this closes: a writer skipping the prepare-pr loop posts a
+    """The gap this closes: a writer skipping the kirocrew-prepare-pr loop posts a
     single-rationale record naming a lane but claiming no span, and the
     adjudication ledger admits it with full downgrade power. The gate must name
     it so the required status can fail."""

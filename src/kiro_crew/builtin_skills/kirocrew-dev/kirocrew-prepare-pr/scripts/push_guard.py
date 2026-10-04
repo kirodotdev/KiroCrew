@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""push_guard.py - stale-base guard and commit builder for the prepare-pr skill.
+"""push_guard.py - stale-base guard and commit builder for the kirocrew-prepare-pr skill.
 
 The default mode verifies that HEAD is safe to force-push by checking:
 0. Nothing is staged in this checkout that HEAD lacks (exit 41).

@@ -1,6 +1,6 @@
 # The Age 5 picture
 
-The one picture a PR body may carry. `prepare-pr`'s Phase 1.5 points here rather
+The one picture a PR body may carry. `kirocrew-prepare-pr`'s Phase 1.5 points here rather
 than restating it: the rules below are what an author needs while WRITING the
 picture, and the skill file is what the loop reads on every load.
 

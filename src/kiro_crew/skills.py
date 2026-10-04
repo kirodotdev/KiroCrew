@@ -1187,7 +1187,9 @@ def _iter_skill_files(
 # installs makes this migration a permanent no-op and leaves the flat copy as
 # the only one the loader finds.
 _RELOCATED_SKILLS: dict[str, str] = {
-    "prepare-pr": "kirocrew-dev/prepare-pr",
+    "prepare-pr": "kirocrew-dev/kirocrew-prepare-pr",
+    # Renamed in place: the nested copy an earlier release installed.
+    "kirocrew-dev/prepare-pr": "kirocrew-dev/kirocrew-prepare-pr",
     "babysit": "kirocrew-dev/babysit",
     "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
 }
@@ -1532,7 +1534,7 @@ class InstalledSkillCurrency:
 def _first_linked_skill_component(base: Path, name: str) -> Path | None:
     """First directory strictly BETWEEN *base* and ``base / name`` that is a link.
 
-    A skill name may be nested (``kirocrew-dev/prepare-pr``), so testing the
+    A skill name may be nested (``kirocrew-dev/kirocrew-prepare-pr``), so testing the
     leaf alone leaves the directories above it unscreened while every probe of
     the leaf still resolves through them. A link at ``<skills>/kirocrew-dev``
     then makes the fingerprint hash a tree outside the skills directory and
@@ -2325,6 +2327,23 @@ def _ensure_builtin_skills(base: Path) -> None:
         for old_name, new_name in _RELOCATED_SKILLS.items():
             old_skill_md = base / old_name / "SKILL.md"
             if old_skill_md.is_file() and (base / new_name / "SKILL.md").exists():
+                # A directory on the way to the old SKILL.md that is a link or
+                # junction points outside the skills home. Renaming through it
+                # would rename a file the operator linked in, so leave it alone.
+                linked = [
+                    base.joinpath(*Path(old_name).parts[: i + 1])
+                    for i in range(len(Path(old_name).parts))
+                    if is_link_or_junction(base.joinpath(*Path(old_name).parts[: i + 1]))
+                ]
+                if linked:
+                    logger.warning(
+                        "Skill %s relocated to %s, but %s is a link; not "
+                        "quarantining through it (the linked copy is untouched)",
+                        old_name,
+                        new_name,
+                        linked[0],
+                    )
+                    continue
                 try:
                     # Never overwrite an earlier quarantine (a rollback or
                     # reinstall can recreate SKILL.md after a prior migration;

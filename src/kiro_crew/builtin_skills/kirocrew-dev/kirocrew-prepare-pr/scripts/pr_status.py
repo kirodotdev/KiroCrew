@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pr_status.py - the decisive PR-readiness gate for the prepare-pr skill.
+"""pr_status.py - the decisive PR-readiness gate for the kirocrew-prepare-pr skill.
 
 Prints PR state + every CI check + advisory unresolved-thread count and returns
 an exit code that drives the poll loop. The aggregate ``PR Readiness`` status is
@@ -84,7 +84,7 @@ def _load_sibling(filename, name):
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
-        raise RuntimeError("cannot import prepare-pr sibling script: " + path)
+        raise RuntimeError("cannot import kirocrew-prepare-pr sibling script: " + path)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
@@ -761,7 +761,7 @@ def resolve_readiness_context(argv, environ):
     """Resolve the aggregate-readiness status-context name.
 
     Precedence: ``--readiness-context`` CLI flag > ``PREPARE_PR_READINESS_CONTEXT``
-    env var > the KiroCrew default. Lets a project profile name a non-default
+    env var > the Kiro Crew default. Lets a project profile name a non-default
     aggregate status; when unset, behavior is identical to before (the default
     context, with the full-rollup fallback when that context is absent).
     """
@@ -1939,7 +1939,7 @@ def disposition_gate(argv, environ):
     This is the server-side entry point: pr-readiness.yml calls
     it so a disposition record violating the one-lane / one-rationale-per-
     finding rule fails the repository's required status for EVERY writer, not
-    only for a writer running the prepare-pr loop. It exists as a mode of this
+    only for a writer running the kirocrew-prepare-pr loop. It exists as a mode of this
     script rather than as a workflow-side reimplementation so the rule keeps a
     single definition -- the same ``disposition_violations`` the local gate
     calls, over the same records the adjudication ledger admits.

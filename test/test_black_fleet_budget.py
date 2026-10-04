@@ -266,7 +266,10 @@ def test_executor_bounds_process_lifetime_and_parallelism(monkeypatch):
 def test_floor_runs_the_exact_ci_black_command_and_worker_budget():
     import json
 
-    profile = ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/profiles/kirocrew.json"
+    profile = (
+        ROOT
+        / "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/profiles/kirocrew.json"
+    )
     gates = json.loads(profile.read_text(encoding="utf-8"))["gates"]
     step = _step()
     assert "BLACK_NUM_WORKERS" not in step.get("env", {})

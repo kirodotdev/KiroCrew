@@ -238,7 +238,7 @@ any future import-graph work will meet the same ones:
 |---|---|
 | matching a module by its **bare stem** | `session` and `config` occur in nearly every test file's prose, so a one-file diff selected 621 of ~700 test files — the full suite wearing a smaller number |
 | matching a broad-impact marker as a **bare substring** | `clone_setup.py` contains `setup.py`, so an ordinary module was escalated as packaging config. Markers now match on file NAME (exact, or a prefix for `tsconfig*`/`vite.config*`/`requirements*`) or on a path prefix |
-| matching a data file by its **bare basename** | `prepare-pr/profiles/kirocrew.json` selected 38 test files that all mention `kirocrew.json` meaning Kiro Crew's own config file in a different directory |
+| matching a data file by its **bare basename** | `kirocrew-prepare-pr/profiles/kirocrew.json` selected 38 test files that all mention `kirocrew.json` meaning Kiro Crew's own config file in a different directory |
 | matching a barrel module by its stem | `store/index.ts` has **128** real consumers, while **235** specs merely contain the word `index` — simultaneously too wide and missing the right ones |
 | classifying a file by **location** instead of role | `src/kiro_crew/apps/builtins` is a source tree AND a configured testpath, so "inside a root" was read as "is a test", making production modules look like helpers |
 | assuming an extension makes a file **inert** | `.md` under `docs/` is prose, but `test/test_build_target_parity.py` reads `docs/`, and `.md` under `src/` is packaged skill content with contract tests. Nothing is classified inert now |

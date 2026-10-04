@@ -38,7 +38,13 @@ SEMGREP_RULE = ROOT / "semgrep" / "find-sentinel-truthiness.yaml"
 SEMGREP_FIXTURE = ROOT / "semgrep-tests" / "find-sentinel-truthiness.py"
 AUTOSDE = ROOT / "AUTOSDE.yaml"
 PREPARE_PR = (
-    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
+    ROOT
+    / "src"
+    / "kiro_crew"
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "kirocrew-prepare-pr"
+    / "SKILL.md"
 )
 
 LABEL = "deferred-finding"

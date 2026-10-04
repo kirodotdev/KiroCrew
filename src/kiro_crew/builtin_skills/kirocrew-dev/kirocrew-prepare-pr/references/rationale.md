@@ -1,4 +1,4 @@
-# prepare-pr — why the rules are shaped this way
+# kirocrew-prepare-pr — why the rules are shaped this way
 
 `SKILL.md` carries only what the loop executes. This file carries the evidence and
 the design history behind those rules. Read it when you need to justify a deviation,
@@ -41,13 +41,46 @@ a reason to hand the PR back.
 ## Why the two Phase 0 gates come before opening
 
 Measured across the 20 slowest PRs on this repo, rounds spent before the decision
-gate and the file-overlap gate were the largest single waste class. The worst case
+gate and the file-overlap gate were the largest single waste class. The decision
+gate used to be a line count (~1k lines needed a sign-off); it is now the issue's
+tier, because the tier is the record of how big the work was judged to be and a
+`tier:T3`/`tier:T4` issue already waits on a person for `triaged`. The worst case
 reached full green and was then parked by a one-line product hold — every round of
 that work was discarded.
 
 The file-overlap gate's `--limit 500` is load-bearing because `gh pr list` returns
 30 rows by default. With 175+ open PRs the default silently checks about a sixth of
 them and the gate reads as passing.
+
+## Why a red main gets its own PR, and the original PR waits
+
+A PR that is red only because main is red cannot be fixed by its author's diff,
+and every open PR rebuilt on that main fails the same way. Fixing it inside the
+first PR that noticed widens that PR past its goal and buries the fix where nobody
+looks. A separate `tier:T1` fix lands once and unblocks everyone; the original PR
+rebases onto it rather than overriding a red that is real. Searching first keeps
+two agents from racing two fixes for one break.
+
+## Why the full loop arms auto-merge and watches to the merge
+
+A review-ready PR that nobody watches decays: the base moves, a conflict appears,
+the approval goes stale, and the PR sits green-but-unmergeable. Auto-merge hands
+the final step to GitHub, which still requires the human approval and every check,
+so arming it grants no authority a reviewer did not give. The loop stays on for the
+same 24-hour budget so a conflict found after arming is rebased the same day.
+
+## Why an agent may override a false positive itself
+
+Most rounds that never converge are a reviewer re-raising a finding the code
+already answers, or asking for machinery the goal does not need. Waiting on a
+maintainer for each of those costs hours and teaches nothing. The override stays
+writer-only (the handler checks), SHA-scoped, posted after an evidence-backed
+`rebutted` disposition, and reported afterwards so a human can reverse it. The
+carve-out is fixed: a security, data-loss or corruption finding, a crash or a
+removed guard is never overridden by the agent. Those are the findings the lanes
+exist to catch, and the override record is read as proof a person checked the
+finding, so even a security finding the agent judges *not a defect* goes to a
+writer to verify and post.
 
 ## Why the fetch in Phase 1 must succeed
 
@@ -302,7 +335,7 @@ The section is deliberately absent from `REQUIRED_SECTIONS` in
 every open PR on each `edited`/`synchronize`, so adding a heading to it would fail
 every body written before this change -- a red that says nothing about the diff.
 The rule reaches the author through the template's own prompt and through
-prepare-pr's Phase 1.5 instead, where it costs an existing PR nothing. The frozen
+kirocrew-prepare-pr's Phase 1.5 instead, where it costs an existing PR nothing. The frozen
 goal sections pay that cost on purpose: a PR with no goal is exactly what the
 gate exists to stop, so its red does say something about the PR.
 

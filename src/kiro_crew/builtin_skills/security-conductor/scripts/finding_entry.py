@@ -87,7 +87,7 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
 def load_sibling(filename: str, module_name: str) -> Any:
     """Load a script beside this one without cwd, sys.path or bytecode effects.
 
-    Mirrors ``prepare-pr/scripts/pr_status.py``: a skill's scripts are synced out
+    Mirrors ``kirocrew-prepare-pr/scripts/pr_status.py``: a skill's scripts are synced out
     of the package tree and run as bare files, so a sibling is a file next to
     this one rather than an importable module, and importing it the ordinary way
     would drop a ``__pycache__`` entry into the checked-out tree.

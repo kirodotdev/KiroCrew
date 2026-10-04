@@ -263,7 +263,7 @@ class TestNormalizeScriptHook:
                 "name": "skills only",
                 "event": "UserPromptSubmit",
                 "command": "",
-                "skills": ["kirocrew-dev/prepare-pr"],
+                "skills": ["kirocrew-dev/kirocrew-prepare-pr"],
             }
         )
         assert kas_wire.normalize_script_hook(created) is None

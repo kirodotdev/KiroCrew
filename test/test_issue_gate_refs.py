@@ -1,7 +1,7 @@
 """Unit tests for .github/scripts/issue_gate_refs.py.
 
 The Issue Gate workflow decides "which issues does this PR declare" through
-this adapter, and the adapter must give the SAME answer as the prepare-pr
+this adapter, and the adapter must give the SAME answer as the kirocrew-prepare-pr
 grammar it wraps (`pr_status.py`'s explicit-trailer grammar). These tests pin
 that equivalence on the body shapes that have already fooled a hand-rolled
 grep: the PR template's HTML-comment hint, an unclosed fence, inline code,

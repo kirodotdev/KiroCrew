@@ -39,8 +39,8 @@ name: Issue Gate
 #
 # ONE GRAMMAR. Which issues a body declares is decided by
 # `.github/scripts/issue_gate_refs.py`, an adapter onto the declaration
-# grammar `prepare-pr/scripts/pr_status.py` exports as
-# `declared_issue_numbers()` -- the masking and targets the local prepare-pr
+# grammar `kirocrew-prepare-pr/scripts/pr_status.py` exports as
+# `declared_issue_numbers()` -- the masking and targets the local kirocrew-prepare-pr
 # loop uses too. By reference to that grammar: a line that STARTS (<=3
 # columns, optional bullet) with a closing verb
 # (`close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved`, the issue
@@ -279,7 +279,7 @@ jobs:
             0|3|4) ;;
             *)
               cat grammar-err.txt >&2
-              echo "::error::The reference grammar (default branch's .github/scripts/issue_gate_refs.py -> prepare-pr/scripts/pr_status.py) exited $rc, so this check cannot judge the PR. This is an environment failure, not a missing issue -- see the step log."
+              echo "::error::The reference grammar (default branch's .github/scripts/issue_gate_refs.py -> kirocrew-prepare-pr/scripts/pr_status.py) exited $rc, so this check cannot judge the PR. This is an environment failure, not a missing issue -- see the step log."
               exit 1
               ;;
           esac

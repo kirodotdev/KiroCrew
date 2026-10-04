@@ -33,7 +33,7 @@ SCRIPT = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "pr_findings.py"
 )
@@ -138,7 +138,7 @@ class TestCredentialRedaction:
 STATUS_SCRIPT = SCRIPT.with_name("pr_status.py")
 REVIEW_CONTRACT_SCRIPT = SCRIPT.with_name("_review_contract.py")
 # pr_status.py imports this sibling too, so a bundle missing it is a bundle that
-# cannot start. The whole prepare-pr/ directory is the supported copy unit.
+# cannot start. The whole kirocrew-prepare-pr/ directory is the supported copy unit.
 GREEN_AGE_SCRIPT = SCRIPT.with_name("green_age.py")
 
 _HEAD = "f" * 40

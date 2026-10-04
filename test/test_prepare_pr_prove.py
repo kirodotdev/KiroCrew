@@ -1,4 +1,4 @@
-"""Tests for the prepare-pr prove.py test-strength proof.
+"""Tests for the kirocrew-prepare-pr prove.py test-strength proof.
 
 prove.py reverts a change's production hunks, keeps its test hunks, and re-runs
 the changed test files.  These tests pin the four verdicts that matter and the
@@ -31,7 +31,7 @@ PROVE = str(
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "prove.py"
 )

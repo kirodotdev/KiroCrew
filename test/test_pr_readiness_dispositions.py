@@ -1,7 +1,7 @@
 """Behavioural tests for pr-readiness.yml's server-side disposition gate.
 
 The one-lane / one-rationale-per-finding disposition rule is mechanical only
-for a writer running the prepare-pr loop. A writer who skips that loop can post
+for a writer running the kirocrew-prepare-pr loop. A writer who skips that loop can post
 a blanket single-rationale ``target=gpt`` record, which codex-review.yml's
 adjudication ledger admits with full downgrade power, and nothing on the merge
 path objects. Readiness publishes the repository's sole required status, so
@@ -37,7 +37,7 @@ GATE = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "pr_status.py"
 )
@@ -386,7 +386,7 @@ class TestTheGateIsWiredIntoTheVerdict:
         """The rule must not gain a workflow-side fourth copy of the grammar:
         the step calls pr_status.py's mode, and nothing else parses the marker."""
         step = _step("dispositions")
-        assert step["env"]["GATE"].endswith("prepare-pr/scripts/pr_status.py")
+        assert step["env"]["GATE"].endswith("kirocrew-prepare-pr/scripts/pr_status.py")
         assert "--disposition-gate" in step["run"]
         assert "ai-review-disposition" not in step["run"]
 

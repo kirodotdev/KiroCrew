@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""preflight.py - deterministic Phase-0 gate for the prepare-pr skill.
+"""preflight.py - deterministic Phase-0 gate for the kirocrew-prepare-pr skill.
 
 Reports repo / current-branch / base-branch / gh-auth / dirty / divergence /
 existing-PR and gates on blockers so the agent never commits on the base
 branch or acts unauthenticated.
 
 Portable: stdlib only; shells out to git/gh via argument lists (no shell
-pipelines), so it runs on macOS, Linux, and Windows wherever KiroCrew's
+pipelines), so it runs on macOS, Linux, and Windows wherever Kiro Crew's
 python3 plus git/gh are available.
 
 Usage:  python3 preflight.py
@@ -527,7 +527,7 @@ def _main():
     # (more than DEFAULT_MAX_AHEAD commits for a single-commit PR workflow),
     # warn loudly.  This catches worktrees that were branched from a local
     # trunk carrying unshipped integration commits (root cause of the
-    # clobber).  The threshold is generous — a normal prepare-pr
+    # clobber).  The threshold is generous — a normal kirocrew-prepare-pr
     # squashes to 1 commit; DEFAULT_MAX_AHEAD allows for multi-commit profiles
     # or a small rebase stack.
     if ahead != "?" and int(ahead) > DEFAULT_MAX_AHEAD:

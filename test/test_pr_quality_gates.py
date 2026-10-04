@@ -197,7 +197,7 @@ class TestScreenshotEvidence:
         part that is its own; the reason lives once, in rationale.md."""
         root = WORKFLOWS.parents[1]
         skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
-        rationale = (skills / "prepare-pr" / "references" / "rationale.md").read_text(
+        rationale = (skills / "kirocrew-prepare-pr" / "references" / "rationale.md").read_text(
             encoding="utf-8"
         )
         section = rationale.split("## Why screenshots are attachments, not commits", 1)[1]
@@ -232,7 +232,7 @@ class TestScreenshotEvidence:
         assert cost in template and "the blob stays" in template
         wf = _read("screenshot-evidence.yml")
         assert cost in wf and 'echo "blob stays."' in wf
-        prepare = (skills / "prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+        prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
         assert "never committed, bar one scoped exception" in prepare
         assert "never committed. See below." not in prepare
         assert "is in `main`'s history for good" in prepare
@@ -247,7 +247,7 @@ class TestScreenshotEvidence:
         assert "references/rationale.md" in stt
         worktree = (skills / "kirocrew-worktree-dev" / "SKILL.md").read_text(encoding="utf-8")
         assert "never committed — with write access, which\nthis agent has" in worktree
-        assert "see prepare-pr's *Screenshots*" in worktree
+        assert "see kirocrew-prepare-pr's *Screenshots*" in worktree
 
     def test_the_ci_doc_describes_the_committed_read_as_the_script_performs_it(self):
         """The CI doc's Design-lane paragraph describes where committed media is
@@ -290,7 +290,7 @@ class TestScreenshotEvidence:
         skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
         template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
         wf = _read("screenshot-evidence.yml")
-        prepare = (skills / "prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+        prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
         # The attachment limits stay where they are, and the committed ceiling
         # is stated in the same block as the `git add -f` it applies to, after
         # the attachment limits and before the merge-time cost. Whitespace is
@@ -345,7 +345,7 @@ class TestScreenshotEvidence:
             / "kiro_crew"
             / "builtin_skills"
             / "kirocrew-dev"
-            / "prepare-pr"
+            / "kirocrew-prepare-pr"
             / "SKILL.md"
         ).read_text(encoding="utf-8")
         media = "*.png|*.jpg|*.jpeg|*.webp|*.gif|*.webm|*.mp4|*.mov) ;;"

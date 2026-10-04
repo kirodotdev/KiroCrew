@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""resolve_profile.py - resolve the prepare-pr project profile for a repo.
+"""resolve_profile.py - resolve the kirocrew-prepare-pr project profile for a repo.
 
-Emits the resolved profile as JSON on stdout so the prepare-pr skill can read
+Emits the resolved profile as JSON on stdout so the kirocrew-prepare-pr skill can read
 setup / gates / reviewers / conventions from DATA instead of hardcoding one
 project's conventions in prose.
 
 Resolution order (most-specific-wins):
   1. .prepare-pr.toml at the repo root   -> explicit config
-  2. KiroCrew markers present            -> bundled profiles/kirocrew.json
+  2. Kiro Crew markers present            -> bundled profiles/kirocrew.json
   3. a detectable stack                  -> auto-detected gates + reviewers
      (pyproject / package.json /            globbed from .github/workflows
       Cargo.toml / go.mod / Makefile)
@@ -48,7 +48,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROFILES_DIR = os.path.join(os.path.dirname(HERE), "profiles")
 
-# Files whose combined presence identifies the KiroCrew repo (or a faithful
+# Files whose combined presence identifies the Kiro Crew repo (or a faithful
 # fork) with a very low false-positive rate. All must be present to match.
 _KIROCREW_MARKERS = (
     "AUTOSDE.yaml",

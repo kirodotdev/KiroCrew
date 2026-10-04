@@ -63,7 +63,7 @@ BACKEND_PKG = ROOT / "src" / "kiro_crew" / "security"
 # guard can point at the enforcing site while the sweep stays package-wide.
 BACKEND_EXFIL = BACKEND_PKG / "exfil.py"
 PREPARE_PR = (
-    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_findings.py"
+    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts" / "pr_findings.py"
 )
 FRONTEND = ROOT / "website" / "src" / "utils" / "sanitize.ts"
 TOKEN_MINT = ROOT / "src" / "kiro_crew" / "instances" / "token_mint.py"

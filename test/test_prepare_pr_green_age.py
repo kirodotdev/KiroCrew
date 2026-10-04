@@ -32,7 +32,7 @@ SCRIPT = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "green_age.py"
 )
@@ -372,7 +372,15 @@ def test_the_skill_states_the_loops_own_bounds(mod) -> None:
     file could re-sync forever; and an exit 2 must not read as either verdict.
     """
     skill = " ".join(
-        (ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md")
+        (
+            ROOT
+            / "src"
+            / "kiro_crew"
+            / "builtin_skills"
+            / "kirocrew-dev"
+            / "kirocrew-prepare-pr"
+            / "SKILL.md"
+        )
         .read_text(encoding="utf-8")
         .split()
     )
@@ -484,7 +492,7 @@ def test_the_tested_base_is_the_merge_base_not_a_caller_supplied_sha(
 ) -> None:
     """The commit the green was measured on is inferred, never passed in.
 
-    prepare-pr rebases before every push, so merge-base(HEAD, origin/base) IS
+    kirocrew-prepare-pr rebases before every push, so merge-base(HEAD, origin/base) IS
     the base tip at trigger time. There is no flag to override it: a caller
     that could pin an arbitrary commit could also pin today's tip and make a
     stale tree read fresh.

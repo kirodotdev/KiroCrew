@@ -528,7 +528,7 @@ test on base, a counted consumer, the deletion made. REQUIRED on every
 item whose tag reaches CONCERNS (unjustified move, inherited, duplicate,
 zero consumers, symptom-level, premise risk); an item with no statable
 `Clears when:` line is not a finding -- retag it or drop it. It is the
-LAST line of the entry: the prepare-pr loop reads everything after
+LAST line of the entry: the kirocrew-prepare-pr loop reads everything after
 `Clears when:` to the end of the item as the clearance, so a line
 after it would be read as part of the clearance. An `undeclared` or
 `rides along` rider that carries no premise risk prints its tag and

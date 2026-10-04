@@ -1564,7 +1564,7 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
 
 
 class TestDispositionViolationsBlockTheVerdict:
-    """The disposition rule binds only a writer running the prepare-pr loop
+    """The disposition rule binds only a writer running the kirocrew-prepare-pr loop
     unless readiness enforces it too. Readiness publishes the repository's sole
     required status, so folding the violation list in here binds every
     writer -- including one who never runs that loop."""
@@ -1659,7 +1659,7 @@ def _whole_design_lanes() -> tuple[str, ...]:
         / "kiro_crew"
         / "builtin_skills"
         / "kirocrew-dev"
-        / "prepare-pr"
+        / "kirocrew-prepare-pr"
         / "scripts"
         / "_review_contract.py"
     )

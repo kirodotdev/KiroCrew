@@ -129,13 +129,13 @@ class TestExtractSkills:
             "resources": [
                 "file://.kiro/steering/**/*.md",
                 "skill://~/.kiro/skills/babysit/SKILL.md",
-                "skill://~/.kiro/skills/prepare-pr/SKILL.md",
+                "skill://~/.kiro/skills/kirocrew-prepare-pr/SKILL.md",
             ]
         }
-        assert _extract_skills(data) == ["babysit", "prepare-pr"]
+        assert _extract_skills(data) == ["babysit", "kirocrew-prepare-pr"]
         assert skill_resource_uris(data) == [
             "skill://~/.kiro/skills/babysit/SKILL.md",
-            "skill://~/.kiro/skills/prepare-pr/SKILL.md",
+            "skill://~/.kiro/skills/kirocrew-prepare-pr/SKILL.md",
         ]
 
     def test_unions_builder_mcp_filter_without_duplicates(self):

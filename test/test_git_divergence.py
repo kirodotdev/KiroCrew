@@ -284,7 +284,7 @@ class TestNoHandRolledCopies:
         Path("src/kiro_crew/git_divergence.py"),
         # A standalone skill script shipped to users' machines; it must stay
         # dependency-free, so it cannot import the shared module.
-        Path("src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/preflight.py"),
+        Path("src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/preflight.py"),
     }
 
     def test_no_new_hand_rolled_divergence_count(self) -> None:

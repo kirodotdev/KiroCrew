@@ -1,13 +1,13 @@
 """Load a checked-in skill script as a module without leaving bytecode behind.
 
-The prepare-pr scripts live inside the checked-out source tree, so importing one
+The kirocrew-prepare-pr scripts live inside the checked-out source tree, so importing one
 the ordinary way drops a ``__pycache__`` entry beside it that outlives the run --
 a persistent mutation of the working copy, which the no-test-side-effects rule
 forbids.
 
 Five test modules each grew their own loader and none of them carried the guard.
 Measured one file at a time from a clean tree, they left this in
-``src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/__pycache__/``:
+``src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/__pycache__/``:
 
 ===================================  ==========================================
 test module                          residue

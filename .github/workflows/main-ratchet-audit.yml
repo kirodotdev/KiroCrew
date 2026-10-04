@@ -236,8 +236,8 @@ jobs:
       # one numeric source (test/test_eslint_warning_ceiling.py pins that), and a
       # second copy here would grant slack the PR gate does not the first time
       # the ceiling is burned down -- a false green on main, which is the very
-      # failure this workflow exists to close. Same extraction the prepare-pr
-      # profile uses (prepare-pr/profiles/kirocrew.json), except that an
+      # failure this workflow exists to close. Same extraction the kirocrew-prepare-pr
+      # profile uses (kirocrew-prepare-pr/profiles/kirocrew.json), except that an
       # unreadable ceiling fails CLOSED here: a gate that cannot find its own
       # ceiling must not pass. The point of the job is that main's ceiling is
       # measured unconditionally, including on a backend-only push where ci.yml

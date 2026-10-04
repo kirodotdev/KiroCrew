@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
-PREPARE = SKILLS / "prepare-pr" / "SKILL.md"
+PREPARE = SKILLS / "kirocrew-prepare-pr" / "SKILL.md"
 
 
 def _text(path):
@@ -93,7 +93,7 @@ def test_fallback_does_not_skip_siblings_or_replay_partial_edits():
 def test_entry_skills_load_one_canonical_contract(name):
     path = SKILLS / name / "SKILL.md"
     text = _text(path)
-    link = "../prepare-pr/SKILL.md#review-repair-routing"
+    link = "../kirocrew-prepare-pr/SKILL.md#review-repair-routing"
     assert "MUST load" in text and link in text
     assert (path.parent / link.split("#")[0]).resolve() == PREPARE
     assert "Fable 5.1" not in text
@@ -104,7 +104,7 @@ def test_local_review_and_generic_monitoring_keep_their_own_contracts():
     assert "never the repair-family table" in prepare
     assert "do not change CI models, profile `reviewers[]`/`model_tier`" in prepare
     babysit = " ".join(_text(SKILLS / "babysit" / "SKILL.md").split())
-    assert "works without a Kiro Crew checkout or prepare-pr installed" in babysit
+    assert "works without a Kiro Crew checkout or kirocrew-prepare-pr installed" in babysit
     for contract in ("GitLab", "Bitbucket", "Stall tripwire", "not counted AND not reset"):
         assert contract in babysit
     assert "Other-host guidance is not live-verified here" in babysit
@@ -113,7 +113,7 @@ def test_local_review_and_generic_monitoring_keep_their_own_contracts():
 
 @pytest.mark.parametrize(
     ("name", "byte_ceiling"),
-    [("kirocrew-worktree-dev", 16000), ("babysit", 22000), ("prepare-pr", 68000)],
+    [("kirocrew-worktree-dev", 16000), ("babysit", 22000), ("kirocrew-prepare-pr", 56000)],
 )
 def test_slim_skills_do_not_regrow_duplicate_guidance_or_wire_model_ids(name, byte_ceiling):
     text = _text(SKILLS / name / "SKILL.md")
@@ -124,8 +124,8 @@ def test_slim_skills_do_not_regrow_duplicate_guidance_or_wire_model_ids(name, by
 
 def test_ci_doc_links_the_contract_and_rationale_drops_stale_budget():
     ci_doc = _text(ROOT / "docs/ci/ci-and-reviews.md")
-    assert "prepare-pr/SKILL.md#review-repair-routing" in ci_doc
-    rationale = _text(SKILLS / "prepare-pr/references/rationale.md")
+    assert "kirocrew-prepare-pr/SKILL.md#review-repair-routing" in ci_doc
+    rationale = _text(SKILLS / "kirocrew-prepare-pr/references/rationale.md")
     assert "3 is the real limit" not in rationale and "10-iteration backstop" not in rationale
     assert "## Why review repairs are delegated by reviewer family" in rationale
 
@@ -139,7 +139,7 @@ def test_ladder_generation_names_live_only_in_the_canonical_table():
     assert heads
     for path in (
         ROOT / "docs/ci/ci-and-reviews.md",
-        SKILLS / "prepare-pr/references/rationale.md",
+        SKILLS / "kirocrew-prepare-pr/references/rationale.md",
         SKILLS / "kirocrew-worktree-dev/SKILL.md",
         SKILLS / "babysit/SKILL.md",
     ):
@@ -162,7 +162,7 @@ def test_local_reviewers_are_pinned_per_call_and_launched_concurrently():
     assert "END THE TURN after each call" not in phase_two
 
 
-@pytest.mark.parametrize("name", ["prepare-pr", "babysit"])
+@pytest.mark.parametrize("name", ["kirocrew-prepare-pr", "babysit"])
 def test_arming_refusals_preserve_existing_loops_and_user_stops(name):
     text = " ".join(_text(SKILLS / name / "SKILL.md").split())
     assert "create-only refusal means a loop may already be active" in text
@@ -201,7 +201,7 @@ def test_babysit_separates_provider_facts_from_comment_and_reporting_work():
     assert "Use `0` only" not in text
 
 
-@pytest.mark.parametrize("name", ["prepare-pr", "babysit"])
+@pytest.mark.parametrize("name", ["kirocrew-prepare-pr", "babysit"])
 def test_arm_acknowledgement_requires_a_later_turn_not_an_immediate_retry(name):
     text = " ".join(_text(SKILLS / name / "SKILL.md").split())
     assert "pending request" in text or "pending application request" in text
@@ -240,6 +240,6 @@ def test_comment_aware_recipes_are_finite_ungated_and_keep_repair_routing():
             "autonudge_stop",
         ):
             assert contract in recipe["message"]
-    assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (80, 86400)
+    assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (280, 86400)
     assert (legacy["max_cycles"], legacy["max_runtime_secs"]) == (24, 14400)
-    assert "`max_cycles=80` and `max_runtime_secs=86400`" in _text(PREPARE)
+    assert "`max_cycles=280` and `max_runtime_secs=86400`" in _text(PREPARE)

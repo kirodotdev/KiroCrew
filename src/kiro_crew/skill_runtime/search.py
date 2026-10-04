@@ -307,6 +307,12 @@ def resolve_dollar_skills(
         if matched is None and "/" not in token:
             choices = leaves.get(token.casefold(), [])
             matched = choices[0] if len(choices) == 1 else None
+        if matched is None and token not in exact and not leaves.get(token.casefold()):
+            # A built-in that moved or was renamed keeps answering to its old
+            # name (a saved hook's `$prepare-pr`, an AGENTS.md line), but only
+            # when no installed skill holds that name -- an ambiguous leaf
+            # stays unresolved rather than quietly picking the built-in.
+            matched = exact.get(sk._RELOCATED_SKILLS.get(token, ""))
         if matched is None or matched in seen_names:
             continue
         content = loader.read_scoped_skill(matched, only=only, project_dir=project_dir)

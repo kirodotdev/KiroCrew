@@ -83,13 +83,13 @@ The contributor workflow is codified as agent-loadable skills in
 
 - **`kirocrew-worktree-dev`** — the HARD RULE workflow: every change in a git
   worktree, the blocking build gates, the built-dist gotcha, preview paths.
-- **`prepare-pr`** — drives working-tree changes to a review-ready PR
+- **`kirocrew-prepare-pr`** — drives working-tree changes to a review-ready PR
   (commit → sync → squash → open → poll CI/review bots → fix findings).
 - **`babysit`** — same-session monitoring loop that keeps a PR moving through
   CI and review rounds.
 
 An agent contributing to Kiro Crew loads this suite and follows the same
-worktree → build gate → prepare-pr → review loop human contributors use, so
+worktree → build gate → kirocrew-prepare-pr → review loop human contributors use, so
 the PR process stays consistent regardless of who is writing the code. If you
 change the workflow, change it THERE. The checked-in workflows and
 [CI and review guide](docs/ci/ci-and-reviews.md) are canonical for the gate list;
@@ -264,7 +264,7 @@ get it merged.
 
 When your change is ready, the workflow is already codified rather than left to
 taste. See Development Skills above: `kirocrew-worktree-dev` covers building and
-verifying in a worktree, and `prepare-pr` takes it from there, driving the change
+verifying in a worktree, and `kirocrew-prepare-pr` takes it from there, driving the change
 to a review-ready pull request by committing, syncing onto the base, squashing to
 the one or two commits this repo allows, opening or updating the PR, then polling CI
 and the review bots and fixing what they find. An agent that loads it follows the

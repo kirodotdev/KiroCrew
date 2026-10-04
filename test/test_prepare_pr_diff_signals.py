@@ -27,7 +27,7 @@ from skill_script_helpers import load_skill_script
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
 ROOT = Path(__file__).resolve().parent.parent
-PREPARE_PR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr"
+PREPARE_PR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
 SCRIPT = PREPARE_PR / "scripts" / "diff_signals.py"
 SKILL = PREPARE_PR / "SKILL.md"
 

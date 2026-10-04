@@ -3611,7 +3611,7 @@ advice. Its `kirocrew-codebase-refactor` skill owns repository-scale structural
 campaigns: hotspot baselines, coherent module ownership, non-overlapping worker
 waves, behavior-equivalence evidence, stale-work recovery, and landed structural
 metrics. It delegates isolated implementation, test authoring, PR delivery, and
-monitoring to `kirocrew-worktree-dev`, `writing-tests`, `prepare-pr`, and
+monitoring to `kirocrew-worktree-dev`, `writing-tests`, `kirocrew-prepare-pr`, and
 `babysit` respectively, so those contracts remain single-owned.
 
 The bundled `kirocrew-dev/babysit` skill is an on-demand, pointer-on-trigger recipe.

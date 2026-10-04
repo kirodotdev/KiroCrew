@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """local_review.py - assemble the LOCAL pre-push reviewer briefs from CI's own workflows.
 
-The prepare-pr skill's Phase-2 gate only has value if the local reviewers judge a
+The kirocrew-prepare-pr skill's Phase-2 gate only has value if the local reviewers judge a
 commit against the SAME contract the server reviewers will. Every hand-written
 "charter" in a skill file is a paraphrase, and a paraphrase drifts the moment
 someone tunes a workflow prompt: local review then goes green on a bar the server
@@ -1334,7 +1334,7 @@ def assemble(
         # problem, so it owes the caller EXIT_ENV and a sentence - not a
         # traceback and exit 1 from outside the documented contract.
         raise EnvironmentError(
-            "cannot read the prepare-pr profile for {}: {}: {}".format(
+            "cannot read the kirocrew-prepare-pr profile for {}: {}: {}".format(
                 worktree, type(exc).__name__, exc
             )
         )

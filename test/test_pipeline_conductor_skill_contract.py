@@ -1402,7 +1402,9 @@ class TestWorkOrderBriefClauses:
         would make the mandatory gate raise ``ModuleNotFoundError`` on every push
         -- a fleet-wide push refusal. The clause carries the exception and its
         reason, because an unexplained omission gets 'fixed' back in."""
-        gate_scripts = REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts"
+        gate_scripts = (
+            REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts"
+        )
         preflight = (gate_scripts / "preflight.py").read_text(encoding="utf-8")
         assert "from push_guard import" in preflight, "the sibling import this guards is gone"
         brief = _flat(_skill_section(self.HEADING))
@@ -1451,7 +1453,8 @@ class TestWorkOrderBriefClauses:
         dependency runs skill-prose to skill-script and not to any one
         repository's CI."""
         script = (
-            REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py"
+            REPO_ROOT
+            / "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py"
         ).read_text(encoding="utf-8")
         declared = re.search(r"^DEFAULT_MAX_AHEAD = (\d+)", script, re.M)
         assert declared, "DEFAULT_MAX_AHEAD not found in push_guard.py"
@@ -1468,7 +1471,8 @@ class TestWorkOrderBriefClauses:
         named constant in the script; a brief that drops it would read 41 as an
         unknown code, so the number is asserted against the script."""
         script = (
-            REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py"
+            REPO_ROOT
+            / "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py"
         ).read_text(encoding="utf-8")
         declared = re.search(r"^EXIT_FOREIGN_INDEX = (\d+)", script, re.M)
         assert declared, "EXIT_FOREIGN_INDEX not found in push_guard.py"

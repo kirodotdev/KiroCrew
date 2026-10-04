@@ -2,7 +2,7 @@
 
 This reference belongs to `kirocrew-codebase-refactor` and applies only to the
 Kiro Crew source repository or one of its worktrees. Read it for stale branches,
-interrupted work, upstream overlap, or the handoff into `prepare-pr`.
+interrupted work, upstream overlap, or the handoff into `kirocrew-prepare-pr`.
 
 ## Refresh twice
 
@@ -91,7 +91,7 @@ required authority. Starting more writers does not resolve orphaned work.
 
 ## Hand off publication
 
-Once the refactor is locally green, load `../prepare-pr/SKILL.md`. That sibling
+Once the refactor is locally green, load `../kirocrew-prepare-pr/SKILL.md`. That sibling
 owns the commit, base sync, single-commit policy, body accounting, local review,
 push, PR creation/update, dispositions, and PR-to-green loop.
 

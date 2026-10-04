@@ -41,7 +41,13 @@ EXACT_IDENTITY_REVIEW_LANES = (
 )
 REVIEW_PROMPTS = ROOT / ".github" / "review-prompts"
 PREPARE_PR_SKILL = (
-    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
+    ROOT
+    / "src"
+    / "kiro_crew"
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "kirocrew-prepare-pr"
+    / "SKILL.md"
 )
 PREPARE_PR_FINDINGS = (
     ROOT
@@ -49,7 +55,7 @@ PREPARE_PR_FINDINGS = (
     / "kiro_crew"
     / "builtin_skills"
     / "kirocrew-dev"
-    / "prepare-pr"
+    / "kirocrew-prepare-pr"
     / "scripts"
     / "pr_findings.py"
 )
@@ -9902,7 +9908,7 @@ class TestReviewLaneVerdictVisibility:
         # to claim the slot, but the write itself fails. One attempt under
         # `|| true` with an unconditional "Updated existing ..." echo leaves the
         # marker pinned to a superseded head while the job log claims the
-        # opposite, and prepare-pr then refuses a PR whose every check passes.
+        # opposite, and kirocrew-prepare-pr then refuses a PR whose every check passes.
         calls, result = self._run_step(
             lane,
             tmp_path,
@@ -10515,7 +10521,7 @@ class TestReviewLaneVerdictVisibility:
         # pr-readiness maps a FAILED lane to a blocking verdict on the required
         # check, so failing here would invent a BLOCK nobody judged from an
         # infrastructure fault. The annotation is what reports the loss, and
-        # prepare-pr's marker evaluation is what refuses a PR whose head has no
+        # kirocrew-prepare-pr's marker evaluation is what refuses a PR whose head has no
         # verdict; the required status itself reads only conclusions.
         assert result.returncode == 0, result.stderr.decode()
         stdout = result.stdout.decode()
@@ -10538,7 +10544,7 @@ class TestReviewLaneVerdictVisibility:
         # The annotation carries the remedy, because nothing in CI catches this
         # for an advisory lane: the required readiness status reads check-run
         # conclusions and has no stamp-freshness read, so the reader that sees a
-        # head with no verdict is prepare-pr's own marker evaluation.
+        # head with no verdict is kirocrew-prepare-pr's own marker evaluation.
         assert "re-run this lane" in stdout, stdout
 
     @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
@@ -11805,7 +11811,7 @@ class TestFirstPrinciplesOneStatementPerProblem:
         assert "the\nworkflow counts them and flags an overrun" in contract
 
     def test_the_rule_the_local_loop_parses_still_holds(self) -> None:
-        # The prepare-pr loop reads items out of `### Not justified as shipped`
+        # The kirocrew-prepare-pr loop reads items out of `### Not justified as shipped`
         # by bullet + continuation lines, so an entry shaped as the contract
         # now asks (bullet, then indented `Clears when:` / `Subtraction:`)
         # must yield ONE item carrying both lines, not three.
@@ -12086,7 +12092,7 @@ def _review_contract_module():
         / "kiro_crew"
         / "builtin_skills"
         / "kirocrew-dev"
-        / "prepare-pr"
+        / "kirocrew-prepare-pr"
         / "scripts"
         / "_review_contract.py",
     )

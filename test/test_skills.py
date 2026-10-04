@@ -623,12 +623,12 @@ class TestRelocatedSkillCleanup:
         base = tmp_path / "skills"
         old = base / "prepare-pr"
         old.mkdir(parents=True)
-        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nUSER-EDITED flat copy")
+        (old / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nUSER-EDITED flat copy")
         (old / "scripts").mkdir()
         (old / "scripts" / "helper.py").write_text("# user script")
-        new = base / "kirocrew-dev" / "prepare-pr"
+        new = base / "kirocrew-dev" / "kirocrew-prepare-pr"
         new.mkdir(parents=True)
-        (new / "SKILL.md").write_text("---\nname: prepare-pr\n---\nnested copy")
+        (new / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nnested copy")
 
         _ensure_builtin_skills(base)
 
@@ -640,6 +640,54 @@ class TestRelocatedSkillCleanup:
         assert (old / "scripts" / "helper.py").exists()
         assert (new / "SKILL.md").exists()
 
+    def test_renamed_nested_copy_quarantined_when_new_name_present(self, tmp_path):
+        """An install that already holds ``kirocrew-dev/prepare-pr`` gets the
+        renamed ``kirocrew-dev/kirocrew-prepare-pr``; the old nested copy is
+        quarantined so the loader never sees two copies of the same skill."""
+        from kiro_crew.skills import _ensure_builtin_skills
+
+        base = tmp_path / "skills"
+        old = base / "kirocrew-dev" / "prepare-pr"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nold nested copy")
+        new = base / "kirocrew-dev" / "kirocrew-prepare-pr"
+        new.mkdir(parents=True)
+        (new / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nrenamed copy")
+
+        _ensure_builtin_skills(base)
+
+        assert not (old / "SKILL.md").exists()
+        assert (
+            (old / "SKILL.md.pre-relocation")
+            .read_text(encoding="utf-8")
+            .endswith("old nested copy")
+        )
+        assert (new / "SKILL.md").exists()
+
+    def test_linked_old_dir_is_never_quarantined_through_the_link(self, tmp_path: Path) -> None:
+        """An operator who linked ``kirocrew-dev/prepare-pr`` to an outside
+        provider keeps that provider's ``SKILL.md``: the relocation must not
+        rename a file through the link."""
+        from kiro_crew.skills import _ensure_builtin_skills
+
+        provider = tmp_path / "provider" / "prepare-pr"
+        provider.mkdir(parents=True)
+        (provider / "SKILL.md").write_text("---\nname: prepare-pr\n---\nprovider copy")
+        base = tmp_path / "skills"
+        (base / "kirocrew-dev").mkdir(parents=True)
+        try:
+            (base / "kirocrew-dev" / "prepare-pr").symlink_to(provider, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable on this host")
+        new = base / "kirocrew-dev" / "kirocrew-prepare-pr"
+        new.mkdir(parents=True)
+        (new / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nrenamed copy")
+
+        _ensure_builtin_skills(base)
+
+        assert (provider / "SKILL.md").read_text(encoding="utf-8").endswith("provider copy")
+        assert not (provider / "SKILL.md.pre-relocation").exists()
+
     def test_repeated_migration_never_overwrites_prior_quarantine(self, tmp_path: Path) -> None:
         # HIGH regression (GPT 5.6): a rollback/reinstall can recreate
         # SKILL.md AFTER a prior migration quarantined a user-edited copy.
@@ -650,18 +698,18 @@ class TestRelocatedSkillCleanup:
         base = tmp_path / "skills"
         old = base / "prepare-pr"
         old.mkdir(parents=True)
-        new = base / "kirocrew-dev" / "prepare-pr"
+        new = base / "kirocrew-dev" / "kirocrew-prepare-pr"
         new.mkdir(parents=True)
-        (new / "SKILL.md").write_text("---\nname: prepare-pr\n---\nnested copy")
+        (new / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nnested copy")
 
         # First migration quarantines the user's original edits.
-        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nFIRST user edit")
+        (old / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nFIRST user edit")
         _ensure_builtin_skills(base)
         first = old / "SKILL.md.pre-relocation"
         assert first.read_text(encoding="utf-8").endswith("FIRST user edit")
 
         # Rollback recreates SKILL.md with different content; migration re-runs.
-        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nSECOND rollback copy")
+        (old / "SKILL.md").write_text("---\nname: kirocrew-prepare-pr\n---\nSECOND rollback copy")
         _ensure_builtin_skills(base)
 
         # Both preserved copies survive; nothing was overwritten.
@@ -2094,6 +2142,48 @@ class TestResolveDollarSkills:
     def test_unknown_token_skipped(self, tmp_path):
         loader = self._loader(tmp_path)
         assert loader.resolve_dollar_skills("$does-not-exist hello") == []
+
+    def test_renamed_builtin_answers_to_its_old_name(self, tmp_path):
+        """A saved hook or AGENTS.md line still says `$prepare-pr` (or the old
+        nested key) after the skill became `kirocrew-dev/kirocrew-prepare-pr`."""
+        _create_skill(
+            tmp_path / "skills",
+            "kirocrew-dev/kirocrew-prepare-pr",
+            "---\nname: kirocrew-prepare-pr\ndescription: PR loop\n---\n# PR\nBody P.",
+        )
+        loader = self._loader(tmp_path)
+        for text in ("run $prepare-pr", "run $kirocrew-dev/prepare-pr"):
+            out = loader.resolve_dollar_skills(text)
+            assert [name for _, name, _ in out] == ["kirocrew-dev/kirocrew-prepare-pr"], text
+            assert "Body P." in out[0][2]
+
+    def test_installed_skill_keeps_its_name_over_a_relocation_alias(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "prepare-pr", "---\nname: prepare-pr\n---\nUser's own.")
+        _create_skill(
+            skills_dir,
+            "kirocrew-dev/kirocrew-prepare-pr",
+            "---\nname: kirocrew-prepare-pr\n---\nBuilt-in.",
+        )
+        loader = self._loader(tmp_path)
+        assert [name for _, name, _ in loader.resolve_dollar_skills("$prepare-pr")] == [
+            "prepare-pr"
+        ]
+
+    def test_ambiguous_old_name_does_not_fall_through_to_the_relocation_alias(self, tmp_path):
+        """Two user skills share the `prepare-pr` leaf: the token stays
+        unresolved, as before the alias existed, instead of picking the
+        renamed built-in."""
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "team-a/prepare-pr", "---\nname: a\n---\nA.")
+        _create_skill(skills_dir, "team-b/prepare-pr", "---\nname: b\n---\nB.")
+        _create_skill(
+            skills_dir,
+            "kirocrew-dev/kirocrew-prepare-pr",
+            "---\nname: kirocrew-prepare-pr\n---\nBuilt-in.",
+        )
+        loader = self._loader(tmp_path)
+        assert loader.resolve_dollar_skills("$prepare-pr") == []
 
     def test_no_dollar_returns_empty(self, tmp_path):
         loader = self._loader(tmp_path)

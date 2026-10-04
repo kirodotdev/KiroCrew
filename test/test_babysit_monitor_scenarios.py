@@ -73,7 +73,7 @@ def test_babysit_keeps_finite_legacy_path_when_terminal_success_must_report() ->
 
 
 def test_prepare_pr_recipe_covers_its_poll_budget_without_provider_gating() -> None:
-    skill_path = _BABYSIT_SKILL.parent.parent / "prepare-pr/SKILL.md"
+    skill_path = _BABYSIT_SKILL.parent.parent / "kirocrew-prepare-pr/SKILL.md"
     skill = skill_path.read_text(encoding="utf-8")
     recipe = next(
         textwrap.dedent(block).strip()
@@ -89,7 +89,7 @@ def test_prepare_pr_recipe_covers_its_poll_budget_without_provider_gating() -> N
     applied = session_directive.decode(result, "monitor_start")
     assert applied is not None
     loop = NudgeLoop(
-        id="prepare-pr",
+        id="kirocrew-prepare-pr",
         slot_key=_BINDING,
         message=applied["message"],
         idle_secs=applied["idle_secs"],

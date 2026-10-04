@@ -14,7 +14,7 @@ SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
 WEB_VERIFY = SKILLS / "web-verify" / "SKILL.md"
 WEB_BROWSE = SKILLS / "web-browse" / "SKILL.md"
 WEB_PREVIEW = SKILLS / "web-preview" / "SKILL.md"
-PREPARE_PR = SKILLS / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
+PREPARE_PR = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "SKILL.md"
 PROMPT = ROOT / "src" / "kiro_crew" / "config" / "prompt.md"
 
 

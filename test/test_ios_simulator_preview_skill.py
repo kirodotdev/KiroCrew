@@ -67,7 +67,7 @@ class TestSkillFilesShip:
 
     def test_documented_launcher_path_resolves_via_skill_dir(self, skill_md: str) -> None:
         """The documented path must honor KIROCREW_HOME (same convention as
-        prepare-pr), not hardcode a home that a relocated install won't have."""
+        kirocrew-prepare-pr), not hardcode a home that a relocated install won't have."""
         assert '"${KIROCREW_HOME:-$HOME/.kiro/crew}/skills/ios-simulator-preview"' in skill_md
         assert '"$SKILL_DIR/scripts/sim_mirror.py"' in skill_md
 

@@ -14,7 +14,7 @@ of items whose bodies ask which of three designs to take.
 
 So this file pins the distinction wherever an agent reads it: any line that
 dispositions a concern as ``accepted-and-deferred`` must also offer
-``needs-a-decision``, and the prepare-pr skill must keep telling the agent not to
+``needs-a-decision``, and the kirocrew-prepare-pr skill must keep telling the agent not to
 file an issue for one. It is a ratchet, not a description -- it does not care how the
 guidance is worded, only that both halves are still there.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
-PREPARE_PR = SKILLS / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
+PREPARE_PR = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "SKILL.md"
 
 DEFERRED = "accepted-and-deferred"
 DECISION = "needs-a-decision"
@@ -132,14 +132,14 @@ def test_the_disposition_step_offers_the_whole_vocabulary() -> None:
 # and parsed nowhere, so one comment with one rationale silently covered N
 # findings across lanes (observed: one "out of scope" rationale answered four
 # findings from three lanes and the PR merged green). The enforcement half is
-# a disposition-record contract shared by the two prepare-pr scripts: a
+# a disposition-record contract shared by the two kirocrew-prepare-pr scripts: a
 # writer-authored record claims exactly one span= finding identity from its
 # own target= lane, pr_findings.py computes the violations (non-gating) and
 # pr_status.py gates on them. These assertions pin that the rule STAYS
 # mechanical -- deleting the parser or the gate must fail here, not silently
 # demote the rule back to prose.
 
-SCRIPTS = SKILLS / "kirocrew-dev" / "prepare-pr" / "scripts"
+SCRIPTS = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts"
 
 
 def test_the_disposition_rule_is_mechanically_enforced() -> None:

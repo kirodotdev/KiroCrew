@@ -1,4 +1,4 @@
-"""Tests for the prepare-pr project-profile mechanism.
+"""Tests for the kirocrew-prepare-pr project-profile mechanism.
 
 Covers:
   * resolve_profile.py resolution order (config / kirocrew markers /
@@ -23,7 +23,7 @@ import pytest
 from skill_script_helpers import load_skill_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr"
+SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 PROFILES_DIR = SKILL_DIR / "profiles"
 
@@ -235,7 +235,7 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
 def test_opus_profile_model_matches_the_ci_workflow():
     """The local reviewer must mirror the model CI actually runs.
 
-    prepare-pr's whole value is that local-green predicts server-green. When the
+    kirocrew-prepare-pr's whole value is that local-green predicts server-green. When the
     profile pinned claude-opus-5 while claude-review.yml had moved to
     opus-4-8, the local gate was reviewing with a different model than the gate
     it claims to mirror. This test fails the next time they diverge.
@@ -269,7 +269,7 @@ def test_opus_profile_model_matches_the_ci_workflow():
         return re.sub(r"-(\d)-(\d)$", r"-\1.\2", tail)
 
     assert _normalize(ci_model) == _normalize(local_model), (
-        f"prepare-pr opus reviewer ({local_model}) no longer mirrors "
+        f"kirocrew-prepare-pr opus reviewer ({local_model}) no longer mirrors "
         f"claude-review.yml ({ci_model})"
     )
 
@@ -422,13 +422,13 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
     # Only repeatable verdict-producing gates satisfy the CI floor. A command
     # filed under setup runs once per worktree, so counting it here would let a
-    # future blocking CI check disappear from later prepare-pr passes.
+    # future blocking CI check disappear from later kirocrew-prepare-pr passes.
     floor = "\n".join(data["gates"])
 
     # CI-only capability gate: "Require real FAISS edit invalidation regressions"
     # installs an optional native accelerator in an isolated Linux venv and
     # requires all four versioned cases to pass. The local scoped-test gate
-    # retains those tests with their declared capability skips; prepare-pr does
+    # retains those tests with their declared capability skips; kirocrew-prepare-pr does
     # not provision optional native runtimes, just as it does not grant Linux
     # namespaces or supply the Darwin kernel. Its absence is not FAISS evidence.
     exempt_scripts = {
@@ -460,7 +460,7 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "scripts/stamp-distribution.sh",
         # Optional synthetic Qwen measurement, not a blocking score gate. The
         # bounded CI step records unavailable evidence on failure; local
-        # prepare-pr must not download a model or claim a calibration score.
+        # kirocrew-prepare-pr must not download a model or claim a calibration score.
         "scripts/ci-member-memory-benchmark.py",
         # Reports Python advisories against a baseline and cannot fail a build on
         # what it finds, so by this floor's own rule -- only repeatable
@@ -471,7 +471,7 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "scripts/check_python_audit.py",
         # Reports route coverage from the dumps the Linux-only `integration` job
         # writes while booting real gateways in-process; it has no verdict
-        # without that run, and prepare-pr does not boot gateways in its
+        # without that run, and kirocrew-prepare-pr does not boot gateways in its
         # repeated static floor -- the layer's proof stays in CI, like E2E.
         "scripts/check_integration_route_coverage.py",
     }
@@ -497,7 +497,7 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
 
     missing = sorted(s for s in invoked - exempt_scripts if s not in floor)
     assert not missing, (
-        "ci.yml/fast-gate.yml run these scripts but the prepare-pr floor does not: "
+        "ci.yml/fast-gate.yml run these scripts but the kirocrew-prepare-pr floor does not: "
         f"{missing}. Add them to profiles/kirocrew.json gates[] in their "
         "CI-exact form, or exempt them here with a reason."
     )
@@ -731,7 +731,7 @@ def test_named_project_is_the_root_tsconfigs_only_reference():
 
     `tsc -b` on the solution root followed every reference. `-p` does not, so if
     a second project is ever added to `website/tsconfig.json` every caller here
-    (package.json build/typecheck, ci.yml, the prepare-pr floor) would skip it
+    (package.json build/typecheck, ci.yml, the kirocrew-prepare-pr floor) would skip it
     without any of them failing. This test turns that silent skip into a
     decision: extend the callers, or go back to a spelling that follows
     references and re-examine the cache.

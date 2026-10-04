@@ -334,7 +334,7 @@ jobs:
         # repository -- its GitHub slug, a src/ checkout path, a test file, a
         # workflow file -- is an instruction that resolves for one user and
         # points an agent at a path that does not exist for everyone else.
-        # prepare-pr already solved it properly: repository specifics live in a
+        # kirocrew-prepare-pr already solved it properly: repository specifics live in a
         # profile keyed by repository, so the body stays portable. The
         # kirocrew-dev/ family is exempt by directory (matched directly beneath
         # builtin_skills/, so a nested or look-alike name cannot inherit it),

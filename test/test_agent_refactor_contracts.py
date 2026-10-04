@@ -126,7 +126,7 @@ BASE_SURFACE: dict[str, str] = {
     "_SAFE_PATH_RE": "value platform",
     "_SECURITY_CONDUCTOR_AGENT_FILENAME": "value str ea0f45466289114a",
     "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 4f02f1db82a878ee",
-    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 896e45b01ff0646e",
+    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str b62418d54ab8fe24",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",

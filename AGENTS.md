@@ -275,7 +275,7 @@ python3 scripts/local-gate.py
 `local-gate.py` runs the tests related to your diff on both surfaces with a
 bounded worker count; the full suite is CI's job and never runs locally unless a
 human passes `--full`. See
-[prepare-pr](src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/references/gate-floor.md).
+[kirocrew-prepare-pr](src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/references/gate-floor.md).
 
 - **On macOS, run `mypy --platform linux src/kiro_crew`.** Without it a local run
   reports errors you did not cause and MISSES the Linux-only errors CI fails on, so

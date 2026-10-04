@@ -19,7 +19,7 @@ inventory" is not something a regex can ask.
 
 Exit 0 when every fixture is clean, 1 when one is not, naming the file, the marker and
 the reason. Read-only: it writes nothing, so it runs from CI, from the Main Ratchet
-Audit lane and from the prepare-pr floor without the no-test-side-effects problem the
+Audit lane and from the kirocrew-prepare-pr floor without the no-test-side-effects problem the
 snapshot writer has to think about. It always sweeps the WHOLE corpus: a partial sweep
 could not tell a cleaned file from one it was not asked about, so the stale-baseline
 check would have to be skipped, and the three call sites all want the whole answer.
