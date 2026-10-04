@@ -128,11 +128,27 @@ def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[Non
     if self._memory_startup_task is None:
 
         async def initialize() -> None:
+            import contextvars
+
+            from kiro_crew.executors import memory_preparation_executor
+
+            # Its own thread, not asyncio.to_thread: the loop's default executor
+            # is shared by every boot task, and admission stays closed while
+            # this job waits for a free slot there. The context copy keeps
+            # to_thread's contextvars behaviour.
+            pool = memory_preparation_executor()
+            run = contextvars.copy_context().run
             try:
-                await asyncio.to_thread(self._initialize_memory_worker)
+                await asyncio.get_running_loop().run_in_executor(
+                    pool, run, self._initialize_memory_worker
+                )
             except asyncio.CancelledError:
                 await asyncio.to_thread(self._stop_memory_startup)
                 raise
+            finally:
+                # A worker still running after cancellation keeps its thread
+                # until it returns; stop() above already told it to close.
+                pool.shutdown(wait=False)
 
         task = asyncio.create_task(initialize())
         self._memory_startup_task = task

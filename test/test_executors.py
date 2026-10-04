@@ -61,6 +61,20 @@ def test_pools_are_bounded() -> None:
     assert ex.subprocess_executor()._max_workers == ex._MAX_SUBPROCESS_WORKERS
 
 
+def test_memory_preparation_pool_is_one_named_worker_and_fresh_per_pass() -> None:
+    # Fresh per pass: a stopped pass's worker can still hold its thread, and the
+    # next gateway's pass must not queue behind it.
+    first = ex.memory_preparation_executor()
+    second = ex.memory_preparation_executor()
+    try:
+        assert first is not second
+        assert first._max_workers == 1
+        assert first._thread_name_prefix == "mc-memprep"
+    finally:
+        first.shutdown(wait=False)
+        second.shutdown(wait=False)
+
+
 def test_shutdown_is_idempotent_and_resets() -> None:
     first = ex.maintenance_executor()
     first_subproc = ex.subprocess_executor()

@@ -6,6 +6,8 @@ import inspect
 import json
 import textwrap
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -275,6 +277,100 @@ async def test_one_worker_finishes_restore_before_open_and_starts_migration(monk
         require_memory_ready()
     finally:
         await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+def _stub_preparation_steps(monkeypatch, restore=None):
+    monkeypatch.setattr("kiro_crew.memory_stores.repair_legacy_member_stores", lambda: [])
+    monkeypatch.setattr(
+        memory_backup, "apply_pending_member_restores", restore or (lambda **kwargs: {})
+    )
+
+
+@pytest.mark.asyncio
+async def test_preparation_does_not_queue_behind_a_saturated_default_executor(monkeypatch):
+    """Boot work that fills the default executor must not hold admission closed.
+
+    Every slot of the loop's default executor is held by a blocking job, as MCP
+    probes and reconnects do at boot. On that executor the worker would wait for
+    a slot until the 5s bound fires; on its own thread it finishes at once.
+    """
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    ran_on = []
+
+    def open_vectors():
+        require_memory_ready()
+        ran_on.append(threading.current_thread().name)
+
+    gateway.vector_memory.init.side_effect = open_vectors
+    loop = asyncio.get_running_loop()
+    workers = 2
+    loop.set_default_executor(
+        ThreadPoolExecutor(max_workers=workers, thread_name_prefix="busy-default")
+    )
+    hold = threading.Event()
+    busy = [loop.run_in_executor(None, hold.wait, 30) for _ in range(workers * 2)]
+    try:
+        assert await asyncio.wait_for(gateway._wait_for_memory_preparation(), timeout=5)
+        require_memory_ready()
+        assert ran_on == ["mc-memprep_0"]
+        # The default executor stayed full the whole time.
+        assert not any(job.done() for job in busy)
+    finally:
+        hold.set()
+        await asyncio.gather(*busy)
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preparation_still_stops_and_closes_its_own_worker(monkeypatch):
+    gateway = _gateway(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    ran_on = []
+
+    def restore(**kwargs):
+        ran_on.append(threading.current_thread().name)
+        entered.set()
+        assert release.wait(5)
+        return {}
+
+    _stub_preparation_steps(monkeypatch, restore)
+    gateway.vector_memory.close.side_effect = lambda: closed.set()
+    task = gateway._schedule_memory_preparation()
+    assert task is not None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Cancelling the awaiting task stopped the pass. The worker still owns
+        # its handle, so the stop did not close it out from under the worker.
+        assert gateway._memory_startup.stopped
+        assert not closed.is_set()
+        release.set()
+        assert await asyncio.to_thread(closed.wait, 5)
+        gateway.vector_memory.init.assert_not_called()
+        assert ran_on == ["mc-memprep_0"]
+        # The worker released the barrier on its way out, so a successor can begin.
+        successor = await asyncio.to_thread(_begin_when_released)
+        successor.stop()
+        successor.release()
+    finally:
+        release.set()
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+def _begin_when_released(timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return MemoryStartup.begin()
+        except MemoryStartupUnavailable:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.01)
 
 
 def test_invalid_declared_store_is_scoped_without_failing_global_startup(monkeypatch):

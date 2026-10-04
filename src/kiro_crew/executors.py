@@ -96,6 +96,7 @@ __all__ = [
     "path_probe_executor",
     "path_transfer_executor",
     "crew_log_executor",
+    "memory_preparation_executor",
     "governance_executor",
     "cron_gate_executor",
     "CronGateTimeout",
@@ -678,6 +679,26 @@ def crew_log_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _crew_log_pool
+
+
+def memory_preparation_executor() -> ThreadPoolExecutor:
+    """Return a NEW one-worker pool for one gateway's memory preparation pass.
+
+    Threads are named ``mc-memprep``. The caller owns the pool and shuts it
+    down once its one job has been submitted and awaited.
+
+    Memory preparation is the barrier that keeps chat admission closed after a
+    restart, and its work is short (about 1.5s on a large store). On the loop's
+    default executor that job waits behind every other boot task queued there
+    -- MCP probes, remote reconnects, app loading -- so admission stayed closed
+    for minutes of queueing. Its own thread starts it at once.
+
+    A fresh pool per pass rather than a process-wide singleton: a stopped
+    pass's worker cannot be cancelled and may still hold its thread, and a
+    shared single slot would queue the next gateway's pass behind it, which is
+    the same wait in a new place.
+    """
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="mc-memprep")
 
 
 def embed_executor() -> ThreadPoolExecutor:
