@@ -85,6 +85,10 @@ interface FetchOpts {
   knowledgeAdded?: boolean
   knowledgePostStatus?: number
   knowledgeSourceType?: string
+  /** Explicit multi-source list for the GET; overrides knowledgeAdded/Type. */
+  knowledgeSources?: { id: number; source_type: string }[]
+  /** When false, the sources GET resolves non-ok (HTTP 500). */
+  knowledgeSourcesOk?: boolean
   knowledgeDeleteStatus?: number
   fileReadOk?: boolean
   fileReadText?: string
@@ -112,6 +116,12 @@ function installFetch() {
         return { ok: status < 400, status, json: async () => (status >= 400 ? { error: 'library refused the removal' } : {}) }
       }
       const type = fetchOpts.knowledgeSourceType ?? 'local_file'
+      if (fetchOpts.knowledgeSourcesOk === false) {
+        return { ok: false, status: 500, json: async () => ({ error: 'sources read failed' }) }
+      }
+      if (fetchOpts.knowledgeSources) {
+        return { ok: true, json: async () => fetchOpts.knowledgeSources }
+      }
       return { ok: true, json: async () => (fetchOpts.knowledgeAdded ? [{ id: 1, source_type: type }] : []) }
     }
     if (url.startsWith('/api/file-download')) {
@@ -1158,7 +1168,7 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     fetchOpts.knowledgeEnabled = true
     fetchOpts.knowledgeAdded = true
     mountPanel()
-    const remove = await screen.findByLabelText('Remove from Knowledge Library')
+    const remove = await screen.findByLabelText(/Remove from Knowledge Library/)
     expect(screen.queryByLabelText('Add to Knowledge Library')).toBeNull()
     fireEvent.click(remove)
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
@@ -1172,7 +1182,7 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     fetchOpts.knowledgeAdded = true
     fetchOpts.knowledgeDeleteStatus = 404
     mountPanel()
-    fireEvent.click(await screen.findByLabelText('Remove from Knowledge Library'))
+    fireEvent.click(await screen.findByLabelText(/Remove from Knowledge Library/))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
     expect(screen.queryByTestId('markdown-panel-action-error')).toBeNull()
   })
@@ -1182,7 +1192,7 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     fetchOpts.knowledgeAdded = true
     fetchOpts.knowledgeDeleteStatus = 500
     mountPanel()
-    fireEvent.click(await screen.findByLabelText('Remove from Knowledge Library'))
+    fireEvent.click(await screen.findByLabelText(/Remove from Knowledge Library/))
     // The backend's raw English body ("library refused the removal") is
     // intentionally swallowed: the notice shows the localized string instead.
     expect(await screen.findByTestId('markdown-panel-action-error')).toHaveTextContent('Couldn’t remove the source.')
@@ -1195,8 +1205,53 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     mountPanel()
     const badge = await screen.findByLabelText('In Knowledge Library')
     expect(badge.tagName).toBe('SPAN')
-    expect(screen.queryByLabelText('Remove from Knowledge Library')).toBeNull()
+    expect(screen.queryByLabelText(/Remove from Knowledge Library/)).toBeNull()
     expect(screen.queryByLabelText('Add to Knowledge Library')).toBeNull()
+  })
+
+  it('finds the removable local_file even when a folder source is listed first', async () => {
+    // A file can match more than one source. The removable affordance must key
+    // off the local_file among all matches, not whichever row came back first,
+    // so a leading folder source must not mask it (and the DELETE must target
+    // the local_file's id, not the folder's).
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeSources = [
+      { id: 9, source_type: 'folder' },
+      { id: 1, source_type: 'local_file' },
+    ]
+    mountPanel()
+    const remove = await screen.findByLabelText(/Remove from Knowledge Library/)
+    expect(screen.queryByLabelText('Add to Knowledge Library')).toBeNull()
+    fireEvent.click(remove)
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
+  })
+
+  it('URL-encodes the source id so a traversal id cannot redirect the delete', async () => {
+    // Source ids come from imported bundles and are only validated as a
+    // non-empty string, so an id like "../../../sessions" would otherwise
+    // resolve to a different route. The id must be sent as a single, encoded
+    // path segment.
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeSources = [{ id: '../../../sessions' as unknown as number, source_type: 'local_file' }]
+    mountPanel()
+    fireEvent.click(await screen.findByLabelText(/Remove from Knowledge Library/))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/knowledge/sources/' + encodeURIComponent('../../../sessions'),
+      expect.objectContaining({ method: 'DELETE' }),
+    ))
+    expect(fetch).not.toHaveBeenCalledWith('/api/knowledge/sources/../../../sessions', expect.anything())
+  })
+
+  it('surfaces an error (not an empty library) when the sources read fails', async () => {
+    // A failed sources GET must not resolve to [] and read as "not added":
+    // that would offer Add and hide the Remove for a file that may already be
+    // indexed. The panel must render its knowledge query-error notice instead.
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeSourcesOk = false
+    mountPanel()
+    expect(await screen.findByTestId('markdown-panel-knowledge-error')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Add to Knowledge Library')).toBeNull()
+    expect(screen.queryByLabelText(/Remove from Knowledge Library/)).toBeNull()
   })
 
   it('offers the Remove row in the overflow menu for an added local_file source', async () => {
@@ -1204,7 +1259,7 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     fetchOpts.knowledgeAdded = true
     mountPanel()
     openPanelMenu()
-    fireEvent.click(await screen.findByText('Remove from Knowledge Library'))
+    fireEvent.click(await screen.findByText(/Remove from Knowledge Library/))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
   })
 })

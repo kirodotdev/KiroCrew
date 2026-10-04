@@ -7174,7 +7174,7 @@
       "in_artifacts": "已在产物中",
       "in_knowledge_library": "已在知识库中",
       "in_library": "已在库中",
-      "remove_from_knowledge_library": "从知识库中移除",
+      "remove_from_knowledge_library": "从知识库中移除（文件保留在磁盘上）",
       "failed_to_remove_source": "移除来源失败",
       "line_numbers": "行号",
       "more_options": "更多选项",

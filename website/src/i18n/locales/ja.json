@@ -7174,7 +7174,7 @@
       "in_artifacts": "アーティファクトに含まれています",
       "in_knowledge_library": "ナレッジライブラリに含まれています",
       "in_library": "ライブラリに含まれています",
-      "remove_from_knowledge_library": "ナレッジライブラリから削除",
+      "remove_from_knowledge_library": "ナレッジライブラリから削除（ファイルはディスクに残ります）",
       "failed_to_remove_source": "ソースを削除できませんでした",
       "line_numbers": "行番号",
       "more_options": "その他のオプション",

@@ -120,7 +120,7 @@ async function main() {
 
   // Shot 1 + 2: the added state — remove button AND the ⋯ menu row.
   await openPanel(page, true)
-  const removeBtn = page.getByLabel('Remove from Knowledge Library')
+  const removeBtn = page.getByLabel(/^Remove from Knowledge Library/)
   await removeBtn.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(400)
   await cropHeader(page, 'added-local-file')
@@ -132,7 +132,7 @@ async function main() {
   await page.waitForTimeout(400)
   const items = (await menu.locator('[role="menuitem"]').allInnerTexts()).map(s => s.trim())
   console.log('ITEMS added/en', JSON.stringify(items))
-  if (!items.includes('Remove from Knowledge Library')) {
+  if (!items.some(t => t.startsWith('Remove from Knowledge Library'))) {
     failures.push('⋯ menu is missing the "Remove from Knowledge Library" entry')
   }
   const mBox = await menu.boundingBox()

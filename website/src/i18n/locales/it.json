@@ -7394,7 +7394,7 @@
       "in_artifacts": "Negli artefatti",
       "in_knowledge_library": "Nella libreria delle conoscenze",
       "in_library": "Nella libreria",
-      "remove_from_knowledge_library": "Rimuovi dalla libreria delle conoscenze",
+      "remove_from_knowledge_library": "Rimuovi dalla libreria delle conoscenze (il file resta sul disco)",
       "failed_to_remove_source": "Impossibile rimuovere la fonte.",
       "line_numbers": "Numeri di riga",
       "more_options": "Altre opzioni",

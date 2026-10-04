@@ -7504,7 +7504,7 @@
       "in_artifacts": "В артефактах",
       "in_knowledge_library": "В библиотеке знаний",
       "in_library": "В библиотеке",
-      "remove_from_knowledge_library": "Убрать из библиотеки знаний",
+      "remove_from_knowledge_library": "Убрать из библиотеки знаний (файл останется на диске)",
       "failed_to_remove_source": "Не удалось убрать источник.",
       "line_numbers": "Номера строк",
       "more_options": "Дополнительные параметры",

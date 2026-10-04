@@ -7284,7 +7284,7 @@
       "in_artifacts": "In Artefakten",
       "in_knowledge_library": "In der Wissensbibliothek",
       "in_library": "In der Bibliothek",
-      "remove_from_knowledge_library": "Aus der Wissensbibliothek entfernen",
+      "remove_from_knowledge_library": "Aus der Wissensbibliothek entfernen (Datei bleibt auf der Festplatte)",
       "failed_to_remove_source": "Die Quelle konnte nicht entfernt werden.",
       "line_numbers": "Zeilennummern",
       "more_options": "Weitere Optionen",
