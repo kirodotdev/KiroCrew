@@ -187,6 +187,12 @@ class TestLabelContract:
             "needs-human",
         }
         assert env["PENDING_LABEL"] == "needs-triage"
+        assert env["TIER_LABELS"].split() == [
+            "tier:T1",
+            "tier:T2",
+            "tier:T3",
+            "tier:T4",
+        ]
 
 
 class TestCommandLine:

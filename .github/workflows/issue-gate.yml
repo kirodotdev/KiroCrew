@@ -68,8 +68,10 @@ name: Issue Gate
 # THE RULE, in full:
 #   1. The visible body declares at least one issue of this repository.
 #   2. Every declared number is an issue (not a pull request), is not closed as
-#      `not_planned`, does not still carry `needs-triage`, and carries one of
-#      the triage verdict labels in TRIAGE_VERDICT_LABELS.
+#      `not_planned`, does not still carry `needs-triage`, carries one of
+#      the triage verdict labels in TRIAGE_VERDICT_LABELS, and carries exactly
+#      one tier label from TIER_LABELS (`tier:T1` bug .. `tier:T4` new
+#      concept), so the size of the work is settled before it is built.
 #   One bad reference fails the whole PR: a triaged issue beside an untriaged
 #   one is still work nobody triaged.
 #
@@ -149,6 +151,10 @@ jobs:
           # pre-verdict state and is checked for separately below.
           TRIAGE_VERDICT_LABELS: "auto-fixable needs-investigation needs-human"
           PENDING_LABEL: "needs-triage"
+          # Exactly one label from this set says how big the work is (see the
+          # header). Triage writes it beside the verdict; none, or two, is an
+          # issue whose size nobody has settled.
+          TIER_LABELS: "tier:T1 tier:T2 tier:T3 tier:T4"
         run: |
           set -uo pipefail
 
@@ -277,7 +283,8 @@ jobs:
               echo "\`#N\`. The line must start with the keyword; a bare \`#N\`, a mention inside a"
               echo "sentence, a quote, an HTML comment, a code block or inline code do not count."
               echo "The issue must already carry a"
-              echo "triage verdict label (one of: \`${TRIAGE_VERDICT_LABELS// /\`, \`}\`)."
+              echo "triage verdict label (one of: \`${TRIAGE_VERDICT_LABELS// /\`, \`}\`)"
+              echo "and exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
               echo
               echo "**No issue yet?** Open one first and let triage run; this gate exists so"
               echo "that work is agreed on before it is built. A maintainer may apply the"
@@ -335,7 +342,21 @@ jobs:
               problems+="- #$n has no triage verdict label (needs one of: \`${TRIAGE_VERDICT_LABELS// /\`, \`}\`)."$'\n'
               continue
             fi
-            echo "#$n: issue, $state, triage verdict '$verdict'."
+            tiers=""
+            for label in $TIER_LABELS; do
+              if grep -qxF -- "$label" <<< "$labels"; then
+                tiers+="${tiers:+ }$label"
+              fi
+            done
+            if [ -z "$tiers" ]; then
+              problems+="- #$n has no tier label (needs exactly one of: \`${TIER_LABELS// /\`, \`}\`)."$'\n'
+              continue
+            fi
+            if [ "$tiers" != "${tiers%% *}" ]; then
+              problems+="- #$n carries more than one tier label (\`${tiers// /\`, \`}\`); keep exactly one."$'\n'
+              continue
+            fi
+            echo "#$n: issue, $state, triage verdict '$verdict', tier '$tiers'."
           done
 
           if [ -n "$problems" ]; then
@@ -346,7 +367,8 @@ jobs:
               printf '%s' "$problems"
               echo
               echo "Every issue a PR declares must be a real issue of this repository, not closed"
-              echo "as not planned, and already carry a triage verdict label. If triage has not"
+              echo "as not planned, and already carry a triage verdict label and exactly one"
+              echo "tier label (\`${TIER_LABELS// /\`, \`}\`). If triage has not"
               echo "reached the issue yet, wait for it: triage is expected within 24h, and longer"
               echo "is a defect in the triage pipeline to report. Once the verdict label lands,"
               echo "any edit to this PR's description re-runs the check (no push, no re-run"

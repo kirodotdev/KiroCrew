@@ -1545,8 +1545,13 @@ with a notice, never filled by running PR code, and is dead once the gate is on
 
 **The rule, in full.** The visible body declares at least one issue of this
 repository. Every declared number must be an issue (not a pull request), not
-closed as `not_planned`, free of `needs-triage`, and carrying one of the verdict
-labels. One bad reference fails the whole PR: a triaged issue beside an untriaged
+closed as `not_planned`, free of `needs-triage`, carrying one of the verdict
+labels, and carrying exactly one tier label (`TIER_LABELS`: `tier:T1` a bug
+whose fix keeps the design, `tier:T2` a small additive feature, `tier:T3` a
+change to an existing experience that needs a one-pager, `tier:T4` a new concept
+that needs a design review). The tier is written by the same triage pipeline
+beside the verdict; none, or two, means nobody has settled how big the work is,
+so the gate reds rather than guessing. One bad reference fails the whole PR: a triaged issue beside an untriaged
 one is still work nobody triaged. The job summary lists each problem and says
 how to go green: once the verdict label lands, any edit to the description
 re-runs the check, which is how a fork author -- who cannot press re-run -- gets
