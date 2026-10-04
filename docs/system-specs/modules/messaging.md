@@ -592,7 +592,12 @@ through. It is synchronous, so it adds no suspension point between the destinati
 check and the send. Two markdown concerns ride along, because Discord renders the
 message as markdown: whitespace is collapsed so a multi-line preview stays one block,
 and backticks are dropped so the preview cannot close the fence it sits in and style
-the rest of the message.
+the rest of the message. Telegram's `dispatch.spawn_approval.deliver_spawn_approval`
+clears the preview through its renderer's `_display_safe` before HTML escaping:
+escaping alone preserves invisible format characters that can split a secret
+for the literal scan while rendering it intact. Its `<pre>` body is HTML, so the
+Discord markdown adjustments do not apply. This synchronous display pass does
+not add a suspension point before the destination authorization check.
 
 ## Layer 2b — `Renderer` + `OutputEvent` (`renderer.py`)
 

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, CHAT_TYPE_FORUM, parse_session_key
 from kiro_crew.messaging.renderer import new_approval_nonce
+from kiro_crew.telegram.renderer import _display_safe
 from kiro_crew.telegram.transport import forum_gate_outcome
 
 if TYPE_CHECKING:
@@ -107,10 +108,10 @@ async def deliver_spawn_approval(
             ],
         ]
     }
-    # ``description`` is the gate's own ``spawn_run(<task-preview>)`` string,
-    # already credential/exfil-redacted in admission.py before it reaches
-    # here; escape it for the HTML body it lands in.
-    detail = " ".join((description or "spawn_run").split())
+    # The upstream literal scan cannot see credentials split by invisible
+    # format characters. Redact the rendered form before HTML escaping, which
+    # preserves those characters. Keep the destination check after this pass.
+    detail = _display_safe(" ".join((description or "spawn_run").split()))
     body = f"🔐 Approve sub-agent spawn?\n<pre>{html.escape(detail)}</pre>"
     if not self._spawn_prompt_destination_permitted(chat_id, thread_id):
         # Authorization for this destination was withdrawn between the turn that
