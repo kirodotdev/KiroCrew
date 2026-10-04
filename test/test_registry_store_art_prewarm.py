@@ -2943,6 +2943,99 @@ class TestBlobCacheReclaim:
         assert not deep.exists(), "within the depth ceiling the same aged file is reclaimed"
 
 
+class TestBlobCacheLstatSweep:
+    """``_gc_blob_cache_sweep_lstat`` is the by-name sweep a platform that cannot pin
+    a directory fd (Windows) falls back to. It is driven here directly, so its rules
+    hold on every runner: only aged regular files go, a link is never followed or
+    removed, an emptied subdirectory is pruned, and the entry budget and depth
+    ceiling both stop the walk."""
+
+    @staticmethod
+    def _age(path: Path, seconds: float = 3600) -> None:
+        old = time.time() - seconds
+        os.utime(path, (old, old))
+
+    def test_aged_files_go_and_fresh_files_stay(self, tmp_path):
+        old = tmp_path / "repo" / "main" / "old.png"
+        fresh = tmp_path / "repo" / "main" / "fresh.png"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old")
+        fresh.write_bytes(b"fresh")
+        self._age(old)
+
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path, time.time() - 60, [100], depth=0)
+
+        assert not old.exists()
+        assert fresh.is_file()
+
+    def test_an_emptied_subdirectory_is_pruned(self, tmp_path):
+        old = tmp_path / "repo" / "main" / "old.png"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old")
+        self._age(old)
+
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path, time.time() - 60, [100], depth=0)
+
+        assert not (tmp_path / "repo").exists()
+        assert tmp_path.is_dir()
+
+    @requires_symlinks
+    def test_a_link_is_never_followed_or_removed(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "victim.png"
+        target.write_bytes(b"keep")
+        self._age(target)
+        root = tmp_path / "blobs"
+        root.mkdir()
+        (root / "dir-link").symlink_to(outside, target_is_directory=True)
+        (root / "file-link.png").symlink_to(target)
+
+        reg_mod._gc_blob_cache_sweep_lstat(root, time.time() - 60, [100], depth=0)
+
+        assert target.is_file(), "a file reached through a link must survive"
+        assert (root / "dir-link").is_symlink()
+        assert (root / "file-link.png").is_symlink()
+
+    def test_a_non_regular_entry_is_left_alone(self, tmp_path):
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("needs a FIFO to stand in for a special file")
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+        self._age(fifo)
+
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path, time.time() - 60, [100], depth=0)
+
+        assert fifo.exists()
+
+    def test_the_entry_budget_stops_the_walk(self, tmp_path):
+        for i in range(5):
+            aged = tmp_path / f"f{i}.png"
+            aged.write_bytes(b"x")
+            self._age(aged)
+        budget = [2]
+
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path, time.time() - 60, budget, depth=0)
+
+        assert budget == [0]
+        assert len(list(tmp_path.iterdir())) == 3
+
+    def test_a_subtree_past_the_depth_ceiling_is_left(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(reg_mod, "_BLOB_CACHE_GC_MAX_DEPTH", 2)
+        reg_mod._BLOB_CACHE_GC_DEPTH_LOGGED.discard(True)
+        deep = tmp_path / "a" / "b" / "deep.png"
+        deep.parent.mkdir(parents=True)
+        deep.write_bytes(b"x")
+        self._age(deep)
+
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path, time.time() - 60, [100], depth=0)
+
+        assert deep.is_file()
+
+    def test_a_missing_directory_is_a_no_op(self, tmp_path):
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path / "absent", time.time() - 60, [100], depth=0)
+
+
 # ---------------------------------------------------------------------------
 # One row cannot fill the blob cache with screenshots
 # ---------------------------------------------------------------------------
