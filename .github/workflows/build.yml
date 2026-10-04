@@ -107,7 +107,8 @@ jobs:
   # payload, a launcher redirecting imports into an empty user cache -- had no
   # gate on a PR at all. The install-duration ceiling it did enforce was measured
   # against 40 bytes of batch file, so it proved nothing about a real install
-  # either.
+  # either. The ceiling is a performance gate below the release smoke's 300
+  # seconds; the script states the measured install times behind it.
   #
   # This is the SAME assembly packaging/build-desktop.sh's build_backend_windows
   # performs, minus the voice extras: PBS runtime, pip install, the relocatable
