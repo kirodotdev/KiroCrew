@@ -371,18 +371,19 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/workflows.py::api_workflow_run_intent": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/workflows.py::api_workflow_run_promote": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/workflows.py::api_workflow_run_rerun": ("None", _UNBOUNDED_USER_CONTENT),
-    # handlers/files.py: bodies name paths and routing fields -- the file
-    # bytes travel in api_file_write's body, which is the one uncapped site.
+    # handlers/files.py and its file_api owners: bodies name paths and routing
+    # fields -- the file bytes travel in api_file_write's body, which is the one
+    # uncapped site.
     "handlers/files.py::api_reveal_path": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/files.py::api_outbox_notify": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/files.py::api_slack_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/files.py::api_channel_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_workspaces_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_workspaces_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/workspaces.py::api_workspaces_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/workspaces.py::api_workspaces_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/files.py::api_file_write": ("None", _UNBOUNDED_USER_CONTENT),
     # a root path and a query the handler caps at 200 characters
     "handlers/files.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/files.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "file_api/dashboard_config.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent

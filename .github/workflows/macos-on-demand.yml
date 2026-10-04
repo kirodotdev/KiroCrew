@@ -127,6 +127,7 @@ jobs:
               - "src/kiro_crew/hooks.py"
               - "src/kiro_crew/pinned_fs.py"
               - "src/kiro_crew/dashboard/handlers/files.py"
+              - "src/kiro_crew/dashboard/file_api/**"
               - "test/test_safe_read_file_bytes_descriptor.py"
               - "test/test_theme_install.py"
               # The singleton home lock: its durable anchor is POSIX-only, and

@@ -1292,6 +1292,47 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "is audited.",
     ),
     (
+        "File watch frames",
+        "dashboard/file_api/transfer.py",
+        "The file-watch SSE frames (api_file_watch) are redacted before they are "
+        "pushed. The file download and the Range stream serve the file's own "
+        "bytes and use redact() as a GATE: a file whose text the redactor would "
+        "change is refused, not served masked.",
+    ),
+    (
+        "Office document preview",
+        "dashboard/file_api/office_preview.py",
+        "The text, blocks and slides the Office preview (api_file_office_preview) "
+        "returns are redacted before they are capped.",
+    ),
+    (
+        "Spreadsheet preview",
+        "dashboard/file_api/sheet.py",
+        "The cell values and formula text the spreadsheet preview "
+        "(api_file_sheet) returns are redacted.",
+    ),
+    (
+        "Project branch label",
+        "dashboard/file_api/project_dirs.py",
+        "The branch name, short HEAD and project path the branch label "
+        "(api_project_git) returns are redacted; the path goes through "
+        "_redact_project_path, which the Git panel and the file tree share.",
+    ),
+    (
+        "Git panel status and log",
+        "dashboard/file_api/git_panel.py",
+        "The branch, file paths, commit messages and authors the Git panel's "
+        "status and log (api_project_git_status, api_project_git_log) return are "
+        "redacted; file paths go through redact_path_segments.",
+    ),
+    (
+        "Project file tree",
+        "dashboard/file_api/project_tree.py",
+        "The root the Files tab's tree listing (api_project_tree) returns goes "
+        "through _redact_project_path, and every listed path is redacted segment "
+        "by segment through redact_path_segments.",
+    ),
+    (
         "Slide-deck render screen and conversion diagnostic",
         "dashboard/handlers/office_slides.py",
         "The .pptx/.ppt slide renderer screens the deck's rendered text through "
@@ -2012,6 +2053,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
         "dashboard/chat_voice.py",
+        # The content-search engines composed into dashboard/handlers/files.py:
+        # they redact each hit row, and that facade's api_file_grep, a registered
+        # sink module, returns the rows.
+        "dashboard/file_api/grep.py",
         # Owner-driven components extracted from dashboard/state.py.  They
         # redact while staging or dispatching through the facade, but they do
         # not introduce new logical egress paths: the same DashboardState

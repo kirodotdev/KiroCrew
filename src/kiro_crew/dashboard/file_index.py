@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Directory names never offered as @-mention candidates and never descended
 # into, by either search path. This is the SINGLE source of truth: the walk
-# fallback in dashboard/handlers/files.py imports it, so the indexed fast path
+# fallback in dashboard/file_api/search.py imports it, so the indexed fast path
 # and the fallback cannot diverge. Dot-prefixed noise dirs (.git, .cache,
 # .venv) are listed EXPLICITLY here -- the candidate collection does not filter
 # on a leading dot, which would hide the .github/.kiro/.claude dirs that must be

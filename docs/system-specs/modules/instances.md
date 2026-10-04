@@ -1763,7 +1763,7 @@ file (`_gunzip_file`), and only the parse loads the document. Reading
 `request.content` rather than `request.read()` is deliberate: `request.read()` /
 `.post()` / `.json()` buffer the whole body and are the calls aiohttp enforces
 `client_max_size` in, so reading the raw stream bypasses that limit — exactly as
-the streaming multipart upload in `handlers/files.py` streams past the same limit
+the streaming multipart upload in `dashboard/file_api/uploads.py` streams past the same limit
 under its own bound. A session of any size therefore arrives rather than being
 refused, and memory is bounded by the disk write, not by the body's size.
 

@@ -208,6 +208,13 @@ class TestNoBareSandboxedSpawnArgvHops:
     _REQUIRE_ALL = ("sandboxed_spawn_argv",)
     _REQUIRE_ANY = ("run_in_executor", "to_thread")
 
+    #: The dashboard file handlers and the ``file_api`` owners composed into them
+    #: run on ONE namespace, so a preparer one of them defines is reachable from
+    #: every other. The family is read, and its reaching set computed, as one
+    #: module; every other file keeps the per-file rule.
+    _FAMILY_FACADE = "dashboard/handlers/files.py"
+    _FAMILY_OWNERS = "dashboard/file_api"
+
     @staticmethod
     def _src_root() -> Path:
         return src_root()
@@ -259,11 +266,37 @@ class TestNoBareSandboxedSpawnArgvHops:
                     return child.attr
         return None
 
+    @classmethod
+    def _family(cls) -> dict[Path, ast.Module]:
+        """The file handler family, every member parsed, whether or not it spells
+        the chokepoint itself."""
+        root = cls._src_root()
+        paths = [root / cls._FAMILY_FACADE, *sorted((root / cls._FAMILY_OWNERS).glob("[!_]*.py"))]
+        return {path.resolve(): ast.parse(path.read_text(encoding="utf-8")) for path in paths}
+
     def test_no_bare_hops_to_sandboxed_spawn_argv(self):
         violations: list[str] = []
-        for path, _text, tree in parsed_candidates(self._REQUIRE_ALL, self._REQUIRE_ANY):
-            rel = path.relative_to(self._src_root())
-            reaching = self._names_that_reach_the_chokepoint(tree)
+        family = self._family()
+        family_reaching = set().union(
+            *(self._names_that_reach_the_chokepoint(tree) for tree in family.values())
+        )
+        root = self._src_root()
+        read = {path.relative_to(root.resolve()).as_posix() for path in family}
+        assert {
+            "dashboard/file_api/git_panel.py",
+            "dashboard/file_api/project_tree.py",
+        } <= read, sorted(read)
+        assert "_run_git_bounded" in family_reaching
+        scanned = [
+            (path.relative_to(root), tree, self._names_that_reach_the_chokepoint(tree))
+            for path, _text, tree in parsed_candidates(self._REQUIRE_ALL, self._REQUIRE_ANY)
+            if path.resolve() not in family
+        ]
+        scanned += [
+            (path.relative_to(root.resolve()), tree, family_reaching)
+            for path, tree in family.items()
+        ]
+        for rel, tree, reaching in scanned:
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue

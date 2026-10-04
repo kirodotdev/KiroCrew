@@ -1936,7 +1936,7 @@ async def _stream_request_to_file(request: web.Request, dst: Path) -> tuple[bool
     ``request.read()`` / ``.post()`` / ``.json()``: those buffer the whole body and
     are the calls aiohttp enforces ``client_max_size`` in, so reading the stream
     directly is what lets a session of any size arrive (the streaming multipart
-    reader in ``handlers/files.py`` bypasses the same limit the same way). The body
+    reader in ``dashboard/file_api/uploads.py`` bypasses the same limit the same way). The body
     lands on disk a chunk at a time, so memory is bounded by the write rather than
     by the body's size.
 

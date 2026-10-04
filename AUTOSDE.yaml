@@ -16,6 +16,7 @@ custom-rules:
       - "website/src/pages/**"
       - "src/kiro_crew/dashboard/handlers/**"
       - "src/kiro_crew/dashboard/messaging_api/**"
+      - "src/kiro_crew/dashboard/file_api/**"
       - "website/src/App.tsx"
     rule: |
       Keep the feature map semantically aligned with every structural dashboard
@@ -135,6 +136,7 @@ custom-rules:
       - "src/kiro_crew/dashboard/server.py"
       - "src/kiro_crew/dashboard/handlers/**/*.py"
       - "src/kiro_crew/dashboard/messaging_api/**/*.py"
+      - "src/kiro_crew/dashboard/file_api/**/*.py"
       - "src/kiro_crew/cli.py"
     rule: |
       Do NOT add work to the gateway boot path. Everything between process
@@ -432,6 +434,7 @@ custom-rules:
       - "src/kiro_crew/dashboard/chat_turn/**/*.py"
       - "src/kiro_crew/dashboard/handlers/**/*.py"
       - "src/kiro_crew/dashboard/messaging_api/**/*.py"
+      - "src/kiro_crew/dashboard/file_api/**/*.py"
       - "src/kiro_crew/eval/runner.py"
       - "src/kiro_crew/config/loader.py"
       - "scripts/check_memory_store_seam.py"

@@ -75,6 +75,24 @@
     "dashboard/chat_voice.py": {
       "missing_code": 3
     },
+    "dashboard/file_api/dashboard_config.py": {
+      "missing_code": 9
+    },
+    "dashboard/file_api/pinned_io.py": {
+      "missing_code": 6
+    },
+    "dashboard/file_api/project_dirs.py": {
+      "missing_code": 4
+    },
+    "dashboard/file_api/transfer.py": {
+      "missing_code": 6
+    },
+    "dashboard/file_api/uploads.py": {
+      "missing_code": 4
+    },
+    "dashboard/file_api/workspaces.py": {
+      "missing_code": 20
+    },
     "dashboard/handlers/agents.py": {
       "missing_code": 46
     },
@@ -100,7 +118,7 @@
       "missing_code": 15
     },
     "dashboard/handlers/files.py": {
-      "missing_code": 82
+      "missing_code": 33
     },
     "dashboard/handlers/kiro_prerequisite.py": {
       "missing_code": 1

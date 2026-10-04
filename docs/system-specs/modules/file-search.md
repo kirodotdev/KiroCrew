@@ -6,9 +6,12 @@ This module owns three endpoints. `GET /api/file-search` finds files and
 directories by NAME and backs the `@`-mention picker; `POST /api/file-grep` finds
 them by CONTENT and backs the chat side panel's Files tab; `GET /api/path-complete`
 lists ONE directory level and backs the composer's shell-style `./` completion.
-They share `handlers/files.py`, the sensitive-path fence and the off-loop probe
-discipline, and nothing else: separate roots, separate budgets, separate result
-shapes.
+They share the `handlers/files.py` facade (the routes' import path and patch
+surface, which also keeps the grep route and the `_run_path_probe` chokepoint),
+the sensitive-path fence and the off-loop probe discipline, and nothing else:
+separate roots, separate budgets, separate result shapes. Each endpoint's code
+lives in its own `dashboard/file_api/` owner: `search.py`, `path_complete.py`, and
+`grep.py` for the engines behind the grep route.
 
 File search backs the `@`-mention picker in the dashboard chat composer. A user types `@` followed by a query that meets the endpoint minimum, picks a result, and the composer inserts a token that serializes into the prompt as an attachment marker; `test_short_query_returns_empty` pins the minimum-query refusal.
 
@@ -25,6 +28,16 @@ Results cover both **files** and **directories**. A file is an attachment whose 
 | `workspace` | no | Workspace name resolved through `workspace_dir_for` only when `project` is absent. A missing workspace does not establish scope, so `api_file_search` uses its fallback roots. |
 | `kinds` | no | `all` (default), `files`, or `dirs`. Unrecognized values fall back to `all`. |
 | `limit` | no | Result page size. `api_file_search` normalizes it to a positive server ceiling; invalid input uses the default. The ceiling is load-bearing because candidate collection scales with the requested page size; `test_limit_clamped_at_server_ceiling`, `test_limit_non_integer_falls_back_to_default`, and `test_limit_negative_or_zero_clamped_to_floor` pin the contract. |
+
+The route is owner-only: `require_owner_dashboard_request` runs first and refuses
+anyone else (403 `owner_only`, or 401 for a stale pre-owner session), because
+`project` names any directory on the host. A
+sensitive `project` is 403 `{"error": "Access denied", "code": "access_denied"}`; a
+`project` that is not a directory is 404
+`{"results": [], "error": "Project directory not found", "code": "project_not_found"}`.
+The short-query exit and the missing-project exit each write an `allowed` SEL
+record (`_audit_file_search_exit`), so a granted request never ends at the gate
+unrecorded; `test_file_search.py` and `test_owner_gate_file_readers.py` pin both.
 
 Response:
 
@@ -376,7 +389,10 @@ shows literally — the same trade-off inline file mentions make.
 
 | File | Role |
 |---|---|
-| `src/kiro_crew/dashboard/handlers/files.py` | `api_file_search` endpoint, fuzzy scorer, walk fallback; `api_file_grep` endpoint, rg argv + stdin pattern channel, python fallback, document pass |
+| `src/kiro_crew/dashboard/handlers/files.py` | Facade the routes bind; `api_file_grep` endpoint; `_run_path_probe` |
+| `src/kiro_crew/dashboard/file_api/search.py` | `api_file_search` endpoint, fuzzy scorer, walk fallback |
+| `src/kiro_crew/dashboard/file_api/path_complete.py` | `api_path_complete` endpoint, lexical containment walk, no-follow per-component open |
+| `src/kiro_crew/dashboard/file_api/grep.py` | rg argv + stdin pattern channel, python fallback, document pass |
 | `website/src/pages/chat/FileBrowserRail.tsx` | Files tab: Name/Content toggle, result rows, status row |
 | `website/src/api/fileGrep.ts` | `/api/file-grep` client and result types |
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
@@ -400,6 +416,7 @@ shows literally — the same trade-off inline file mentions make.
 | File | Coverage |
 |---|---|
 | `test/test_file_search.py` | Endpoint behaviour, scoring, exclusions |
+| `test/test_dashboard_files_composition_contract.py` | The `files.py` facade's surface and patch reach over the `file_api` owners, and the guards that read them |
 | `test/test_path_complete.py` | Directory listing, prefix + dot-entry rules, cap, the containment refusals (`../` escape, absolute `dir`, symlink out, an entry pointing out), the re-entering `../` run, and the swap-after-validation race |
 | `website/src/test/ChatInput.refactor.pickers.test.tsx` | The same `@` / `$` / `./` / `/` trigger decision from the textarea and from the Lexical change callback, and the caret each publishes |
 | `website/src/test/ChatInput.pathTrigger.test.tsx` | The `./` trigger: scoping per token, Tab/Enter accept, directory re-open, the debounce and placeholder windows (an accepted row is always rebuilt on the prefix that produced it), the out-of-project empty state, Escape, no `~/`, no menu without a project |

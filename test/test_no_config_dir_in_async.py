@@ -19,6 +19,18 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 # Files the AST guard checks for config_dir() calls inside async functions.
 _ASYNC_CHECKED_FILES = [
     "dashboard/handlers/files.py",
+    "dashboard/file_api/browse.py",
+    "dashboard/file_api/dashboard_config.py",
+    "dashboard/file_api/git_panel.py",
+    "dashboard/file_api/office_preview.py",
+    "dashboard/file_api/path_complete.py",
+    "dashboard/file_api/project_dirs.py",
+    "dashboard/file_api/project_tree.py",
+    "dashboard/file_api/search.py",
+    "dashboard/file_api/sheet.py",
+    "dashboard/file_api/transfer.py",
+    "dashboard/file_api/uploads.py",
+    "dashboard/file_api/workspaces.py",
     "dashboard/chat_runner.py",
     "dashboard/chat_turn/acp_recovery.py",
     "dashboard/chat_turn/directives.py",

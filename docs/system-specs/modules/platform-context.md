@@ -630,8 +630,9 @@ Wired sites:
   fail-closed-aware shim; modules import it as `redact`). Covers: `agent.py`
   SEL-audit callers, `mcp_core.py` chat-history/spawn output, `mcp_cron.py`
   deny-reason + script-vet + timezone messages, and `dashboard/handlers/files.py`
-  file-content egress (slot append, file-watch, file_read, download gate) as well
-  as the filename/path/description gates. Standalone is byte-for-byte the prior
+  file-content egress (slot append, file_read; file-watch and the download gate in
+  `dashboard/file_api/transfer.py`) as well as the filename/path/description gates.
+  Standalone is byte-for-byte the prior
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes
   uniformly across every egress surface.
