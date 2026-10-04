@@ -24,15 +24,19 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.transport_errors import AcpProcessDied, AcpPromptBusy
+from kiro_crew.llm_helpers import PromptBusyExhaustedError
 
 _MESSAGE = "delete the old branches"
 
 # One factory per arm: the typed runtime death, the pipe death that arrives as a
-# plain AcpError, and a prompt-busy answer. The last two share one gate.
+# plain AcpError, a prompt-busy answer (those two share one gate), and the
+# provider reset after the busy retries ran out, whose gate is the recovery
+# helper ``_requeue_after_prompt_busy``.
 _ERRORS = {
     "process-died": lambda: AcpProcessDied("kiro-cli exited"),
     "pipe-death": lambda: AcpError("ACP process exited unexpectedly"),
     "prompt-busy": lambda: AcpPromptBusy("prompt already in progress"),
+    "prompt-busy-exhausted": lambda: PromptBusyExhaustedError(),
 }
 
 

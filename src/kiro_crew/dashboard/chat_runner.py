@@ -17140,6 +17140,7 @@ async def _run_chat(
             _turn_emitted=_turn_emitted,
             _is_synthetic=_is_synthetic,
             _queue_recovery=_queue_recovery,
+            _stop_pressed=_stop_pressed,
         )
     except AcpError as exc:
         # The exception CLASS is logged alongside the message because the
