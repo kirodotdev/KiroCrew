@@ -470,6 +470,32 @@ class ValidationError(Exception):
 #: short so it costs almost none of the field's budget.
 _CLAMP_NOTE = " [... truncated, dropped {n} chars]"
 
+#: Reads :data:`_CLAMP_NOTE` back off a clamped value. Derived FROM that constant
+#: rather than spelled a second time, so the stamp and its reader cannot drift
+#: apart when the wording changes.
+_CLAMP_NOTE_RE = re.compile(re.escape(_CLAMP_NOTE).replace(r"\{n\}", r"(\d+)") + r"\Z")
+
+
+def clamp_report(value: str) -> tuple[int, int] | None:
+    """For a value stamped by :func:`clamp_to_max_len`, return ``(before, kept)``.
+
+    ``None`` when the value carries no stamp, which is the common case. ``before``
+    is the length the clamp saw and ``kept`` the length of the caller's own text
+    that survived, excluding the stamp itself — the two numbers a caller needs to
+    be told what happened to its field in the same round-trip that accepted it.
+
+    Reading the stamp back is what lets a tool whose reply does NOT echo the
+    applied value still report the cut (see ``mcp_work.work_report``). A caller
+    whose own text happens to end in the stamp's exact shape would be described
+    as clamped when it was not; the cost is one inaccurate advisory line, which
+    is why no decision is keyed off this.
+    """
+    match = _CLAMP_NOTE_RE.search(value)
+    if not match:
+        return None
+    kept = len(value) - (match.end() - match.start())
+    return kept + int(match.group(1)), kept
+
 
 @dataclass
 class FieldSpec:
@@ -4143,11 +4169,17 @@ WORK_REPORT_SCHEMA = ToolSchema(
     tool_name="work_report",
     fields=[
         FieldSpec("status", str, required=True, allowed=_WORK_STATUSES),
-        # NOT ``clamp_to_max``: a truncated summary the worker believes landed
-        # whole is a silent data loss the worker cannot detect, and the conductor
-        # reads this field to decide. Refusing names the cap so the worker retries
-        # with a shorter one.
-        FieldSpec("summary", str, required=True, max_len=500),
+        # ``clamp_to_max``: the only caller is a model composing prose, which
+        # cannot measure the field before it calls, so a refusal here is
+        # discovered only by violating it and costs a whole round-trip to resend.
+        # Clamping is safe for the same reason it is on ``monitor_stop``'s
+        # ``reason``: the cut is not silent. ``clamp_to_max_len`` stamps the
+        # stored value, so the conductor reads a summary that announces its own
+        # truncation, and ``mcp_work.work_report`` reads the stamp back with
+        # ``clamp_report`` to tell the worker in the reply. Both halves are
+        # required: the stamp alone leaves the worker told only "Recorded.",
+        # which is a silent loss it cannot detect.
+        FieldSpec("summary", str, required=True, max_len=500, clamp_to_max=True),
         FieldSpec("artifacts", dict),
         FieldSpec("pr", int, min_val=1, max_val=1_000_000_000),
     ],

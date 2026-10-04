@@ -496,13 +496,57 @@ async def test_item_store_full_is_409(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_field_too_long_is_400_and_names_the_field():
+    """``artifacts`` carries pointers a conductor follows, so it refuses rather than cut."""
     await two_by_two()
     status, body = await _report(
-        WORKER_A, {"status": "progress", "summary": "x" * (wl.MAX_SUMMARY_CHARS + 1)}
+        WORKER_A,
+        {
+            "status": "progress",
+            "summary": "ok",
+            "artifacts": {"k": "v" * (wl.MAX_ARTIFACT_VALUE_CHARS + 1)},
+        },
     )
     assert status == 400
-    assert body["code"] == wl.CODE_FIELD_TOO_LONG
-    assert "summary" in body["error"]
+    assert "artifacts" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_summary_is_clamped_through_the_route_and_the_store_says_so():
+    """Prose over the cap costs no round-trip, and the stored value announces the cut.
+
+    The whole path: route validation, the store write, and the stamp read back off
+    the item the conductor reads. ``summary`` is the one field cut rather than
+    refused, because a model composing prose cannot measure it before it calls.
+    """
+    ids = await two_by_two()
+    sent = wl.MAX_SUMMARY_CHARS + 30
+
+    status, body = await _report(WORKER_A, {"status": "progress", "summary": "w" * sent})
+    assert status == 200, body
+
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert len(item.summary) <= wl.MAX_SUMMARY_CHARS
+    reported = validation.clamp_report(item.summary)
+    assert reported is not None
+    before, kept = reported
+    assert before == sent
+    assert item.summary.startswith("w" * kept)
+
+
+@pytest.mark.asyncio
+async def test_a_summary_exactly_at_the_cap_reaches_the_store_byte_identical():
+    """The boundary the clamp must not disturb."""
+    ids = await two_by_two()
+    exact = "b" * wl.MAX_SUMMARY_CHARS
+
+    status, body = await _report(WORKER_A, {"status": "progress", "summary": exact})
+    assert status == 200, body
+
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert item.summary == exact
+    assert validation.clamp_report(item.summary) is None
 
 
 @pytest.mark.asyncio

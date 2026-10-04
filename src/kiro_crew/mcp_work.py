@@ -69,7 +69,12 @@ from urllib.parse import urlencode
 from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import MCP_WORK_SCHEMAS, sanitize_string, validate_tool_args
+from kiro_crew.validation import (
+    MCP_WORK_SCHEMAS,
+    clamp_report,
+    sanitize_string,
+    validate_tool_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,13 @@ WORKER_TOOLS: tuple[str, ...] = ("work_brief", "work_report")
 
 #: The conductor half.
 CONDUCTOR_TOOLS: tuple[str, ...] = ("work_ledger_read", "work_ledger_rebuild", "work_ledger_record")
+
+#: Read off the schema that ENFORCES it rather than spelled again here. The
+#: ``work_report`` reply and the tool description both quote this number back to
+#: the worker, and a local copy could drift from the cap actually applied.
+SUMMARY_CAP: int = next(
+    f.max_len for f in MCP_WORK_SCHEMAS["work_report"].fields if f.name == "summary"
+)
 
 WORK_TOOLS: tuple[str, ...] = WORKER_TOOLS + CONDUCTOR_TOOLS
 
@@ -346,7 +358,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "Your own account of where the work is, <= 500 chars. Facts "
-                            "and artifact pointers; refused, not truncated, when longer."
+                            "and artifact pointers. A longer one is accepted and cut to "
+                            "the cap, not refused: the stored value and the reply both "
+                            "say how much was dropped, so write it to fit."
                         ),
                     },
                     "artifacts": {
@@ -611,9 +625,23 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         resp = _post(_REPORT_PATH, payload, session_key=caller_key)
         if resp.get("error"):
             return _refusal("could not record your report", resp)
+        # A summary over the cap is clamped rather than refused, so the only place
+        # the worker can learn its text was cut is this reply: the success frame
+        # carries no summary to read it off. Reported here with both lengths so
+        # the next report can be written to fit instead of discovering the cap
+        # again. The stored value carries the same note for the conductor.
+        clamped = clamp_report(str(payload.get("summary") or ""))
+        note = ""
+        if clamped:
+            before, kept = clamped
+            note = (
+                f" Your summary was {before} chars, over the {SUMMARY_CAP} cap: "
+                f"the first {kept} were stored and the rest dropped. "
+                f"The stored summary says so too. Keep the next one shorter."
+            )
         return (
             f"Recorded. status={resp.get('status') or '(unset)'} "
-            f"item={resp.get('item_id') or '(unknown)'}"
+            f"item={resp.get('item_id') or '(unknown)'}{note}"
         )
 
     if name == "work_ledger_read":

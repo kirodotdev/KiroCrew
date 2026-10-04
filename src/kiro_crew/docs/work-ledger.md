@@ -152,9 +152,15 @@ separate values and not one "stuck". A build the worker does not control is
 `blocked`; a choice only the conductor can make is `question`.
 
 Reports belong at real milestones, not on a timer.
-`summary` is capped at 500 characters and is **refused rather than truncated**
-when longer, so a report that lands is a report that landed whole. Evidence goes in `artifacts` as
-pointers — a branch, a commit, a path, a pull request number.
+`summary` is capped at 500 characters.
+A longer one is **cut to the cap, not refused**: the stored value carries a note
+saying how many characters were dropped, and `work_report`'s reply repeats it
+with the length the caller sent, so a worker learns it overran in the same
+round-trip that accepted the report instead of spending another one rewriting
+it. Evidence goes in `artifacts` as pointers — a branch, a commit, a path, a
+pull request number. `artifacts`, `pr` and `status` are still refused when they
+are wrong or oversized: a truncated pointer is a broken pointer, while prose cut
+at the cap still reads.
 
 ## Why `done` is a claim
 
