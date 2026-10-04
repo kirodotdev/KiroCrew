@@ -215,6 +215,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },
   // Bare Escape, handled by a capture-phase listener; listed for the reference.
   { id: 'stop-speaking', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
+  // Bare Up/Down, handled by NotificationFeed while one of its rows has focus
+  // (inbox page and bell sheet); listed for the reference.
+  { id: 'notification-prev', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp' }) },
+  { id: 'notification-next', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowDown' }) },
   // ---- Remote instances (useInstanceShortcuts, Electron only) ---------------
   // 1 = Local, 2..6 = the 1st..5th remote instance, matching the InstanceTabBar
   // left-to-right order.

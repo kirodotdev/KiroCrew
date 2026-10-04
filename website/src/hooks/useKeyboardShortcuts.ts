@@ -278,6 +278,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
+  'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',
+  'notification-next': 'hooks.useKeyboardShortcuts.next_notification',
   'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
   'instance-2': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
   'instance-3': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',

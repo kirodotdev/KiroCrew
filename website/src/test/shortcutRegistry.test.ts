@@ -58,11 +58,24 @@ describe('shortcutRegistry — table invariants', () => {
     expect([...declared].filter(id => shortcutEntry(id)?.dispatch !== 'registry')).toEqual([])
   })
 
-  it('every default and alias chord is a valid chord (a modifier that is not Shift), except bare Escape', () => {
+  it('every default and alias chord is a valid chord (a modifier that is not Shift), and the bare-key entries are exactly these', () => {
+    // A bare key would fire mid-typing from the global handler, so only an entry
+    // whose own handler gates it may carry one, and each is pinned to its exact
+    // chord: bare Escape stops speech from a capture-phase listener, and bare
+    // Up/Down move through the notification feed only while one of its rows has
+    // focus. None of them can be stored or rebound, so each is code-dispatched.
+    const bareKeyChords = new Map<string, Chord>([
+      ['stop-speaking', { key: 'Escape' }],
+      ['notification-prev', { key: 'ArrowUp' }],
+      ['notification-next', { key: 'ArrowDown' }],
+    ])
     for (const e of SHORTCUT_REGISTRY) {
+      const bare = bareKeyChords.get(e.id)
+      if (bare) expect(e.dispatch, e.id).toBe('code')
       for (const p of ['mac', 'other'] as const) {
         const d = e.defaults[p]
-        if (d && e.id !== 'stop-speaking') expect(isValidChord(d), `${e.id}/${p}`).toBe(true)
+        if (bare) expect(d, `${e.id}/${p}`).toEqual(bare)
+        else if (d) expect(isValidChord(d), `${e.id}/${p}`).toBe(true)
         for (const a of e.aliases?.[p] ?? []) expect(isValidChord(a), `${e.id}/${p} alias`).toBe(true)
       }
     }

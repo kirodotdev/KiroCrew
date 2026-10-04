@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed from '../components/notifications/NotificationFeed'
+import { groupShortcuts } from '../components/ShortcutsModal'
+import { formatShortcut, shortcutLabel } from '../hooks/useKeyboardShortcuts'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
 
@@ -88,6 +90,36 @@ describe('NotificationFeed: Up/Down step through the rows', () => {
     expect(selected).toEqual(['1'])
   })
 
+  // The store holds oldest first, so the rows read Newest, then the stack
+  // headed by its newest note, with "Under the head" collapsed beneath it.
+  const STACKED = [
+    mkN({ ts: '1', title: 'Under the head', group_key: 'ci' }),
+    mkN({ ts: '2', title: 'Stack head', group_key: 'ci' }),
+    mkN({ ts: '3', title: 'Newest' }),
+  ]
+
+  it('mac: landing on a collapsed stack expands it, as a click on it does', () => {
+    const selected = renderFeed(STACKED, 'mac')
+    opener('Newest').focus()
+
+    expect(press('ArrowDown')).toBe(true)
+    expect(selected).toEqual([])
+    // Expanded, the head is labelled as an opener and the note under it has a row.
+    expect(document.activeElement).toBe(opener('Stack head'))
+
+    expect(press('ArrowDown')).toBe(true)
+    expect(selected).toEqual(['1'])
+    expect(document.activeElement).toBe(opener('Under the head'))
+  })
+
+  it('panel: landing on a collapsed stack opens its newest note, as a click on it does', () => {
+    const selected = renderFeed(STACKED)
+    opener('Newest').focus()
+    expect(press('ArrowDown')).toBe(true)
+    expect(selected).toEqual(['2'])
+    expect(document.activeElement).toBe(opener('Stack head'))
+  })
+
   it('leaves the key to an inner control of the row, so its focus and the selection stay put', () => {
     const selected = renderFeed([
       mkN({ ts: '1', title: 'Oldest' }),
@@ -102,5 +134,12 @@ describe('NotificationFeed: Up/Down step through the rows', () => {
       expect(document.activeElement).toBe(inner)
     }
     expect(selected).toEqual([])
+  })
+})
+
+describe('NotificationFeed: Up/Down in the shortcuts reference', () => {
+  it('lists both keys under Actions', () => {
+    const actions = groupShortcuts('actions', true).map(def => [shortcutLabel(def), formatShortcut(def)])
+    expect(actions).toEqual(expect.arrayContaining([['Previous notification', '↑'], ['Next notification', '↓']]))
   })
 })

@@ -198,10 +198,13 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     }
   }, [revealTs, items, expandedStacks])
 
-  // Up/Down on a row's open control select its neighbour in the order rendered
-  // (a collapsed stack is one stop) and carry focus along, so repeated presses
-  // walk the feed. Keys from an inner control (dismiss, Approve, a code block),
-  // modified arrows and the ends are left to the browser.
+  // Up/Down on a row's open control press the neighbouring row's open control,
+  // in rendered order (a collapsed stack is one stop), and move focus to it, so
+  // repeated presses walk the feed. Pressing the control rather than selecting
+  // the note makes a step do exactly what a click on that row does: in the bell
+  // sheet a collapsed stack expands instead of opening its newest note. Keys
+  // from an inner control (dismiss, Approve, a code block), modified arrows and
+  // the ends are left to the browser.
   const stepSelectionWithArrowKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0
     const row = (e.target as Element).closest('[data-notif-row]')
@@ -210,10 +213,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
     const rows = Array.from(stackedGroups.values()).flat()
     const next = rows[rows.findIndex(r => r.n.ts === fromTs) + step]
-    if (!next) return
+    const nextOpenControl = next && e.currentTarget.querySelector<HTMLElement>(`[data-ts="${CSS.escape(next.n.ts)}"] [role="button"]`)
+    if (!nextOpenControl) return
     e.preventDefault()
-    onSelect(next.n)
-    e.currentTarget.querySelector<HTMLElement>(`[data-ts="${CSS.escape(next.n.ts)}"] [role="button"]`)?.focus()
+    nextOpenControl.click()
+    nextOpenControl.focus()
   }
 
   // One-click approval resolution from the feed.
