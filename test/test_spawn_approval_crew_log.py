@@ -80,13 +80,24 @@ def _of(kind: str) -> list[dict]:
     return [entry["data"] for entry in _entries()[1:] if entry["type"] == kind]
 
 
-def _folded() -> dict:
-    """The ``approvals`` fold over the session's whole log, as a reader sees it."""
+def _fold_from_worker() -> dict:
     handle = CrewLog.open("session", SESSION)
     try:
         return fold_approvals(tuple(handle.iter_from(1)))
     finally:
         handle.release_ownership()
+
+
+async def _folded() -> dict:
+    """The ``approvals`` fold over the session's whole log, as a reader sees it.
+
+    Read on a worker thread. The read takes the log's append lock, and an acquire
+    on the event-loop thread makes one attempt and never waits. The background
+    eager fold opens the same log after each write, and opening settles its tail
+    under that lock, so a read from the loop thread raced it and failed with
+    ``OSError`` about two runs in five.
+    """
+    return await asyncio.to_thread(_fold_from_worker)
 
 
 def _open_session() -> None:
@@ -206,7 +217,7 @@ async def test_a_spawn_waiting_on_a_human_is_pending_in_the_approvals_fold(_pinn
     await _reach_the_prompt(approval)
     assert emit.flush()
 
-    folded = _folded()
+    folded = await _folded()
     assert folded["pending"] == 1, folded
     (row,) = folded["pending_requests"]
     assert row["approval_id"] == f"spawn:{info.id}"
@@ -241,7 +252,7 @@ async def test_an_approved_spawn_is_decided_without_naming_who_answered(_pinned_
     assert decided["decision"] == "approved"
     assert "by" not in decided, "a person's answer is attributed to nobody"
     assert "cause" not in decided
-    folded = _folded()
+    folded = await _folded()
     assert folded["pending"] == 0, "the decision retires the pending row"
     assert folded["by_decision"] == {"approved": 1}
 
@@ -260,7 +271,7 @@ async def test_a_declined_spawn_is_recorded_as_rejected(_pinned_parent):
     await _settle(info)
     assert emit.flush()
 
-    folded = _folded()
+    folded = await _folded()
     assert folded["requested"] == 1 and folded["decided"] == 1
     assert folded["pending"] == 0
     assert folded["unmatched_decisions"] == 0, "the decision found its own request"
@@ -294,7 +305,7 @@ async def test_a_prompt_no_surface_received_is_a_host_decline_with_its_cause(_pi
     assert decided["decision"] == "rejected"
     assert decided["by"] == "host"
     assert decided["cause"] == DENY_CAUSE_APPROVAL_UNDELIVERABLE
-    assert _folded()["pending"] == 0
+    assert (await _folded())["pending"] == 0
 
 
 @pytest.mark.asyncio
@@ -335,7 +346,7 @@ async def test_a_cancelled_wait_still_answers_its_own_request(_pinned_parent):
     assert info is not None
     await _reach_the_prompt(approval)
     assert emit.flush()
-    assert _folded()["pending"] == 1
+    assert (await _folded())["pending"] == 1
 
     task = mgr._tasks.get(info.id)
     assert task is not None
@@ -351,7 +362,7 @@ async def test_a_cancelled_wait_still_answers_its_own_request(_pinned_parent):
     assert decided["decision"] == "rejected"
     assert decided["by"] == "host"
     assert "cause" not in decided
-    assert _folded()["pending"] == 0
+    assert (await _folded())["pending"] == 0
 
 
 @pytest.mark.asyncio
@@ -375,7 +386,7 @@ async def test_an_unresolvable_parent_writes_neither_half(_pinned_parent, monkey
     await _settle(info)
     assert emit.flush()
 
-    folded = _folded()
+    folded = await _folded()
     assert folded["requested"] == 0 and folded["decided"] == 0
     assert folded["unmatched_decisions"] == 0
 
