@@ -92,6 +92,11 @@ async def _fetch_json(url: str) -> Any | None:
     # sensitive-path floor). Explicit proxy= gets the egress without that read.
     proxies = urllib.request.getproxies()
     proxy = proxies.get("https") or proxies.get("http")
+    # The bypass list still decides per host, as it does for trust_env: a
+    # registry host the operator lists in NO_PROXY (or the OS bypass list that
+    # ``getproxies`` reads beside it) is fetched directly.
+    if proxy and urllib.request.proxy_bypass(urllib.parse.urlparse(url).hostname or ""):
+        proxy = None
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers={"User-Agent": _USER_AGENT}, proxy=proxy) as resp:
