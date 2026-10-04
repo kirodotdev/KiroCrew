@@ -1072,8 +1072,106 @@ def test_mcp_tools_pass_the_verified_key_to_transport(monkeypatch):
     monkeypatch.setattr(mcp_core, "_get", get)
     monkeypatch.setattr(mcp_core, "_post", post)
     tools.session_ledger_read("x", {})
-    get.assert_called_once_with("/api/session-ledger", session_key="chat-v-1")
+    get.assert_called_once_with(
+        "/api/session-ledger",
+        session_key="chat-v-1",
+        timeout=tools._LEDGER_READ_TIMEOUT_S,
+    )
     tools.session_ledger_record("x", {"goal": "g"})
     post.assert_called_once_with(
         "/api/session-ledger/record", {"goal": "g"}, session_key="chat-v-1"
     )
+
+
+# ── MCP read budget ───────────────────────────────────────────────────────
+
+
+class _TimingUrlopen:
+    """A socket that honours the timeout it is handed, like a slow route does.
+
+    Raises the exact exception a real read timeout raises -- ``urlopen`` surfaces
+    a socket timeout, which on 3.10+ IS ``TimeoutError("timed out")`` -- so the
+    string the tool ends up returning is produced by the real plumbing rather
+    than asserted into existence.
+    """
+
+    def __init__(self, route_seconds: float, payload: dict[str, Any]) -> None:
+        self.route_seconds = route_seconds
+        self.payload = payload
+        self.timeouts: list[float] = []
+
+    def __call__(self, req, timeout, *, unix_socket_path=None):
+        self.timeouts.append(float(timeout))
+        if float(timeout) < self.route_seconds:
+            raise TimeoutError("timed out")
+        return _JsonResponse(json.dumps(self.payload).encode())
+
+
+class _JsonResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_JsonResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_read_of_a_slot_whose_fold_outlasts_the_telemetry_budget(monkeypatch):
+    """A ledger read must not fail on a slot whose crew log takes a while to fold.
+
+    ``/api/session-ledger`` folds the slot's log, which is O(the log) and streams
+    every unit on a cold fold, so the GET does real work. Given only the 10s
+    ``mcp_core._get`` hands a telemetry read, a big-enough slot answers
+    ``Error: timed out`` -- while ``session_ledger_record``, which reaches the SAME
+    fold through ``_post``, has 30s and succeeds. This pins the read's budget
+    against a route slower than the telemetry default.
+
+    The real chain runs: the tool, ``_get``, ``_send``, and the error wrapping.
+    Only the socket is faked, and it fakes exactly what a slow fold does.
+    """
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import ledger as tools
+
+    route_seconds = 12.0
+    socket = _TimingUrlopen(
+        route_seconds,
+        {"state": {"goal": "harden the log", "phase": "implementation"}, "events": []},
+    )
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-v-1")
+    monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "secret")
+    monkeypatch.setattr(mcp_core, "_resolve_api_target", lambda: ("http://127.0.0.1:9", ""))
+    monkeypatch.setattr(mcp_core, "_api_urlopen", socket)
+
+    out = tools.session_ledger_read("x", {})
+
+    assert "Error: timed out" not in out, (
+        "the read was given a budget too small for its own fold: "
+        f"dialled with timeout={socket.timeouts}"
+    )
+    assert "implementation" in out
+    assert socket.timeouts and min(socket.timeouts) >= route_seconds
+
+
+def test_the_ledger_read_budget_matches_the_write_path(monkeypatch):
+    """Same ledger, same fold, same budget.
+
+    The write pays the fold AND an append, so a read allowed less than the write
+    can fail where that write succeeds -- an outcome no caller can predict from
+    the two tools' descriptions. The floor is read off ``_send``, the one
+    transport every verb funnels through and the default ``_post`` leaves alone,
+    rather than restated here, so the two cannot drift apart silently. (``_post``
+    itself is replaced by the suite's no-traffic fixture, so its signature is the
+    stub's rather than the real one's.)
+    """
+    import inspect
+
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import ledger as tools
+
+    transport_default = inspect.signature(mcp_core._send).parameters["timeout"].default
+    assert tools._LEDGER_READ_TIMEOUT_S >= transport_default

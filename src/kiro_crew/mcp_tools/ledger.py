@@ -20,6 +20,19 @@ from kiro_crew import mcp_core
 from kiro_crew.constants import env_file_display
 from kiro_crew.session_ledger import EVENT_KINDS, TERMINAL_PHASES
 
+# The read's own ceiling, because the GET does real work rather than serving a
+# stored document: ``/api/session-ledger`` folds the slot's crew log, which is
+# O(the log) and streams every unit on a cold fold -- the cost model stated in
+# ``crew_log.projection.fold_slot_warm``. ``mcp_core._get``'s 10s default is
+# sized for a telemetry read and its docstring asks a route like this one to
+# raise it.
+#
+# The value is the write path's: ``session_ledger_record`` reaches the SAME fold
+# through ``mcp_core._post``, whose default is 30s, and it pays an append on top.
+# A read failing where that write succeeds is the asymmetry this removes, so the
+# two budgets are deliberately equal rather than merely both large.
+_LEDGER_READ_TIMEOUT_S = 30.0
+
 
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the session-ledger tools."""
@@ -147,7 +160,7 @@ def session_ledger_read(name: str, args: dict[str, Any]) -> str:
     sk, err = _strict_session_key()
     if err:
         return err
-    d = mcp_core._get("/api/session-ledger", session_key=sk)
+    d = mcp_core._get("/api/session-ledger", session_key=sk, timeout=_LEDGER_READ_TIMEOUT_S)
     api_err = d.get("error")
     if api_err:
         return f"Error: {api_err}"
