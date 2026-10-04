@@ -109,10 +109,14 @@ const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /**
  * A term is removed only where it stands as a word, so `Git` does not eat the `Git`
  * inside a longer identifier and leave a fragment behind to be scored.
+ *
+ * Longer terms are tried first. Alternation takes the first alternative that matches,
+ * so in glossary order `AWS` would win over `AWS SSM Session Manager` and leave
+ * `SSM Session Manager` behind to be judged as untranslated prose.
  */
 const dntPattern = terms =>
   (terms.length
-    ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${terms.map(escapeRe).join('|')})(?![\\p{L}\\p{N}])`, 'giu')
+    ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${[...terms].sort((a, b) => b.length - a.length).map(escapeRe).join('|')})(?![\\p{L}\\p{N}])`, 'giu')
     : null)
 
 /** Strip every locale-invariant span, then the DNT terms, then collapse whitespace. */

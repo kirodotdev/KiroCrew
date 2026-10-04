@@ -215,6 +215,22 @@ describe('stripping', () => {
       .toBe('GitLab is required')
   })
 
+  it('removes the longer of two overlapping terms, whatever order the glossary lists them in', () => {
+    // The shipped glossary lists `AWS` before `AWS SSM Session Manager`. Tried in that
+    // order, `AWS` matched first and left `SSM Session Manager` standing as three
+    // English words, so a value that IS a do-not-translate term read as untranslated.
+    const longer = 'AWS SSM Session Manager'
+    for (const terms of [['AWS', longer], [longer, 'AWS']]) {
+      const [check] = passthroughChecks(terms)
+      for (const lang of Object.keys(TARGET_SCRIPTS)) {
+        expect(check.violates(longer, lang), `${lang} with ${terms.join(' | ')}`).toBe(false)
+      }
+    }
+    // The shorter term is still removed on its own, so English around it still counts.
+    const [shortOnly] = passthroughChecks(['AWS'])
+    expect(shortOnly.violates(longer, 'ja')).toBe(true)
+  })
+
   it('counts tokens by whitespace, not by punctuation', () => {
     expect(tokenCount('us-east-1')).toBe(1)
     expect(tokenCount('localhost:5173')).toBe(1)
