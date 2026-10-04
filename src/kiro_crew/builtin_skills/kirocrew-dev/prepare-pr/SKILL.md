@@ -770,8 +770,9 @@ in the body means the keyword is missing or malformed, and `pr_status.py` prints
 
 On Kiro Crew the link is **a gate, not advice**: the `Issue Gate` lane of
 `PR Readiness` fails a PR whose visible body declares no issue of the repository,
-or declares one that still carries `needs-triage` or has no triage verdict label
-(`auto-fixable`, `needs-investigation`, `needs-human`). The gate reads the body
+or declares one that still carries `needs-triage`, has no triage verdict label
+(`auto-fixable`, `needs-investigation`, `needs-human`), or does not carry
+exactly one tier label (`tier:T1`, `tier:T2`, `tier:T3`, `tier:T4`). The gate reads the body
 with `pr_status.py`'s `declared_issue_numbers()` (through
 `.github/scripts/issue_gate_refs.py`): a declaration STARTS a line and the rest
 of the line is free, and the non-closing `Refs #<n>` / `Part of #<n>` count as
