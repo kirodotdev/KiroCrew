@@ -77,18 +77,22 @@ describe('hooks page — lifecycle event picker', () => {
 
     // Radix Select: open, then click — a `change` on the trigger does nothing.
     fireEvent.click(trigger)
-    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(11))
-    // The five the gateway fires, then the six a Kiro Agent session owns. The
-    // order is asserted whole because the picker's order is the one the hook
-    // table sorts rows by.
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(12))
+    // The five the gateway fires, then `SessionLaneChanged`, whose delivery is
+    // pending, then the six a Kiro Agent session owns. The order is asserted
+    // whole because the picker's order is the one the hook table sorts rows by.
     //
-    // Read past the dormant mark: six options carry a trailing badge, so
-    // `textContent` is `FileEdited` + `stored only`. The mark itself is covered
-    // below; what this asserts is the vocabulary and its order.
+    // Read past the dormant mark and the gloss: an option row renders the wire
+    // value plus whichever of those it carries, so `textContent` is `FileEdited` +
+    // `stored only` or `SessionLaneChanged` + `(board column)` + `not fired yet`. Both
+    // suffixes have their own assertions below; what this asserts is the vocabulary
+    // and its order, which is why they are stripped rather than spelled out here.
     const names = screen.getAllByRole('option')
-      .map(o => (o.textContent ?? '').replace(/not fired yet|never fires/, '').trim())
+      .map(o => (o.textContent ?? '')
+        .replace(/not fired yet|never fires|\([^)]*\)/g, '').trim())
     expect(names).toEqual([
       'AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+      'SessionLaneChanged',
       'PreTaskExecution', 'PostTaskExecution', 'FileCreated', 'FileEdited', 'FileDeleted',
       'UserTriggered',
     ])
@@ -302,6 +306,40 @@ describe('hooks page — lifecycle event picker', () => {
     expect(screen.queryByText(/No matcher:/)).toBeNull()
     expect(screen.queryByText(/will be saved turned off/)).toBeNull()
     expect(screen.queryByText(/never fires on its own/)).toBeNull()
+  })
+
+  it('glosses the pending event where the choice is made, beside its mark', async () => {
+    // The wire value reads as its own opposite -- "lane" is also the board's word for
+    // the AUTOMATIC columns this event never fires on -- so the gloss has to be in the
+    // OPEN LIST, not only in the native list a mouse user never sees.
+    renderPage()
+    const trigger = await openForm()
+    fireEvent.click(trigger)
+    const option = await screen.findByRole('option', { name: 'SessionLaneChanged' })
+    // Parenthesised, so it reads as an aside rather than as a second label.
+    expect(option).toHaveTextContent('(board column)')
+    expect(option).toHaveTextContent('not fired yet')
+    // And the accessible name stays the bare wire value, so an exact-name lookup
+    // (locators, a screen reader announcing the choice) is unaffected by either.
+    expect(option.getAttribute('aria-label')).toBeNull()
+  })
+
+  it('marks a pending gateway event not fired yet, with its own reason', async () => {
+    // The mark says the same thing as a task trigger's -- nothing runs this by
+    // itself today -- but the reason differs: no agent is being waited on, the
+    // delivery simply has not landed. A shared hint would have claimed the wrong one.
+    //
+    // The hint also has to ADD to the pill rather than paraphrase it, which is why it
+    // names the delivery and keeps the `Test runs it now` fact both sibling hints
+    // carry: without it, this is the one event whose only on-surface route to
+    // learning Test still works was missing.
+    renderPage()
+    const trigger = await openForm()
+    fireEvent.click(trigger)
+    const option = await screen.findByRole('option', { name: 'SessionLaneChanged' })
+    expect(option).toHaveTextContent('not fired yet')
+    expect(option.querySelector('[title]')?.getAttribute('title'))
+      .toBe('This event will start firing in a future release; nothing fires it yet. Test runs it now.')
   })
 
   it('does not mark the five events the gateway fires', async () => {
@@ -552,4 +590,5 @@ describe('hooks page — lifecycle event picker', () => {
     await waitFor(() => expect(updateHook).toHaveBeenCalledTimes(1))
     expect(updateHook.mock.calls[0][1]).toMatchObject({ event: 'agentSpawn' })
   })
+
 })

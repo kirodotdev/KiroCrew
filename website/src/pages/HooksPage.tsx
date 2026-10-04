@@ -16,7 +16,7 @@ import { useSortableTable } from '../hooks/useSortableTable'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useArmedDelete } from '../hooks/useArmedDelete'
 import SortableHeader from '../components/SortableHeader'
-import { EVENTS, KAS_ONLY_EVENTS, AGENT_REQUESTED_EVENTS } from './hookEventWireValues'
+import { EVENTS, KAS_ONLY_EVENTS, AGENT_REQUESTED_EVENTS, PENDING_EVENTS } from './hookEventWireValues'
 
 import { i18nT } from '../i18n/t'
 interface Hook {
@@ -43,6 +43,7 @@ const EVENT_STYLE: Record<string, string> = {
   PreToolUse: 'bg-aim-subtle text-aim border-aim/30',
   PostToolUse: 'bg-aim-subtle text-aim border-aim/30',
   Stop: 'bg-warn-subtle text-warn border-warn/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
   PreTaskExecution: 'bg-aim-subtle text-aim border-aim/30',
   PostTaskExecution: 'bg-aim-subtle text-aim border-aim/30',
   FileCreated: 'bg-ok-subtle text-ok border-ok/30',
@@ -54,6 +55,7 @@ const EVENT_STYLE: Record<string, string> = {
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   AgentSpawn: 'ok', UserPromptSubmit: 'ok',
   PreToolUse: 'aim', PostToolUse: 'aim', Stop: 'warn',
+  SessionLaneChanged: 'ok',
   PreTaskExecution: 'aim', PostTaskExecution: 'aim',
   FileCreated: 'ok', FileEdited: 'ok', FileDeleted: 'warn',
   UserTriggered: 'ok',
@@ -69,12 +71,17 @@ const BASE_CELL = 'px-2.5 py-2 border-b border-border'
  *  Two marks, not one: the distance to running differs. A task trigger is asked
  *  for by an agent and waits only on this side answering; a file or manual
  *  trigger is not asked for at all. One mark for both would be a promise to
- *  four of them that nothing has made. */
+ *  four of them that nothing has made.
+ *
+ *  A PENDING gateway event takes the same `not fired yet` mark as a task trigger,
+ *  because the reader's question is identical -- will this run by itself today, no --
+ *  and the difference is only in what it waits for, which the hint carries. */
 const dormantMark = (event: string): string | undefined =>
-  !KAS_ONLY_EVENTS.includes(event) ? undefined
-    : AGENT_REQUESTED_EVENTS.includes(event)
-      ? i18nT('pages.hooksPage.awaiting_agent')
-      : i18nT('pages.hooksPage.stored_only')
+  PENDING_EVENTS.includes(event) ? i18nT('pages.hooksPage.awaiting_agent')
+    : !KAS_ONLY_EVENTS.includes(event) ? undefined
+      : AGENT_REQUESTED_EVENTS.includes(event)
+        ? i18nT('pages.hooksPage.awaiting_agent')
+        : i18nT('pages.hooksPage.stored_only')
 
 /** What the mark means, in user terms, for the badge's own tooltip.
  *
@@ -82,10 +89,11 @@ const dormantMark = (event: string): string | undefined =>
  *  about: whether it will ever run by itself. One shared sentence made a reader
  *  read the help twice and still not know which of their hooks would run. */
 const dormantHint = (event: string): string | undefined =>
-  !KAS_ONLY_EVENTS.includes(event) ? undefined
-    : AGENT_REQUESTED_EVENTS.includes(event)
-      ? i18nT('pages.hooksPage.runs_on_no_event_yet')
-      : i18nT('pages.hooksPage.runs_only_via_test')
+  PENDING_EVENTS.includes(event) ? i18nT('pages.hooksPage.pending_delivery_hint')
+    : !KAS_ONLY_EVENTS.includes(event) ? undefined
+      : AGENT_REQUESTED_EVENTS.includes(event)
+        ? i18nT('pages.hooksPage.runs_on_no_event_yet')
+        : i18nT('pages.hooksPage.runs_only_via_test')
 
 /** Extra badge classes that tell the two marks apart at pill size.
  *
@@ -97,9 +105,14 @@ const dormantHint = (event: string): string | undefined =>
  *  SOLID for the two an agent asks for, HOLLOW and dashed for the four it does not:
  *  an outline reads as "less real than the filled one" without either pill becoming a
  *  fault. Both stay `muted` -- amber beside a green OK read as an error, which a
- *  designed dormant state is not. */
+ *  designed dormant state is not.
+ *
+ *  A PENDING gateway event takes the SOLID pill, to match the mark it shares: like the
+ *  two an agent asks for, it runs once the other side of it lands, and only the hint
+ *  differs on which side that is. A dashed pill under a `not fired yet` mark would
+ *  pair the words of the closer state with the shape of the further one. */
 const dormantBadgeClass = (event: string): string =>
-  AGENT_REQUESTED_EVENTS.includes(event)
+  AGENT_REQUESTED_EVENTS.includes(event) || PENDING_EVENTS.includes(event)
     ? ''
     : 'bg-transparent border border-dashed border-border'
 
@@ -110,10 +123,11 @@ const dormantBadgeClass = (event: string): string =>
  *  which is the single promise they must never make. The two an agent does ask for
  *  keep the "yet", because for them it is true. */
 const dormantOnNote = (event: string): string | undefined =>
-  !KAS_ONLY_EVENTS.includes(event) ? undefined
-    : AGENT_REQUESTED_EVENTS.includes(event)
-      ? i18nT('pages.hooksPage.on_but_nothing_fires')
-      : i18nT('pages.hooksPage.on_but_never_fires')
+  PENDING_EVENTS.includes(event) ? i18nT('pages.hooksPage.on_but_nothing_fires')
+    : !KAS_ONLY_EVENTS.includes(event) ? undefined
+      : AGENT_REQUESTED_EVENTS.includes(event)
+        ? i18nT('pages.hooksPage.on_but_nothing_fires')
+        : i18nT('pages.hooksPage.on_but_never_fires')
 
 /** One row cell's classes, faded when the hook is switched off.
  *
@@ -127,6 +141,17 @@ const dormantOnNote = (event: string): string | undefined =>
  *  to prevent. So the fade sits on the describing cells, in one place. */
 const rowCell = (enabled: boolean, extra = ''): string =>
   `${BASE_CELL}${extra ? ' ' + extra : ''}${enabled ? '' : ' opacity-50'}`
+
+/** The gloss for an event whose wire name reads as its own opposite, PARENTHESISED.
+ *
+ *  Bare, the two words read as a second label rather than an explanation -- `board
+ *  column` beside `SessionLaneChanged` could be part of the name. The brackets are
+ *  what make it an aside, and they are the same shape on all three surfaces (the
+ *  open list, the native label, the saved row) so the reader learns it once. */
+const eventGloss = (event: string): string | undefined =>
+  event === 'SessionLaneChanged'
+    ? `(${i18nT('pages.hooksPage.matcher_lane_pill_gloss')})`
+    : undefined
 
 const normalizeEvent = (e: string) => e.charAt(0).toUpperCase() + e.slice(1)
 
@@ -177,8 +202,24 @@ function HookForm({ hook, onSave, onCancel }: {
             options={EVENTS}
             // The panel is the trigger's width by default, and the trigger hugs a
             // short value like `Stop` — so `PostTaskExecution` plus its mark clipped
-            // to "waiti". Wide enough for the longest option and badge together.
-            contentClassName="min-w-[19rem]"
+            // to "waiti". Wide enough for the longest option, its gloss and its badge
+            // TOGETHER: at 19rem the glossed row pushed the pill past the panel edge
+            // and it rendered as "not fired" with no right cap.
+            //
+            // The floor itself is CLAMPED, inside `min()`. A floor alone is a pinned
+            // width: `SelectContent` sets no max-width of its own, and the touch
+            // diversion is `(pointer: coarse)`, not a width query — so a 320px desktop
+            // window or 400% zoom takes this same panel and a bare 26rem floor hangs
+            // 96px off-screen, clipping the badge and the check indicator.
+            //
+            // It has to be `min-w-[min(...)]` and NOT a sibling `max-w-*`: where the two
+            // conflict CSS resolves min-width LAST, so a 26rem floor beats any cap and
+            // the panel still overflows. Captured at 320px to confirm — the `max-w`
+            // spelling left the mark reading "not fired ye". The other floating panels
+            // here pair a floor with a cap safely only because their floors already fit
+            // (`RejectDropdown` 240px, `AgentTemplateDetail` 300px); this is the first
+            // floor above 320px, so it is the first that has to clamp itself.
+            contentClassName="min-w-[min(26rem,calc(100vw-2rem))]"
             // The mark rides the OPTION, which is where the choice is made; the
             // option's value and accessible name stay the bare wire value, and the
             // touch path spells the same fact as `name -- mark`.
@@ -187,8 +228,17 @@ function HookForm({ hook, onSave, onCancel }: {
               // The hint rides the badge, not just the table's copy of it:
               // the moment of choice is here, and a reader who has never
               // seen the table cannot tell `waiting` from `stored`.
+              //
+              // `note` carries the gloss for the same reason: this row renders the
+              // bare wire value, so a label-borne gloss reached the native list and
+              // the typeahead only, never the open list.
               return mark
-                ? { label: mark, source: 'kirocrew', hint: dormantHint(e) }
+                ? {
+                  label: mark,
+                  source: 'kirocrew',
+                  hint: dormantHint(e),
+                  note: eventGloss(e),
+                }
                 : undefined
             })}
             // Choosing a dormant trigger does NOT clear `matcher`, it only hides
@@ -198,6 +248,18 @@ function HookForm({ hook, onSave, onCancel }: {
             // restore path and nothing on screen saying so. Nothing is discarded
             // invisibly either, which was the original objection: while the field is
             // gone the line in its place says the trigger takes no matcher.
+            // The native list and the typeahead take TEXT and nothing else, so one
+            // label carries both facts there. Parenthesised gloss, dashed mark: two
+            // kinds of suffix in one list need two shapes, or a reader cannot tell
+            // which they are reading. Both must be present — a label defined at an
+            // index shadows the badge's own text fallback above, and an event glossed
+            // without its mark told a screen-reader or native-list author nothing
+            // about whether the hook they were writing would ever fire.
+            optionLabels={EVENTS.map(e => {
+              const gloss = eventGloss(e) ? ` ${eventGloss(e)}` : ''
+              const mark = dormantMark(e) ? ` — ${dormantMark(e)}` : ''
+              return `${e}${gloss}${mark}`
+            })}
             onChange={setEvent}
             value={event}
             // A hook stored with an event this picker no longer offers (legacy
@@ -302,8 +364,10 @@ function HookForm({ hook, onSave, onCancel }: {
           <div className="text-[13px] text-muted">
             {/* Per mark, not one shared sentence: beside "Never runs on its own",
                 a trailing "nothing fires this trigger YET" read as "it might
-                later", which is the promise these four must never make. */}
-            {AGENT_REQUESTED_EVENTS.includes(event)
+                later", which is the promise these four must never make. A PENDING
+                gateway event takes the "yet" sentence for the mirror reason -- its
+                delivery is coming, so the "never" one would be the false half. */}
+            {AGENT_REQUESTED_EVENTS.includes(event) || PENDING_EVENTS.includes(event)
               ? i18nT('pages.hooksPage.saved_switched_off')
               : i18nT('pages.hooksPage.saved_switched_off_never')}
           </div>
@@ -573,7 +637,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         </button>
                       </td>
                       <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{esc(h.name)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm')}><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span></td>
+                      {/* The gloss STACKS under the pill rather than sitting beside it.
+                          This table is auto-layout inside an overflow-x scroller whose
+                          ACTIONS column is `sticky right-0`, so a cell's min-content is
+                          width the sticky column can take from a neighbour: side by side,
+                          pill + gloss on one unbreakable line makes this column's
+                          min-content their SUM and the sticky cell lands on LAST RUN.
+                          Stacked, it is max(pill, gloss) instead. Same idiom the Status
+                          cell already uses for its mark and result. */}
+                      <td className={rowCell(h.enabled, 'text-sm')}><span className="inline-flex flex-col items-start gap-0.5"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span>{eventGloss(h.event) && <span className="text-[11px] text-text/80 whitespace-nowrap" data-testid="lane-pill-gloss">{eventGloss(h.event)}</span>}</span></td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{esc(h.command)}</td>
                       <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono')}>{h.run_count}</td>

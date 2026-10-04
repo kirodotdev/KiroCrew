@@ -115,7 +115,7 @@ try {
       .getByRole('button', { name: 'More information' })
       .click()
     await page
-      .getByText(/is supported by the agent but nothing here fires it yet/)
+      .getByText(/is waiting on the agent or on a future release/)
       .first()
       .waitFor({ timeout: 20000 })
     await page.screenshot({ path: `${OUT}/hooks-table-help-${scheme}.png` })

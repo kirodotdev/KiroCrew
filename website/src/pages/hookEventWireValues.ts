@@ -8,7 +8,9 @@
  * the page, so that boundary is visible in one place and the i18n literal-string
  * lint can be scoped to exactly this file.
  *
- * The first five are the events the gateway fires. The six after them are triggers
+ * The first five are the events the gateway fires. `SessionLaneChanged` follows
+ * them: its delivery is pending, so nothing fires it here yet. The six after
+ * it are triggers
  * a Kiro Agent session owns: authorable and stored, and fired by no event — the
  * gateway has no lifecycle moment for them and no other reader exists, though the
  * row's Test button still runs the command on demand. A Kiro
@@ -27,12 +29,27 @@ export const EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'Stop',
+  'SessionLaneChanged',
   'PreTaskExecution',
   'PostTaskExecution',
   'FileCreated',
   'FileEdited',
   'FileDeleted',
   'UserTriggered',
+]
+
+/**
+ * The gateway events whose DELIVERY has not landed, mirroring
+ * `kiro_crew.hooks.HOOK_EVENTS_PENDING`.
+ *
+ * Authorable and storable — the backend allowlist carries them, so a hook written
+ * against one saves and reloads — and fired by nothing yet. The picker marks one
+ * `not fired yet` from this list rather than from a hand-typed name, and
+ * `test_hook_events_kas_triggers.py` pins the list against that tuple, so the round
+ * that ships delivery moves the name out of it and every surface follows.
+ */
+export const PENDING_EVENTS = [
+  'SessionLaneChanged',
 ]
 
 /**
