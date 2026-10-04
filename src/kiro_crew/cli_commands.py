@@ -3264,6 +3264,11 @@ _IMPORT_FACET_KEYS = ("scope", "surface", "crew", "session_key", "derived_from")
 #: collection this list misses is one that raises AFTER the store was created.
 _IMPORTED_COLLECTIONS = ("semantic", "episodic")
 
+#: Most rows ``memory export`` writes per collection. A cut collection is named on
+#: stderr with its full count, so a short file never reads as a complete one.
+_EXPORT_EPISODIC_LIMIT = 10_000
+_EXPORT_EVENTS_LIMIT = 1_000
+
 
 def _markdown_memory_store() -> MemoryStore:
     """MemoryStore anchored where the DEFAULT runtime writer writes.
@@ -4108,10 +4113,26 @@ def _memory_verb(args: argparse.Namespace) -> None:
                         "Re-run without --include-markdown to export the store's rows."
                     )
                     return
+                episodic = store.get_episodic_list(limit=_EXPORT_EPISODIC_LIMIT)
+                events = store.get_events(limit=_EXPORT_EVENTS_LIMIT)
+                # A full page may hide more rows. Reading past the limit counts
+                # them through the same query the export used, on V1 and V2 alike.
+                for collection, rows, limit, rest in (
+                    ("episodes", episodic, _EXPORT_EPISODIC_LIMIT, store.get_episodic_list),
+                    ("events", events, _EXPORT_EVENTS_LIMIT, store.get_events),
+                ):
+                    if len(rows) >= limit:
+                        omitted = len(rest(limit=-1, offset=limit))
+                        if omitted:
+                            print(
+                                f"warning: exported {len(rows)} of {len(rows) + omitted} "
+                                f"{collection}; {omitted} omitted",
+                                file=sys.stderr,
+                            )
                 data: dict[str, object] = {
                     "semantic": store.get_all_semantic(),
-                    "episodic": store.get_episodic_list(limit=10000),
-                    "events": store.get_events(limit=1000),
+                    "episodic": episodic,
+                    "events": events,
                 }
                 if getattr(args, "include_markdown", False):
                     # Opt-in so the default payload shape stays byte-identical
