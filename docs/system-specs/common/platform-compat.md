@@ -567,6 +567,17 @@ alone: no liveness wait, no poll, and no sleep on a coroutine's thread. The
 creation `FILETIME` is the whole identity, so answering without the exit half
 costs the caller nothing.
 
+`TerminateProcess` answers a process that has already exited with
+`ERROR_ACCESS_DENIED`, the same code a genuine refusal carries, and a drain meets
+that routinely: every member started with `CREATE_NO_WINDOW` owns a `conhost.exe`
+that Toolhelp lists as its child, and that console host exits on its own once its
+client is killed, so it can leave between the liveness read and the terminate.
+`terminate_process_handle` therefore reads that refusal as an exit when the process
+object is signalled and returns `False`, as it does for any member that had already
+exited. A refusal on an unsignalled object, or on a handle that cannot be waited
+on, stays an `OSError`. A real-process regression forces the interleaving:
+`test/test_runtime_cleanup_windows.py::test_a_member_exiting_inside_the_terminate_window_reads_as_exited`.
+
 Teardown deliberately does not keep a Job handle and call `TerminateJobObject`
 instead of draining exact handles. The Job that `apply_job_limits` creates is
 anonymous and is closed before that function returns, so there is no handle to

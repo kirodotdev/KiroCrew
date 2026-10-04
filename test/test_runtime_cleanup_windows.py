@@ -726,3 +726,144 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(tmp_pa
         assert state.terminally_scanned == {process.pid}
     finally:
         pc.close_process_handle(handle)
+
+
+class _Kernel32Fn:
+    """One kernel32 export whose call can run a forced interleaving around it."""
+
+    def __init__(self, real, hook=None):
+        self.real, self.hook = real, hook
+        self.argtypes, self.restype = None, None
+
+    def __call__(self, *args):
+        self.real.argtypes, self.real.restype = self.argtypes, self.restype
+        return self.real(*args) if self.hook is None else self.hook(self.real, *args)
+
+
+class _Kernel32WithHooks:
+    def __init__(self, hooks):
+        self._real = __import__("ctypes").WinDLL("kernel32", use_last_error=True)
+        self._hooks = hooks
+        self._fns = {}
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name not in self._fns:
+            self._fns[name] = _Kernel32Fn(getattr(self._real, name), self._hooks.get(name))
+        return self._fns[name]
+
+
+def _hook_terminate_process_handle(monkeypatch, hooks):
+    """Route ONLY ``terminate_process_handle``'s kernel32 through *hooks*.
+
+    Identity reads and Toolhelp snapshots keep the real bindings, so a drain
+    under test meets the interleaving exactly at the call that suffers it.
+    """
+    import ctypes
+
+    facade = SimpleNamespace(**vars(ctypes))
+    facade.WinDLL = lambda name, **kw: (
+        _Kernel32WithHooks(hooks) if name == "kernel32" else ctypes.WinDLL(name, **kw)
+    )
+    original = pc.terminate_process_handle
+
+    def terminate(handle):
+        monkeypatch.setattr(pc, "ctypes", facade)
+        try:
+            return original(handle)
+        finally:
+            monkeypatch.setattr(pc, "ctypes", ctypes)
+
+    monkeypatch.setattr(pc, "terminate_process_handle", terminate)
+    return original
+
+
+def _spawn_sleeper(tmp_path):
+    import subprocess
+
+    python = getattr(sys, "_base_executable", sys.executable)
+    child = subprocess.Popen(
+        [python, "-I", "-S", "-B", "-c", "import time; time.sleep(60)"],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=pc.CREATE_NEW_PROCESS_GROUP | pc._SUBPROCESS_NO_WINDOW,
+    )
+    token = pc.get_process_start_id(child.pid)
+    assert token is not None
+    handle = pc.open_process_termination_handle(child.pid, token)
+    assert handle is not None
+    return child, handle
+
+
+def test_a_member_exiting_inside_the_terminate_window_reads_as_exited(tmp_path, monkeypatch):
+    """A drain member that exits between the liveness read and TerminateProcess.
+
+    The kernel refuses a terminate aimed at an exited process with
+    ERROR_ACCESS_DENIED. A console host leaving after its client is killed exits
+    on its own inside that window, so the drain must read the refusal as the
+    exit it is, finish, and not raise with the reservation charged.
+    """
+
+    child, handle = _spawn_sleeper(tmp_path)
+    state = None
+    fired = []
+
+    def exits_after_the_read(real, process_handle, exit_code):
+        result = real(process_handle, exit_code)
+        if not fired and process_handle.value == handle and exit_code._obj.value == 259:
+            fired.append(True)
+            # Ends the process for real and waits for its signal, so the stale
+            # "still active" answer reaches the caller exactly as on the shard.
+            kernel32 = __import__("ctypes").WinDLL("kernel32", use_last_error=True)
+            assert kernel32.TerminateProcess(process_handle, 7)
+            assert kernel32.WaitForSingleObject(process_handle, 10_000) == 0
+        return result
+
+    try:
+        _hook_terminate_process_handle(monkeypatch, {"GetExitCodeProcess": exits_after_the_read})
+        identity = pc._windows_process_handle_identity(handle)
+        assert identity is not None and identity[2] is None
+        state = pc._PendingWindowsTreeCleanup(handle, identity)
+
+        assert pc._drain_windows_process_tree(state) is True
+        assert fired, "the forced interleaving never ran"
+        assert child.wait(timeout=10) == 7
+        assert state.terminally_scanned == set(state.handles)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+        for member in () if state is None else state.handles.values():
+            if member != handle:
+                pc.close_process_handle(member)
+        pc.close_process_handle(handle)
+
+
+def test_a_terminate_refused_on_a_live_process_still_raises(tmp_path, monkeypatch):
+    """The exited reading needs the object signalled; a live refusal is an error."""
+
+    import ctypes
+
+    child, handle = _spawn_sleeper(tmp_path)
+
+    def refused(real, process_handle, code):
+        ctypes.set_last_error(5)
+        return 0
+
+    try:
+        original = _hook_terminate_process_handle(monkeypatch, {"TerminateProcess": refused})
+        with pytest.raises(OSError, match="TerminateProcess failed") as raised:
+            pc.terminate_process_handle(handle)
+        assert raised.value.errno == 5
+        assert child.poll() is None
+        monkeypatch.setattr(pc, "terminate_process_handle", original)
+        assert pc.terminate_process_handle(handle) is True
+        assert child.wait(timeout=10) == 1
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+        pc.close_process_handle(handle)

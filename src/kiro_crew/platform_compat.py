@@ -4537,7 +4537,12 @@ def descendant_termination_handles(
 
 
 def terminate_process_handle(handle: int) -> bool:
-    """Terminate the exact Windows process object referenced by *handle*."""
+    """Terminate the exact Windows process object referenced by *handle*.
+
+    Returns ``True`` when this call terminated a live process and ``False`` when
+    the process had already exited, including one that exits on its own between
+    the liveness read and the terminate.
+    """
 
     if type(handle) is not int or handle <= 0:
         raise ValueError(f"terminate_process_handle: refusing invalid handle {handle!r}")
@@ -4551,15 +4556,32 @@ def terminate_process_handle(handle: int) -> bool:
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
     process_handle = wintypes.HANDLE(handle)
     exit_code = wintypes.DWORD()
     still_active = 259
+    error_access_denied = 5
+    wait_object_0 = 0x00000000
     if not kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
         raise OSError(_windows_last_error(), "GetExitCodeProcess failed")
     if exit_code.value != still_active:
         return False
     if not kernel32.TerminateProcess(process_handle, 1):
-        raise OSError(_windows_last_error(), "TerminateProcess failed")
+        error = _windows_last_error()
+        # The kernel answers a terminate aimed at an already-exited process with
+        # ERROR_ACCESS_DENIED, the same code a genuine refusal carries. A process
+        # that exits on its own between the read above and the call lands here --
+        # a console host leaving once its last client is gone does this inside a
+        # drain. The object's signal state tells the two apart: a signalled
+        # process object has terminated, so there is nothing left to end. Any
+        # other refusal, or a handle that cannot be waited on, stays an error.
+        if (
+            error == error_access_denied
+            and int(kernel32.WaitForSingleObject(process_handle, 0)) == wait_object_0
+        ):
+            return False
+        raise OSError(error, "TerminateProcess failed")
     return True
 
 
