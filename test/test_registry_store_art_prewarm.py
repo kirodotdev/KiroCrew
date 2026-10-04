@@ -882,9 +882,10 @@ class TestArtGates:
         """POSIX ``Path.resolve`` reports a loop as ``RuntimeError``, which must
         degrade to None, never propagate: this path is reached bare from
         ``refresh_registries``, where an exception is a 500 on the refresh route.
-        Windows' non-strict resolve does not detect the loop and returns the path
-        as written, which is still under the cache root; either answer keeps the
-        write inside the root, and neither raises."""
+        On Windows the non-strict resolve either returns the path as written,
+        which is still under the cache root, or raises ``OSError`` (WinError
+        1921), which also degrades to None. Every answer keeps the write inside
+        the root, and none raises."""
         entry = _entry()
         good = _store_art_cache_path(entry, "ui/icon.svg")
         assert good is not None
@@ -893,7 +894,7 @@ class TestArtGates:
         os.symlink(good.parent.name, str(good.parent))
         result = _store_art_cache_path(entry, "ui/icon.svg")
         if sys.platform == "win32":
-            assert result is not None and result.is_relative_to(_blob_cache_dir().resolve())
+            assert result is None or result.is_relative_to(_blob_cache_dir().resolve())
         else:
             assert result is None
 
