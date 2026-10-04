@@ -26,6 +26,7 @@ import queue
 import threading
 import time
 import unittest.mock
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
@@ -414,7 +415,14 @@ def _one_item_cell_bytes(name: str, items: int = 1) -> int:
         for index in range(items):
             _work_entry(handle, f"it-{index}", slot=slot)
     crew_log.fold_slot_warm(name, (unit,), slot=slot)
-    weight = next(memo.weight for key, memo in crew_log._slot_memos.items() if key[1] == slot)
+    # Matched on the FOLD as well as the slot: a ``work/recorded`` entry stores a memo
+    # for every slot fold that reads the type, so the slot alone names several cells
+    # and this would otherwise weigh whichever one came first.
+    weight = next(
+        memo.weight
+        for key, memo in crew_log._slot_memos.items()
+        if key[1] == slot and key[2] == name
+    )
     crew_log.forget_slot_folds(slot=slot, name=name)
     return weight
 
@@ -441,7 +449,19 @@ def test_the_byte_budget_evicts_back_to_a_cold_fold(monkeypatch):
     declared caps is charged 24,402 MiB against a ``panel`` cell's 10.1 MiB, so a count
     ceiling priced a resident total across orders of magnitude with no number moving.
     """
-    _work_cell_ceiling(monkeypatch, 1)
+    # One SLOT's worth of memos, which is what a ``work/recorded`` entry stores: every
+    # slot fold that declares the type gets a cell, so a ceiling of one ``work`` cell
+    # would measure which fold stored last rather than which slot was written last.
+    woken = [
+        name
+        for name in crew_log.EAGER_SLOT_FOLD_NAMES
+        if "work/recorded" in (crew_log._FOLDS[name].affects or ())
+    ]
+    assert "work" in woken, f"the work fold does not read its own type: {woken}"
+    monkeypatch.setenv(
+        crew_log.SLOT_FOLD_CACHE_BYTES_ENV,
+        str(sum(_one_item_cell_bytes(name) for name in woken)),
+    )
     slots = ["dashboard:20", "dashboard:21", "dashboard:22"]
     for index, slot in enumerate(slots):
         handle = _slot_log(f"s-budget-{index}", slot)
@@ -449,8 +469,12 @@ def test_the_byte_budget_evicts_back_to_a_cold_fold(monkeypatch):
         eager.note_commit(f"s-budget-{index}", "work/recorded", seq, board=slot)
         assert eager.drain(timeout=10.0)
 
-    assert len(_memo_keys()) == 1, "a budget of one work cell keeps only the newest memo"
-    assert (slots[-1], "work") in _memo_keys()
+    kept = _memo_keys()
+    assert {slot for slot, _fold in kept} == {slots[-1]}, (
+        f"a budget of one slot's cells kept memos for {sorted({s for s, _ in kept})}; "
+        f"only the newest slot {slots[-1]} should remain"
+    )
+    assert (slots[-1], "work") in kept
     # Correctness is untouched: the evicted slot still folds its own record.
     assert crew_log.read_slot_projection(slots[0], "work").value["items"]
 
@@ -1082,8 +1106,109 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             },
             src=GATEWAY,
         )
+    elif name == "agentic":
+        # The WIDEST agentic row: a distinct field name per entry (so each adds a
+        # counted row rather than replacing one) carrying a value at the fold's own
+        # per-value byte ceiling. A string is the widest shape that reaches the
+        # ceiling with no structural overhead.
+        handle.append(
+            "dashboard/agentic_value",
+            {
+                "field": f"f{index:06d}",
+                "type": "string",
+                # Built to the clamp rather than sliced from _WIDE_ASCII, which is
+                # shorter than this fold's per-value ceiling: a slice would measure
+                # the string's length instead of the fold's limit, and the recorded
+                # charge has to cover the widest row the fold can really retain.
+                # Exactly AT the clamp once serialized: the fold measures the value's
+                # JSON form, so a bare string of the cap's length is two bytes over
+                # (the quotes) and is dropped -- which is how an earlier version of
+                # this fixture added no counted rows at all.
+                "value": {"v": "n" * (crew_log.DASHBOARD_VALUE_BYTES - 2)},
+                "instance_version": index + 1,
+                "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",
+            },
+            src=GATEWAY,
+        )
+    elif name == "mistakes":
+        # The WIDEST mistake row: a distinct field per entry so each mints its own
+        # group, with the code, field and reason each at their clamp.
+        handle.append(
+            "dashboard/agentic_refused",
+            {
+                "code": _WIDE_ASCII[: crew_log.DASHBOARD_CODE_LIMIT],
+                "field": f"{_WIDE_ASCII[: crew_log.DASHBOARD_FIELD_LIMIT - 6]}{index:06d}",
+                "reason": _WIDE_ASCII[: crew_log.DASHBOARD_REASON_LIMIT],
+                "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",
+            },
+            src=GATEWAY,
+        )
+    elif name == "workstreams":
+        _append_workstreams_task(handle, slot, index)
     else:
         _append_radar_item(handle, index)
+
+
+def _append_workstreams_task(handle: CrewLog, slot: str, index: int) -> None:
+    """One ``workstreams`` task with every field this fold keeps at its clamp, plus
+    the spender row and hourly buckets that task's own worker adds.
+
+    Several entries, because one cannot carry them all: the conductor's ``create``
+    and ``bind`` set the title and the worker key, the worker's ``report`` sets the
+    summary, and only the worker's own ``turn/completed`` can mint the spend row the
+    task is costed from. The item is the widest row this fold keeps -- narrower than
+    ``work``'s by the ``acceptance``, ``artifacts``, ``decision`` and event tail it
+    deliberately does not retain.
+    """
+    worker = f"chat-{index:06d}-worker"
+    base = {"slot": slot, "by": slot}
+    item = f"it-{index:06d}"
+    handle.append(
+        "work/recorded",
+        {**base, "actor": "conductor", "action": "create", "item_id": item, "title": _WIDE[:200]},
+        src=GATEWAY,
+    )
+    handle.append(
+        "work/recorded",
+        {
+            **base,
+            "actor": "conductor",
+            "action": "bind",
+            "item_id": item,
+            "worker_session_key": worker,
+        },
+        src=GATEWAY,
+    )
+    handle.append(
+        "work/recorded",
+        {
+            **base,
+            "actor": "worker",
+            "action": "report",
+            "item_id": item,
+            "summary": _WIDE[:500],
+            "pr": index + 1,
+        },
+        src=GATEWAY,
+    )
+    # The worker's own unit, which is where the charge that costs this task lives.
+    handle.append(
+        "session/opened",
+        {
+            "agent": "worker",
+            "slot": worker,
+            "model": "opus",
+            "cwd": "/w",
+            "owner": "",
+            "resumed": False,
+        },
+        src=GATEWAY,
+    )
+    handle.append(
+        "turn/completed",
+        {"turn": index + 1, "stop_reason": "end_turn", "duration_ms": 1_000, "credits": 1.5},
+        src=GATEWAY,
+    )
 
 
 def _append_radar_item(handle: CrewLog, index: int) -> None:
@@ -1892,7 +2017,12 @@ def test_an_advanced_fold_is_pushed_with_its_value_and_revision(pushed):
     assert eager.drain(timeout=10.0)
 
     assert pushed, "an eager advance published nothing; the dashboard still has to poll"
-    board, fold, revision, value = pushed[-1]
+    # A ``work/recorded`` entry wakes every slot fold that declares it, so the frames
+    # are selected by fold rather than taken off the end: this test is about the
+    # ``work`` frame carrying its value, not about which folds share the type.
+    frames = [frame for frame in pushed if frame[1] == "work"]
+    assert len(frames) == 1, f"expected one work frame, got {[f[1] for f in pushed]}"
+    board, fold, revision, value = frames[0]
     assert (board, fold) == (slot, "work")
     assert revision > 0, "a frame with no revision cannot be ordered by its client"
     assert [item["item_id"] for item in value["items"]] == [
@@ -1922,11 +2052,18 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
     eager._fold_batch(batch, closers)
 
-    assert len(seen) == 1, (
-        f"three entries of one board published {len(seen)} frames; the push is not "
+    # The coalesce is per ``(slot, fold)``, so the bound is one frame PER FOLD that
+    # declares the type -- three entries must not produce three frames for any of
+    # them. Counted per fold rather than in total, which would make this test fail the
+    # next time a fold starts reading ``work/recorded``.
+    per_fold = Counter(fold for _board, fold, _revision, _value in seen)
+    assert per_fold and set(per_fold.values()) == {1}, (
+        f"three entries of one board published {dict(per_fold)}; the push is not "
         "inheriting the worker's per-batch coalesce"
     )
-    assert [item["item_id"] for item in seen[0][3]["items"]] == ["it-0", "it-1", "it-2"]
+    assert "work" in per_fold, f"the work fold published no frame: {sorted(per_fold)}"
+    work_frame = next(frame for frame in seen if frame[1] == "work")
+    assert [item["item_id"] for item in work_frame[3]["items"]] == ["it-0", "it-1", "it-2"]
 
 
 def test_a_listener_that_raises_does_not_stop_the_fold(pushed):
@@ -2004,8 +2141,18 @@ def test_a_wake_for_a_cell_above_the_ceiling_performs_no_fold(monkeypatch):
     handle = _slot_log(unit, slot)
     _work_entry(handle, "it-0", slot=slot)
     monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, "1")
-    crew_log.read_slot_projection(slot, "work")
-    assert crew_log.slot_fold_over_ceiling(slot, "work"), "the refusal was not recorded"
+    # Every slot fold that reads the type is woken by one entry, so each one's refusal
+    # has to be on record before the wake -- a fold with no refusal recorded would be
+    # folded here and the spy would count its read instead of ``work``'s.
+    woken = [
+        name
+        for name in crew_log.EAGER_SLOT_FOLD_NAMES
+        if "work/recorded" in (crew_log._FOLDS[name].affects or ())
+    ]
+    assert "work" in woken, f"the work fold does not read its own type: {woken}"
+    for name in woken:
+        crew_log.read_slot_projection(slot, name)
+        assert crew_log.slot_fold_over_ceiling(slot, name), f"{name}'s refusal was not recorded"
 
     seq = _work_entry(handle, "it-1", slot=slot)
     with unittest.mock.patch.object(

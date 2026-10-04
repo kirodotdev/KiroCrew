@@ -112,7 +112,7 @@ BASE_SURFACE: dict[str, str] = {
     "_MAX_USER_HOOKS_PER_EVENT": "value int 4a44dc15364204a8",
     "_MCP_REGISTRY_TYPE": "value str 06c63899e16a32c5",
     "_MEMBER_DASHBOARD_GRANTS": "value tuple 2903d7e5ad4146d8",
-    "_MEMBER_PANEL_GRANTS": "value tuple 8eca830550d60c52",
+    "_MEMBER_PANEL_GRANTS": "value tuple f9275ffd5373ced9",
     "_NATIVE_PROMPT_STUB": "value str ceed0be70c1f6da8",
     "_PIPELINE_CONDUCTOR_AGENT_FILENAME": "value str 3b5e111de6d1d305",
     "_PIPELINE_CONDUCTOR_CORE_GRANTS": "value tuple 109d937a21907304",
@@ -912,6 +912,8 @@ def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
     assert agent._MEMBER_PANEL_GRANTS == (
         "@kirocrew-panel/panel_templates",
         "@kirocrew-panel/panel_publish",
+        "@kirocrew-panel/dashboard_fields",
+        "@kirocrew-panel/dashboard_write",
     )
 
 

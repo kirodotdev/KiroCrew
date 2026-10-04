@@ -383,6 +383,33 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # a root path and a query the handler caps at 200 characters
     "handlers/files.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/files.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # handlers/member_dashboard.py: four of the five bodies are control fields
+    # (a slug, a version number, a template id), but an edit and an import both
+    # carry a whole dashboard page -- a manifest plus its HTML -- which the
+    # shared 64 KB ceiling would refuse for a page that is legitimately larger.
+    # So every route on the module takes one explicit per-route cap sized to a
+    # page, which keeps the bound in one place and keeps the two body-carrying
+    # routes bounded rather than opting them out.
+    "handlers/member_dashboard.py::api_member_dashboard_adopt": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
+    "handlers/member_dashboard.py::api_member_dashboard_edit": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
+    "handlers/member_dashboard.py::api_member_dashboard_rollback": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
+    "handlers/member_dashboard.py::api_member_dashboard_import": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
+    "handlers/member_dashboard.py::api_member_dashboard_snapshot": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent

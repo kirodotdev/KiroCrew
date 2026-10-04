@@ -1,0 +1,188 @@
+<div class="board">
+  <style>
+    .board { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .board h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .board .goal { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .board .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .board .sub { font-size: 10px; color: var(--muted, #9aa); }
+    .states { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; margin: 9px 0 5px; background: var(--bg-hover, #222); }
+    .states i { display: block; height: 100%; }
+    .tally { display: flex; flex-wrap: wrap; gap: 9px; font-size: 10.5px; color: var(--muted, #9aa); }
+    .tally b { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+    .item { border: 1px solid var(--border, #333); border-radius: 8px; padding: 8px 9px; margin-top: 6px; }
+    .item .t { font-weight: 600; color: var(--text-strong, #fff); }
+    .item .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .chip { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--bg-hover, #222); }
+    .item .line { font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .item .line em { color: var(--text, #e6e6e6); font-style: normal; }
+  </style>
+
+  <h2>Goal board</h2>
+  <div class="goal" data-dashboard-field="goal">-</div>
+  <div class="meta">
+    <span>round <span data-dashboard-field="round">-</span></span>
+    <span>goal version <span data-dashboard-field="goal_version">-</span></span>
+    <span>depth <span data-dashboard-field="depth">-</span></span>
+    <span>entries <span data-dashboard-field="entries">-</span></span>
+  </div>
+  <div class="meta">
+    <span>opened <span data-dashboard-field="created_at">-</span></span>
+    <span>last write <span data-dashboard-field="last_entry_at">-</span></span>
+  </div>
+
+  <div class="states" id="states"></div>
+  <div class="tally" id="tally"></div>
+
+  <div id="items"></div>
+
+  <div class="sub" style="margin-top: 7px;">
+    <span data-dashboard-field="items">-</span> on the board,
+    <span data-dashboard-field="omitted">-</span> not shown (list truncated)
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+
+      // The states the work ledger stamps. Colour per state, named here rather than
+      // derived, because a state this page has no colour for must still be VISIBLE:
+      // it falls through to the neutral chip instead of vanishing from the tally.
+      var STATES = [
+        ['open', 'open', 'var(--accent, #00d492)'],
+        ['accepted', 'accepted', 'var(--info, #6aa9ff)'],
+        ['rejected', 'rejected', 'var(--danger, #ff5c5c)'],
+        ['blocked', 'blocked', 'var(--warn, #ffd230)'],
+        ['abandoned', 'abandoned', 'var(--muted, #9aa)']
+      ];
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function colourFor(state) {
+        for (var i = 0; i < STATES.length; i++) if (STATES[i][0] === state) return STATES[i][2];
+        return 'var(--muted-strong, #778)';
+      }
+      function chip(label, colour) {
+        var el = document.createElement('span');
+        el.className = 'chip';
+        el.textContent = label;
+        if (colour) el.style.color = colour;
+        return el;
+      }
+      function line(label, value) {
+        var el = document.createElement('div');
+        el.className = 'line';
+        el.appendChild(document.createTextNode(label + ' '));
+        var em = document.createElement('em');
+        em.textContent = value;
+        el.appendChild(em);
+        return el;
+      }
+
+      function items() {
+        var f = (window.kirocrew || {}).fields || {};
+        return Array.isArray(f.items) ? f.items.filter(function (i) { return i && typeof i === 'object'; }) : [];
+      }
+
+      function drawStates(list) {
+        var bar = document.getElementById('states');
+        var tally = document.getElementById('tally');
+        if (!bar || !tally) return;
+        bar.textContent = '';
+        tally.textContent = '';
+        var counts = {};
+        var order = [];
+        for (var i = 0; i < list.length; i++) {
+          var s = text(list[i].state) || 'unknown';
+          if (counts[s] === undefined) { counts[s] = 0; order.push(s); }
+          counts[s] += 1;
+        }
+        // Known states first in their declared order, then anything the ledger used
+        // that this page does not know, so a new state shows up rather than hiding.
+        var seq = [];
+        for (var k = 0; k < STATES.length; k++) if (counts[STATES[k][0]]) seq.push(STATES[k][0]);
+        for (var o = 0; o < order.length; o++) if (seq.indexOf(order[o]) === -1) seq.push(order[o]);
+        for (var j = 0; j < seq.length; j++) {
+          var state = seq[j];
+          var seg = document.createElement('i');
+          seg.style.background = colourFor(state);
+          seg.style.width = (list.length ? (counts[state] / list.length) * 100 : 0) + '%';
+          bar.appendChild(seg);
+          var row = document.createElement('span');
+          var sw = document.createElement('b');
+          sw.style.background = colourFor(state);
+          row.appendChild(sw);
+          row.appendChild(document.createTextNode(' ' + state + ' ' + counts[state]));
+          tally.appendChild(row);
+        }
+      }
+
+      function drawItems(list) {
+        var host = document.getElementById('items');
+        if (!host) return;
+        host.textContent = '';
+        for (var i = 0; i < list.length; i++) {
+          var it = list[i];
+          var card = document.createElement('div');
+          card.className = 'item';
+          var t = document.createElement('div');
+          t.className = 't';
+          t.textContent = text(it.title) || text(it.item_id) || DASH;
+          card.appendChild(t);
+
+          var chips = document.createElement('div');
+          chips.className = 'chips';
+          var state = text(it.state) || 'unknown';
+          chips.appendChild(chip(state, colourFor(state)));
+          // A VERDICT and a STATE are different facts and the board keeps both: the
+          // verdict is what the acceptance evaluator answered, the state is what the
+          // conductor then stamped. Showing only one hides a disagreement.
+          var verdict = text(it.verdict);
+          if (verdict) chips.appendChild(chip('verdict ' + verdict, null));
+          var fails = num(it.fails);
+          if (fails) chips.appendChild(chip(fails + ' fail(s)', 'var(--danger, #ff5c5c)'));
+          var status = text(it.status);
+          // The worker's own last word, which is a CLAIM rather than an acceptance.
+          if (status) chips.appendChild(chip('worker ' + status, null));
+          var pr = num(it.pr);
+          if (pr) chips.appendChild(chip('PR ' + pr, 'var(--info, #6aa9ff)'));
+          card.appendChild(chips);
+
+          var decision = text(it.decision);
+          if (decision) card.appendChild(line('decision', decision));
+          var summary = text(it.summary);
+          if (summary) card.appendChild(line('reported', summary));
+          var worker = text(it.spender);
+          if (worker) card.appendChild(line('worker', worker));
+          host.appendChild(card);
+        }
+        if (!list.length) {
+          var empty = document.createElement('div');
+          empty.className = 'line';
+          empty.textContent = 'No item on this board yet.';
+          host.appendChild(empty);
+        }
+      }
+
+      function render() {
+        var list = items();
+        // A conductor that opened no board leaves `conductor.goal` and the stamps as
+        // the empty string. The host binds that as blank, which reads as a page that
+        // failed to load, so it becomes a dash.
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        drawStates(list);
+        drawItems(list);
+        // The bound element for the array gets a count: the host binds by textContent,
+        // so left alone this cell reads as dumped JSON.
+        var note = document.querySelector('[data-dashboard-field="items"]');
+        if (note) note.textContent = String(list.length);
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

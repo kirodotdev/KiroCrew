@@ -31,7 +31,7 @@ from typing import Any, Final, cast
 
 from aiohttp import web
 
-from kiro_crew import agent_panel
+from kiro_crew import agent_panel, dashboard_agentic
 from kiro_crew import members as members_mod
 from kiro_crew import pipeline_board_contract
 from kiro_crew.config.loader import KiroCrewConfig
@@ -54,6 +54,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
 from kiro_crew.validation import (
+    DASHBOARD_WRITE_SCHEMA,
     PANEL_PUBLISH_SCHEMA,
     ValidationError,
     validate_tool_args,
@@ -1420,9 +1421,323 @@ async def api_member_panel(request: web.Request) -> web.Response:
     )
 
 
+# -------------------------------------------------------------------------- #
+# the dynamic dashboard's agent surface (contract v3, part 6)
+# -------------------------------------------------------------------------- #
+
+
+def read_instance(slug: str, member: str) -> dashboard_agentic.Instance | None:
+    """The crewmate's dashboard instance, or ``None`` when it has none to write to.
+
+    THE SEAM TO THE REGISTRY, and the one place this file depends on a store it does
+    not own. ``dashboard_templates.instance.read`` is the reader and
+    ``GET /api/members/{slug}/dashboard`` serves the same record to the frame, so
+    this surface and the page agree about which manifest is in force without a
+    second source of truth.
+
+    Resolved through the MODULE rather than imported at the top, which keeps the
+    boot-path rule (this handler is reached deferred) and lets a test replace this
+    one function with a stub.
+
+    It narrows the record deliberately. The store's own ``Instance`` carries the
+    html and the state; this returns only the parsed manifest and the version,
+    because an agent tool that could read its own page's markup is one that could
+    be talked into reporting it, and the state is the frame's branch, not a
+    writer's.
+
+    ``live`` and ``stale`` resolve to the stored copy and ``empty`` to the DEFAULT, the
+    page that crewmate is actually shown; only ``error`` and a missing default resolve
+    to ``None``, which the write path reports as ``no_instance``. The test is whether a
+    field name can be checked against a manifest a reader can trust. A stale copy HAS
+    its own manifest, complete and still renderable, and the write is checked against
+    the same manifest the page is drawn from; what a stale copy cannot do is be
+    compared against its source, which says nothing about a field the crewmate
+    declares. An ``empty`` record has no copy of its own, but the page it renders has a
+    manifest all the same -- the default's -- and validating against that is what makes
+    the written value appear on the page the reader is looking at. ``error`` is the one
+    state where no manifest parses, so there is nothing to validate against and
+    refusing is the only honest answer.
+
+    An absent registry is NOT one of those states and is not caught here. The
+    registry ships in the same package as this surface, so a build without it is a
+    packaging fault, and swallowing the ``ImportError`` would report that fault as
+    ``no_instance`` -- sending every crewmate to adopt a template through a registry
+    the build does not have.
+    """
+    from kiro_crew.dashboard_templates import instance as instance_store
+    from kiro_crew.dashboard_templates.manifest import ManifestError, parse_manifest
+
+    try:
+        record = instance_store.read(slug)
+    except Exception:
+        logger.warning("the dashboard instance for %s could not be read", slug, exc_info=True)
+        return None
+    # A STALE copy is writable and a LIVE one is: `_state_of` calls a stale copy
+    # complete and still renderable, and the write is validated against the COPY's own
+    # manifest, which a stale copy still has. What a stale copy cannot do is be
+    # compared against its source, and that says nothing about a field the crewmate
+    # declares and writes.
+    #
+    # EMPTY resolves to the DEFAULT, because the default is the page that crewmate is
+    # actually being shown: `api_member_dashboard` falls back to `default_instance` for
+    # exactly this state, so refusing here made the two paths disagree about which
+    # template is in force. The disagreement was not academic -- the default page's one
+    # agentic field is the "needs you" answer, nothing in P1 calls the adopt route, and
+    # the conductor skill writes that field every cycle, so every write was refused with
+    # a remedy (adopt a template) that has no control to carry it out.
+    #
+    # ERROR stays refused on its own terms: it is the state in which the manifest does
+    # not parse, so there is nothing to validate a write against.
+    live = getattr(instance_store, "STATE_LIVE", "live")
+    stale = getattr(instance_store, "STATE_STALE", "stale")
+    empty = getattr(instance_store, "STATE_EMPTY", "empty")
+    state = getattr(record, "state", "")
+    if state == empty:
+        try:
+            fallback = instance_store.default_instance(slug)
+        except Exception:
+            # No default to fall back to: the registry is unreadable or ships none. A
+            # refusal here is the honest answer, and it is the one case where
+            # `no_instance` still describes the world.
+            logger.warning("no default dashboard for %s to write against", slug, exc_info=True)
+            return None
+        if fallback is None:
+            # `default_instance` ANSWERS None when the registry ships no default; it
+            # does not raise, so the guard above does not cover this.
+            return None
+        record = fallback
+    elif state not in (live, stale):
+        return None
+    try:
+        manifest = parse_manifest(dict(record.manifest))
+    except (ManifestError, TypeError, ValueError):
+        # A record the store called live whose manifest will not parse here is a
+        # disagreement between two readers, not a crewmate's mistake. Logged for the
+        # operator and reported as no instance, so the write is refused rather than
+        # checked against a manifest this process could not read.
+        logger.warning("the dashboard manifest for %s does not parse", slug, exc_info=True)
+        return None
+    return dashboard_agentic.Instance(
+        manifest=manifest, instance_version=int(record.instance_version)
+    )
+
+
+def _mistake_book(slot: str) -> dict[str, Any]:
+    """The crewmate's folded mistake book, or an empty one.
+
+    Read through the ordinary slot-keyed projection -- the same warm kernel the
+    panel fold uses -- and NEVER by refolding a log, which the contract forbids
+    twice. TOTAL: a damaged or absent fold reads as an empty book, because a
+    crewmate with no readable mistakes is in the same position as one that has made
+    none, and failing a write because its mistake book would not load would be the
+    book costing the feature it exists to improve.
+    """
+    try:
+        value = projection.read_slot_projection(slot, dashboard_agentic.MISTAKES_FOLD).value
+    except Exception:
+        logger.warning("the mistakes fold is unreadable for slot %s", slot, exc_info=True)
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+async def _resolve_dashboard_caller(
+    request: web.Request, operation: str
+) -> tuple[tuple[str, str, str], None] | tuple[None, web.Response]:
+    """Vet the caller and resolve it to ``(slug, crew_name, slot)``.
+
+    Through the SAME gate the publish route uses, so the dashboard surface inherits
+    every refusal that one earns: the internal-secret requirement, the app-caller
+    denial, the restricted-session block, the operator switch, and the rule that
+    the crew comes from the session's own binding and never from the body.
+
+    The SLOT comes back too, because both handlers need it -- one to read the
+    mistake book, the other to append -- and resolving it twice would load the
+    config twice and could answer differently if it changed in between.
+    """
+    resolved, refusal = await _resolve_publishing_crew(request, operation)
+    if refusal is not None:
+        return None, refusal
+    assert resolved is not None
+    slug, crew_name = resolved
+
+    def _slot() -> str:
+        return _panel_slot(KiroCrewConfig.load(), crew_name, slug)
+
+    return (slug, crew_name, await asyncio.to_thread(_slot)), None
+
+
+async def api_dashboard_fields(request: web.Request) -> web.Response:
+    """GET /api/agent-panel/dashboard/fields -- the fields, and the mistake book.
+
+    The read that makes an agent's first write usually correct. It is on the
+    strict-internal prefix with the publish routes because it reports a crewmate's
+    own refused writes, which is state about that crewmate and nobody else's to
+    read.
+    """
+    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_fields")
+    if refusal is not None:
+        return refusal
+    assert resolved is not None
+    slug, crew_name, slot = resolved
+    instance = await asyncio.to_thread(read_instance, slug, crew_name)
+    mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
+    return web.json_response(dashboard_agentic.fields_for_agent(instance, mistakes))
+
+
+async def api_dashboard_write(request: web.Request) -> web.Response:
+    """POST /api/agent-panel/dashboard/write -- one type-checked agentic value.
+
+    The order of the steps is the feature:
+
+    1. read the instance, so the check is against the manifest this crewmate is
+       actually running rather than one the caller names;
+    2. read the mistake book, so a refusal can say "you have done this before" and
+       quote what worked;
+    3. check the write -- and on a refusal, RECORD it and hand the sentence back;
+    4. on success, append the value, then append the correction when this write
+       answers a mistake the book was still holding.
+
+    Step 3's recording is what makes the next cycle cheaper, and it happens before
+    the response: an agent that is refused and then crashes has still taught its
+    successor. Step 4's correction comes after the value lands, never before -- a
+    correction for a write that failed to append would tell the crewmate a wrong
+    field name was fixed by one that was never stored.
+    """
+    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_write")
+    if refusal is not None:
+        return refusal
+    assert resolved is not None
+    slug, crew_name, slot = resolved
+    state: DashboardState = request.app["state"]
+    sk = request.headers.get("X-Session-Key", "")
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    try:
+        args = validate_tool_args(body, DASHBOARD_WRITE_SCHEMA)
+    except ValidationError as exc:
+        return web.json_response({"error": str(exc), "code": "validation_error"}, status=400)
+
+    field = str(args.get("field") or "")
+    value = args.get("value")
+    instance = await asyncio.to_thread(read_instance, slug, crew_name)
+    mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
+    owner_key = agent_panel.crew_key(crew_name)
+    try:
+        entry = dashboard_agentic.check_write(instance, field, value, mistakes)
+    except dashboard_agentic.WriteRefused as refused:
+        # RECORDED BEFORE THE RESPONSE. The refusal is already decided, so this
+        # append costs the caller nothing it was going to get, and it is the only
+        # reason the next cycle is cheaper than this one.
+        recorded = dashboard_agentic.refusal_entry(refused, owner_key)
+        await asyncio.to_thread(_record_refusal, state, sk, recorded)
+        # The SAME scrubbed strings the entry carries. Reading them off `refused`
+        # again would hand the caller the unscrubbed sentence and field name, so the
+        # response and the record would disagree about what the refusal said.
+        return web.json_response(
+            {
+                "error": recorded["reason"],
+                "code": recorded["code"],
+                # Absent from the entry exactly when the refusal named no field, and
+                # then `refused.field` is itself empty, so this carries no agent text.
+                "field": recorded.get("field", refused.field),
+            },
+            status=400,
+        )
+    entry["crew_key"] = owner_key
+
+    def _append() -> tuple[bool, bool]:
+        unit = _session_unit(state, sk)
+        if not unit:
+            return False, False
+        # ASKED BEFORE THE APPEND, like the panel route asks its own: an entry over
+        # the log's whole-LINE ceiling can never land, so writing it would report a
+        # value as stored that no fold will ever see.
+        if not crew_log_emit.dashboard_entry_fits(dashboard_agentic.VALUE_ENTRY_TYPE, entry):
+            return False, False
+        if not crew_log_emit.on_dashboard_agentic(unit, entry, timeout=_APPEND_FLUSH_SECONDS):
+            return False, False
+        correction = dashboard_agentic.correction_entry(field, mistakes, owner_key)
+        if correction is None:
+            return True, False
+        return True, crew_log_emit.on_dashboard_refused(
+            unit, correction, timeout=_APPEND_FLUSH_SECONDS
+        )
+
+    if not crew_log_emit.enabled():
+        # THE LOG IS THE DASHBOARD'S ONLY RECORD for an agentic value -- there is no
+        # file beside it, because no host Python computes a dashboard value. So this
+        # is a REFUSAL rather than the best-effort shrug the panel publish gives:
+        # reporting success would promise a cell that will never fill.
+        return web.json_response(
+            {
+                "error": (
+                    "this gateway is not recording a crew log, and an agentic dashboard "
+                    "value has nowhere else to live -- ask the human to switch the crew "
+                    "log on"
+                ),
+                "code": "crew_log_off",
+            },
+            status=503,
+        )
+    stored, corrected = await asyncio.to_thread(_append)
+    if not stored:
+        return web.json_response(
+            {
+                "error": (
+                    "the value could not be written to this crewmate's crew log; try "
+                    "again on your next cycle"
+                ),
+                "code": "append_failed",
+            },
+            status=503,
+        )
+    # Tell an open dashboard a value changed. The fold's own bus event is what
+    # drives the frame's refill; this frame is for a client watching the panel
+    # surface, and it carries the SLUG only, like the publish broadcast.
+    state.broadcast_ws("dashboard_value_written", {"slug": slug})
+    return web.json_response(
+        {"ok": True, "written": {"field": field, "type": entry["type"]}, "corrected": corrected}
+    )
+
+
+def _record_refusal(state: DashboardState, sk: str, entry: dict[str, Any]) -> bool:
+    """Append one refusal to the caller's own log. Best-effort, never raises.
+
+    BEST-EFFORT unlike the value append, and the asymmetry is the point: by the
+    time this runs the caller is already being refused, so a log that is off costs
+    the mistake book this row and nothing else. Failing the request here would turn
+    "we could not remember your mistake" into "your write was not refused", which
+    is false.
+    """
+    if not crew_log_emit.enabled():
+        return False
+    try:
+        unit = _session_unit(state, sk)
+        if not unit:
+            return False
+        return crew_log_emit.on_dashboard_refused(unit, entry, timeout=_APPEND_FLUSH_SECONDS)
+    except Exception:
+        logger.warning("a refused dashboard write was not recorded", exc_info=True)
+        return False
+
+
 def register_agent_panel_routes(app: web.Application) -> None:
     app.router.add_get("/api/agent-panel/templates", api_agent_panel_templates)
     app.router.add_post("/api/agent-panel/publish", api_agent_panel_publish)
+    # The dynamic dashboard's agent surface. Under the SAME prefix, which is what
+    # gives it the same auth: ``server._STRICT_INTERNAL_API_PATHS`` lists
+    # ``/api/agent-panel`` and the middleware matches by prefix, so these are
+    # MCP-only and strict-internal without a second entry. That matters here as
+    # much as for publish -- a write lands in the crewmate's own crew log, so a
+    # caller holding only a dashboard cookie must not reach it.
+    app.router.add_get("/api/agent-panel/dashboard/fields", api_dashboard_fields)
+    app.router.add_post("/api/agent-panel/dashboard/write", api_dashboard_write)
     # The drawer's read. NOT under /api/agent-panel: that prefix is
     # strict-internal (MCP-only), and this one is called by the browser.
     app.router.add_get("/api/members/{slug}/panel", api_member_panel)

@@ -1,0 +1,482 @@
+<div class="wkb">
+  <style>
+    .wkb { font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--text, #e4e4e7); padding: 16px; box-sizing: border-box;
+      -webkit-font-smoothing: antialiased; }
+    .wkb *, .wkb *::before, .wkb *::after { box-sizing: border-box; }
+
+    /* ---- masthead: title, freshness, two meta lines, one sentence ---- */
+    .wkb-top { display: flex; align-items: flex-start; gap: 12px; }
+    .wkb-ttl { font-size: 17px; font-weight: 650; letter-spacing: -.01em; margin: 0;
+      color: var(--text-strong, #fafafa); flex: 1 1 auto; min-width: 0;
+      overflow-wrap: break-word; }
+    .wkb-ttl i { font-style: normal; color: var(--muted, #7f7f88);
+      font-weight: 400; padding: 0 2px; }
+    .wkb-fresh { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+      font-size: 10.5px; font-weight: 600; padding: 3px 9px 3px 7px; border-radius: 999px;
+      background: var(--ok-subtle, rgba(34,197,94,.12)); color: var(--ok, #22c55e);
+      white-space: nowrap; }
+    .wkb-fresh b { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .wkb-fresh.is-stale { background: var(--warn-subtle, rgba(234,179,8,.12));
+      color: var(--warn, #eab308); }
+
+    .wkb-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px;
+      font-size: 11px; color: var(--muted, #7f7f88); margin-top: 7px; }
+    .wkb-meta b { font-weight: 600; color: var(--text, #e4e4e7);
+      font-variant-numeric: tabular-nums; }
+    .wkb-code { font: 500 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding: 3px 6px; border-radius: 4px; background: var(--bg-hover, #262a35);
+      color: var(--muted, #7f7f88); }
+
+    .wkb-head { font-size: 13.5px; line-height: 1.5; margin: 12px 0 0;
+      color: var(--text, #e4e4e7); }
+    .wkb-head b { font-weight: 650; color: var(--text-strong, #fafafa);
+      font-variant-numeric: tabular-nums; }
+
+    .wkb-strip { margin-top: 13px; }
+    .wkb-strip svg { display: block; width: 100%; height: 8px; }
+
+    /* ---- section card ------------------------------------------------ */
+    .wkb-card { margin-top: 14px; border: 1px solid var(--border, #27272a);
+      border-radius: 12px; background: var(--card, #181b22); padding: 15px 16px; }
+    .wkb-lbl { display: flex; align-items: baseline; justify-content: space-between;
+      gap: 10px; font: 600 10.5px/1 system-ui, sans-serif; letter-spacing: .085em;
+      text-transform: uppercase; color: var(--muted, #7f7f88); }
+    .wkb-unit { letter-spacing: .02em; text-transform: none; font-weight: 500;
+      white-space: nowrap; }
+
+    /* ---- the round rows --------------------------------------------- */
+    .wkb-rounds { margin-top: 11px; }
+    .wkb-round { display: grid; grid-template-columns: 78px 1fr auto; align-items: center;
+      gap: 12px; padding: 8px 0; }
+    .wkb-round + .wkb-round { border-top: 1px solid var(--border, #27272a); }
+    .wkb-round.is-now { background: var(--accent-subtle, rgba(4,117,88,.2));
+      margin: 0 -8px; padding: 8px; border-radius: 7px; border-top-color: transparent; }
+    .wkb-round .r { font-weight: 650; font-size: 12px;
+      color: var(--text-strong, #fafafa); }
+    .wkb-round .r em { font-style: normal; font-weight: 500; font-size: 10.5px;
+      color: var(--muted, #7f7f88); display: block; margin-top: 1px;
+      font-variant-numeric: tabular-nums; }
+    .wkb-round svg { display: block; width: 100%; height: 7px; }
+    .wkb-tally { display: flex; gap: 10px; font-size: 10.5px;
+      color: var(--muted, #7f7f88); font-variant-numeric: tabular-nums; }
+    .wkb-tally i { width: 7px; height: 7px; border-radius: 2px; display: inline-block;
+      margin-right: 4px; }
+
+    /* ---- the board: 2x2 in the side panel, 4 across when there is room */
+    .wkb-board { margin-top: 14px; display: grid; gap: 10px; align-items: start;
+      grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (min-width: 1040px) {
+      .wkb-board { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    .wkb-col { border: 1px solid var(--border, #27272a); border-radius: 12px;
+      background: var(--card, #181b22); padding: 12px 11px 11px; min-width: 0; }
+    .wkb-colh { display: flex; align-items: center; gap: 7px; padding: 0 2px 9px;
+      border-bottom: 1px solid var(--border, #27272a); }
+    .wkb-colh i { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 auto; }
+    .wkb-colh h3 { margin: 0; flex: 1 1 auto; min-width: 0;
+      font: 600 10.5px/1.25 system-ui, sans-serif; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--muted, #7f7f88); }
+    .wkb-colh .n { font: 650 12px/1 system-ui, sans-serif;
+      color: var(--text-strong, #fafafa); font-variant-numeric: tabular-nums; }
+
+    /* ---- one item card ---------------------------------------------- */
+    .wkb-it { padding: 10px 2px 9px; }
+    .wkb-it + .wkb-it { border-top: 1px solid var(--border, #27272a); }
+    .wkb-it.is-star { background: var(--accent-subtle, rgba(4,117,88,.2));
+      margin: 0 -7px; padding: 10px 9px 9px; border-radius: 8px;
+      border-top-color: transparent; }
+    .wkb-it .id { display: flex; align-items: center; gap: 6px; }
+    .wkb-it .ttl { font-size: 12px; font-weight: 600; line-height: 1.35; margin-top: 5px;
+      color: var(--text-strong, #fafafa); overflow-wrap: break-word; }
+    .wkb-it .said { font-size: 10.5px; line-height: 1.45; margin-top: 4px;
+      color: var(--muted, #7f7f88); overflow-wrap: break-word;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; }
+    .wkb-pills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+    .wkb-pill { font: 600 10px/1.35 system-ui, sans-serif; padding: 2px 7px;
+      border-radius: 999px; background: var(--bg-hover, #262a35);
+      color: var(--muted, #7f7f88); white-space: nowrap; }
+    .wkb-foot { margin-top: 7px; font-size: 10.5px; line-height: 1.45;
+      color: var(--muted, #7f7f88); font-variant-numeric: tabular-nums;
+      overflow-wrap: break-word; }
+    .wkb-foot em { font-style: normal; color: var(--text, #e4e4e7); }
+    .wkb-none { padding: 11px 2px 3px; font-size: 11px; color: var(--muted, #7f7f88); }
+    .wkb-more { padding: 9px 2px 2px; font-size: 10.5px; font-weight: 600;
+      color: var(--warn, #eab308); border-top: 1px solid var(--border, #27272a);
+      font-variant-numeric: tabular-nums; }
+    .wkb-star { color: var(--accent, #00d492); font-size: 11px; }
+    .wkb-note { margin-top: 12px; font-size: 10.5px; color: var(--muted, #7f7f88);
+      font-variant-numeric: tabular-nums; }
+  </style>
+
+  <div class="wkb-top">
+    <h2 class="wkb-ttl">Work board <i>&middot;</i> <span data-dashboard-field="goal">&mdash;</span></h2>
+    <span class="wkb-fresh" id="wkb-fresh"><b></b><span>&mdash;</span></span>
+  </div>
+
+  <div class="wkb-meta">
+    <span>Board <span class="wkb-code" data-dashboard-field="generation">&mdash;</span></span>
+    <span>Round <b data-dashboard-field="round">&mdash;</b></span>
+    <span>Goal rev <b data-dashboard-field="goal_version">&mdash;</b></span>
+    <span>Writes <b data-dashboard-field="entries">&mdash;</b></span>
+    <span>Last write <b data-dashboard-field="last_entry_at">&mdash;</b></span>
+  </div>
+  <div class="wkb-meta">
+    <span>Opened <b data-dashboard-field="created_at">&mdash;</b></span>
+    <span>Depth <b data-dashboard-field="depth">&mdash;</b></span>
+  </div>
+
+  <p class="wkb-head" id="wkb-head">&mdash;</p>
+  <div class="wkb-strip"><svg id="wkb-strip" preserveAspectRatio="none"></svg></div>
+
+  <div class="wkb-card">
+    <div class="wkb-lbl">
+      <span>By round</span><span class="wkb-unit" id="wkb-roundunit">&mdash;</span>
+    </div>
+    <div class="wkb-rounds" id="wkb-rounds"></div>
+  </div>
+
+  <div class="wkb-board" id="wkb-board"></div>
+
+  <div class="wkb-note">
+    <span data-dashboard-field="items">&mdash;</span> on the board,
+    <span data-dashboard-field="omitted">&mdash;</span> not shown (list truncated).
+  </div>
+
+  <script>
+  (function () {
+    var DASH = '\u2014';
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    //: Cards drawn per column. The work fold is already bounded and reports what it
+    //: dropped, but a wide board would still stack a hundred cards into one column
+    //: and bury the three that matter, so each column caps and SAYS what it held back.
+    var PER_COLUMN = 12;
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    //: The four columns, each a key, a heading and a colour. Named here rather than
+    //: derived from the data: a state this page has no column for still has to land
+    //: somewhere VISIBLE, and `columnOf` sends it to "in progress" rather than
+    //: dropping it off the board.
+    var COLS = [
+      ['prog',  'In progress',      'var(--info, #0891b2)'],
+      ['await', 'Awaiting verdict', 'var(--warn, #eab308)'],
+      ['acc',   'Accepted',         'var(--ok, #22c55e)'],
+      ['shut',  'Rejected / left',  'var(--muted-strong, #52525b)']
+    ];
+
+    //: A worker status is coloured only when it is asking for somebody. `blocked` waits
+    //: on an external dependency and `question` on the conductor, which is what amber
+    //: means on this dashboard; a worker that is simply working, or that has reported
+    //: `done` and is waiting to be ruled on, is NEUTRAL. Amber on a `done` pill would
+    //: make every accepted card read as a warning, because an accepted item's worker
+    //: has also said `done`. Green and red belong to the VERDICT pill, which is the
+    //: fact a reader is looking for on a closed card.
+    var STATUS_TONES = {
+      blocked: 'var(--danger, #ef4444)',
+      question: 'var(--warn, #eab308)'
+    };
+
+    function txt(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+    function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+    function el(tag, cls, text) {
+      var n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    }
+    function svgEl(tag, attrs) {
+      var n = document.createElementNS(SVGNS, tag);
+      for (var k in attrs) {
+        if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]);
+      }
+      return n;
+    }
+    function cell(name) {
+      return document.querySelector('[data-dashboard-field="' + name + '"]');
+    }
+    function put(name, value) {
+      var node = cell(name);
+      if (node) node.textContent = (value === null || value === undefined || value === '')
+        ? DASH : String(value);
+    }
+
+    //: Stamps are sliced, not parsed: `new Date` would re-express a UTC stamp in the
+    //: viewer's zone, so a write at 13:46 UTC would read as a different hour and the
+    //: page would be quietly disagreeing with the ledger it is showing.
+    function stamp(iso, withDay) {
+      var s = txt(iso);
+      if (!s) return null;
+      var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s);
+      if (!m) return s;
+      var mon = MONTHS[Number(m[2]) - 1] || m[2];
+      var time = m[4] + ':' + m[5];
+      return withDay ? mon + ' ' + m[3] + ', ' + time : time;
+    }
+
+    function fields() { return (window.kirocrew || {}).fields || {}; }
+
+    function items() {
+      var list = fields().items;
+      if (!Array.isArray(list)) return [];
+      return list.filter(function (i) { return i && typeof i === 'object'; });
+    }
+
+    //: STATE is the conductor's own stamp; STATUS is the worker's last claim. The
+    //: board needs both, because the one column a conductor opens this page to find
+    //: -- an item whose worker says done and which nothing has ruled on yet -- is
+    //: not named by either field alone.
+    function columnOf(it) {
+      var state = txt(it.state);
+      if (state === 'accepted') return 'acc';
+      if (state === 'rejected' || state === 'abandoned') return 'shut';
+      return txt(it.status) === 'done' ? 'await' : 'prog';
+    }
+
+    function tally(list) {
+      var t = { prog: 0, await: 0, acc: 0, shut: 0 };
+      for (var i = 0; i < list.length; i++) t[columnOf(list[i])] += 1;
+      return t;
+    }
+
+    //: One highlighted card, for the case that wants the reader: something waiting on
+    //: a verdict first, then anything carrying a failed one. Neither present, nothing
+    //: is highlighted -- a board with no call to make should not invent one.
+    function starOf(list) {
+      var best = null, rank = 0;
+      for (var i = 0; i < list.length; i++) {
+        var it = list[i];
+        var r = columnOf(it) === 'await' ? 2 : (num(it.fails) ? 1 : 0);
+        if (r > rank) { rank = r; best = it; }
+      }
+      return best;
+    }
+
+    function stack(host, total, counts, h) {
+      host.appendChild(svgEl('rect', { x: 0, y: 0, width: 100, height: h, rx: 2,
+        fill: 'var(--bg-hover, #262a35)' }));
+      if (!total) return;
+      var x = 0;
+      for (var i = 0; i < COLS.length; i++) {
+        var n = counts[COLS[i][0]];
+        if (!n) continue;
+        var w = (n / total) * 100;
+        host.appendChild(svgEl('rect', { x: x, y: 0, width: Math.max(w - 0.6, 0.6),
+          height: h, rx: 2, fill: COLS[i][2] }));
+        x += w;
+      }
+    }
+
+    function drawStrip(list) {
+      var host = document.getElementById('wkb-strip');
+      if (!host) return;
+      host.textContent = '';
+      host.setAttribute('viewBox', '0 0 100 8');
+      stack(host, list.length, tally(list), 8);
+    }
+
+    function swatch(colour) {
+      var i = el('i');
+      i.style.background = colour;
+      return i;
+    }
+
+    function tallyRow(counts) {
+      var row = el('div', 'wkb-tally');
+      for (var i = 0; i < COLS.length; i++) {
+        var n = counts[COLS[i][0]];
+        if (!n) continue;
+        var one = el('span');
+        one.appendChild(swatch(COLS[i][2]));
+        one.appendChild(document.createTextNode(String(n)));
+        row.appendChild(one);
+      }
+      return row;
+    }
+
+    //: Rounds are the board's own grouping -- the conductor stamps every item with the
+    //: round it was created in -- so they are read off the items rather than guessed
+    //: from the header's current round, which says nothing about the earlier ones.
+    function drawRounds(list) {
+      var host = document.getElementById('wkb-rounds');
+      if (!host) return;
+      host.textContent = '';
+      var groups = {}, order = [];
+      for (var i = 0; i < list.length; i++) {
+        var r = num(list[i].round);
+        var key = r === null ? 'none' : String(r);
+        if (!groups[key]) { groups[key] = { round: r, items: [] }; order.push(key); }
+        groups[key].items.push(list[i]);
+      }
+      order.sort(function (a, b) {
+        if (a === 'none') return 1;
+        if (b === 'none') return -1;
+        return Number(b) - Number(a);
+      });
+      var now = num(fields().round);
+      for (var o = 0; o < order.length; o++) {
+        var g = groups[order[o]];
+        var isNow = g.round !== null && g.round === now;
+        var row = el('div', 'wkb-round' + (isNow ? ' is-now' : ''));
+        var label = el('div', 'r', g.round === null ? 'No round' : 'Round ' + g.round);
+        label.appendChild(el('em', null,
+          g.items.length + (g.items.length === 1 ? ' item' : ' items')));
+        row.appendChild(label);
+
+        var bar = svgEl('svg', { viewBox: '0 0 100 7', preserveAspectRatio: 'none' });
+        stack(bar, g.items.length, tally(g.items), 7);
+        var holder = el('div');
+        holder.appendChild(bar);
+        row.appendChild(holder);
+
+        row.appendChild(tallyRow(tally(g.items)));
+        host.appendChild(row);
+      }
+      if (!order.length) host.appendChild(el('div', 'wkb-none', 'No item carries a round.'));
+      var unit = document.getElementById('wkb-roundunit');
+      if (unit) {
+        unit.textContent = order.length
+          ? order.length + (order.length === 1 ? ' round' : ' rounds')
+          : DASH;
+      }
+    }
+
+    function card(it, starred) {
+      var box = el('div', 'wkb-it' + (starred ? ' is-star' : ''));
+      var head = el('div', 'id');
+      head.appendChild(el('span', 'wkb-code', txt(it.item_id) || DASH));
+      if (starred) head.appendChild(el('span', 'wkb-star', '\u2605'));
+      box.appendChild(head);
+      box.appendChild(el('div', 'ttl', txt(it.title) || DASH));
+
+      //: The worker's own summary when it reported one, else the conductor's decision.
+      //: Both are prose somebody wrote about this item; neither is a measurement, so
+      //: an item with neither says so rather than showing an empty line.
+      var said = txt(it.summary) || txt(it.decision);
+      box.appendChild(el('div', 'said', said || 'Nothing written on this item yet.'));
+
+      var pills = el('div', 'wkb-pills');
+      function pill(label, tone) {
+        var p = el('span', 'wkb-pill', label);
+        if (tone) p.style.color = tone;
+        pills.appendChild(p);
+      }
+      var status = txt(it.status);
+      pill(status ? 'worker ' + status : 'worker silent',
+        (status && STATUS_TONES[status]) || null);
+      var verdict = txt(it.verdict);
+      if (verdict) {
+        pill('verdict ' + verdict,
+          verdict === 'pass' ? 'var(--ok, #22c55e)' : 'var(--danger, #ef4444)');
+      }
+      var fails = num(it.fails);
+      if (fails) pill(fails + (fails === 1 ? ' fail' : ' fails'), 'var(--danger, #ef4444)');
+      var pr = num(it.pr);
+      if (pr) pill('PR ' + pr, 'var(--info, #0891b2)');
+      box.appendChild(pills);
+
+      var foot = el('div', 'wkb-foot');
+      var worker = txt(it.spender);
+      foot.appendChild(document.createTextNode('worker '));
+      foot.appendChild(el('em', null, worker || DASH));
+      foot.appendChild(document.createTextNode('  \u00b7  reported '));
+      foot.appendChild(el('em', null, stamp(it.last_report_at, false) || DASH));
+      box.appendChild(foot);
+      return box;
+    }
+
+    function drawBoard(list) {
+      var host = document.getElementById('wkb-board');
+      if (!host) return;
+      host.textContent = '';
+      var counts = tally(list), star = starOf(list);
+      for (var c = 0; c < COLS.length; c++) {
+        var key = COLS[c][0];
+        var col = el('div', 'wkb-col');
+        var head = el('div', 'wkb-colh');
+        head.appendChild(swatch(COLS[c][2]));
+        head.appendChild(el('h3', null, COLS[c][1]));
+        head.appendChild(el('span', 'n', String(counts[key])));
+        col.appendChild(head);
+
+        var shown = 0, held = 0;
+        for (var i = 0; i < list.length; i++) {
+          if (columnOf(list[i]) !== key) continue;
+          //: The starred card is never the one held back: it is the card the reader
+          //: came for, so a full column drops a later one instead.
+          if (shown >= PER_COLUMN && list[i] !== star) { held += 1; continue; }
+          col.appendChild(card(list[i], list[i] === star));
+          shown += 1;
+        }
+        if (!shown) col.appendChild(el('div', 'wkb-none', 'Nothing here.'));
+        if (held) {
+          col.appendChild(el('div', 'wkb-more',
+            held + ' more in this column, not drawn'));
+        }
+        host.appendChild(col);
+      }
+    }
+
+    function drawHeadline(list) {
+      var out = document.getElementById('wkb-head');
+      if (!out) return;
+      out.textContent = '';
+      if (!list.length) {
+        out.textContent = 'This board carries no item yet.';
+        return;
+      }
+      var t = tally(list);
+      function bold(v) { return el('b', null, String(v)); }
+      out.appendChild(bold(t.acc));
+      out.appendChild(document.createTextNode(' of '));
+      out.appendChild(bold(list.length));
+      out.appendChild(document.createTextNode(' items accepted. '));
+      out.appendChild(bold(t.await));
+      out.appendChild(document.createTextNode(t.await === 1
+        ? ' waits on your verdict, ' : ' wait on your verdict, '));
+      out.appendChild(bold(t.prog));
+      out.appendChild(document.createTextNode(' still with a worker.'));
+    }
+
+    function drawFreshness() {
+      var api = window.kirocrew || {};
+      var node = document.getElementById('wkb-fresh');
+      if (!node) return;
+      node.className = 'wkb-fresh' + (api.stale ? ' is-stale' : '');
+      var seq = num(api.seq);
+      node.lastChild.textContent = (api.stale ? 'Stale' : 'Fresh') +
+        ' \u00b7 seq ' + (seq === null ? DASH : seq);
+    }
+
+    function render() {
+      var f = fields();
+      //: Every cell is written from the field bag rather than left as the host filled
+      //: it: a long slot key and a full ISO stamp both need shortening, and the array
+      //: cell would otherwise read as dumped JSON.
+      put('goal', txt(f.goal));
+      put('round', num(f.round));
+      put('goal_version', num(f.goal_version));
+      put('depth', num(f.depth));
+      put('entries', num(f.entries));
+      put('omitted', num(f.omitted));
+      put('generation', txt(f.generation) ? String(f.generation).slice(0, 8) : null);
+      put('created_at', stamp(f.created_at, true));
+      put('last_entry_at', stamp(f.last_entry_at, true));
+
+      var list = items();
+      put('items', list.length + (list.length === 1 ? ' item' : ' items'));
+
+      drawFreshness();
+      drawHeadline(list);
+      drawStrip(list);
+      drawRounds(list);
+      drawBoard(list);
+    }
+
+    render();
+    window.addEventListener('load', render);
+    window.addEventListener('message', function () { setTimeout(render, 0); });
+  }());
+  </script>
+</div>

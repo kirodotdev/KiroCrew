@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -2136,3 +2137,463 @@ async def test_the_drawer_read_reports_the_templates_docked_opt_in(vetted):
         )
         opted = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
         assert opted["panel"]["docked_height"] == 180
+
+
+# ----------------------------------- the dynamic dashboard's agentic surface
+
+
+#: A template with one field of each SOURCE. Both are needed: the field list has
+#: to say where every value comes from, and the write path has to refuse the one
+#: the host fills.
+DASHBOARD_MANIFEST: dict[str, Any] = {
+    "id": "demo",
+    "version": 2,
+    "title": "Demo",
+    "description": "A demo dashboard",
+    "source": "builtin",
+    "fields": {
+        "open_items": {"type": "number", "source": {"agentic": True}},
+        "entries": {"type": "number", "source": {"fold": "work", "path": "count"}},
+    },
+}
+
+FIELDS_PATH = "/api/agent-panel/dashboard/fields"
+WRITE_PATH = "/api/agent-panel/dashboard/write"
+
+
+def _adopt_dashboard(monkeypatch, *, state: str = "live", version: int = 4) -> None:
+    """Present an adopted dashboard to the one function that reads the registry.
+
+    Through the registry SEAM rather than by committing a real instance: what
+    these routes need from the registry is a parsed manifest and a version, and
+    driving the store's own adopt path would bind every case here to the
+    catalogue's shipped templates.
+
+    Both spellings are replaced because ``read_instance`` imports inside the
+    call: once the real module is imported, ``from kiro_crew.dashboard_templates
+    import instance`` reads the package attribute rather than ``sys.modules``.
+    """
+    record = SimpleNamespace(
+        slug=SLUG,
+        instance_version=version,
+        state=state,
+        manifest=dict(DASHBOARD_MANIFEST),
+    )
+    store = SimpleNamespace(read=lambda _slug: record, STATE_LIVE="live")
+    monkeypatch.setitem(sys.modules, "kiro_crew.dashboard_templates.instance", store)
+    import kiro_crew.dashboard_templates as templates_pkg
+
+    monkeypatch.setattr(templates_pkg, "instance", store, raising=False)
+
+
+async def test_the_dashboard_field_list_needs_the_internal_secret(vetted):
+    """It reports a crewmate's own refused writes, which is state about that
+    crewmate and nobody else's to read, so it sits behind the publish route's
+    gate rather than beside the drawer's browser read."""
+    async with _client(internal=False) as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "internal_secret_required"
+
+
+async def test_a_dashboard_write_needs_the_internal_secret(vetted):
+    """A write lands in the crewmate's own crew log, so a caller holding only a
+    dashboard cookie must not reach it."""
+    async with _client(internal=False) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "internal_secret_required"
+
+
+async def test_the_dashboard_surface_inherits_the_no_slot_refusal(vetted):
+    """The shared resolver's refusals reach both routes.
+
+    A state with no allocation to resolve cannot say which crew is asking, and
+    the field list is keyed by crew -- answering anyway would report one
+    crewmate's mistakes to another.
+    """
+    async with _client(agent=None) as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "no_dashboard_slot"
+
+
+async def test_a_crewmate_that_adopted_nothing_is_told_the_page_it_renders(vetted):
+    """The read answers with the DEFAULT before a template is adopted.
+
+    It reports the default rather than an empty list because the default IS the page
+    that crewmate renders: ``api_member_dashboard`` falls back to it for the same
+    state. An empty list told the crewmate it had no cell to write while the page it
+    was being shown had one, and the one it had is the "needs you" answer.
+    """
+    async with _client() as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["template"]["id"] == "project-report", body["template"]
+        names = {row["field"] for row in body["fields"]}
+        assert "for_you" in names, f"the default's agentic field is not offered: {names}"
+        assert body["retry_budget"] > 0
+
+
+async def test_the_field_list_reports_where_every_value_comes_from(vetted, monkeypatch):
+    """Every field, not only the writable ones, and each with its source.
+
+    A crewmate that cannot see a fold-sourced field has no way to know the number
+    is already recorded, and will either try to write it or duplicate it under an
+    agentic name so the page draws the same quantity twice.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+
+    assert body["template"] == {"id": "demo", "version": 2}
+    assert body["instance_version"] == 4
+    assert body["agentic"] == ["open_items"]
+    rows = {row["field"]: row for row in body["fields"]}
+    assert rows["open_items"]["source"] == "agentic"
+    assert rows["entries"]["source"] == "fold"
+    assert rows["entries"]["fold"] == "work"
+    assert rows["entries"]["path"] == "count"
+
+
+async def test_a_body_that_is_not_json_is_refused_before_the_manifest(vetted, monkeypatch):
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            data="not json",
+            headers={"X-Session-Key": "dashboard:chat-1", "Content-Type": "application/json"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "invalid_json"
+
+
+async def test_a_body_that_is_not_an_object_is_refused(vetted, monkeypatch):
+    """A list parses as JSON and carries no field name, so it is a distinct
+    refusal from unparseable bytes."""
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json=["open_items", 3],
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "invalid_body"
+
+
+async def test_an_argument_the_schema_rejects_never_reaches_the_manifest(vetted, monkeypatch):
+    """The schema's job is to reject an unexpected ARGUMENT; the manifest decides
+    the value. A field name past the schema's length bound is the former, so it
+    is refused with ``validation_error`` rather than grouped as a crewmate's
+    field-name mistake.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "x" * 200, "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "validation_error"
+
+
+async def test_a_field_the_template_does_not_declare_is_refused_with_the_valid_names(
+    vetted, monkeypatch
+):
+    """The refusal is answerable on the next cycle because it carries the list."""
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert body["code"] == "unknown_field"
+        assert body["field"] == "open"
+        assert "open_items" in body["error"]
+
+
+async def test_a_host_filled_field_is_refused_rather_than_overwritten(vetted, monkeypatch):
+    """A write into a fold-sourced cell would be replaced on the next fold, so
+    reporting it as stored would promise a value that does not survive."""
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "entries", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "field_not_agentic"
+
+
+async def test_a_value_of_the_wrong_declared_type_is_refused(vetted, monkeypatch):
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": "three"},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "wrong_type"
+
+
+async def test_a_write_succeeds_for_a_crewmate_that_adopted_nothing(vetted):
+    """The write path resolves the same default the read path renders.
+
+    REPLACES a pin that asserted ``no_instance`` here. That refusal named adopting a
+    template as the remedy, and nothing in P1 calls the adopt route -- so the one
+    agentic field on the page every crewmate is shown, the "needs you" answer, could
+    never be written by anyone, and the conductor skill writes it every cycle.
+    """
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": [{"what": "approve the plan"}]},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["ok"] is True
+        # Accepted AS the declared type, which is what proves it was validated against
+        # the default's manifest rather than waved through.
+        assert body["written"] == {"field": "for_you", "type": "array"}, body["written"]
+
+
+async def test_a_write_is_still_refused_when_no_manifest_parses(vetted, monkeypatch):
+    """``no_instance`` survives for the state it actually describes.
+
+    ERROR is the state in which the stored manifest does not parse, so there is
+    nothing to validate a field name against. Keeping this case is what stops the
+    default fallback above from being read as "writes are never refused".
+    """
+    import kiro_crew.dashboard.handlers.agent_panel as panel
+
+    monkeypatch.setattr(panel, "read_instance", lambda slug, member: None)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": []},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "no_instance"
+
+
+async def test_a_refusal_is_recorded_so_the_next_cycle_is_cheaper(vetted, monkeypatch):
+    """The mistake book is written BEFORE the response.
+
+    The refusal is already decided, so the append costs the caller nothing it was
+    going to get -- and a crewmate that is refused and then stops has still
+    taught its successor. The field list is where that lands, so the round trip
+    is what proves it.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        refused = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert refused.status == 400, await refused.text()
+
+        crew_log_projection.forget_slot_folds()
+        listed = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert listed.status == 200, await listed.text()
+        book = (await listed.json())["mistakes"]
+
+    assert book, "the refusal was not recorded where the next read finds it"
+    assert any(row.get("field") == "open" for row in book), book
+
+
+async def test_a_value_lands_and_an_open_dashboard_is_told(vetted, monkeypatch):
+    """The fold's own event drives the frame's refill; this frame is for a client
+    watching the panel surface, and it carries the SLUG only."""
+    _adopt_dashboard(monkeypatch)
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 7},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["ok"] is True
+        assert body["written"] == {"field": "open_items", "type": "number"}
+        assert body["corrected"] is False
+        sent = app["state"].broadcasts
+        assert ("dashboard_value_written", {"slug": SLUG}) in sent, f"nothing pushed: {sent}"
+        assert agent_panel.crew_key(CREW) not in json.dumps(sent)
+
+
+async def test_a_write_that_answers_a_recorded_mistake_reports_the_correction(vetted, monkeypatch):
+    """The correction comes after the value lands, never before.
+
+    A correction for a write that failed to append would tell the crewmate a
+    wrong field name was fixed by one that was never stored.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        assert (
+            await c.post(
+                WRITE_PATH,
+                json={"field": "open", "value": 3},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+        ).status == 400
+
+        crew_log_projection.forget_slot_folds()
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["corrected"] is True
+
+
+async def test_a_write_is_refused_when_the_gateway_records_no_crew_log(vetted, monkeypatch):
+    """The log is an agentic value's ONLY record -- no host Python computes one,
+    so there is no file beside it. Reporting success would promise a cell that
+    never fills, which is why this refuses rather than shrugging the way a panel
+    publish does.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        crew_log_emit.reset_caches()
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "crew_log_off"
+    crew_log_emit.reset_caches()
+
+
+async def test_a_refusal_with_the_log_off_still_refuses_the_write(vetted, monkeypatch):
+    """Recording the mistake is best-effort, unlike the value append.
+
+    By the time it runs the caller is already being refused, so a log that is off
+    costs the mistake book this row and nothing else. Failing here would turn
+    "we could not remember your mistake" into "your write was not refused".
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        crew_log_emit.reset_caches()
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "unknown_field"
+    crew_log_emit.reset_caches()
+
+
+async def test_a_refusal_whose_append_raises_still_refuses_the_write(vetted, monkeypatch):
+    """The recorder never raises, so a damaged log cannot turn a refusal into a
+    500 that tells the caller nothing about its field name."""
+    _adopt_dashboard(monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("the log is unwritable")
+
+    monkeypatch.setattr(crew_log_emit, "on_dashboard_refused", _boom)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "unknown_field"
+
+
+async def test_a_caller_with_no_crew_log_unit_is_told_the_value_did_not_land(vetted, monkeypatch):
+    """No unit means nowhere to append, which is a failed write and not a stored
+    one -- the response must not claim a cell that is empty."""
+    _adopt_dashboard(monkeypatch)
+    monkeypatch.setattr(routes, "_session_unit", lambda *_a, **_k: "")
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "append_failed"
+
+
+async def test_an_entry_over_the_logs_line_ceiling_is_not_reported_as_stored(vetted, monkeypatch):
+    """Asked BEFORE the append, like the panel route asks its own.
+
+    An entry over the log's whole-line ceiling can never land, so writing it
+    would report a value as stored that no fold will ever see.
+    """
+    _adopt_dashboard(monkeypatch)
+    monkeypatch.setattr(crew_log_emit, "dashboard_entry_fits", lambda *_a, **_k: False)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "append_failed"
+
+
+async def test_an_append_that_does_not_land_is_reported_as_failed(vetted, monkeypatch):
+    """The caller is told to try again on its next cycle rather than being told
+    the value is there."""
+    _adopt_dashboard(monkeypatch)
+    monkeypatch.setattr(crew_log_emit, "on_dashboard_agentic", lambda *_a, **_k: False)
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "append_failed"
+        assert not app["state"].broadcasts, "a write that did not land must push nothing"
+
+
+async def test_an_unreadable_mistake_fold_costs_the_book_and_not_the_write(vetted, monkeypatch):
+    """A crewmate with no readable mistakes is in the same position as one that
+    has made none, so a damaged fold reads as an empty book. Failing the write
+    would be the book costing the feature it exists to improve.
+    """
+    _adopt_dashboard(monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("the fold is unreadable")
+
+    monkeypatch.setattr(crew_log_projection, "read_slot_projection", _boom)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+
+        listed = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert listed.status == 200, await listed.text()
+        assert (await listed.json())["mistakes"] == []

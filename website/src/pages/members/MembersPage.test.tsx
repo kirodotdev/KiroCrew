@@ -57,10 +57,9 @@ vi.mock('../../api/client', () => ({
     // keeps the chat-style Summary row out of the menu, next to the Work log
     // chip it would be a second, unrelated summary of the same thread.
     sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
-    // The Dashboard tab's webview. Stubbed as "nothing published", which is the
-    // state every case here is about: without it the reader rejects and the
-    // tab raises a red alert, so a silent fallback (a remembered crew that
-    // was renamed away) would read as an error on a page that is behaving.
+    // The crew webview drawer. The Dashboard tab no longer reads it (the tab is
+    // the crewmate's dynamic dashboard, mocked out below), but other surfaces on
+    // this page still open it, and an unstubbed read rejects into a red alert.
     memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
     // The panel's session-status frame reads the crewmate's automatic dashboard
     // card. "Waiting, nothing published" is the state every case here is about;
@@ -153,6 +152,18 @@ vi.mock('../chat/FilesHomePanel', () => ({
   ),
 }))
 vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
+// The Dashboard tab's frame. Stubbed because its page pipeline is not this
+// file's subject and its tail is asynchronous: the frame reads the dashboard,
+// then mints a sandbox document for it, and a mint that settles after its own
+// case has ended lands a state update on whichever case is running next --
+// consuming a one-shot mock that case installed. It carries its own tests
+// (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
+// passes it, which is all a page case can claim.
+vi.mock('./CrewDynamicDashboard', () => ({
+  default: ({ slug, displayName }: { slug: string; displayName: string }) => (
+    <div data-testid="crew-dashboard-stub" data-slug={slug} data-display-name={displayName} />
+  ),
+}))
 vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
 vi.mock('../../components/DetailPanel', () => ({ default: () => null }))
 vi.mock('../../components/MarkdownPanel', () => ({ default: () => null }))
@@ -1068,8 +1079,13 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-dashboard')).toBeInTheDocument()
-    await waitFor(() => expect(api.memberPanel).toHaveBeenCalledWith('oncall', 'oncall'), PANE_READY)
-    expect(await screen.findByTestId('crew-webview-empty', undefined, PANE_READY)).toBeInTheDocument()
+    // The tab holds the crewmate's own dynamic dashboard, carrying that
+    // crewmate's identity, and NOT the webview drawer's published document --
+    // so the drawer's read is never issued for this tab.
+    const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+    expect(stub).toHaveAttribute('data-slug', 'oncall')
+    expect(api.memberPanel).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('crew-webview-empty')).toBeNull()
     expect(screen.queryByTestId('member-identity-row')).toBeNull()
   })
 

@@ -29,6 +29,7 @@ from kiro_crew.mcp_panel import (
     _call_tool,
     _call_tool_inner,
     _list_tools,
+    _render_fields,
     _validate_args,
     run_mcp_server,
 )
@@ -259,6 +260,410 @@ class TestPanelTemplates:
         with patch("kiro_crew.mcp_panel._get", return_value={"templates": []}):
             out = _call_tool_inner("panel_templates", {})
         assert "No panel templates" in out
+
+
+# --------------------------------------------------------- dashboard read tool
+
+
+class TestDashboardFields:
+    """The read that makes a crewmate's first dashboard write usually correct.
+
+    It reports which fields exist, which of them are the caller's to write, and
+    which of the caller's own past writes were refused. Each of those is state
+    about one crewmate, which is why the tool is behind the same strict gate as
+    the publish.
+    """
+
+    def test_a_caller_the_gateway_cannot_name_is_refused_before_the_read(self) -> None:
+        with (
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_panel._get") as mock_get,
+        ):
+            out = _call_tool_inner("dashboard_fields", {})
+
+        assert out.startswith("Error:")
+        assert "subagent" in out.lower()
+        mock_get.assert_not_called()
+
+    def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
+        """The field list is keyed by crew, so re-resolving downstream would answer
+        for a different crewmate than the one the gate vetted."""
+        with patch("kiro_crew.mcp_panel._get", return_value={"template": None}) as mock_get:
+            _call_tool_inner("dashboard_fields", {})
+
+        assert mock_get.call_args.kwargs["session_key"] == GOOD_KEY
+
+    def test_the_fields_come_back_as_prose_the_agent_can_act_on(self) -> None:
+        """The payload is rendered rather than returned raw.
+
+        The reader spends context on this, and the JSON's shape is not the
+        message: which field is writable, and under what name, is.
+        """
+        with patch(
+            "kiro_crew.mcp_panel._get",
+            return_value={
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 7,
+                "fields": [{"field": "open_items", "type": "number", "source": "agentic"}],
+                "mistakes": [],
+            },
+        ):
+            out = _call_tool_inner("dashboard_fields", {})
+
+        assert "oncall" in out
+        assert "open_items" in out
+        assert "YOURS to write" in out
+
+    def test_a_field_list_carrying_a_credential_comes_back_scrubbed(self) -> None:
+        """The prose is built from gateway state this module does not author, so
+        the whole rendered answer goes through the redactor, not just a refusal."""
+        secret = "_".join(["ghp", "1234567890abcdefghijklmnopqrstuvwxyz"])
+        with patch(
+            "kiro_crew.mcp_panel._get",
+            return_value={
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [{"field": secret, "type": "string", "source": "agentic"}],
+            },
+        ):
+            out = _call_tool_inner("dashboard_fields", {})
+
+        assert secret not in out
+        assert "REDACTED" in out
+
+
+# -------------------------------------------------------- dashboard write tool
+
+
+class TestDashboardWrite:
+    """One type-checked value into the caller's own dashboard cell."""
+
+    def test_a_missing_field_name_is_refused_before_the_gateway(self) -> None:
+        with patch("kiro_crew.mcp_panel._post") as mock_post:
+            out = _call_tool_inner("dashboard_write", {"value": 3})
+
+        assert out.startswith("Error:")
+        assert "field" in out
+        mock_post.assert_not_called()
+
+    @pytest.mark.parametrize("bad", ["", "   ", None, 42])
+    def test_a_field_name_that_names_nothing_is_refused(self, bad: Any) -> None:
+        with patch("kiro_crew.mcp_panel._post") as mock_post:
+            out = _call_tool_inner("dashboard_write", {"field": bad, "value": 3})
+
+        assert out.startswith("Error:")
+        mock_post.assert_not_called()
+
+    def test_an_absent_value_is_refused_rather_than_sent_as_null(self) -> None:
+        """A write with no value and a write of ``None`` are different intents.
+
+        Defaulting the absent one to ``None`` would send a null the manifest's
+        type check then refuses, spending a round trip on a mistake that is
+        answerable here.
+        """
+        with patch("kiro_crew.mcp_panel._post") as mock_post:
+            out = _call_tool_inner("dashboard_write", {"field": "open_items"})
+
+        assert out.startswith("Error:")
+        assert "`value` is required" in out
+        mock_post.assert_not_called()
+
+    def test_an_explicit_null_reaches_the_gateway(self) -> None:
+        """``None`` is a value the caller chose, so the manifest decides it."""
+        with patch("kiro_crew.mcp_panel._post", return_value={"written": {}}) as mock_post:
+            _call_tool_inner("dashboard_write", {"field": "risk_note", "value": None})
+
+        sent = mock_post.call_args[0][1]
+        assert sent == {"field": "risk_note", "value": None}
+
+    def test_a_caller_the_gateway_cannot_name_is_refused_before_the_write(self) -> None:
+        """The refusal matters more here than on the read: a write lands in the
+        crewmate's own crew log, so a caller resolved to its parent's slot would
+        fill a cell on a dashboard its parent never asked it to touch."""
+        with (
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_panel._post") as mock_post,
+        ):
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+
+        assert out.startswith("Error:")
+        assert "subagent" in out.lower()
+        mock_post.assert_not_called()
+
+    def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
+        with patch("kiro_crew.mcp_panel._post", return_value={"written": {}}) as mock_post:
+            _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+
+        assert mock_post.call_args.kwargs["session_key"] == GOOD_KEY
+
+    def test_the_target_dashboard_is_never_taken_from_the_arguments(self) -> None:
+        """Ownership comes from the vetted session, as it does for a publish."""
+        with patch("kiro_crew.mcp_panel._post", return_value={"written": {}}) as mock_post:
+            _call_tool_inner(
+                "dashboard_write",
+                {"field": "open_items", "value": 3, "crew": "someone-else", "slug": "other"},
+            )
+
+        sent = mock_post.call_args[0][1]
+        assert set(sent) == {"field", "value"}, f"caller-controlled identity in {sent}"
+
+    def test_a_refusal_comes_back_whole(self) -> None:
+        """The refusal sentence is the feature.
+
+        It names the valid fields, the type that was wanted, and how many times
+        this mistake has been made before. A caller handed a generic failure
+        instead guesses again, which is the cycle the mistake book ends.
+        """
+        refusal = (
+            "unknown_field: 'open' is not a field of template 'oncall' (version 3). "
+            "Writable fields: open_items, risk_note. You have made this mistake 3 times."
+        )
+        with patch("kiro_crew.mcp_panel._post", return_value={"error": refusal}):
+            out = _call_tool_inner("dashboard_write", {"field": "open", "value": 3})
+
+        assert "unknown_field" in out
+        assert "open_items, risk_note" in out
+        assert "3 times" in out
+        assert "REDACTED" not in out
+
+    def test_a_refusal_carrying_a_credential_is_scrubbed(self) -> None:
+        secret = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        with patch(
+            "kiro_crew.mcp_panel._post",
+            return_value={"error": f"wrong_type: 'risk_note' wants string, got {secret}"},
+        ):
+            out = _call_tool_inner("dashboard_write", {"field": "risk_note", "value": 1})
+
+        assert secret not in out
+        assert "REDACTED" in out
+
+    def test_a_successful_write_reports_the_field_and_type_that_landed(self) -> None:
+        """The gateway's own answer, not an echo of the request.
+
+        The manifest decides the stored type, so reporting the argument back
+        would hide a value that landed as something other than what was sent.
+        """
+        with patch(
+            "kiro_crew.mcp_panel._post",
+            return_value={"ok": True, "written": {"field": "open_items", "type": "number"}},
+        ):
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+
+        assert "open_items" in out
+        assert "number" in out
+        assert not out.startswith("Error:")
+
+    def test_a_write_that_answers_an_earlier_refusal_says_so(self) -> None:
+        """The correction is what tells a crewmate its mistake book shrank."""
+        with patch(
+            "kiro_crew.mcp_panel._post",
+            return_value={
+                "ok": True,
+                "written": {"field": "open_items", "type": "number"},
+                "corrected": True,
+            },
+        ):
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+
+        assert "corrected an earlier refused write" in out
+
+    def test_an_ordinary_write_claims_no_correction(self) -> None:
+        with patch(
+            "kiro_crew.mcp_panel._post",
+            return_value={"ok": True, "written": {"field": "open_items", "type": "number"}},
+        ):
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+
+        assert "corrected" not in out
+
+    def test_a_gateway_answer_with_no_written_block_still_names_the_field(self) -> None:
+        """The request's own field is the fallback, so a thin answer still tells
+        the caller which cell it filled rather than reporting a blank."""
+        with patch("kiro_crew.mcp_panel._post", return_value={"ok": True}):
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+
+        assert "open_items" in out
+
+
+# ------------------------------------------------------------ field rendering
+
+
+class TestTheFieldRendering:
+    """The prose an agent reads before it writes.
+
+    Exercised directly because each branch is a sentence a reader acts on: a
+    missing dashboard sends it to the human, a fold-sourced field tells it not to
+    write that one, and the mistake rows tell it what to write instead.
+    """
+
+    def test_a_crewmate_with_no_dashboard_is_sent_to_the_human(self) -> None:
+        out = _render_fields({"template": None, "fields": []})
+
+        assert "no dashboard yet" in out
+        assert "Ask the human" in out
+        # No mistake-book line: there is no dashboard for a write to have been
+        # refused against, so claiming an empty book would invent a state.
+        assert "mistake book" not in out
+
+    @pytest.mark.parametrize("bad", [None, "oncall", 42, ["oncall"]])
+    def test_a_template_that_is_not_an_object_reads_as_no_dashboard(self, bad: Any) -> None:
+        assert "no dashboard yet" in _render_fields({"template": bad})
+
+    def test_the_header_names_the_template_and_both_versions(self) -> None:
+        """The instance version is the crewmate's own copy, which can trail the
+        template's -- a reader that saw only one number could not tell."""
+        out = _render_fields(
+            {"template": {"id": "oncall", "version": 3}, "instance_version": 7, "fields": []}
+        )
+
+        assert "oncall" in out
+        assert "version 3" in out
+        assert "7" in out
+
+    def test_an_agentic_field_is_marked_as_the_callers_to_write(self) -> None:
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [{"field": "open_items", "type": "number", "source": "agentic"}],
+            }
+        )
+
+        assert "open_items (number) -- YOURS to write" in out
+
+    def test_a_fold_sourced_field_names_its_fold_and_path(self) -> None:
+        """Listed rather than hidden, and with its source.
+
+        A crewmate that cannot see the field has no way to know the number is
+        already recorded, and will either try to write it or duplicate it under
+        an agentic name so the page draws the same quantity twice.
+        """
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [
+                    {
+                        "field": "entries",
+                        "type": "number",
+                        "source": "fold",
+                        "fold": "work",
+                        "path": "count",
+                    }
+                ],
+            }
+        )
+
+        assert "entries (number)" in out
+        assert "work fold at count" in out
+        assert "YOURS to write" not in out
+
+    def test_a_malformed_field_row_is_skipped_rather_than_crashing_the_read(self) -> None:
+        """The payload comes from the gateway, so one bad row must not cost the
+        caller the rows beside it."""
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [
+                    "not a row",
+                    {"field": "open_items", "type": "number", "source": "agentic"},
+                ],
+            }
+        )
+
+        assert "open_items" in out
+
+    def test_an_empty_field_list_renders_no_field_section(self) -> None:
+        out = _render_fields(
+            {"template": {"id": "oncall", "version": 3}, "instance_version": 1, "fields": []}
+        )
+
+        assert "Fields:" not in out
+
+    def test_a_single_refusal_reads_as_once_rather_than_a_count(self) -> None:
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [],
+                "mistakes": [
+                    {
+                        "count": 1,
+                        "code": "unknown_field",
+                        "field": "open",
+                        "use_instead": "open_items",
+                    }
+                ],
+            }
+        )
+
+        assert "once: unknown_field on `open` -- use `open_items` instead" in out
+        assert "1 times" not in out
+
+    def test_a_repeated_refusal_leads_with_how_often_it_happened(self) -> None:
+        """The count leads so the mistake made five times is the one read first."""
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [],
+                "mistakes": [
+                    {
+                        "count": 5,
+                        "code": "wrong_type",
+                        "field": "risk_note",
+                        "reason": "wants a string",
+                    }
+                ],
+            }
+        )
+
+        assert "5 times: wrong_type on `risk_note` -- wants a string" in out
+
+    def test_a_malformed_mistake_row_is_skipped(self) -> None:
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [],
+                "mistakes": [None, {"count": 1, "code": "wrong_type", "field": "risk_note"}],
+            }
+        )
+
+        assert "once: wrong_type on `risk_note`" in out
+
+    def test_an_empty_mistake_book_is_reported_rather_than_left_silent(self) -> None:
+        """Silence reads as "the book did not load". Saying it is empty tells the
+        caller its past writes were accepted."""
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [],
+                "mistakes": [],
+            }
+        )
+
+        assert "mistake book is empty" in out
+
+    def test_the_retry_budget_tells_the_caller_when_to_stop_guessing(self) -> None:
+        out = _render_fields(
+            {
+                "template": {"id": "oncall", "version": 3},
+                "instance_version": 1,
+                "fields": [],
+                "retry_budget": 3,
+            }
+        )
+
+        assert "after 3 tries, ask the human" in out
+
+    def test_no_budget_leaves_out_the_retry_advice(self) -> None:
+        out = _render_fields({"template": None, "retry_budget": 0})
+
+        assert "Ask the human" in out, "the no-dashboard advice stands on its own"
+        assert "tries" not in out
 
 
 # ------------------------------------------------------------- module plumbing

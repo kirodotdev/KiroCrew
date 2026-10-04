@@ -136,6 +136,9 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   // Same scope name the gateway declares in ws_event_scope.py, so an app author
   // gets the real permission to ask for instead of an "unknown event" hint.
   panel_published: 'panels',
+  // A crewmate's dashboard value moved. Metadata only ({slug}), and it rides
+  // `panels` for the same reason `panel_published` does.
+  dashboard_value_written: 'panels',
   log: 'log',
   browser_event: 'browser',
   // NOTE: `slots` is deliberately absent — the list re-push is always

@@ -1,0 +1,201 @@
+<div class="ledger">
+  <style>
+    .ledger { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .ledger h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .ledger .headline { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .ledger .mark { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--warn, #ffd230); }
+    .ledger .goal { margin-top: 6px; }
+    .ledger .sub { font-size: 10px; color: var(--muted, #9aa); }
+    .card { border: 1px solid var(--border, #333); border-radius: 8px; padding: 9px; margin-top: 8px; }
+    .phases { display: flex; gap: 3px; margin: 8px 0 4px; }
+    .phases i { flex: 1 1 0; height: 6px; border-radius: 3px; background: var(--bg-hover, #222); }
+    .phases i.on { background: var(--accent, #00d492); }
+    .phases i.past { background: var(--muted, #9aa); }
+    .phasenames { display: flex; gap: 3px; font-size: 9.5px; color: var(--muted, #9aa); }
+    .phasenames span { flex: 1 1 0; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .next { border-left: 2px solid var(--accent, #00d492); padding-left: 8px; }
+    .rows { display: flex; flex-direction: column; gap: 6px; }
+    .tried { border-left: 2px solid var(--danger, #ff5c5c); padding-left: 8px; }
+    .tried .a { font-weight: 600; }
+    .tried .b { font-size: 10.5px; color: var(--muted, #9aa); }
+    .arts { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; }
+    .arts div { display: flex; gap: 7px; }
+    .arts k { color: var(--muted, #9aa); min-width: 74px; flex: none; }
+    .arts v { word-break: break-all; min-width: 0; }
+    .ev { display: flex; gap: 7px; font-size: 10.5px; padding: 2px 0; border-bottom: 1px solid var(--border, #333); }
+    .ev .k { color: var(--muted, #9aa); min-width: 62px; flex: none; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 7px; }
+  </style>
+
+  <h2>Session ledger</h2>
+
+  <div class="mark" id="headline_mark">written by the crewmate, not folded</div>
+  <div class="headline" data-dashboard-field="headline">-</div>
+
+  <div class="goal" data-dashboard-field="goal">-</div>
+
+  <div class="phases" id="phases"></div>
+  <div class="phasenames" id="phasenames"></div>
+  <div class="sub">phase <span data-dashboard-field="phase">-</span></div>
+
+  <div class="card">
+    <h2>Next step</h2>
+    <div class="next" data-dashboard-field="next_step">-</div>
+  </div>
+
+  <div class="card">
+    <h2>Tried and rejected</h2>
+    <div class="rows" id="tried"></div>
+    <div class="sub" data-dashboard-field="tried">-</div>
+  </div>
+
+  <div class="card">
+    <h2>Artifacts</h2>
+    <div class="arts" id="artifacts"></div>
+    <div class="sub" data-dashboard-field="artifacts">-</div>
+  </div>
+
+  <div class="card">
+    <h2>Recent events</h2>
+    <div id="events"></div>
+    <div class="sub" data-dashboard-field="events">-</div>
+  </div>
+
+  <div class="meta">
+    <span>opened <span data-dashboard-field="created_at">-</span></span>
+    <span>last progress <span data-dashboard-field="last_progress_at">-</span></span>
+    <span>finished <span data-dashboard-field="finished_at">-</span></span>
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+
+      // The phases the session ledger stamps, in the order work moves through them.
+      // A phase this page does not know still shows: the strip draws nothing lit and
+      // the line under it prints the raw word, rather than implying phase one.
+      var PHASES = ['planning', 'implementing', 'verifying', 'reviewing', 'done'];
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function rows(v) {
+        return Array.isArray(v) ? v.filter(function (r) { return r && typeof r === 'object'; }) : [];
+      }
+      function el(tag, cls, content) {
+        var node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (content !== undefined) node.textContent = content;
+        return node;
+      }
+      function bound(name) { return document.querySelector('[data-dashboard-field="' + name + '"]'); }
+
+      function drawPhases(phase) {
+        var strip = document.getElementById('phases');
+        var names = document.getElementById('phasenames');
+        if (!strip || !names) return;
+        strip.textContent = '';
+        names.textContent = '';
+        var at = phase === null ? -1 : PHASES.indexOf(phase);
+        for (var i = 0; i < PHASES.length; i++) {
+          var seg = el('i');
+          if (at >= 0 && i < at) seg.className = 'past';
+          if (at >= 0 && i === at) seg.className = 'on';
+          strip.appendChild(seg);
+          names.appendChild(el('span', null, PHASES[i]));
+        }
+      }
+
+      function drawTried(list) {
+        var host = document.getElementById('tried');
+        if (!host) return;
+        host.textContent = '';
+        for (var i = 0; i < list.length; i++) {
+          var row = el('div', 'tried');
+          row.appendChild(el('div', 'a', text(list[i].approach) || DASH));
+          // The REASON is the load-bearing half: a list of approaches without why each
+          // was rejected invites the resume to try the same thing again.
+          var why = text(list[i].rejected_because);
+          row.appendChild(el('div', 'b', why || 'no reason recorded'));
+          host.appendChild(row);
+        }
+        if (!list.length) host.appendChild(el('div', 'b', 'Nothing rejected yet.'));
+      }
+
+      function drawArtifacts(map) {
+        var host = document.getElementById('artifacts');
+        if (!host) return;
+        host.textContent = '';
+        var keys = [];
+        for (var key in map) if (Object.prototype.hasOwnProperty.call(map, key)) keys.push(key);
+        keys.sort();
+        for (var i = 0; i < keys.length; i++) {
+          var row = el('div');
+          row.appendChild(el('k', null, keys[i]));
+          row.appendChild(el('v', null, String(map[keys[i]])));
+          host.appendChild(row);
+        }
+        if (!keys.length) host.appendChild(el('div', null, 'None recorded.'));
+      }
+
+      function drawEvents(list) {
+        var host = document.getElementById('events');
+        if (!host) return;
+        host.textContent = '';
+        // Newest first: a reader opening this card asks what just happened, and the
+        // fold stores its tail oldest-first.
+        var shown = list.slice(-12).reverse();
+        for (var i = 0; i < shown.length; i++) {
+          var row = el('div', 'ev');
+          row.appendChild(el('span', 'k', text(shown[i].kind) || DASH));
+          row.appendChild(el('span', null, text(shown[i].text) || DASH));
+          host.appendChild(row);
+        }
+        if (!shown.length) host.appendChild(el('div', 'ev', 'No event recorded.'));
+      }
+
+      function render() {
+        var api = window.kirocrew || {};
+        var f = api.fields || {};
+        // A fold's EMPTY STRING is a field it declares and nothing has filled -- a
+        // ledger that is not finished has `finished_at: ""`. The host binds that as
+        // blank, which reads as a broken row, so it becomes the same dash as an absent
+        // value.
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        drawPhases(text(f.phase));
+
+        var tried = rows(f.tried);
+        var events = rows(f.events);
+        var artifacts = f.artifacts && typeof f.artifacts === 'object' ? f.artifacts : {};
+        drawTried(tried);
+        drawArtifacts(artifacts);
+        drawEvents(events);
+
+        // The three bound elements carrying a structure get a count instead of the
+        // JSON the host's textContent binding would otherwise leave in them.
+        var arts = 0;
+        for (var key in artifacts) if (Object.prototype.hasOwnProperty.call(artifacts, key)) arts += 1;
+        var t = bound('tried');
+        if (t) t.textContent = tried.length + ' rejected approach(es)';
+        var a = bound('artifacts');
+        if (a) a.textContent = arts + ' artifact pointer(s)';
+        var e = bound('events');
+        if (e) e.textContent = events.length + ' event(s) in the fold window';
+
+        // The agentic field is MARKED, and the mark is driven by the host's own list
+        // rather than by this page's belief about it: a value the crewmate wrote and a
+        // value folded from the record must not look alike.
+        var agentic = Array.isArray(api.agentic) ? api.agentic : [];
+        var mark = document.getElementById('headline_mark');
+        if (mark) mark.style.display = agentic.indexOf('headline') === -1 ? 'none' : '';
+        var head = bound('headline');
+        if (head && !text(head.textContent)) head.textContent = 'no headline written';
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

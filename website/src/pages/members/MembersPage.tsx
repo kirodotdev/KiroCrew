@@ -115,7 +115,7 @@ import CrewmateSwitcher from './CrewmateSwitcher'
 import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
 import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
-import { CrewDashboardFrame } from './CrewWebview'
+import CrewDashboardTab from './CrewDashboardTab'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
@@ -2075,7 +2075,7 @@ export default function MembersPage() {
   const activeTabId = shownTabId ?? tabsCtl.activeId
   // The in-chat Command Center dock is the Dynamic Dashboard, a Feature Preview
   // (Settings > Developer); off, the dock has no opener. The Dashboard TAB is the
-  // crewmate's own published page (CrewDashboardFrame), not that surface, so it
+  // crewmate's own dynamic dashboard (CrewDashboardTab), not that surface, so it
   // stays a standing entry either way.
   const dashboardPreview = usePreviewFlag(PREVIEW_DASHBOARD)
   const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
@@ -4094,11 +4094,13 @@ export default function MembersPage() {
           // One Dashboard: the existing crew publication is one task view.
           // Preserve its renderer and exact member identity, while the host
           // owns live task summaries, questions and approval controls.
-          // The Dashboard tab IS the crewmate's published view (crewmate-panel IA):
-          // the HTML report the crewmate writes itself, rendered straight into the
-          // panel. No card, Contained bar or Expand around it (CrewDashboardFrame,
-          // not the CrewWebview drawer) and no Command Center above it: each read
-          // as one more container stacked over the one page that matters.
+          // The Dashboard tab IS the crewmate's own dynamic dashboard: the page the
+          // read resolves for it -- its adopted copy, or the default template when
+          // it has adopted nothing -- with every number folded from its crew log,
+          // rendered straight into the panel. No card, Contained bar or Expand
+          // around it (CrewDashboardTab, not the CrewWebview drawer) and no Command
+          // Center above it: each read as one more container stacked over the one
+          // page that matters.
           const dashboardBody = (
             <div className="h-full min-h-0 flex flex-col" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
               {/* Said here only when the MAIN COLUMN is not already saying it:
@@ -4109,7 +4111,14 @@ export default function MembersPage() {
                 ? <p role="status" className="px-4 pt-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
                 : null}
               {activeSlug && activeMemberName && (
-                <CrewDashboardFrame slug={activeSlug} member={activeMemberName} displayName={crewDisplayName(activeView ?? active)} />
+                // Keyed per crewmate so the tab remounts on a switch instead of
+                // opening the next crewmate on the page held for this one.
+                <CrewDashboardTab
+                  key={JSON.stringify([activeSlug, activeMemberName])}
+                  slug={activeSlug}
+                  member={activeMemberName}
+                  displayName={crewDisplayName(activeView ?? active)}
+                />
               )}
             </div>
           )

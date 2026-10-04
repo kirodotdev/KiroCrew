@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from kiro_crew import dashboard_agentic
 from kiro_crew.mcp_core import (
     _get,
     _post,
@@ -57,7 +58,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "panel_publish",
             "description": (
                 "Publish what the human watching you should see into YOUR "
-                "crew's webview, shown in your drawer on the Crew page. Send "
+                "crew's webview, stored for readers of GET /panel. It is NOT "
+                "what the Dashboard tab draws: that tab draws the crewmate's "
+                "own dashboard, so anything a person must ACT on belongs in "
+                "an agentic dashboard field via dashboard_write, where it "
+                "appears under 'Needs you'. Send "
                 "DATA, not layout: you "
                 "pass a JSON object and name a template that renders it, so "
                 "the panel keeps a stable shape across cycles and costs you a "
@@ -117,6 +122,64 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "other than your crew's own."
             ),
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "dashboard_fields",
+            "description": (
+                "READ THIS BEFORE YOU WRITE. Lists every field of YOUR dashboard "
+                "with its type and where its value comes from -- `fold` for a "
+                "number the gateway reads out of your crew log, which you cannot "
+                "write, and `agentic` for one you write yourself with "
+                "dashboard_write. It also returns your own MISTAKE BOOK: the "
+                "writes of yours that were refused, grouped, with how many times "
+                "you made each one and the field name that worked instead. Those "
+                "are mistakes you made in earlier cycles and cannot remember, so "
+                "reading them is the difference between fixing a wrong field name "
+                "once and rediscovering it every cycle. Takes no arguments: the "
+                "dashboard it describes is your own."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "dashboard_write",
+            "description": (
+                "Write ONE agentic field of your dashboard -- a number, phrase or "
+                "series only you know, which the page then draws. Call "
+                "dashboard_fields first if you do not know your field names and "
+                "types; a write naming a field your template does not declare, a "
+                "field the gateway fills from a fold, or a value of the wrong "
+                "type is REFUSED, and the refusal names the fields you could have "
+                "used. Fix it from that list and call again; after "
+                f"{dashboard_agentic.AGENTIC_RETRY_BUDGET} tries, ask the human "
+                "instead of guessing further. Each write replaces that one field "
+                "and leaves the others alone, so report the number you just "
+                "learned rather than restating the whole dashboard. Every refusal "
+                "is recorded in your mistake book, which dashboard_fields hands "
+                "back -- so the same wrong guess next cycle is one you were "
+                "already told about."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "description": (
+                            "The agentic field to fill, exactly as dashboard_fields " "names it."
+                        ),
+                    },
+                    "value": {
+                        "description": (
+                            "The value, of the type the field declares. A `number` "
+                            "field takes a number and not a string holding one; a "
+                            "`boolean` field takes true or false and not 1; an "
+                            "`array` field takes the whole series and the page's own "
+                            "script walks it."
+                        ),
+                    },
+                },
+                "required": ["field", "value"],
+            },
         },
     ]
 
@@ -206,7 +269,105 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             "It replaced the previous panel."
         )
 
+    if name == "dashboard_fields":
+        sk, err = _strict_session_key()
+        if err:
+            return err
+        d = _get("/api/agent-panel/dashboard/fields", session_key=sk)
+        if d.get("error"):
+            return redact(f"Error: {d['error']}")
+        return redact(_render_fields(d))
+
+    if name == "dashboard_write":
+        field = args.get("field")
+        if not isinstance(field, str) or not field.strip():
+            return "Error: `field` must name the dashboard field to fill"
+        if "value" not in args:
+            return "Error: `value` is required -- there is nothing to write without it"
+        sk, err = _strict_session_key()
+        if err:
+            return err
+        d = _post(
+            "/api/agent-panel/dashboard/write",
+            {"field": field, "value": args["value"]},
+            session_key=sk,
+        )
+        api_err = d.get("error")
+        if api_err:
+            # THE REFUSAL COMES BACK WHOLE, which is the one thing this tool must
+            # not shorten. It names the valid fields, the type that was wanted, and
+            # how many times this mistake has been made before -- an agent handed a
+            # generic failure instead would guess again, which is exactly the cycle
+            # the mistake book exists to end.
+            return redact(f"Error: {api_err}")
+        written = d.get("written") or {}
+        return redact(
+            f"Wrote `{written.get('field', field)}` "
+            f"({written.get('type', 'value')}) to your dashboard."
+            + (" It corrected an earlier refused write." if d.get("corrected") else "")
+        )
+
     return f"Error: unknown tool '{name}'"
+
+
+def _render_fields(payload: dict[str, Any]) -> str:
+    """The field list and mistake book as the agent reads them.
+
+    PROSE rather than the raw JSON, because the reader spends context on this and
+    the JSON's shape is not the message: what matters is which fields are the
+    agent's to write, which are already recorded, and which of its own past guesses
+    were wrong. The mistake rows lead with the count, so the one made five times is
+    the one read first.
+    """
+    template = payload.get("template")
+    lines: list[str] = []
+    if not isinstance(template, dict):
+        lines.append(
+            "You have no dashboard yet, so there is no field to write. Ask the human "
+            "to adopt a template for you."
+        )
+    else:
+        lines.append(
+            f"Dashboard: template `{template.get('id')}` version "
+            f"{template.get('version')}, your copy at version "
+            f"{payload.get('instance_version')}."
+        )
+        rows = payload.get("fields")
+        if isinstance(rows, list) and rows:
+            lines.append("")
+            lines.append("Fields:")
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("source") == "agentic":
+                    lines.append(f"  {row.get('field')} ({row.get('type')}) -- YOURS to write")
+                else:
+                    lines.append(
+                        f"  {row.get('field')} ({row.get('type')}) -- read from the "
+                        f"{row.get('fold')} fold at {row.get('path')}"
+                    )
+    mistakes = payload.get("mistakes")
+    if isinstance(mistakes, list) and mistakes:
+        lines.append("")
+        lines.append("Your mistake book (refused writes you have made before):")
+        for row in mistakes:
+            if not isinstance(row, dict):
+                continue
+            times = "once" if row.get("count") == 1 else f"{row.get('count')} times"
+            fix = row.get("use_instead")
+            tail = f" -- use `{fix}` instead" if fix else f" -- {row.get('reason')}"
+            lines.append(f"  {times}: {row.get('code')} on `{row.get('field')}`{tail}")
+    elif isinstance(template, dict):
+        lines.append("")
+        lines.append("Your mistake book is empty: no write of yours has been refused.")
+    budget = payload.get("retry_budget")
+    if budget:
+        lines.append("")
+        lines.append(
+            f"A refused write names the fields you could have used. Fix it from that "
+            f"list and retry; after {budget} tries, ask the human."
+        )
+    return "\n".join(lines)
 
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
