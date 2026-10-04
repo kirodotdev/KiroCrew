@@ -37,7 +37,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -1106,8 +1106,10 @@ class ScriptContext:
     _port: int = 5476
     _secret: str = ""
     _session_token: str = ""
+    _kept_servers: KeptMcpServers = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        self._kept_servers = KeptMcpServers(session_key=f"cron:{self.job.id}")
         # The parent injects the port it minted the credential for. Preferring it
         # keeps credential and dial target from one resolution; KIROCREW_PORT is the
         # fallback for a directly-constructed context and is 5476 on a --port auto
@@ -1248,7 +1250,12 @@ class ScriptContext:
         return f"unexpected response {json.dumps(result)[:200]}"
 
     def call_tool(self, server: str, tool: str, args: dict) -> str:
-        """Call an MCP tool by spawning the server subprocess directly.
+        """Call an MCP tool, starting the server subprocess on the first call to it.
+
+        The server lives for the run, not for one call: :class:`KeptMcpServers`
+        keeps a server whose call succeeded for this run's next call to it, so a
+        server that signs in to a service when it starts signs in once per run
+        rather than once per call. :meth:`close` stops the kept servers.
 
         Args are scanned for credential/URL leakage before passing to the
         sandboxed MCP server subprocess.
@@ -1257,18 +1264,21 @@ class ScriptContext:
         args_str = json.dumps(args)
         args_str = redact(args_str)
         safe_args = json.loads(args_str)
-        client = None
         try:
-            client = McpToolClient(server, session_key=f"cron:{self.job.id}")
-            result = client.call_tool(tool, safe_args)
-            self._audit_tool_call(server, tool, "ok")
-            return result
+            result = self._kept_servers.call_tool(server, tool, safe_args)
         except Exception as exc:
             self._audit_tool_call(server, tool, "error", str(exc))
             raise
-        finally:
-            if client is not None:
-                client.close()
+        self._audit_tool_call(server, tool, "ok")
+        return result
+
+    def close(self) -> None:
+        """Stop every MCP server kept for reuse; later calls keep none.
+
+        The launcher calls this once the script function returns. It never
+        raises, because by then the run's result is already decided.
+        """
+        self._kept_servers.close()
 
     def _audit_tool_call(self, server: str, tool: str, outcome: str, error: str = "") -> None:
         """Log tool invocation for audit trail."""
@@ -1534,6 +1544,10 @@ class McpToolClient:
         content = result.get("content", [])
         return content[0].get("text", "") if content else ""
 
+    def is_running(self) -> bool:
+        """Whether the server process is still up and so can take another call."""
+        return self._proc.poll() is None
+
     def close(self) -> None:
         try:
             self._proc.terminate()
@@ -1553,6 +1567,67 @@ class McpToolClient:
                 Path(stderr_file.name).unlink(missing_ok=True)
             if self._sandbox_cleanup:
                 Path(self._sandbox_cleanup).unlink(missing_ok=True)
+
+
+class KeptMcpServers:
+    """One MCP server per name, kept across the calls of a run.
+
+    A server whose call succeeds is kept for the run's next call to the same
+    server name, so a server that signs in to a service when it starts signs in
+    once per run rather than once per call. A failed call stops its server and
+    the next call starts a fresh one; a kept server whose process has exited is
+    replaced; a call made while another call to the same server still holds the
+    kept server starts a server of its own, and once both finish only one is
+    kept. :meth:`close` stops every kept server and keeps none afterwards.
+    """
+
+    def __init__(self, session_key: str = ""):
+        self._session_key = session_key
+        self._kept_clients: dict[str, McpToolClient] = {}
+        self._kept_clients_lock = threading.Lock()
+        self._closed = False
+
+    def call_tool(self, server: str, tool: str, args: dict) -> str:
+        client = self._take_kept_client(server)
+        kept = False
+        try:
+            if client is None:
+                client = McpToolClient(server, session_key=self._session_key)
+            result = client.call_tool(tool, args)
+            kept = self._keep_client(server, client)
+            return result
+        finally:
+            if client is not None and not kept:
+                client.close()
+
+    def close(self) -> None:
+        """Stop every kept server; never raises, and later calls keep none."""
+        with self._kept_clients_lock:
+            self._closed = True
+            clients = list(self._kept_clients.values())
+            self._kept_clients.clear()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:
+                logger.debug("stopping a kept MCP server failed", exc_info=True)
+
+    def _take_kept_client(self, server: str) -> McpToolClient | None:
+        """The server kept from an earlier call, if its process is still running."""
+        with self._kept_clients_lock:
+            client = self._kept_clients.pop(server, None)
+        if client is not None and not client.is_running():
+            client.close()
+            return None
+        return client
+
+    def _keep_client(self, server: str, client: McpToolClient) -> bool:
+        """Keep ``client`` for the next call to ``server``; False when one is already kept."""
+        with self._kept_clients_lock:
+            if self._closed or server in self._kept_clients:
+                return False
+            self._kept_clients[server] = client
+            return True
 
 
 @lru_cache(maxsize=16)
@@ -2274,6 +2349,8 @@ def run_script_sandboxed(
         "    print(json.dumps({'status': 'report', 'message': r.message}))\n"
         "except Exception as e:\n"
         "    print(json.dumps({'status': 'error', 'error': str(e)}))\n"
+        "finally:\n"
+        "    ctx.close()\n"
     )
 
     # A granted launcher is born inside the private pinned dir: on Python

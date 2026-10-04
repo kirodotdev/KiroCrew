@@ -542,7 +542,7 @@ class TestScriptContextPost:
 
 
 class TestScriptContextCallTool:
-    def test_success_audits_ok_and_closes_the_client(self, monkeypatch):
+    def test_success_audits_ok_and_keeps_the_client_until_close(self, monkeypatch):
         ctx = _ctx()
         client = MagicMock()
         client.call_tool.return_value = "tool output"
@@ -553,6 +553,8 @@ class TestScriptContextCallTool:
         assert ctx.call_tool("kirocrew-core", "browse_search", {"query": "x"}) == "tool output"
 
         client.call_tool.assert_called_once_with("browse_search", {"query": "x"})
+        client.close.assert_not_called()
+        ctx.close()
         client.close.assert_called_once()
         assert audits == [(("kirocrew-core", "browse_search", "ok"), {})]
 

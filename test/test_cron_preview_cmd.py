@@ -224,6 +224,44 @@ class TestCronPreviewCallToolPath:
         assert any(c.get("tool_name") == "builder-mcp/ReadInternalWebsites" for c in sel_calls)
         assert any(c.get("outcome") == "ok" for c in sel_calls)
 
+    def test_call_tool_keeps_one_server_per_name_until_the_script_returns(
+        self, tmp_path: Path, capsys
+    ):
+        """Two calls to one server start one client, closed once, after the script returned."""
+        _write_script(
+            tmp_path, "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    ctx.call_tool('builder-mcp', 'ReadInternalWebsites', {'inputs': []})\n"
+            "    ctx.call_tool('builder-mcp', 'InternalSearch', {'query': 'x'})\n"
+            "    raise Report('done')\n")
+        events: list[str] = []
+
+        class _FakeClient:
+            def __init__(self, server, session_key=""):
+                events.append(f"start {server} session_key={session_key!r}")
+
+            def call_tool(self, tool, args):
+                events.append(f"call {tool}")
+                return "result"
+
+            def is_running(self):
+                return True
+
+            def close(self):
+                events.append("close")
+
+        with _patch_resolve(tmp_path):
+            with patch("kiro_crew.cron_script.McpToolClient", _FakeClient):
+                _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        assert "done" in capsys.readouterr().out
+        assert events == [
+            "start builder-mcp session_key=''",
+            "call ReadInternalWebsites",
+            "call InternalSearch",
+            "close",
+        ]
+
     def test_notify_prints_suppressed(self, tmp_path: Path, capsys):
         """ctx.notify() prints suppression message instead of delivering."""
         _write_script(

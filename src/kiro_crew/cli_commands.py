@@ -2258,7 +2258,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 def _cron_preview(args: argparse.Namespace) -> None:
     """Dry-run a script cron with real MCP tools but suppressed hooks."""
     # Imported here (not at module top) to avoid a cron_script import cycle.
-    from kiro_crew.cron_script import Done, McpToolClient, Report, Skip, resolve_script_path
+    from kiro_crew.cron_script import Done, KeptMcpServers, Report, Skip, resolve_script_path
 
     # Resolve and validate script path (same validation as production cron runner:
     # format, existence, sensitive path, containment under ~/.kiro/crew/crons/)
@@ -2315,22 +2315,23 @@ def _cron_preview(args: argparse.Namespace) -> None:
         def __init__(self, message: str):
             self.message = message
             self.job = _PreviewJob()
+            # Bare on purpose: the preview presents no cron identity to its servers.
+            self._kept_servers = KeptMcpServers()
 
         def call_tool(self, server: str, tool: str, tool_args: dict) -> str:
             # Redact credentials/exfiltration URLs (same as production ScriptContext.call_tool)
             args_str = json.dumps(tool_args)
             args_str = redact(args_str)
             safe_args = json.loads(args_str)
-            # Per-call spawn + close (same lifecycle as production ScriptContext.call_tool)
-            client = McpToolClient(server)
+            # One server per name kept for the run, stopped by close() once the
+            # script returns (same lifecycle as production ScriptContext.call_tool)
             outcome = "ok"
             try:
-                result = client.call_tool(tool, safe_args)
+                result = self._kept_servers.call_tool(server, tool, safe_args)
             except Exception:
                 outcome = "error"
                 raise
             finally:
-                client.close()
                 sel().log_tool_invocation(
                     session_key=f"cron:{self.job.id}",
                     tool_name=f"{server}/{tool}",
@@ -2353,7 +2354,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
             return {}
 
         def close(self):
-            pass
+            self._kept_servers.close()
 
     ctx = _LiveTestCtx(message=args.message)
     outcome = "ok"
