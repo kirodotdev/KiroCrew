@@ -266,6 +266,10 @@ re-adds, once:
    `_session_cap_figure` took when the session started, because the cap in force
    is derived from live host conditions and a second reading would hand the
    session a contract it never agreed to, differing in a number it never chose.
+   `{{COMPUTER_USE_BLOCK}}` is held the same way (`_session_computer_use_gate`),
+   except that a resume re-takes the reading, because it starts a new backend
+   from the current spec: the full Computer Use section when that backend has
+   `kirocrew-computer` in its spec, the short pointer to Settings when it does not.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn.

@@ -1201,6 +1201,7 @@ _FACADE_IMPORTS: dict[str, tuple[str, str]] = {
 #: ContextBuilder members: kind and signature, frozen before the split.
 _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
     "_CAP_FIGURE_SESSIONS": ("attr", "512"),
+    "_COMPUTER_USE_TOKEN": ("attr", "'{{COMPUTER_USE_BLOCK}}'"),
     "_MAX_SUBAGENTS_TOKEN": ("attr", "'{{MAX_SUBAGENTS}}'"),
     "__init__": (
         "method",
@@ -1217,6 +1218,7 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
     "_cap_memo_key": ("static", "(session_key: 'str') -> 'str'"),
     "_forget_shown_lessons": ("method", "(self, session_key: 'str') -> 'None'"),
     "_live_cap_figure": ("static", "() -> 'str'"),
+    "_live_computer_use_gate": ("static", "() -> 'bool'"),
     "_live_shown_lessons": ("method", "(self, session_key: 'str') -> '_ShownLessons'"),
     "_load_agent_prompt": (
         "static",
@@ -1232,6 +1234,14 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
         "(prompt: 'str', session_key: 'str', cap_figure: 'str' = '') -> 'str'",
     ),
     "_session_cap_figure": ("method", "(self, session_key: 'str', *, refresh: 'bool') -> 'str'"),
+    "_session_computer_use_gate": (
+        "method",
+        "(self, session_key: 'str', *, refresh: 'bool') -> 'bool'",
+    ),
+    "_session_reading": (
+        "method",
+        "(self, memo: 'dict[str, _ReadingT]', lock: 'threading.Lock', session_key: 'str', live: 'Callable[[], _ReadingT]', *, refresh: 'bool') -> '_ReadingT'",
+    ),
     "_substitute_bot_name": ("method", "(self, prompt: 'str') -> 'str'"),
     "_turn_lessons_block": (
         "method",
