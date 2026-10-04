@@ -85,7 +85,7 @@ from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.messaging.link import _in_namespace, canonical_key
 from kiro_crew.platform import redact_log_via_context
-from kiro_crew.platform_compat import kill_and_reap
+from kiro_crew.platform_compat import _SUBPROCESS_NO_WINDOW, kill_and_reap
 from kiro_crew.runtime_ownership import release_session_lease
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -823,6 +823,11 @@ async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=scrub_agent_subprocess_env(),
+            # Windows: the gateway has no console, so a helper spawned without
+            # CREATE_NO_WINDOW gets a fresh console allocated and flashes on
+            # screen ~every 30s. Suppress it (no-op on POSIX, where the flag is
+            # 0). Same guard the ACP spawn paths and kiro_prerequisite apply.
+            creationflags=_SUBPROCESS_NO_WINDOW,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         raw = (out or err or b"").decode(errors="replace")
@@ -1165,6 +1170,11 @@ async def _fetch_usage_bg() -> str | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=scrub_agent_subprocess_env(),
+            # Windows: the gateway has no console, so a helper spawned without
+            # CREATE_NO_WINDOW gets a fresh console allocated and flashes on
+            # screen ~every 30s. Suppress it (no-op on POSIX, where the flag is
+            # 0). Same guard the ACP spawn paths and kiro_prerequisite apply.
+            creationflags=_SUBPROCESS_NO_WINDOW,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
         raw = (out or err or b"").decode(errors="replace")

@@ -2396,3 +2396,60 @@ class TestUsageRefreshRoute:
         routes = {(r.method, r.resource.canonical) for r in app.router.routes()}
         assert ("POST", "/api/sessions/usage/refresh") in routes
         assert ("GET", "/api/sessions/usage") in routes
+
+
+class TestSpawnSuppressesConsoleWindow:
+    """The identity/usage helper spawns must thread ``creationflags`` carrying
+    ``_SUBPROCESS_NO_WINDOW`` through ``spawn_supervised_oneshot``.
+
+    On Windows the gateway runs without a console, so a console-subsystem child
+    spawned without ``CREATE_NO_WINDOW`` gets a fresh console allocated that
+    flashes on screen ~every 30s. On POSIX the constant is ``0``; the kwarg is
+    forwarded untouched to ``asyncio.create_subprocess_exec`` by the spawn
+    shim, so the assertion still pins that the call threads the flag through
+    rather than dropping it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_sandbox_wrap(self, monkeypatch):
+        # wrap_argv cold-probes the OS sandbox and can raise on a host with no
+        # backend; the creationflags on the spawn is what these tests assert on.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+
+    @pytest.mark.asyncio
+    async def test_whoami_spawn_sets_no_window(self):
+        spawn = AsyncMock(return_value=_mock_proc(b"{}"))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await sessions_mod._fetch_whoami("/bin/kiro")
+        assert spawn.await_args is not None, "whoami did not spawn"
+        assert spawn.await_args.kwargs.get("creationflags") == sessions_mod._SUBPROCESS_NO_WINDOW
+
+    @pytest.mark.asyncio
+    async def test_usage_scrape_spawn_sets_no_window(self, monkeypatch):
+        _reset_usage_globals()
+        # A proven, unchanging account so the scrape branch runs and publishes;
+        # force the text-scrape fallback by making the API read return nothing.
+        monkeypatch.setattr(
+            sessions_mod, "_fetch_whoami", AsyncMock(return_value=dict(_IDENTITY_A))
+        )
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        try:
+            with (
+                patch.object(
+                    sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"
+                ),
+                patch.object(
+                    sessions_mod.kiro_usage_api,
+                    "fetch_usage_limits",
+                    return_value=_api_result(None),
+                ),
+                patch("asyncio.create_subprocess_exec", spawn),
+            ):
+                await sessions_mod._fetch_usage_bg()
+        finally:
+            _reset_usage_globals()
+        assert spawn.await_args is not None, "usage scrape did not spawn"
+        assert spawn.await_args.kwargs.get("creationflags") == sessions_mod._SUBPROCESS_NO_WINDOW
