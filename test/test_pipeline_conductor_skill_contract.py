@@ -283,7 +283,7 @@ class TestClaimPreflightIsDocumented:
         assert "not a bare cross-reference" in preflight
         assert "a mention decides nothing" in preflight
 
-    def test_the_five_checks_are_all_named(self):
+    def test_the_six_checks_are_all_named(self):
         preflight = _skill_section(self.HEADING)
         for check in (
             "merged_prs",
@@ -291,6 +291,7 @@ class TestClaimPreflightIsDocumented:
             "prose_claim",
             "symbol_on_base",
             "recency",
+            "forge_claim",
         ):
             assert check in preflight, check
 
@@ -299,7 +300,22 @@ class TestClaimPreflightIsDocumented:
         against a shared rate limit, so it is not part of the contract."""
         preflight = _skill_section(self.HEADING)
         assert "closedByPullRequestsReferences" not in preflight
-        assert "Five checks" in preflight
+        assert "Six checks" in preflight
+
+    def test_a_forge_claim_is_honoured_with_or_without_an_assignee(self):
+        """A ``claimed`` label from another pipeline must not read as CLAIM
+        when the item has no assignee. The skill names labels and assignees the
+        cross-operator lock, so the preflight has to read both, either alone,
+        and the skill has to say so where the conductor reads the verdicts."""
+        preflight = _flat(_skill_section(self.HEADING))
+        assert "`forge_claim`" in preflight
+        assert "**skip** `forge-claim`" in preflight
+        assert "either field alone is a claim" in preflight
+        # Our own atomic claim must not read as somebody else's, or a conductor
+        # re-checking an item it holds is told to abandon it.
+        assert "your own atomic claim" in preflight
+        # And the CLOSE for an already-fixed item is not hidden behind the SKIP.
+        assert "open, claimed and already fixed still reads close" in preflight
 
     def test_symbol_absence_alone_does_not_veto(self):
         """Unconditionally, that check parks every feature request naming a
