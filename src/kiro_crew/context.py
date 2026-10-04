@@ -773,7 +773,7 @@ def _board_safe_tag_name(raw: object) -> str:
 
 
 # Per-section limits are derived below; shared admission never sums them.
-def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
+def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None, crew: str = "") -> bool:
     """Whether the configured member backend can mount the dispatch tools.
 
     The member operating-mode block teaches ``session_*`` tools that arrive as
@@ -784,6 +784,13 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
     member chasing refusals. Fail-safe both ways: on any resolution error the
     block is withheld, which degrades to plain chat rather than to a lie.
 
+    *crew* names the member whose DM thread this is. Its own
+    ``agents.<name>.acp_backend`` pin outranks the member route exactly as it
+    does in ``members.select_provider_backend`` (pin, else member route, both
+    through the same resolver), so a member pinned to an engine that cannot
+    carry the mount gets plain chat too, and so does a member pinned to kiro-cli
+    with ``""``. An empty *crew* reads the member route alone.
+
     ``cfg`` lets a caller that already loaded the config share the handle —
     the context builder calls this once per member turn, so a second disk
     read would be pure waste.
@@ -793,12 +800,19 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
             ACP_BACKENDS_MEMBER_DISPATCH,
             resolve_selected_backend,
         )
+        from kiro_crew.external_text import redact_external_text
 
         if cfg is None:
             from kiro_crew.config import KiroCrewConfig
 
             cfg = KiroCrewConfig.load()
-        backend = resolve_selected_backend(cfg.agent.member_acp_backend)
+        pin = cfg.crew_acp_backend(None, crew) if crew else None
+        # Redacted before the resolver, which logs a refused value, for the
+        # reason select_provider_backend gives: the pin is raw agent-written text.
+        backend = resolve_selected_backend(
+            cfg.agent.member_acp_backend if pin is None else redact_external_text(pin),
+            setting="agent.member_acp_backend" if pin is None else f"agents.{crew}.acp_backend",
+        )
         return backend in ACP_BACKENDS_MEMBER_DISPATCH
     except Exception:
         logger.debug("member backend capability check failed", exc_info=True)
@@ -2625,7 +2639,22 @@ class ContextBuilder:
         # deliberately silent there.
         effective_groups = _config_scoped_groups(context_groups, _cfg)
 
-        if mode == _member_mode and _member_backend_can_dispatch(_cfg):
+        # The crew whose pin decides the engine is the one the provider factory
+        # runs: the record's member_id resolved to its CURRENT key, not the desk
+        # label the caller passed, which a re-keyed member can leave stale. A
+        # TEMPLATE selection runs as no crew, as in session_crew_acp_backend.
+        dispatch_crew = desk_member
+        if execution_context is not None and execution_context.selection_kind == "template":
+            dispatch_crew = ""
+        elif mode == _member_mode and execution_context is not None and execution_context.member_id:
+            from kiro_crew.execution_context import member_config_for_id
+            from kiro_crew.memory_stores import UnknownMemoryStore
+
+            try:
+                dispatch_crew = member_config_for_id(_cfg, execution_context.member_id)[0]
+            except UnknownMemoryStore:
+                pass
+        if mode == _member_mode and _member_backend_can_dispatch(_cfg, dispatch_crew):
             append_required(_member.operating_mode_block(agent_label))
 
         # Legacy member-DM identity. Private V2 has already derived its owner

@@ -57,7 +57,11 @@ from kiro_crew.agent_discovery import (
     spec_str,
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
-from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
+from kiro_crew.agent_sdk.capabilities import (
+    MODEL_NAMESPACE_ACP,
+    capabilities_for,
+    capabilities_of,
+)
 from kiro_crew.agent_sdk.drivers.acp import (
     EntitlementRevalidating,
     catalog_row_would_drop,
@@ -146,7 +150,12 @@ from kiro_crew.executors import discovery_executor, maintenance_executor, subpro
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.members import MemberNameError, key_new_crew, validate_member_name
+from kiro_crew.members import (
+    MemberNameError,
+    key_new_crew,
+    select_provider_backend,
+    validate_member_name,
+)
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MemberAlreadyExists,
@@ -5317,8 +5326,18 @@ def _crew_memory_store_rejected(raw: object) -> str | None:
     )
 
 
-def _pin_entitlement_backend(cfg: Any) -> str:
+def _pin_entitlement_backend(cfg: Any, crew: str = "") -> str:
     """The harness whose live catalog may judge a crew's model pin.
+
+    A crew that pins its own ``agents.<name>.acp_backend`` (``""`` included,
+    which pins kiro-cli) runs every session on that harness, so its catalog is
+    the one that can judge the model: a crew pinned to ``claude`` would
+    otherwise have a claude id refused by the member route's kiro catalog. The
+    pin is answered by the selection gate itself (``select_provider_backend``)
+    rather than by a second reading of it here, so governance, a refused pin
+    degrading to kiro-cli, and the precedence are the ones the factory applies
+    (harness-parity H3/H13: one selection gate). *crew* is the record's key;
+    ``""`` (a crew still being created, which pins nothing yet) reads no pin.
 
     Every agent created or updated here is a Crew Member whose DM slot
     (``member-<slug>``) routes through ``agent.member_acp_backend`` — not
@@ -5337,6 +5356,9 @@ def _pin_entitlement_backend(cfg: Any) -> str:
     """
     default_backend = getattr(cfg.agent, "acp_backend", "")
     member_backend = getattr(cfg.agent, "member_acp_backend", "")
+    pin = cfg.crew_acp_backend(None, crew) if crew else None
+    if pin is not None:
+        return select_provider_backend(None, member_backend, default_backend, crew_backend=pin)
     if (
         capabilities_for(member_backend).model_id_namespace
         != capabilities_for(default_backend).model_id_namespace
@@ -5345,7 +5367,21 @@ def _pin_entitlement_backend(cfg: Any) -> str:
     return default_backend
 
 
-async def _revalidate_crew_pin(model: str, request: web.Request) -> str | None:
+def _kiro_spelling_correction(model: str, backend: str | None) -> str | None:
+    """The registry's kiro-cli spelling for *model*, when *backend* reads kiro-cli ids.
+
+    The correction maps a spelling to the one kiro-cli serves, so it only means
+    something for a harness in kiro-cli's model namespace. A crew pinned to
+    ``claude`` takes ``claude-opus-4-8`` as its own wire id; correcting it would
+    refuse a model that crew's sessions can run. ``None`` *backend* (no harness
+    known) keeps the correction, as before the pin existed.
+    """
+    if backend is not None and capabilities_for(backend).model_id_namespace != MODEL_NAMESPACE_ACP:
+        return None
+    return model_registry.acp_id_correction(model)
+
+
+async def _revalidate_crew_pin(model: str, request: web.Request, crew: str = "") -> str | None:
     """Revalidate the snapshot a crew's model pin is about to be judged by.
 
     Awaited BEFORE the handlers take the config lock: :func:`_model_pin_rejected`
@@ -5359,17 +5395,18 @@ async def _revalidate_crew_pin(model: str, request: web.Request) -> str | None:
     the retained claude_code seam and a known wrong-flavour spelling -- so no probe
     is spent on a value the snapshot does not decide.
     """
-    if not model or model == "auto" or model_registry.acp_id_correction(model):
+    if not model or model == "auto":
         return None
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if is_claude_code(cfg.agent.provider):
         return None
+    backend = _pin_entitlement_backend(cfg, crew)
+    if _kiro_spelling_correction(model, backend):
+        return None
     # circular import: see _model_pin_rejected.
     from kiro_crew.dashboard.handlers.core import _revalidate_role_pin_evidence
 
-    return await _revalidate_role_pin_evidence(
-        model, request, backend=_pin_entitlement_backend(cfg)
-    )
+    return await _revalidate_role_pin_evidence(model, request, backend=backend)
 
 
 def _model_pin_rejected(
@@ -5409,7 +5446,7 @@ def _model_pin_rejected(
     # kiro-cli serves; the others reach the child verbatim and kill it at startup.
     # Check this before live entitlement because a wrong-flavour id is naturally
     # absent from that set and would otherwise produce a less actionable error.
-    correction = model_registry.acp_id_correction(model)
+    correction = _kiro_spelling_correction(model, backend)
     if correction:
         # Deliberately NOT prescriptive. Upstream naming does not line up across
         # providers — Bedrock's ``claude-opus-4-8`` is the registry's
@@ -5891,7 +5928,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             status=400,
         )
     if "model" in body:
-        pending_reason = await _revalidate_crew_pin(pending_model, request)
+        pending_reason = await _revalidate_crew_pin(pending_model, request, name)
         if pending_reason:
             return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
     async with _get_config_lock():
@@ -5905,7 +5942,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 pending_model,
                 request,
                 cfg.agent.provider,
-                backend=_pin_entitlement_backend(cfg),
+                backend=_pin_entitlement_backend(cfg, name),
             )
             if model_reason:
                 return web.json_response(

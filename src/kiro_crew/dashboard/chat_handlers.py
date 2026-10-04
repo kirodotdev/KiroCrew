@@ -190,6 +190,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
+    session_crew_acp_backend,
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,
@@ -7746,14 +7747,24 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
 
 
 async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
-    """Resolve a cold slot through the same member-aware gate as the provider factory."""
+    """Resolve a cold slot through the same member-aware gate as the provider factory.
+
+    Including the crew's own ``acp_backend`` pin, resolved for the slot the way
+    the turn path resolves the crew it hands the factory; off the loop because
+    that resolution reads the session's execution record.
+    """
     config = await asyncio.to_thread(KiroCrewConfig.load)
     from kiro_crew.members import select_provider_backend
 
+    session_key = effective_session_key(slot)
+    crew_backend = await asyncio.to_thread(
+        session_crew_acp_backend, config, session_key, slot.agent or None, slot.project or None
+    )
     return select_provider_backend(
-        effective_session_key(slot),
+        session_key,
         config.agent.member_acp_backend,
         config.agent.acp_backend,
+        crew_backend=crew_backend,
     )
 
 

@@ -86,7 +86,9 @@ def test_every_unguarded_str_field_is_in_the_masked_set():
         "reasoning_effort",  # coerce_effort: unknown level collapses to ""
         "session_color",  # _safe_color: pinned to #rrggbb or ""
     }
-    str_fields = {f.name for f in dataclasses.fields(KiroCrewAgentConfig) if f.type in ("str", str)}
+    # A nullable text field (``acp_backend``) carries the same free text when set.
+    text_types = ("str", str, "str | None")
+    str_fields = {f.name for f in dataclasses.fields(KiroCrewAgentConfig) if f.type in text_types}
     assert str_fields, "field-type introspection returned nothing — check f.type handling"
     covered = set(_AGENT_UNTRUSTED_TEXT_FIELDS) | shape_guarded
     assert str_fields == covered, (
@@ -281,3 +283,16 @@ class TestConfigEndpointWire:
         # The PATCH wrote only its own path; the stored free text is untouched.
         stored = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert stored["agents"]["kirocrew"]["description"] == _CRED_DESCRIPTION
+
+
+def test_a_null_acp_backend_is_not_masked():
+    """``null`` is the field's inherit value, not text: masking it would render
+    every crew that pins nothing as a masked pin."""
+    from kiro_crew.dashboard.handlers.core import _masked_config_dict
+
+    cfg = KiroCrewConfig()
+    cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    cfg.agents["pinned"] = KiroCrewAgentConfig(kiro_agent="kirocrew", acp_backend="")
+    agents = _masked_config_dict(cfg)["agents"]
+    assert agents["reviewer"]["acp_backend"] is None
+    assert agents["pinned"]["acp_backend"] == ""

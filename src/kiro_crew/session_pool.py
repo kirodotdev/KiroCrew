@@ -373,6 +373,7 @@ class WarmSessionPool:
                         "",
                         agent=self._pool_agent or None,
                         cwd=self._pool_cwd or None,
+                        pooled=True,
                     )
                 async with self._owner._start_sem:
                     # Age includes startup time. Startup takes seconds, while

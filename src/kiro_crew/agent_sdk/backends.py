@@ -708,7 +708,7 @@ def selectable_backend_values() -> list[str]:
     return sorted(selectable_backends())
 
 
-def resolve_selected_backend(value: object) -> str:
+def resolve_selected_backend(value: object, setting: str = "agent.acp_backend") -> str:
     """Coerce a persisted ``agent.acp_backend`` to a backend this build can serve.
 
     THE single gate, in the one place the pre-registry code already gated: called
@@ -734,14 +734,18 @@ def resolve_selected_backend(value: object) -> str:
 
     An edition that registers a backend must do so before the first config load; the
     registry is read here, not cached, so ordering is the edition's to get right.
+
+    *setting* names the key the warning tells the operator to fix, so a refused
+    crew pin points at ``agents.<name>.acp_backend`` rather than the global key.
     """
     selectable = selectable_backends()
     if isinstance(value, str) and value in selectable:
         return value
     if value not in (None, ACP_BACKEND_KIRO):
         logger.warning(
-            "Ignoring agent.acp_backend %r (not selectable in this build); using "
-            "the default backend. Selectable values: %s",
+            "Ignoring %s %r (not selectable in this build); running on "
+            "kiro-cli instead. Selectable values: %s",
+            setting,
             value,
             ", ".join(repr(b) for b in sorted(selectable)),
         )

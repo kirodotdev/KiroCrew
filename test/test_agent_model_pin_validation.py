@@ -604,3 +604,81 @@ class TestSavePathRefusesAnUnusablePin:
         cfg = KiroCrewConfig.load()
         assert "pending" not in cfg.agents
         assert cfg.agents[seeded_agent].model != "pending-model"
+
+
+class TestACrewsOwnBackendPinJudgesItsModel:
+    """A crew that pins ``agents.<name>.acp_backend`` runs every session on that
+    harness, so that harness's catalog -- not the member route's or the
+    default's -- is the one that can judge the crew's ``model`` pin."""
+
+    @staticmethod
+    def _pin(name: str, pin: str | None, *, default: str, member: str) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = default
+        cfg.agent.member_acp_backend = member
+        cfg.agents[name].acp_backend = pin
+        cfg.save()
+
+    @staticmethod
+    async def _put(name: str, model: str, *providers: SimpleNamespace) -> int:
+        app = _crud_app()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(active_providers=lambda: list(providers))
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.put(f"/api/agents/{name}", json={"model": model})
+            if response.status == 400:
+                assert (await response.json())["code"] == "invalid_model"
+            return response.status
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pin, status", [("claude", 200), (None, 400)], ids=["pinned", "unpinned"]
+    )
+    async def test_a_claude_pin_admits_a_claude_model(self, seeded_agent, pin, status) -> None:
+        """Pinned: judged by the claude catalog, which advertises it. Unpinned:
+        still judged by the member route's kiro-family catalog, which does not,
+        exactly as before the pin existed."""
+        self._pin(seeded_agent, pin, default="", member="kas")
+        got = await self._put(
+            seeded_agent,
+            "claude-served-model",
+            _catalog_provider("kas", "kas-served-model"),
+            _catalog_provider("claude", "claude-served-model"),
+        )
+        assert got == status
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model, status", [("kiro-served-model", 200), ("claude-served-model", 400)]
+    )
+    async def test_an_empty_pin_is_judged_by_kiros_catalog(self, seeded_agent, model, status):
+        """``""`` pins kiro-cli, so kiro's catalog judges even when the member
+        route (claude) would otherwise have been the scope."""
+        self._pin(seeded_agent, "", default="codex", member="claude")
+        got = await self._put(
+            seeded_agent,
+            model,
+            _catalog_provider(ACP_BACKEND_KIRO, "kiro-served-model"),
+            _catalog_provider("claude", "claude-served-model"),
+        )
+        assert got == status
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pin, status", [("claude", 200), (None, 400)], ids=["pinned", "unpinned"]
+    )
+    async def test_a_claude_pin_is_not_given_kiros_spelling_correction(
+        self, seeded_agent, pin, status
+    ) -> None:
+        """``claude-opus-4-8`` is a registry spelling kiro-cli does not serve, so
+        an unpinned crew is told the mapping; the claude harness serves it as its
+        own wire id, so a crew pinned there must be judged by that catalog."""
+        assert acp_id_correction("claude-opus-4-8")
+        self._pin(seeded_agent, pin, default="", member="kas")
+        got = await self._put(
+            seeded_agent, "claude-opus-4-8", _catalog_provider("claude", "claude-opus-4-8")
+        )
+        assert got == status

@@ -2087,6 +2087,48 @@ class SessionManager:
         "default_workspace",
     )
 
+    def _crew_backend_pin_changed(self, change: ConfigChange) -> bool:
+        """Whether this delivery carries a crew pin edit the provider factory reads.
+
+        Covers both per-crew factory inputs: ``agents.<name>.acp_backend`` and
+        ``agents.<name>.reasoning_effort``, which the factory reads off the
+        config it captured exactly the same way, so an effort edit left the
+        factory stale just as a backend edit did.
+
+        A factory input like every path in ``_FACTORY_CONFIG_PATHS`` (the factory
+        reads it off the config it captured), but per crew, so no prefix there can
+        name it without also matching every other crew edit; the suffix test
+        below is that prefix. It is path-based like the rest of this applier on
+        purpose: the watcher adopts a document before it dispatches it, so every
+        REDELIVERY of an edit this manager did not finish carries an ``old`` that
+        already holds the edit -- a retry passes ``old is new``, and a fold-in
+        into the next file change passes the snapshot that failed -- and only
+        the changed path still says the pin moved. A value comparison would drop
+        a refresh that failed after ``refresh_defaults`` adopted the config but
+        before it restarted the pool. The cost is one pool drain when a crew
+        record is added or removed, since its ``acp_backend`` leaf moves too.
+
+        A delivery that spells only a record or the section (a bind-time replay
+        delivers bare section prefixes) names no leaf, so it is compared against
+        ``self._cfg``, the snapshot this manager last adopted, instead: it
+        refreshes only when some pin differs from the one in force.
+        """
+        paths = change.under("agents")
+        if any(p.endswith((".acp_backend", ".reasoning_effort")) for p in paths):
+            return True
+        if not paths:
+            return False
+
+        def _pins(cfg: KiroCrewConfig | None) -> dict[str, tuple[str | None, str]]:
+            agents = cfg.agents if cfg is not None else {}
+            return {
+                n: (a.acp_backend, a.reasoning_effort)
+                for n, a in agents.items()
+                if a.acp_backend is not None or a.reasoning_effort
+            }
+
+        return _pins(self._cfg) != _pins(change.new)
+
     async def _on_config_change(self, change: ConfigChange) -> None:
         """Hot-apply a ``config.json`` write observed by the config watcher.
 
@@ -2107,7 +2149,7 @@ class SessionManager:
         """
         if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
             raise live.ConfigDeferred(change.changed)
-        if change.touched(*self._FACTORY_CONFIG_PATHS):
+        if change.touched(*self._FACTORY_CONFIG_PATHS) or self._crew_backend_pin_changed(change):
             await self.refresh_defaults(cfg=change.new)
         else:
             async with self._lock:

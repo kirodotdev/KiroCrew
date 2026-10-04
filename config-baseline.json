@@ -8693,6 +8693,21 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crew ACP backend",
+      "help": "Backend for this member's conversations and tasks. Null inherits the session default; an empty string selects kiro-cli explicitly.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
       "path": "agents.*.display_name",
       "kind": "core",
       "type": "string",

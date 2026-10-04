@@ -4315,6 +4315,16 @@ class KiroCrewConfig:
                     # roster surface, so a non-string collapses to "" (show the
                     # name) rather than reaching the wire.
                     raw_display_name = entry.get("display_name", "")
+                    # Type-guarded but NOT normalized. null/absent inherits and ""
+                    # pins kiro-cli, so the two must survive the load as distinct
+                    # values. Normalizing here would also lose the reason: the
+                    # resolver answers "" for a value this build cannot select, so
+                    # a refused pin would arrive at the gate looking like a
+                    # deliberate kiro-cli pin. The selection gate
+                    # (members.select_provider_backend) resolves it per session,
+                    # where a refused pin degrades to kiro with its reason logged
+                    # (harness-parity H3). A non-string collapses to inherit.
+                    raw_acp_backend = entry.get("acp_backend")
                     agents[name] = KiroCrewAgentConfig(
                         member_id=entry.get("member_id", ""),
                         kiro_agent=entry.get("kiro_agent", ""),
@@ -4325,6 +4335,7 @@ class KiroCrewConfig:
                         # collapse to "" (inherit) rather than travel to the
                         # provider, where kiro-cli rejects the whole overlay.
                         reasoning_effort=coerce_effort(entry.get("reasoning_effort", "")),
+                        acp_backend=raw_acp_backend if isinstance(raw_acp_backend, str) else None,
                         display_name=raw_display_name if isinstance(raw_display_name, str) else "",
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
@@ -5158,6 +5169,21 @@ class KiroCrewConfig:
         crew = self._crew_record(agent, crew_agent)
         return coerce_effort(crew.reasoning_effort) if crew is not None else ""
 
+    def crew_acp_backend(self, agent: str | None, crew_agent: str | None = None) -> str | None:
+        """The ACP backend THIS CREW pins (``agents.<name>.acp_backend``), or ``None``.
+
+        ``None`` means no pin: the session runs as no crew, or its crew inherits.
+        ``""`` is a real pin, of kiro-cli, so callers test ``is not None`` and
+        never truthiness. Keyed on the same canonical record as
+        :meth:`crew_pinned_effort`, so one lookup answers for every surface that
+        can start a session. Returned RAW: it is an input to the selection gate
+        (``members.select_provider_backend``) and selectability is decided there,
+        so a pin this build cannot serve is refused with its reason logged
+        instead of being dropped here as if unset.
+        """
+        crew = self._crew_record(agent, crew_agent)
+        return crew.acp_backend if crew is not None else None
+
     def _crew_record(
         self, agent: str | None, crew_agent: str | None
     ) -> "KiroCrewAgentConfig | None":
@@ -5422,6 +5448,12 @@ class KiroCrewConfig:
             # watchdog, which is the exact defect the callback exists to end.
             on_gate_acquired: Callable[..., None] | None = None,
             on_gate_queued: Callable[..., None] | None = None,
+            # A warm-pool child: built as the pool agent's crew (its effort and
+            # watchdog windows, as before the pin existed) but never on that
+            # crew's backend pin. Pinned-crew sessions bypass the pool, so its
+            # children are claimed only by no-crew or unpinned sessions, which
+            # must get the routed default. NAMED for ``permission_mode``'s reason.
+            pooled: bool = False,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -5453,14 +5485,17 @@ class KiroCrewConfig:
             # backend, and why to_acp_id is the non-claude choice, is documented
             # on that method.)
             # Per-session backend selection -- ONE call to the selection gate's
-            # per-session half (members.select_provider_backend: member-DM
-            # auto-route > configured default). The factory body carries no
-            # branching of its own, so the kiro construction path gains no
-            # second check (harness-parity H3/H13); resolve_selected_backend
-            # inside the helper applies the same governance/selectability gate
-            # as the persisted field, so a denied or unknown value degrades to
-            # kiro -- the member thread then runs as plain chat and the mount
-            # step logs why.
+            # per-session half (members.select_provider_backend: the crew's own
+            # acp_backend pin > member-DM auto-route > configured default). The
+            # factory body carries no branching of its own, so the kiro
+            # construction path gains no second check (harness-parity H3/H13);
+            # resolve_selected_backend inside the helper applies the same
+            # governance/selectability gate as the persisted field, so a denied
+            # or unknown value degrades to kiro -- the member thread then runs
+            # as plain chat and the mount step logs why. The crew is the one
+            # resolve_crew_identity named above, so the pin reaches every
+            # surface that starts a session as that crew; no pin (None, every
+            # crew that sets none) leaves the two routes exactly as they were.
             # circular import: members sits above config in the layering.
             from kiro_crew.members import select_provider_backend
 
@@ -5468,6 +5503,7 @@ class KiroCrewConfig:
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
+                crew_backend=None if pooled else self.crew_acp_backend(agent, crew_agent),
             )
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

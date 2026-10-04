@@ -1945,10 +1945,12 @@ gateway environment. The listener address comes from the gateway, not an editabl
 agent spec. Declared secrets and arbitrary environment values remain withheld,
 and non-managed servers receive no gateway port.
 
-The provider factory selects `agent.member_acp_backend` for member-DM session
-keys and the configured default backend otherwise. Ordinary backend governance,
-selectability, member-capability checks and host sandbox rules remain independent
-requirements; memory version adds no direct-MCP refusal.
+The provider factory selects a crew's own `agents.<name>.acp_backend` pin when
+the session runs as a crew that sets one, else `agent.member_acp_backend` for
+member-DM session keys, else the configured default backend (one gate,
+`members.select_provider_backend`; see [crew-mode](crew-mode.md)). Ordinary
+backend governance, selectability, member-capability checks and host sandbox
+rules remain independent requirements; memory version adds no direct-MCP refusal.
 
 ### Cold-start admission and startup telemetry
 

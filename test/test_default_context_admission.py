@@ -632,7 +632,7 @@ def test_overflow_keeps_mandatory_framing_not_optional_skills(rig, monkeypatch):
     cfg.skills.lazy_load = True
     memory.write_preferences("Required preference.\n" * ctx._CONTEXT_BUDGET_BASE)
     seed_skill(skills._dir, "optional-summary")
-    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg: True)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg, crew="": True)
     builder.conversation_log = Mock()
     builder.conversation_log.recent_with_provenance.return_value = []
     builder.conversation_log.recent.return_value = [
@@ -884,3 +884,114 @@ def test_member_lessons_renderer_ranks_against_the_request(tmp_path, monkeypatch
         tier.close()
         if skills is not None:
             skills.close()
+
+
+class _Checked(Exception):
+    """Stops the build at the dispatch check, once its input is recorded."""
+
+
+@pytest.mark.parametrize(
+    ("record_id", "desk_label", "expected", "kind"),
+    [
+        ("member-0001", "reviewer-old", "reviewer", "member"),
+        ("member-0001", "reviewer", "reviewer", "member"),
+        ("member-9999", "reviewer-old", "reviewer-old", "member"),
+        (None, "reviewer-old", "reviewer-old", "member"),
+        # A template run on the member's store runs as no crew, exactly as the
+        # factory's readers derive it, so only the member route is judged.
+        ("member-0001", "reviewer", "", "template"),
+    ],
+    ids=[
+        "stale-desk-label",
+        "matching-desk-label",
+        "unknown-member-id",
+        "no-member-id",
+        "template-selection",
+    ],
+)
+def test_the_member_block_asks_about_the_crew_the_record_names(
+    rig, monkeypatch, record_id, desk_label, expected, kind
+):
+    """The provider factory runs the crew the execution record's member_id
+    resolves to under its CURRENT key, so the dispatch check must ask about
+    that crew; a re-keyed member's stale desk label would read no pin at all.
+    An id the config cannot resolve, or no id, keeps the desk label."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    builder, _, _, _, cfg = rig
+    cfg.agents["reviewer"] = KiroCrewAgentConfig(
+        kiro_agent="kirocrew", member_id="member-0001", acp_backend=""
+    )
+    execution = SimpleNamespace(
+        member_id=record_id,
+        selection_name="reviewer",
+        selection_kind=kind,
+        template_id="",
+        store=SimpleNamespace(legacy_name="default"),
+        memory_mode="persistent",
+    )
+    asked: list[str] = []
+
+    def _record(_cfg, crew=""):
+        asked.append(crew)
+        raise _Checked
+
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", _record)
+    # The member-memory envelope is not what this test is about, and it needs a
+    # provisioned member store this rig does not have.
+    monkeypatch.setattr(builder, "_build_v2_essentials", lambda *_a, **_k: None)
+    with pytest.raises(_Checked):
+        builder.build_session_context(
+            session_key="subagent:synthetic",
+            mode="member",
+            member=desk_label,
+            execution_context=execution,
+        )
+    assert asked == [expected]
+
+
+@pytest.mark.parametrize(
+    ("pin", "shown"), [("", False), (None, True)], ids=["pinned-to-kiro", "unpinned"]
+)
+def test_a_stale_desk_label_gets_the_block_its_crews_engine_can_carry(rig, monkeypatch, pin, shown):
+    """End to end through the real capability check: a member re-keyed to
+    ``reviewer`` but addressed by a stale desk label is judged by its own pin.
+    ``""`` pins kiro-cli, which has no dispatch channel, so the block is
+    withheld; with no pin the kas member route still carries it."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    builder, _, _, _, cfg = rig
+    cfg.agent.member_acp_backend = "kas"
+    cfg.agents["reviewer"] = KiroCrewAgentConfig(
+        kiro_agent="kirocrew", member_id="member-0001", acp_backend=pin
+    )
+    execution = SimpleNamespace(
+        member_id="member-0001",
+        selection_name="reviewer",
+        selection_kind="member",
+        template_id="",
+        store=SimpleNamespace(legacy_name="default"),
+        memory_mode="persistent",
+    )
+    monkeypatch.setattr(builder, "_build_v2_essentials", lambda *_a, **_k: None)
+    real_check = ctx._member_backend_can_dispatch
+    verdicts: list[bool] = []
+
+    def _judge(cfg_, crew=""):
+        verdicts.append(real_check(cfg_, crew))
+        raise _Checked
+
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", _judge)
+    with pytest.raises(_Checked):
+        builder.build_session_context(
+            session_key="subagent:synthetic",
+            mode="member",
+            member="reviewer-old",
+            execution_context=execution,
+        )
+    # The block is appended exactly when this check answers True.
+    assert verdicts == [shown]

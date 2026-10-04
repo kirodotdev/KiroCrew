@@ -16,7 +16,8 @@ agent-internal and background paths still run on the kiro-cli sign-in —
 crew-member DM threads follow `agent.member_acp_backend` (default `"kas"`)
 rather than `acp_backend`, and other internal pools may too; anything pinned
 to the kiro harness always does. Set `agent.member_acp_backend` as well if
-members should use your endpoint.
+members should use your endpoint, or pin a single member with
+`agents.<name>.acp_backend`.
 
 The contract this guide describes is
 [claude-code-provider.md](../system-specs/modules/claude-code-provider.md);

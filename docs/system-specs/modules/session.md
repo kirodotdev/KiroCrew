@@ -1456,7 +1456,15 @@ document validates. Otherwise it does three things, in order:
   `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
   `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, and `session.pool_size` / `pool_agent` /
-  `pool_ttl_secs`. `refresh_defaults` is the **live-session-preserving** path —
+  `pool_ttl_secs`. A crew's `agents.<name>.acp_backend` and
+  `agents.<name>.reasoning_effort` pins are factory-bound too, but per crew, so
+  `_crew_backend_pin_changed` matches them by their leaves instead of by prefix. Path-based like the
+  prefixes, not by value: a retried or folded-in redelivery carries an `old`
+  that already holds the edit, so only the changed path says a refresh is
+  still owed. Adding or removing a crew moves its leaf too, which costs one
+  pool drain. A delivery that names only a record or the section (a bind-time
+  replay) is compared against the manager's in-force snapshot instead.
+  `refresh_defaults` is the **live-session-preserving** path —
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
   NEW sessions see the new defaults. `reload_provider_factory` (which retires

@@ -177,6 +177,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "workspace",
     "memory_store",
     "model",
+    # Kept raw at load so the selection gate can refuse it with its reason, so
+    # any string can arrive here.
+    "acp_backend",
     "source",
     "telegram_account",
 )
@@ -314,8 +317,14 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
             if not isinstance(record, dict):
                 continue
             for field_name in _AGENT_UNTRUSTED_TEXT_FIELDS:
-                if field_name in record:
-                    record[field_name] = _mask_agent_free_text(record[field_name])
+                if field_name not in record:
+                    continue
+                # acp_backend's declared unset value is null (inherit), which
+                # carries no text to leak; masking it would show every crew that
+                # pins nothing as a masked pin.
+                if field_name == "acp_backend" and record[field_name] is None:
+                    continue
+                record[field_name] = _mask_agent_free_text(record[field_name])
         if removed:
             if masked.get("default_agent") in removed:
                 masked["default_agent"] = _SENSITIVE_MASK
