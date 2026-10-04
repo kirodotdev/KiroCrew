@@ -136,6 +136,16 @@ async def api_session_ledger_record(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Imported HERE, not at module scope, and the placement is load-bearing rather
+    # than stylistic. This module is on the gateway's boot path, and the crew log's
+    # storage package is optional behind its own flag, so AUTOSDE's
+    # ``no-new-work-on-gateway-boot-path`` rule asks for the IMPORT to be gated and
+    # not merely the calls -- a flag-off launch must not load the subsystem at all.
+    # It sits above the ``try`` because the ``except`` clause below needs the name
+    # bound by the time an exception is raised, and the sibling crew log routes
+    # import it per function for the same reason.
+    from kiro_crew.crew_log.errors import CrewLogError
+
     try:
         # record() appends through the crew log's writer and folds the result
         # (bounded file reads); off-loop so a slow filesystem cannot freeze
@@ -167,6 +177,29 @@ async def api_session_ledger_record(request: web.Request) -> web.Response:
     except ValueError as exc:
         # The phase-requires-event discipline (and key validation) surface here.
         return web.json_response({"error": str(exc), "code": "ledger_discipline"}, status=400)
+    except CrewLogError as exc:
+        # The record is a PROJECTION of this session's crew log, so every write folds
+        # that log before appending to it, and the fold's own refusal type is
+        # ``CrewLogError``. It subclasses neither ``ValueError`` nor ``OSError``, so
+        # none of the branches above name it -- and an unnamed exception out of an
+        # aiohttp handler is answered as a bare ``500 Internal Server Error / Server
+        # got itself in trouble``, a body carrying no code at all. That is the one
+        # answer this route must never give: the caller cannot tell what failed, nor
+        # whether a retry could ever clear it.
+        #
+        # 409 with the crew log's own code, which is what the sibling work-ledger
+        # route already answers for the same refusal on the same store
+        # (``crew_log_unreadable``): the request is well formed and the state of the
+        # record's home is what blocks it. Not 503 -- a refused fold is not a busy
+        # filesystem, so "try again" would be false.
+        logger.warning("session ledger: the crew log fold refused for %s (%s)", key, exc.code)
+        return web.json_response(
+            {
+                "error": f"the crew log could not be read ({exc.code}): {exc}",
+                "code": "crew_log_unreadable",
+            },
+            status=409,
+        )
     except OSError:
         logger.warning("session ledger write failed for %s", key, exc_info=True)
         return web.json_response(

@@ -608,6 +608,54 @@ async def test_route_record_without_a_crew_log_is_409(_open_route):
 
 
 @pytest.mark.asyncio
+async def test_route_record_answers_a_typed_refusal_when_the_crew_log_refuses(_open_route):
+    """A crew log the fold REFUSES is answered with a code, never as a bare 500.
+
+    The record is a projection of the session's crew log, so every write folds
+    that log first. The fold's refusal type is ``CrewLogError`` — not a
+    ``ValueError`` and not an ``OSError`` — so the route's typed branches do not
+    name it, and an unhandled one leaves aiohttp to answer ``500 Internal Server
+    Error / Server got itself in trouble``: a body with no code, which tells the
+    caller neither what failed nor whether retrying could ever work.
+
+    409 with the crew log's own code, which is the answer the sibling work-ledger
+    route already gives for the same refusal on the same store
+    (``handlers/work_ledger.py``, ``crew_log_unreadable``): the request is well
+    formed and the state of the record's home is what blocks it.
+
+    The damage here is the one an append-only writer cannot produce — a
+    byte-identical copy of the newest record, so the last seq appears twice —
+    which is the case ``projection.advance`` refuses with ``bad_data``. Driven
+    through the real store and the real route rather than a patched raise, so the
+    test pins the path a caller actually travels.
+    """
+    routes = _open_route
+    slot = sl.ledger_key("chat-r-1")
+    _unit(slot=slot)
+    first = await routes.api_session_ledger_record(
+        _mk_request("POST", "/api/session-ledger/record", body={"goal": "before the damage"})
+    )
+    assert first.status == 200, "the undamaged write must land, or this pins nothing"
+    assert crew_log_emit.flush(timeout=5.0), "the crew log writer did not drain"
+
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
+    newest = path.read_bytes().splitlines(keepends=True)[-1]
+    with open(path, "ab") as damaged:
+        damaged.write(newest)
+    # The warm fold would answer from its cached cell without re-walking the
+    # bytes, so the damage has to be met by a fold that reads the file.
+    crew_log.forget_slot_folds()
+
+    resp = await routes.api_session_ledger_record(
+        _mk_request("POST", "/api/session-ledger/record", body={"goal": "after the damage"})
+    )
+    assert resp.status == 409, f"expected a typed 409, got {resp.status}"
+    body = json.loads(resp.text)
+    assert body["code"] == "crew_log_unreadable", body
+    assert lg.CODE_BAD_DATA in body["error"], body
+
+
+@pytest.mark.asyncio
 async def test_route_refuses_unrecognized_session(monkeypatch):
     from kiro_crew.dashboard.handlers import session_ledger as routes
 
