@@ -1,4 +1,4 @@
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import UpdateModal from './UpdateModal'
 import { i18nT } from '../i18n/t'
@@ -146,6 +146,44 @@ describe('UpdateModal', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.click(byName('components.updateModal.later'))
     expect(dialog()).toBeInTheDocument()
+  })
+
+  it('reports an install request the main process rejected, instead of silently re-arming', async () => {
+    // No update state is pushed for a rejected IPC, so nothing else on screen
+    // would say the click failed.
+    install.mockRejectedValue(new Error('ipc failed'))
+    await mount({ state: 'downloaded', version: '9.9.11' })
+    fireEvent.click(
+      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+    )
+
+    const notice = await screen.findByTestId('update-modal-install-error')
+    expect(notice.textContent).toContain(i18nT('pages.settings.aboutPanel.update_error_install_unknown'))
+    // The header says it once, and stops claiming "ready".
+    expect(dialog()).toHaveAccessibleName(i18nT('components.updateModal.install_failed'))
+    expect(within(dialog()!).getByText(i18nT('components.updateModal.install_failed'))).toBeInTheDocument()
+    expect(within(dialog()!).queryByText(i18nT('components.updateModal.update_ready'))).toBeNull()
+    // The failure is the only status claim: no "ready to install", no "will close
+    // and relaunch", and the primary action says it retries.
+    expect(screen.queryByText(i18nT('components.updateModal.is_downloaded_and_ready_to_install'), { exact: false })).toBeNull()
+    expect(screen.queryByText(i18nT('components.updateModal.install_restart_timing'), { exact: false })).toBeNull()
+    expect(byName('pages.settings.aboutPanel.try_again')).not.toBeDisabled()
+  })
+
+  it('re-arms Install for a newer build after the main process refused the stale one', async () => {
+    // The freshness gate refuses a superseded stage and pursues the newest
+    // instead: `install` resolves, the app keeps running, and the newer build
+    // downloads. The one-way latch must not leave that build's button disabled.
+    const { push } = await mount({ state: 'downloaded', version: '9.9.11' })
+    fireEvent.click(
+      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+    )
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+
+    await push({ state: 'available', version: '9.9.12' })
+    await push({ state: 'downloaded', version: '9.9.12' })
+
+    expect(await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') })).not.toBeDisabled()
   })
 
   describe('installing overlay', () => {

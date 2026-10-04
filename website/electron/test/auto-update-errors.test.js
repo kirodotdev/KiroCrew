@@ -141,6 +141,10 @@ test("the library's error event is attributed to the phase in flight", async () 
   await u.check();
   emit("update-available", { version: "1.1.0" });
   u.download(); // leave the download in flight
+  // The manual download click re-confirms the feed before spending the transfer, so
+  // let that bounded check settle -- `downloading` is set once it hands off, and this
+  // test is about attribution AFTER that point, not about the gate.
+  await new Promise((r) => setImmediate(r));
   states.length = 0;
   emit("error", Object.assign(new Error("mid-download"), { code: "ECONNRESET" }));
   const err = states.find((s) => s.state === "error");
