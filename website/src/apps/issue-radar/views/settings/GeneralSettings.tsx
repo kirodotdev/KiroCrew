@@ -64,7 +64,7 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
           ) : (
             <div className="text-[13px] text-muted">
               {i18nT('apps.issueRadar.views.settings.generalSettings.not_signed_in_the')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.generalSettings.cli_has_no_active_session_run')}{' '}
-              <code>{terms.cli} {i18nT('apps.issueRadar.views.settings.generalSettings.auth_login')}</code> {i18nT('apps.issueRadar.views.settings.generalSettings.in_your_terminal')}
+              <code>{terms.loginCommand}</code> {i18nT('apps.issueRadar.views.settings.generalSettings.in_your_terminal')}
             </div>
           )}
         </div>

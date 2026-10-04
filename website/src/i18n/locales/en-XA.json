@@ -2342,7 +2342,6 @@
         "settings": {
           "generalSettings": {
             "account": "[Àççøùñţ ···········]",
-            "auth_login": "[àùţĥ ĺøğìñ ···············]",
             "authenticated_through_your_local": "[Àùţĥèñţìçàţèð ţĥŕøùğĥ ýøùŕ ĺøçàĺ ················]",
             "cli_has_no_active_session_run": "[ÇĹÌ ĥàş ñø àçţìṽè şèşşìøñ. Ŕùñ ·····················]",
             "cli_issue_radar_keeps_no_credentials": "[ÇĹÌ — Ìşşùè Ŕàðàŕ\n                  ķèèþş ñø çŕèðèñţìàĺş. ····················]",

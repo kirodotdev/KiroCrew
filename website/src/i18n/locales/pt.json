@@ -2735,7 +2735,6 @@
           "generalSettings": {
             "account": "Conta",
             "always_refetch": "Sempre buscar novamente",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "Autenticado localmente pelo seu",
             "cache_for": "Usar dados em cache por",
             "cache_for_hint": "Quanto tempo uma lista obtida conta como atual, para que reabrir o app apareça na hora em vez de esperar.",

@@ -2683,7 +2683,6 @@
           "generalSettings": {
             "account": "অ্যাকাউন্ট",
             "always_refetch": "সর্বদা পুনরায় আনুন",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "প্রমাণীকরণ হয়েছে আপনার লোকাল",
             "cache_for": "ক্যাশ করা ডেটা ব্যবহার করুন",
             "cache_for_hint": "একটি আনা তালিকা কত সময় বর্তমান হিসেবে গণ্য হয়, যাতে অ্যাপ পুনরায় খুললে অপেক্ষা ছাড়াই সঙ্গে সঙ্গে দেখায়।",

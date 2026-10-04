@@ -662,15 +662,17 @@ export default [
               // a closed DOM set cannot match prose — no English phrase is
               // `AltRight` — and a new key code has to be added here on purpose.
               '^(?:Alt|Control|Meta|Shift)(?:Left|Right)$',
-              // The TWO provider-CLI LOGIN COMMANDS the pull-request panel offers
-              // as copyable recovery text (`pullRequestErrorDetails` returns one
-              // verbatim and the panel renders it in a <code> block). A command
-              // typed into a terminal is a wire string: translating it breaks
-              // it. Enumerated rather than shaped, like the key codes above — a
-              // "lowercase words" shape would exempt exactly the prose this
-              // config fights hardest, and this is a closed two-member set that
-              // grows only when a new provider CLI is wired in on purpose.
+              // The provider-CLI LOGIN COMMANDS: the pull-request panel offers
+              // one as copyable recovery text (`pullRequestErrorDetails` returns
+              // it verbatim and the panel renders it in a <code> block), and Issue
+              // Radar's `providerTerms().loginCommand` shows one in its sign-in
+              // hint. A command typed into a terminal is a wire string:
+              // translating it breaks it. Enumerated rather than shaped, like the
+              // key codes above — a "lowercase words" shape would exempt exactly
+              // the prose this config fights hardest, and this is a closed set
+              // that grows only when a new provider CLI is wired in on purpose.
               '^(?:gh|glab) auth login$',
+              '^az login$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such

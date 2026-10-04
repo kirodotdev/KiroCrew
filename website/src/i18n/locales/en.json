@@ -1497,7 +1497,6 @@
         "settings": {
           "generalSettings": {
             "account": "Account",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "Authenticated through your local",
             "cli_has_no_active_session_run": "CLI has no active session. Run",
             "cli_issue_radar_keeps_no_credentials": "CLI — Issue Radar\n                  keeps no credentials.",

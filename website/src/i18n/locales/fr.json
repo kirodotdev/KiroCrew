@@ -2821,7 +2821,6 @@
           "generalSettings": {
             "account": "Compte",
             "always_refetch": "Toujours recharger",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "Authentifié localement via votre",
             "cache_for": "Utiliser les données en cache pendant",
             "cache_for_hint": "Combien de temps une liste récupérée est considérée à jour, pour que la réouverture de l’app s’affiche immédiatement sans attendre.",

@@ -2735,7 +2735,6 @@
           "generalSettings": {
             "account": "Account",
             "always_refetch": "Ricarica sempre",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "Autenticato tramite il tuo",
             "cache_for": "Usa i dati in cache per",
             "cache_for_hint": "Per quanto tempo un elenco caricato è considerato attuale, così riaprire l’app mostra subito i dati invece di attendere.",

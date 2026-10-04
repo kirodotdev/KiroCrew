@@ -104,7 +104,9 @@ describe('providerTerms', () => {
 
   it('names the CLI that owns the credentials', () => {
     expect(providerTerms(GL).cli).toBe('glab')
+    expect(providerTerms(GL).loginCommand).toBe('glab auth login')
     expect(providerTerms(GH).cli).toBe('gh')
+    expect(providerTerms(GH).loginCommand).toBe('gh auth login')
   })
 
   it('treats a legacy record as GitHub', () => {
@@ -238,6 +240,7 @@ describe('Azure DevOps link shapes', () => {
   it('names Azure DevOps and its own CLI', () => {
     expect(providerTerms(AZ).providerName).toBe('Azure DevOps')
     expect(providerTerms(AZ).cli).toBe('az')
+    expect(providerTerms(AZ).loginCommand).toBe('az login')
     // Azure DevOps calls them pull requests, not merge requests.
     expect(providerTerms(AZ).changeRequestPluralTitle).toBe('Pull Requests')
   })

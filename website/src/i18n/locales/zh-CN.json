@@ -2631,7 +2631,6 @@
           "generalSettings": {
             "account": "账户",
             "always_refetch": "始终重新获取",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "已通过你本地的以下方式认证：",
             "cache_for": "缓存数据有效期",
             "cache_for_hint": "已获取的列表被视为最新的时长，以便重新打开应用时立即显示而无需等待。",

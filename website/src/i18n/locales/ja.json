@@ -2717,7 +2717,6 @@
           "generalSettings": {
             "account": "アカウント",
             "always_refetch": "常に再取得",
-            "auth_login": "認証ログイン",
             "authenticated_through_your_local": "ローカル経由で認証されている:",
             "cache_for": "キャッシュデータを使用",
             "cache_for_hint": "取得されたリストが現在であると見なされる期間。アプリを再度開くと、待つ代わりに即座にペイントされます。",

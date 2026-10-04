@@ -2735,7 +2735,6 @@
           "generalSettings": {
             "account": "Cuenta",
             "always_refetch": "Volver a consultar siempre",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "Autenticado con tu",
             "cache_for": "Usar datos en caché durante",
             "cache_for_hint": "Cuánto tiempo se considera actual una lista obtenida, para que al reabrir la app se muestre al instante sin esperar.",

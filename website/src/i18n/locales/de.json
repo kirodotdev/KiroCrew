@@ -2769,7 +2769,6 @@
           "generalSettings": {
             "account": "Konto",
             "always_refetch": "Immer neu abrufen",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "Authentifiziert über Ihr lokales",
             "cache_for": "Zwischengespeicherte Daten verwenden für",
             "cache_for_hint": "Wie lange eine geladene Liste als aktuell gilt, damit ein erneutes Öffnen der App sofort erscheint statt zu warten.",

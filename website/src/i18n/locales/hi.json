@@ -2525,7 +2525,6 @@
           "generalSettings": {
             "account": "खाता",
             "always_refetch": "हमेशा दोबारा प्राप्त करें",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "आपके स्थानीय के माध्यम से प्रमाणित",
             "cache_for": "कैश्ड डेटा इतने समय तक उपयोग करें",
             "cache_for_hint": "प्राप्त सूची कितने समय तक वर्तमान मानी जाती है, ताकि ऐप दोबारा खोलने पर प्रतीक्षा किए बिना तुरंत दिखे।",

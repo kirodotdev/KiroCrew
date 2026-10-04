@@ -2717,7 +2717,6 @@
           "generalSettings": {
             "account": "계정",
             "always_refetch": "항상 다시 가져오기",
-            "auth_login": "auth login",
             "authenticated_through_your_local": "다음 로컬 도구로 인증됨:",
             "cache_for": "캐시 데이터 사용 기간",
             "cache_for_hint": "가져온 목록을 최신으로 간주하는 기간입니다. 앱을 다시 열 때 기다리지 않고 즉시 표시됩니다.",
