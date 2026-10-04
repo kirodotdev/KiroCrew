@@ -6824,7 +6824,10 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
     ``start_new_session``) has no tree of its own to signal — the group kill
     is skipped for it and the pid-scoped ``kill()`` below covers it, instead
     of tripping :func:`kill_process_tree`'s broadcast guard on every routine
-    timeout.
+    timeout. Likewise, a child that asyncio has already reaped
+    (``proc.returncode is not None``) is skipped: its pid may have been
+    recycled onto a different process, and the pid-scoped ``kill()`` below is
+    harmless because the handle refers to a child that has already exited.
 
     The reap goes through ``communicate()`` rather than ``wait()`` so the
     pipes are drained: ``wait_for`` already cancelled the original
@@ -6842,7 +6845,15 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
     async def _cleanup() -> None:
         # Bare-name lookup so a test can pin the probe (see
         # ``_shares_own_process_group``) without reaching into ``os``.
-        if not _shares_own_process_group(proc.pid):
+        #
+        # ``proc.returncode is None`` guards against a recycled pid: once
+        # asyncio has recorded the child's exit, the OS may hand that pid to
+        # an unrelated process (even another of our own gateway children, whose
+        # parent pid would also be ours), so a pid-addressed group SIGKILL could
+        # reach a stranger's tree. A child that has not been reaped yet still
+        # owns its pid. This is the same ``reaped=proc.returncode is not None``
+        # test ``_isolated_group_of_live_child`` / ``terminate_and_reap`` use.
+        if proc.returncode is None and not _shares_own_process_group(proc.pid):
             # Bare-name lookup resolves through this module's namespace at
             # call time, so tests patching ``kiro_crew.platform_compat.
             # kill_process_tree_async`` still intercept the tree kill.

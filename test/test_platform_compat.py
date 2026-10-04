@@ -7171,6 +7171,10 @@ class TestKillAndReap:
 
         proc = mock.MagicMock()
         proc.pid = pid
+        # Default to a still-running child (asyncio has not recorded an exit),
+        # which is the case the group kill fires for. A reaped child
+        # (``returncode is not None``) is covered by its own test.
+        proc.returncode = None
         proc.kill = mock.MagicMock()
         proc.communicate = mock.AsyncMock(return_value=(b"", b""))
         proc.wait = mock.AsyncMock()
@@ -7306,6 +7310,7 @@ class TestKillAndReap:
 
         class Proc:
             pid = 4242
+            returncode = None  # a live child: the group kill fires
 
             def kill(self):
                 events.append("killed")
@@ -7331,6 +7336,47 @@ class TestKillAndReap:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert events == ["killed", "reap-started", "reaped"]
+
+    @pytest.mark.asyncio
+    async def test_skips_the_tree_kill_for_a_reaped_child(self) -> None:
+        """The recycled-pid guard: once asyncio has recorded the child's
+        exit (``returncode is not None``) the OS may hand that pid to an
+        unrelated process -- even another of our own gateway children, whose
+        parent pid would also be ours -- so a pid-addressed group SIGKILL could
+        reach a stranger's tree. The group kill must be skipped; only the
+        pid-scoped ``kill()`` (harmless on a dead handle) runs. The same-group
+        probe is pinned to ``False`` (its routine value) so the returncode
+        guard alone gates the branch."""
+        from unittest import mock
+
+        proc = self._proc(pid=4242)
+        proc.returncode = 0  # asyncio has already reaped this child
+        with (
+            mock.patch.object(pc, "_shares_own_process_group", lambda _pid: False),
+            mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree,
+        ):
+            await pc.kill_and_reap(proc)
+        tree.assert_not_awaited()
+        proc.kill.assert_called_once()
+        proc.communicate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fires_the_tree_kill_for_a_live_child(self) -> None:
+        """The complement: a child asyncio has NOT reaped (``returncode is
+        None``) still owns its pid, so the group kill fires exactly as before.
+        This is the branch the recycled-pid guard must not disturb."""
+        from unittest import mock
+
+        proc = self._proc(pid=4242)
+        assert proc.returncode is None  # a live child
+        with (
+            mock.patch.object(pc, "_shares_own_process_group", lambda _pid: False),
+            mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree,
+        ):
+            await pc.kill_and_reap(proc)
+        tree.assert_awaited_once()
+        assert tree.await_args.args == (4242, pc.SIGKILL)
+        proc.kill.assert_called_once()
 
 
 class TestPublishDirNoreplace:

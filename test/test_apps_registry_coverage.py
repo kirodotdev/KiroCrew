@@ -2164,6 +2164,10 @@ class TestKillProcessGroup:
         class _Stubborn(_FakeProc):
             def __init__(self) -> None:
                 super().__init__(returncode=0)
+                # A child that ignores SIGTERM has NOT exited yet, so asyncio
+                # has recorded no exit code; it is set only once ``wait()``
+                # finally returns.
+                self.returncode = None
                 self._reaped = False
 
             async def wait(self) -> int:
@@ -2171,6 +2175,7 @@ class TestKillProcessGroup:
                 if not self._reaped:
                     self._reaped = True
                     await asyncio.sleep(5)
+                self.returncode = 0
                 return 0
 
         proc = _Stubborn()
@@ -2195,6 +2200,10 @@ class TestKillProcessGroup:
         class _Stubborn(_FakeProc):
             def __init__(self) -> None:
                 super().__init__(returncode=0)
+                # A child that ignores SIGTERM has NOT exited yet, so asyncio
+                # has recorded no exit code; it is set only once ``wait()``
+                # finally returns.
+                self.returncode = None
                 self._reaped = False
 
             async def wait(self) -> int:
@@ -2202,6 +2211,7 @@ class TestKillProcessGroup:
                 if not self._reaped:
                     self._reaped = True
                     await asyncio.sleep(5)
+                self.returncode = 0
                 return 0
 
         proc = _Stubborn()

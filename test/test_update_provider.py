@@ -507,7 +507,7 @@ def _wait_for_raising(exc: BaseException):
     return _wait_for
 
 
-def _fake_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") -> "MagicMock":
+def _fake_proc(returncode: int | None = 0, stdout: bytes = b"", stderr: bytes = b"") -> "MagicMock":
     """Build a mock subprocess the production code can actually read.
 
     ``_read_bounded_output`` drains ``proc.stdout``/``proc.stderr`` itself rather
@@ -632,7 +632,7 @@ class TestCommandProviderNoShellAndTimeout:
     @pytest.mark.asyncio
     async def test_check_timeout_kills_proc(self, _fake_process_tree) -> None:
         p = CommandProvider(check_command="sleep 100", apply_command="echo ok")
-        proc = _fake_proc(returncode=0)
+        proc = _fake_proc(returncode=None)  # a child that timed out has not exited
         with (
             patch(
                 "kiro_crew.platform.update_provider._shell_exec_args",
@@ -678,7 +678,7 @@ class TestCommandProviderNoShellAndTimeout:
     @pytest.mark.asyncio
     async def test_apply_timeout_kills_proc(self, _fake_process_tree) -> None:
         p = CommandProvider(check_command="echo hi", apply_command="sleep 100")
-        proc = _fake_proc(returncode=0)
+        proc = _fake_proc(returncode=None)  # a child that timed out has not exited
         with (
             patch(
                 "kiro_crew.platform.update_provider._shell_exec_args",
@@ -906,6 +906,9 @@ class TestCancellationKillsUpdaterChild:
         pipes those survivors hold."""
         proc = MagicMock()
         proc.pid = _UNALLOCATABLE_PID
+        # A child being killed on cancellation has NOT exited, so asyncio has
+        # recorded no exit code; the group tree kill fires for a live child.
+        proc.returncode = None
         proc.kill = MagicMock()
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.stdout = _stream(b"")
