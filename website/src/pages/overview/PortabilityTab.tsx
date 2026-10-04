@@ -5,6 +5,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
+import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 interface Manifest {
   version: number
   created_at: string
@@ -84,6 +85,7 @@ export default function PortabilityTab() {
       const resp = await fetch('/api/portability/export')
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }))
+        noteStaleOwnerResponse(resp.status, err)
         setExportStatus({ type: 'error', msg: err.error || resp.statusText })
         return
       }
@@ -151,6 +153,7 @@ export default function PortabilityTab() {
           setImportWarning(i18nT('pages.overview.portabilityTab.import_templates_missing', { crews }))
         }
       } else {
+        noteStaleOwnerResponse(resp.status, data)
         setImportStatus({
           type: 'error',
           msg: refusalText(resp.status, data, i18nT('pages.overview.portabilityTab.import_failed')),

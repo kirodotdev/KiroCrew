@@ -36,6 +36,12 @@ Rotation-on-use races when a refresh POST is duplicated (network retry / double-
 
 ### Dashboard client: who owns browser-side recovery
 
+Portability export and import use direct fetches rather than the API client's
+transport. Their error branches pass the response status and parsed refusal to
+`noteStaleOwnerResponse`, raising the existing re-authentication prompt only for
+`401 stale_session_reauth`. Inline refusals remain visible; generic 401 and owner-only
+403 responses do not raise that prompt. The non-owner-gated import preview is unchanged.
+
 The browser half of refresh and re-authentication is split by responsibility
 across a few frontend owners. None of them authorizes anything: authorization
 stays on the gateway, in the token middleware and in the handler-level owner
