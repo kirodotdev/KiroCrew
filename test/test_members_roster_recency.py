@@ -19,6 +19,7 @@ list. Three things had to be true at once for that, and each is pinned here:
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -134,7 +135,11 @@ class TestTheFoldNeverWalksRecencyBackwards:
         """
         far_future = time.time() + 86_400.0  # a day ahead of the fold's clock
         out = self._apply({"last_active_ts": 100.0}, {"ts": far_future})
-        now = time.time()
+        # Read the bound with the fold's OWN clock. ``datetime.now().timestamp()``
+        # is rounded to the microsecond, so it can sit a fraction of a microsecond
+        # above a ``time.time()`` read made AFTER it; bounding by ``time.time()``
+        # failed on a Windows shard by one float step (0.1 us).
+        now = datetime.now(timezone.utc).timestamp()
         assert out["last_active_ts"] <= now + 300.0
         # It still advanced past the stale held value -- the activity happened.
         assert out["last_active_ts"] > 100.0

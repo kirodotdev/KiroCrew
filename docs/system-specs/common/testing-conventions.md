@@ -4095,6 +4095,12 @@ Two more shapes, both MEASURED in a 5x full-suite run on Windows:
   the real pass, which makes eligibility pure arithmetic and also stops an `== 0`
   assertion passing vacuously because a stamp aged out. Reading the clock inside the
   test instead is the weaker fix — it shrinks the gap to microseconds without closing it.
+- **Same instant, two readers.** `datetime.now(timezone.utc).timestamp()` is rounded to
+  the microsecond; `time.time()` is not. Read in that order, the earlier `datetime`
+  value is larger in about 1 of 80 back-to-back pairs on Windows, by up to 0.24 us.
+  `test_a_future_ts_is_clamped_to_the_present` bounded the fold's ceiling (`datetime`)
+  by a later `time.time()` and failed by one float step. A bound on a value the product
+  computed from the clock must be read through the product's own clock call.
 
 More shapes this class hides, all Windows-only and all green on every Linux run:
 
