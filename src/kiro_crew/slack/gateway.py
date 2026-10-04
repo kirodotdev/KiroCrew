@@ -622,7 +622,8 @@ logger = logging.getLogger(__name__)
 # More generous than INJECTION_TIMEOUT (default 900s, tunable via
 # KIROCREW_INJECTION_TIMEOUT) which only covers a single injected continuation turn.
 
-# Max retries for injecting subagent results into parent sessions.
+# Max attempts, the first one included, to inject a subagent result into a
+# parent session.
 _MAX_INJECT_ATTEMPTS = 2
 
 # Per-turn hard deadline for an unattended AutoNudge turn in a channel session
@@ -9650,14 +9651,18 @@ class GatewayOrchestrator:
                 return
 
             if parent_key and not parent_key.startswith(("cron:", "subagent:")):
-                # Channel session — inject silently into the parent's ACP
-                # session, then deliver only the synthesized reply to the
-                # conversation. Retry up to _MAX_INJECT_ATTEMPTS times on
-                # timeout. Slack keeps its dedicated rich posting; every other
-                # channel namespace (Telegram, Discord, …) delivers through
-                # the governed transport ladder — its stored channel value is
-                # not a Slack channel id, so posting it through the Slack
-                # client can never reach the user.
+                # Parent with no tab to stream into — inject silently into the
+                # parent's ACP session, then deliver only the synthesized reply
+                # to the conversation. Make up to _MAX_INJECT_ATTEMPTS attempts;
+                # only a timeout starts the next one (_inject_with_retry has its
+                # own ACP-error retry inside each attempt). Slack keeps its
+                # dedicated rich posting; every other channel namespace
+                # (Telegram, Discord, …) delivers through the governed transport
+                # ladder — its stored channel value is not a Slack channel id,
+                # so posting it through the Slack client can never reach the
+                # user. A parent with neither a channel namespace nor a Slack
+                # thread (a taskrunner: session, say) is still injected, but its
+                # reply goes to no channel.
                 assert self.sessions is not None
                 _namespace = channel_namespace_of(parent_key)
                 _via_transport = bool(_namespace) and _namespace != SLACK_NAMESPACE
@@ -9665,13 +9670,17 @@ class GatewayOrchestrator:
                 if _slack_thread is None and is_legacy_slack_key(parent_key):
                     _slack_thread = parent_key
                 _via_slack = _namespace == SLACK_NAMESPACE or bool(_slack_thread)
-                _inject_label = (
-                    _namespace if _via_transport else ("Slack" if _via_slack else "session")
-                )
-                # Snapshot delivery targets BEFORE the injection retry loop:
-                # the timeout path's sessions.reset() evicts the session's
-                # in-memory links, so resolving after a retry would lose a
-                # channel thread/forum target or a mapped Slack thread.
+                if _via_transport:
+                    _inject_label = _namespace
+                elif _via_slack:
+                    _inject_label = "Slack"
+                else:
+                    _inject_label = "session"
+                # Snapshot the transport reply link BEFORE the injection retry
+                # loop: the timeout path's sessions.reset() evicts the session's
+                # in-memory origin link, the first rung _channel_reply_link
+                # tries, so resolving after a retry could miss the
+                # conversation's own thread/forum target.
                 _reply_link = self._channel_reply_link(parent_key) if _via_transport else None
                 _injected = False
                 _inject_failure_reasons: list[str] = []
@@ -9840,11 +9849,6 @@ class GatewayOrchestrator:
                                 "Subagent %s: Slack posting failed (injection succeeded)",
                                 info.id,
                             )
-
-                        # Persist the subagent completion turn to the conversation
-                        # log so the dashboard replay shows it. Without this, Slack
-                        # subagent injections are visible in the thread but missing
-                        # from the dashboard session history.
 
                         logger.info(
                             "Subagent %s → %s session %s", info.id, _inject_label, parent_key
