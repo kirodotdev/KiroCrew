@@ -259,7 +259,10 @@ The mechanism, when on:
 kiro-cli compacts its own window and drops the session-start blocks with it.
 `SessionManager.mark_needs_reinjection` arms a one-shot flag on confirmed
 compaction; the next turn reads it through `messaging/dispatch.py` →
-`consume_reinjection` and passes `needs_reinjection=True`. `build_message` then
+`consume_reinjection` and passes `needs_reinjection=True`. Every turn loop that can
+compact (calls `check_context_usage` or `compact_if_needed`) must consume the flag,
+forward it and `rearm_reinjection` it when the turn does not land, or delegate to
+`drive_turn`; `test/test_reinjection_gate.py` pins that per module. `build_message` then
 re-adds, once:
 
 1. the memory activity index and the `[Memory tools]` line;
