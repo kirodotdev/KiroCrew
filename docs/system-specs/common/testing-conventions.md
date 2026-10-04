@@ -4064,6 +4064,16 @@ wait exactly, and give the real deadline a generous backstop
 (`_PointClock` in `test_decisions_memory_recall_reachable.py`). To make a deadline
 pass, move it to the real present rather than sleeping past it.
 
+**A count taken across a wall-clock cache measures the runner too.** The path gate's
+target cache expires after a 0.1s floor, and each expiry is a rebuild that resolves the
+root anchors once more. `test_the_fence_resolves_its_anchors_per_directory_not_per_entry`
+counted those resolutions for a 4-entry and a 400-entry walk; a slow Windows runner took
+longer than the floor to list 400 entries, the cache expired mid-walk, and the count came
+out `4 == 5`. When a test counts calls behind a TTL, hold the expiry open for the
+measurement (patch the module's own TTL function) so the count is the walk's shape, not
+its duration. Reproduce by advancing a fake clock per entry processed: the bigger walk
+crosses the floor on any host.
+
 **`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
 cancelled before its first tool call takes the one-shot auto-continue branch: it returns
 normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`

@@ -467,6 +467,13 @@ class TestProjectTree:
 
         project = plain_project.parent / ".counted"
         (project / "sub").mkdir(parents=True)
+        # The target cache expires on the wall clock (a 0.1s floor), and an
+        # expiry inside the counted walk is a rebuild that resolves the anchors
+        # once more. A slow runner walking 400 entries outlasts that floor, so
+        # the count would say how long the walk took, not what shape it has.
+        # The expiry is held open for the measurement; the per-directory
+        # property is what remains to be counted.
+        monkeypatch.setattr(paths_mod, "_home_targets_ttl", lambda *_a, **_k: 3600.0)
 
         def resolutions(entries: int) -> int:
             for stale in project.glob("sub/f*.txt"):
