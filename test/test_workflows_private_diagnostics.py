@@ -19,7 +19,7 @@ def test_member_task_payload_has_one_canonical_record(tmp_path):
         "execution_context": execution.to_record(),
     }
     write_task_snapshot(path, json.dumps([row]))
-    assert json.loads(read_task_snapshot(path)) == [row]
+    assert json.loads(read_task_snapshot(path, legacy_references=[])) == [row]
     assert list(tmp_path.iterdir()) == [path]
 
 

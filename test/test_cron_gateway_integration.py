@@ -1012,11 +1012,14 @@ def _make_gw_for_llm():
     return gw
 
 
-async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
+async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None, fires=1):
     """Run the cron callback for an LLM-based job through _init_cron.
 
     get_or_create_side_effect: if provided, set as the side_effect on
     sessions.get_or_create (for simulating model errors / fallback).
+    fires: how many times to run the ONE callback the gateway built, as one
+    gateway process fires a job on successive schedule slots; the last result
+    is returned.
     """
     captured_cb = None
 
@@ -1050,7 +1053,8 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
         mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
         await gw._init_cron()
         assert captured_cb is not None
-        result = await captured_cb(job)
+        for _ in range(fires):
+            result = await captured_cb(job)
         return result, _stream_mock
 
 
@@ -1108,6 +1112,141 @@ class TestLlmCronAdmission:
         assert job.last_result == ""
         assert job.consecutive_failures == 2
         stream.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("legacy_agent", ["alice", "named-template"])
+    async def test_an_upgraded_member_schedule_naming_an_agent_fires(
+        self, monkeypatch, tmp_path, legacy_agent
+    ):
+        """The upgrade's capture and the old build's session record agree at dispatch.
+
+        0.7.0-insider.1 to .5 fired a member schedule once and left
+        ``{memory_store, agent: <member selector>}`` under ``cron:<id>``. The
+        start-of-process capture keeps the ``agent_id`` the schedule named, and
+        the single-agent fire then binds that capture under the same stable key
+        with ``replace_existing`` False -- which refused the record until the
+        capture reconciled it. Driven through the real callback: the fire runs,
+        dispatches the named agent, and the record carries the capture.
+        """
+        import json
+        import os
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from kiro_crew import execution_context
+        from kiro_crew.config import loader
+        from kiro_crew.config.sections import KiroCrewAgentConfig, MemoryStoreConfig
+        from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
+        from kiro_crew.cron_service.store import _job_from_record
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.vector_memory import create_member_database
+
+        home = Path(os.environ["KIROCREW_HOME"])
+        db = home / "memory_stores" / "member-alice" / "memory.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        create_member_database(db, member_id="id-alice", store_id="member-alice")
+        cfg = SimpleNamespace(
+            agents={
+                "alice": KiroCrewAgentConfig(
+                    member_id="id-alice", memory_store="member-alice", kiro_agent="shared"
+                )
+            },
+            memory_stores={
+                "member-alice": MemoryStoreConfig(
+                    owner_member="alice", owner_member_id="id-alice", memory_version=2
+                )
+            },
+        )
+        loader._invalidate_config_cache()
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        execution_context._LIVE_EXECUTIONS.clear()
+
+        store_dir = tmp_path / "cron-store"
+        store_dir.mkdir()
+        record = {
+            "id": "lj1",
+            "name": "llm-job",
+            "message": "Run daily check",
+            "schedule": {"kind": "every", "every_secs": 3600},
+            "agent_id": "named-template",
+            "member_id": "alice",
+            "memory_store": "member-alice",
+        }
+        (store_dir / "crons.json").write_text(
+            json.dumps({"version": 2, "jobs": [record]}), encoding="utf-8"
+        )
+        ConversationLog().update_metadata(
+            "cron:lj1", {"memory_store": "member-alice", "agent": legacy_agent}
+        )
+
+        assert migrate_legacy_member_schedules(store_dir) == ["lj1"]
+        saved = json.loads((store_dir / "crons.json").read_text(encoding="utf-8"))["jobs"][0]
+        job = _job_from_record(saved)
+        assert job.agent_id == "named-template"
+        assert job.persistent_session is True
+
+        gw = _make_gw_for_llm()
+        result, stream = await _run_llm_callback(gw, job, fires=2)
+
+        assert result == "Agent response here"
+        assert job.last_status != "error", job.last_error
+        assert job.consecutive_failures == 0
+        assert stream.await_count == 2
+        dispatched = [c.kwargs.get("agent") for c in gw.sessions.get_or_create.call_args_list]
+        assert dispatched == ["named-template", "named-template"]
+        recorded = execution_context.read_session_execution("cron:lj1", required=True)
+        assert recorded.template_id == "named-template"
+        assert recorded.member_id == "id-alice"
+        assert recorded.store.store_id == "member-alice"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_legacy_member_schedule_is_an_ordinary_failed_run(
+        self, monkeypatch, tmp_path
+    ):
+        """A pre-identity schedule refused before dispatch fails like any other refusal.
+
+        The gateway gives ``LegacyScheduleRefused`` no handling of its own: nothing
+        is dispatched, no alert is sent, no runtime marker is set, and the raise
+        reaches the scheduler, whose catch records an ordinary failed run whose
+        error text is the ``memory_unavailable:`` refusal naming the repair.
+        """
+        from kiro_crew import cron
+        from kiro_crew.cron_service.identity import LegacyScheduleRefused
+
+        def refuse(job, **_kwargs):
+            raise LegacyScheduleRefused("its store's member was deleted", "delete this schedule")
+
+        monkeypatch.setattr(cron, "resolve_cron_memory", refuse)
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(member_id="alice", memory_store="member-alice")
+        with pytest.raises(LegacyScheduleRefused, match="delete this schedule"):
+            await _run_llm_callback(gw, job)
+        gw.sessions.get_or_create.assert_not_awaited()
+        gw.dashboard_state.notify.assert_not_called()
+        assert job.run_never_started is False
+        assert job.fire_time_denied is False
+
+        async def refusing_callback(job):
+            raise LegacyScheduleRefused("its store's member was deleted", "delete this schedule")
+
+        svc = cron.CronService(base_dir=tmp_path, on_job=refusing_callback)
+        await svc._execute(job)
+        assert job.last_status == "error"
+        assert job.last_error.startswith("memory_unavailable:")
+        assert "delete this schedule" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_other_refusals_before_dispatch_still_raise(self, monkeypatch):
+        from kiro_crew import cron
+
+        def refuse(job, **_kwargs):
+            raise ValueError("memory_unavailable: schedule has no canonical execution context")
+
+        monkeypatch.setattr(cron, "resolve_cron_memory", refuse)
+        gw = _make_gw_for_llm()
+        with pytest.raises(ValueError, match="no canonical execution context"):
+            await _run_llm_callback(gw, _make_llm_job(member_id="deleted"))
+        gw.dashboard_state.notify.assert_not_called()
 
 
 class TestModelFallback:

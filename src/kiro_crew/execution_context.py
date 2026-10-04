@@ -903,6 +903,68 @@ def _legacy_store_remedy(store: str) -> str:
     )
 
 
+class LegacyMemberAttributionRefused(ValueError):
+    """One attribution step of :func:`attribute_legacy_member` did not hold.
+
+    The message is the step's reason, phrased for no particular caller; each
+    subclass names the step so a caller can keep its own wording and remedy.
+    Failures raised by the resolvers the steps call (``UnknownMemoryStore``, a
+    slug error) are NOT wrapped: they propagate as they always did, so each
+    caller's handling of them is unchanged.
+    """
+
+
+class LegacyStoreHasNoOwner(LegacyMemberAttributionRefused):
+    """The store's declaration carries no ``owner_member_id``."""
+
+
+class LegacyStoreOwnerDeleted(LegacyMemberAttributionRefused):
+    """No configured member carries the store's ``owner_member_id``."""
+
+
+class LegacyOwnerNotNamed(LegacyMemberAttributionRefused):
+    """The record names neither the owner's alias nor its id."""
+
+
+class LegacyOwnerBoundElsewhere(LegacyMemberAttributionRefused):
+    """The owner resolves to a store other than the one the record names."""
+
+
+def attribute_legacy_member(
+    config: Any, store: str, named: str, *, memory_mode: str = "persistent", app: str = ""
+) -> ExecutionContext:
+    """Attribute a pre-identity record on V2 *store* that names *named* to the store's owner.
+
+    The ONE spelling of the attribution a 0.7.0.5 member record admits, shared
+    by the chat backfill (:func:`_backfill_legacy_member_record`) and the
+    schedule capture (``cron_service.identity.legacy_member_cron_execution``)
+    so the two cannot drift. Nothing here guesses a member: the store's declared
+    ``owner_member_id`` must be exactly one configured member
+    (:func:`member_config_for_id`), *named* must be that member's alias or id,
+    and the member must still resolve (:func:`resolve_member_execution`) to this
+    very store. Each step that does not hold raises its own
+    :class:`LegacyMemberAttributionRefused` subclass; what the resolvers raise
+    propagates unwrapped. The caller has already decided *store* is a declared
+    V2 store.
+    """
+    declaration = config.memory_stores.get(store)
+    owner_member_id = getattr(declaration, "owner_member_id", "")
+    if not isinstance(owner_member_id, str) or not owner_member_id:
+        raise LegacyStoreHasNoOwner("the memory store has no attributed owner")
+    if not any(
+        getattr(member, "member_id", "") == owner_member_id for member in config.agents.values()
+    ):
+        # The store outlives a deleted member on purpose (its id stays reserved).
+        raise LegacyStoreOwnerDeleted("the store's member was deleted")
+    alias, _ = member_config_for_id(config, owner_member_id)
+    if named not in (alias, owner_member_id):
+        raise LegacyOwnerNotNamed("the record does not name the store's owner")
+    execution = resolve_member_execution(config, alias, memory_mode=memory_mode, app=app)
+    if execution.store.store_id != store:
+        raise LegacyOwnerBoundElsewhere("the member is bound to another store")
+    return execution
+
+
 def _backfill_legacy_member_record(
     session_key: str, record: Mapping[str, Any], store: str
 ) -> ExecutionContext | None:
@@ -917,10 +979,11 @@ def _backfill_legacy_member_record(
 
     Nothing here guesses a member. The derivation is admitted only when the
     attribution is unambiguous and mirrors what the store migration itself
-    required: the store is a declared V2 store whose ``owner_member_id`` names
-    exactly one configured member (`member_config_for_id`), that member resolves
-    to this store (`resolve_member_execution`), and the record's own ``agent``
-    names that member by alias or by id. The record's own ``app`` attribution is
+    required -- the five steps of :func:`attribute_legacy_member`: the store is a
+    declared V2 store whose ``owner_member_id`` names exactly one configured
+    member (`member_config_for_id`), that member resolves to this store
+    (`resolve_member_execution`), and the record's own ``agent`` names that
+    member by alias or by id. The record's own ``app`` attribution is
     carried into the carrier. A record with no ``agent``, an ``agent`` naming
     anyone else, a template pick, a store the migration could not attribute, a
     restricted mode or a malformed ``app`` is left untouched and the caller keeps
@@ -957,19 +1020,11 @@ def _backfill_legacy_member_record(
         app = ""
     if not isinstance(app, str):
         return None
-    config = KiroCrewConfig.load()
-    declaration = config.memory_stores.get(store)
-    owner_member_id = getattr(declaration, "owner_member_id", "")
-    if not isinstance(owner_member_id, str) or not owner_member_id:
-        return None
     try:
-        alias, _ = member_config_for_id(config, owner_member_id)
-        if agent not in (alias, owner_member_id):
-            return None
-        execution = resolve_member_execution(config, alias, memory_mode=mode, app=app)
-    except UnknownMemoryStore:
-        return None
-    if execution.store.store_id != store:
+        execution = attribute_legacy_member(
+            KiroCrewConfig.load(), store, agent, memory_mode=mode, app=app
+        )
+    except (LegacyMemberAttributionRefused, UnknownMemoryStore):
         return None
     committed = ConversationLog().update_metadata_if(
         session_key,

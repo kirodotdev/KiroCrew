@@ -3068,11 +3068,27 @@ class TaskRunner:
         try:
             from kiro_crew.workflow_memory import read_task_snapshot
 
-            items = json.loads(read_task_snapshot(path, public_payload=raw))
+            legacy: list[dict] = []
+            items = json.loads(
+                read_task_snapshot(path, public_payload=raw, legacy_references=legacy)
+            )
         except Exception as exc:
             self._snapshot_recovery_incomplete = True
             logger.error("Failed to read task snapshot (%s)", type(exc).__name__)
             return
+        if legacy:
+            # A row of exactly the pre-release shape is left out of the restored
+            # runs rather than refusing the registry: its payload in the hidden
+            # sidecar is never read, so the task cannot resume. Writes are not
+            # fenced by it, so the next snapshot rewrites the registry without
+            # it; a restart that finds the same rows again logs this once more.
+            logger.warning(
+                "Left out %d task record(s) from a 0.7.0 pre-release (%s); their private "
+                "payloads were not read and those tasks cannot resume. Re-create them to "
+                "run them again.",
+                len(legacy),
+                ", ".join(row["task_id"] for row in legacy),
+            )
         for item in items:
             try:
                 execution_context = execution_from_record(item, required=False)

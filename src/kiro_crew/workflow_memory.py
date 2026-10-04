@@ -469,12 +469,38 @@ def write_task_snapshot(public_path: Path, payload: str, *, writer: Any = atomic
     writer(public_path, json.dumps(persistent), fsync=True)
 
 
-def read_task_snapshot(public_path: Path, *, public_payload=None) -> str:
+def _is_legacy_task_reference(row: dict) -> bool:
+    """The exact row 0.7.0-insider.1 to .5 wrote for a member task: an id and the marker."""
+    return (
+        set(row) == {"task_id", "private_payload"}
+        and row["private_payload"] is True
+        and isinstance(row["task_id"], str)
+        and bool(row["task_id"])
+    )
+
+
+def read_task_snapshot(
+    public_path: Path, *, public_payload=None, legacy_references: list[dict]
+) -> str:
+    """Return the restorable rows; a legacy ``private_payload`` row is never one.
+
+    0.7.0-insider.1 to .5 kept a member task's payload in a hidden sidecar and
+    left only ``{"task_id": ..., "private_payload": true}`` here. That row is
+    never hydrated and never run under Global. The caller's *legacy_references*
+    collects rows of exactly that shape, which are left out of the returned rows
+    instead of refusing the registry; any other ``private_payload`` row still
+    refuses it.
+    """
     rows = json.loads(read_task_registry(public_path) if public_payload is None else public_payload)
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError("Task registry must contain records")
+    restorable = []
     for row in rows:
         if row.get("private_payload"):
-            raise TaskSnapshotError("Unsupported task record; Global was not used")
+            if not _is_legacy_task_reference(row):
+                raise TaskSnapshotError("Unsupported task record; Global was not used")
+            legacy_references.append(row)
+            continue
         execution_from_record(row, required=False)
-    return json.dumps(rows)
+        restorable.append(row)
+    return json.dumps(restorable)

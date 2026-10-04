@@ -197,6 +197,75 @@ errors retain their separate recovery guidance. At execution, the job's captured
 context reaches the runtime and every worker before provider startup. Continuation
 keeps that member. Ordinary jobs without a member retain their existing V1 behavior.
 
+A member schedule written by 0.7.0-insider.1 to .5 carries `{member_id: <alias>,
+memory_store}` and no `execution_context`. The gateway's memory worker captures it
+once, right after the start-of-process store upgrade gives that store its
+`owner_member_id` and before the scheduler arms:
+`cron_service.identity.migrate_legacy_member_schedules` rewrites, under the cron
+store lock and only while the record still has no `execution_context`, that field
+and `member_id` (to the member's permanent id). Every reader then sees an ordinary
+captured schedule: dispatch, the dashboard's session registry for `cron:<id>`, and
+the crewmate pages that compare `member_id` with that id. Attribution
+(`legacy_member_cron_execution`) is the one a member chat of that shape is
+backfilled with: the store's `owner_member_id` names exactly one configured member,
+the schedule's `member_id` names that member by alias or by id, and the member still
+resolves to the store. The result is the member's own execution. An `agent_id` the
+old schedule named is kept unchanged in the record and becomes the captured
+execution's `template_id`, as `bind_cron_memory` does for a schedule that names an
+agent today, so `GET /api/crons`, `cron_list` and `dispatched_agents_from_disk` all
+report the template the job runs. A record that named no agent keeps an empty
+`agent_id` and runs as the member's own template. A member schedule on a V1 store
+keeps its V1 dispatch.
+
+The old build also left a session record under the schedule's stable key: on its
+first fire it wrote `{memory_store, agent: <member_id selector>}` to `cron:<id>`,
+whatever `agent_id` the schedule named. The single-agent fire publishes the capture
+under that same key with `bind_session_execution(key, execution)`, no
+`replace_existing`, which refuses any record that decodes to something else -- and
+the first read of that record backfills it into the member's OWN template
+(`_backfill_legacy_member_record`), so a capture naming an agent was "another
+execution" on every fire until the schedule auto-paused, while a record whose
+`agent` named anything but the member was refused as identity-less. So before
+mutating each schedule record, and still under the cron store lock,
+`cron_service.identity._reconcile_legacy_cron_session` brings that record into
+agreement with the capture. A record still in the legacy shape is rewritten by a
+compare-and-set against exactly that shape (no carrier, the schedule's store,
+persistent, no app, an `agent` naming the schedule's `member_id` selector, the
+member's id or the kept `agent_id`); a record an earlier read already backfilled is
+rebound with `replace_existing=True`, the decoded value as `expected` and
+`vouch=False`, and only when it differs from the capture in `template_id` alone.
+Nothing is guessed: the identity written is the one `legacy_member_cron_execution`
+attributed, and a record naming anyone else, a restricted mode or an app is left as
+it is and logged, since dispatch refuses it with its own reason. Only the stable
+single-agent key `cron:<id>` is reconciled: a `persistent_session: false` job mints
+a fresh key per fire, and a dispatching `agent_sequence` reads and replaces its own
+per-agent record. A schedule the old build never fired has no record, and the first
+fire writes one. A reconciliation that raises is logged and leaves that schedule
+uncaptured, with its original `member_id`, for the next start to retry; other
+schedules still proceed. A reconciliation that returns normally but deliberately
+leaves a session alone does not prevent capture. The `crons.json` write follows
+all successful reconciliations. If that write fails, a retry accepts a session
+already carrying the capture without rewriting it. Migration failures never
+escape into startup.
+
+Dispatch never runs an uncaptured pre-identity member schedule. `resolve_cron_memory`
+refuses it with a `LegacyScheduleRefused` (`memory_unavailable:`) naming its repair:
+`LEGACY_MEMBER_STORE_REMEDY` then restart when the store has no attributed owner;
+"delete this schedule" when the store's member was deleted; restore the store's
+entry in `config.json`, then restart the gateway, or delete the schedule when the
+store declaration is gone; "recreate it from the member's chat" when it names someone else; and
+"restart the gateway" when it is attributable but was not captured (a capture that
+could not take the store lock, or an older `crons.json` brought in later). The
+gateway gives that refusal no handling of its own: it raises to the scheduler
+exactly as every other `memory_unavailable` refusal before dispatch does (no
+canonical execution context, a malformed identity), and the run is recorded as an
+ordinary failed run -- `last_status` `error`, `last_error` the `memory_unavailable:`
+text naming its repair, a `failure` history row -- with the same auto-pause,
+one-shot and carried-result treatment as any other run that fails that way.
+Nothing is dispatched, no runtime marker (`run_never_started`,
+`fire_time_denied`) is set, and no separate alert is sent. The refusal recurs on
+every fire until the operator applies the repair its text names.
+
 `member_id` is the only per-crewmate GROUPING key the dashboard has, and it is the
 one the surfaces group by. `GET /api/crons` returns it (`null` for a job with no
 member), and the server offers no member filter or server-side grouping, so every

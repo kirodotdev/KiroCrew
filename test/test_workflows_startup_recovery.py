@@ -182,3 +182,97 @@ def test_bad_project_isolated_in_memory_and_original_snapshot_retained(tmp_path,
     errors = [record for record in caplog.records if record.levelname == "ERROR"]
     assert errors
     assert all(record.exc_info is None and record.exc_text is None for record in errors)
+
+
+# The exact row 0.7.0-insider.1 to .5 wrote into the public registry for a member
+# task whose payload lived in the hidden memory_stores/.task-runs/ sidecar.
+_LEGACY_PRIVATE_ROW = {"task_id": "member-task", "private_payload": True}
+_PUBLIC_ROW = {"task_id": "public-task", "spec_path": "", "status": "completed"}
+
+
+def _legacy_registry(tmp_path):
+    path = tmp_path / "runs.json"
+    path.write_text(json.dumps([_LEGACY_PRIVATE_ROW, _PUBLIC_ROW]), encoding="utf-8")
+    return path
+
+
+def test_legacy_private_reference_is_left_out_and_writes_are_not_fenced(tmp_path, caplog):
+    path = _legacy_registry(tmp_path)
+    before = path.read_bytes()
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert set(runner._runs) == {"public-task"}
+    assert not runner._snapshot_recovery_incomplete
+    # Restore itself writes nothing: the registry is rewritten on the next snapshot.
+    assert path.read_bytes() == before
+    assert set(tmp_path.iterdir()) == {path}
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "member-task" in warnings[0].getMessage()
+    assert "cannot resume" in warnings[0].getMessage()
+    assert "Re-create" in warnings[0].getMessage()
+    runner._runs["public-task"].name = "pending change"
+    runner._persist_runs()
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    assert [row["task_id"] for row in rows] == ["public-task"]
+    assert rows[0]["name"] == "pending change"
+    assert set(tmp_path.iterdir()) == {path}
+    restarted = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert set(restarted._runs) == {"public-task"}
+    assert not restarted._snapshot_recovery_incomplete
+
+
+def test_a_restart_that_finds_the_same_row_again_restores_and_warns_again(tmp_path, caplog):
+    path = _legacy_registry(tmp_path)
+    before = path.read_bytes()
+    TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    caplog.clear()
+    restarted = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert set(restarted._runs) == {"public-task"}
+    assert not restarted._snapshot_recovery_incomplete
+    assert path.read_bytes() == before
+    assert set(tmp_path.iterdir()) == {path}
+    assert "member-task" in caplog.text
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_private_reference_does_not_fence_async_writes(tmp_path):
+    path = _legacy_registry(tmp_path)
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    await runner._apersist_runs()
+    assert [row["task_id"] for row in json.loads(path.read_text(encoding="utf-8"))] == [
+        "public-task"
+    ]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"task_id": "member-task", "private_payload": "true"},
+        {"task_id": ["member-task"], "private_payload": True},
+        {"task_id": "", "private_payload": True},
+        {"task_id": "member-task", "private_payload": True, "status": "running"},
+    ],
+)
+def test_any_other_private_payload_row_still_refuses_the_registry(tmp_path, row):
+    path = tmp_path / "runs.json"
+    path.write_text(json.dumps([row, _PUBLIC_ROW]), encoding="utf-8")
+    before = path.read_bytes()
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert runner._snapshot_recovery_incomplete
+    assert runner._runs == {}
+    runner._persist_runs()
+    assert path.read_bytes() == before
+    assert set(tmp_path.iterdir()) == {path}
+
+
+def test_leaving_out_a_legacy_row_does_not_clear_another_recovery_failure(tmp_path):
+    path = tmp_path / "runs.json"
+    malformed = {"task_id": "bad-task", "status": "completed"}  # No spec_path.
+    path.write_text(json.dumps([_LEGACY_PRIVATE_ROW, malformed, _PUBLIC_ROW]), encoding="utf-8")
+    before = path.read_bytes()
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert runner._snapshot_recovery_incomplete
+    assert set(runner._runs) == {"public-task"}
+    runner._persist_runs()
+    assert path.read_bytes() == before

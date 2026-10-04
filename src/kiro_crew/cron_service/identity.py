@@ -13,11 +13,17 @@ back at dispatch (:func:`resolve_cron_memory`).
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.cron_service.model import CronJob
+    from kiro_crew.execution_context import ExecutionContext
+
+logger = logging.getLogger("kiro_crew.cron")
 
 
 def agent_sequence_dispatches(seq: list[str]) -> bool:
@@ -112,10 +118,18 @@ def resolve_cron_memory(job: CronJob, *, validate_memory_files: bool = True) -> 
         return execution.store.legacy_name, execution.template_id
     if not isinstance(job.member_id, str) or not isinstance(job.memory_store, str):
         raise ValueError("memory_unavailable: malformed schedule identity")
-    # A V2 schedule must carry the captured execution record: its member ID is
-    # an immutable database identity and cannot be reconstructed from a name.
-    # Older V1 schedules may still carry the historical member selector beside
-    # their explicit legacy store; keep dispatching that store instead of
+    if legacy_member_cron_execution(job) is not None:
+        # Attributable, but only the start-of-process capture may bind it: a
+        # run derived here would carry no record the dashboard's session
+        # registry, or the next fire after a template change, could agree on.
+        raise LegacyScheduleRefused(
+            "its member execution has not been captured yet",
+            "restart the gateway, which captures it",
+        )
+    # Any other V2 schedule must carry the captured execution record: its member
+    # ID is an immutable database identity and cannot be reconstructed from a
+    # name. Older V1 schedules may still carry the historical member selector
+    # beside their explicit legacy store; keep dispatching that store instead of
     # silently auto-pausing it after an upgrade.
     if memory_store_version(job.memory_store) == 2 or (job.member_id and not job.memory_store):
         raise ValueError("memory_unavailable: schedule has no canonical execution context")
@@ -125,6 +139,305 @@ def resolve_cron_memory(job: CronJob, *, validate_memory_files: bool = True) -> 
         else ""
     )
     return store, job.agent_id
+
+
+class LegacyScheduleRefused(ValueError):
+    """A pre-identity member schedule that dispatch must not run as it stands.
+
+    Raised by :func:`legacy_member_cron_execution` when the schedule cannot be
+    attributed, and by :func:`resolve_cron_memory` when it could be but was never
+    captured; always before anything is dispatched, and always carrying the step
+    that repairs it. The scheduler records it as an ordinary failed run.
+    """
+
+    def __init__(self, reason: str, remedy: str) -> None:
+        super().__init__(
+            f"memory_unavailable: this schedule predates member identities and {reason}; {remedy}"
+        )
+
+
+_RECREATE_REMEDY = "recreate it from the member's chat"
+_DELETE_REMEDY = "delete this schedule"
+
+
+def _is_legacy_member_schedule(job: CronJob) -> bool:
+    """The shape 0.7.0-insider.1 to .5 stored: a member alias and a store, nothing captured."""
+    return (
+        job.execution_context is None
+        and isinstance(job.member_id, str)
+        and isinstance(job.memory_store, str)
+        and bool(job.member_id)
+        and bool(job.memory_store)
+    )
+
+
+def legacy_member_cron_execution(job: CronJob, *, config: Any = None) -> ExecutionContext | None:
+    """The member a V2 schedule with no captured execution runs as, or a refusal.
+
+    0.7.0-insider.1 to .5 stored a member schedule as ``{member_id: <alias>,
+    memory_store}`` with no ``execution_context``. The start-of-process store
+    upgrade gives that store its ``owner_member_id``, and
+    :func:`migrate_legacy_member_schedules` then captures this result into the
+    record once; dispatch never runs an uncaptured one. Attribution is the one
+    shared by a chat with the same shape
+    (``execution_context.attribute_legacy_member``, which
+    ``_backfill_legacy_member_record`` also calls): the store's declared
+    owner must be exactly one configured member, the schedule's ``member_id``
+    must name that member by alias or by id, and the member must still resolve
+    to this store. Nothing is guessed. The result is the member's own execution;
+    :func:`migrate_legacy_member_schedules` then keeps whatever ``agent_id`` the
+    schedule named as its template and brings the session record the old build
+    left under ``cron:<id>`` into agreement.
+
+    ``None`` for any other shape, including a member schedule on a V1 store,
+    which keeps its V1 dispatch. Every refusal is a
+    :class:`LegacyScheduleRefused` naming its repair.
+    """
+    from kiro_crew.memory_stores import (
+        DEFAULT_MEMORY_STORE,
+        LEGACY_MEMBER_STORE_REMEDY,
+        validate_memory_store_name,
+    )
+
+    # The default store is V1 by definition, as memory_store_version answers.
+    if not _is_legacy_member_schedule(job) or job.memory_store == DEFAULT_MEMORY_STORE:
+        return None
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.execution_context import (
+        LegacyOwnerNotNamed,
+        LegacyStoreHasNoOwner,
+        LegacyStoreOwnerDeleted,
+        attribute_legacy_member,
+    )
+
+    config = config if config is not None else KiroCrewConfig.load()
+    try:
+        record = config.memory_stores.get(validate_memory_store_name(job.memory_store))
+    except ValueError as exc:
+        raise LegacyScheduleRefused(f"its memory store is invalid ({exc})", _DELETE_REMEDY) from exc
+    version = getattr(record, "memory_version", None)
+    if record is None or type(version) is not int or version not in (1, 2):
+        raise LegacyScheduleRefused(
+            "its memory store declaration is unavailable",
+            # Capture runs only at start, so the restored entry needs a restart
+            # before this schedule can run.
+            f"restore the store's entry in config.json, then restart the gateway, "
+            f"or {_DELETE_REMEDY}",
+        )
+    if version == 1:
+        return None
+    try:
+        return attribute_legacy_member(config, job.memory_store, job.member_id)
+    except LegacyStoreHasNoOwner as exc:
+        raise LegacyScheduleRefused(
+            "its memory store has no attributed owner",
+            f"to repair it, {LEGACY_MEMBER_STORE_REMEDY}, then restart",
+        ) from exc
+    except LegacyStoreOwnerDeleted as exc:
+        # The store outlives a deleted member on purpose (its id stays
+        # reserved), so there is no member left to recreate the schedule from.
+        raise LegacyScheduleRefused("its store's member was deleted", _DELETE_REMEDY) from exc
+    except LegacyOwnerNotNamed as exc:
+        raise LegacyScheduleRefused(
+            "cannot be attributed to its store's owner "
+            "(the schedule does not name the store's owner)",
+            _RECREATE_REMEDY,
+        ) from exc
+    except ValueError as exc:
+        # LegacyOwnerBoundElsewhere, UnknownMemoryStore and MemberSlugError are
+        # all ValueErrors.
+        raise LegacyScheduleRefused(
+            f"cannot be attributed to its store's owner ({exc})", _RECREATE_REMEDY
+        ) from exc
+
+
+def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
+    """Capture the execution of every pre-identity member schedule once; never raises.
+
+    Run after the start-of-process store upgrade, before the scheduler arms, so
+    every reader of the record -- dispatch, the dashboard's session registry, the
+    crewmate pages, which compare ``member_id`` with the member's permanent id --
+    sees an ordinary captured schedule rather than re-deriving one on each fire.
+    A compare-and-set keyed on shape: under the store's own lock, only a record
+    that still has no ``execution_context`` is rewritten, and only its
+    ``execution_context`` and ``member_id`` change. A named ``agent_id`` is kept
+    unchanged and captured as the execution's template, as :func:`bind_cron_memory`
+    does for a schedule that names an agent today. Before capturing the schedule,
+    the session record the old build left under its stable key is brought into
+    agreement (:func:`_reconcile_legacy_cron_session`), since dispatch publishes
+    the capture under that key and refuses a record that disagrees. If that step
+    raises, the schedule stays uncaptured for the next start to retry. A
+    schedule that cannot be attributed is left as it was and logged with its
+    repair; dispatch refuses it, and any schedule still uncaptured, through
+    :func:`resolve_cron_memory`. Returns the ids of the schedules it captured.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.cron_service.model import CronJob
+    from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
+
+    path = store_dir / _CRONS_FILE
+    try:
+        if not path.is_file():
+            return []
+        config = KiroCrewConfig.load()
+        with cron_store_lock(store_dir):
+            data = json.loads(path.read_bytes())
+            records = data.get("jobs") if isinstance(data, dict) else None
+            if not isinstance(records, list):
+                return []
+            migrated: list[str] = []
+            for record in records:
+                # The old build wrote no execution_context key at all.
+                if not isinstance(record, dict) or record.get("execution_context") is not None:
+                    continue
+                agent_id = record.get("agent_id")
+                sequence = record.get("agent_sequence")
+                job = CronJob(
+                    id=str(record.get("id", "")),
+                    name=str(record.get("name", "")),
+                    message="",
+                    agent_id=agent_id if isinstance(agent_id, str) else "",
+                    member_id=record.get("member_id"),  # type: ignore[arg-type]
+                    memory_store=record.get("memory_store"),  # type: ignore[arg-type]
+                    # The two fields that decide which session key dispatch mints,
+                    # read as the store reads them.
+                    persistent_session=bool(record.get("persistent_session", True)),
+                    agent_sequence=(
+                        [item for item in sequence if isinstance(item, str)]
+                        if isinstance(sequence, list)
+                        else []
+                    ),
+                )
+                try:
+                    execution = legacy_member_cron_execution(job, config=config)
+                except LegacyScheduleRefused as exc:
+                    logger.warning("Cron '%s' was left uncaptured: %s", job.name, exc)
+                    continue
+                if execution is None:
+                    continue
+                if job.agent_id:
+                    execution = replace(execution, template_id=job.agent_id)
+                # Reconcile first: a failed session write must leave the schedule
+                # uncaptured so the next start retries. An already-reconciled
+                # session is safe to retry if the schedule write later fails.
+                try:
+                    _reconcile_legacy_cron_session(job, execution)
+                except Exception:
+                    logger.warning(
+                        "Cron '%s' was left uncaptured: its session record was not reconciled",
+                        job.name,
+                        exc_info=True,
+                    )
+                    continue
+                record["execution_context"] = execution.to_record()
+                record["member_id"] = execution.member_id or ""
+                migrated.append(job.id)
+            if migrated:
+                atomic_write(path, json.dumps(data, indent=2))
+        return migrated
+    except Exception:
+        logger.warning("pre-identity member schedules were not upgraded", exc_info=True)
+        return []
+
+
+def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) -> None:
+    """Make the session record the old build left under *job*'s key carry *execution*.
+
+    0.7.0-insider.1 to .5 wrote a member schedule's session as
+    ``{memory_store: <store>, agent: <member_id selector>}`` under ``cron:<id>``
+    on its first fire, whatever ``agent_id`` the schedule named. The single-agent
+    fire publishes the captured execution under that same key with
+    ``bind_session_execution(key, execution)`` -- no ``replace_existing`` -- which
+    refuses any record that decodes to something else. The first read of that
+    record backfills it into the member's OWN template
+    (``execution_context._backfill_legacy_member_record``), so a schedule that
+    named an agent would be refused on every fire until it auto-paused; a record
+    whose ``agent`` is not the member is never backfilled and is refused as
+    identity-less instead. Either way the record is the schedule's own: the key
+    is minted from the job id, and its store is the one the schedule was just
+    attributed through. So the capture is written into it here, once.
+
+    Two shapes, one identity. A record still in the legacy shape is rewritten
+    by a compare-and-set against exactly that shape: no carrier, the schedule's
+    store, persistent, no app, and an ``agent`` naming what the schedule itself
+    names -- its ``member_id`` selector as the old build wrote it, the member's
+    id, or the ``agent_id`` it kept. A record some earlier read already
+    backfilled is rebound through :func:`bind_session_execution` with
+    ``replace_existing`` and the decoded value as ``expected``, and only when it
+    differs from the capture in its template alone -- same member, store, mode
+    and app -- so the rewrite changes nothing else. Nothing here guesses a
+    member: the identity written is the one
+    :func:`legacy_member_cron_execution` attributed, and a record that names
+    anyone else, a restricted mode or an app is left as it is and logged, since
+    dispatch will refuse it with its own reason. Not vouched: a cron key is never
+    the caller slot of an own-store admission.
+
+    Only the stable single-agent key is reconciled. A per-run key is fresh on
+    every fire, and the sequential path reads the record and replaces it itself.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import (
+        EXECUTION_CONTEXT_KEY,
+        bind_session_execution,
+        read_session_execution,
+    )
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory_stores import MissingExecutionIdentity
+
+    if agent_sequence_dispatches(job.agent_sequence) or not job.persistent_session:
+        return
+    session_key, _ = build_cron_session_context(job)
+    log = ConversationLog()
+    metadata, readable = log.get_metadata_status(session_key)
+    if not readable:
+        raise OSError(f"cron session record {session_key} is unreadable")
+    if not metadata:
+        # The old build never fired it; the first fire writes the record afresh.
+        return
+    accepted_agents = {job.member_id, execution.member_id, job.agent_id} - {"", None}
+    fields = {
+        EXECUTION_CONTEXT_KEY: execution.to_record(),
+        "memory_store": execution.store.legacy_name,
+        "memory_mode": execution.memory_mode,
+    }
+    if log.update_metadata_if(
+        session_key,
+        fields,
+        lambda meta: EXECUTION_CONTEXT_KEY not in meta
+        and meta.get("memory_store") == job.memory_store
+        and meta.get("agent") in accepted_agents
+        and meta.get("memory_mode", "persistent") == "persistent"
+        and not meta.get("app"),
+        require_existing=True,
+    ):
+        logger.info("Cron '%s': its pre-identity session record now carries its capture", job.name)
+        return
+    try:
+        current = read_session_execution(session_key)
+    except MissingExecutionIdentity:
+        logger.warning(
+            "Cron '%s': its session record cannot be attributed to the schedule and was "
+            "left as it is; archive that session or recreate the schedule",
+            job.name,
+        )
+        return
+    if current is None or current == execution:
+        return
+    if replace(current, template_id=execution.template_id) != execution:
+        logger.warning(
+            "Cron '%s': its session record belongs to another execution and was left as it "
+            "is; archive that session or recreate the schedule",
+            job.name,
+        )
+        return
+    bind_session_execution(
+        session_key, execution, replace_existing=True, expected=current, vouch=False
+    )
+    logger.info("Cron '%s': its session record now carries the agent it names", job.name)
 
 
 def bind_cron_memory(job: CronJob) -> None:

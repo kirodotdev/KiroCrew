@@ -1358,7 +1358,9 @@ derives the carrier from the repaired store's `owner_member_id` when that owner
 is unique and the record's `agent` names it, and persists it with a
 compare-and-set (see [session](session.md), *Agent selection provenance*). A
 record the store migration left unattributed stays refused, with the remedy in
-the message.
+the message. Member schedules of the same era are not backfilled at read: the
+gateway's memory worker captures them once, right after this migration and before
+the scheduler arms (see [learn-cron-dashboard](learn-cron-dashboard.md)).
 
 V2 labels owner changes as Edit and retained older experiences as Replaced
 experiences. Recall explains which context the member would receive; the record
