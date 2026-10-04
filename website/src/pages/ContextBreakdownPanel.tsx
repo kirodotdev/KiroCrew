@@ -554,15 +554,17 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
     cats: categorise(turn.blocks),
     isStart: turn.phase === 'session_start',
   }))
+  // One entry per TURN, not per row. A retried or recomposed turn writes one row per
+  // attempt and every attempt carries that turn's single ordinal, so listing rows would
+  // show "Turn N" twice and count it twice. Keep the newest attempt, the one the turn
+  // ended on, at the turn's first position. Session-start turns follow the same rule:
+  // a replay that regenerates a turn re-emits its session-start composition.
+  const startByTurn = new Map<number, ChartTurn>()
+  const byTurn = new Map<number, ChartTurn>()
+  for (const t of all) (t.isStart ? startByTurn : byTurn).set(t.displayN, t)
   // Session-start turns are listed above the chart: one of them is many times
   // the size of any later turn and would pin the y-axis, flattening the rest.
-  const starts = all.filter(t => t.isStart)
-  // One column per TURN, not per row. A retried or recomposed turn writes one row per
-  // attempt and every attempt carries that turn's single ordinal, so drawing rows would
-  // show "Turn N" twice and count it twice. Keep the newest attempt, the one the turn
-  // ended on, at the turn's first position.
-  const byTurn = new Map<number, ChartTurn>()
-  for (const t of all) if (!t.isStart) byTurn.set(t.displayN, t)
+  const starts = [...startByTurn.values()]
   const regular = [...byTurn.values()]
   // The chart draws the newest MAX_CHART_TURNS regular turns; the rest are earlier.
   const clipped = Math.max(0, regular.length - MAX_CHART_TURNS)
@@ -573,13 +575,9 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
   // never a turn shown above as a session-start row. Exact and window-scoped, because
   // the first shown row is chosen after the day-window filter.
   const firstShown = shown[0]
-  // DISTINCT ordinals, not rows. An ordinal numbers a TURN, and one turn can own more
-  // than one row: a failed replay that regenerates a turn re-emits its session-start
-  // injection, and both rows carry that turn's single ordinal. Counting rows would
-  // subtract two for one turn position and understate `hidden`, so the line would claim
-  // fewer earlier turns than there are -- and the claim is the one a reader cannot check.
+  // `starts` holds one entry per turn, so this counts turn positions, not rows.
   const startsBeforeFirstShown = firstShown
-    ? new Set(starts.filter(t => t.displayN < firstShown.displayN).map(t => t.displayN)).size
+    ? starts.filter(t => t.displayN < firstShown.displayN).length
     : 0
   const hidden = firstShown ? Math.max(0, firstShown.displayN - 1 - startsBeforeFirstShown) : 0
   const newest = all.length
@@ -589,8 +587,8 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
   const selectedChart = all[selected - 1]
   // The previous TURN, not the previous row: a retried turn's earlier attempts are not
   // drawn, so comparing against one would label attempt-vs-attempt as turn-vs-turn.
-  const kept = new Set<ChartTurn>(regular)
-  const sequence = all.filter(t => t.isStart || kept.has(t))
+  const kept = new Set<ChartTurn>([...starts, ...regular])
+  const sequence = all.filter(t => kept.has(t))
   const at = sequence.indexOf(selectedChart)
   const previous = at > 0 ? sequence[at - 1].total : undefined
   const delta = deltaText(selectedChart.total, previous)

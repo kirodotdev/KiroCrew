@@ -309,6 +309,26 @@ describe('ContextBreakdownPanel rendering', () => {
     expect(screen.getByText('44 earlier turns not shown')).toBeInTheDocument()
   })
 
+  it('lists a regenerated start turn once, from its newest attempt', () => {
+    // A replay that regenerates turn 41 (for example after a provider switch) writes a
+    // second session-start row carrying the same ordinal. That is ONE turn, so exactly
+    // one start row is listed, and it is the newest attempt: window-local index 2.
+    const regenerated = [
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
+      turnOf({ your_message: 120, memory: 31_000 }, { phase: 'session_start', ordinal: 41 }),
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 42 }),
+    ]
+    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: regenerated })} />)
+    const startRows = container.querySelectorAll('[data-start-row]')
+    expect(startRows).toHaveLength(1)
+    expect(startRows[0]).toHaveAttribute('data-turn', '2')
+    expect(startRows[0].textContent).toContain('Turn 41 · session start')
+    expect(startRows[0].textContent).toContain('31,120 characters')
+    // The previous turn for turn 42 is the kept start attempt, not the dropped one.
+    const detail = screen.getByTestId('selected-turn-detail')
+    expect(within(detail).getByText(/31,010 vs previous/)).toBeInTheDocument()
+  })
+
   it('draws a retried turn once, from its newest attempt', () => {
     // A retried or recomposed turn writes one row per attempt, all with the turn's one
     // ordinal. Drawing rows would show two "Turn 9" columns and say "Last 3 turns" for two.
