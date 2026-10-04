@@ -1806,7 +1806,14 @@ def _commit_by_name(paths, message, message_file, amend, git_dir, base_arg=""):
     branch = _head_ref()
     pre = _sha("HEAD")
     pre_tree, pre_parents, pre_author = _commit_info(pre)
-    diff_base = (pre_parents[0] if pre_parents else _empty_tree()) if amend else pre
+    # The paths this commit changes are diffed against its parent: HEAD or, for an
+    # amend, HEAD's first parent (the empty tree when HEAD is a root commit).
+    if not amend:
+        diff_base = pre
+    elif pre_parents:
+        diff_base = pre_parents[0]
+    else:
+        diff_base = _empty_tree()
     if amend:
         # The base as last fetched (an amend fetches nothing), so renames the
         # base made and published paths count exactly as in the push check.
@@ -2198,9 +2205,12 @@ _INTERRUPTED = {
 
 def main(argv=None):
     args = _parse_args(argv)
-    kind = (
-        "squash" if args.squash is not None else "commit" if args.commit or args.amend else "other"
-    )
+    if args.squash is not None:
+        kind = "squash"
+    elif args.commit or args.amend:
+        kind = "commit"
+    else:
+        kind = "other"
     previous = install_termination_handlers()
     try:
         return _main(args)
