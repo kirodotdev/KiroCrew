@@ -174,6 +174,25 @@ def _body(resp: web.Response) -> Any:
 
 
 class TestStatus:
+
+    @pytest.mark.asyncio
+    async def test_running_describes_only_visible_runs(self, tmp_path: Path) -> None:
+        """A hidden cron run must not make an idle visible result look active."""
+        runner = _runner(tmp_path)
+        runner.status.return_value = {
+            "running": True,
+            "runs": [
+                {"source": "dashboard", "running": False},
+                {"source": "cron", "running": True},
+            ],
+        }
+
+        resp = await api_taskrunner_status(_request(_state(runner), "GET"))
+
+        data = _body(resp)
+        assert data["runs"] == [{"source": "dashboard", "running": False}]
+        assert data["running"] is False
+
     @pytest.mark.asyncio
     async def test_unavailable_when_no_runner(self) -> None:
         resp = await api_taskrunner_status(_request(_state(None), "GET"))
