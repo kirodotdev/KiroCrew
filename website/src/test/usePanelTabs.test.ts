@@ -295,6 +295,87 @@ describe('usePanelTabs', () => {
     expect(result.current.activeTab?.modified).toBe('mod-2')
   })
 
+  describe('openWorkingTreeDiff (#9695 — coexisting diff tab)', () => {
+    it('opens a wtdiff tab keyed wtdiff:<path>, in diff mode, titled "name - Diff"', () => {
+      const { result } = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
+      act(() => result.current.openWorkingTreeDiff('/src/App.tsx', 'body', 'slot-a'))
+      expect(result.current.activeTab).toMatchObject({
+        id: 'wtdiff:/src/App.tsx', kind: 'wtdiff', title: 'App.tsx - Diff',
+        path: '/src/App.tsx', content: 'body', savedContent: 'body', diffMode: true, slot: 'slot-a',
+      })
+    })
+
+    it('coexists with the plain file tab for the same path instead of replacing it', () => {
+      const { result } = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
+      act(() => result.current.openFile('/src/App.tsx', 'file-body', 'slot-a'))
+      act(() => result.current.openWorkingTreeDiff('/src/App.tsx', 'wt-body', 'slot-a'))
+      // Both tabs are present — this is the whole point of #9695.
+      expect(result.current.tabs.map(t => t.id)).toEqual(['file:/src/App.tsx', 'wtdiff:/src/App.tsx'])
+      expect(result.current.activeId).toBe('wtdiff:/src/App.tsx')
+      // Opening the file again does NOT touch the wtdiff tab, and vice versa.
+      act(() => result.current.openFile('/src/App.tsx', 'file-body-2', 'slot-a'))
+      expect(result.current.tabs.map(t => t.id)).toEqual(['file:/src/App.tsx', 'wtdiff:/src/App.tsx'])
+      expect(result.current.activeId).toBe('file:/src/App.tsx')
+    })
+
+    it('dedupes per path: re-opening the diff focuses the existing wtdiff tab', () => {
+      const { result } = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
+      act(() => result.current.openWorkingTreeDiff('/src/App.tsx', 'v1', 'slot-a'))
+      act(() => result.current.openView('files'))
+      act(() => result.current.openWorkingTreeDiff('/src/App.tsx', 'v2', 'slot-a'))
+      expect(result.current.tabs.filter(t => t.kind === 'wtdiff')).toHaveLength(1)
+      expect(result.current.activeId).toBe('wtdiff:/src/App.tsx')
+      expect(result.current.tabs.find(t => t.id === 'wtdiff:/src/App.tsx')?.content).toBe('v2')
+    })
+
+    it('focuses (never reverts) a wtdiff tab holding unsaved edits on re-open', () => {
+      const { result } = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
+      act(() => result.current.openWorkingTreeDiff('/notes.md', 'disk', 'slot-a'))
+      act(() => result.current.patchTab('wtdiff:/notes.md', { content: 'user edits' }))
+      act(() => result.current.openView('files'))
+      act(() => result.current.openWorkingTreeDiff('/notes.md', 'disk-newer', 'slot-a'))
+      // Buffer preserved, tab refocused.
+      expect(result.current.tabs.find(t => t.id === 'wtdiff:/notes.md')?.content).toBe('user edits')
+      expect(result.current.activeId).toBe('wtdiff:/notes.md')
+    })
+
+    it('is persisted (not dropped like a snapshot diff) and self-hydrates with its body stripped', () => {
+      vi.useFakeTimers()
+      try {
+        const { result } = renderHook(() => usePanelTabs('slot-wt', mock.descriptors))
+        act(() => result.current.openWorkingTreeDiff('/src/App.tsx', 'big-body', 'slot-wt'))
+        act(() => { vi.advanceTimersByTime(500) })
+        const stored = JSON.parse(localStorage.getItem('mc-panel-tabs:slot-wt') || 'null')
+        const tab = stored.tabs.find((t: { id: string }) => t.id === 'wtdiff:/src/App.tsx')
+        expect(tab).toBeTruthy() // persisted, unlike a `diff:` tab
+        expect(tab.kind).toBe('wtdiff')
+        expect(tab.diffMode).toBe(true)
+        expect(tab.content).toBeUndefined() // heavy body stripped, re-fetched on reload
+        expect(tab.savedContent).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('evictDocumentBodies treats a clean wtdiff like a file (strips body, keeps the tab)', () => {
+      const a = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
+      act(() => a.result.current.openWorkingTreeDiff('/clean.md', 'raw', 'slot-a'))
+      act(() => { evictDocumentBodies() })
+      const wt = a.result.current.tabs.find(t => t.id === 'wtdiff:/clean.md')
+      expect(wt).toBeTruthy() // NOT closed like a snapshot diff
+      expect(wt?.content).toBeUndefined()
+      expect(wt?.savedContent).toBeUndefined()
+    })
+
+    it('evictDocumentBodies keeps a dirty wtdiff buffer whole', () => {
+      const a = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
+      act(() => a.result.current.openWorkingTreeDiff('/dirty.md', 'disk', 'slot-a'))
+      act(() => a.result.current.patchTab('wtdiff:/dirty.md', { content: 'user edits' }))
+      act(() => { evictDocumentBodies() })
+      expect(a.result.current.tabs.find(t => t.id === 'wtdiff:/dirty.md')?.content).toBe('user edits')
+    })
+  })
+
   it('keeps a folder tab while files open in separate de-duplicated tabs', () => {
     const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
     act(() => result.current.openFolder('/Users/me/workspace/KiroCrew', 'chat-a'))

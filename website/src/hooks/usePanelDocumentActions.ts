@@ -96,7 +96,40 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     }
   }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
 
-  // Open an artifact as a side-panel tab — the artifact twin of openFile, and
+  // Open a file's WORKING-TREE DIFF as its OWN panel tab (keyed `wtdiff:<path>`),
+  // coexisting with the plain file tab rather than flipping it into diff mode
+  // (#9695). The file twin of openFile: same seed read (body + binary verdict)
+  // and same diff prefetch, so the panel paints its diff immediately; only the
+  // tab identity and initial mode differ. Honours the IntelliJ file-bridge the
+  // same way openFile does.
+  const openWorkingTreeDiff = useCallback(async (filePath: string, opts?: { slot?: string | null }) => {
+    try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
+    if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
+    const slot = opts?.slot !== undefined ? opts.slot : (slotRef.current ?? null)
+    try {
+      const [read] = await Promise.all([
+        queryClient.fetchQuery({
+          queryKey: fileReadQueryKey(filePath),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          staleTime: FILE_READ_STALE_MS,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['file-diff', filePath],
+          queryFn: () => api.fileDiff(filePath),
+        }),
+      ])
+      const { text, ok, status, binary } = read
+      if (!ok && status !== 404) {
+        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        return
+      }
+      const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read) })
+      onOpened?.()
+    } catch (e) {
+      showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    }
+  }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
   // the single entry point every in-panel artifact affordance routes through
   // (the Artifacts tab's rows and `/artifacts/<slug>` links inside messages).
   // Rendering inline here instead of hard-navigating to the standalone detail
@@ -159,8 +192,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // The saved bytes become the tab's dirty baseline, so a later re-open of
     // the same path refreshes the buffer instead of (needlessly) preserving it
     // as if it still held unsaved work. Best-effort: a tab that is not open
-    // right now is simply not found by id.
+    // right now is simply not found by id. BOTH tab identities for this path
+    // are restamped — a file tab and its coexisting working-tree-diff tab share
+    // the same editable buffer semantics, so a save made in one must clear the
+    // dirty state the other would otherwise report.
     tabsCtl.patchTab(`file:${filePath}`, { savedContent: content })
+    tabsCtl.patchTab(`wtdiff:${filePath}`, { savedContent: content })
     // Reconcile the inline-preview draft for the SAVING slot (drafts are
     // slot+path keyed). Clear it ONLY if it still equals what we just saved -
     // if the user typed more while the write was in flight, the draft now holds
@@ -168,5 +205,5 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     if (getInlineDraft(requestSlot, filePath) === content) clearInlineDraft(requestSlot, filePath)
   }, [tabsCtl, slotRef])
 
-  return { openFile, openArtifact, saveFile }
+  return { openFile, openWorkingTreeDiff, openArtifact, saveFile }
 }

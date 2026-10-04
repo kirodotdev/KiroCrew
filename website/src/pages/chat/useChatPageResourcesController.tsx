@@ -509,6 +509,7 @@ export function useChatPageResourcesController({
   // save-baseline reconcile cannot drift between hosts.
   const {
     openFile: handleFileOpen,
+    openWorkingTreeDiff: handleOpenWorkingTreeDiff,
     openArtifact: handleArtifactOpen,
     saveFile: handleFileSave,
   } = usePanelDocumentActions({
@@ -784,6 +785,7 @@ export function useChatPageResourcesController({
     addSourceCommentToChat,
     colorThemeRef,
     handleFileOpen,
+    handleOpenWorkingTreeDiff,
     handleFolderOpen,
     handleArtifactOpen,
     handleOpenDiff,

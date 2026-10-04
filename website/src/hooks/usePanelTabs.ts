@@ -25,7 +25,20 @@ export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 
 // built-in literal REQUIRED in mapped types and preserves `tab.kind === 'termnal'`
 // typo errors; `KIND_ICON` is keyed by the non-app arms and app tabs fall back to
 // the descriptor's own icon.
-export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app' | `app:${string}`
+// `wtdiff` is the WORKING-TREE diff of a file, as its OWN tab — distinct from a
+// `file` tab (keyed `file:<path>`, flips between file and diff via an in-tab
+// toggle) and from the turn-snapshot `diff` tab (keyed `diff:<path>`, a
+// before/after pair captured from a chat file-change chip). Opening a file's
+// git diff from the Changed rail / Git view mints a `wtdiff:<path>` tab that
+// coexists with the plain `file:<path>` tab instead of flipping it, matching
+// VS Code / GitHub / GitLab, where a file view and its diff are independent
+// tabs (#9695). Unlike the `diff` snapshot, a `wtdiff` tab is PERSISTED and
+// self-hydrates on reload: its body is the file re-read from disk and its diff
+// is the CURRENT working tree, both faithfully re-fetchable — the exact thing a
+// snapshot cannot promise. Rendered through the same `MarkdownPanel` path as a
+// `file` tab (the working-tree diff IS that panel in diff mode), opened in diff
+// mode.
+export type TabKind = ViewKind | 'file' | 'diff' | 'wtdiff' | 'artifact' | 'terminal' | 'folder' | 'app' | `app:${string}`
 
 /** The PERMANENT pinned block: these views are ALWAYS present — pinned to the
  *  front, non-closable, and absent from the + menu — regardless of whether they
@@ -502,8 +515,10 @@ export function openPanelView(slotKey: string | null, kind: ViewKind): void {
  *  self-hydrating reference a reload restores (`HydratingFileTab`). A DIRTY tab
  *  (edits the owner has not saved) is kept whole: discarding it would destroy
  *  work silently, and its buffer is the owner's own typing, not a fresh read.
- *  Diff tabs are closed: their bodies are not re-fetchable by shape (the persist
- *  path drops them for the same reason). Returns how many tabs were touched. */
+ *  A `wtdiff` (working-tree-diff) tab follows the file arm — same re-fetchable
+ *  body. Only the turn-snapshot `diff` tab is closed: its before/after bytes are
+ *  not re-fetchable by shape (the persist path drops it for the same reason).
+ *  Returns how many tabs were touched. */
 /** Bumped by every `evictDocumentBodies`. A DIRECT file read -- `MarkdownPanel`'s
  *  refresh / watch re-read, which bypasses react-query -- captures it before the
  *  fetch and discards its result if it moved: a read that STARTED while the
@@ -525,8 +540,12 @@ export function evictDocumentBodies(): number {
       const tabs: PanelTab[] = []
       for (const t of b.tabs) {
         if (t.kind === 'diff') { changed = true; touched++; continue }
-        const dirty = t.kind === 'file' && t.content !== undefined && t.savedContent !== undefined && t.content !== t.savedContent
-        if (t.kind === 'file' && t.content !== undefined && !dirty) {
+        // `wtdiff` is file-shaped (re-fetchable body + working-tree diff), so it
+        // follows the `file` arm — strip a clean body, keep a dirty one — not the
+        // `diff` arm that closes the tab.
+        const fileLike = t.kind === 'file' || t.kind === 'wtdiff'
+        const dirty = fileLike && t.content !== undefined && t.savedContent !== undefined && t.content !== t.savedContent
+        if (fileLike && t.content !== undefined && !dirty) {
           const copy = { ...t }; delete copy.content; delete copy.savedContent
           tabs.push(copy); changed = true; touched++
           continue
@@ -938,6 +957,41 @@ export function usePanelTabs(
     })
   }, [key])
 
+  /** Open (and focus) a file's WORKING-TREE DIFF as its own tab, keyed
+   *  `wtdiff:${path}` so it coexists with the plain `file:${path}` tab instead
+   *  of flipping it into diff mode (#9695). Rendered through the same
+   *  `MarkdownPanel` path as a file tab — the working-tree diff IS that panel in
+   *  diff mode — so this is a file-shaped tab opened in diff mode under a distinct
+   *  identity. The body is re-fetchable (file re-read from disk; diff is the
+   *  current working tree), so it persists and self-hydrates like a file tab,
+   *  unlike the turn-snapshot `diff:` tab.
+   *
+   *  Dirty-preserving on the SAME terms as `openFile`: a user can edit inside a
+   *  wtdiff tab (the panel's in-tab toggle flips it to the editable file view),
+   *  so a re-open of a tab holding unsaved edits FOCUSES it and refreshes
+   *  everything except the buffer and its baseline, never reverting the user's
+   *  text. */
+  const openWorkingTreeDiff = useCallback((path: string, content: string, slot: string | null = null, opts?: { binary?: boolean; partial?: boolean }) => {
+    // Same slot/bucket routing as openFile (see its note): the stamp and the
+    // bucket must name the same slot, and a `null` slot keeps the bound key.
+    const target = slot !== null ? bucketKey(slot) : key
+    const title = i18nT('hooks.usePanelTabs.diff', { name: basename(path) })
+    mutateSlot(target, b => {
+      const prev = b.tabs.find(t => t.id === `wtdiff:${path}`)
+      if (prev && prev.content !== prev.savedContent) {
+        // Unsaved edits in this tab's buffer — focus, never revert (see openFile).
+        return upsertInBucket(b, { id: `wtdiff:${path}`, kind: 'wtdiff', title, path, slot, diffMode: true })
+      }
+      return upsertInBucket(b, {
+        id: `wtdiff:${path}`, kind: 'wtdiff', title, path, content, slot,
+        savedContent: content,
+        binary: opts?.binary,
+        partial: opts?.partial,
+        diffMode: true,
+      })
+    })
+  }, [key])
+
   const openDiff = useCallback((path: string, modified: string, original = '') => {
     upsert({ id: `diff:${path}`, kind: 'diff', title: i18nT('hooks.usePanelTabs.diff', { name: basename(path) }), path, modified, original })
   }, [upsert])
@@ -1106,8 +1160,8 @@ export function usePanelTabs(
 
   return useMemo(() => ({
     tabs, activeId: effectiveActiveId, activeTab,
-    openView, openPanelTab, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp,
+    openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+  }), [tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }
