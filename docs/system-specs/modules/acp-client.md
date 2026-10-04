@@ -38,6 +38,177 @@ model-catalog rules to `acp/runtime_models.py`; process-tree inspection to
 `acp/runtime_start.py`. A moved name a test patches through its facade is
 forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins.
 
+## Pi MCP broker admission and lifecycle
+
+The session-owned broker is an intentional second lifecycle plane rather than a
+second policy plane. Pi's sealed extension needs a per-session endpoint whose
+single-use approvals, session attribution, sandbox inputs, and teardown share the
+ACP session lifetime; the shared gateway pool does not carry that Pi wire or its
+permission generations. The broker therefore owns only Pi's child transport and
+lifecycle while reusing Crew's admission, sandbox, redaction, process-identity,
+and audit controls. `AcpClient` remains the sole production admission caller: it
+applies disabled-server, transport, identity-bound, projection-allowlist, and
+duplicate-name filters, then passes a REQUIRED `AdmittedServerRoster` to
+`PiMcpBroker`. The broker cannot construct or re-admit a raw server list.
+MCP-child request and notification writes and bridge response writes use the
+bounded writers in `acp/transport_framing.py`; each child or bridge connection
+has its own write lock so a stopped reader cannot hold a write indefinitely.
+Teardown closes the endpoint and revokes approvals, but retains any child whose
+death could not be verified. The owning `AcpClient` retains the broker on
+teardown failure so a later stop can retry; it cannot start a replacement broker
+while that cleanup remains unresolved. A host-owned retry task also retains the
+broker and retries failed child cleanup until the child dies or a verified kill
+succeeds, even if the session owner is discarded.
+
+Pi's MCP extension connects to a session-owned host broker. Same-user socket
+admission is only the transport check: every tool call must consume an exact,
+single-use host permission for its tool-call id, tool name and JSON arguments.
+Only a successfully delivered, recognized allow response grants that permission;
+a transport security-floor refusal rejects the dialog before the broker stages a
+grant. On the automatic permission path, Pi retains the advertised allow ids
+while its broker is active so delivery can be verified; other backends retain
+only the reject id for a floor refusal. An explicit allow id consumes recorded
+options only for brokered Pi calls; other backends retain their retry behavior.
+A racing call waits for delivery, while send failure or cancellation revokes it.
+Each delivery carries a request generation: replacement, terminal tool events
+and delivery timeout invalidate it, so late completion cannot grant a reused
+call id. A mismatched request does not consume another call's grant. Denied, truncated,
+changed and replayed calls fail before reaching a server. Server specifications
+remain in host memory; no credential-bearing server-list artifact is written.
+Bridge calls reject server and tool names over 512 UTF-8 bytes before building
+an approval title or recording an audit.
+Pending and approved calls together are limited to 32. The broker retains only
+bounded request and call IDs, tool title, and canonical arguments (at most
+2 MiB serialized); excess permission frames grant nothing. Unrelated envelope
+fields are never retained.
+Endpoint directory setup, stale socket cleanup, and socket permission changes
+run off the gateway event loop so a slow filesystem cannot stall other sessions.
+At admission the broker retains at most 64 JSON server specs, each at most
+64 KiB serialized; oversized specs and entries beyond the count limit are
+reported as initialization failures while admitted siblings can still start.
+The Pi session report uses that same admission snapshot: accepted names are at
+most 512 UTF-8 bytes, rejected names have bounded failure labels, and the
+over-limit tail has one summary entry. It never retains the unbounded source
+server list as report state. Admission failure reasons remain visible even when
+every server is rejected and no bridge broker starts. The summary label is distinct from every admitted
+name after report normalization, so an initialized server cannot hide the
+count-limit failure. The broker holds at most 64 active client
+connections and closes excess connections at admission.
+Pooled stubs obey the same projected tools allowlist, per-tool denies, and
+whole-server disables as direct servers; a failed projection or gateway stub
+lookup admits no servers. Pi withholds pooled
+stubs from the ACP `session/new` and `session/load` arrays because its sealed
+extension gets them from the broker; this prevents a second mount if Pi starts
+honoring those arrays. Tool descriptions are
+limited to 4096 characters.
+The aggregate serialized tool index is limited to 7 MiB, below the extension's
+8 MiB receive ceiling. Child-authored descriptions, nested schema strings,
+tool results, errors, and diagnostic output are scrubbed for credential
+patterns and secret-bearing declared or trusted child environment values,
+including their padded or unpadded base64 and base64url encodings and encoded
+blobs that contain them, before Pi or logs see them. A declared or trusted value
+counts as secret-bearing when its KEY names a credential, a `TOKEN`, `SECRET`,
+`PASSWORD`, `CREDENTIAL`, `AUTH`, `KEY`, `PASS`, `PIN`, `PASSWD`, `COOKIE` or
+`COOKIES` segment,
+including a compound spelling such as `APIKEY` — or when the VALUE is shaped
+like one: the package credential matcher recognises it, it is a 32-or-longer hex
+run, or it is a 20-or-longer whitespace-free opaque token that mixes lower case,
+upper case and digits and is neither a URL nor a filesystem path.
+Length alone is NOT evidence. `GITHUB_HOST=github.com`, `NODE_ENV=production`
+and `AWS_REGION=eu-west-1` are ordinary metadata, and a length-only rule redacted
+them out of every description, schema and result and withheld any callable tool
+whose NAME contained one. A working tool vanished from Pi's index because its
+server declared its own hostname. What stays covered: host port and channel
+identity labels are excluded by name; `KIROCREW_SESSION_KEY` and
+`KIROCREW_STUB_SESSION_TOKEN` are selected by the key rule whatever their value
+looks like; and the credential-pattern and exfiltration-URL scrubs run on every
+metadata string unconditionally, so a credential inside child-authored text is
+removed whether or not a declared environment value named it.
+Callable names requiring redaction are withheld and reported. A server whose
+scrubbed metadata exceeds the remaining budget is
+reported unavailable without discarding healthy siblings.
+Each brokered call response is capped at 7 MiB before writing to the bridge;
+an oversized result returns an error for that call and leaves the connection
+available for later tools. Broker error text is limited to 4096 characters, so
+a child-authored error cannot overflow the bridge receiver. Error text is
+redacted for credentials, exact child environment values, and exfiltration
+URLs before that limit is applied.
+The bridge bounds individual receive frames, so multiple complete responses
+in one socket chunk
+do not trip its buffer limit.
+If a child writes a stdout frame over the read limit, the broker fails pending
+calls immediately, drains through that frame's newline, and continues reading
+later frames. A child whose stdout reader exits is removed from the tool index.
+An overlong stderr line is discarded while the broker continues draining.
+
+Broker children use the session sandbox mode and resource-limited spawn path.
+The broker sanitizes spec-declared environment values before adding host-authored
+identity and stub tokens, so loader variables cannot execute code in the spawn
+shim before confinement and spec values cannot forge Crew's identity namespace.
+Credential-bearing host proxy URLs are omitted from inherited child environment;
+an unauthenticated proxy remains available.
+Verified mask-exempt control-plane children also strip inherited Python and
+Node loader variables and `VIRTUAL_ENV` from their explicit spawn environment;
+the sandbox launcher independently strips Python loader variables. They also
+disable Python's user site and unsafe startup path.
+Each child starts in the verified session work directory; the client normalizes
+relative paths and the broker refuses an absent or relative directory. Command
+paths must be absolute or bare names.
+One relative-path server command is reported as that server's failure;
+duplicate server names withhold both ambiguous entries. Valid siblings
+continue starting.
+The child `PATH` excludes relative entries and directories inside the work
+directory before a sandbox wrapper or server executable is resolved. On Windows,
+the suspended child receives its resource ceiling and resumes before the MCP
+handshake. On POSIX, the broker captures the isolated process group while the
+leader is alive and signals that group during cleanup, including after the leader
+has exited, only while a member's process identity still verifies the group.
+Descendants captured with atomic process identities at MCP handshake and call
+boundaries are also checked and signalled by individual PID if they leave that
+group; a mismatched or unreadable identity is refused. The broker retains at
+most 1024 descendant identities per child. When that bound is reached, it
+discards only identities whose process is confirmed gone or recycled. If live
+descendants still exceed the bound, the broker attempts verified teardown and
+refuses further calls; retained identities continue through that teardown. An
+unrecorded helper that detached before overflow detection cannot be proven
+gone by that teardown. Each detached-helper signal passes the runtime-kill
+attribution gate. Group refusal does not skip cleanup of verified detached
+helpers. Pi settles its broker before resetting
+its process state; Kiro's shared reset remains synchronous.
+Third-party children keep the Pi adapter's
+credential-directory mask. Only host-managed control-plane children whose
+invocation matches the current managed entry omit that mask, so they can read
+their protected session binding; a server name alone cannot grant the exception.
+Failed or cancelled child startup reaps that child while preserving healthy
+siblings. Up to eight children start concurrently, each with a 30-second
+budget; the aggregate 60-second budget cancels unfinished children and keeps
+those ready to serve. Session MCP reports carry
+broker initialization failures and bridge-unavailable outcomes to the dashboard.
+The broker emits SEL access records for accepted and denied local peers, including
+peers refused when its active-client limit is full. Concurrent capacity
+refusals share one in-flight audit so reconnect bursts cannot queue unbounded
+work. It records one tool-invocation
+outcome for each brokered call (`completed`, `denied`, or
+`failed`, including MCP `isError` results). The call response is sent before
+its audit write; the bridge allows 130 seconds for a 120-second child call.
+Failed writes to an MCP child's stdin clear that request's pending response slot.
+Audit writes run off the event loop and are bounded; failures are
+diagnostic and never grant a denied call. Argument payloads and untrusted
+call ids are excluded from the audit record. The ACP provider delegates the
+warm-pool policy check to its client, which compares Pi's current MCP projection
+with the one used to prewarm the broker before a warm-pool claim.
+A changed or unreadable policy discards the prewarmed process; a matching
+claim rekeys the broker so later records name the claiming session.
+The sealed extension probe verifies loading; it does not prove a server started.
+MCP inputs remain complete within the existing 200,000-character gate envelope
+ceiling. The bridge preserves supported text and image result blocks, appends structured
+output as model-visible text, retains the full MCP result in details, and carries
+MCP error status through Pi's tool-result hook. MCP stderr
+is redacted and bounded before logging. Windows child teardown retires the owned
+process tree even when its root has already exited. One child cleanup failure
+does not skip sibling teardown or broker state cleanup, and startup retains its
+original exception if cleanup also fails.
+
 ## Native skill startup views
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness

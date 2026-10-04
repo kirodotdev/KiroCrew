@@ -611,6 +611,44 @@ class WarmSessionPool:
                 await self._owner._discard_pool_provider(provider, "Warm pool discard")
                 claimed = self._owner._claim_from_pool(agent)
                 continue
+
+            try:
+                policy_current = await provider.pool_mcp_policy_current()
+            except asyncio.CancelledError:
+                # The provider is out of the queue; its shutdown must finish
+                # so Pi's host broker can stop its children and remove its socket.
+                cleanup = asyncio.create_task(
+                    self._owner._discard_pool_provider(provider, "Warm pool claim cancellation")
+                )
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        break
+                if cleanup.cancelled():
+                    self._owner._dispatch_hard_kill(provider)
+                else:
+                    failure = cleanup.exception()
+                    if failure is not None:
+                        self._deps.logger.warning(
+                            "Warm pool claim cancellation cleanup failed — hard-killing",
+                            exc_info=(type(failure), failure, failure.__traceback__),
+                        )
+                        self._owner._dispatch_hard_kill(provider)
+                raise
+            except Exception:
+                self._deps.logger.warning(
+                    "Warm pool: MCP policy check failed, discarding", exc_info=True
+                )
+                policy_current = False
+            if not policy_current:
+                self._deps.logger.info("Warm pool: MCP policy changed after spawn, discarding")
+                discarded = True
+                await self._owner._discard_pool_provider(provider, "Warm pool MCP policy discard")
+                claimed = self._owner._claim_from_pool(agent)
+                continue
             return provider
 
         if discarded:
