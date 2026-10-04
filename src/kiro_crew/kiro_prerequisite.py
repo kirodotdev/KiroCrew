@@ -336,6 +336,11 @@ async def spawn_supervised_oneshot(argv: list[str], **kwargs: Any) -> asyncio.su
     (Windows ignores ``start_new_session``). So does a
     host that cannot reap (no pidfd, e.g. macOS): there the supervisor would only
     wait for the leftovers instead of ending them, which would hold the call open.
+
+    Every call is spawned with ``CREATE_NO_WINDOW`` (``0`` off Windows) unless
+    the caller passes its own ``creationflags``: these are background helpers,
+    and a console-subsystem child of the console-less gateway otherwise gets a
+    console of its own that flashes on screen at each call.
     """
     supervised = False
     if _PROCESS_GROUP_SUPERVISOR_CODE and argv and _host_can_reap():
@@ -357,6 +362,7 @@ async def spawn_supervised_oneshot(argv: list[str], **kwargs: Any) -> asyncio.su
             ]
     if not supervised:
         _note_unsupervised_once()
+    kwargs.setdefault("creationflags", platform_compat._SUBPROCESS_NO_WINDOW)
     return await create_subprocess_limited(*argv, start_new_session=True, **kwargs)
 
 
