@@ -66,6 +66,7 @@ export const TARGET_SCRIPTS = {
   ko: ['Hangul'],
   ru: ['Cyrillic'],
   'zh-CN': ['Han'],
+  'zh-TW': ['Han'],
 }
 
 /**

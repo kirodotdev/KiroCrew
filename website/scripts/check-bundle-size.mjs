@@ -44,7 +44,7 @@ const CATALOG_CHUNK_BUDGET = 3 * 1024 * KB
 
 /** The non-English catalogs `src/i18n/lazy.ts` emits as their own chunks. */
 const CATALOG_CHUNK_BUDGETS = Object.fromEntries(
-  ['bn', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'ko', 'pt', 'ru', 'zh-CN'].map((code) => [code, CATALOG_CHUNK_BUDGET])
+  ['bn', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'].map((code) => [code, CATALOG_CHUNK_BUDGET])
 )
 
 export const CHUNK_BUDGETS = {
@@ -61,7 +61,7 @@ export const CHUNK_BUDGETS = {
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from the catalog chunks above because
   // `src/i18n/index.ts` imports English alone, so the ~600 components that call
-  // `t()` no longer pull the other twelve catalogs in behind them. Sized for the
+  // `t()` no longer pull the other thirteen catalogs in behind them. Sized for the
   // English catalog plus headroom; a jump here means a non-English catalog, or a
   // library, reached the runtime module.
   // Re-measured 2026-09-04 at 740 KB, and the 702 KB note above was ~38 KB

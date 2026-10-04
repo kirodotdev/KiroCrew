@@ -9,7 +9,7 @@
  *
  * `EN_TRANSLATION` lives here rather than in `./index` because BOTH catalog
  * owners need it: `./index` seeds its registry with English alone, and
- * `./catalogs` lists it alongside the other twelve. The module cache makes one
+ * `./catalogs` lists it alongside the other thirteen. The module cache makes one
  * merge serve both, and the shared object identity is what lets
  * `registerCatalogs` recognise the English bundle it already holds instead of
  * re-merging it.

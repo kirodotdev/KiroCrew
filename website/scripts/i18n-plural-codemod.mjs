@@ -215,7 +215,7 @@ if (CHECK) {
       + `\n\nEvery site is listed so yours is findable: the one(s) this branch added are`
       + `\nthe growth. Replace the glued suffix with i18nT('key', { count: n }) and`
       + `\n_one/_other catalog forms — see this script's header for why no hardcoded`
-      + `\nspelling can be correct in 12 languages. If no listed site is yours, a`
+      + `\nspelling can be correct in 13 languages. If no listed site is yours, a`
       + `\nconcurrent merge grew the count under you: convert the added site, or raise`
       + `\nHARDCODED_CEILING in the same PR with a line explaining the growth is`
       + `\ninherited.\n`,

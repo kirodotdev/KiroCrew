@@ -3078,37 +3078,29 @@ membership: `context.ui_language_tag()` checks the tag against
 `SUPPORTED_LANGUAGES` entries) and treats a non-catalog tag exactly like
 `""`/Auto — no `[UI LANGUAGE]` steer is emitted, so the agent is never steered
 to a language the chrome cannot render (#1130). Adding a language is therefore
-the three frontend edits — add `locales/<tag>.json`, register the picker entry
-in `SUPPORTED_LANGUAGES`, and add the static import plus `AUTHORED_CATALOGS`
-entry in `i18n/catalogs.ts` — **plus one mechanical backend entry** in
+the frontend data edits listed in `website/src/i18n/languages.ts` — add
+`locales/<tag>.json`, register the picker entry in `SUPPORTED_LANGUAGES`, add the
+`AUTHORED_CATALOGS` entry in `i18n/catalogs.ts`, and its lazy loader in
+`i18n/lazy.ts` plus its chunk budget — **plus one mechanical backend entry** in
 `_UI_LANGUAGE_CATALOGS`, which the drift gate in
 `test/test_context_ui_language.py` names explicitly on failure.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`. Right-to-left
+order): `en`, `zh-CN`, `zh-TW`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`. Right-to-left
 languages are deliberately **not** shipped yet: the catalogs would translate
 fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
 `left-*`, `text-left`) and unmirrored directional icons, so an RTL locale would
 render correct text in a visibly wrong shell. RTL requires `dir="rtl"` plus a
 logical-property conversion first.
 
-All catalogs are **statically bundled**, so `t()` stays synchronous (see the
-rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
-every language: at 8592 keys the catalogs share one chunk that is **~173 KB gzip
-per catalog, ~2.0 MB gzip for the twelve combined** (`npm run analyze`, then gzip
-the `assets/t-*.js` chunk). This is tolerable only because the dashboard is served
-from a loopback gateway — over a network it is already past the point of
-justification, and each further catalog adds another ~173 KB to every user's first
-load regardless of the language they read.
-
-The documented next step is therefore to keep `en` static and lazily fetch the
-active non-English catalog. That seam is already isolated to
-`website/src/i18n/catalogs.ts` — the module that owns every catalog import — plus
-a `<Suspense>` boundary in `main.tsx`; no call site changes, and
-`registerCatalogs()` is where a fetching backend hands its catalog over.
-**Catalog #13 belongs behind that seam**: Korean is #12 and the last one this
-chunk absorbs in front of it. Re-measure when the seam lands — the figure above
-is what says whether it worked.
+Only `en` is bundled up front. Since #14228 the browser entry,
+`website/src/i18n/lazy.ts`, fetches every other catalog as its own chunk the first
+time that language is needed, and `t()` stays synchronous because a language is
+registered before it renders (see `website/src/i18n/index.ts`). A catalog
+therefore costs only the users who pick it; `website/scripts/check-bundle-size.mjs`
+budgets each catalog chunk under one shared ceiling. `zh-TW` was catalog #13, the
+first added behind that seam, and `catalogParity.test.ts` still caps the count so
+each further catalog arrives with its own chunk measurement.
 
 #### The tag reaches the agent, too
 

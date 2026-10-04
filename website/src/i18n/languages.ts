@@ -54,6 +54,10 @@ export interface LanguageEntry {
 export const SUPPORTED_LANGUAGES: readonly LanguageEntry[] = [
   { code: 'en', label: 'English' },
   { code: 'zh-CN', label: '简体中文' },
+  // After zh-CN on purpose: a Chinese tag with no catalog of its own (`zh`,
+  // `zh-Hant`, `zh-HK`) falls back to the FIRST `zh-*` entry (`matchTag` in
+  // `./detect`), so this order keeps that fallback on zh-CN.
+  { code: 'zh-TW', label: '繁體中文' },
   { code: 'hi', label: 'हिन्दी' },
   { code: 'es', label: 'Español' },
   { code: 'fr', label: 'Français' },
