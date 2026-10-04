@@ -114,6 +114,23 @@
     "spawn_label": "kiro-cli acp",
     "stderr_label": "kiro-cli"
   },
+  "lmstudio": {
+    "argv": [
+      "/opt/bin/python",
+      "-P",
+      "-m",
+      "kiro_crew.acp.lmstudio_server"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "python -m kiro_crew.acp.lmstudio_server",
+    "stderr_label": "python -m kiro_crew.acp.lmstudio_server"
+  },
   "opencode": {
     "argv": [
       "/opt/bin/opencode",

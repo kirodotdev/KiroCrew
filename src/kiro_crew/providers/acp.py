@@ -40,6 +40,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -731,6 +732,11 @@ class AcpProvider(LLMProvider):
     def is_deepseek_backend(self) -> bool:
         """True when this ACP provider talks to DeepSeek Harness (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
+    def is_lmstudio_backend(self) -> bool:
+        """True when this ACP provider talks directly to LM Studio."""
+        return self._client.backend == ACP_BACKEND_LMSTUDIO
 
     @property
     def is_kas_backend(self) -> bool:

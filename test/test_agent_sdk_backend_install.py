@@ -863,6 +863,7 @@ class TestEndpointPayloadShape:
             "goose",
             "kas",
             "kiro",
+            "lmstudio",
             "opencode",
             "pi",
         ]

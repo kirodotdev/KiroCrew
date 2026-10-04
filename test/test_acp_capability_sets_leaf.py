@@ -37,6 +37,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -206,11 +207,14 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # deepseek joins for that same capture reason, in its strongest form: its
     # select's values are JSON-encoded ``[provider, model]`` pairs from its own live
     # catalog, which nothing can spell from a stored bare model name.
+    # lmstudio joins for the capture reason as well: its ids are the local LM Studio
+    # server's own downloaded-model keys, which no static registry names.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
         {
             ACP_BACKEND_CLAUDE,
             ACP_BACKEND_CODEX,
             ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_LMSTUDIO,
             ACP_BACKEND_PI,
             ACP_BACKEND_GOOSE,
             ACP_BACKEND_DEEPSEEK,

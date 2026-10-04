@@ -1,0 +1,8 @@
+{"_meta":{"backend":"lmstudio","recorded":"synthesized","date":"2026-09-13","agent_version":"0.2.0","note":"Synthesized from the owned adapter wire contract to cover the standard ACP event classes and the mandatory per-tool permission relay without contacting a local model."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"kirocrew-lmstudio","version":"0.2.0"},"agentCapabilities":{"loadSession":false}}}
+{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture-lmstudio"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-lmstudio","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Checking"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-lmstudio","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"read_file","kind":"read","status":"pending","rawInput":{"path":"fixture.txt"}}}}
+{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission","params":{"sessionId":"fixture-lmstudio","toolCall":{"toolCallId":"call-1","title":"read_file","kind":"read","rawInput":{"path":"fixture.txt"}},"options":[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"reject_once","name":"Reject","kind":"reject_once"}]}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-lmstudio","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","rawOutput":{"output":"fixture"}}}}
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}

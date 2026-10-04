@@ -21,6 +21,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -298,6 +299,7 @@ PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
 PROVIDER_LABEL_CODEX = "codex"
 PROVIDER_LABEL_OPENCODE = "opencode"
+PROVIDER_LABEL_LMSTUDIO = "lmstudio"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
@@ -317,6 +319,7 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
     ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
     ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
     ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
+    ACP_BACKEND_LMSTUDIO: PROVIDER_LABEL_LMSTUDIO,
     ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
     ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
@@ -381,6 +384,15 @@ UPDATE_CONFIG_OPTION = "config_option_update"
 UPDATE_SESSION_INFO = "session_info_update"
 UPDATE_USAGE = "usage_update"
 
+#: A single back-and-forth status line for the agent ("thinking", "waiting on the
+#: local model", ...). Distinct from a message/thought chunk on purpose: reusing
+#: either would put status text into the answer transcript.
+UPDATE_AGENT_STATUS = "agent_status_update"
+
+#: The model's advertised context window, so the dashboard's window meter
+#: reflects the model that is actually serving rather than a hosted default.
+UPDATE_CONTEXT_WINDOW = "context_window_update"
+
 # Updates we recognise but don't yet surface (plumbing-only). Listed here so the
 # "unhandled session update" log doesn't fire for them.
 KNOWN_SESSION_UPDATES = frozenset(
@@ -396,6 +408,8 @@ KNOWN_SESSION_UPDATES = frozenset(
         UPDATE_CONFIG_OPTION,
         UPDATE_SESSION_INFO,
         UPDATE_USAGE,
+        UPDATE_AGENT_STATUS,
+        UPDATE_CONTEXT_WINDOW,
     }
 )
 
@@ -450,6 +464,15 @@ STOP_REASON_TOOL_STALL = "error: tool stall"
 # it deliberately triggers NO retry — the user-visible compaction notice
 # already explains what happened, and this only releases the slot.
 STOP_REASON_COMPACTION_FAILED = "error: compaction failed"
+
+# Signalled by a Crew-owned direct adapter when the turn stopped because a LOCAL
+# budget was reached (steps, tool calls, wall clock) rather than because the
+# model refused. Deliberately NOT ``STOP_REASON_REFUSAL``: "refusal" is the
+# model-side content filter, and wearing it here would render the false card
+# "Response declined by the model … tripped the filter". It is also deliberately
+# outside the "error:" family, so it classifies as a deliberate stop rather than
+# a transient failure — re-queuing the same prompt would only re-hit the budget.
+STOP_REASON_LOCAL_LIMIT = "local_limit"
 
 # ── Stop-reason classes ──
 #
