@@ -575,7 +575,9 @@ def _governance_denial(
         # caller that most needs it. Raised by the GPT review.
         manager = HookManager(hooks_config_from_config_dict(getattr(cfg, "hooks", {}) or {}))
         if tool_kind is None:
-            tool_kind = getattr(ev, "tool_kind", "") or getattr(ev, "tool_purpose", "")
+            # ``tool_purpose`` is the agent's own prose about the call (display text
+            # only), so it never stands in for the tool's identity.
+            tool_kind = getattr(ev, "tool_kind", "") or ""
         command = _requested_command(ev)
         result = manager.on_tool_call(
             (getattr(ev, "title", "") or tool_kind or "").strip(),
@@ -1562,10 +1564,13 @@ class SessionAgentRunner:
                     # approval landed out-of-order relative to the read loop, the agent never
                     # saw its tool result, and the run hung to the timeout. Inline await is
                     # the proven pattern and completes the turn.
-                    tool = (
-                        getattr(ev, "tool_kind", "")
-                        or announced_tool_kind.get(getattr(ev, "tool_call_id", ""), "")
-                        or getattr(ev, "tool_purpose", "")
+                    # Identity comes from the provider's ``kind`` only, never from
+                    # ``tool_purpose``: that is agent-written display text, and the
+                    # allowlist below substring-matches it, so a purpose such as
+                    # "Read the module" would pass a ``["Read"]`` allowlist for a
+                    # write. An unnamed request stays unnamed and is refused.
+                    tool = getattr(ev, "tool_kind", "") or announced_tool_kind.get(
+                        getattr(ev, "tool_call_id", ""), ""
                     )
                     rid = getattr(ev, "request_id", "")
                     # ENFORCE the caller's allowlist. `allowed_tools` was accepted by `run`

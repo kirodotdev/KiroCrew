@@ -3009,10 +3009,17 @@ async def _resolve_permission(
     # stores that field as document text, so the field skips the command-text
     # rules -- the deny list and the argv floor -- that read a page mentioning a
     # product subcommand as an attempt to run it. The body keeps the size
-    # ceiling and the path tier; every other argument keeps the full scan. Same
-    # provenance bar as the built-in scoping above, and the identity is the
+    # ceiling and the path tier; every other argument keeps the full scan. The
+    # params and identity bar match the built-in scoping above, and the identity is the
     # cached server AND tool, so a same-named tool on another server, or a frame
     # whose identity did not come from the caches, keeps the full scan.
+    #
+    # Unlike the built-in scoping, ``shell_classified`` is not required: the
+    # trusted cached server+tool pair (adapter-written ``_meta``, never the
+    # payload) already names exactly what runs. kiro-cli's MCP ``tool_call``
+    # frame carries no ``kind`` (only its later updates do), so the shell cache
+    # is empty for a real kiro-cli MCP call. A frame that does report a shell
+    # kind still sets ``is_shell`` and is refused the exemption.
     _mcp_body_keys = (
         mcp_document_body_keys(
             getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
@@ -3020,8 +3027,7 @@ async def _resolve_permission(
         if (
             _edit_params is None
             and _scoped_params is None
-            and getattr(event, "shell_classified", False)
-            and not event.is_shell
+            and not getattr(event, "is_shell", False)
             and getattr(event, "raw_params_trusted", False)
             and getattr(event, "mcp_identity_trusted", False)
             and isinstance(getattr(event, "raw_tool_params", None), dict)
