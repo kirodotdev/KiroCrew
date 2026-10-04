@@ -362,8 +362,22 @@ describe('SlackPanel save payload', () => {
       reactions_enabled: true,
       show_thinking: true,
       session_folder: '',
+      auto_link_sessions: false,
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
+  })
+
+  it('saves the auto-connect toggle once it is flipped on, with no target to pick', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Connect new sessions to Slack automatically' }))
+    expect(screen.queryByText('Auto-connect target')).not.toBeInTheDocument()
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ auto_link_sessions: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('auto_link_channel')
   })
 
   it('falls back to the channel name when the folder is on but unnamed', async () => {

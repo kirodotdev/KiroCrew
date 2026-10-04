@@ -2042,6 +2042,23 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    auto_link_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Connect New Sessions To Slack Automatically",
+            "Open a Slack thread for every new dashboard session on its first "
+            "message, exactly as the Connect to Slack button does, so you can "
+            "follow and reply from Slack without clicking the button each time. "
+            "The thread is created when the first message is sent, not when the "
+            "tab opens, so an abandoned tab leaves nothing behind. Only sessions "
+            "a person starts in the dashboard qualify: cron, app, sub-agent, "
+            "incognito, temporary and channel-born sessions are never connected "
+            "this way. The thread always opens in the owner's DM with the bot, "
+            "which only the owner can read. Off by default. Takes effect on the "
+            "next new session; no restart.",
+            tags=["slack"],
+        ),
+    )
 
 
 @dataclass

@@ -10427,7 +10427,14 @@ async def _run_chat(
             if _mirror_thread and _mirror_chan:
                 try:
                     if not _is_synthetic:
-                        _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
+                        from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
+                            escape_mrkdwn,
+                        )
+
+                        # The prompt is not only the operator's keystrokes (a
+                        # session_send peer lands here too), and Slack parses
+                        # <!channel> / <@U…> in `text`, so escape at this sink.
+                        _mirror_msg = escape_mrkdwn(_prepare_mirror_msg(_user_msg_for_mirror))
                         await state.slack_client.post_message(
                             _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
                         )

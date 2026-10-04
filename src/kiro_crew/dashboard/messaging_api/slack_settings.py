@@ -101,6 +101,7 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "reactions_enabled": slack.reactions_enabled,
             "show_thinking": slack.show_thinking,
             "session_folder": slack.session_folder,
+            "auto_link_sessions": slack.auto_link_sessions,
         }
     )
 
@@ -241,7 +242,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_enterprise_ids"] = new_ents
             applied.append("allowed_enterprise_ids")
 
-    for key in ("reactions_enabled", "show_thinking"):
+    for key in ("reactions_enabled", "show_thinking", "auto_link_sessions"):
         if key in body:
             val = body.get(key)
             if not isinstance(val, bool):

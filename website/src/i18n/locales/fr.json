@@ -16103,6 +16103,8 @@
         "add": "Ajouter",
         "allowed_enterprise_orgs": "Organisations Enterprise autorisées",
         "app_level_token_required_for_socket_mode_starts": "Jeton de niveau application requis pour Socket Mode (commence par xapp-).",
+        "auto_link_sessions": "Connecter automatiquement les nouvelles sessions à Slack",
+        "auto_link_sessions_desc": "Chaque nouvelle session du tableau de bord reçoit un fil Slack dès son premier message, dans ton message direct privé avec le bot. Les sessions lancées par cron, des apps ou des sous-agents, celles qui ont commencé dans Slack ou une autre app de messagerie, et les sessions incognito ou temporaires ne sont pas touchées. Une session connectée ainsi ne compte pas comme session Slack pour le réglage de dossier ci-dessous : elle reste à sa place dans la barre latérale, et seules les conversations qui commencent dans Slack sont classées.",
         "behavior": "Comportement",
         "cannot_load_slack_config_is_the_gateway_running": "Impossible de charger la configuration Slack. La passerelle est-elle en cours d'exécution ?",
         "connected": "Connecté",

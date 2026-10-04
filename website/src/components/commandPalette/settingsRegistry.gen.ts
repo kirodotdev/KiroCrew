@@ -214,6 +214,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.connect-new-sessions-to-slack-automatically-slack",
+    "label": "Connect new sessions to Slack automatically (Slack)",
+    "labelKey": "pages.settings.slackPanel.auto_link_sessions",
+    "labelSuffix": "Slack",
+    "description": "Every new dashboard session gets a Slack thread on its first message, in your private direct message with the bot. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone. A session connected this way does not count as a Slack session for the folder setting below: it stays where it is in the sidebar, and only conversations that start in Slack are filed.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.auto_link_sessions"
+  },
+  {
     "id": "channels.enable-imessage-channel-imessage",
     "label": "Enable iMessage channel (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.enable",

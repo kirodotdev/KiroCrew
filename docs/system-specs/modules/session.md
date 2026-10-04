@@ -19,7 +19,16 @@ replayed as historical input. This includes cron, recovery and user-replay
 injections; queue drain supplies the exact appended row to the runner.
 
 `running` gates turn admission and destructive history edits; `turn_running`
-reports execution. `test_pending_boundary_consumer_semantics.py::test_running_and_turn_running_slot_readers_are_enumerated`
+reports execution. `running` also reads `_turn_admission_reserved`, which the
+dashboard send handler sets for a person's own send between admitting the row
+and publishing `slot.task`, the window that holds the automatic Slack link
+(`chat_slack.maybe_auto_link_slack`, at most `AUTO_LINK_HOLD_SECS`), so a second
+send arriving in that window takes the queue path instead of dispatching a
+second turn; the handler's busy branch reads the same flag, and a `finally`
+clears it on every path out of the window. A Stop pressed in that window has no
+task to cancel, so the handler reads `_stop_generation` across the hold and does
+not dispatch the stopped turn; a send queued behind it in that window starts
+then, as it would at the end of a stopped turn. `test_pending_boundary_consumer_semantics.py::test_running_and_turn_running_slot_readers_are_enumerated`
 walks every dashboard symbol and pins each direct or shared-helper reader by
 `(module, symbol)` to the predicate it uses; the same census enumerates every
 non-null `slot.task` publisher so a new unguarded admission site fails the test.

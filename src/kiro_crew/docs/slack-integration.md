@@ -143,6 +143,34 @@ you asked in. Group channels and group DMs are unaffected.
 Off by default, because turning it on routes your next DM to a different session
 than the previous one. Existing threads keep working either way.
 
+## Auto-connect new dashboard sessions
+
+Every dashboard session can be mirrored into a Slack thread from its session
+actions menu: the **Connect to Slack** rows offer your bot DM and each channel the
+bot can post in. Turn on **Connect new sessions to Slack automatically** at
+`/settings/channels/slack` (`slack.auto_link_sessions`) and the dashboard does that
+for you: the thread opens when a new session sends its first message, so you can
+follow and reply to it from Slack without clicking the row each time. A tab you
+open and abandon leaves nothing behind, because nothing is posted until the first
+message.
+
+The automatic thread always opens in your DM with the bot, which only you can
+read. To mirror a session into a channel instead, use the **Connect to Slack**
+rows in its session actions menu.
+
+Only sessions a person starts in the dashboard qualify. Sessions started by cron
+jobs, apps, sub-agents or another channel, incognito and temporary sessions, and
+sessions that already existed when the setting was turned on are left alone. A
+session connected this way behaves exactly like one connected by hand: disconnect
+it, pause its mirror or reply in the thread as usual. It stays where it is in the
+sidebar: the **File sessions in a folder** setting below applies only to
+conversations that start in Slack. If Slack is slow when the first message is
+sent, the thread still opens and picks up from the next message; if Slack cannot
+be reached, the session simply stays unconnected, and you can connect it from the
+session actions menu later.
+
+Off by default. Applies to the next new session with no restart.
+
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, they render as interactive Block Kit buttons.

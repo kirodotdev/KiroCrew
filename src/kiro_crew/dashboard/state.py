@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import uuid
+import weakref
 from collections.abc import Coroutine, Iterable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -2727,6 +2728,7 @@ class _ChatSlot:
         "messages",
         "total_messages",
         "_task",
+        "_turn_admission_reserved",
         "_turn_generation",
         "_chunk_seq",
         "event",
@@ -3160,6 +3162,8 @@ class _ChatSlot:
         self._dismissed_txn_pending: set[str] = set()
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
+        # A send reserved the next turn and is between admission and dispatch.
+        self._turn_admission_reserved: bool = False
         # Monotonic publication history for turn ownership. ``task`` returns to
         # None after teardown, so consumers that span awaits cannot distinguish
         # "stayed idle" from "ran and finished" by comparing task references.
@@ -5263,7 +5267,11 @@ class _ChatSlot:
 
         See ``docs/system-specs/modules/session.md``.
         """
-        return bool(self.turn_running or self.stage_boundary.stage is not None)
+        return bool(
+            self.turn_running
+            or self._turn_admission_reserved
+            or self.stage_boundary.stage is not None
+        )
 
     @property
     def queue_depth(self) -> int:
@@ -5948,6 +5956,12 @@ class DashboardState:
         self.consolidator = consolidator
         self.task_runner = task_runner
         self.slack_client = slack_client
+        # One lock per effective session key serialises the whole Slack link
+        # attempt. Weak values: the holder and every waiter keep the lock alive
+        # through their own reference, and the entry goes with the last of them.
+        self._slack_link_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
         # True only when the Slack socket-mode connect actually succeeded this
         # session. slack_client being set proves tokens existed at boot, not
         # that they are valid — the gateway records the real outcome after

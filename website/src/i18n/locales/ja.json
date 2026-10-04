@@ -15639,6 +15639,8 @@
         "add": "追加",
         "allowed_enterprise_orgs": "許可されたエンタープライズ org",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode に必要なアプリレベルトークン（xapp- で始まります）。",
+        "auto_link_sessions": "新しいセッションを自動的にSlackへ接続",
+        "auto_link_sessions_desc": "ダッシュボードの新しいセッションごとに、最初のメッセージでボットとのプライベートなダイレクトメッセージにSlackスレッドが作られます。cron、アプリ、サブエージェントから始まったセッション、Slackや他のメッセージングアプリで始まったセッション、シークレットや一時的なセッションは対象外です。この方法で接続したセッションは、下のフォルダー設定ではSlackセッションとして数えられません。サイドバーの元の場所に残り、Slackで始まった会話だけがフォルダーに入ります。",
         "behavior": "動作",
         "cannot_load_slack_config_is_the_gateway_running": "Slack 設定を読み込めません。ゲートウェイは実行されていますか？",
         "connected": "接続済み",

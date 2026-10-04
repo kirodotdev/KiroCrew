@@ -16103,6 +16103,8 @@
         "add": "Adicionar",
         "allowed_enterprise_orgs": "Organizações enterprise permitidas",
         "app_level_token_required_for_socket_mode_starts": "Token de nível de app necessário para o Socket Mode (começa com xapp-).",
+        "auto_link_sessions": "Conectar novas sessões ao Slack automaticamente",
+        "auto_link_sessions_desc": "Cada nova sessão do painel ganha uma thread no Slack na primeira mensagem, na sua mensagem direta privada com o bot. Sessões iniciadas por cron, apps ou subagentes, sessões que começaram no Slack ou em outro app de mensagens, e sessões anônimas ou temporárias ficam como estão. Uma sessão conectada assim não conta como sessão do Slack para a configuração de pasta abaixo: ela fica onde está na barra lateral, e só as conversas que começam no Slack são arquivadas.",
         "behavior": "Comportamento",
         "cannot_load_slack_config_is_the_gateway_running": "Não foi possível carregar a configuração do Slack. O gateway está em execução?",
         "connected": "Conectado",

@@ -4751,7 +4751,8 @@
         "home_tab_sessions_per_kind": 5,
         "sessions_limit": 10,
         "use_tunnel_url": false,
-        "session_folder": ""
+        "session_folder": "",
+        "auto_link_sessions": false
       }
     },
     {
@@ -5073,6 +5074,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "slack.auto_link_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Connect New Sessions To Slack Automatically",
+      "help": "Open a Slack thread for every new dashboard session on its first message, exactly as the Connect to Slack button does, so you can follow and reply from Slack without clicking the button each time. The thread is created when the first message is sent, not when the tab opens, so an abandoned tab leaves nothing behind. Only sessions a person starts in the dashboard qualify: cron, app, sub-agent, incognito, temporary and channel-born sessions are never connected this way. The thread always opens in the owner's DM with the bot, which only the owner can read. Off by default. Takes effect on the next new session; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "publish",
