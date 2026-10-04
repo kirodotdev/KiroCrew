@@ -6,9 +6,10 @@ compaction drops the session-start context. The turn loops are copies by design
 the flag itself (``consume_reinjection``), hand it to ``build_message`` and put it
 back in the turn's ``finally`` when the turn never lands (``rearm_reinjection``).
 A copy that skips this runs every later turn without the skills index, the member
-section and ``[RESPONSE PREFERENCES]``. #11138 fixed the channel and task-runner
-copies by hand after a review found the last sibling by grepping call sites. This
-gate is what makes the next copy fail on its own.
+section and ``[RESPONSE PREFERENCES]``, and nothing at runtime notices. Every
+compaction-capable module is therefore held to the contract here, so a new copy
+that skips any of the three steps fails this gate instead of relying on a
+reviewer grepping call sites.
 
 The runtime half lives in ``test_background_loops_compaction_reinjection.py`` and
 the per-channel ``TestCompactionReinjection`` classes. This is the discovery half,
