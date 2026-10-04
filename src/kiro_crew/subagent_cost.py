@@ -157,14 +157,10 @@ def _iter_samples(status: _ReadStatus) -> Iterator[dict]:
         logger.warning("cost log present but could not be read; read as incomplete", exc_info=True)
 
 
-def _read_samples() -> list[dict]:
-    """Every record, materialised. For tests and small utilities only: the
-    production readers stream through :func:`_iter_samples`."""
-    return list(_iter_samples(_ReadStatus()))
-
-
 def _read_samples_checked() -> tuple[list[dict], bool]:
-    """Every record plus the completeness flag; see :class:`_ReadStatus`."""
+    """Every record, materialised, plus the completeness flag (see
+    :class:`_ReadStatus`). For tests and small utilities only: the production
+    readers stream through :func:`_iter_samples`."""
     status = _ReadStatus()
     rows = list(_iter_samples(status))
     return rows, status.complete
