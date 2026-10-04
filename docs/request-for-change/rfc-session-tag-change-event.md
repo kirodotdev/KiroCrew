@@ -7,8 +7,8 @@ last-audited: 2026-09-02
 audited-at: 6581a04ee
 doc-pr: 10930
 implementation-prs: [7669]
-implementation-scope: partial — 7669 ships the delta-only payload and defers re-entrancy
-tracking-issues: [7663]
+implementation-scope: partial — 7669 ships the delta-only payload and the dispatcher, and defers every emit site and re-entrancy
+tracking-issues: [13865]
 supersedes: []
 superseded-by: []
 ---
@@ -322,15 +322,15 @@ docstring warns about for its consolidation. Per-site emits are rejected: they a
 the shape that let review miss call sites twice during #7366 (as the
 mcp-lifecycle RFC records) and would re-open that finding here.
 
-**Amendment — what actually shipped, and how it differs from the above.** The
+**Amendment — what the implementation PR carries, and how it differs from the above.** The
 recommendation stands as the target shape, but the implementation PR (#7669) does
-**not** implement it. Emits come per-writer rather than through a single choke point: the two
-`chat_tags.py` writers, plus closing-order step 1, the folder inheritance in
-`_read_folder_tags` reached from `api_chat_slot_create` (`chat_handlers.py`), which
-emits because the create handler already runs under a dashboard request. Two
-`slot.tags.append` sites therefore still write status tags without emitting, both in
-`surface_channel_session` (`channel_slots.py`) — verified by grep at the shipped
-head, against a positive control showing `chat_tags.py` carries the dispatch six times.
+**not** implement it. #7669 ships the dispatcher, `dispatch_session_lane_changed_bulk`, with
+no emit site: it touches neither `chat_tags.py` nor `chat_handlers.py`, so no writer calls
+the dispatcher and the event cannot fire. Per-writer emits — the two `chat_tags.py`
+writers, and closing-order step 1, the folder inheritance in `_read_folder_tags` reached
+from `api_chat_slot_create` (`chat_handlers.py`) — are deferred to a follow-up PR. The two
+`slot.tags.append` sites in `surface_channel_session` (`channel_slots.py`) stay silent
+after that follow-up too, until closing-order step 2.
 
 The blocker is authorization, not scheduling. The dispatch helper itself needs no
 request — `_lane_dispatch_queue()` takes its loop from `asyncio.get_running_loop()`
@@ -339,10 +339,10 @@ callers could reach it as they stand. What needs a request is the PERMIT GATE,
 `_lane_dispatch_is_permitted`, which is what confines dispatch to the dashboard
 user. Routing folder filing, channel-slot filing and app-token moves through the
 dispatch means deciding what authorizes a fire on a path with no dashboard caller
-to check, and that decision belongs with the choke point rather than ahead of it. Until then a session can still enter a lane without the event firing — by
-channel slot filing — which is the exact
-failure mode this section was written to prevent. It is a narrowed gap, not a solved
-one, and the choke point remains the shape to build.
+to check, and that decision belongs with the choke point rather than ahead of it. Until then a session can still enter a lane without the event firing — through
+every writer, since none emits yet — which is the exact
+failure mode this section was written to prevent. It is an open gap, and the choke
+point remains the shape to build.
 
 **Closing order.** Each writer gains emission when its own authorization question has an answer, so
 the order below is set by that dependency rather than by convenience:
@@ -350,8 +350,8 @@ the order below is set by that dependency rather than by convenience:
 1. **Folder inheritance** (`_read_folder_tags`, reached from `api_chat_slot_create`) goes first,
    because it already runs under a dashboard request: `_lane_dispatch_is_permitted` applies to it
    unchanged, so it needs no new authorization rule and closes the folder-inherit gap on its own.
-   It ships in #7669, the implementation PR — not in the docs-only PR that adds
-   this amendment.
+   It is deferred from #7669, the implementation PR, to a follow-up PR — and is not in
+   the docs-only PR that adds this amendment.
 2. **Channel first-filing** (both `slot.tags.append` sites in `surface_channel_session`) goes
    second, because it has no
    dashboard caller. It needs a stated rule for what authorizes a fire on a channel surface, and

@@ -5202,8 +5202,8 @@ Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of thi
 module already describes.
 
 The implementation is PR #7669, and this section stands or falls with it: it is
-owned by that PR, is asserted against the code by a spec-pinning test that ships
-there, and **must be deleted if #7669 is withdrawn** rather than left describing
+owned by that PR, whose tests pin the event's behaviour but not this text, and
+**must be deleted if #7669 is withdrawn** rather than left describing
 code that never arrived. The RFC amendment in
 `docs/request-for-change/rfc-session-tag-change-event.md` records which writers
 emit and which remain silent; that document, not this section, is where the
