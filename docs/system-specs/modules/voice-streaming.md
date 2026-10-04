@@ -361,6 +361,16 @@ Text-to-speech settings link. A refusal while the consent stands (the account co
 not be re-checked, or the consent changed during the check) returns no audio for
 that sentence, and the next sentence is checked again.
 
+Polly's consent identity probe and synthesis child pass their explicit
+environments through `sandbox.without_python_env`, as the voice catalogue does. A Python AWS CLI therefore cannot load the gateway's interpreter
+packages, even without a sandbox backend. AWS credentials and unrelated settings
+remain available; the identity probe also retains `aws_spawn_env`'s vetted PATH.
+The probe runs through `cloud.aws.run_aws`, the shared entry point for the `aws`
+children of the cloud, deploy and publish modules, the consent check and the AWS
+Control app, so the same filter applies to every one of them, not only to Polly's.
+The `aws ssm start-session` tunnel spawns its own child, outside `run_aws`, and is
+unchanged.
+
 `_synthesize_polly()` runs its command through
 `wrap_argv_async(..., _prepare=wrap_argv)`. `_synthesize_system()` instead delegates
 to `_run_tts_subprocess()`, which uses `sandboxed_spawn_argv_async()` and the
