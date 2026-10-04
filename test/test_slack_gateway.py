@@ -2486,6 +2486,49 @@ class TestInitSubagents:
         assert orch.dashboard_state.push_slots_update.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_queued_frame_carries_its_tabs_sum_across_parents(self):
+        """Two parents that route to one cron tab: each frame carries the tab's
+        sum, which is what serialize_slots reports, so a frame and the next slots
+        push agree -- including after one of the parents publishes 0."""
+        from kiro_crew.dashboard.state import _published_queued_by_slot
+        from kiro_crew.subagent import SubagentInfo
+
+        def _slot(key: str) -> str:
+            return "cron-job7" if key.startswith("cron:job7") else key.removeprefix("dashboard:")
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        table: dict[str, int] = {}
+        with (
+            patch("kiro_crew.slack.gateway.subagent_event_slot", _slot),
+            patch("kiro_crew.dashboard.chat_utils.subagent_event_slot", _slot),
+        ):
+            on_event = self._capture_on_event(orch)
+            orch.subagent_mgr.published_queued_depths = lambda: dict(table)
+
+            async def publish(parent: str, depth: int) -> int:
+                # The manager records before on_event runs (_fire_event).
+                table.pop(parent, None)
+                if depth:
+                    table[parent] = depth
+                info = SubagentInfo(id="_queue", task="", parent_session_key=parent)
+                await on_event("subagent_queued", info, {"queued": depth})
+                frame = orch.dashboard_state.broadcast_ws.call_args.args[1]
+                assert frame["slot"] == "cron-job7"
+                assert frame["queued"] == _published_queued_by_slot(orch.subagent_mgr).get(
+                    "cron-job7", 0
+                )
+                return frame["queued"]
+
+            assert await publish("cron:job7:run1", 2) == 2
+            assert await publish("cron:job7:writer", 1) == 3
+            assert await publish("cron:job7:run1", 0) == 1
+            assert await publish("cron:job7:writer", 0) == 0
+
+    @pytest.mark.asyncio
     async def test_subagent_tool_event_does_not_push_slots(self):
         """High-frequency subagent_tool events must NOT trigger slots pushes —
         only spawn/done flip the subagents_running truth value (and a queued

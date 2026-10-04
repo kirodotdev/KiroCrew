@@ -11907,7 +11907,7 @@
       "archived_count_many": "{{count}} archiviate",
       "archived_count_one": "{{count}} archiviata",
       "archived_count_other": "{{count}} archiviate",
-      "waiting_for_memory": "In attesa di memoria"
+      "waiting_for_memory": "In attesa di RAM libera"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

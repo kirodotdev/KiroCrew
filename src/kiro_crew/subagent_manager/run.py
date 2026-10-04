@@ -1157,10 +1157,10 @@ class RunEventCoordinator(ManagerComponent):
     ) -> None:
         # Recorded before the frame goes out, so a slots push serialized after
         # this frame can never carry an older depth than the frame did.
-        # ``getattr``: a manager stub built without ``__init__`` has no table.
-        published = getattr(self._manager, "_published_depths", None)
-        if etype == "subagent_queued" and published is not None:
-            published.record(info.parent_session_key, (extra or {}).get("queued"))
+        if etype == "subagent_queued":
+            self._manager._published_depths.record(
+                info.parent_session_key, (extra or {}).get("queued")
+            )
         if self._manager._on_event:
             try:
                 await self._manager._on_event(etype, info, extra or {})
@@ -1175,8 +1175,7 @@ class RunEventCoordinator(ManagerComponent):
         # only for a parent with a non-zero entry.
         if (
             etype in ("subagent_spawn", "subagent_done")
-            and published is not None
-            and published.get(info.parent_session_key) > 0
+            and self._manager._published_depths.get(info.parent_session_key) > 0
         ):
             self._request_queue_depth(info.parent_session_key, set(), heal=True)
 
@@ -1444,11 +1443,9 @@ class RunEventCoordinator(ManagerComponent):
             # was being sent: not answered yet.
             since = _queue_depth_clock()
 
-    def _published_depth(self, parent_session_key: str) -> int | None:
-        """The depth last published for the parent, or ``None`` without a table
-        (a manager stub built without ``__init__``)."""
-        published = getattr(self._manager, "_published_depths", None)
-        return None if published is None else published.get(parent_session_key)
+    def _published_depth(self, parent_session_key: str) -> int:
+        """The depth last published for the parent, 0 when none is held."""
+        return self._manager._published_depths.get(parent_session_key)
 
     async def _publish_queue_depth(
         self, parent_session_key: str, depth: int, batch_id: str, *, forget_label: bool

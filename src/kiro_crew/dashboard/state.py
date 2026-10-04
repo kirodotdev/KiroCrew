@@ -462,7 +462,7 @@ def _new_card_store(state: Any) -> Any:
     return state._dynamic_cards
 
 
-def _published_queued_by_slot(subs: object) -> dict[str, int]:
+def _published_queued_by_slot(subs: "SubagentManager | None") -> dict[str, int]:
     """Each slot's ``subagents_queued``: the manager's last published depths, by tab.
 
     Routed exactly as the ``subagent_queued`` frames are (``subagent_event_slot`` of
@@ -470,20 +470,16 @@ def _published_queued_by_slot(subs: object) -> dict[str, int]:
     two keys differ for a cron tab: a stateless or agent-sequence run publishes
     under ``cron:<job>:<run>`` while the tab's own key is ``cron:<job>``, and
     several runs of one job sum on the job's tab.
-
-    Anything but a positive int reads as 0, so a stub manager in the suite (or one
-    predating the reader) cannot put a non-JSON value on the row.
     """
-    reader = getattr(subs, "published_queued_depths", None) if subs else None
-    table = reader() if callable(reader) else None
-    if not isinstance(table, dict):
+    if not subs:
         return {}
+    table = subs.published_queued_depths()
     # circular import: chat_utils imports this module at load time.
     from kiro_crew.dashboard.chat_utils import subagent_event_slot
 
     by_slot: dict[str, int] = {}
     for parent, depth in table.items():
-        if isinstance(parent, str) and type(depth) is int and depth > 0:
+        if depth > 0:
             slot = subagent_event_slot(parent)
             by_slot[slot] = by_slot.get(slot, 0) + depth
     return by_slot

@@ -10188,6 +10188,27 @@ class GatewayOrchestrator:
             _slots_push_pending = True
             asyncio.get_running_loop().call_later(0.2, _flush_slots_push)
 
+        def _tab_queued_depth(parent_key: str, slot_name: str, extra: dict) -> object:
+            """The queued depth a ``subagent_queued`` frame carries: its tab's sum.
+
+            Several parents can route to one tab (a cron tab's ``cron:<job>:<run>``
+            and ``cron:<job>:<agent>`` runs). The client reducer sets the tab's
+            count from each frame, and the slot list sums the published depths by
+            tab, so a frame carrying only its own parent's depth would disagree
+            with the next slots push and the count would flip between the two.
+            The frame therefore carries this parent's depth plus every other
+            parent's published depth on the same tab. A non-int depth is passed
+            through unchanged for the client to ignore.
+            """
+            own = extra.get("queued")
+            if not isinstance(own, int) or isinstance(own, bool) or not self.subagent_mgr:
+                return own
+            total = max(own, 0)
+            for other, depth in self.subagent_mgr.published_queued_depths().items():
+                if other != parent_key and _event_slot(other) == slot_name:
+                    total += depth
+            return total
+
         async def _subagent_event(etype: str, info: SubagentInfo, extra: dict) -> None:
             if not self.dashboard_state:
                 return
@@ -10199,6 +10220,11 @@ class GatewayOrchestrator:
             _ebid = getattr(info, "batch_id", "")
             if isinstance(_ebid, str) and _ebid:
                 base["batch_id"] = _ebid
+            if etype == "subagent_queued":
+                extra = {
+                    **extra,
+                    "queued": _tab_queued_depth(info.parent_session_key, slot_name, extra),
+                }
             if etype == "subagent_injection_failed":
                 # Show error in UI + queue for LLM context on next turn.
                 slot = self.dashboard_state.get_slot(slot_name)

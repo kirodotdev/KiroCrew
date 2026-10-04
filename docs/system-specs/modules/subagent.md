@@ -968,7 +968,7 @@ made; no gate reads it back. Two consumers:
   pending cards), never the queued count, so a parent is Working only through its
   own turn (`running`, which stays true while it blocks in `spawn_sub_agents`) or a
   started child. A row whose children are all queued shows a static
-  "Waiting for memory" badge for a memory wait (`isMemoryWait`: `low_memory`,
+  "Waiting for free RAM" badge for a memory wait (`isMemoryWait`: `low_memory`,
   `memory_pressure`) and the queued count otherwise, with the wait's sentence as
   its tooltip. `selectSidebarSubagentCounts` (started plus queued) stays the
   reading for "this session still owns sub-agent work": the row's count label, the

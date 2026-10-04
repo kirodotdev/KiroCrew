@@ -226,24 +226,24 @@ describe('board state lanes: queued children', () => {
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
   })
 
-  it('shows the queued children as a Waiting for memory badge, not the running pulse', () => {
+  it('shows the queued children as a Waiting for free RAM badge, not the running pulse', () => {
     const { container } = renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 2, reason: 'low_memory', available_gb: 1.2, required_gb: 2.5 }))
     })
     const badge = container.querySelector('[data-testid="session-subagents-waiting"]') as HTMLElement
     expect(badge).toBeTruthy()
-    expect(badge.textContent).toContain('Waiting for memory')
+    expect(badge.textContent).toContain('Waiting for free RAM')
     // The sentence that says what is short rides in the tooltip.
     expect(badge.getAttribute('title')).toContain('free memory')
     expect(badge.querySelector('.animate-pulse, .animate-spin')).toBeNull()
   })
 
-  it('reads the macOS memory-pressure hold as Waiting for memory too', () => {
+  it('reads the macOS memory-pressure hold as Waiting for free RAM too', () => {
     const { container } = renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 1, reason: 'memory_pressure' }))
     })
     const badge = container.querySelector('[data-testid="session-subagents-waiting"]') as HTMLElement
-    expect(badge.textContent).toContain('Waiting for memory')
+    expect(badge.textContent).toContain('Waiting for free RAM')
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
   })
 

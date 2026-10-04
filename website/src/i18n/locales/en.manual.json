@@ -5211,7 +5211,7 @@
       "unlink_source_link": "Select a PR or Issue chip to permanently hide from this session. The source and transcript stay unchanged.",
       "unlink_source_link_confirm": "Select again to permanently hide “{{label}}”",
       "unlink_source_link_failed": "Could not hide. Try again.",
-      "waiting_for_memory": "Waiting for memory"
+      "waiting_for_memory": "Waiting for free RAM"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

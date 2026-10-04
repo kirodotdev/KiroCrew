@@ -40,11 +40,10 @@ MAX_PUBLISHED_PARENTS = 1024
 class PublishedQueueDepths:
     """Last published ``subagent_queued`` depth per parent session key."""
 
-    __slots__ = ("_depths", "_cap")
+    __slots__ = ("_depths",)
 
-    def __init__(self, cap: int = MAX_PUBLISHED_PARENTS) -> None:
+    def __init__(self) -> None:
         self._depths: dict[str, int] = {}
-        self._cap = cap
 
     def record(self, parent_session_key: str, depth: object) -> None:
         """Remember the depth a frame just published for *parent_session_key*.
@@ -60,7 +59,7 @@ class PublishedQueueDepths:
         if depth <= 0:
             return
         self._depths[parent_session_key] = depth
-        while len(self._depths) > self._cap:
+        while len(self._depths) > MAX_PUBLISHED_PARENTS:
             evicted = next(iter(self._depths))
             del self._depths[evicted]
             logger.debug("Published queue depth table full; dropped %s", evicted)
@@ -76,6 +75,3 @@ class PublishedQueueDepths:
     def forget(self, parent_session_key: str) -> None:
         """Drop *parent_session_key*'s entry (its parent ended)."""
         self._depths.pop(parent_session_key, None)
-
-    def __len__(self) -> int:
-        return len(self._depths)

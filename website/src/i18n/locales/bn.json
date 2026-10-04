@@ -11726,7 +11726,7 @@
       "archived_sessions_kept_other": "{{count}}টি আর্কাইভ করা সেশন পুরোনো সেশনে থাকবে",
       "archived_count_one": "{{count}}টি আর্কাইভ করা",
       "archived_count_other": "{{count}}টি আর্কাইভ করা",
-      "waiting_for_memory": "মেমোরির অপেক্ষায়"
+      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

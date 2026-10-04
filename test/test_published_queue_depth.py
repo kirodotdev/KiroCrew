@@ -11,7 +11,6 @@ end that forgets it, and the routing of each entry onto the tab its frames reach
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,6 +19,7 @@ from overload_fakes import mock_ctx, mock_sessions
 
 from kiro_crew.session_surface import set_dashboard_surfaced
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent_manager import published_depth
 from kiro_crew.subagent_manager.published_depth import PublishedQueueDepths
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
@@ -52,7 +52,7 @@ class TestPublishedQueueDepths:
         assert depths.get(PARENT) == 0
         # Zero is the absent state, not a stored row: the table holds only
         # parents that still have something waiting.
-        assert len(depths) == 0
+        assert len(depths.snapshot()) == 0
 
     def test_a_malformed_depth_keeps_the_last_value(self) -> None:
         depths = PublishedQueueDepths()
@@ -69,14 +69,15 @@ class TestPublishedQueueDepths:
         assert depths.get(PARENT) == 0
         assert depths.get("dashboard:s2") == 4
 
-    def test_is_bounded_and_drops_the_oldest_publisher(self) -> None:
-        depths = PublishedQueueDepths(cap=2)
+    def test_is_bounded_and_drops_the_oldest_publisher(self, monkeypatch) -> None:
+        monkeypatch.setattr(published_depth, "MAX_PUBLISHED_PARENTS", 2)
+        depths = PublishedQueueDepths()
         depths.record("a", 1)
         depths.record("b", 1)
         # A re-publish makes "a" the newest, so "b" is the one that goes.
         depths.record("a", 5)
         depths.record("c", 1)
-        assert len(depths) == 2
+        assert len(depths.snapshot()) == 2
         assert (depths.get("a"), depths.get("b"), depths.get("c")) == (5, 0, 1)
 
 
@@ -225,18 +226,6 @@ class TestSerializeSlotsSubagentsQueued:
             assert rows[slot.key] == 3
         finally:
             await mgr.cancel_all()
-
-    async def test_a_stub_manager_reads_as_zero_and_stays_json(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        subs = MagicMock()
-        subs.running_agents_for = MagicMock(return_value=[])
-        state = _make_state(tmp_path, subagents=subs)
-        state.get_or_create_slot("s1")
-
-        slots = state.serialize_slots()
-
-        assert [d["subagents_queued"] for d in slots] == [0]
-        json.dumps(slots)
 
     async def test_no_manager_reads_as_zero(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
