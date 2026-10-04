@@ -29,13 +29,22 @@ _CREW_LOG_CALLS = frozenset(
         "commit_work_progress",
         "record_crew_checkpoint",
         "open_session_log",
+        "CrewLog.open",
+        "iter_from",
         "session_ledger.read_state",
         "sl.read_state",
     }
 )
 
 #: Substrings that make a module worth parsing.
-_SCAN_IF = ("commit_work_progress", "record_crew_checkpoint", "open_session_log", "read_state")
+_SCAN_IF = (
+    "commit_work_progress",
+    "record_crew_checkpoint",
+    "open_session_log",
+    "CrewLog.open",
+    "iter_from",
+    "read_state",
+)
 
 #: ``(file name, async function)`` pairs that make the on-loop call on purpose.
 _ON_LOOP_ON_PURPOSE = frozenset(
@@ -152,6 +161,13 @@ async def reads():
 async def via_reader():
     reader()
 
+def folded():
+    handle = CrewLog.open("session", "s")
+    return tuple(handle.iter_from(1))
+
+async def via_folded():
+    folded()
+
 async def unrelated_read_state():
     redaction_switch.read_state()
 
@@ -174,4 +190,5 @@ async def installs_fakes(monkeypatch):
         "via_helper",
         "reads",
         "via_reader",
+        "via_folded",
     ]

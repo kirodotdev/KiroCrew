@@ -4067,7 +4067,11 @@ reached unrelated PRs on Windows and Linux shards through sync helpers that cann
 their caller is async (`_item`, `_work`, `_seed_item` in the issue-radar tests) and
 through direct reads in `test_discord.py`, `test_session_ledger.py` and
 `test_work_ledger_projection.py`; 0 in 400 local runs, so only a held-lock probe
-reproduces it. Make the call the way product handlers do, off the loop:
+reproduces it. It came back through a read the pin did not list: `_folded()` in
+`test_spawn_approval_crew_log.py` opened the log with `CrewLog.open` and read it with
+`iter_from` from async tests, and failed three unrelated PRs on Windows and Linux the
+day it merged. The pin's call list must name every crew-log entry point, not only the
+ones a past failure used. Make the call the way product handlers do, off the loop:
 `off_loop(fn, ...)` from `test/off_loop_helpers.py` inside a helper both kinds of test
 call, or `await asyncio.to_thread(...)`. `test_crew_log_off_loop_pin.py` fails any
 `async def` that makes such a call directly or through a same-module sync helper, and
