@@ -211,6 +211,38 @@ class TestVerdictFingerprint:
         assert fp(a) == fp(aged)
         assert fp(a) != fp(moved)
 
+    def test_an_uncharged_tally_change_moves_the_digest(self):
+        base = _health(running=1)
+        base["uncharged"] = {"native_children": 1}
+        grown = _health(running=1)
+        grown["uncharged"] = {"native_children": 2}
+        fp = session_health.health_verdict_fingerprint
+        assert fp(base) != fp(grown)
+        assert fp(base) != fp(_health(running=1))
+
+    def test_one_slot_native_children_change_moves_the_digest(self):
+        base = _health(running=1)
+        base["slots"]["sess-2"] = {"classification": "running", "age_secs": 1.0}
+        grown = _health(running=1)
+        grown["slots"]["sess-2"] = {
+            "classification": "running",
+            "age_secs": 1.0,
+            "native_children": 3,
+        }
+        fp = session_health.health_verdict_fingerprint
+        assert fp(base) != fp(grown)
+
+    def test_new_parts_ignore_ages(self):
+        a = _health(running=1)
+        a["uncharged"] = {"native_children": 2}
+        a["slots"]["sess-1"]["native_children"] = 2
+        b = _health(running=1)
+        b["uncharged"] = {"native_children": 2}
+        b["slots"]["sess-1"]["native_children"] = 2
+        b["slots"]["sess-1"]["age_secs"] = 999.0
+        fp = session_health.health_verdict_fingerprint
+        assert fp(a) == fp(b)
+
     def test_survives_a_missing_or_malformed_health_dict(self):
         for bad in (None, {}, {"counts": None, "stalled": 7, "degrade_reason": None}):
             assert isinstance(session_health.health_verdict_fingerprint(bad), str)

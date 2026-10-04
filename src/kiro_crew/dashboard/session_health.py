@@ -916,9 +916,10 @@ def health_verdict_fingerprint(health: Mapping[str, Any] | None) -> str:
     on every sample, so folding them in would make each computation look like a
     change and turn a periodic refresh into a periodic broadcast. Everything else
     the payload says is folded in BY IDENTITY, never only by count: which
-    classification each slot holds, which slots are stalled, which slot and task
-    rows are waiting or recovering and in which state, the queue's per-state
-    tallies, the effective caps per lane, and the degrade reason. A count alone
+    classification each slot holds and its harness-native child count, which
+    slots are stalled, which slot and task rows are waiting or recovering and in
+    which state, the queue's per-state tallies, the effective caps per lane, the
+    uncharged-residency tally per kind, and the degrade reason. A count alone
     is not enough -- one row leaving a state as another enters it keeps every
     count still while the rows a subscriber holds are wrong.
 
@@ -935,7 +936,7 @@ def health_verdict_fingerprint(health: Mapping[str, Any] | None) -> str:
     slots = src.get("slots")
     slots_part = (
         ",".join(
-            f"{k}={slots[k].get('classification')}"
+            f"{k}={slots[k].get('classification')}:nc={slots[k].get('native_children', 0)}"
             for k in sorted(slots, key=str)
             if isinstance(slots[k], Mapping)
         )
@@ -976,12 +977,18 @@ def health_verdict_fingerprint(health: Mapping[str, Any] | None) -> str:
         if isinstance(caps, Mapping)
         else ""
     )
+    uncharged = src.get("uncharged")
+    uncharged_part = (
+        ";".join(f"{k}={uncharged[k]}" for k in sorted(uncharged, key=str))
+        if isinstance(uncharged, Mapping)
+        else ""
+    )
     degrade = src.get("degrade_reason")
     degrade_part = "" if degrade is None else str(degrade)
     canonical = (
         f"counts[{counts_part}]|slots[{slots_part}]|stalled[{stalled_part}]"
         f"|waiting[{waiting_part}]|recovering[{recovering_part}]|queued[{queued_part}]"
-        f"|caps[{caps_part}]|degrade[{degrade_part}]"
+        f"|caps[{caps_part}]|uncharged[{uncharged_part}]|degrade[{degrade_part}]"
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

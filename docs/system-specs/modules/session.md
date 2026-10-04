@@ -4411,8 +4411,9 @@ manifest does not list that path refreshes the surfaces it can already read
 instead of polling an endpoint that answers it with a denial. The digest
 excludes every age, timestamp and monotonic reading (a quiet resample is not a
 change) and folds everything else in BY IDENTITY, never only by count: each
-slot's classification, which slots are stalled, each waiting and recovering
-row's identity and state, the queue's `by_state` tallies, `effective_caps` and
+slot's classification and `native_children`, which slots are stalled, each
+waiting and recovering row's identity and state, the queue's `by_state`
+tallies, `effective_caps`, the `uncharged` per-kind tally and
 `degrade_reason` -- so one row leaving a state as another enters it is a change
 even though every count stands still. The first computation after process start
 seeds the baseline silently rather than firing a refresh at every subscriber on
