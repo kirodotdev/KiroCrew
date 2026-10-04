@@ -2017,6 +2017,21 @@ class AcpClient:
         # refuses EVERY permission request when it is set (``_handle_permission``).
         # Cleared on reset with the array.
         self._spec_zero_tools: bool = False
+        # Narrowed servers the projection withheld because THIS session cannot put
+        # their per-tool rule in force (``SessionProjection.unhonoured_servers``). No
+        # member mount may re-add one, whatever the backend's PerToolDeny says.
+        self._session_mcp_unhonoured: frozenset[str] = frozenset()
+        # Tool ids the projection asks the harness itself to deny
+        # (``SessionProjection.harness_deny_rules``), seeded by the opencode routing.
+        self._session_harness_deny_rules: tuple[str, ...] = ()
+        # The subset of those rules the opencode read-back found IN FORCE, handed back
+        # to every later projection so it withholds a server whose rule is not. None
+        # until this spawn has seeded any.
+        self._opencode_denies_in_force: frozenset[str] | None = None
+        # The seeded rules the last read-back found outranked by another rule.
+        self._opencode_denies_unenforced: frozenset[str] = frozenset()
+        # Servers opencode mounts from its own config, from this spawn's read-back.
+        self._opencode_native_mounts: frozenset[str] = frozenset()
         # The MCP server names opencode's routing read-back found in the harness's
         # own resolved config, so a fused tool title from one of them splits back
         # exactly. Recorded by its launch (``acp.harness.opencode``).
@@ -2638,8 +2653,13 @@ class AcpClient:
             # identity through the signed mapping rather than through an env key
             # a warm-pool rekey can leave stale.
             session_token=self._stub_session_token,
+            # The deny rules the opencode read-back found in force (None before any
+            # were seeded), so a later re-parse withholds a server whose rule is not.
+            harness_denies_in_force=getattr(self, "_opencode_denies_in_force", None),
         )
         self._spec_denied_tools = projection.denied_tools
+        self._session_mcp_unhonoured = projection.unhonoured_servers
+        self._session_harness_deny_rules = projection.harness_deny_rules
         self._spec_zero_tools = projection.zero_tools
         # Kept beside the array it describes, so the post-consume check judges the
         # generation these elements were built from and not a later read of the file.
@@ -2791,6 +2811,17 @@ class AcpClient:
                 "%s is not mounted -- no backend can refuse a call to a server it was "
                 "handed, and mounting it would undo that switch; re-enable that server "
                 "to restore it",
+                self._session_key,
+                server_name,
+                capability,
+            )
+            return True
+        if server_name in getattr(self, "_session_mcp_unhonoured", frozenset()):
+            logger.warning(
+                "member session %s: one of %s's tools is switched off and this session "
+                "could not put that restriction in force, so the projection withheld the "
+                "server and mounting it here would make that tool reachable again; %s is "
+                "not mounted",
                 self._session_key,
                 server_name,
                 capability,
@@ -6783,6 +6814,11 @@ class AcpClient:
         self._mcp_ref_spec = None
         self._spec_denied_tools = frozenset()
         self._spec_zero_tools = False
+        self._session_mcp_unhonoured = frozenset()
+        self._session_harness_deny_rules = ()
+        self._opencode_denies_in_force = None
+        self._opencode_denies_unenforced = frozenset()
+        self._opencode_native_mounts = frozenset()
         # Save PID state before clearing it. A root is confirmed exited only
         # when its own Process reports a reaped return code; a missing or
         # unreadable PID is not enough to reclaim its working directory.

@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
@@ -687,6 +688,9 @@ class TestPerToolDenyIsDeclaredAndTrue:
             lambda name: dict(managed[name]) if name in managed else None,
         )
         monkeypatch.setattr(session_mcp, "_mcp_registry_mode", lambda: False)
+        # goose reads its own permission.yaml from these; keep the operator's out.
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.delenv("GOOSE_PATH_ROOT", raising=False)
         return agents
 
     @pytest.mark.parametrize("backend", sorted(MIRRORS))
@@ -708,9 +712,13 @@ class TestPerToolDenyIsDeclaredAndTrue:
         are three and not a boolean:
 
         * ``settings-file`` -- the narrowed server stays MOUNTED, because the
-          restriction survives as a per-tool rule in a file the harness reads.
-        * ``per-call`` -- the narrowed third-party server is withheld, and the
-          projection hands the client a NON-EMPTY deny set to refuse calls with.
+          restriction survives as a per-tool rule in config the harness reads, and the
+          deny set is EMPTY.
+        * ``per-call`` -- the projection hands the client a NON-EMPTY deny set, and it
+          covers every switched-off tool of every narrowed server that is still
+          mounted. Crew's own control plane stays mounted. A third-party server may be
+          withheld (codex, whose readOnlyHint tools never ask) or kept (goose, whose
+          every MCP call asks).
         * ``whole-server`` -- the narrowed server is withheld and the deny set is
           EMPTY, because there is no per-call identity to match.
 
@@ -725,12 +733,12 @@ class TestPerToolDenyIsDeclaredAndTrue:
 
         if declared is PerToolDeny.SETTINGS_FILE:
             assert "narrowed" in mounted, (
-                f"{backend!r} declares settings-file, so the restriction rides a file and "
-                "the narrowed server must stay mounted"
+                f"{backend!r} declares settings-file, so the restriction rides harness "
+                "config and the narrowed server must stay mounted"
             )
-        else:
+        elif declared is PerToolDeny.WHOLE_SERVER:
             assert "narrowed" not in mounted, (
-                f"{backend!r} declares {declared.value}, which has no per-tool rule for a "
+                f"{backend!r} declares whole-server, which has no per-tool rule for a "
                 "third-party server, so it must be withheld rather than mounted un-narrowed"
             )
 
@@ -739,41 +747,57 @@ class TestPerToolDenyIsDeclaredAndTrue:
                 f"{backend!r} declares per-call, so the projection must hand the client "
                 "the pairs it refuses calls with -- an empty set means nothing enforces it"
             )
+            assert "kirocrew-core" in mounted, (
+                f"{backend!r} declares per-call, which is complete for Crew's own control "
+                "plane, so a narrowed kirocrew-core must stay mounted"
+            )
+            narrowed = {"narrowed": "danger", "kirocrew-core": "spawn_run"}
+            for server, tool in narrowed.items():
+                if server in mounted:
+                    assert (server, tool) in projection.denied_tools, (
+                        f"{backend!r} mounts {server!r} narrowed but hands the client no "
+                        f"pair for {tool!r}, so nothing refuses it"
+                    )
         else:
             assert not projection.denied_tools, (
                 f"{backend!r} declares {declared.value}, so a non-empty deny set claims an "
                 "enforcement path this transport does not have"
             )
 
-    def test_opencode_is_whole_server_only_and_withholds_the_control_plane_too(self, narrowed):
-        """The entry this field was added for, pinned by name.
+    def test_opencode_keeps_a_narrowed_server_mounted_and_goose_withholds_it(self, narrowed):
+        """The entries this field was added for, pinned by name.
 
-        opencode mounts the agent spec through ``session/new`` and honours a per-tool
-        restriction ONLY by withholding the whole server -- Crew's own control plane
-        included, which is where it parts company with codex. codex keeps
-        ``kirocrew-core`` mounted because it has a per-call refusal behind it; this
-        harness emits no ``_meta.kiro`` and no ``rawInput.server``/``tool``, only a
-        fused ``<server>_<tool>`` title, so there is nothing for
-        ``AcpClient._deny_spec_disabled_tool`` to match.
-
-        Named rather than left to the parametrized pair above because the difference
-        BETWEEN the two array backends is the fact a reader is most likely to get
-        wrong, and a change to it should have to edit an assertion that says so.
+        opencode carries the restriction per tool as a ``deny`` rule in the
+        ``permission`` config Crew seeds, so a narrowed server stays MOUNTED, Crew's
+        own control plane included. goose withholds a narrowed server whole: its
+        per-call channel is not safe yet. codex is pinned beside them because it is the
+        third shape: it keeps the control plane and withholds the third-party server.
         """
-        assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.WHOLE_SERVER
+        assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.SETTINGS_FILE
+        assert projection_for(ACP_BACKEND_GOOSE).per_tool_deny is PerToolDeny.WHOLE_SERVER
         assert projection_for(ACP_BACKEND_CODEX).per_tool_deny is PerToolDeny.PER_CALL
 
-        opencode = mirror_for(ACP_BACKEND_OPENCODE)
-        codex = mirror_for(ACP_BACKEND_CODEX)
-        assert opencode is not None and codex is not None
-        opencode_mounted = {
-            str(e.get("name")) for e in opencode.session_projection("kirocrew").params["mcpServers"]
-        }
-        codex_mounted = {
-            str(e.get("name")) for e in codex.session_projection("kirocrew").params["mcpServers"]
-        }
-        assert "kirocrew-core" not in opencode_mounted
-        assert "kirocrew-core" in codex_mounted
+        def project(backend):
+            mirror = mirror_for(backend)
+            assert mirror is not None
+            return mirror.session_projection("kirocrew")
+
+        def names(projection):
+            return {str(e.get("name")) for e in projection.params["mcpServers"]}
+
+        opencode = project(ACP_BACKEND_OPENCODE)
+        goose = project(ACP_BACKEND_GOOSE)
+        codex = project(ACP_BACKEND_CODEX)
+
+        assert {"narrowed", "kirocrew-core"} <= names(opencode)
+        assert set(opencode.harness_deny_rules) == {"narrowed_danger", "kirocrew-core_spawn_run"}
+        assert opencode.denied_tools == frozenset()
+
+        assert not {"narrowed", "kirocrew-core"} & names(goose)
+        assert goose.denied_tools == frozenset()
+
+        assert "kirocrew-core" in names(codex)
+        assert "narrowed" not in names(codex)
 
     def test_a_settled_non_mirror_kind_may_not_declare_it(self):
         """Only a mirror can answer, so only a mirror may claim to.

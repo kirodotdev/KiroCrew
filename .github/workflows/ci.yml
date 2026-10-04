@@ -1914,7 +1914,8 @@ jobs:
           pytest -v -n0 --no-cov --timeout=1200 -m real_adapter \
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
-            test/test_opencode_session_mcp.py
+            test/test_opencode_session_mcp.py \
+            test/test_per_tool_mcp_deny_single_binary.py
 
       # The second half of the no-silent-skip rule, and the half that does not trust
       # the first. KIROCREW_E2E_REQUIRE turns an absent adapter into a failure; this
@@ -1930,7 +1931,7 @@ jobs:
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "4"
+          MEASURED_CONTRACT_FLOOR: "11"
         run: |
           python3 - <<'PY'
           import os

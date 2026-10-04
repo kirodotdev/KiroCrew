@@ -131,9 +131,10 @@ because one spec parse CAN produce two things and only one of them is wire data:
 the `mcpServers` array, and the `(server, tool)` pairs the client refuses itself
 when the harness asks permission for them (`acp/client.py`,
 `_deny_spec_disabled_tool`). Only `codex.py` fills that second half —
-`claude_code.py` puts its deny rules in the settings file instead, and
-`opencode.py` and `goose.py` return an empty set and withhold the whole server,
-which `base.py` calls out on `SessionProjection` itself. A mirrored backend's
+`claude_code.py` puts its deny rules in the settings file instead,
+`opencode.py` hands its rules back as `harness_deny_rules` for the client to seed
+into the harness's own `permission` config, and `goose.py` returns an empty set and
+withholds the whole server, which `base.py` calls out on `SessionProjection` itself. A mirrored backend's
 broker stubs are placed by the mirror rather than appended afterwards —
 `AcpClient._pooled_mcp_servers` is inert for one — so a single withhold rule
 covers the whole array instead of an unnarrowed append re-adding what the
@@ -149,7 +150,7 @@ underneath.
 |---|---|---|---|---|
 | `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
-| `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane INCLUDED [7] | as `codex`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
+| `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7] | as `codex`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | as `codex`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `pi` | none | — | — | no projection at all — kind `no-channel` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
@@ -216,14 +217,13 @@ the spawn window, which is why a prepared view is preferred.
 6. Not the mirrors' own wording: three of the four give this field a reason the
    code does not support. See the note below the table, and
    [#12215](https://github.com/kirodotdev/KiroCrew/issues/12215).
-7. `codex` is the one harness that keeps a narrowed CONTROL-PLANE server mounted
-   and refuses the call instead, at the permission request
-   (`AcpClient._deny_spec_disabled_tool`); withholding `kirocrew-core` would
-   leave the session unable to report back at all. `opencode` and `goose`
-   withhold it too. On `opencode` that is forced — it emits no per-call
-   `(server, tool)` identity Crew could match. On `goose` it is CONSERVATIVE
-   rather than forced: the pair is on the wire and Crew reads it, but no
-   projection yet mounts a narrowed server with its denied tools filtered out.
+7. `codex` and `opencode` keep a narrowed CONTROL-PLANE server mounted;
+   withholding `kirocrew-core` would leave the session unable to report back at
+   all. `codex` refuses the call at the permission request
+   (`AcpClient._deny_spec_disabled_tool`); `opencode` hides the tool with a
+   `deny` rule in its own `permission` config. `goose` withholds it: a per-call
+   refusal is reachable, but goose's own `permission.yaml` can pre-approve a tool
+   so it never asks, and the agent can write that file mid-session.
 8. `pi` accepts the array, stores it on its session state and never hands it to
    the pi process, so a projection written into it would report Crew's tools as
    mounted on a session where none can be called. `deepseek` DOES mount stdio
@@ -294,8 +294,8 @@ call.
 
 How far a per-tool MCP restriction survives is declared separately, as
 `per_tool_deny` on the projection record (`registry.py`, `PerToolDeny`):
-`settings-file` on `claude`, `per-call` on `codex`, `whole-server` on `opencode`
-and `goose`. It is a declaration, not a requirement — what it owes you is knowing
+`settings-file` on `claude` and `opencode`, `per-call` on `codex`, `whole-server`
+on `goose`. It is a declaration, not a requirement — what it owes you is knowing
 which of the three you are getting BEFORE a session runs.
 
 ### What this means for a spec author
@@ -311,12 +311,12 @@ is the part worth knowing before you switch:
   mounts the whole server everywhere else, so a spec that pins one tool of a
   server widens to that server's siblings on all four mirrors. If that matters,
   the restriction has to be `disabledTools`, not a narrow `tools` ref.
-- **A per-tool restriction can cost the whole server, on three harnesses out of
-  four.** `per_tool_deny` on the projection record says which of three forms you
-  get BEFORE a session runs. `settings-file` on `claude` keeps the server mounted
-  and the harness refuses the tool. `whole-server` on `opencode` and `goose` drops
-  the server. `per-call` on `codex` reads as the middle ground and is narrower
-  than it sounds: it keeps the server mounted and refuses the call for Crew's own
+- **A per-tool restriction can cost the whole server on `goose` and `codex`.**
+  `per_tool_deny` on the projection record says which of three forms you get
+  BEFORE a session runs. `settings-file` on `claude` and `opencode` keeps the
+  server mounted and the harness refuses the tool; on `opencode`, a lower config
+  source that already names the tool can outrank Crew's rule, and that server is
+  withheld. `whole-server` on `goose` drops the server. `per-call` on `codex` is narrower than it sounds: it keeps the server mounted and refuses the call for Crew's own
   CONTROL PLANE only, whose tools carry no annotations so codex asks permission
   for every one of them. A narrowed third-party server is withheld whole there
   too, because codex approves a `readOnlyHint` tool internally without asking, so

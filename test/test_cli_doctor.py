@@ -944,13 +944,13 @@ class TestSelectedBackendProjectionRow:
         record drift, so the selected-harness row states the kind's own gap and
         nothing about the reach.
 
-        Driven on the shipped opencode declaration, which carries `whole-server`, so
+        Driven on the shipped goose declaration, which carries `whole-server`, so
         the assertion is about the report rather than about a stub.
         """
-        cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        cli_doctor._doctor_selected_backend_projection(self._cfg("goose"))
         assert capsys.readouterr().out == ""
 
-        cli_doctor._doctor_backend_ability_cards(self._cfg("opencode"))
+        cli_doctor._doctor_backend_ability_cards(self._cfg("goose"))
         out = capsys.readouterr().out
         assert out.count("per-tool deny: 'whole-server'") == 1, out
 

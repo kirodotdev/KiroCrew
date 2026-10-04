@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import subprocess as subprocess_mod
-from typing import Any
+from typing import Any, Collection
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp import launch as launch_mod
@@ -191,8 +191,161 @@ def _opencode_agent_permissions(resolved: dict, setting_key: str) -> list[tuple[
     return found
 
 
-def _opencode_routing_config(backend: str) -> str:
+def _glob_fullmatch(value: str, pattern: str) -> bool:
+    """Whether *pattern* matches all of *value*: ``*`` any run, ``?`` one character.
+
+    Every other character is literal. The classic two-pointer walk with one saved
+    ``*`` position: it never backtracks past the last ``*``, so it runs in at most
+    ``len(value) * len(pattern)`` steps, however many ``*`` and ``?`` the pattern
+    holds. A regex built from the same pattern can take exponential time.
+    """
+    v = p = 0
+    star = -1
+    mark = 0
+    while v < len(value):
+        if p < len(pattern) and pattern[p] == "*":
+            star, mark = p, v
+            p += 1
+        elif p < len(pattern) and pattern[p] in ("?", value[v]):
+            v += 1
+            p += 1
+        elif star >= 0:
+            mark += 1
+            v = mark
+            p = star + 1
+        else:
+            return False
+    while p < len(pattern) and pattern[p] == "*":
+        p += 1
+    return p == len(pattern)
+
+
+def _opencode_wildcard_match(value: str, pattern: str) -> bool:
+    """The harness's own wildcard test, transcribed from opencode 1.18.30.
+
+    Both sides have ``\\`` turned into ``/``; in the pattern, ``*`` matches any run
+    and ``?`` any one character, everything else is literal, and a trailing `` *``
+    also matches nothing after the space. Anchored at both ends.
+
+    The harness compiles this to a regex. Here it is a backtrack-free glob walk
+    (:func:`_glob_fullmatch`), because the pattern comes from the operator's opencode
+    config: a regex built from ``*?*?*?...`` would take seconds per call while holding
+    the GIL, which stalls the whole gateway.
+    """
+    value = value.replace("\\", "/")
+    pattern = pattern.replace("\\", "/")
+    if _glob_fullmatch(value, pattern):
+        return True
+    # The trailing " *" also matches the bare prefix, with no space after it.
+    return pattern.endswith(" *") and _glob_fullmatch(value, pattern[:-2])
+
+
+def _opencode_rules(raw: object) -> list[tuple[str, str, str]]:
+    """One resolved ``permission`` value as the harness's ordered rule list.
+
+    ``(permission, pattern, action)`` per rule, in the order the harness reads them:
+    a string value is one rule for every pattern, a map value is one rule per pattern
+    it lists. A bare string for the whole setting is the same as ``{"*": value}``.
+    """
+    if isinstance(raw, str):
+        return [("*", "*", raw)]
+    rules: list[tuple[str, str, str]] = []
+    if not isinstance(raw, dict):
+        return rules
+    for key, value in raw.items():
+        if isinstance(value, str):
+            rules.append((str(key), "*", value))
+        elif isinstance(value, dict):
+            rules.extend(
+                (str(key), str(pattern), action)
+                for pattern, action in value.items()
+                if isinstance(action, str)
+            )
+    return rules
+
+
+def _opencode_denied_in(tool_id: str, rules: list[tuple[str, str, str]]) -> bool:
+    """Whether the harness hides *tool_id* under *rules*.
+
+    The harness's own test: the LAST rule whose permission key matches the tool
+    decides, and it hides the tool only when that rule denies every pattern.
+    """
+    last = None
+    for rule in rules:
+        if _opencode_wildcard_match(tool_id, rule[0]):
+            last = rule
+    return last is not None and last[1] == "*" and last[2] == "deny"
+
+
+def _opencode_unenforced_denies(
+    resolved: dict, setting_key: str, deny_rules: Collection[str]
+) -> frozenset[str]:
+    """The seeded deny rules the harness's RESOLVED config does not put in force.
+
+    Evaluated for the top-level setting and again for every agent that carries its
+    own, because an agent's rules are appended after the top-level ones and so can
+    outrank them. A rule that loses in either place is not in force for a session
+    that may run as that agent.
+    """
+    if not deny_rules:
+        return frozenset()
+    top = _opencode_rules(resolved.get(setting_key))
+    contexts = [top]
+    agents = resolved.get("agent")
+    if isinstance(agents, dict):
+        for entry in agents.values():
+            if isinstance(entry, dict) and setting_key in entry:
+                contexts.append(top + _opencode_rules(entry.get(setting_key)))
+    return frozenset(
+        tool_id
+        for tool_id in deny_rules
+        if not all(_opencode_denied_in(tool_id, rules) for rules in contexts)
+    )
+
+
+def _opencode_native_servers_holding(resolved: dict, rules: Collection[str]) -> list[str]:
+    """Servers opencode mounts from its OWN config whose tool ids *rules* could name.
+
+    *resolved* is the harness's resolved config; its ``mcp`` map is every server
+    opencode mounts itself, apart from Crew's ``session/new`` array. A rule id is
+    ``sanitize(server) + "_" + sanitize(tool)``, so a server whose sanitized name plus
+    ``_`` starts a rule id is reported. Prefix matching can over-report a server
+    whose name is a prefix of another's; that only refuses more, never less.
+    """
+    from kiro_crew.providers.mirrors.opencode import opencode_tool_id
+
+    mounts = resolved.get("mcp")
+    if not rules or not isinstance(mounts, dict):
+        return []
+    found = []
+    for name in sorted(str(n) for n in mounts):
+        prefix = opencode_tool_id(name, "")
+        if any(rule.startswith(prefix) for rule in rules):
+            found.append(name)
+    return found
+
+
+def _opencode_seeded_deny_rules(config_content: str, setting_key: str) -> tuple[str, ...]:
+    """The deny rules Crew wrote into *config_content*, in seed order.
+
+    Read back out of the seed itself rather than handed in separately, so the
+    read-back judges exactly what the harness was given.
+    """
+    try:
+        seed = json.loads(config_content)
+    except ValueError:
+        return ()
+    value = seed.get(setting_key) if isinstance(seed, dict) else None
+    if not isinstance(value, dict):
+        return ()
+    return tuple(str(key) for key, action in value.items() if key != "*" and action == "deny")
+
+
+def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> str:
     """The inline harness config that makes this session ask, as one env value.
+
+    *deny_rules* are the tool ids the session's projection asks the harness itself to
+    deny (``SessionProjection.harness_deny_rules``).
 
     MERGED over an ambient value rather than replacing it: an operator who set
     the variable themselves keeps every key they chose, and only the permission
@@ -222,7 +375,13 @@ def _opencode_routing_config(backend: str) -> str:
                     "only Crew's permission routing.",
                     _ENV_OPENCODE_CONFIG_CONTENT,
                 )
-    merged[setting_key] = value
+    rules = tuple(deny_rules)
+    if rules and value == "ask":
+        # Each switched-off tool AFTER the "*", because the harness lets the last
+        # matching rule win; the read-back checks that order survived the merge.
+        merged[setting_key] = {"*": value, **{rule: "deny" for rule in rules}}
+    else:
+        merged[setting_key] = value
     return json.dumps(merged)
 
 
@@ -330,7 +489,37 @@ def _verify_opencode_routing(
     if servers_issue:
         return servers_issue, _opencode_config_mcp_servers_remedy()
     session._opencode_config_mcp_servers = config_servers
-    observed = _opencode_uniform_permission(resolved.get(setting_key))
+    seeded_denies = _opencode_seeded_deny_rules(config_content, setting_key)
+    # Which of Crew's deny rules the harness's own resolution keeps in force. A rule
+    # that lost is normally not a refusal: the projection withholds its server.
+    session._opencode_denies_unenforced = _opencode_unenforced_denies(
+        resolved, setting_key, seeded_denies
+    )
+    # ...unless opencode mounts that server from its OWN config too. Withholding the
+    # array element does not reach that mount, so the switched-off tool would stay
+    # callable there: refuse the session instead.
+    lost = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ()) - (
+        frozenset(seeded_denies) - session._opencode_denies_unenforced
+    )
+    native = _opencode_native_servers_holding(resolved, lost)
+    # A server the projection could not keep narrowed at all (a tool id the harness
+    # re-maps to a builtin, so no rule exists) is matched by NAME: opencode registers
+    # a native mount under the name its config gives it.
+    raw_mounts = resolved.get("mcp")
+    mounts: set[str] = {str(n) for n in raw_mounts} if isinstance(raw_mounts, dict) else set()
+    # Kept so a later re-projection on this spawn is checked against the same native
+    # mounts (see refuse_native_mount_of_unhonoured).
+    session._opencode_native_mounts = frozenset(mounts)
+    unhonoured: frozenset[str] = getattr(session, "_session_mcp_unhonoured", frozenset())
+    native = sorted(set(native) | (mounts & unhonoured))
+    if native:
+        return _native_mount_refusal(session, native)
+    top_level = resolved.get(setting_key)
+    if seeded_denies and isinstance(top_level, dict):
+        # Crew's own deny rules are judged above, so the routing check sees the value
+        # the operator's sources and the seed's "*" leave behind.
+        top_level = {k: v for k, v in top_level.items() if k not in seeded_denies}
+    observed = _opencode_uniform_permission(top_level)
     issue = acp_tool_gate.seeded_setting_issue(backend, session._scrub_observed(observed))
     if issue:
         return issue, acp_tool_gate.remediation_for(backend)
@@ -346,6 +535,54 @@ def _verify_opencode_routing(
                 acp_tool_gate.remediation_for(backend),
             )
     return "", ""
+
+
+def _native_mount_refusal(session: ProcessSession, native: Collection[str]) -> tuple[str, str]:
+    """The refusal for a narrowed server opencode mounts from its own config."""
+    names = ", ".join(repr(session._scrub_observed(n)) for n in native)
+    return (
+        f"a switched-off tool on {names} is not denied in the resolved config, and "
+        "opencode mounts that server from its own config, where withholding it from "
+        "Crew's array cannot reach",
+        "remove that tool's key from your opencode config, or stop mounting the server " "there",
+    )
+
+
+def settle_opencode_denies(session: ProcessSession, config_content: str) -> frozenset[str]:
+    """Record which deny rules are in force after the read-back; return the lost ones.
+
+    In force means SEEDED and not outranked. Derived from the seed Crew actually
+    handed the harness, never from the rules the projection asked for, so a routing
+    value that leaves the rules out cannot be read as having put them in. The lost
+    rules are the ones the projection asked for that are not in force; the caller
+    re-projects, and each one's server is withheld whole.
+    """
+    setting_key = acp_tool_gate.permission_setting_for(ACP_BACKEND_OPENCODE)[0]
+    seeded = frozenset(_opencode_seeded_deny_rules(config_content or "", setting_key))
+    unenforced: frozenset[str] = getattr(session, "_opencode_denies_unenforced", frozenset())
+    session._opencode_denies_in_force = seeded - unenforced
+    asked = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ())
+    return asked - session._opencode_denies_in_force
+
+
+def refuse_native_mount_of_unhonoured(session: ProcessSession) -> None:
+    """Refuse the session if a server this projection withholds is mounted natively.
+
+    Withholding the array element cannot reach a server opencode mounts from its
+    own config, so a narrowed server there would keep its switched-off tool. The
+    native mounts are the ones the read-back resolved for this spawn.
+    """
+    native = sorted(
+        getattr(session, "_opencode_native_mounts", frozenset())
+        & getattr(session, "_session_mcp_unhonoured", frozenset())
+    )
+    if not native:
+        return
+    issue, remedy = _native_mount_refusal(session, native)
+    try:
+        acp_tool_gate.enforce_runtime_routing(ACP_BACKEND_OPENCODE, issue, remedy=remedy)
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        raise AcpToolGateUnroutable(str(exc)) from None
 
 
 class OpencodeLaunch(ProcessAdapter):
@@ -391,7 +628,9 @@ class OpencodeLaunch(ProcessAdapter):
         # member promises. OFF-LOOP: the read-back spawns a short-lived child, and a
         # synchronous spawn on the gateway loop is the stall this path guards
         # against everywhere else.
-        self._config_content = _opencode_routing_config(self.backend)
+        self._config_content = _opencode_routing_config(
+            self.backend, getattr(session, "_session_harness_deny_rules", ())
+        )
         # Wrapped in the SAME sandbox, with the SAME credential mask, as the session
         # spawn. The read-back runs the harness's own binary, and this harness
         # resolves its configuration by reading the work dir -- which can load a
@@ -438,6 +677,24 @@ class OpencodeLaunch(ProcessAdapter):
                 )
             except acp_tool_gate.ToolGateUnroutable as exc:
                 raise AcpToolGateUnroutable(str(exc)) from None
+        lost = settle_opencode_denies(session, self._config_content)
+        if lost:
+            # A deny rule the projection asked for is not in force: the seed left it
+            # out, or the harness's resolved config outranks it. Its tool would stay
+            # listed, so re-project with only the rules that held: the server it
+            # narrows is withheld whole.
+            logger.warning(
+                "opencode: %d per-tool deny rule(s) are not in force in the resolved "
+                "config, so the servers they narrow are withheld this session: %s",
+                len(lost),
+                ", ".join(sorted(lost)),
+            )
+            session._session_mcp_cache = await asyncio.to_thread(
+                session._resolve_session_mcp_servers
+            )
+            # The re-projection re-reads the spec, so it can narrow a server the
+            # read-back never judged. Hold the result to the same native mounts.
+            refuse_native_mount_of_unhonoured(session)
         return SpawnPlan(
             argv=argv,
             spawn_label=spawn_label,

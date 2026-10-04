@@ -133,6 +133,12 @@ class ProcessSession(Protocol):
     _agent_version_read: bool
     _claude_adapter_disk_version: str
     _opencode_config_mcp_servers: tuple[str, ...]
+    _session_harness_deny_rules: tuple[str, ...]
+    _session_mcp_unhonoured: frozenset[str]
+    _opencode_denies_in_force: frozenset[str] | None
+    _opencode_denies_unenforced: frozenset[str]
+    _opencode_native_mounts: frozenset[str]
+    _session_mcp_cache: list[dict[str, Any]] | None
     _pi_gate_nonce: str
     _deepseek_gate_nonce: str
 
@@ -142,6 +148,9 @@ class ProcessSession(Protocol):
 
     async def _prepare_session_mcp(self) -> None:
         """Warm the session's ``mcpServers`` array off the loop."""
+
+    def _resolve_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """Translate the agent spec into this session's ``mcpServers`` array (blocking)."""
 
     async def _seed_session_settings(self) -> None:
         """Seed the session's own settings file, best-effort."""

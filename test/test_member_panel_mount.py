@@ -404,12 +404,22 @@ class TestClaudePanelAppend:
         stub.backend = backend
         assert self._run(stub, disabled=frozenset({MEMBER_PANEL_SERVER})) == _base_servers()
 
+    def test_a_whole_server_deny_backend_withholds_a_restricted_server(self, panel_granted):
+        stub = _ClientStub()
+        stub.backend = ACP_BACKEND_GOOSE
+        assert self._run(stub, restricted=frozenset({MEMBER_PANEL_SERVER})) == _base_servers()
+
+    def test_a_per_tool_deny_backend_keeps_its_mount(self, panel_granted):
+        stub = _ClientStub()
+        stub.backend = ACP_BACKEND_OPENCODE
+        out = self._run(stub, restricted=frozenset({MEMBER_PANEL_SERVER}))
+        assert [e["name"] for e in out][-1] == MEMBER_PANEL_SERVER
+
     @pytest.mark.parametrize("backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE])
-    def test_a_whole_server_deny_backend_withholds_a_restricted_server(
-        self, backend, panel_granted
-    ):
+    def test_an_unhonoured_server_is_withheld(self, backend, panel_granted):
         stub = _ClientStub()
         stub.backend = backend
+        stub._session_mcp_unhonoured = frozenset({MEMBER_PANEL_SERVER})
         assert self._run(stub, restricted=frozenset({MEMBER_PANEL_SERVER})) == _base_servers()
 
     @pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE])

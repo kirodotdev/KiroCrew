@@ -906,14 +906,13 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # identity, while the entry mounted here is Crew's own and carries this session's key
 # and its signed stub token.
 #
-# One restriction the mount must NOT step over, and this harness is the only member it
-# binds: switching off a tool of the dashboard server is honoured here by withholding
-# the whole server (``registry.PerToolDeny.WHOLE_SERVER`` -- no deny slot on the
-# element, no file of Crew's, and no structured identity on a tool call to refuse by).
-# So ``AcpClient._append_member_dispatch_server`` withholds the mount for a member
-# whose dashboard server is narrowed, and that thread runs as plain chat rather than
-# reaching a tool the operator switched off. codex and claude keep their mounts there:
-# both hold a second channel that still refuses the call.
+# One restriction the mount must NOT step over: switching off a tool of the dashboard
+# server. This harness carries it as a ``deny`` rule in the permission config Crew
+# seeds (``registry.PerToolDeny.SETTINGS_FILE``), so the mount keeps its server and the
+# harness hides the tool. Where that rule did not come out in force -- a lower config
+# source outranked it -- the projection names the server in ``unhonoured_servers`` and
+# ``AcpClient._member_mount_withheld`` withholds the mount, so that thread runs as plain
+# chat rather than reaching a tool the operator switched off.
 #
 # Switching that server off WHOLE (``disabled``) is a stronger rule and carries no
 # backend condition, because the form has no per-call spelling for any harness to
@@ -959,9 +958,9 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # fixture pins for ``crew-probe``), so a dispatch call arrives as a placed server
 # rather than as a drifted one.
 #
-# The per-tool rule binds here for opencode's reason: this harness's declared
-# ``registry.PerToolDeny`` is ``WHOLE_SERVER``, so narrowing a dashboard tool withholds
-# the whole mount and the thread runs as plain chat.
+# The per-tool rule binds here: this harness's declared ``registry.PerToolDeny`` is
+# ``WHOLE_SERVER``, so narrowing a dashboard tool withholds the whole mount and the
+# thread runs as plain chat.
 #
 # pi is excluded on the evidence in ``ACP_BACKENDS_SESSION_MCP_ARRAY``: the array is
 # accepted and never forwarded to the agent, so a member dispatch mounted through it

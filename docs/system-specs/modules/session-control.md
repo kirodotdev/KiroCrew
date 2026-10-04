@@ -1121,9 +1121,11 @@ widening is approval-free. The resume half matters on its own: `session/load`
 re-initializes the session's servers and would otherwise re-mount what `session/new`
 withheld. Switching off one TOOL of that server is narrower and is weighed against the
 backend: where withholding the server is the whole of its per-tool deny channel
-(`mirrors.registry.PerToolDeny.WHOLE_SERVER`, opencode today) the mount is withheld
-too, while codex refuses the call at permission time and claude's deny rules refuse it
-inside the adapter, so both keep their mounts. Because the mount is
+(`mirrors.registry.PerToolDeny.WHOLE_SERVER`, goose today) the mount is withheld
+too, while codex refuses the call at permission time and claude's and opencode's
+deny rules refuse it inside the harness, so they keep their mounts. A
+server the projection could not keep narrowed on THIS session
+(`SessionProjection.unhonoured_servers`) is withheld from the mount on every backend. Because the mount is
 session-scoped, no other session on the same agent template gains the tools,
 preserving the two-part grant for ordinary agents (the switch AND the
 per-agent server assignment).

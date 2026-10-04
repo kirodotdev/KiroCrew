@@ -681,17 +681,12 @@ class TestOpencodeSessionArray:
         assert MEMBER_DISPATCH_SERVER not in names, names
         assert "kirocrew-core" in names, names
 
-    def test_a_switched_off_dashboard_tool_withholds_the_whole_mount(
+    def test_a_switched_off_dashboard_tool_keeps_the_mount_and_denies_the_tool(
         self, agents_dir, tmp_path, monkeypatch
     ):
-        """The one way this mount can make a session WORSE than no mount at all.
-
-        opencode's declared per-tool deny is ``WHOLE_SERVER``: there is no deny slot on
-        the element, no file of Crew's, and no structured identity on a tool call for
-        the client to refuse by, so withholding the narrowed server IS the enforcement.
-        Re-adding it for a member would put a tool the operator switched off back within
-        reach, and nothing downstream would refuse the call. The thread runs as plain
-        chat instead.
+        """opencode's per-tool deny is a rule in the permission config Crew seeds
+        (``SETTINGS_FILE``), so the member keeps its mount and the switched-off tool
+        is denied by name -- the rule keys on the server name the mount carries.
 
         The restriction is written the way the dashboard's tool-off action writes it --
         to the global MCP settings file, which for Crew's own managed servers is the only
@@ -704,6 +699,23 @@ class TestOpencodeSessionArray:
             encoding="utf-8",
         )
         client = self._client(agents_dir, tmp_path, MEMBER_KEY)
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER in names, names
+        assert f"{MEMBER_DISPATCH_SERVER}_session_stop" in client._session_harness_deny_rules
+
+    def test_a_dashboard_rule_not_in_force_withholds_the_whole_mount(
+        self, agents_dir, tmp_path, monkeypatch
+    ):
+        """Where the read-back found that rule outranked, re-adding the server would put
+        the switched-off tool back within reach, so the thread runs as plain chat."""
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabledTools": ["session_stop"]}}}
+            ),
+            encoding="utf-8",
+        )
+        client = self._client(agents_dir, tmp_path, MEMBER_KEY)
+        client._opencode_denies_in_force = frozenset()
         names = [e["name"] for e in client._resolve_session_mcp_servers()]
         assert MEMBER_DISPATCH_SERVER not in names, names
         assert "kirocrew-core" in names, names
@@ -728,9 +740,25 @@ class TestRestrictedServerIsNotReAdded:
         stub._claude_settings_authored = True  # so claude reaches the second check
         return AcpClient._append_member_dispatch_server(stub, _base_servers(), restricted)
 
-    @pytest.mark.parametrize("backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE])
-    def test_a_whole_server_deny_backend_withholds(self, backend):
-        out = self._run(backend, frozenset({MEMBER_DISPATCH_SERVER}))
+    def test_a_whole_server_deny_backend_withholds(self):
+        out = self._run(ACP_BACKEND_GOOSE, frozenset({MEMBER_DISPATCH_SERVER}))
+        assert out == _base_servers()
+
+    def test_a_per_tool_deny_backend_keeps_its_mount(self):
+        out = self._run(ACP_BACKEND_OPENCODE, frozenset({MEMBER_DISPATCH_SERVER}))
+        assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
+
+    @pytest.mark.parametrize(
+        "backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE, ACP_BACKEND_CODEX]
+    )
+    def test_an_unhonoured_server_is_withheld_on_every_backend(self, backend):
+        stub = _ClientStub()
+        stub.backend = backend
+        stub._claude_settings_authored = True
+        stub._session_mcp_unhonoured = frozenset({MEMBER_DISPATCH_SERVER})
+        out = AcpClient._append_member_dispatch_server(
+            stub, _base_servers(), frozenset({MEMBER_DISPATCH_SERVER})
+        )
         assert out == _base_servers()
 
     def test_opencode_still_mounts_when_another_server_is_the_restricted_one(self):
@@ -749,7 +777,7 @@ class TestRestrictedServerIsNotReAdded:
         disagree about one backend."""
         from kiro_crew.providers.mirrors import PerToolDeny, projection_for
 
-        assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.WHOLE_SERVER
+        assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.SETTINGS_FILE
         assert projection_for(ACP_BACKEND_GOOSE).per_tool_deny is PerToolDeny.WHOLE_SERVER
         assert projection_for(ACP_BACKEND_CODEX).per_tool_deny is PerToolDeny.PER_CALL
         assert projection_for(ACP_BACKEND_CLAUDE).per_tool_deny is PerToolDeny.SETTINGS_FILE

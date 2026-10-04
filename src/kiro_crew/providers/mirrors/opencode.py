@@ -50,7 +50,8 @@ Measured against opencode 1.18.30 rather than re-inferred
 
 Crew writes no opencode config file of its own beyond the permission routing
 (``AcpClient._opencode_routing_config`` seeds ``OPENCODE_CONFIG_CONTENT`` with the
-one setting ``tool_gate`` demands), and the MCP servers deliberately do NOT travel
+one setting ``tool_gate`` demands, plus one ``deny`` rule per switched-off MCP tool
+-- see :func:`opencode_projection`), and the MCP servers deliberately do NOT travel
 there. That channel works, but ``OPENCODE_CONFIG_CONTENT`` MERGES with the project
 and user config rather than replacing them, and declaring the same server in both
 the config block and the array DOUBLE-MOUNTS it: both children spawn, because the
@@ -61,10 +62,15 @@ channel, and this module is the whole of it.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Collection
 from typing import Any, Mapping
 
-from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
+from kiro_crew.acp.session_mcp import (
+    CONTROL_PLANE_SERVERS,
+    SessionMcpProjection,
+    session_mcp_projection,
+)
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
 from kiro_crew.providers.mirrors.base import (
     AgentConfigMirror,
@@ -187,123 +193,102 @@ def opencode_elements(
     return out
 
 
-def narrowed_control_plane(disabled_tools: Collection[tuple[str, str]]) -> frozenset[str]:
-    """Crew's own control-plane servers whose spec narrows them PER TOOL.
+#: Characters the harness keeps in a tool id; every other one becomes ``_``. Read
+#: from opencode 1.18.30's own MCP tool registration, which names a tool
+#: ``sanitize(server) + "_" + sanitize(tool)`` with exactly this class. The result
+#: can never hold ``*`` or ``?``, so a deny rule built from it is a literal key in
+#: the harness's wildcard rule matcher and cannot widen into a pattern.
+_TOOL_ID_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]")
 
-    These are withheld on this transport, and the whole of the argument is that
-    codex's exemption for them was never about the wire — it was about having a
-    SECOND channel to honour the restriction on.
+#: Tool ids the harness's tool filter re-maps to a builtin permission before it
+#: looks a rule up (``edit``/``write``/``apply_patch`` -> ``edit``, the three MCP
+#: resource tools -> ``read``). An MCP tool whose fused id lands on one of these is
+#: judged by the builtin's rule, not by a deny Crew writes under its id, so no rule
+#: of Crew's can switch it off. Its server is withheld instead.
+_REMAPPED_TOOL_IDS = frozenset(
+    {
+        "edit",
+        "write",
+        "apply_patch",
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+    }
+)
 
-    ``session_mcp_restricted_servers`` subtracts the control plane, because
-    ``managed_mcp_spec_entry`` emits only command/args/env: a ``disabledTools`` on
-    those two entries never reaches the element, so withholding on the strength of
-    a key that was never delivered would be pure loss. codex completes that argument
-    — it keeps the server mounted AND refuses a call to a switched-off tool when the
-    adapter asks permission for it, so nothing is lost and nothing is widened.
 
-    Neither half of that completion exists here. This harness emits no
-    ``_meta.kiro`` and no ``rawInput.server``/``tool`` — only a fused
-    ``<server>_<tool>`` title — so ``AcpClient._deny_spec_disabled_tool`` has no
-    identity to match, and whether it asks for an MCP tool call at all under
-    ``permission: ask`` is unmeasured. Carrying the exemption across on codex's
-    reasoning while dropping the mechanism that made it safe would leave a tool the
-    user switched off on the dashboard REACHABLE, on an ordinary path, with nothing
-    saying so.
+def opencode_tool_id(server: str, tool: str) -> str:
+    """The id this harness gives *tool* on *server*, which its permission rules key on.
 
-    So the rule this module already applies to a third-party server applies here
-    too, in the module's own words: an availability cost is the honest price of a
-    deny channel this transport does not have; reachability of a tool the user
-    switched off is not. The cost is stated rather than hidden — a session whose
-    control plane is narrowed loses that server, and with ``kirocrew-core`` gone it
-    cannot report back to its channel at all — and it is paid ONLY by an operator
-    who narrowed the control plane deliberately. A default install narrows nothing
-    and is untouched, which is why this is not the "present but unusable" shape the
-    folder exists to remove: the server is absent and logged, not mounted and mute.
-
-    Derived from the ``(server, tool)`` PAIRS the caller already resolved, never
-    from the spec again, so the withhold decision reads the same bytes as the array
-    — and it sees a narrowing written to the GLOBAL settings file, which is where
-    the dashboard's ordinary tool-off action writes it. Free of I/O.
+    Two different pairs can fuse to one id (``a_b``/``c`` and ``a``/``b_c``). A deny
+    for one then denies the other too. That is the safe direction: it can only switch
+    off more than the spec asked, never less.
     """
-    return frozenset(server for server, _tool in disabled_tools) & frozenset(CONTROL_PLANE_SERVERS)
+    return f"{_TOOL_ID_UNSAFE.sub('_', server)}_{_TOOL_ID_UNSAFE.sub('_', tool)}"
 
 
-def opencode_projection(
-    agent: str | None,
+def opencode_deny_rules(disabled_tools: Collection[tuple[str, str]]) -> tuple[str, ...]:
+    """The tool ids Crew seeds as ``deny`` for *disabled_tools*, sorted and unique.
+
+    An id the harness re-maps to a builtin is left out, because a rule under it would
+    not be the rule the harness reads (see :data:`_REMAPPED_TOOL_IDS`). Free of I/O.
+    """
+    ids = {opencode_tool_id(server, tool) for server, tool in disabled_tools}
+    return tuple(sorted(ids - _REMAPPED_TOOL_IDS))
+
+
+def place_single_binary_array(
+    projection: SessionMcpProjection,
     *,
-    stub_server_names: Collection[str] = (),
+    label: str,
+    unhonoured: frozenset[str],
     stub_elements: Collection[Mapping[str, Any]] = (),
-    work_dir: object = None,
     session_key: str = "",
     channel_id: str = "",
     session_token: str = "",
-) -> SessionProjection:
-    """The whole opencode array -- spec translation AND pooled stubs.
+) -> list[dict[str, Any]]:
+    """The ``mcpServers`` array for a single-binary harness, both halves of it.
 
-        The mirror's :meth:`~OpenCodeMirror.session_projection`, as a function so it can
-        be called and tested without the class.
+    Shared by opencode and goose, which differ only in HOW a per-tool restriction is
+    honoured, never in how the array is placed. *unhonoured* is the set of narrowed
+    servers whose restriction this session cannot put in force; they are withheld
+    whole, which is the only faithful action left for them. Crew's identity-bound
+    servers are withheld from the spec-described half for the reason
+    :func:`~kiro_crew.providers.mirrors.identity.withheld_servers` gives.
 
-        ONE owner for both halves of the array, exactly as codex has. The shared MCP
-        gateway's broker stubs carry the SAME name as the spec entry each one rewrites,
-        so a stub appended after the projection withheld that name un-withholds it --
-        and the stub is the UNRESTRICTED server, the worse of the two. Taking the stub
-        ELEMENTS here, beside the stub NAMES the translation already yields to, lets the
-        withhold rule run over both halves in one place instead of being re-spelled at
-        the call site. Once this backend is in ``MIRRORS``,
-        ``AcpClient._pooled_mcp_servers`` returns ``[]`` for it, so this IS the stubs'
-        only route in.
-
-        Stubs are appended as given rather than run through :func:`opencode_elements`:
-        they are gateway-authored, their env is the broker's own, and none of them is
-        Crew's control plane (a session-strict server is never pooled), so there is no
-        identity to add. They ARE held to the spec's ``tools`` allowlist, from the same
-        parse that filtered the translated half: the overlay is written per agent from
-        the global settings file too, so it can carry a stub for a server this agent
-        never references, and a stub is that server.
-
-    ``denied_tools`` is deliberately EMPTY, and that is a statement rather than a
-        default. The client's per-call refusal (``AcpClient._deny_spec_disabled_tool``)
-        identifies an MCP call from codex-acp's ``rawInput = {server, tool}``, which
-        opencode does not emit, so pairs returned here could never match -- and a set
-        that reads as an enforced restriction while being inert is worse than an empty
-        one. The restriction is honoured by WITHHOLDING instead, for Crew's own control
-        plane as well as for a third-party server: see :func:`narrowed_control_plane`
-        for why codex's exemption does not extend to a transport with no second channel.
-
-        Blocking (parses the agent spec once), so callers run it off the event loop.
+    ONE owner for both halves. The shared MCP gateway's broker stubs carry the SAME
+    name as the spec entry each one rewrites, so a stub appended after this withheld
+    that name would un-withhold it, and the stub is the unrestricted server. A stub
+    the spec narrows but does not withhold is fine to mount: the per-tool rule keys on
+    the server NAME, which the stub shares. Stubs are held to the spec's ``tools``
+    allowlist from the same parse, and go through the same stdio tag strip as the
+    translated half.
     """
-    projection = session_mcp_projection(
-        agent,
-        stub_server_names=stub_server_names,
-        work_dir=work_dir,  # type: ignore[arg-type]
-    )
-    withheld = withheld_servers(projection.restricted) | narrowed_control_plane(
-        projection.disabled_tools
-    )
+    withheld = withheld_servers(frozenset()) | unhonoured
     kept: list[dict[str, Any]] = []
-    narrowed_plane = narrowed_control_plane(projection.disabled_tools)
     for element in projection.servers:
         name = element.get("name")
-        if name in narrowed_plane:
+        if name in unhonoured:
             logger.warning(
-                "opencode session MCP: withholding Crew's own %r -- its agent spec (or the "
-                "global MCP settings file) switches one of its tools off, and this transport "
-                "has NO channel for that restriction: no per-tool deny slot on the element, "
-                "and no structured MCP identity on a tool call for the client to refuse by. "
-                "Leaving it mounted would make a tool you switched off reachable. This "
-                "session runs without that server -- with kirocrew-core withheld it cannot "
-                "report back to its channel at all -- and the way to clear it is to stop "
-                "narrowing the control plane, or to run this agent on a backend that has a "
-                "deny channel",
+                "%s session MCP: withholding server %r -- one of its tools is switched off "
+                "and this session cannot put that per-tool rule in force (see the earlier "
+                "warning for why), so mounting it would make the tool reachable. This "
+                "session runs without that server%s",
+                label,
                 name,
+                (
+                    "; with kirocrew-core withheld it cannot report back to its channel"
+                    if name in CONTROL_PLANE_SERVERS
+                    else ""
+                ),
             )
             continue
         if name in withheld:
             logger.warning(
-                "opencode session MCP: withholding server %r -- this transport cannot deliver "
-                "what makes it correct (a per-tool restriction it has no deny channel for, "
-                "or the session identity a Crew server binds to), and a mounted server that "
-                "cannot work is the defect this projection exists to remove",
+                "%s session MCP: withholding server %r -- it is one of Crew's own servers, "
+                "and an element the agent spec describes cannot carry this session's "
+                "identity",
+                label,
                 name,
             )
             continue
@@ -317,33 +302,102 @@ def opencode_projection(
         name = stub.get("name")
         if name in withheld:
             logger.warning(
-                "opencode session MCP: withholding pooled stub %r -- the projection withheld "
+                "%s session MCP: withholding pooled stub %r -- the projection withheld "
                 "the server it wraps, and a stub re-adds it unrestricted",
+                label,
                 name,
             )
             continue
         if not projection.allowlist.grants(str(name)):
             logger.info(
-                "opencode session MCP: not mounting pooled stub %r -- the agent spec's `tools` "
+                "%s session MCP: not mounting pooled stub %r -- the agent spec's `tools` "
                 "does not reference it, and the allowlist that filtered the translated "
                 "half applies to a stub of the same name",
+                label,
                 name,
             )
             continue
-        # Through the SAME tag strip as the translated half. A stub is gateway-authored
-        # and carries no tag today, so this changes no shipped element -- but the array
-        # is one array, and a rule that held for only the half this module builds
-        # itself would be false of the other the moment the gateway's entry shape
-        # gained one.
         out.append(without_stdio_tag(dict(stub)))
+    return out
+
+
+def opencode_projection(
+    agent: str | None,
+    *,
+    stub_server_names: Collection[str] = (),
+    stub_elements: Collection[Mapping[str, Any]] = (),
+    work_dir: object = None,
+    session_key: str = "",
+    channel_id: str = "",
+    session_token: str = "",
+    denies_in_force: Collection[str] | None = None,
+) -> SessionProjection:
+    """The whole opencode array -- spec translation AND pooled stubs -- plus its deny rules.
+
+    The mirror's :meth:`~OpenCodeMirror.session_projection`, as a function so it can
+    be called and tested without the class.
+
+    A narrowed server stays MOUNTED. Each switched-off tool becomes a ``deny`` rule
+    under the harness's own tool id (:func:`opencode_deny_rules`), returned as
+    ``harness_deny_rules`` for the client to seed after its ``"*": "ask"``. Measured on
+    opencode 1.18.30, such a rule removes that one tool from the model's tool list,
+    and the server's other tools stay listed and still ask per call. This holds for
+    Crew's own control plane and a third-party server alike, and for a pooled stub,
+    because the rule keys on the server name the stub shares.
+
+    *denies_in_force* is the set of rule ids the client found IN FORCE in the
+    harness's resolved config, or ``None`` before it has seeded any (the spawn path's
+    first call, whose rules ARE what gets seeded). A narrowed server with a
+    switched-off tool whose id is not in that set is withheld whole instead. Two
+    cases land there: the harness re-maps the id to a builtin rule
+    (:data:`_REMAPPED_TOOL_IDS`), and a rule the read-back found outranked -- the
+    harness lets the LAST matching rule win, and a lower config source that already
+    names the same tool keeps its earlier place, behind the seed's ``"*"``.
+
+    ``denied_tools`` stays EMPTY. The client's per-call refusal needs a structured
+    ``(server, tool)`` on the call, and this harness sends only a fused title, so
+    pairs here could never match.
+
+    Blocking (parses the agent spec once), so callers run it off the event loop.
+    """
+    projection = session_mcp_projection(
+        agent,
+        stub_server_names=stub_server_names,
+        work_dir=work_dir,  # type: ignore[arg-type]
+    )
+    rules = opencode_deny_rules(projection.disabled_tools)
+    in_force = frozenset(rules if denies_in_force is None else denies_in_force)
+    unhonoured = frozenset(
+        server
+        for server, tool in projection.disabled_tools
+        if opencode_tool_id(server, tool) not in in_force
+    )
+    for server in sorted(unhonoured):
+        logger.warning(
+            "opencode session MCP: a switched-off tool on %r has no deny rule in force on "
+            "this session -- either its tool id is one the harness judges by a builtin "
+            "rule, or a lower opencode config source names that tool and outranks Crew's "
+            "seed. Remove that tool's key from your opencode config to restore per-tool "
+            "deny for it",
+            server,
+        )
+    out = place_single_binary_array(
+        projection,
+        label="opencode",
+        unhonoured=unhonoured,
+        stub_elements=stub_elements,
+        session_key=session_key,
+        channel_id=channel_id,
+        session_token=session_token,
+    )
     return SessionProjection(
         params={"mcpServers": out},
-        # The restriction half of ``withheld`` above, identity half excluded: an
-        # identity-bound name is withheld from the spec-described element precisely so
-        # Crew can author its own, while these names must not come back at all -- this
-        # transport has no deny channel, so the withhold IS the enforcement.
         disabled_servers=projection.disabled_servers,
-        restricted_servers=projection.restricted | narrowed_plane,
+        # Only the names actually withheld for a restriction: every other narrowed
+        # server is mounted, with its rule in force.
+        restricted_servers=unhonoured,
+        unhonoured_servers=unhonoured,
+        harness_deny_rules=rules,
         derived_spec_snapshot=projection.derived_spec_snapshot,
         zero_tools=projection.zero_tools,
     )
@@ -414,46 +468,24 @@ class OpenCodeMirror(AgentConfigMirror):
             ),
             Concern.DENIED_TOOLS: Ruling(
                 _D.TRANSLATED,
-                "the restriction is honoured by WITHHOLDING THE SERVER -- for a "
-                "third-party server AND for Crew's own control plane, which is "
-                "where this backend parts company with codex. opencode's element "
-                "schema is {name, command, args, env} with no per-tool slot, and "
-                "claude's answer (re-applying it as permissions.deny) needs a "
-                "settings file Crew does not write here. So "
-                "acp.session_mcp.session_mcp_restricted_servers names the "
-                "third-party servers (read from the spec AND the global settings "
-                "file, which is where the dashboard's ordinary tool-off action "
-                "writes them) and the array omits them. An availability cost is the "
-                "honest price of a deny channel this transport does not have; "
-                "reachability of a tool the user switched off is not. `disabled` "
-                "needs nothing here -- build_agent_config strips a disabled "
-                "server's @alias from `tools`, and the allowlist mounts nothing "
-                "`tools` does not name. "
-                "codex EXEMPTS the control plane from that withholding and this "
-                "backend does not, because the exemption was never about the wire: "
-                "managed_mcp_spec_entry emits only command/args/env, so the "
-                "narrowing reaches no element on either backend -- what made "
-                "keeping the server safe on codex is its SECOND channel, refusing "
-                "the call at the permission request. Neither half of that exists "
-                "here: this harness emits no _meta.kiro and no "
-                "rawInput.server/tool (only a fused `<server>_<tool>` title, whose "
-                "recognition is a separate change), so "
-                "AcpClient._deny_spec_disabled_tool has no identity to match, and "
-                "whether it asks permission for an MCP tool call at all is "
-                "unmeasured. Carrying the exemption across without the mechanism "
-                "would leave a tool the operator switched off on the dashboard "
-                "REACHABLE, on an ordinary path, with nothing saying so. So a "
-                "narrowed control-plane server is withheld and the cost is stated "
-                "rather than hidden -- that session loses the server, and with "
-                "kirocrew-core withheld it cannot report back to its channel at all "
-                "-- and it is paid ONLY by an operator who narrowed the control "
-                "plane deliberately, since a default install narrows nothing. That "
-                "is an absent server with a logged reason, not the mounted-and-mute "
-                "shape this folder exists to remove. denied_tools is therefore "
-                "EMPTY, which is a statement and not a default: pairs returned here "
-                "could never match, and a set that reads as an enforced restriction "
-                "while being inert is worse than an empty one. The exemption "
-                "returns when the two measurements do -- see narrowed_control_plane",
+                "into a per-tool `deny` rule in the harness's own `permission` "
+                "config, which Crew already seeds on OPENCODE_CONFIG_CONTENT for the "
+                'permission routing: `{"*": "ask", "<server>_<tool>": '
+                '"deny"}`, the tool id spelled the way the harness names an MCP '
+                "tool (opencode_tool_id). Measured on opencode 1.18.30, the rule "
+                "removes that one tool from the model's tool list, while the server's "
+                "other tools stay listed and still ask per call -- so a narrowed "
+                "server stays MOUNTED, Crew's own control plane included, and "
+                "per_tool_deny is settings-file. The rule is held to the harness's "
+                "resolved config, not to the seed: the harness lets the LAST matching "
+                "rule win, and a lower source that already names the same tool keeps "
+                "its earlier place behind the seed's `*`, which turns the deny into an "
+                "ask. The routing read-back evaluates every rule the way the harness "
+                "does, and a server whose rule did not come out in force is withheld "
+                "whole, with a warning naming the cause. An id the harness re-maps to "
+                "a builtin rule is withheld the same way. denied_tools stays EMPTY: "
+                "the harness sends only a fused `<server>_<tool>` title on a call, so "
+                "the client has no structured pair to refuse by",
             ),
             Concern.AUTO_APPROVE: Ruling(
                 _D.WITHHELD,
@@ -590,11 +622,13 @@ class OpenCodeMirror(AgentConfigMirror):
         session_token: str = "",
         **kwargs: object,
     ) -> SessionProjection:
-        """The structured face: :func:`opencode_projection`, with ``kwargs`` ignored
-        as :meth:`session_params` documents (``permission_surface_owned`` arrives
-        there). ``denied_tools`` is empty on this backend by decision, not by
-        default -- see the ``disabledTools`` ruling."""
-        del kwargs
+        """The structured face: :func:`opencode_projection`.
+
+        ``harness_denies_in_force`` arrives in ``kwargs``: the rule ids the client's
+        read-back found in force, or ``None`` before any were seeded. Every other
+        keyword in ``kwargs`` is ignored, as :meth:`session_params` documents
+        (``permission_surface_owned`` arrives there)."""
+        in_force = kwargs.get("harness_denies_in_force")
         return opencode_projection(
             agent,
             stub_server_names=stub_server_names,
@@ -603,4 +637,9 @@ class OpenCodeMirror(AgentConfigMirror):
             session_key=session_key,
             channel_id=channel_id,
             session_token=session_token,
+            denies_in_force=(
+                frozenset(str(rule) for rule in in_force)
+                if isinstance(in_force, (set, frozenset, list, tuple))
+                else None
+            ),
         )
