@@ -584,27 +584,34 @@ class TestRepoScope:
         inside = loader.get_context(project_dir=str(self._repo(tmp_path)))
         assert "repo-only" in inside
 
-    def test_pod_e2e_declares_a_repo_scope(self) -> None:
-        # pod-e2e drives this repo's pod tooling and its triggers are matched by
-        # word overlap, so it must carry the gate rather than rely on prose.
-        # The description carries the applicability statement as well: the gate
-        # covers the injection paths, and the description is what an agent reads
-        # on the paths it does not cover (an explicit `$name` load, a
-        # `skill_search` hit, or reading the file directly).
+    def test_kiro_crew_dev_skills_load_globally_and_say_so(self) -> None:
+        # Maintainer decision: the Kiro Crew developer skills load in
+        # every session like any other skill, so a Kiro Crew PR written from any
+        # folder still gets them. The description is what keeps them out of other
+        # repositories, so each one must state that it is for this repository.
         from kiro_crew import skills as skills_mod
 
-        skill_md = (
-            Path(skills_mod.__file__).parent
+        pkg = Path(skills_mod.__file__).parent
+        expected = {
+            pkg
             / "apps"
             / "builtins"
             / "dev_fleet"
             / "skills"
-            / "pod-e2e"
-            / "SKILL.md"
-        )
-        head = skill_md.read_text(encoding="utf-8")[:2048]
-        assert "repo_scope: src/kiro_crew" in head
-        assert "ONLY for developing Kiro Crew itself" in head
+            / "pod-e2e": "ONLY for developing Kiro Crew itself",
+            pkg / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr": "Kiro Crew repo only",
+            pkg
+            / "builtin_skills"
+            / "kirocrew-dev"
+            / "kirocrew-worktree-dev": "Kiro Crew source repo ITSELF",
+            pkg / "builtin_skills" / "kirocrew-dev" / "writing-tests": "Kiro Crew repo only",
+            pkg / "builtin_skills" / "kirocrew-dev" / "dashboard-template": "Kiro Crew repo only",
+        }
+        for skill_dir, statement in expected.items():
+            head = (skill_dir / "SKILL.md").read_text(encoding="utf-8")[:2048]
+            frontmatter = head.split("---", 2)[1]
+            assert "repo_scope" not in frontmatter, skill_dir.name
+            assert statement in frontmatter, skill_dir.name
 
 
 class TestRelocatedSkillCleanup:

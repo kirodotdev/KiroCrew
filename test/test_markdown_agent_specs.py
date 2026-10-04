@@ -939,8 +939,10 @@ _ONE_FORM_SCAN_RE = re.compile(
 )
 
 # The writers that are JSON-only BY DESIGN: a markdown spec is never rewritten by
-# Kiro Crew, so a bookkeeping migration that reads-then-writes must not see it.
-_ONE_FORM_SCANS_ALLOWED: dict[str, int] = {"kiro_crew/agent.py": 1}
+# Kiro Crew, so a migration that reads-then-writes must not see it. agent.py has
+# two: migrate_agent_specs (bookkeeping keys) and migrate_relocated_skill_uris
+# (skill:// paths of a moved builtin skill).
+_ONE_FORM_SCANS_ALLOWED: dict[str, int] = {"kiro_crew/agent.py": 2}
 
 
 def test_no_agents_dir_scan_sees_one_form_only() -> None:

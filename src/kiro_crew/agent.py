@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Literal, MutableMapping
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_discovery import (
+    SKILL_URI_PREFIX,
     AmbiguousAgentSpecError,
     _declared_project_agent_name,
     _read_agent_spec,
@@ -2422,6 +2423,126 @@ def migrate_agent_specs() -> int:
     return cleaned
 
 
+def _relocated_skill_uri(uri: str, moves: dict[Path, Path]) -> str | None:
+    """The new ``skill://`` URI for *uri* when it names a relocated skill, else ``None``.
+
+    Only a ``~/`` or absolute URI is matched: a workspace-relative one points into
+    a project tree, never at the builtin skills home. The rewrite keeps the URI's
+    form, so a ``~/`` mapping stays portable across machines.
+    """
+    if not uri.startswith(SKILL_URI_PREFIX):
+        return None
+    raw = uri[len(SKILL_URI_PREFIX) :]
+    home_form = raw.startswith("~/")
+    if home_form:
+        path = Path.home() / raw[2:]
+    elif Path(raw).is_absolute():
+        path = Path(raw)
+    else:
+        return None
+    new = moves.get(Path(os.path.normpath(path)))
+    if new is None:
+        return None
+    if home_form:
+        try:
+            return f"{SKILL_URI_PREFIX}~/{new.relative_to(Path.home()).as_posix()}"
+        except ValueError:
+            pass
+    return f"{SKILL_URI_PREFIX}{new.as_posix()}"
+
+
+def migrate_relocated_skill_uris() -> int:
+    """Point agent specs that map a relocated builtin skill at its new path.
+
+    A builtin skill that moves (``skills._RELOCATED_SKILLS``) leaves its old
+    ``SKILL.md`` quarantined, so an agent spec that maps the old path by
+    ``skill://`` would silently load nothing. This rewrites each such resource to
+    the new path, in place and in order, and drops it instead when the spec
+    already maps the new path. A move counts only once the new ``SKILL.md`` is
+    installed and the old one is gone, so a mapping is never pointed at a file
+    that does not exist, and a skill still loadable at its old path keeps its
+    mapping. Idempotent and safe to run on every rebuild. Returns the number of
+    spec files rewritten.
+    """
+    from kiro_crew.skills import _RELOCATED_SKILLS, skills_dir  # noqa: PLC0415
+
+    agents_dir = kiro_agents_dir_path()
+    if not agents_dir.is_dir():
+        return 0
+    base = skills_dir()
+    moves: dict[Path, Path] = {}
+    for old_name, new_name in _RELOCATED_SKILLS.items():
+        old_md = base / old_name / "SKILL.md"
+        new_md = base / new_name / "SKILL.md"
+        if new_md.is_file() and not old_md.exists():
+            moves[Path(os.path.normpath(old_md))] = new_md
+    if not moves:
+        return 0
+    rewritten = 0
+    # Every template-spec writer holds this lock, and the read sits INSIDE it:
+    # a snapshot taken before a concurrent PATCH saved would otherwise be
+    # written back over that edit.
+    try:
+        with agents_spec_lock(agents_dir):
+            # JSON only, for the same reason as migrate_agent_specs: a markdown spec is
+            # never rewritten by Kiro Crew.
+            for spec_path in sorted(agents_dir.glob("*.json")):
+                if not _spec_path_is_safe(spec_path, agents_dir):
+                    continue
+                data = _read_agent_spec(
+                    spec_path,
+                    operation="migrate_relocated_skill_uris",
+                    source="unknown",
+                )
+                if data is None:
+                    continue
+                name = data.get("name") or spec_path.stem
+                try:
+                    enrolled = agent_state.get_capabilities(str(name)) is not None
+                except (ValueError, OSError):
+                    enrolled = True
+                if enrolled:
+                    # An enrolled member's spec is a saved generation whose
+                    # digest its capability intent records; rewriting it in
+                    # place would make reconcile refuse new sessions. It is
+                    # left for a re-save in Capabilities.
+                    continue
+                resources = data.get("resources")
+                if not isinstance(resources, list):
+                    continue
+                present = {r for r in resources if isinstance(r, str)}
+                updated: list[object] = []
+                changed = False
+                for resource in resources:
+                    new_uri = (
+                        _relocated_skill_uri(resource, moves) if isinstance(resource, str) else None
+                    )
+                    if new_uri is None:
+                        updated.append(resource)
+                        continue
+                    changed = True
+                    if new_uri not in present:
+                        updated.append(new_uri)
+                        present.add(new_uri)
+                if not changed:
+                    continue
+                data["resources"] = updated
+                try:
+                    _atomic_json_write(spec_path, data)
+                    rewritten += 1
+                except OSError as exc:
+                    logger.warning(
+                        "Could not rewrite relocated skill mapping in %s: %s", spec_path, exc
+                    )
+    except OSError:
+        # The lock already logged why it could not be taken; try again on
+        # the next rebuild rather than write unserialized.
+        return rewritten
+    if rewritten:
+        logger.info("Pointed %d agent spec(s) at relocated builtin skills", rewritten)
+    return rewritten
+
+
 def clear_model_pin(config: MutableMapping[str, object], name: str) -> None:
     """Drop *config*'s ``model`` pin and resume tracking the shipped default.
 
@@ -3253,6 +3374,8 @@ def rebuild_agent_config(
     # One-time (idempotent) self-heal: strip KiroCrew bookkeeping keys from
     # every kiro agent spec into the sidecar so kiro-cli accepts them all.
     migrate_agent_specs()
+    # A relocated builtin skill keeps working for agents that map its old path.
+    migrate_relocated_skill_uris()
 
     # Managed MCP sync happens after config is fully built (see below).
 

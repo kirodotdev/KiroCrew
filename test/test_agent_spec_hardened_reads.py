@@ -1040,6 +1040,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent.py": [
         ("agent_spec_lookup", "unknown"),
         ("migrate_agent_specs", "unknown"),
+        ("migrate_relocated_skill_uris", "unknown"),
     ],
     "kiro_crew/agent_capabilities.py": [("capability_publish", "dashboard")],
     "kiro_crew/agent_discovery.py": [

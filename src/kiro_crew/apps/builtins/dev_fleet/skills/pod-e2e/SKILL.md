@@ -2,7 +2,6 @@
 name: pod-e2e
 description: "ONLY for developing Kiro Crew itself -- if the project you are working on is anything else, ignore this skill: it drives Kiro Crew's own pod tooling, which does not exist in another repository. Boots a Kiro Crew feature worktree's full stack as an ISOLATED throwaway pod and proves it boots, authenticates and renders (headless Playwright), without touching the live gateway. It does NOT run the worktree's test suite -- run the tests your change touches yourself and let CI own the full suite. Use when asked to e2e-test / smoke-test / verify a Kiro Crew worktree's feature hands-off, drive browser checks on a pod, or prove a new backend route + UI work together. NOT for testing the live instance, and NOT a general-purpose e2e or smoke-test skill."
 triggers: e2e test, smoke test, pod test, verify worktree, test pod, run e2e, end to end
-repo_scope: src/kiro_crew
 ---
 
 # pod-e2e — test a worktree against an isolated full-stack pod

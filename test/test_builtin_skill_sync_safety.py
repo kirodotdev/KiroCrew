@@ -264,6 +264,54 @@ class TestStaleCleanupGuard:
         parked = base / ".subagent.superseded"
         assert "old builtin" in (parked / "SKILL.md").read_text(encoding="utf-8")
 
+    def test_a_dropped_nested_builtin_is_retired_beside_itself(
+        self, builtin_root: Path, base: Path
+    ) -> None:
+        # kirocrew-codebase-refactor is not shipped: an unchanged installed
+        # copy is parked next to it, inside the family directory.
+        name = "kirocrew-dev/kirocrew-codebase-refactor"
+        _make_skill(base, name, "old builtin")
+        _record_builtin_provenance(base / name)
+
+        _ensure_builtin_skills(base)
+
+        assert not (base / name).exists()
+        parked = base / "kirocrew-dev" / ".kirocrew-codebase-refactor.superseded"
+        assert "old builtin" in (parked / "SKILL.md").read_text(encoding="utf-8")
+
+    @requires_symlinks
+    def test_a_dropped_nested_builtin_behind_a_linked_family_is_untouched(
+        self, builtin_root: Path, base: Path, tmp_path: Path
+    ) -> None:
+        # The family directory itself is a user-made link: nothing is moved
+        # through it, so the linked tree keeps its copy.
+        outside = tmp_path / "outside-family"
+        _make_skill(outside, "kirocrew-codebase-refactor", "linked copy")
+        _record_builtin_provenance(outside / "kirocrew-codebase-refactor")
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "kirocrew-dev").symlink_to(outside, target_is_directory=True)
+
+        _ensure_builtin_skills(base)
+
+        assert (outside / "kirocrew-codebase-refactor" / "SKILL.md").is_file()
+        assert not (outside / ".kirocrew-codebase-refactor.superseded").exists()
+
+    @requires_symlinks
+    def test_a_parked_slot_behind_a_linked_family_is_not_disposed(
+        self, builtin_root: Path, base: Path, tmp_path: Path
+    ) -> None:
+        # Only the parked copy is left, inside the linked family's target: the
+        # disposal of a parked slot must not reach through the link either.
+        outside = tmp_path / "outside-family"
+        slot = outside / ".kirocrew-codebase-refactor.superseded"
+        _make_skill(outside, ".kirocrew-codebase-refactor.superseded", "parked copy")
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "kirocrew-dev").symlink_to(outside, target_is_directory=True)
+
+        _ensure_builtin_skills(base)
+
+        assert (slot / "SKILL.md").is_file()
+
     def test_user_edited_stale_copy_is_left_alone(
         self, builtin_root: Path, base: Path
     ) -> None:

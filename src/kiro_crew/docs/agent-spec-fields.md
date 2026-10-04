@@ -450,6 +450,18 @@ prompt — and only with no project supplied does it fall back to three levels a
 the spec file (`<project>/.kiro/agents/foo.json` → `<project>`).
 `agent_skill_globs` is what the rest of the product asks.
 
+When a builtin skill moves (`_RELOCATED_SKILLS` in `skills.py`), its old
+`SKILL.md` is set aside, so a mapping of the old path would load nothing.
+`agent.migrate_relocated_skill_uris` runs on every agent-config rebuild and
+rewrites such a `~/` or absolute `skill://` entry in each JSON spec under
+`~/.kiro/agents/` to the new path, keeping its place and its `~/` form. It
+drops the entry instead when the spec already maps the new path, and acts only
+once the new `SKILL.md` exists and the old one is gone. Workspace-relative
+entries, wildcards and markdown specs are left alone, and so is an enrolled
+member's spec: it is a saved capability generation whose digest the intent
+records, so it picks up the new path when the member is re-saved in
+Capabilities.
+
 `file://<glob>` is a steering glob, and a narrower mechanism than it looks:
 `_load_steering_resources` in `src/kiro_crew/context.py` reads `resources` from
 `kirocrew.json` specifically — not from the session's active agent — globs each

@@ -1,8 +1,7 @@
 ---
 name: writing-tests
-description: "How to write a Kiro Crew backend pytest test with NO side effects that does not flake. Use when adding, editing, reviewing or debugging a test in the Kiro Crew repo: which conftest applies, what leaks (temp dirs, data home, ~/.kiro, cron, threads), the six flake classes, cross-platform traps."
+description: "Kiro Crew repo only: how to write a backend pytest test with NO side effects that does not flake. Use when adding, editing, reviewing or debugging a test there: which conftest applies, what leaks (temp dirs, data home, ~/.kiro, cron, threads), the six flake classes, cross-platform traps."
 triggers: write a test, add a test, fix a flaky test, test is flaky, test side effect, temp dir residue, tmp residue, kirocrew test, pytest kirocrew, test isolation, conftest, xdist, test leaked
-repo_scope: src/kiro_crew
 ---
 
 # Writing a Kiro Crew test that does not leak and does not flake

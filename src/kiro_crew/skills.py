@@ -2104,6 +2104,21 @@ def _retire_verified_claim(claim: Path, dest_dir: Path, verified_fingerprint: st
     return True
 
 
+def _linked_component(base: Path, name: str) -> Path | None:
+    """The first directory of *name* under *base* that is a link or junction, if any.
+
+    *name* is a catalog key, so a nested one (``kirocrew-dev/x``) has a family
+    directory on the way. A link anywhere on that path points outside the skills
+    home, and the sync must not rename or remove anything through it.
+    """
+    parts = Path(name).parts
+    for i in range(len(parts)):
+        candidate = base.joinpath(*parts[: i + 1])
+        if is_link_or_junction(candidate):
+            return candidate
+    return None
+
+
 def _ensure_builtin_skills(base: Path) -> None:
     """Sync built-in skills: copy new/updated, remove known-stale ones.
 
@@ -2276,21 +2291,36 @@ def _ensure_builtin_skills(base: Path) -> None:
     # Deliberate consequence: installs that predate provenance recording keep
     # their stale builtin dirs until a human removes them, because there is no
     # packaged tree left to prove ownership against.
-    stale_builtins = {"learn", "subagent", "cron", "kirocrew-core"} - source_names
+    stale_builtins = {
+        "learn",
+        "subagent",
+        "cron",
+        "kirocrew-core",
+        # Not shipped: retire the installed copy.
+        "kirocrew-dev/kirocrew-codebase-refactor",
+    } - source_names
     if base.exists():
         for name in stale_builtins:
             stale = base / name
+            family = Path(name).parent
+            if family.parts and _linked_component(base, family.as_posix()) is not None:
+                # A nested name's family directory is a user-made link: its
+                # parked slot lives inside the link target too, so nothing on
+                # this path is claimed, disposed of or read.
+                logger.debug("Leaving %s in place: its family directory is a link", stale)
+                continue
             # Unlike update-path slots (rotated by the next update), nothing
             # ever ships for a stale name again, so its parked copy is
             # disposed of here on the sweep AFTER the one that parked it —
             # that is its full quiescent cycle. Ordered before the live-dir
             # handling below, which can park a fresh copy this same run.
-            slot = base / f".{name}.superseded"
+            slot = stale.with_name(f".{stale.name}.superseded")
             if not stale.is_dir() and os.path.lexists(slot):
                 _dispose_superseded_slot(slot, stale)
-            if is_link_or_junction(stale):
-                # The sync only ever creates real directories; a link here is
-                # user-made and its target must not even be read.
+            if _linked_component(base, name) is not None:
+                # The sync only ever creates real directories; a link on the
+                # way (a nested name's family directory included) is user-made
+                # and its target must not even be read.
                 logger.debug("Leaving link %s in place: user-made", stale)
                 continue
             if not stale.is_dir():
@@ -2330,18 +2360,14 @@ def _ensure_builtin_skills(base: Path) -> None:
                 # A directory on the way to the old SKILL.md that is a link or
                 # junction points outside the skills home. Renaming through it
                 # would rename a file the operator linked in, so leave it alone.
-                linked = [
-                    base.joinpath(*Path(old_name).parts[: i + 1])
-                    for i in range(len(Path(old_name).parts))
-                    if is_link_or_junction(base.joinpath(*Path(old_name).parts[: i + 1]))
-                ]
-                if linked:
+                linked = _linked_component(base, old_name)
+                if linked is not None:
                     logger.warning(
                         "Skill %s relocated to %s, but %s is a link; not "
                         "quarantining through it (the linked copy is untouched)",
                         old_name,
                         new_name,
-                        linked[0],
+                        linked,
                     )
                     continue
                 try:

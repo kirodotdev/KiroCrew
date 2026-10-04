@@ -1,8 +1,7 @@
 ---
 name: kirocrew-prepare-pr
-description: LOAD THIS FOR EVERY KIRO CREW PR you open or update (scoped to the Kiro Crew repo; never other repos or CRs). Runs the whole loop — issue + tier, commit, sync, squash, push, drive CI and AI review to green, fix a red main, arm auto-merge and watch it land (24h). 'push my changes' = prepare-only.
+description: LOAD THIS FOR EVERY KIRO CREW PR you open or update (Kiro Crew repo only; not other repos or CRs). Runs the whole loop — issue + tier, commit, sync, squash, push, drive CI and AI review to green, fix a red main, arm auto-merge and watch it land (24h). 'push my changes' = prepare-only.
 always: false
-repo_scope: src/kiro_crew
 triggers: prepare pr, prep pr, prepare pull request, ship pr, ship this pr, raise pr, open pr, create pr, update pr, Kiro Crew PR, commit and push, open a pull request, get pr ready, get the pr review ready, review ready pr, make it green, make the pr green, drive pr green, babysit pr, handle review comments, address review comments, fix ci, pr ci failing, main is red, fix merge conflict, rebase pr, poll ci, keep going until green, land it, land pr, land this pr, auto-merge, auto-merge it, enable auto-merge
 ---
 
@@ -12,7 +11,7 @@ Drive the working tree to a **merged PR**: open it review-ready, then keep drivi
 until CI and the review bots are satisfied and GitHub lands it. Opening the PR is
 the midpoint, not the end. Every Kiro Crew author — maintainer or outside
 contributor — runs this same loop, so it also states the repository's rules.
-`repo_scope` keeps it out of every other repository's sessions.
+It is for the Kiro Crew repository only: in any other repository, ignore it.
 
 This file carries only what the loop executes. The reasons behind the rules are in
 `references/rationale.md`; read it when you need to justify a deviation.

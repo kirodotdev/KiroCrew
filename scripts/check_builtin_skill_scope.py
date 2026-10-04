@@ -63,9 +63,8 @@ that were actually leaking. Read it as "these four shapes are extinct", not as
 ## The kirocrew-dev family is exempt, structurally
 
 ``builtin_skills/kirocrew-dev/`` is the family FOR developing this repository --
-``kirocrew-prepare-pr``, ``babysit``, ``writing-tests``, ``kirocrew-worktree-dev``, and
-``kirocrew-codebase-refactor``. A
-Kiro Crew path there is the subject matter, not a leak, and 26 of the tree's 28
+``kirocrew-prepare-pr``, ``babysit``, ``writing-tests``, ``kirocrew-worktree-dev`` and
+``dashboard-template``. A Kiro Crew path there is the subject matter, not a leak, and 26 of the tree's 28
 markers live in it. That exemption is a directory rule rather than 26 recorded
 lines on purpose: it is a property of what the family IS, so it stays true as
 those skills are edited, where a per-line list would just record today's bytes
@@ -349,7 +348,8 @@ def self_test() -> int:
         cases = (
             (
                 f"{EXEMPT_FAMILY}/ body is exempt",
-                f"{SKILL_ROOT.as_posix()}/{EXEMPT_FAMILY}/kirocrew-prepare-pr/SKILL.md" not in flagged,
+                f"{SKILL_ROOT.as_posix()}/{EXEMPT_FAMILY}/kirocrew-prepare-pr/SKILL.md"
+                not in flagged,
             ),
             (
                 f"nested {EXEMPT_FAMILY}/ reference file is exempt",

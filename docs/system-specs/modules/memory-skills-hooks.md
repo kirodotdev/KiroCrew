@@ -3611,12 +3611,21 @@ real endpoint in both orders to keep that true rather than merely currently-true
 ever shared the FILTERED result would fail whichever agent asked second.
 
 The `kirocrew-dev` family is repository-maintainer guidance, not user-project
-advice. Its `kirocrew-codebase-refactor` skill owns repository-scale structural
-campaigns: hotspot baselines, coherent module ownership, non-overlapping worker
-waves, behavior-equivalence evidence, stale-work recovery, and landed structural
-metrics. It delegates isolated implementation, test authoring, PR delivery, and
-monitoring to `kirocrew-worktree-dev`, `writing-tests`, `kirocrew-prepare-pr`, and
-`babysit` respectively, so those contracts remain single-owned.
+advice: isolated implementation, test authoring, PR delivery and monitoring belong
+to `kirocrew-worktree-dev`, `writing-tests`, `kirocrew-prepare-pr` and `babysit`
+respectively, so each contract stays single-owned. None of them carries
+`repo_scope`: they load in every session like any other skill, and each one that
+is specific to this repository says so in its description ("Kiro Crew repo
+only"), so the model decides from the description whether the task is about this
+repository. The dev-fleet app's `pod-e2e` skill follows the same rule.
+
+A builtin skill that moves (`_RELOCATED_SKILLS`) has its old copy quarantined by
+the sync, and `agent.migrate_relocated_skill_uris` points every agent spec that
+mapped the old path at the new one, so the move needs no manual re-map
+([agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md#resources)).
+A builtin dropped from the package (`kirocrew-codebase-refactor`) is listed with
+the sync's stale builtins, so an unchanged installed copy is parked beside itself
+in its family directory; a link anywhere on a nested name's path is left alone.
 
 The bundled `kirocrew-dev/babysit` skill is an on-demand, pointer-on-trigger recipe.
 Its explicit trigger vocabulary covers babysit/watch/monitor phrasing for pull
