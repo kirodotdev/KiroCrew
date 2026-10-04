@@ -12194,7 +12194,7 @@
         "open_webhooks": "Webhooks öffnen",
         "webhooks": "Webhooks",
         "remote_instance_sessions": "Sitzungen der Remote-Crew",
-        "merge_a_connected_remote_instances_live_sessions": "Fügt die aktiven Sitzungen einer verbundenen Remote-Crew in die Sitzungsliste ein, jeweils mit einem Server-Abzeichen. Funktionsfähig, aber noch nicht fertig.",
+        "merge_a_connected_remote_instances_live_sessions": "Fügt die aktiven Sitzungen einer verbundenen Remote-Crew in die Sitzungsliste ein, jeweils mit einem Server-Abzeichen. Eine Remote-Crew ist ein anderer Rechner, den du verbunden hast, nicht deine Agenten. Funktionsfähig, aber noch nicht fertig.",
         "intro": {
           "webhooks_summary": "Ein anderes System – CI, ein Review-Bot, eine Deploy-Pipeline – kann deinen Agenten für dich starten, indem es eine Nachricht mit einem Zugriffstoken sendet, das du auf der Webhooks-Seite erstellst.",
           "webhooks_where": "Sobald das an ist, erscheint auf dieser Karte in den Einstellungen der Link „Webhooks öffnen“; dort öffnest du die neue Webhooks-Seite. In der Seitenleiste erscheint sie erst, wenn sie fertig ist. Ausschalten blendet die Seite nur wieder aus; erstellte Token bleiben erhalten.",

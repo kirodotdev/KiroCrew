@@ -12379,7 +12379,7 @@
         "open_webhooks": "Abrir Webhooks",
         "webhooks": "Webhooks",
         "remote_instance_sessions": "Sessões da crew remota",
-        "merge_a_connected_remote_instances_live_sessions": "Combina as sessões ativas de uma crew remota conectada na lista de sessões, cada uma com um selo de servidor. Funcional, mas não finalizado.",
+        "merge_a_connected_remote_instances_live_sessions": "Combina as sessões ativas de uma crew remota conectada na lista de sessões, cada uma com um selo de servidor. Uma crew remota é outra máquina que você conectou, não os seus agentes. Funcional, mas não finalizado.",
         "intro": {
           "webhooks_summary": "Outro sistema (CI, um bot de revisão, uma pipeline de deploy) pode iniciar seu agente por você enviando uma mensagem com um token de acesso que você cria na página Webhooks.",
           "webhooks_where": "Quando isto estiver ligado, o link “Abrir Webhooks” aparece neste cartão em Configurações; é dali que a nova página Webhooks abre. Ela fica fora da barra lateral até estar pronta. Desligar só esconde a página de novo; os tokens que você criou são mantidos.",

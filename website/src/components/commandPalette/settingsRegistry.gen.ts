@@ -1680,7 +1680,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.remote-crew-sessions",
     "label": "Remote crew sessions",
     "labelKey": "pages.developer.featurePreviewsTab.remote_instance_sessions",
-    "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished.",
+    "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. A remote crew is another machine you have connected, not your agents. Functional, but not finished.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1

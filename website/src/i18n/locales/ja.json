@@ -12009,7 +12009,7 @@
         "open_webhooks": "Webhooks を開く",
         "webhooks": "Webhooks",
         "remote_instance_sessions": "リモートクルーのセッション",
-        "merge_a_connected_remote_instances_live_sessions": "接続済みのリモートクルーのライブセッションをセッション一覧に統合し、それぞれにサーバーバッジを表示します。動作しますが、まだ未完成です。",
+        "merge_a_connected_remote_instances_live_sessions": "接続済みのリモートクルーのライブセッションをセッション一覧に統合し、それぞれにサーバーバッジを表示します。リモートクルーとは、接続した別のマシンのことで、エージェントのことではありません。動作しますが、まだ未完成です。",
         "intro": {
           "webhooks_summary": "別のシステム（CI、レビューボット、デプロイパイプライン）が、Webhooks ページで作成したアクセストークン付きでメッセージを送るだけで、あなたの代わりにエージェントを動かせます。",
           "webhooks_where": "オンにすると、設定のこのカードに「Webhooks を開く」リンクが現れ、新しい Webhooks ページはそこから開きます。ページが完成するまでサイドバーには表示されません。オフにしてもページが再び隠れるだけで、作成したトークンは残ります。",

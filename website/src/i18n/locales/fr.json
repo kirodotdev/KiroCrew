@@ -12379,7 +12379,7 @@
         "open_webhooks": "Ouvrir Webhooks",
         "webhooks": "Webhooks",
         "remote_instance_sessions": "Sessions de la crew distante",
-        "merge_a_connected_remote_instances_live_sessions": "Fusionne les sessions actives d’une crew distante connectée dans la liste des sessions, chacune marquée d’un badge serveur. Fonctionnel, mais pas terminé.",
+        "merge_a_connected_remote_instances_live_sessions": "Fusionne les sessions actives d’une crew distante connectée dans la liste des sessions, chacune marquée d’un badge serveur. Une crew distante est une autre machine que tu as connectée, pas tes agents. Fonctionnel, mais pas terminé.",
         "intro": {
           "webhooks_summary": "Un autre système (CI, bot de revue, pipeline de déploiement) peut lancer ton agent à ta place en envoyant un message avec un jeton d’accès que tu crées sur la page Webhooks.",
           "webhooks_where": "Une fois activé, le lien « Ouvrir Webhooks » apparaît sur cette carte dans les Réglages ; c’est de là que s’ouvre la nouvelle page Webhooks. Elle n’apparaît pas dans la barre latérale tant qu’elle n’est pas terminée. Le désactiver ne fait que masquer la page à nouveau ; les jetons que tu as créés sont conservés.",

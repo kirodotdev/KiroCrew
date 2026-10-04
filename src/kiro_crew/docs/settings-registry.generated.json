@@ -982,7 +982,7 @@
       "label": "Remote crew sessions",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.remote-crew-sessions",
-      "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
+      "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. A remote crew is another machine you have connected, not your agents. Functional, but not finished."
     },
     {
       "id": "developer.reply-threads-on-crewmate-chat-messages",
