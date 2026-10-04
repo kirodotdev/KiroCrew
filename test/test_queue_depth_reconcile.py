@@ -997,6 +997,208 @@ async def test_shutdown_during_stop_all_drains_the_reports_its_applier_spawns(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
+async def test_a_single_cancel_during_stop_all_joins_the_batch_and_reports_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The user stops one queued card while Stop all's cancel job is on the
+    writer thread. That row's window entry is already gone and it has no
+    ``_agents`` record. A single cancel that took it for a store-only row
+    would cancel it on the loop, land first and report it, and the batch,
+    whose own cancel then finds the row already cancelled, would re-post that
+    cancel with a WARNING and report the row a second time: two
+    ``subagent_done`` and two completions for the parent. So the single
+    cancel joins the batch's answer, and the row is reported once."""
+    caplog.set_level(logging.WARNING, logger=_DEPTH_LOGGER)
+    mgr = await _manager(monkeypatch, pump_off_loop=True, max_concurrent=1)
+    try:
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(3)]
+            await _settle(mgr)
+            events = _record(mgr)
+            entered, release, on_loop = _contend_row_cancels(monkeypatch)
+
+            stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+            await _until(entered.is_set, "the batch's cancel job is on the writer thread")
+            single = asyncio.ensure_future(mgr.cancel(rows[-1].id))
+            # One loop turn runs the single cancel up to its decision: it either
+            # finishes on the loop or waits on the batch it joined.
+            await asyncio.sleep(0)
+            release.set()
+            assert await asyncio.wait_for(single, 10) is True
+            assert await asyncio.wait_for(stop, 10) == (0, 3)
+            await _settle(mgr)
+
+        done = [i for etype, _k, i, _x in events if etype == "subagent_done"]
+        assert sorted(done) == sorted(r.id for r in rows)
+        assert True not in on_loop
+        assert _warned(caplog, _DEPTH_LOGGER, "re-posting the cancel") == 0
+        assert all(mgr._taskq.state_of(r.id) == model.CANCELLED for r in rows)
+        assert mgr._batched_stops == {}
+    finally:
+        await mgr.cancel_all()
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("reports_first", ["teardown", "batch"])
+async def test_a_teardown_cancel_queued_before_stop_all_reports_its_row_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, reports_first: str
+) -> None:
+    """A parent-end teardown's cancel of a queued row is already on the writer
+    thread when Stop all pops that row's window entry, so the teardown's
+    cancel lands and the batch's own cancel of the row comes back empty. Both
+    stops then hold the row, and each builds a fresh ``SubagentInfo`` to
+    report it, so the record's one-shot claim cannot stop a second report:
+    the claim is taken per row instead, whichever stop reports first. One
+    ``subagent_done``, and no retired child's completion injected twice.
+
+    ``batch`` holds the teardown until the batch has applied its answers.
+    The batch cannot tell then that the teardown's cancel landed, so it
+    re-posts that cancel (a WARNING) and reports the row, and the teardown
+    reports nothing. ``teardown`` lets the teardown report first: the batch
+    finds the row reported and re-posts nothing. Stop all's count is the same
+    in both orders: the row was in the window it took, so it counts once."""
+    caplog.set_level(logging.WARNING, logger=_DEPTH_LOGGER)
+    mgr = await _manager(monkeypatch, pump_off_loop=True, max_concurrent=1)
+    try:
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(2)]
+            await _settle(mgr)
+            events = _record(mgr)
+            entered, release, _on_loop = _contend_row_cancels(monkeypatch)
+            if reports_first == "batch":
+                real_async = SpawnAdmissionCoordinator.taskq_cancel_queued_async
+
+                async def after_the_batch(self: Any, agent_id: str, **kw: Any) -> Any:
+                    params = await real_async(self, agent_id, **kw)
+                    await _until(
+                        lambda: agent_id not in mgr._batched_stops, "the batch applied first"
+                    )
+                    return params
+
+                monkeypatch.setattr(
+                    SpawnAdmissionCoordinator, "taskq_cancel_queued_async", after_the_batch
+                )
+
+            teardown = asyncio.ensure_future(
+                mgr.cancel_for_teardown([rows[0].id], parent_session_key=_PARENT, verb="reset")
+            )
+            await _until(entered.is_set, "the teardown's cancel is on the writer thread")
+            stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+            await _until(lambda: rows[0].id in mgr._batched_stops, "the batch popped the row")
+            release.set()
+            await asyncio.wait_for(teardown, 10)
+            stopped = await asyncio.wait_for(stop, 10)
+            await _settle(mgr)
+
+        done = [i for etype, _k, i, _x in events if etype == "subagent_done"]
+        assert sorted(done) == sorted(r.id for r in rows)
+        # The batch took both rows from the window, so it counts both,
+        # whichever stop reported the contested one.
+        assert stopped == (0, 2)
+        reposted = _warned(caplog, _DEPTH_LOGGER, "re-posting the cancel")
+        assert reposted == (1 if reports_first == "batch" else 0)
+        assert all(mgr._taskq.state_of(r.id) == model.CANCELLED for r in rows)
+        assert mgr._batched_stops == {}
+    finally:
+        await mgr.cancel_all()
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_parent_end_during_stop_all_gates_the_batchs_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stop all, then reset the chat, while the batch's cancels are still on
+    the writer thread. The batch has taken its rows from the window and has
+    not reported them, so they are in neither ``_queue`` nor ``_agents`` and
+    the teardown's snapshot names none of them; once the batch's cancels land
+    its store sweep cannot name them either. The batch's report of each row
+    must still be held out of the ended conversation: the parent-end gate
+    covers every row the batch is cancelling for that parent, while each row
+    still ends with its ``subagent_done`` and is stopped exactly once."""
+    mgr = await _manager(monkeypatch, pump_off_loop=True, max_concurrent=1)
+    release = threading.Event()
+    try:
+        delivered: list[str] = []
+
+        async def on_done(info: SubagentInfo) -> None:
+            delivered.append(info.id)
+
+        mgr._on_done = on_done
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            rows = [mgr.spawn(f"t{i}", parent_session_key=_PARENT) for i in range(3)]
+            await _settle(mgr)
+            events = _record(mgr)
+            entered, release, _on_loop = _contend_row_cancels(monkeypatch)
+
+            stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+            await _until(entered.is_set, "the batch's cancel job is on the writer thread")
+            assert all(r.id in mgr._batched_stops for r in rows)
+            assert _parent_window(mgr) == []
+
+            selected = mgr.snapshot_teardown_children(_PARENT)
+            # The batch owns these rows' cancels, so the teardown cancels none.
+            assert selected == ()
+            teardown = asyncio.ensure_future(
+                mgr.cancel_for_teardown(selected, parent_session_key=_PARENT, verb="reset")
+            )
+            release.set()
+            assert await asyncio.wait_for(stop, 10) == (0, 3)
+            assert await asyncio.wait_for(teardown, 10) == 0
+            await _settle(mgr)
+
+        done = [i for etype, _k, i, _x in events if etype == "subagent_done"]
+        assert sorted(done) == sorted(r.id for r in rows)
+        assert not set(delivered) & {r.id for r in rows}, "a retired row reported home"
+        assert all(mgr._taskq.state_of(r.id) == model.CANCELLED for r in rows)
+        assert mgr._batched_stops == {} and mgr._batched_stop_parents == {}
+    finally:
+        release.set()
+        await mgr.cancel_all()
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_single_cancel_joined_to_a_batch_that_never_answers_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store closes under a Stop all's batch, cancelling its job, so the
+    batch reports nothing. A single cancel that joined it returns False rather
+    than waiting forever, and nothing is left filed as batched."""
+    mgr = await _manager(monkeypatch, pump_off_loop=True, max_concurrent=1)
+    try:
+        with patch.object(SubagentManager, "_run", new=_park):
+            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
+            row = mgr.spawn("t0", parent_session_key=_PARENT)
+            await _settle(mgr)
+            never: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+            monkeypatch.setattr(
+                SpawnAdmissionCoordinator, "taskq_post_cancel_queued", lambda self, ids: never
+            )
+
+            stop = asyncio.ensure_future(mgr.cancel_for_parent(_PARENT))
+            await _until(lambda: row.id in mgr._batched_stops, "the batch filed the row")
+            single = asyncio.ensure_future(mgr.cancel(row.id))
+            await asyncio.sleep(0)
+            never.cancel()
+            assert await asyncio.wait_for(single, 10) is False
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(stop, 10)
+            assert mgr._batched_stops == {}
+    finally:
+        await mgr.cancel_all()
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @PUMP_MODES
 @pytest.mark.parametrize("path", ["stop_all", "stage_cancel", "parent_end", "cancel"])
 async def test_a_queued_stop_skips_the_settle_its_landed_cancel_already_wrote(
@@ -1615,6 +1817,10 @@ async def test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing
             assert not mgr._agents[running.id].done
             assert mgr._taskq.state_of(rows[0].id) == model.QUEUED
             assert rows[0].id not in mgr._tasks
+            # Still waiting, so still windowed: the stop dropped every entry
+            # before its batch answered, and puts back the one it did not stop.
+            windowed = [q.get("_preassigned_id") for q in mgr._queue]
+            assert windowed == [rows[0].id]
     finally:
         await mgr.cancel_all()
         _close(mgr)

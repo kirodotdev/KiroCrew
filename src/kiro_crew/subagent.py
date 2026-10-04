@@ -3826,6 +3826,17 @@ class SubagentManager:
         # queued before the stop would otherwise put back rows the stop is
         # cancelling, or window store-only rows its pending read then skips.
         self._stopping_parents: dict[str, int] = {}
+        # agent_id -> the per-row answer of the Stop all batch that is
+        # cancelling its row and has not reported it yet. A single ``cancel``
+        # of such a row joins the batch instead of cancelling and reporting it
+        # again (``cancel_impl``), and a claim whose re-read the cancel may
+        # have overtaken waits for it and re-reads (``claim_and_start``): the
+        # row is in neither ``_queue`` nor ``_agents``.
+        self._batched_stops: dict[str, asyncio.Future[Any]] = {}
+        # agent_id -> the parent of each row filed in ``_batched_stops``, for
+        # as long as it is filed: a parent-end teardown's snapshot gates the
+        # batch's report of a row that is in neither ``_queue`` nor ``_agents``.
+        self._batched_stop_parents: dict[str, str] = {}
         # Batch ids whose spawn_batch_started event has already fired.
         self._seen_batches: set[str] = set()
         # Submission accounting per wave: batch_id -> (submitted, expected).

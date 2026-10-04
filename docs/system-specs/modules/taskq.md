@@ -696,8 +696,10 @@ that landed before that re-read refuses the start there. The re-read is a read,
 not a compare-and-set, so a store-only cancel (no `_agents` record, such as an
 orphan cancel or reconcile) that commits after it answers and before the
 claimer resumes still registers a run that finishes in memory. Stop all's queued
-stop does not reach that window: it also installs a loop record, which the
-claimer checks after the re-read. The ROW is the cancel the operator asked for
+stop does not reach that window. Its batched cancel files the row in
+`_batched_stops` before the stop first awaits, and a claimer that finds it there
+waits for the batch's answer and re-reads behind the cancel. A single queued
+stop installs a loop record, which the claimer checks after the re-read. The ROW is the cancel the operator asked for
 and every later write of that run is fenced out as `stale_result`. Nothing is
 re-dispatched either way.
 

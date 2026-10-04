@@ -547,6 +547,8 @@ class _PumpMixin(ManagerComponent):
             )
             generation, proceed, _reason = claimed
             if proceed:
+                import asyncio as _asyncio
+
                 from kiro_crew import taskq as _taskq
 
                 # Every claim the store took re-reads its row before it
@@ -567,6 +569,21 @@ class _PumpMixin(ManagerComponent):
                         if generation or point.boundary_owner
                         else True
                     )
+                    # A Stop all batch whose cancel of this row was queued
+                    # AFTER that re-read answers it stale, and installs no
+                    # record until its answer comes back. Wait for that answer,
+                    # then re-read behind the cancel: the start is decided only
+                    # by a read the cancel cannot have overtaken.
+                    while still_current and generation:
+                        batched = self._batched_stop_of(point.agent_id)
+                        if batched is None:
+                            break
+                        await _asyncio.shield(batched)
+                        still_current = await store.run(
+                            self.taskq_claim_still_current,
+                            point.agent_id,
+                            generation,
+                        )
                     cancellation_pending = getattr(
                         self._manager,
                         "_boundary_cancellation_pending",
@@ -615,8 +632,9 @@ class _PumpMixin(ManagerComponent):
                 elif self._stopped_while_claimed(point.agent_id):
                     # The re-read answered before a stop landed, and the stop
                     # ran before this coroutine resumed. A queued stop installs
-                    # its record synchronously, so the loop's own state is the
-                    # last word: the row is not ours to start.
+                    # its record synchronously, and a batched one's answer was
+                    # waited for above, so the loop's own state is the last
+                    # word: the row is not ours to start.
                     claimed = (generation, False, self.CLAIM_REFUSED)
             # No await between a successful final durable/boundary check and
             # registration: cancellation cannot interleave after the
@@ -655,6 +673,11 @@ class _PumpMixin(ManagerComponent):
                 self._manager._report_queued_stop(report_params)
         assert not isinstance(result, ClaimPoint)
         return result
+
+    def _batched_stop_of(self, agent_id: str) -> "asyncio.Future[Any] | None":
+        """The answer a Stop all batch owes *agent_id*, while its cancel is in
+        flight (``cancellation._stop_queued`` files it), else ``None``."""
+        return self._manager.__dict__.get("_batched_stops", {}).get(agent_id)
 
     def _stopped_while_claimed(self, agent_id: str) -> bool:
         """Whether a stop was recorded for *agent_id* while its claim was in flight.
