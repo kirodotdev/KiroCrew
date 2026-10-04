@@ -155,10 +155,8 @@ type BareCounts = Partial<Record<(typeof BARE_CONTROL_TAGS)[number], number>>
  */
 const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string }> = {
   'AboutPanel.tsx': {
-    counts: { Toggle: 1, SegmentedControl: 2 },
-    reason:
-      'gateway auto-update Toggle has a ternary label (manual: about.update-notifications); ' +
-      'the two channel SegmentedControls share manual: about.update-channel',
+    counts: { SegmentedControl: 2 },
+    reason: 'the two channel SegmentedControls share manual: about.update-channel',
   },
   'ChatPanel.tsx': {
     counts: { Input: 2 },

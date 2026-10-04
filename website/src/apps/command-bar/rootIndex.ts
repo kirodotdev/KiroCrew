@@ -123,6 +123,16 @@ export interface RootRow {
   /** Extra strings that should match but are not displayed (aliases, keywords). */
   keywords?: string[]
   /**
+   * The row's OWN matcher, used instead of the title/subtitle/keyword match: a
+   * settings row matches by the one settings scorer every settings search
+   * shares, so the same query finds it here as there. `tier` names the field
+   * that matched (`title`: offsets in `indices`; `keyword`: the synonym in
+   * `matchedKeyword`; `subtitle`: the subtitle contains the query), so the hit
+   * is drawn, and a hit off the title pays {@link ALT_FIELD_PENALTY} as every
+   * other row's does. `discounted`: the scorer already applied that discount.
+   */
+  match?: (query: string) => OwnMatch | null
+  /**
    * Sort this row to the END of its group while the query is EMPTY.
    *
    * The empty-query order is frecency, and an unused row scores zero — so the tie
@@ -247,6 +257,15 @@ const SETTINGS_WEAK_LIMIT = 2
  */
 const ALT_FIELD_PENALTY = 0.6
 
+/** What a row's own matcher reports (see `RootRow.match`). */
+export interface OwnMatch {
+  score: number
+  indices: number[]
+  field: MatchField
+  matchedKeyword?: string
+  discounted?: boolean
+}
+
 interface FieldMatch {
   score: number
   indices: number[]
@@ -264,6 +283,7 @@ interface FieldMatch {
  * no highlight at all: correct by score, unexplainable on screen.
  */
 function bestFieldMatch(query: string, row: RootRow): FieldMatch | null {
+  if (row.match) return ownFieldMatch(query, row, row.match(query))
   const direct = fuzzyMatch(query, row.title)
   if (direct) return { score: direct.score, indices: direct.indices, field: 'title' }
   if (row.subtitle) {
@@ -289,6 +309,23 @@ function bestFieldMatch(query: string, row: RootRow): FieldMatch | null {
     }
   }
   return null
+}
+
+/** A row's own match, priced and drawn like the generic field match. */
+function ownFieldMatch(query: string, row: RootRow, own: OwnMatch | null): FieldMatch | null {
+  if (!own) return null
+  if (own.field === 'title') return { score: own.score, indices: own.indices, field: 'title' }
+  const score = own.discounted ? own.score : own.score * ALT_FIELD_PENALTY
+  if (own.field === 'keyword' && own.matchedKeyword) {
+    return { score, indices: [], field: 'keyword', matchedKeyword: own.matchedKeyword }
+  }
+  // The subtitle contains the query (the matcher's gate), so mark that span.
+  const q = query.trim().toLowerCase()
+  const at = row.subtitle && q ? row.subtitle.toLowerCase().indexOf(q) : -1
+  return {
+    score, indices: [], field: 'subtitle',
+    subtitleIndices: at < 0 ? [] : Array.from({ length: q.length }, (_, i) => at + i),
+  }
 }
 
 /**

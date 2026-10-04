@@ -36,8 +36,10 @@ import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
-import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
+import { localizedSettingLabel, scoreSettingEntry, settingEntryOffered } from '../../components/commandPalette/settingsSearchCore'
+import { useSettingsSearchGovernance } from '../../components/commandPalette/useSettingsSearchGovernance'
 import { settingsRoute } from '../../components/commandPalette/settingsRoute'
+import type { SettingEntry } from '../../components/commandPalette/settingsTypes'
 import { settingsSubtitle } from '../../components/commandPalette/settingsTabLabel'
 import { usePaletteActions } from '../../components/commandPalette/paletteActions'
 import { appIcon } from '../../components/commandPalette/providers/appsProvider'
@@ -66,8 +68,8 @@ import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
 
-import { loadUsage, recordUse, type UsageMap } from './frecency'
-import { rankRootRows, type RankedRow, type RootGroup, type RootRow, type RootRowKind, type RowStatus } from './rootIndex'
+import { SETTING_ROW_PREFIX, loadUsage, recordUse, type UsageMap } from './frecency'
+import { rankRootRows, type OwnMatch, type RankedRow, type RootGroup, type RootRow, type RootRowKind, type RowStatus } from './rootIndex'
 import {
   argumentIsValid,
   contributedCommands,
@@ -149,6 +151,20 @@ const DEBOUNCE_MS = 150
  * under Search Sessions.
  */
 const RECENT_SESSION_ROWS = 3
+
+/**
+ * A settings row's matcher: the settings scorer decides whether and how well it
+ * matches, and its tier says which field to draw the hit on.
+ */
+function settingRowMatch(query: string, entry: SettingEntry): OwnMatch | null {
+  const hit = scoreSettingEntry(query, entry)
+  if (!hit) return null
+  if (hit.tier === 'label') return { score: hit.score, indices: hit.indices, field: 'title' }
+  return {
+    score: hit.score, indices: [], field: hit.matchedKeyword ? 'keyword' : 'subtitle',
+    matchedKeyword: hit.matchedKeyword, discounted: hit.tier === 'corpus',
+  }
+}
 
 function groupLabel(group: RootGroup): string {
   switch (group) {
@@ -604,6 +620,9 @@ export default function CommandBarOverlay({
 
   const [selected, setSelected] = useState(0)
   const [usage, setUsage] = useState<UsageMap>(() => loadUsage())
+  // The rows every other settings search withholds, withheld here too, from
+  // cached answers only: the root issues no request.
+  const settingsGovernance = useSettingsSearchGovernance({ fetch: false })
   const [actionError, setActionError] = useState<string | null>(null)
   /**
    * What the last copy did, held until the reader moves.
@@ -1209,8 +1228,12 @@ export default function CommandBarOverlay({
       })
     }
     for (const entry of SETTINGS_REGISTRY) {
+      if (!settingEntryOffered(entry, settingsGovernance)) continue
       rows.push({
-        id: `setting:${entry.id}`,
+        id: `${SETTING_ROW_PREFIX}${entry.id}`,
+        // Matched as the other settings searches match it: label, synonyms, then
+        // a description or tab that contains the query.
+        match: query => settingRowMatch(query, entry),
         // The shared resolver, not a bare labelKey lookup: resolving the key
         // alone drops the fan-out suffix ("Bot Token (Discord)" → "Bot
         // Token"), rendering per-channel rows as indistinguishable titles.
@@ -1227,7 +1250,7 @@ export default function CommandBarOverlay({
     // the tree without remounting it, which does not recompute a memo. Omitting it
     // would freeze these rows in whichever language the surface first resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, commandById, crewPreview, cycleTheme, dispatch, liveSlots, navigate, resolved, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
+  }, [apps, commandById, crewPreview, cycleTheme, dispatch, liveSlots, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
 
   // The root ranks from the LIVE query, not the debounced one. Ranking is pure and
   // local, so there is nothing to throttle, and debouncing it would let a fast Enter

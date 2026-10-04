@@ -1,7 +1,6 @@
 {
   "app": {
     "apps": "Apps",
-    "auto_update_on_restart": "Auto-update on restart",
     "cancel_update": "Cancel Update",
     "changelog": "Changelog",
     "click_to_hide": "Click to hide",
@@ -8549,9 +8548,7 @@
         "agent_request_install_version": "Install v{{version}} & restart",
         "agent_request_unknown_requester": "An agent",
         "apache_2_0": "Apache 2.0",
-        "auto_update_on_restart": "Auto-update on restart",
         "automatic_updates_are_unavailable_in_this_build": "Automatic updates are unavailable in this build",
-        "automatically_pull_and_apply_updates_when_the_ga": "Automatically pull and apply updates when the gateway restarts",
         "autonomous_agent_management_runs_locally_open_so": "Autonomous agent management · runs locally · open source",
         "browse_this_branch_on_github": "Browse this branch on GitHub",
         "check_for_updates": "Check for updates",

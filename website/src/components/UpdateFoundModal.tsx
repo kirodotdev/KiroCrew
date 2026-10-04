@@ -5,6 +5,8 @@ import { Trans } from 'react-i18next'
 import MarkdownRenderer from './MarkdownRenderer'
 import ErrorNotice from './ErrorNotice'
 import { InAppUpdateFlow } from '../pages/settings/AboutPanel'
+import { updateInfoQuery } from '../api/updateInfoQuery'
+import { failedWithNoData } from '../api/queryState'
 import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
@@ -72,7 +74,11 @@ type Candidate = {
   command?: string
 }
 
-export default function UpdateFoundModal() {
+/**
+ * `held`: another update dialog (What's new) is on screen. The popup stays
+ * mounted, so its per-version session state survives, and opens once released.
+ */
+export default function UpdateFoundModal({ held = false }: { held?: boolean } = {}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -99,23 +105,48 @@ export default function UpdateFoundModal() {
   // "nothing downloads until you choose" line is false for the frame it
   // flashes. Those users chose the quiet flow: the staged-build modal at
   // `downloaded` is their prompt. Absent/older bridges report no preference
-  // and keep the popup.
-  const { data: bridgeInfo } = useQuery({
-    queryKey: ['update-info'],
-    queryFn: async () =>
-      window.updateAPI?.getInfo?.() ?? null,
-    enabled: !!desktop && (desktop.state === 'found' || desktop.state === 'available'),
-    staleTime: Infinity,
+  // and keep the popup. Read again each time a build is found, since another
+  // window may have changed the preference since it was last read
+  // (`staleTime: 0`); not on focus, since the popup is gated on that read.
+  const buildFound = !!desktop && (desktop.state === 'found' || desktop.state === 'available')
+  const infoQ = useQuery({
+    ...updateInfoQuery,
+    enabled: buildFound,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
   })
+  const bridgeInfo = infoQ.data
+  // Each found build waits for a read of its own: a later poll that finds a
+  // build again (the feed reports `checking` in between) must not open the
+  // popup on the answer an earlier find read. Enabling the query starts that
+  // read; a build found while it was already enabled starts none, so ask,
+  // joining a read in flight rather than cancelling it. The read resolves
+  // whether it succeeded or failed.
+  const foundKey = buildFound ? (desktop?.version ?? '') : null
+  const [readForKey, setReadForKey] = useState<string | null>(null)
+  const { refetch: rereadInfo } = infoQ
+  useEffect(() => {
+    if (foundKey === null) return
+    let current = true
+    void rereadInfo({ cancelRefetch: false }).then(() => { if (current) setReadForKey(foundKey) })
+    return () => { current = false; setReadForKey(null) }
+  }, [foundKey, rereadInfo])
+  // The preference could not be read: the popup still asks, and says why it
+  // cannot tell whether a download already started.
+  // A failed re-read leaves the older answer cached; it does not describe this
+  // build, so it counts as unread too.
+  const preferenceUnread = failedWithNoData(infoQ)
+    || (infoQ.data !== undefined && infoQ.errorUpdatedAt > infoQ.dataUpdatedAt)
 
   // Desktop first: when the dashboard runs inside the desktop app the gateway
   // defers its own check (`managed_by_app`), so the two cannot both report —
   // this ordering is belt-and-braces for the transition frame, not a policy.
-  // `bridgeInfo === undefined` means the preference read is still in flight:
-  // candidacy waits for it, otherwise the popup opens for a frame and then
-  // vanishes when an auto-download preference lands.
+  // Candidacy waits for a read finished since this build was found (or for it
+  // to fail), otherwise the popup opens for a frame on a stale preference and
+  // then vanishes when the current one lands.
+  const preferenceSettled = foundKey !== null && readForKey === foundKey && (bridgeInfo !== undefined || preferenceUnread)
   let candidate: Candidate | null = null
-  if (desktop && (desktop.state === 'found' || desktop.state === 'available') && !desktop.replayed && desktop.version && desktopCanDownload() && bridgeInfo !== undefined && bridgeInfo?.autoDownload !== true) {
+  if (desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
     // Desktop-reported version never crosses the gateway, so the fold is
     // computed locally, keyed on the followed channel like the backend's.
     candidate = {
@@ -180,7 +211,7 @@ export default function UpdateFoundModal() {
   // The agent hand-off is one more dismissal, so it is confined to the
   // voluntary branch: a mandatory prompt that a failed apply could wave away
   // would enforce nothing.
-  const open = !!candidate
+  const open = !!candidate && !held
     && (required || (
       !handedOff
       && recordLoaded
@@ -479,11 +510,15 @@ export default function UpdateFoundModal() {
               <MarkdownRenderer content={notes} />
             </div>
           )}
-          {candidate.source === 'desktop' && (
+          {candidate.source === 'desktop' && (preferenceUnread ? (
+            <ErrorNotice variant="inline" className="mt-2" message={i18nT('pages.settings.aboutPanel.auto_download_unreadable')}
+              askAgent={!required} onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+              testId="update-found-preference-error" />
+          ) : (
             <p className="mt-2 text-[12px] text-muted">
               {i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to')}
             </p>
-          )}
+          ))}
           {candidate.source === 'gateway' && candidate.affordance === 'arm' && (
             <div className="mt-2">
               <InAppUpdateFlow

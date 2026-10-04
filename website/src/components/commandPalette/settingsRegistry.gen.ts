@@ -6,21 +6,13 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
-    "id": "about.auto-update-on-restart",
-    "label": "Auto-update on restart",
-    "labelKey": "pages.settings.aboutPanel.auto_update_on_restart",
+    "id": "about.install-app-updates-automatically",
+    "label": "Install app updates automatically",
+    "labelKey": "pages.settings.aboutPanel.install_app_updates_automatically",
+    "description": "Downloads new versions in the background and installs them the next time you quit the app.",
     "tab": "about",
     "type": "toggle",
     "occurrence": 1
-  },
-  {
-    "id": "about.update-notifications",
-    "labelKey": "pages.settings.aboutPanel.notify_when_an_update_is_available",
-    "tab": "about",
-    "type": "toggle",
-    "occurrence": 1,
-    "configKey": "auto_update",
-    "label": "Notify when an update is available"
   },
   {
     "id": "about.update-channel",
@@ -29,6 +21,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "buttonGroup",
     "occurrence": 1,
     "label": "Update channel"
+  },
+  {
+    "id": "about.update-the-gateway-automatically",
+    "label": "Update the gateway automatically",
+    "labelKey": "pages.settings.aboutPanel.automatic_updates",
+    "description": "Installs a new release once no work is running and restarts the gateway, on installs that can update themselves.",
+    "tab": "about",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "auto_update"
   },
   {
     "id": "browser.attach-token",

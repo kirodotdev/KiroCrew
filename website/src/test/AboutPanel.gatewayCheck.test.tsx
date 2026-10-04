@@ -24,21 +24,36 @@ import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
+import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+import { i18nT } from '../i18n/t'
 
-/** Route the component's three GETs; /api/update/check answers with `check`. */
-function stubFetch(check: Record<string, unknown>) {
-  const json = (body: unknown) => ({
-    ok: true,
-    status: 200,
+type Answer = { status: number; body: unknown }
+
+/** Route the component's requests; /api/update/check answers with `check`. */
+function stubFetch(
+  check: Record<string, unknown>,
+  { config = () => Promise.resolve({ status: 200, body: { auto_update: true } }), autoUpdateSave }: {
+    config?: () => Promise<Answer>
+    autoUpdateSave?: (body: Record<string, unknown>) => Answer
+  } = {},
+) {
+  const json = ({ status, body }: Answer) => ({
+    ok: status < 400,
+    status,
     json: async () => body,
     text: async () => JSON.stringify(body),
     headers: new Headers({ 'content-type': 'application/json' }),
   })
-  const spy = vi.fn(async (input: unknown) => {
+  const spy = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input)
-    if (url.includes('/api/update/check')) return json(check)
-    if (url.includes('/api/changelog')) return json({ content: '' })
-    return json({})
+    if (url.includes('/api/update/check')) return json({ status: 200, body: check })
+    if (url.includes('/api/config/kirocrew')) return json(await config())
+    if (url.includes('/api/update/auto')) {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      return json(autoUpdateSave ? autoUpdateSave(body) : { status: 200, body: { ok: true, auto_update: body.enabled } })
+    }
+    if (url.includes('/api/changelog')) return json({ status: 200, body: { content: '' } })
+    return json({ status: 200, body: {} })
   })
   vi.stubGlobal('fetch', spy)
   return spy
@@ -47,7 +62,7 @@ function stubFetch(check: Record<string, unknown>) {
 function mountWeb() {
   // No window.updateAPI => isDesktop false => the gateway branch renders.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  return { qc, ...render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
         <MemoryRouter>
@@ -55,7 +70,7 @@ function mountWeb() {
         </MemoryRouter>
       </QueryClientProvider>
     </Provider>,
-  )
+  ) }
 }
 
 async function pressCheck() {
@@ -153,7 +168,7 @@ describe('AboutPanel gateway update check', () => {
     expect(diverged.textContent).toContain('219')
     expect(diverged.textContent?.toLowerCase()).toContain('rebase')
     expect(screen.queryByTestId('up-to-date')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
     // The hero badge must not contradict the warning on the same screen: the
     // green "Up to date" pill yields to a warn "Diverged" pill.
     expect(screen.getByTestId('hero-diverged')).toBeTruthy()
@@ -211,7 +226,7 @@ describe('AboutPanel gateway update check', () => {
 
     expect(await screen.findByTestId('diverged')).toBeTruthy()
     expect(screen.queryByTestId('up-to-date')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
     // The hero badge must show diverged too, not the stale "Update available".
     expect(screen.getByTestId('hero-diverged')).toBeTruthy()
   })
@@ -255,7 +270,7 @@ describe('AboutPanel gateway update check', () => {
     store.dispatch(sseStatus({ ...BLANK_STATUS, update_available: true, update_can_apply: true } as never))
     mountWeb()
 
-    const trigger = await screen.findByRole('button', { name: /update/i })
+    const trigger = await screen.findByRole('button', { name: /^Update(?! the gateway)/ })
     fireEvent.click(trigger)
 
     const dialog = await screen.findByRole('dialog')
@@ -281,7 +296,7 @@ describe('AboutPanel gateway update check', () => {
     })
     mountWeb()
 
-    const trigger = await screen.findByRole('button', { name: /update/i })
+    const trigger = await screen.findByRole('button', { name: /^Update(?! the gateway)/ })
     fireEvent.click(trigger)
 
     const note = await screen.findByTestId('diverged-modal')
@@ -314,7 +329,7 @@ describe('AboutPanel gateway update check', () => {
     expect(block.textContent).toBe(command)
     expect(screen.getByTestId('manual-update-instructions').textContent).toContain('insider')
     // The Update button would 409 on this layout, so it must not be offered.
-    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
     expect(screen.getByRole('button', { name: /copy command/i })).toBeTruthy()
   })
 
@@ -433,7 +448,7 @@ describe('AboutPanel gateway update check', () => {
     await waitFor(() => expect(screen.getByTestId('policy-managed-update-note')).toBeTruthy())
     expect(screen.queryByTestId('manual-update-instructions')).toBeNull()
     expect(screen.queryByText(/re-running the installer/i)).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
   })
 
   it('copying the command flips the button label', async () => {
@@ -492,7 +507,7 @@ describe('AboutPanel gateway update check', () => {
     mountWeb()
     await pressCheck()
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Update/ })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Update(?! the gateway)/ })).toBeTruthy())
     expect(screen.queryByTestId('manual-update-instructions')).toBeNull()
   })
 
@@ -537,7 +552,7 @@ describe('AboutPanel gateway update check', () => {
 
     const block = await screen.findByTestId('manual-update-command')
     expect(block.textContent).toBe(command)
-    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
   })
 
   it('suppresses the Update button even when no command is known', async () => {
@@ -548,7 +563,7 @@ describe('AboutPanel gateway update check', () => {
     mountWeb()
 
     await screen.findByTestId('manual-update-instructions')
-    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
     expect(screen.queryByTestId('manual-update-command')).toBeNull()
   })
 
@@ -578,24 +593,326 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.getByTestId('hero-not-checked')).toBeTruthy()
   })
 
-  it('the auto-apply toggle is reworded where the gateway cannot self-apply', async () => {
+  // The gateway's `auto_update` row is one SettingsToggle in every state. The
+  // gateway's `update_auto_effect` decides whether it can be flipped and the
+  // note under it (`gatewayAutoUpdateCopy`, unit-tested on its own).
+  const LABEL = i18nT('pages.settings.aboutPanel.automatic_updates')
+  const NOTIFY_ONLY = i18nT('pages.settings.aboutPanel.auto_update_notify_only_on_this_install')
+  const autoUpdateRow = () => document.querySelector<HTMLElement>('[data-setting-key="auto_update"]')
+  const note = () => screen.queryByTestId('auto-update-note')
+  // The Toggle is a role="switch" div, so its held state is `aria-disabled`.
+  const live = () => expect(screen.getByRole('switch', { name: LABEL })).not.toHaveAttribute('aria-disabled')
+  const held = () => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-disabled', 'true')
+
+  it('offers a live switch where the gateway installs, with no note', async () => {
     stubFetch({})
-    pushStatus({ update_can_apply: false, update_check_status: 'succeeded' })
+    pushStatus({ update_auto_effect: 'install' })
     mountWeb()
 
-    await waitFor(() =>
-      expect(screen.getByText(/Notify when an update is available/)).toBeTruthy(),
-    )
-    // The auto-apply promise must not be shown where the backend downgrades it.
-    expect(screen.queryByText(/Auto-update on restart/)).toBeNull()
+    await waitFor(live)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true')
+    expect(note()).toBeNull()
   })
 
-  it('the auto-apply toggle keeps its promise on a git checkout', async () => {
+  it('keeps the same row, held off with its reason, when the effect turns to notify', async () => {
+    // A verdict can land while the row is on screen; the row changes state in
+    // place rather than being swapped for another element.
     stubFetch({})
-    pushStatus({ update_can_apply: true, update_check_status: 'succeeded' })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+    const row = autoUpdateRow()
+
+    act(() => { pushStatus({ update_auto_effect: 'notify' }) })
+    await waitFor(held)
+    expect(note()).toHaveTextContent(NOTIFY_ONLY)
+    expect(autoUpdateRow()).toBe(row)
+  })
+
+  it.each([
+    ['mandatory', 'pages.settings.aboutPanel.gateway_auto_update_mandatory_note'],
+    // A gateway without the field has not said what the switch does.
+    [undefined, 'pages.settings.aboutPanel.gateway_auto_update_unknown_hint'],
+  ])('notes the %s effect beside a live switch', async (effect, key) => {
+    stubFetch({})
+    pushStatus({ update_auto_effect: effect })
     mountWeb()
 
-    await waitFor(() => expect(screen.getByText(/Auto-update on restart/)).toBeTruthy())
+    await waitFor(live)
+    expect(note()).toHaveTextContent(i18nT(key))
+  })
+
+  it('carries both deep-link anchors from the first paint, before the saved value is read', async () => {
+    // `key:auto_update` (the agent's route) resolves on the key, the palette's id
+    // form on the registry label; a search that probes once must find the row.
+    stubFetch({}, { config: () => new Promise(() => {}) })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+
+    await waitFor(() => expect(autoUpdateRow()).not.toBeNull())
+    held()
+    const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'auto_update')
+    expect(autoUpdateRow()?.dataset.settingLabel).toBe(i18nT(entry!.labelKey!))
+  })
+
+  it("takes the saved value from a check's answer, so a change made elsewhere appears", async () => {
+    stubFetch({ check_status: 'succeeded', update_available: false, auto_update: false })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true'))
+
+    await pressCheck()
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+  })
+
+  it("does not take a check's value when the switch was saved while it ran", async () => {
+    // The check read the config before the save landed, so its copy is older.
+    let answerCheck: () => void = () => {}
+    let saved = true
+    const spy = stubFetch({}, {
+      config: () => Promise.resolve({ status: 200, body: { auto_update: saved } }),
+      autoUpdateSave: body => { saved = body.enabled as boolean; return { status: 200, body: { ok: true, auto_update: saved } } },
+    })
+    const route = spy.getMockImplementation()!
+    spy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (!String(input).includes('/api/update/check')) return route(input, init)
+      await new Promise<void>(resolve => { answerCheck = resolve })
+      return route(input, init).then(r => ({ ...r, json: async () => ({ check_status: 'succeeded', auto_update: true }) }))
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+
+    await pressCheck()
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+    await act(async () => { answerCheck() })
+    await waitFor(() => expect(screen.queryByRole('button', { name: /check for updates/i })).not.toBeDisabled())
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('keeps the switch usable at its default after a failed read', async () => {
+    stubFetch({}, { config: () => Promise.resolve({ status: 500, body: { error: 'zzq' } }) })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+
+    expect(await screen.findByTestId('auto-update-read-error')).toBeTruthy()
+    live()
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('moves on a click after a failed read, and keeps what the save answered', async () => {
+    // Nothing was read, so there is no cached config to write into; the
+    // switch shows the click while it saves and the answer after.
+    stubFetch({}, { config: () => Promise.resolve({ status: 500, body: { error: 'zzq' } }) })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    expect(await screen.findByTestId('auto-update-read-error')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+    await waitFor(() => expect(screen.queryByTestId('auto-update-save-error')).toBeNull())
+    // Settled, and still where the gateway said it is.
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('after a failed read, a failed save falls back to the last value a save confirmed', async () => {
+    // The gateway is off after the first save; the second never landed, so
+    // the switch must not drop to the default, on, beside its save error.
+    let saves = 0
+    stubFetch({}, {
+      config: () => Promise.resolve({ status: 500, body: { error: 'zzq' } }),
+      autoUpdateSave: body => (++saves === 1
+        ? { status: 200, body: { ok: true, auto_update: body.enabled } }
+        : { status: 500, body: { error: 'boom' } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    expect(await screen.findByTestId('auto-update-read-error')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    await waitFor(() => expect(saves).toBe(1))
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-save-error')).toHaveTextContent('boom')
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+  })
+
+  it("after a failed read, a save's answer replaces the default notice, and a click in flight shows neither", async () => {
+    let answerSave: () => void = () => {}
+    const spy = stubFetch({}, { config: () => Promise.resolve({ status: 500, body: { error: 'zzq' } }) })
+    const route = spy.getMockImplementation()!
+    spy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/api/update/auto')) await new Promise<void>(resolve => { answerSave = resolve })
+      return route(input, init)
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    expect(await screen.findByTestId('auto-update-read-error')).toHaveTextContent(
+      i18nT('pages.settings.aboutPanel.auto_update_setting_unavailable'))
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    // In flight: the switch shows the click, so "shows the default: on" is false.
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+    expect(screen.queryByTestId('auto-update-read-error')).toBeNull()
+    expect(screen.queryByTestId('auto-update-refresh-error')).toBeNull()
+
+    await act(async () => { answerSave() })
+    // The re-read fails again: the switch shows the save's answer, and says so.
+    expect(await screen.findByTestId('auto-update-refresh-error')).toHaveTextContent(
+      i18nT('pages.settings.aboutPanel.auto_update_save_answer_shown'))
+    expect(screen.queryByTestId('auto-update-read-error')).toBeNull()
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('says a refresh failed, and keeps the last value read', async () => {
+    let fail = false
+    stubFetch({}, {
+      config: () => Promise.resolve(fail ? { status: 500, body: { error: 'zzq' } } : { status: 200, body: { auto_update: false } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    const { qc } = mountWeb()
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false'))
+
+    fail = true
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    expect(await screen.findByTestId('auto-update-refresh-error')).toBeTruthy()
+    live()
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('reports a write config.local.json refused, and notes the pin until a save says it is gone', async () => {
+    let pinned = true
+    stubFetch({}, {
+      autoUpdateSave: body => pinned
+        ? { status: 409, body: { error: 'auto_update is set in config.local.json', code: 'auto_update_overlay_owned', overlay_override: true } }
+        : { status: 200, body: { ok: true, auto_update: body.enabled, overlay_override: false } },
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+    const pinText = i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-save-error')).toHaveTextContent(pinText)
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true'))
+    // Still usable: a click is how a removed override is noticed.
+    live()
+
+    pinned = false
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    await waitFor(() => expect(screen.queryByTestId('auto-update-save-error')).toBeNull())
+    expect(screen.queryByTestId('auto-update-pin-note')).toBeNull()
+  })
+
+  it('notes a config.local.json pin a check reports, before any click, and ties it to the switch', async () => {
+    stubFetch({ check_status: 'succeeded', overlay_override: true })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+    expect(screen.queryByTestId('auto-update-pin-note')).toBeNull()
+
+    await pressCheck()
+    const pin = await screen.findByTestId('auto-update-pin-note')
+    expect(screen.getByRole('switch', { name: LABEL }).closest('[aria-describedby]')?.getAttribute('aria-describedby') ?? '')
+      .toContain(pin.id)
+  })
+
+  it('notes the pin when a save is accepted but config.local.json still decides', async () => {
+    stubFetch({}, {
+      autoUpdateSave: () => ({ status: 200, body: { ok: true, auto_update: true, overlay_override: true } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-pin-note')).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true'))
+  })
+
+  it('reports a failed save until a read made after it shows the write landed, and not again later', async () => {
+    // The POST persisted but its answer was lost.
+    let saved = true
+    let answerRead: (() => void) | null = null
+    stubFetch({}, {
+      config: () => answerRead === null && saved === false
+        ? new Promise(resolve => { answerRead = () => resolve({ status: 200, body: { auto_update: saved } }) })
+        : Promise.resolve({ status: 200, body: { auto_update: saved } }),
+      autoUpdateSave: body => { saved = body.enabled as boolean; return { status: 502, body: { error: 'zzq lost' } } },
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    const { qc } = mountWeb()
+    await waitFor(live)
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-save-error')).toBeTruthy()
+    await waitFor(() => expect(answerRead).not.toBeNull())
+    await act(async () => { answerRead!() })
+    await waitFor(() => expect(screen.queryByTestId('auto-update-save-error')).toBeNull())
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+
+    // Another tab or the CLI turns it back on: the cleared failure stays cleared.
+    saved = true
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true'))
+    expect(screen.queryByTestId('auto-update-save-error')).toBeNull()
+  })
+
+  it('keeps a failed re-toggle reported while the cache still holds its value from before', async () => {
+    // On, then off (saved), then on again (fails), and the re-reads fail. The
+    // cache still reads "on" from before both saves; that read proves nothing
+    // about the failed one.
+    let reads = 0
+    let calls = 0
+    stubFetch({}, {
+      config: () => Promise.resolve(++reads === 1 ? { status: 200, body: { auto_update: true } } : { status: 500, body: { error: 'zzq down' } }),
+      autoUpdateSave: body => (++calls === 1
+        ? { status: 200, body: { ok: true, auto_update: body.enabled } }
+        : { status: 500, body: { error: 'zzq refused' } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-save-error')).toHaveTextContent('zzq refused')
+    await waitFor(() => expect(calls).toBe(2))
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+    expect(screen.getByTestId('auto-update-save-error')).toHaveTextContent('zzq refused')
+  })
+
+  it('keeps reporting a failed read while a retry is in flight', async () => {
+    let fail = true
+    let release: () => void = () => {}
+    stubFetch({}, {
+      config: () => fail
+        ? Promise.resolve({ status: 500, body: { error: 'zzq' } })
+        : new Promise(resolve => { release = () => resolve({ status: 200, body: { auto_update: true } }) }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    const { qc } = mountWeb()
+    expect(await screen.findByTestId('auto-update-read-error')).toBeTruthy()
+
+    fail = false
+    act(() => { void qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(qc.getQueryState(['kirocrewConfig'])?.fetchStatus).toBe('fetching'))
+    expect(screen.getByTestId('auto-update-read-error')).toBeTruthy()
+    act(() => release())
+    await waitFor(() => expect(screen.queryByTestId('auto-update-read-error')).toBeNull())
+  })
+
+  it('reports a refused save that did not land', async () => {
+    stubFetch({}, { autoUpdateSave: () => ({ status: 500, body: { error: 'zzq refused' } }) })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await waitFor(live)
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-save-error')).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true'))
   })
 
   it('copying awaits the clipboard helper before confirming', async () => {

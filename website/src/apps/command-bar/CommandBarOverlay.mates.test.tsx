@@ -67,12 +67,17 @@ vi.mock('../../hooks/useTheme', () => ({ useTheme: () => ({ cycle: vi.fn() }) })
 const listApps = vi.fn(async () => [])
 const chatFolders = vi.fn(async () => [] as unknown[])
 const kirocrewConfig = vi.fn(async () => ({}) as unknown)
+// The settings-search governance reads: the root must answer from cache, never fetch.
+const dashboardConfig = vi.fn(async () => ({}) as unknown)
+const tipsStatus = vi.fn(async () => ({}) as unknown)
 const agentCatalog = vi.fn(async () => ({ agents: [] as unknown[], default_agent: '' }))
 vi.mock('../../api/client', () => ({
   api: {
     listApps: (...a: unknown[]) => listApps(...(a as [])),
     chatFolders: (...a: unknown[]) => chatFolders(...(a as [])),
     kirocrewConfig: (...a: unknown[]) => kirocrewConfig(...(a as [])),
+    dashboardConfig: (...a: unknown[]) => dashboardConfig(...(a as [])),
+    tipsStatus: (...a: unknown[]) => tipsStatus(...(a as [])),
     agentCatalog: (...a: unknown[]) => agentCatalog(...(a as [])),
   },
 }))
@@ -285,6 +290,9 @@ describe('command bar — the root', () => {
     expect(agentCatalog).not.toHaveBeenCalled()
     expect(chatFolders).not.toHaveBeenCalled()
     expect(listApps).not.toHaveBeenCalled()
+    // The settings rows' governance answers come from cache only.
+    expect(dashboardConfig).not.toHaveBeenCalled()
+    expect(tipsStatus).not.toHaveBeenCalled()
   })
 })
 

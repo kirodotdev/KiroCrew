@@ -51,9 +51,15 @@ interface SettingsToggleProps {
    * description (`InfoTip`). One catalog string per tip.
    */
   hint?: string
+  /**
+   * `false` drops the `data-setting-*` highlight anchors, for a copy of a
+   * Settings row drawn somewhere else (the What's-new modal reuses About's
+   * update switches), so a deep link can only land on the panel's row.
+   */
+  anchor?: boolean
 }
 
-export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, describedBy }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, describedBy, anchor = true }: SettingsToggleProps) {
   /**
    * Did this activation come from the "?" tip rather than the row?
    *
@@ -66,7 +72,7 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
   const fromHint = (e?: React.MouseEvent | React.KeyboardEvent) =>
     e?.target instanceof HTMLElement && e.target.closest('[data-settings-hint]') !== null
   return (
-    <Clickable data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
+    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}) } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
           <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>

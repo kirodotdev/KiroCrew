@@ -2,23 +2,25 @@
   "$comment": "AUTO-GENERATED from the dashboard settings panels by website/scripts/gen-settings-registry.mjs — DO NOT EDIT. How to use a route: settings-deeplink.md (same directory).",
   "settings": [
     {
-      "id": "about.auto-update-on-restart",
-      "label": "Auto-update on restart",
+      "id": "about.install-app-updates-automatically",
+      "label": "Install app updates automatically",
       "tab": "about",
-      "route": "/settings/about?highlight=about.auto-update-on-restart"
-    },
-    {
-      "id": "about.update-notifications",
-      "label": "Notify when an update is available",
-      "tab": "about",
-      "route": "/settings/about?highlight=key%3Aauto_update",
-      "configKey": "auto_update"
+      "route": "/settings/about?highlight=about.install-app-updates-automatically",
+      "description": "Downloads new versions in the background and installs them the next time you quit the app."
     },
     {
       "id": "about.update-channel",
       "label": "Update channel",
       "tab": "about",
       "route": "/settings/about?highlight=about.update-channel"
+    },
+    {
+      "id": "about.update-the-gateway-automatically",
+      "label": "Update the gateway automatically",
+      "tab": "about",
+      "route": "/settings/about?highlight=key%3Aauto_update",
+      "description": "Installs a new release once no work is running and restarts the gateway, on installs that can update themselves.",
+      "configKey": "auto_update"
     },
     {
       "id": "browser.attach-token",

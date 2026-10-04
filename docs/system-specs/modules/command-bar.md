@@ -134,7 +134,14 @@ eviction.
 1. **Claim the slot** — declare `ui.overlays` in the manifest and take over the `quick-search`
    host slot while enabled, without the shell ever naming an app
 2. **Root index** — build the attention / command / app / settings rows from local data only,
-   rank them, and cap each group
+   rank them, and cap each group. Settings rows match through `scoreSettingEntry`, the scorer
+   the palette and the Settings search share (label, synonyms, then a description or tab that
+   contains the query), through the row's own `match`. Its tier picks the field the hit is
+   drawn on (title marks, the matched synonym, or the subtitle span), and a hit off the label
+   pays the same alias/subtitle discount as every other row. A settings row is withheld once a
+   cached `useSettingsSearchGovernance` answer (`{ fetch: false }`) says its tab does not draw
+   it; an unread answer offers it, as on the other searches, and opening the bar still issues
+   no request
 3. **Ranking** — fuzzy match against the live query plus a frecency boost, so habit surfaces
    without out-ranking a clearly better string match
 4. **Scopes** — enter a sub-surface (today: session search, artifact name search, folder search,
@@ -253,7 +260,10 @@ that.
 with a 14-day half-life, read through a guarded accessor (a disabled or full store degrades to
 no boost rather than throwing). `FRECENCY_WEIGHT` is sized so habit beats a marginally better
 string match but not a clearly better one: an exact prefix hit on a never-used row still wins
-over a scattered subsequence on a daily one.
+over a scattered subsequence on a daily one. A settings row's id follows its label, so
+`loadUsage` reads a relabelled row's history under the id it has now, through the legacy-id
+table its deep links use (`resolveLegacyHighlightId`): two stored ids that land on one row
+merge (counts add, the later use wins), and the next save writes the merged map.
 
 The root ranks from the LIVE query, not a debounced copy, so a fast typist never sees rows
 that answer an older prefix.

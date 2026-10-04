@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Package, X, Download, Copy } from 'lucide-react'
 import { SettingsLink } from '../../components/SettingsLink'
 import { Progress } from '@/components/ui/progress'
-import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
+import { Card, CardTitle, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -15,6 +17,11 @@ import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
 import { api, ApiError } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
+import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useUpdateSwitchesShown } from '../../utils/updateSwitches'
+import { adoptCheckedAutoUpdate, configReads, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
+import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
+import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
+import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
@@ -716,6 +723,131 @@ export function AgentUpdateRequestCard({
   )
 }
 
+/**
+ * A switch row's notices: the saved value could not be read (the switch then
+ * shows its default), a read failed while the switch shows a value known
+ * otherwise (the last value read, or a save's answer), or the write failed or
+ * was refused. askAgent on: the switch shows the value still
+ * in effect, so nothing is lost by leaving.
+ */
+function SwitchNotices({ state, unreadable, testIdPrefix, onHandoff }: {
+  state: SwitchState
+  /** Omitted where another notice on the page already reports the read. */
+  unreadable?: string
+  testIdPrefix: string
+  onHandoff?: () => void
+}) {
+  return (
+    <>
+      {unreadable && state.readFailed && (
+        <ErrorNotice variant="inline" message={unreadable} askAgent onHandoff={onHandoff}
+          testId={`${testIdPrefix}-read-error`} />
+      )}
+      {state.refreshFailed && (
+        <ErrorNotice variant="inline" message={state.refreshFailed}
+          askAgent onHandoff={onHandoff} testId={`${testIdPrefix}-refresh-error`} />
+      )}
+      {state.saveError && (
+        <ErrorNotice variant="inline" message={state.saveError} askAgent onHandoff={onHandoff}
+          testId={`${testIdPrefix}-save-error`} />
+      )}
+    </>
+  )
+}
+
+/**
+ * The desktop app updater's auto-download opt-out, which is ON by default.
+ * Shared with the What's-new modal; where each surface draws it is
+ * `utils/updateSwitches`. Held at the shell's default, on, until the
+ * updater's getInfo() answers.
+ */
+export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: {
+  /** The read-failure copy; omitted where the page already reports it. */
+  unreadable?: string
+  /** `false` for a copy outside Settings, so deep links land on About's row. */
+  anchor?: boolean
+  onHandoff?: () => void
+}) {
+  const app = useAppAutoDownload()
+  return (
+    <div className="pt-1 border-t border-border">
+      <SettingsToggle
+        label={i18nT('pages.settings.aboutPanel.install_app_updates_automatically')}
+        description={i18nT('pages.settings.aboutPanel.install_app_updates_automatically_hint')}
+        checked={app.checked}
+        disabled={app.held}
+        onChange={app.set}
+        anchor={anchor}
+      />
+      <SwitchNotices state={app} testIdPrefix="auto-download" onHandoff={onHandoff} unreadable={unreadable} />
+    </div>
+  )
+}
+
+/**
+ * The gateway's `auto_update` switch, shared with the What's-new modal. One
+ * row in every state: what changes with the gateway's `update_auto_effect` is
+ * whether the switch can be flipped and the note under it
+ * (`gatewayAutoUpdateCopy`), so a verdict that arrives while the row is on
+ * screen never swaps it for another element. Held at the schema default, on,
+ * until the saved value has been read. Where config.local.json sets the key,
+ * a note says so (the Privacy tab's pin note); the switch stays usable, since
+ * a click is how a removed override is noticed.
+ */
+export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff }: {
+  /** `false` for a copy outside Settings, so deep links land on About's row. */
+  anchor?: boolean
+  /** Re-read the saved value on every mount, not only once it is 30 s old. */
+  readOnMount?: boolean
+  onHandoff?: () => void
+}) {
+  const canApply = useAppSelector(s => s.dashboard.status?.update_can_apply) === true
+  const copy = gatewayAutoUpdateCopy(useGatewayAutoUpdateEffect(), { canApply })
+  const gw = useGatewayAutoUpdate({ readOnMount })
+  const reduceMotion = useReducedMotion()
+  const noteId = useId()
+  const pinNoteId = useId()
+  // A refusal already says the same thing, through its notice.
+  const showPinNote = gw.overlayPinned && !gw.saveError
+  const describedBy = [copy.hint ? noteId : '', showPinNote ? pinNoteId : ''].filter(Boolean).join(' ') || undefined
+  return (
+    <div className="pt-2.5 border-t border-border">
+      <SettingsToggle
+        label={i18nT('pages.settings.aboutPanel.automatic_updates')}
+        description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
+        checked={gw.checked}
+        disabled={copy.disabled || gw.held}
+        onChange={gw.set}
+        configKey="auto_update"
+        describedBy={describedBy}
+        anchor={anchor}
+      />
+      <AnimatePresence initial={false}>
+        {copy.hint && (
+          <motion.p
+            key="note"
+            id={noteId}
+            className="text-[12px] text-muted overflow-hidden"
+            initial={reduceMotion ? false : { opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}
+            data-testid="auto-update-note"
+          >
+            {copy.hint}
+          </motion.p>
+        )}
+      </AnimatePresence>
+      {showPinNote && (
+        <p id={pinNoteId} className="text-[12px] text-muted mt-1" data-testid="auto-update-pin-note">
+          {i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')}
+        </p>
+      )}
+      <SwitchNotices state={gw} testIdPrefix="auto-update" onHandoff={onHandoff}
+        unreadable={i18nT('pages.settings.aboutPanel.auto_update_setting_unavailable')} />
+    </div>
+  )
+}
+
 export function AboutPanel() {
   const { botName, avatar } = useBranding()
   const gatewayVersion = useAppSelector(s => s.dashboard.status?.version) || ''
@@ -746,12 +878,14 @@ export function AboutPanel() {
   const isDesktop = !!desktopApi
 
   // Desktop (Electron) app info (version, channel, platform)
-  const { data: info, isError: infoError } = useQuery({
-    queryKey: ['update-info'],
-    queryFn: () => desktopApi!.getInfo!(),
-    enabled: isDesktop,
-    staleTime: Infinity, // static per session
-  })
+  const infoQuery = useQuery({ ...updateInfoQuery, enabled: isDesktop })
+  const info = infoQuery.data
+  // A shell with no getInfo() answers `null`: as much a failed read here as a
+  // rejection, since the version, channel and auto-download rows all need it.
+  // The last settled read, so the notice holds through a retry.
+  const infoError = failedWithNoData(infoQuery) || (isDesktop && info === null)
+  // A re-read rejected over cached info: the rows shown are the last ones read.
+  const infoRefreshFailed = info !== undefined && infoQuery.isError
 
   // Desktop update lifecycle state, read from the shared cache that
   // useUpdateSubscription (mounted in App.tsx) populates.
@@ -857,7 +991,7 @@ export function AboutPanel() {
   // builds report channelSwitchable=false (separate pinned install).
   const channelMutation = useMutation({
     mutationFn: (next: string) => desktopApi!.setChannel!(next),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
+    onSuccess: answer => storeAnsweredUpdateInfo(queryClient, answer),
   })
   // A refused switch arrives either as a rejection or as a RESOLVED
   // `{ ok: false, error }` — the bridge's contract — so both count as failed.
@@ -867,17 +1001,6 @@ export function AboutPanel() {
   const desktopChannelReason = channelMutation.data && !channelMutation.data.ok
     ? (channelMutation.data.error || '')
     : ''
-  // Auto-download opt-out. The toggle renders from info.autoDownload, so the
-  // invalidate is what moves it -- there is no local optimistic state to roll
-  // back, and a failed write leaves the switch where it was, which is why the
-  // failure is reported next to it below (a switch that silently refuses to
-  // move reads as broken, not as refused).
-  const autoDownloadMutation = useMutation({
-    mutationFn: (next: boolean) => desktopApi!.setAutoDownload!(next),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
-  })
-  const autoDownloadFailed = autoDownloadMutation.isError
-    || (autoDownloadMutation.data !== undefined && !autoDownloadMutation.data.ok)
 
   // The version chip's DISPLAY text. For a gateway install the fold is the
   // backend's (`version_display`, raw `version` fallback for a gateway that
@@ -1205,15 +1328,11 @@ export function AboutPanel() {
   const [showConfirm, setShowConfirm] = useState(false)
   const [applyError, setApplyError] = useState('')
   const [restarting, setRestarting] = useState(false)
-  const [autoUpdate, setAutoUpdate] = useState(true)
-  const { data: mcCfg, isError: mcCfgError } = useQuery({ queryKey: ['mc-config-autoupdate'], queryFn: () => api.kirocrewConfig() })
-  useEffect(() => {
-    const v = (mcCfg as { auto_update?: boolean } | undefined)?.auto_update
-    if (typeof v === 'boolean') setAutoUpdate(v)
-  }, [mcCfg])
   const gwCheck = useMutation({
     mutationFn: () => api.checkUpdate(),
-    onSuccess: (d) => {
+    // Where the saved switch's entry stood, so a late answer cannot overwrite a newer read.
+    onMutate: () => configReads(queryClient),
+    onSuccess: (d, _vars, readsWhenSent) => {
       setGwChanges(d?.changes || '')
       // `latest_version` is the field the gateway actually emits; `version` is
       // read as a fallback only because it is what some older payloads carried.
@@ -1246,7 +1365,9 @@ export function AboutPanel() {
       setGwCommandCopied(false)
       setGwCommandCopyFailed(false)
       if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
-      if (typeof d?.auto_update === 'boolean') setAutoUpdate(d.auto_update)
+      // The check read the saved switch too, which another tab or the CLI may
+      // have changed: adopt it, unless a save or a read has moved it since.
+      adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
     },
   })
   const gwApply = useMutation({
@@ -1283,7 +1404,7 @@ export function AboutPanel() {
   // why the control is only rendered when the backend reported a channel.
   const gwChannelMutation = useMutation({
     mutationFn: (next: string) => api.setUpdateChannel(next),
-    onMutate: () => setGwChannelError(''),
+    onMutate: () => { setGwChannelError(''); return configReads(queryClient) },
     onError: (e: unknown) => {
       // The backend's 409s carry the only actionable detail there is ("a git
       // checkout follows its git remote", or the externally-managed guidance
@@ -1292,7 +1413,7 @@ export function AboutPanel() {
       // one and fall back to the generic line when it did not.
       setGwChannelError(e instanceof ApiError ? (e.message || '') : '')
     },
-    onSuccess: (d) => {
+    onSuccess: (d, _vars, readsWhenSent) => {
       // The response is the re-run check against the new channel, so adopt it
       // wholesale rather than leaving the previous lane's verdict on screen.
       //
@@ -1314,6 +1435,7 @@ export function AboutPanel() {
       setGwTarget(typeof d?.latest_version === 'string' ? d.latest_version : '')
       setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
       if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
+      adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
     },
   })
   // Diverged: local commits on top of a moved upstream. `update_available` is
@@ -1442,6 +1564,10 @@ export function AboutPanel() {
   const effectiveGwCanArm = typeof gwCheck.data?.can_arm === 'boolean'
     ? gwCheck.data.can_arm
     : gwCanArm
+  const updateSwitches = useUpdateSwitchesShown()
+  // The app switch says itself when a re-read fails; with no switch drawn,
+  // the card's notice must say it instead.
+  const showInfoError = infoError || (infoRefreshFailed && !updateSwitches.app)
 
   // Escape closes the confirm dialog (unless an apply/restart is in flight).
   useEffect(() => {
@@ -1559,7 +1685,7 @@ export function AboutPanel() {
             {/* getInfo() rejected: the version chip above fell back to the
                 gateway's figure and the channel row is missing, with nothing
                 to say why. askAgent on: a read failure on a status card. */}
-            {infoError && (
+            {showInfoError && (
               <ErrorNotice
                 variant="inline"
                 className="mt-1"
@@ -1832,8 +1958,8 @@ export function AboutPanel() {
 
       <Card>
         <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
-        {isDesktop ? (
-          isExternallyManaged ? (
+        {isDesktop ? (<>
+          {isExternallyManaged ? (
             // The marker's owner (a distro/enterprise package manager) replaces
             // the whole install, so there is no Check button and no channel —
             // just the fact, plus the owner's own update command when the
@@ -1946,37 +2072,15 @@ export function AboutPanel() {
                 />
               )}
               {updateCard}
-              {/* Auto-download opt-out. ON by default, so this row is the only
-                  place a user can decline the background download — it renders
-                  whenever the desktop bridge exposes the setter, and is absent
-                  on an older shell that does not. `autoDownload` comes from the
-                  updater's own getInfo(), not from a local copy of the store, so
-                  the switch reflects what the updater will actually do.
-                  Reuses the gateway row's label: on desktop the downloaded
-                  update installs on the next restart/quit, which is exactly what
-                  it says. */}
-              {desktopApi?.setAutoDownload && (
-                <div className="pt-1 border-t border-border">
-                  <SettingsToggle
-                    label={i18nT('pages.settings.aboutPanel.auto_update_on_restart')}
-                    checked={info?.autoDownload !== false}
-                    onChange={next => autoDownloadMutation.mutate(next)}
-                  />
-                  {/* askAgent on: the switch already shows the value still in
-                      effect (it re-reads getInfo), so nothing is lost by leaving. */}
-                  {autoDownloadFailed && (
-                    <ErrorNotice
-                      variant="inline"
-                      message={i18nT('pages.settings.aboutPanel.auto_download_save_failed')}
-                      askAgent
-                      testId="auto-download-error"
-                    />
-                  )}
-                </div>
-              )}
+              {/* The card's update-info notice already reports a failed read. */}
+              {updateSwitches.app && <AppAutoDownloadSwitch />}
             </div>
-          )
-        ) : (
+          )}
+          {/* Outside the app updater's branches on purpose: a gateway the app
+              does not own (a reused cli.sh service, an SSH-forwarded one)
+              installs on its own switch whatever this build's updater says. */}
+          {updateSwitches.gateway && <GatewayAutoUpdateSwitch />}
+        </>) : (
           <div className="flex flex-col gap-2.5">
             {(showUpdate || channelMovePending) ? (
               <>
@@ -2140,36 +2244,7 @@ export function AboutPanel() {
                 )}
               </>
             )}
-            {/* The auto-apply promise only holds where the gateway can replace its
-                own code. On any other layout the backend deliberately downgrades
-                auto-update to a notification (the `self_updatable` guard in
-                `gateway.py`), so leaving an enabled toggle and an "automatically
-                pull and apply" tooltip here would accept input for something that
-                cannot happen. Say what it will actually do instead. */}
-            <div className="flex items-center justify-between pt-2.5 border-t border-border"
-              data-setting-label={i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}
-              title={gwSelfUpdate
-                ? i18nT('pages.settings.aboutPanel.automatically_pull_and_apply_updates_when_the_ga')
-                : i18nT('pages.settings.aboutPanel.auto_update_notify_only_on_this_install')}>
-              <span className={`text-sm ${gwSelfUpdate ? 'text-text' : 'text-muted'}`}>{gwSelfUpdate
-                ? i18nT('pages.settings.aboutPanel.auto_update_on_restart')
-                : i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}</span>
-              <Toggle checked={autoUpdate} label={gwSelfUpdate
-                ? i18nT('pages.settings.aboutPanel.auto_update_on_restart')
-                : i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}
-                onChange={async next => { setAutoUpdate(next); try { await api.setAutoUpdate(next) } catch { setAutoUpdate(!next) } }} />
-            </div>
-            {/* The config read failed, so the switch above shows its default
-                (on) rather than the persisted value. askAgent on: a read failure;
-                the toggle itself persists on each flip. */}
-            {mcCfgError && (
-              <ErrorNotice
-                variant="inline"
-                message={i18nT('pages.settings.aboutPanel.auto_update_setting_unavailable')}
-                askAgent
-                testId="auto-update-config-error"
-              />
-            )}
+            <GatewayAutoUpdateSwitch />
 
             {/* Standing maintenance action, NOT gated on an update being
                 available. Restarting is how this install picks up code that

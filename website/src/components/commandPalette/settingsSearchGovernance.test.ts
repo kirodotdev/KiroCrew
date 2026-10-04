@@ -21,16 +21,23 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import { Provider } from 'react-redux'
 
 import { api } from '../../api/client'
+import { createTestStore } from '../../test/helpers'
+import { updateInfoQuery } from '../../api/updateInfoQuery'
+import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
+import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
 import {
+  APP_AUTO_DOWNLOAD_SETTING_ID,
   DECISIONS_SETTING_ID,
   DECISIONS_SETTING_IDS,
   FEATURE_TIPS_SETTING_ID,
+  GATEWAY_AUTO_UPDATE_SETTING_ID,
   settingEntryOffered,
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
@@ -43,24 +50,41 @@ const decisionsEntry = (): SettingEntry => {
   return entry
 }
 
+const entryById = (id: string): SettingEntry => {
+  const entry = SETTINGS_REGISTRY.find(e => e.id === id)
+  if (!entry) throw new Error(`${id} missing from the registry`)
+  return entry
+}
+
 const tipsEntry = (): SettingEntry => {
   const entry = SETTINGS_REGISTRY.find(e => e.id === FEATURE_TIPS_SETTING_ID)
   if (!entry) throw new Error(`${FEATURE_TIPS_SETTING_ID} missing from the registry`)
   return entry
 }
 
+/** Every id some governance answer can withhold. */
+const GOVERNED_IDS = new Set([
+  ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
+])
+
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
 const otherEntry = (): SettingEntry => {
-  const entry = SETTINGS_REGISTRY.find(
-    e => !DECISIONS_SETTING_IDS.has(e.id) && e.id !== FEATURE_TIPS_SETTING_ID,
-  )
+  const entry = SETTINGS_REGISTRY.find(e => !GOVERNED_IDS.has(e.id))
   if (!entry) throw new Error('registry has only the governed entries')
   return entry
 }
 
-const ON: SettingsSearchGovernance = { decisionsEnabled: true, tipsEnabled: true }
-const OFF: SettingsSearchGovernance = { decisionsEnabled: false, tipsEnabled: true }
-const TIPS_OFF: SettingsSearchGovernance = { decisionsEnabled: true, tipsEnabled: false }
+const BOTH_SWITCHES = { app: true, gateway: true }
+const ON: SettingsSearchGovernance = { decisionsEnabled: true, tipsEnabled: true, updateSwitches: BOTH_SWITCHES }
+const OFF: SettingsSearchGovernance = { ...ON, decisionsEnabled: false }
+const TIPS_OFF: SettingsSearchGovernance = { ...ON, tipsEnabled: false }
+
+describe('the governed ids', () => {
+  it('all name a row the registry has, so a relabel cannot silently re-offer it', () => {
+    const ids = new Set(SETTINGS_REGISTRY.map(e => e.id))
+    expect([...GOVERNED_IDS].filter(id => !ids.has(id))).toEqual([])
+  })
+})
 
 describe('settingEntryOffered', () => {
   it('withholds the Decisions entry when the ceiling withdrew the feature', () => {
@@ -91,6 +115,17 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(decisionsEntry(), TIPS_OFF)).toBe(true)
     expect(settingEntryOffered(otherEntry(), TIPS_OFF)).toBe(true)
   })
+
+  it('offers each About update switch only where About draws it', () => {
+    const app = entryById(APP_AUTO_DOWNLOAD_SETTING_ID)
+    const gateway = entryById(GATEWAY_AUTO_UPDATE_SETTING_ID)
+    const only = (updateSwitches: SettingsSearchGovernance['updateSwitches']) => ({ ...ON, updateSwitches })
+    expect(settingEntryOffered(app, only({ app: true, gateway: false }))).toBe(true)
+    expect(settingEntryOffered(gateway, only({ app: true, gateway: false }))).toBe(false)
+    expect(settingEntryOffered(app, only({ app: false, gateway: true }))).toBe(false)
+    expect(settingEntryOffered(gateway, only({ app: false, gateway: true }))).toBe(true)
+    expect(settingEntryOffered(otherEntry(), only({ app: false, gateway: false }))).toBe(true)
+  })
 })
 
 describe('a read that did not succeed is not a denial', () => {
@@ -101,12 +136,19 @@ describe('a read that did not succeed is not a denial', () => {
   const renderProvider = async (
     dashboardConfig: () => Promise<unknown>,
     tipsStatus: () => Promise<unknown> = () => Promise.resolve({ enabled_config: true }),
+    autoEffect?: string,
+    /** The updater's answer, as `useUpdateSubscription` seeds it at boot. */
+    info?: Record<string, unknown>,
   ) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    if (info) client.setQueryData(updateInfoQuery.queryKey, info)
     vi.spyOn(api, 'dashboardConfig').mockImplementation(dashboardConfig as never)
     vi.spyOn(api, 'tipsStatus').mockImplementation(tipsStatus as never)
+    const store = createTestStore()
+    store.dispatch(sseStatus({ uptime: '1m', sessions: 0, messages: 0, update_auto_effect: autoEffect } as never))
     const wrapper = ({ children }: { children: ReactNode }) =>
-      createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children))
+      createElement(Provider, { store },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
     const hook = renderHook(() => useSettingsProvider(), { wrapper })
     await waitFor(() => {
       expect(client.getQueryState(['dashboardConfig'])?.status).not.toBe('pending')
@@ -127,6 +169,93 @@ describe('a read that did not succeed is not a denial', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    delete window.updateAPI
+  })
+
+  const offers = (provider: ResourceProvider, id: string) =>
+    (provider.search('auto-update') as { id?: string }[]).some(r => (r.id ?? '').endsWith(id))
+  const ok = () => Promise.resolve({ decisions_enabled: true })
+  const desktopShell = (over: Partial<UpdateAPI> = {}): UpdateAPI => ({
+    onState: () => () => {},
+    check: vi.fn().mockResolvedValue({ ok: true }),
+    install: vi.fn().mockResolvedValue({ ok: true }),
+    getInfo: vi.fn().mockResolvedValue({}),
+    setAutoDownload: vi.fn().mockResolvedValue({ ok: true }),
+    ...over,
+  })
+
+  // The rule's case table is `utils/updateSwitches.test.ts`; these prove the
+  // search feeds it this window's bridge, the cached updater answer and the effect.
+  it("offers the app switch, and not the app's own notify-only gateway, in a desktop window", async () => {
+    window.updateAPI = desktopShell()
+    const { result } = await renderProvider(ok, undefined, 'notify', { autoDownload: true })
+    expect(offers(result.current, APP_AUTO_DOWNLOAD_SETTING_ID)).toBe(true)
+    expect(offers(result.current, GATEWAY_AUTO_UPDATE_SETTING_ID)).toBe(false)
+  })
+
+  it("offers a self-updating gateway's switch, not the app's, where the cached answer says the updater is disabled", async () => {
+    // A translocated or dev build attached to a cli.sh service: the gateway
+    // still installs and restarts, so its switch is still the way to stop it.
+    window.updateAPI = desktopShell()
+    const { result } = await renderProvider(ok, undefined, 'install', { disabled: 'dev' })
+    expect(offers(result.current, GATEWAY_AUTO_UPDATE_SETTING_ID)).toBe(true)
+    expect(offers(result.current, APP_AUTO_DOWNLOAD_SETTING_ID)).toBe(false)
+  })
+
+  it('costs one getInfo() at startup, shared with the update subscription', async () => {
+    const shell = desktopShell()
+    window.updateAPI = shell
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
+    const store = createTestStore()
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    renderHook(() => { useUpdateSubscription(); return useSettingsProvider() }, { wrapper })
+    await waitFor(() => expect(client.getQueryState(updateInfoQuery.queryKey)?.status).toBe('success'))
+    expect(shell.getInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a failed boot read of the updater', async () => {
+    // Best-effort: a rejection (old preload, IPC teardown) is left alone, even
+    // under a client whose queries retry.
+    const shell = desktopShell({ getInfo: vi.fn().mockRejectedValue(new Error('zzq')) })
+    window.updateAPI = shell
+    const client = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 0 } } })
+    const store = createTestStore()
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    renderHook(() => useUpdateSubscription(), { wrapper })
+    await waitFor(() => expect(client.getQueryState(updateInfoQuery.queryKey)?.status).toBe('error'))
+    await new Promise(r => setTimeout(r, 20))
+    expect(shell.getInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it("reads the updater's answer from the cache only", async () => {
+    // `useUpdateSubscription` reads getInfo() once at boot; a search must not add a second IPC.
+    const shell = desktopShell()
+    window.updateAPI = shell
+    await renderProvider(ok, undefined, 'notify')
+    expect(shell.getInfo).not.toHaveBeenCalled()
+  })
+
+  it('re-reads an answer over 30 s old when the search opens', async () => {
+    // Tips turned off mid-session must not stay offered for the whole session.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const old = Date.now() - 31_000
+    client.setQueryData(['tipsStatus'], { enabled_config: true }, { updatedAt: old })
+    client.setQueryData(['dashboardConfig'], { decisions_enabled: true }, { updatedAt: old })
+    const tips = vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: false } as never)
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    const store = createTestStore()
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    const { result } = renderHook(() => useSettingsProvider(), { wrapper })
+    await waitFor(() => expect(offersTips(result.current)).toBe(false))
+    expect(tips).toHaveBeenCalledTimes(1)
   })
 
   it('offers the entry when the config read FAILED', async () => {

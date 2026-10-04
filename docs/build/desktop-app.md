@@ -1190,7 +1190,15 @@ container defers to its image. Both updaters running on one install is
 [#15797](https://github.com/kirodotdev/KiroCrew/issues/15797).
 
 Settings → About renders the app's update section in the desktop app's own
-window and the gateway's in a browser, never both. The app's switch, its default
+window and the gateway's in a browser. A desktop window also draws the gateway's
+**Update the gateway automatically** switch when that gateway installs updates itself
+(`update_auto_effect` is `install` or `mandatory`): a gateway the app attaches to
+rather than bundles follows its own switch. The What's-new modal and the
+settings searches offer the same switches under the same rule,
+`website/src/utils/updateSwitches.ts`. Where `config.local.json` sets
+`auto_update`, the switch says so (the note appears once a save, a refusal or a
+check reports the pin) and stays usable, since a click is how a removed
+override is noticed. The app's switch, its default
 and install-on-quit are owned by
 [release.md → Client auto-update](release.md#client-auto-update); the policy
 floor by [governance.md → Update pins](../system-specs/modules/governance.md#update-pins-updates--policy-only). The user-facing summary is

@@ -49,6 +49,12 @@ export interface SettingEntryScore {
   indices: number[]
   /** Label as rendered in the active locale, fan-out suffix re-appended. */
   localizedLabel: string
+  /** Which ranking tier produced `score` (see the module comment): the label,
+   *  a whole-word synonym, or a description, synonym or tab name that contains
+   *  the query (`score` already discounted). */
+  tier: 'label' | 'synonym' | 'corpus'
+  /** The synonym that produced the hit, when one did. */
+  matchedKeyword?: string
 }
 
 /**
@@ -102,6 +108,10 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
  *  then self-heals to the first group -- so an offered hit would land without its control. */
 export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
 
+/** Registry ids of the two update switches on the About tab (`utils/updateSwitches`). */
+export const GATEWAY_AUTO_UPDATE_SETTING_ID = 'about.update-the-gateway-automatically'
+export const APP_AUTO_DOWNLOAD_SETTING_ID = 'about.install-app-updates-automatically'
+
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
   /**
@@ -116,6 +126,12 @@ export interface SettingsSearchGovernance {
    * `['tipsStatus']` read SUCCEEDED and said `enabled_config === false`.
    */
   tipsEnabled: boolean
+  /**
+   * Whether About draws each update switch in this window, by the rule in
+   * `utils/updateSwitches`. A hit for a switch it does not draw would land on
+   * a tab with nothing there to flash.
+   */
+  updateSwitches: { app: boolean; gateway: boolean }
 }
 
 /**
@@ -138,6 +154,8 @@ export function settingEntryOffered(
   governance: SettingsSearchGovernance,
 ): boolean {
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
+  if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
+  if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }
@@ -164,17 +182,18 @@ const SEPARATORS_RE = /[-_/.:\\|]+/g
  * "theme" → the Theme setting above Mode-with-keyword-'theme'; the name-based
  * tiebreak would otherwise pick alphabetically).
  */
-function keywordRankScore(query: string, kws: readonly string[] | undefined): number {
-  if (!kws) return 0
+function keywordRankScore(query: string, kws: readonly string[] | undefined): { score: number; keyword?: string } {
+  if (!kws) return { score: 0 }
   const q = query.toLowerCase().replace(SEPARATORS_RE, ' ')
   let best = 0
+  let keyword: string | undefined
   for (const kw of kws) {
     const k = kw.toLowerCase().replace(SEPARATORS_RE, ' ')
     if (!(k.startsWith(q) || k.includes(' ' + q))) continue
     const m = fuzzyMatch(query, kw)
-    if (m && m.score > best) best = m.score
+    if (m && m.score > best) { best = m.score; keyword = kw }
   }
-  return best > 0 ? best - 1 : 0
+  return best > 0 ? { score: best - 1, keyword } : { score: 0 }
 }
 
 /**
@@ -197,31 +216,37 @@ export function scoreSettingEntry(
     localizedLabel !== entry.label ? fuzzyMatch(query, entry.label)?.score ?? 0 : 0,
     localizedLabelMatch?.score ?? 0,
   )
-  const strong = Math.max(labelScore, keywordRankScore(query, kws))
-
-  let score = strong
-  if (strong <= 0) {
-    // Corpus tier: best single-part hit, discounted — and only for parts that
-    // CONTAIN the query. fuzzyMatch still provides the score (so a hit at a
-    // word boundary outranks one mid-word), but the containment gate is what
-    // keeps a 40-word description from matching every 4-letter query as a
-    // scattered subsequence. See the module comment.
-    const q = query.trim().toLowerCase()
-    const parts: string[] = []
-    if (entry.description) parts.push(entry.description)
-    if (kws) parts.push(...kws)
-    if (opts.includeTab !== false) {
-      parts.push(entry.tab)
-      parts.push(settingsTabLabel(entry.tab))
-    }
-    let corpus = 0
-    for (const part of parts) {
-      if (!part.toLowerCase().includes(q)) continue
-      const m = fuzzyMatch(query, part)
-      if (m && m.score > corpus) corpus = m.score
-    }
-    if (corpus <= 0) return null
-    score = Math.max(1, Math.round(corpus * 0.6))
+  const synonym = keywordRankScore(query, kws)
+  const indices = localizedLabelMatch?.indices ?? []
+  if (labelScore > 0 && labelScore >= synonym.score) {
+    return { score: labelScore, indices, localizedLabel, tier: 'label' }
   }
-  return { score, indices: localizedLabelMatch?.indices ?? [], localizedLabel }
+  if (synonym.score > 0) {
+    return { score: synonym.score, indices, localizedLabel, tier: 'synonym', matchedKeyword: synonym.keyword }
+  }
+  // Corpus tier: best single-part hit, discounted — and only for parts that
+  // CONTAIN the query. fuzzyMatch still provides the score (so a hit at a
+  // word boundary outranks one mid-word), but the containment gate is what
+  // keeps a 40-word description from matching every 4-letter query as a
+  // scattered subsequence. See the module comment.
+  const q = query.trim().toLowerCase()
+  const parts: string[] = []
+  if (entry.description) parts.push(entry.description)
+  if (kws) parts.push(...kws)
+  if (opts.includeTab !== false) {
+    parts.push(entry.tab)
+    parts.push(settingsTabLabel(entry.tab))
+  }
+  let corpus = 0
+  let corpusPart = ''
+  for (const part of parts) {
+    if (!part.toLowerCase().includes(q)) continue
+    const m = fuzzyMatch(query, part)
+    if (m && m.score > corpus) { corpus = m.score; corpusPart = part }
+  }
+  if (corpus <= 0) return null
+  return {
+    score: Math.max(1, Math.round(corpus * 0.6)), indices, localizedLabel, tier: 'corpus',
+    matchedKeyword: kws?.includes(corpusPart) ? corpusPart : undefined,
+  }
 }

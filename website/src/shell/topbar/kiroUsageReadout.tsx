@@ -7,6 +7,7 @@ import { isKiroBackend, type AcpBackendConfig } from '../../api/acpBackend'
 import type { KiroAccountUsage } from '../../components/KiroAccountModal'
 import { fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { failedWithNoData } from '../../api/queryState'
 
 /**
  * The Kiro credit reading one derivation serves: the capsule's credits segment,
@@ -48,7 +49,6 @@ export function useKiroUsageReadout() {
     queryFn: () => api.kirocrewConfig(),
   })
   const { data: kirocrewCfg, isSuccess: kirocrewCfgLoaded } = kirocrewCfgQuery
-  const refetchKirocrewCfg = kirocrewCfgQuery.refetch
   const kiroCreditSurface = isKiroBackend(kirocrewCfg)
   // "The config read failed" must survive its own retry: a data-less errored
   // query goes back to `pending` (error cleared) for the whole refetch, and
@@ -56,7 +56,7 @@ export function useKiroUsageReadout() {
   // for that second, then bring it back. The last SETTLED outcome is what
   // counts: no data ever arrived and an error has -- so until data lands, the
   // read is failed, in flight or not.
-  const kirocrewCfgFailed = kirocrewCfg === undefined && kirocrewCfgQuery.errorUpdatedAt > 0
+  const kirocrewCfgFailed = failedWithNoData(kirocrewCfgQuery)
   // `config-unreadable`: the gateway holds no reading AND the config read that
   // decides whether this is the Kiro backend FAILED. Neither "no plan" nor "not
   // the kiro harness" is established, so the segment must not collapse into the
@@ -88,7 +88,7 @@ export function useKiroUsageReadout() {
   // `null` -- the desktop paints a spinner there and takes it back if the cache
   // settles on `none`, which for a nav row would be a row blinking in and out.
   const kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)
-  return { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry, refetchKirocrewCfg }
+  return { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry }
 }
 
 /** The capsule's credits segment for the current reading, or nothing on a harness with no balance. */

@@ -8,6 +8,7 @@ import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { SNOOZE_SECS } from '../utils/updateNudge'
 import UpdateFoundModal from './UpdateFoundModal'
+import { updateInfoQuery } from '../api/updateInfoQuery'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import type { StatusData } from '../types'
 
@@ -173,6 +174,83 @@ describe('UpdateFoundModal — desktop source', () => {
     // process is already downloading.
     expect(container.firstChild).toBeNull()
     expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
+  })
+
+  it('reads the preference again once a build is found, so a change made in another window counts', async () => {
+    // Read as "auto-download on" earlier; turned off in another window since.
+    ;(window as unknown as { updateAPI?: object }).updateAPI = {
+      download: downloadBridge,
+      getInfo: vi.fn().mockResolvedValue({ autoDownload: false }),
+    }
+    const { queryClient, push } = await mount()
+    queryClient.setQueryData(updateInfoQuery.queryKey, { autoDownload: true })
+    await push(found)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+  })
+
+  it('a later find in the same window waits for its own read of the preference', async () => {
+    // The popup stays mounted across polls. Found, dismissed, then the
+    // preference is turned on in another window before the next poll finds a
+    // build: the popup must not open on the earlier read while this one runs.
+    const getInfo = vi.fn().mockResolvedValue({ autoDownload: false })
+    ;(window as unknown as { updateAPI?: object }).updateAPI = { download: downloadBridge, getInfo }
+    const { push } = await mount(found)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.remind_me_tomorrow'))
+    await waitFor(() => expect(dialog()).not.toBeInTheDocument())
+
+    let answer!: (info: { autoDownload: boolean }) => void
+    getInfo.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    await push({ state: 'checking' })
+    await push({ state: 'found', version: '9.9.10', notes: '' })
+    for (let i = 0; i < 4; i++) {
+      await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    }
+    expect(getInfo).toHaveBeenCalledTimes(2)
+    expect(dialog()).toBeNull()
+
+    await act(async () => { answer({ autoDownload: true }) })
+    for (let i = 0; i < 4; i++) {
+      await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    }
+    expect(dialog()).toBeNull()
+  })
+
+  it('a build found again opens once its own read says nothing downloads by itself', async () => {
+    const getInfo = vi.fn().mockResolvedValue({ autoDownload: true })
+    ;(window as unknown as { updateAPI?: object }).updateAPI = { download: downloadBridge, getInfo }
+    const { push } = await mount(found)
+    expect(dialog()).toBeNull()
+
+    getInfo.mockResolvedValue({ autoDownload: false })
+    await push({ state: 'found', version: '9.9.10', notes: '' })
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(getInfo).toHaveBeenCalledTimes(2)
+  })
+
+  it('still asks, and says why, when the preference cannot be read', async () => {
+    ;(window as unknown as { updateAPI?: object }).updateAPI = {
+      download: downloadBridge,
+      getInfo: vi.fn().mockRejectedValue(new Error('zzq')),
+    }
+    await mount(found)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('update-found-preference-error')).toHaveTextContent(
+      i18nT('pages.settings.aboutPanel.auto_download_unreadable'))
+    expect(screen.queryByText(i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to'))).toBeNull()
+  })
+
+  it('still asks when a later re-read fails, rather than trusting the older answer', async () => {
+    const getInfo = vi.fn().mockResolvedValue({ autoDownload: true })
+    ;(window as unknown as { updateAPI?: object }).updateAPI = { download: downloadBridge, getInfo }
+    const { push } = await mount(found)
+    expect(dialog()).toBeNull()
+
+    getInfo.mockRejectedValue(new Error('zzq'))
+    await push({ state: 'found', version: '9.9.10', notes: '' })
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('update-found-preference-error')).toHaveTextContent(
+      i18nT('pages.settings.aboutPanel.auto_download_unreadable'))
   })
 
   it('a save failure for one version does not bypass persistence for the next', async () => {

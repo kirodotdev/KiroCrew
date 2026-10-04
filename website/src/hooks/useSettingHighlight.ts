@@ -31,8 +31,10 @@ export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crewmates'
  *   again when the qualifier was corrected to the service's real name,
  *   Amazon Polly — so BOTH the positional id and the short-form id have to
  *   land on the current one.
- * - `chat.fallback-model` — the row was relabeled from "Fallback Model" to
- *   "Default Model", the tier it actually is.
+ *
+ * No key may be an id a row has now (an older label can produce an id a later
+ * row takes, as `chat.fallback-model` did): that row's links would land on
+ * another one. `settingHighlightAliases.test.ts` pins it over every key.
  */
 const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-profile': 'voice.aws-profile-transcribe',
@@ -41,10 +43,6 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-region-2': 'voice.aws-region-amazon-polly',
   'voice.aws-profile-polly': 'voice.aws-profile-amazon-polly',
   'voice.aws-region-polly': 'voice.aws-region-amazon-polly',
-  // The "Default Model" row was labeled "Fallback Model", and registry ids
-  // derive from the label — without this, links saved or bookmarked against
-  // the old id silently lose their highlight.
-  'chat.fallback-model': 'chat.default-model',
   // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
@@ -59,7 +57,15 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // "Remote crew sessions" when the remote-crew vocabulary was restored. Same
   // flag, same card — only the label, and so the derived id, moved.
   'developer.remote-instance-sessions': 'developer.remote-crew-sessions',
+  // The two About update switches shared one "Auto-update on restart" label,
+  // and the gateway's row was registered under its notify wording; each is now
+  // labelled by what it does.
+  'about.auto-update-on-restart': 'about.install-app-updates-automatically',
+  'about.update-notifications': 'about.update-the-gateway-automatically',
 }
+
+/** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
+export const LEGACY_EXACT_HIGHLIGHT_IDS: readonly string[] = Object.keys(LEGACY_ID_EXACT)
 
 /** Current registry ids, for fail-safe legacy rewrites below. */
 const REGISTRY_IDS = new Set(SETTINGS_REGISTRY.map(e => e.id))

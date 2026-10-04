@@ -14,7 +14,7 @@ const out = process.argv[3] || '../temp-screenshots/settings-search-registry/abo
 const b = await chromium.launch()
 const p = await (await b.newContext({ viewport: { width: 900, height: 700 }, deviceScaleFactor: 2 })).newPage()
 await p.goto(`${base}/capture/desktop-auto-download.html?scene=on&theme=dark`, { waitUntil: 'networkidle' })
-const row = p.locator('[data-setting-label="Auto-update on restart"]')
+const row = p.locator('[data-setting-label="Install app updates automatically"]')
 await row.waitFor({ state: 'visible', timeout: 15_000 })
 await p.screenshot({ path: out })
 console.log(`captured ${out} (SettingsToggle anchor asserted)`)

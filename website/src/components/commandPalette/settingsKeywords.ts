@@ -39,11 +39,11 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'notifications.sources': ['mute', 'priority', 'channel', 'per-app', 'silence'],
   'notifications.volume': ['loudness', 'sound level', 'quieter', 'louder'],
 
+  // About. fuzzyMatch is literal, so the spaced and hyphenated spellings are
+  // both listed; "auto-update on restart" is the name both switches shipped under.
+  'about.update-the-gateway-automatically': ['auto update', 'auto-update', 'automatic updates', 'gateway updates', 'auto update on restart', 'auto-update on restart', 'install updates', 'update check'],
+  'about.install-app-updates-automatically': ['auto update', 'auto-update', 'automatic updates', 'auto update on restart', 'auto-update on restart', 'auto download', 'app updates'],
   // About (manual entries — settingsManual.ts)
-  // The gateway row's rendered label is a ternary: self-updatable installs show
-  // "Auto-update on restart" while the entry is indexed under the notify
-  // wording — these keywords keep the row findable under BOTH phrasings.
-  'about.update-notifications': ['auto-update', 'auto update on restart', 'automatic updates', 'update check'],
   'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta'],
 
   // Browser

@@ -61,6 +61,14 @@ vi.mock('../../components/commandPalette/providers/recentsProvider', async impor
   ...(await importOriginal<typeof import('../../components/commandPalette/providers/recentsProvider')>()),
   useRecentsProvider: () => ({ search: recentsSearch }),
 }))
+// Passed through, and watched: a settings row must be scored by the scorer the
+// other settings searches share, not by the bar's own field matcher.
+const scoreSettingEntry = vi.hoisted(() => ({ spy: null as null | ReturnType<typeof vi.fn> }))
+vi.mock('../../components/commandPalette/settingsSearchCore', async importOriginal => {
+  const real = await importOriginal<typeof import('../../components/commandPalette/settingsSearchCore')>()
+  scoreSettingEntry.spy = vi.fn(real.scoreSettingEntry)
+  return { ...real, scoreSettingEntry: (...args: Parameters<typeof real.scoreSettingEntry>) => scoreSettingEntry.spy!(...args) }
+})
 vi.mock('../../hooks/useVisualViewport', () => ({ useVisualViewport: () => ({ height: 800 }) }))
 vi.mock('../../hooks/useDialogFocusTrap', () => ({ useDialogFocusTrap: () => {} }))
 const cycleTheme = vi.fn()
@@ -196,6 +204,41 @@ describe('CommandBarOverlay rows', () => {
       expect(screen.getByText(s)).toBeTruthy()
     }
     expect(settingsTabLabel('computer-use')).not.toBe('computer-use')
+  })
+
+  it('withholds the settings rows the other searches withhold', () => {
+    // A browser window: About draws the gateway's switch and no app updater, so a
+    // row for the app switch would land on a tab with nothing to flash.
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'automatic' } })
+    const options = screen.getAllByRole('option').map(o => o.textContent ?? '')
+    expect(options.some(o => o.includes('Update the gateway automatically'))).toBe(true)
+    expect(options.some(o => o.includes('Install app updates automatically'))).toBe(false)
+  })
+
+  it('finds a settings row by the synonyms the other searches use', () => {
+    // "auto-update" is in neither switch's label; it is the name both shipped under.
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'auto-update' } })
+    const option = screen.getAllByRole('option').find(o => o.textContent?.includes('Update the gateway automatically'))
+    // The synonym that matched is drawn on the row, since neither its title nor
+    // its subtitle carries the word.
+    expect(option).toHaveTextContent('auto-update')
+  })
+
+  it('marks a settings row matched by its description in its subtitle', () => {
+    // In the description only: "Enterprise Grid org IDs to allow (starts with E or T). ..."
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'starts with E or T' } })
+    const option = screen.getAllByRole('option').find(o => o.textContent?.includes('Allowed enterprise orgs'))!
+    expect(option.querySelector('strong')?.textContent).toBe('starts with E or T')
+  })
+
+  it('scores settings rows with the scorer the other settings searches share', () => {
+    mount()
+    scoreSettingEntry.spy!.mockClear()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'automatic' } })
+    expect(scoreSettingEntry.spy).toHaveBeenCalledWith('automatic', expect.objectContaining({ id: 'about.update-the-gateway-automatically' }))
   })
 
   it('navigates and closes on a settings row', () => {

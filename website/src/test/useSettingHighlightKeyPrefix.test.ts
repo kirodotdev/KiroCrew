@@ -167,7 +167,6 @@ describe('useSettingHighlight key: prefix', () => {
   })
 
   it('legacy id format still works (resolveLegacyHighlightId)', () => {
-    expect(resolveLegacyHighlightId('chat.fallback-model')).toBe('chat.default-model')
     expect(resolveLegacyHighlightId('slack.phase-reactions')).toBe('channels.phase-reactions')
   })
 

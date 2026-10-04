@@ -446,8 +446,9 @@ The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
 installs the next time you quit the app (closing the window only hides it to
-the tray; quit from the tray or the menu bar). To be asked first, turn off the
-app's update switch on the About page; the app then offers each release and
+the tray; quit from the tray or the menu bar). To be asked first, turn off
+**Install app updates automatically** on the About page (an **Update the gateway
+automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
 downloads it when you click Download, in the update popup or on the About page.
 A locally built app is stamped ahead of the stable channel, so on stable it gets
 no update until a newer release ships. The updater is also off when the app runs from the DMG or

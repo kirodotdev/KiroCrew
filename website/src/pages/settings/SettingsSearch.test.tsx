@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 
 import { api } from '../../api/client'
+import { createTestStore } from '../../test/helpers'
 
 import SettingsSearch from './SettingsSearch'
 
@@ -36,12 +38,14 @@ function setup(initialEntry = '/settings?tab=chat&channel=slack') {
   // `settingsSearchGovernance.test.ts` owns the offered/withheld behaviour.
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <SettingsSearch />
-        <ParamsProbe />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createTestStore()}>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <SettingsSearch />
+          <ParamsProbe />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
   return client
 }
@@ -144,6 +148,17 @@ describe('SettingsSearch', () => {
       expect(
         screen.getAllByRole('option').some(o => /Decisions/i.test(o.textContent ?? '')),
       ).toBe(true)
+    })
+  })
+
+  it('offers only the update switch About draws in this window', async () => {
+    // A browser window: About draws the gateway's switch and no app updater.
+    setup()
+    fireEvent.change(input(), { target: { value: 'auto-update' } })
+    await waitFor(() => {
+      const options = screen.getAllByRole('option').map(o => o.textContent ?? '')
+      expect(options.some(o => /Update the gateway automatically/.test(o))).toBe(true)
+      expect(options.some(o => /Install app updates automatically/.test(o))).toBe(false)
     })
   })
 

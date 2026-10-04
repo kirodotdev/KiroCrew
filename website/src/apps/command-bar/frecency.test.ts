@@ -160,3 +160,26 @@ describe('recordUse', () => {
     expect(Object.keys(map).length).toBe(300)
   })
 })
+
+describe('loadUsage and relabelled settings rows', () => {
+  it('merges the history of an old id into the entry its row has now (counts add, later use wins)', () => {
+    localStorage.setItem(KEY, JSON.stringify({
+      'setting:about.update-notifications': { count: 3, last: 10 },
+      'setting:about.update-the-gateway-automatically': { count: 2, last: 20 },
+      'setting:about.update-channel': { count: 1, last: 5 },
+    }))
+    expect(loadUsage()).toEqual({
+      'setting:about.update-the-gateway-automatically': { count: 5, last: 20 },
+      'setting:about.update-channel': { count: 1, last: 5 },
+    })
+  })
+
+  it("reads a relabelled row's history under the id it has now, and saves it there", () => {
+    localStorage.setItem(KEY, JSON.stringify({ 'setting:about.update-notifications': { count: 7, last: 1 } }))
+    expect(loadUsage()).toEqual({ 'setting:about.update-the-gateway-automatically': { count: 7, last: 1 } })
+    recordUse('chat:new', 2)
+    expect(Object.keys(JSON.parse(localStorage.getItem(KEY) ?? '{}')).sort()).toEqual([
+      'chat:new', 'setting:about.update-the-gateway-automatically',
+    ])
+  })
+})
