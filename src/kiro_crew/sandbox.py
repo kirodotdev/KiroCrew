@@ -7459,8 +7459,6 @@ def namespace_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
-    extra_readonly_private_dirs: tuple[str, ...] = (),
-    extra_required_mask_targets: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> list[str]:
@@ -7497,10 +7495,6 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
-    # A caller's own fail-closed masks: names it saw present when it planned the spawn.
-    # The launcher refuses when one is absent at mask time instead of skipping it, so
-    # a file moved aside in between cannot come back unmasked.
-    _required_targets.extend(os.path.abspath(path) for path in extra_required_mask_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
@@ -7608,7 +7602,6 @@ def namespace_argv(
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
         extra_private_dir_ids=extra_private_dir_ids,
-        extra_readonly_private_dirs=extra_readonly_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
         required_mask_targets=tuple(_required_targets),
@@ -8207,7 +8200,6 @@ def sandbox_exec_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
-    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> tuple[list[str], str | None]:
@@ -8335,7 +8327,6 @@ def sandbox_exec_argv(
         extra_hidden_dirs=extra_hidden_dirs + tuple(m.path for m in alias_masks),
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
-        extra_readonly_private_dirs=extra_readonly_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
     )
@@ -9981,8 +9972,6 @@ def wrap_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
-    extra_readonly_private_dirs: tuple[str, ...] = (),
-    extra_required_mask_targets: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
@@ -10001,16 +9990,6 @@ def wrap_argv(
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
             (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
             read-write as a window; the parent's mask and every sibling stay hidden.
-        extra_readonly_private_dirs: The subset of ``extra_private_dirs`` to
-            re-expose READ-ONLY (an app cron's own bundle: its code must import,
-            and nothing may rewrite what the app's backend later runs). An entry
-            that is not also an admitted private window is inert. A read-write
-            window nested inside a read-only one (the bundle's ``data/``) stays
-            writable, and a masked leaf inside either stays masked.
-        extra_required_mask_targets: Hidden paths the caller saw PRESENT when it
-            planned the spawn. The Linux launcher refuses the spawn when one is
-            absent at mask time, instead of skipping it. Seatbelt denies by path, so
-            a later file at the name is covered there without this.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
             ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
             the launcher's ``EXPOSE_FILES`` primitive (cc mode's mechanism
@@ -10351,7 +10330,6 @@ def wrap_argv(
                     extra_visible_dirs=extra_visible_dirs,
                     extra_private_dirs=extra_private_dirs,
                     extra_private_dir_ids=extra_private_dir_ids,
-                    extra_readonly_private_dirs=extra_readonly_private_dirs,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
                 )
@@ -10395,8 +10373,6 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
-                extra_readonly_private_dirs=extra_readonly_private_dirs,
-                extra_required_mask_targets=extra_required_mask_targets,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )
@@ -10431,7 +10407,6 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
-                extra_readonly_private_dirs=extra_readonly_private_dirs,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )

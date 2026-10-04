@@ -40,7 +40,6 @@ def _build_launcher_script(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
-    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
@@ -157,10 +156,6 @@ def _build_launcher_script(
     extra_private_dirs = tuple(
         _fold_crew_home_alias(path, crew_home_aliases) for path in extra_private_dirs
     )
-    extra_readonly_private_dirs = tuple(
-        _fold_crew_home_alias(os.path.abspath(path), crew_home_aliases)
-        for path in extra_readonly_private_dirs
-    )
     extra_private_dir_ids = tuple(
         (_fold_crew_home_alias(p, crew_home_aliases), dev, ino)
         for p, dev, ino in extra_private_dir_ids
@@ -237,16 +232,8 @@ def _build_launcher_script(
     # without relying on how subpath treats a non-directory.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
     readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
-    private_windows = _private_window_spellings(
-        extra_private_dirs, hidden_dirs, remasks_contained_targets=True
-    )
-    private_json = json.dumps(private_windows)
-    # The windows the child seals read-only after binding: only ADMITTED windows, so a
-    # read-only entry the gate withheld stays under its parent's mask (masked is
-    # stricter than read-only).
-    _readonly_requested = set(extra_readonly_private_dirs)
-    readonly_windows_json = json.dumps(
-        [window for window in private_windows if window in _readonly_requested]
+    private_json = json.dumps(
+        _private_window_spellings(extra_private_dirs, hidden_dirs, remasks_contained_targets=True)
     )
     # Identities the PRODUCER took when it approved each window, serialized and never
     # re-derived: this function runs on the gateway's event loop, where
@@ -1266,7 +1253,6 @@ SENSITIVE_DIRS = {dirs_json}
 SENSITIVE_DIR_IDS = {hidden_ids_json}
 PRIVATE_DIRS = {private_json}
 PRIVATE_DIR_IDS = {private_ids_json}
-READONLY_WINDOWS = frozenset({readonly_windows_json})
 READONLY_DIRS = {readonly_json}
 WRITABLE_DIRS = {writable_json}
 SENSITIVE_FILES = {files_json}
@@ -1727,20 +1713,15 @@ def main():
                     continue
             # Held open until the mount is done; every failure in between ends the
             # process, so the descriptor path stays valid for exactly the mount.
-            # Outermost first: a read-write window may sit INSIDE a read-only one (an
-            # app bundle sealed read-only, its ``data/`` kept writable), and the inner
-            # bind has to land on the outer window's real tree, not on the stand-in
-            # the outer bind replaces.
-            _windows = sorted((p for p in _private_stage
-                               if p.startswith(d.rstrip("/") + "/")),
-                              key=lambda w: w.rstrip("/").count("/"))
+            _windows = [p for p in _private_stage
+                        if p.startswith(d.rstrip("/") + "/")]
             try:
                 per_dir_empty = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix).encode()
                 _per_dir_id = _stand_in_identity(per_dir_empty)
                 _register_stand_in(_per_dir_id, _mask_fd)
                 for p in _windows:
                     os.makedirs(os.path.join(per_dir_empty.decode(),
-                                             os.path.relpath(p, d)), exist_ok=True)
+                                             os.path.relpath(p, d)))
                 _mount_or_die(per_dir_empty, target, _MS_BIND,
                               "hiding credential directory %s" % d)
             finally:
@@ -1756,23 +1737,6 @@ def main():
                 _mount_or_die(_private_stage[p].encode(), p.encode(), _MS_BIND,
                               "opening private window %s" % p)
                 _BOUND_WINDOWS.add(p.rstrip("/"))
-                if p in READONLY_WINDOWS:
-                    # Sealed BEFORE any window nested in it is bound, so the inner
-                    # bind is a separate mount that keeps its own (writable) flags.
-                    # MS_RDONLY is ignored on the initial MS_BIND, hence the remount,
-                    # with the kernel-locked bits re-asserted as READONLY_DIRS does.
-                    _mount_or_die(p.encode(), p.encode(),
-                                  _MS_REMOUNT | _MS_BIND | _MS_RDONLY
-                                  | _locked_mount_flags(p.encode()),
-                                  "sealing read-only window %s" % p)
-                    # The remount names the path, so require the name to answer as
-                    # read-only now: a seal that landed on some other mount leaves
-                    # this window writable, and that is a refusal.
-                    if not os.statvfs(p).f_flag & os.ST_RDONLY:
-                        sys.exit(
-                            "sandbox: BLOCKED -- the read-only seal on window %s did "
-                            "not take, so the window would stay writable" % p
-                        )
             # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the
             # masked ``apps/meetings/data/edits`` -- and the bind above just replaced
             # the empty stand-in that covered it with the real tree. Re-apply those
@@ -1784,16 +1748,11 @@ def main():
             # classified and mounted through one descriptor, and the name re-read
             # afterwards to confirm it reaches the stand-in. Fresh empty dir per
             # leaf, as the mask loop itself does.
-            _rehidden = set()
             for p in _windows:
                 for _nested in SENSITIVE_DIRS:
                     _nested = _nested.rstrip("/")
                     if not _nested.startswith(p.rstrip("/") + "/"):
                         continue
-                    # Nested windows share leaves: hide each one once.
-                    if _nested in _rehidden:
-                        continue
-                    _rehidden.add(_nested)
                     _nested_fd, _nested_target = _pin_mount_path(
                         _nested.encode(), stat.S_ISDIR,
                         require_present=_mask_required(_nested))

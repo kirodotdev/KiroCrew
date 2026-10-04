@@ -326,7 +326,6 @@ def _run(
         "SENSITIVE_DIR_IDS": {},
         "PRIVATE_DIRS": list(private_dirs),
         "PRIVATE_DIR_IDS": {},
-        "READONLY_WINDOWS": frozenset(),
         "READONLY_DIRS": [str(bed.cache)],
         "WRITABLE_DIRS": [],
         "SENSITIVE_FILES": (
@@ -481,7 +480,6 @@ def _run_with_libc(tmp_path: Path, bed: _Bed, libc: _FakeLibc) -> str | None:
         "SENSITIVE_DIR_IDS": {},
         "PRIVATE_DIRS": [],
         "PRIVATE_DIR_IDS": {},
-        "READONLY_WINDOWS": frozenset(),
         "READONLY_DIRS": [str(bed.cache)],
         "WRITABLE_DIRS": [],
         "SENSITIVE_FILES": [],

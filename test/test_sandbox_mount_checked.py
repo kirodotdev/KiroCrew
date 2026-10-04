@@ -221,9 +221,6 @@ def _run(
     sensitive_dirs: list[str] | None = None,
     readonly_dirs: list[str] | None = None,
     private_dir_ids: dict[str, list[int]] | None = None,
-    readonly_windows: list[str] | None = None,
-    sensitive_files: list[str] | None = None,
-    required_targets: list[str] | None = None,
 ) -> tuple[_FakeLibc, str | None]:
     """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
 
@@ -293,20 +290,17 @@ def _run(
         # Read by the staging loop for every window that sits under a mask root. Empty
         # here: these cases vouch for no window identity, so the child stages by name.
         "PRIVATE_DIR_IDS": dict(private_dir_ids or {}),
-        # Empty by default: no window is sealed read-only, so no extra remount is
-        # numbered. The read-only window cases inject their own entries.
-        "READONLY_WINDOWS": frozenset(readonly_windows or ()),
         "READONLY_DIRS": [str(cache)] if readonly_dirs is None else list(readonly_dirs),
         # Empty by default so the six-site call numbering above stays stable;
         # the carve-out tests inject their own entry.
         "WRITABLE_DIRS": list(writable_dirs or []),
-        "SENSITIVE_FILES": [str(lone)] if sensitive_files is None else list(sensitive_files),
+        "SENSITIVE_FILES": [str(lone)],
         # Empty by default for the same reason as WRITABLE_DIRS: an entry here makes the
         # region refuse before any mount when its path is absent or single-linked, which
         # would end the run before the call numbering above is exercised. The alias tests
         # inject their own entry.
         "FAIL_CLOSED_FILE_MASKS": [],
-        "REQUIRED_MASK_TARGETS": frozenset(required_targets or ()),
+        "REQUIRED_MASK_TARGETS": frozenset(),
         "SSH_DIR": str(ssh),
         "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
         "HIDE_SSH": True,
@@ -540,108 +534,6 @@ def test_a_window_whose_identity_matches_is_staged(tmp_path: Path) -> None:
     assert len(staged) == 1, f"expected one staging mount, got {staged}"
 
 
-def _bundle_layout(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    """An apps tree under a mask root: one bundle with ``data/`` and ``.app_secret``."""
-    apps = tmp_path / "home" / ".aws" / "apps"
-    bundle = apps / "own-app"
-    (bundle / "data").mkdir(parents=True)
-    secret = bundle / ".app_secret"
-    secret.write_text("s\n")
-    return apps, bundle, bundle / "data", secret
-
-
-class _StatvfsAnswer:
-    def __init__(self, f_flag: int) -> None:
-        self.f_flag = f_flag
-
-
-def _targets(libc: _FakeLibc) -> list[tuple[str, int]]:
-    return [
-        (os.fsdecode(target), flags)
-        for _src, target, flags in libc.calls
-        if isinstance(target, (bytes, str))
-    ]
-
-
-@_LINUX_WINDOW_ONLY
-def test_a_read_only_window_is_sealed_before_its_writable_child_is_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Bundle bound, then sealed read-only, then its ``data/`` bound, then the secret hidden.
-
-    The order is the whole control: a seal applied after the nested bind would not reach
-    it (the inner bind is its own mount), but a nested bind made BEFORE the outer window
-    lands on the stand-in the outer bind then covers, and ``data/`` vanishes. The secret
-    mask comes after both, so it lands on the window's real tree.
-    """
-    apps, bundle, data, secret = _bundle_layout(tmp_path)
-    # The fake libc mounts nothing, so the kernel's answer to "is this read-only now"
-    # is supplied: yes.
-    monkeypatch.setattr(os, "statvfs", lambda _p: _StatvfsAnswer(os.ST_RDONLY))
-
-    libc, refusal = _run(
-        tmp_path,
-        fail_at=None,
-        sensitive_dirs=[str(apps)],
-        private_dirs=[str(data), str(bundle)],
-        readonly_windows=[str(bundle)],
-        sensitive_files=[str(secret)],
-    )
-
-    assert refusal is None, refusal
-    targets = _targets(libc)
-    bind_bundle = targets.index((str(bundle), 4096))
-    seal = next(i for i, (path, flags) in enumerate(targets) if path == str(bundle) and flags & 32)
-    assert targets[seal][1] & 1, "the bundle's remount does not carry MS_RDONLY"
-    bind_data = targets.index((str(data), 4096))
-    secret_st = os.lstat(secret)
-    hide_secret = libc.resolved.index((secret_st.st_dev, secret_st.st_ino))
-    assert bind_bundle < seal < bind_data < hide_secret
-    assert not any(
-        path == str(data) and flags & 32 for path, flags in targets
-    ), "data/ was sealed read-only"
-
-
-@_LINUX_WINDOW_ONLY
-def test_a_required_secret_moved_aside_refuses_the_spawn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An update that moved the secret out after planning must not leave it unmasked."""
-    apps, bundle, _data, secret = _bundle_layout(tmp_path)
-    secret.unlink()
-    monkeypatch.setattr(os, "statvfs", lambda _p: _StatvfsAnswer(os.ST_RDONLY))
-
-    _libc, refusal = _run(
-        tmp_path,
-        fail_at=None,
-        sensitive_dirs=[str(apps)],
-        private_dirs=[str(bundle)],
-        readonly_windows=[str(bundle)],
-        sensitive_files=[str(secret)],
-        required_targets=[str(secret)],
-    )
-
-    assert refusal is not None, "an absent required secret was skipped"
-
-
-@_LINUX_WINDOW_ONLY
-def test_a_read_only_seal_that_did_not_take_refuses_the_spawn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    apps, bundle, _data, _secret = _bundle_layout(tmp_path)
-    monkeypatch.setattr(os, "statvfs", lambda _p: _StatvfsAnswer(0))
-
-    _libc, refusal = _run(
-        tmp_path,
-        fail_at=None,
-        sensitive_dirs=[str(apps)],
-        private_dirs=[str(bundle)],
-        readonly_windows=[str(bundle)],
-    )
-
-    assert refusal is not None and "read-only seal" in refusal
-
-
 @_LINUX_WINDOW_ONLY
 def test_a_window_no_one_vouched_for_is_skipped_not_refused(tmp_path: Path) -> None:
     """The second control: absence of an identity is not a mismatch.
@@ -684,14 +576,13 @@ def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
         assert raw == collections.Counter(
             _PERMITTED_RAW_MOUNTS
         ), f"{level}: unchecked mount call(s): {dict(raw)}"
-        # 1 def + 11 call sites: propagation, credential dirs, the read-only
+        # 1 def + 10 call sites: propagation, credential dirs, the read-only
         # bind and its sealing remount, sensitive files and the read-only seal
         # on an unreadable mask, ~/.ssh, the private window's two -- staging its real contents out before the parent is
         # masked, then binding them onto the placeholder inside the stand-in --
         # and the nested re-mask that re-hides a masked leaf sitting INSIDE such
-        # a window, applied after the window is bound, plus the remount that seals
-        # a read-only window.
-        assert script.count("_mount_or_die(") == 12
+        # a window, applied after the window is bound.
+        assert script.count("_mount_or_die(") == 11
 
 
 # --------------------------------------------------------------------------
