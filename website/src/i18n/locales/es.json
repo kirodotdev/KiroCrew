@@ -6110,8 +6110,8 @@
       "this_folder_contains": "Esta carpeta contiene"
     },
     "artifactPanel": {
-      "add_instruction": "Añadir instrucción",
-      "additional_instruction": "Instrucción adicional",
+      "add_instruction": "Añadir instrucción general",
+      "additional_instruction": "Instrucción general",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Haz clic para copiar el slug",
       "comment_many": "{{count}} comentarios",
@@ -6126,10 +6126,11 @@
       "loading_artifact": "Cargando el artefacto…",
       "open_full_artifact_page": "Abrir la página completa del artefacto",
       "optional_overall_feedback_or_an_extra_instructio": "Opcional: comentarios generales o una instrucción adicional para enviar con estos comentarios…",
+      "overall_instruction_hint": "Añade una instrucción que se aplique a todos los comentarios pendientes",
       "show_comments": "Mostrar los comentarios",
       "submit": "Enviar",
       "to_send_to_this_chat": "para enviar a este chat",
-      "toggle_additional_instruction": "Mostrar u ocultar la instrucción adicional"
+      "toggle_additional_instruction": "Añadir instrucción general"
     },
     "askAgent": {
       "ask_the_agent": "Preguntar al agente",
@@ -6480,19 +6481,20 @@
     },
     "commentOverlay": {
       "add_comment": "Añadir comentario",
-      "add_instruction": "Añadir instrucción",
-      "additional_prompt": "Prompt adicional",
+      "add_instruction": "Añadir instrucción general",
+      "additional_prompt": "Instrucción general",
       "close": "Cerrar",
       "comment_many": "{{count}} comentarios",
       "comment_one": "{{count}} comentario",
       "comment_other": "{{count}} comentarios",
       "edit": "Editar",
       "optional_overall_feedback_or_an_extra_instructio": "Opcional: comentarios generales o una instrucción extra para enviar junto con estos comentarios…",
+      "overall_instruction_hint": "Añade una instrucción que se aplique a todos los comentarios pendientes",
       "pending": "pendiente",
       "remove": "Quitar",
       "save": "Guardar",
       "submit_all": "Enviar todos",
-      "toggle_additional_prompt": "Mostrar u ocultar el prompt adicional",
+      "toggle_additional_prompt": "Añadir instrucción general",
       "write_a_comment": "Escribe un comentario…"
     },
     "commentThreadPopover": {

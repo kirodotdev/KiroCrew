@@ -4208,8 +4208,8 @@
       "this_folder_contains": "This folder contains"
     },
     "artifactPanel": {
-      "add_instruction": "Add instruction",
-      "additional_instruction": "Additional instruction",
+      "add_instruction": "Add overall instruction",
+      "additional_instruction": "Overall instruction",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Click to copy slug",
       "comment_one": "{{count}} comment",
@@ -4222,9 +4222,10 @@
       "loading_artifact": "Loading artifact…",
       "open_full_artifact_page": "Open full artifact page",
       "optional_overall_feedback_or_an_extra_instructio": "Optional: overall feedback or an extra instruction to send with these comments…",
+      "overall_instruction_hint": "Add one instruction that applies to all pending comments",
       "submit": "Submit",
       "to_send_to_this_chat": "to send to this chat",
-      "toggle_additional_instruction": "Toggle additional instruction"
+      "toggle_additional_instruction": "Add overall instruction"
     },
     "autoNudgePopover": {
       "close": "Close",
@@ -4347,18 +4348,19 @@
     },
     "commentOverlay": {
       "add_comment": "Add comment",
-      "add_instruction": "Add instruction",
-      "additional_prompt": "Additional prompt",
+      "add_instruction": "Add overall instruction",
+      "additional_prompt": "Overall instruction",
       "close": "Close",
       "comment_one": "{{count}} comment",
       "comment_other": "{{count}} comments",
       "edit": "Edit",
       "optional_overall_feedback_or_an_extra_instructio": "Optional: overall feedback or an extra instruction to send with these comments…",
+      "overall_instruction_hint": "Add one instruction that applies to all pending comments",
       "pending": "pending",
       "remove": "Remove",
       "save": "Save",
       "submit_all": "Submit All",
-      "toggle_additional_prompt": "Toggle additional prompt",
+      "toggle_additional_prompt": "Add overall instruction",
       "write_a_comment": "Write a comment…"
     },
     "commentThreadPopover": {

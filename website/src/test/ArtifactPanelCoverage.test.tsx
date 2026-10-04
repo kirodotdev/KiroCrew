@@ -490,8 +490,8 @@ describe('ArtifactPanel', () => {
       stubComments = [mkComment()]
       const { onClose } = renderPanel({ onSubmitComments })
       await screen.findByText(NAME)
-      fireEvent.click(screen.getByRole('button', { name: 'Toggle additional instruction' }))
-      const field = await screen.findByLabelText('Additional instruction')
+      fireEvent.click(screen.getByRole('button', { name: 'Add overall instruction' }))
+      const field = await screen.findByLabelText('Overall instruction')
       fireEvent.keyDown(field, { key: 'Escape' })
       expect(onClose).not.toHaveBeenCalled()
     })
@@ -775,10 +775,10 @@ describe('ArtifactPanel', () => {
       renderPanel({ onSubmitComments })
       await screen.findByText(NAME)
 
-      const toggle = screen.getByRole('button', { name: 'Toggle additional instruction' })
+      const toggle = screen.getByRole('button', { name: 'Add overall instruction' })
       expect(toggle.getAttribute('aria-pressed')).toBe('false')
       fireEvent.click(toggle)
-      const field = await screen.findByLabelText('Additional instruction')
+      const field = await screen.findByLabelText('Overall instruction')
       expect(field).toHaveFocus()
       fireEvent.change(field, { target: { value: instruction } })
 
@@ -787,7 +787,7 @@ describe('ArtifactPanel', () => {
       expect(message).toContain('OVERALL INSTRUCTION')
       expect(message).toContain(instruction)
       // Submitting collapses the affordance and drops the note.
-      await waitFor(() => expect(screen.queryByLabelText('Additional instruction')).toBeNull())
+      await waitFor(() => expect(screen.queryByLabelText('Overall instruction')).toBeNull())
     })
 
     it('omits the instruction block when the toggle was never opened', async () => {

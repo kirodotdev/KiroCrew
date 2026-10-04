@@ -6110,8 +6110,8 @@
       "this_folder_contains": "Ce dossier contient"
     },
     "artifactPanel": {
-      "add_instruction": "Ajouter une instruction",
-      "additional_instruction": "Instruction supplémentaire",
+      "add_instruction": "Ajouter une instruction globale",
+      "additional_instruction": "Instruction globale",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Cliquer pour copier le slug",
       "comment_many": "{{count}} commentaires",
@@ -6126,10 +6126,11 @@
       "loading_artifact": "Chargement de l’artefact…",
       "open_full_artifact_page": "Ouvrir la page complète de l’artefact",
       "optional_overall_feedback_or_an_extra_instructio": "Facultatif : commentaire global ou instruction supplémentaire à envoyer avec ces commentaires…",
+      "overall_instruction_hint": "Ajoute une instruction qui s’applique à tous les commentaires en attente",
       "show_comments": "Afficher les commentaires",
       "submit": "Envoyer",
       "to_send_to_this_chat": "à envoyer dans ce chat",
-      "toggle_additional_instruction": "Afficher/masquer l’instruction supplémentaire"
+      "toggle_additional_instruction": "Ajouter une instruction globale"
     },
     "askAgent": {
       "ask_the_agent": "Demander à l'agent",
@@ -6480,19 +6481,20 @@
     },
     "commentOverlay": {
       "add_comment": "Ajouter un commentaire",
-      "add_instruction": "Ajouter une instruction",
-      "additional_prompt": "Prompt supplémentaire",
+      "add_instruction": "Ajouter une instruction globale",
+      "additional_prompt": "Instruction globale",
       "close": "Fermer",
       "comment_many": "{{count}} commentaires",
       "comment_one": "{{count}} commentaire",
       "comment_other": "{{count}} commentaires",
       "edit": "Modifier",
       "optional_overall_feedback_or_an_extra_instructio": "Facultatif : retour global ou instruction supplémentaire à envoyer avec ces commentaires…",
+      "overall_instruction_hint": "Ajoute une instruction qui s’applique à tous les commentaires en attente",
       "pending": "en attente",
       "remove": "Supprimer",
       "save": "Enregistrer",
       "submit_all": "Tout envoyer",
-      "toggle_additional_prompt": "Afficher/masquer le prompt supplémentaire",
+      "toggle_additional_prompt": "Ajouter une instruction globale",
       "write_a_comment": "Écrire un commentaire…"
     },
     "commentThreadPopover": {

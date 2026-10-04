@@ -6204,8 +6204,8 @@
       "this_folder_contains": "Эта папка содержит"
     },
     "artifactPanel": {
-      "add_instruction": "Добавить инструкцию",
-      "additional_instruction": "Дополнительная инструкция",
+      "add_instruction": "Добавить общую инструкцию",
+      "additional_instruction": "Общая инструкция",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Нажмите, чтобы скопировать slug",
       "comment_few": "{{count}} комментария",
@@ -6221,10 +6221,11 @@
       "loading_artifact": "Загрузка артефакта…",
       "open_full_artifact_page": "Открыть полную страницу артефакта",
       "optional_overall_feedback_or_an_extra_instructio": "Необязательно: общий отзыв или дополнительная инструкция к этим комментариям…",
+      "overall_instruction_hint": "Добавь одну инструкцию для всех ожидающих комментариев",
       "show_comments": "Показать комментарии",
       "submit": "Отправить",
       "to_send_to_this_chat": "чтобы отправить в этот чат",
-      "toggle_additional_instruction": "Показать или скрыть дополнительную инструкцию"
+      "toggle_additional_instruction": "Добавить общую инструкцию"
     },
     "askAgent": {
       "ask_the_agent": "Спросить агента",
@@ -6579,8 +6580,8 @@
     },
     "commentOverlay": {
       "add_comment": "Добавить комментарий",
-      "add_instruction": "Добавить инструкцию",
-      "additional_prompt": "Дополнительный промпт",
+      "add_instruction": "Добавить общую инструкцию",
+      "additional_prompt": "Общая инструкция",
       "close": "Закрыть",
       "comment_few": "{{count}} комментария",
       "comment_many": "{{count}} комментариев",
@@ -6588,11 +6589,12 @@
       "comment_other": "{{count}} комментария",
       "edit": "Изменить",
       "optional_overall_feedback_or_an_extra_instructio": "Необязательно: общий отзыв или дополнительная инструкция к этим комментариям…",
+      "overall_instruction_hint": "Добавь одну инструкцию для всех ожидающих комментариев",
       "pending": "в ожидании",
       "remove": "Удалить",
       "save": "Сохранить",
       "submit_all": "Отправить все",
-      "toggle_additional_prompt": "Показать/скрыть дополнительный промпт",
+      "toggle_additional_prompt": "Добавить общую инструкцию",
       "write_a_comment": "Напишите комментарий…"
     },
     "commentThreadPopover": {

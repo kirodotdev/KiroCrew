@@ -5922,8 +5922,8 @@
       "this_folder_contains": "이 폴더에 포함된 항목"
     },
     "artifactPanel": {
-      "add_instruction": "지시 추가",
-      "additional_instruction": "추가 지시",
+      "add_instruction": "전체 지시 추가",
+      "additional_instruction": "전체 지시",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "클릭하여 슬러그 복사",
       "comment_other": "댓글 {{count}}개",
@@ -5936,10 +5936,11 @@
       "loading_artifact": "아티팩트 불러오는 중…",
       "open_full_artifact_page": "전체 아티팩트 페이지 열기",
       "optional_overall_feedback_or_an_extra_instructio": "선택 사항: 이 댓글과 함께 보낼 전체 피드백 또는 추가 지시…",
+      "overall_instruction_hint": "대기 중인 모든 댓글에 적용할 지시를 하나 추가하세요",
       "show_comments": "댓글 표시",
       "submit": "제출",
       "to_send_to_this_chat": "이 채팅으로 보내기",
-      "toggle_additional_instruction": "추가 지시 전환"
+      "toggle_additional_instruction": "전체 지시 추가"
     },
     "askAgent": {
       "ask_the_agent": "에이전트에게 질문",
@@ -6282,17 +6283,18 @@
     },
     "commentOverlay": {
       "add_comment": "댓글 추가",
-      "add_instruction": "지시 추가",
-      "additional_prompt": "추가 프롬프트",
+      "add_instruction": "전체 지시 추가",
+      "additional_prompt": "전체 지시",
       "close": "닫기",
       "comment_other": "댓글 {{count}}개",
       "edit": "편집",
       "optional_overall_feedback_or_an_extra_instructio": "선택 사항: 이 댓글과 함께 보낼 전체 피드백 또는 추가 지시…",
+      "overall_instruction_hint": "대기 중인 모든 댓글에 적용할 지시를 하나 추가하세요",
       "pending": "대기 중",
       "remove": "제거",
       "save": "저장",
       "submit_all": "모두 제출",
-      "toggle_additional_prompt": "추가 프롬프트 전환",
+      "toggle_additional_prompt": "전체 지시 추가",
       "write_a_comment": "댓글 작성…"
     },
     "commentThreadPopover": {

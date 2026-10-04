@@ -5922,8 +5922,8 @@
       "this_folder_contains": "このフォルダーには以下が含まれています"
     },
     "artifactPanel": {
-      "add_instruction": "指示を追加",
-      "additional_instruction": "追加指示",
+      "add_instruction": "全体への指示を追加",
+      "additional_instruction": "全体への指示",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "クリックしてスラッグをコピー",
       "comment_other": "{{count}} コメント",
@@ -5936,10 +5936,11 @@
       "loading_artifact": "アーティファクト読み込み中…",
       "open_full_artifact_page": "フルアーティファクトページを開く",
       "optional_overall_feedback_or_an_extra_instructio": "オプション: 全体的なフィードバックまたはこれらのコメントと一緒に送信する追加指示…",
+      "overall_instruction_hint": "保留中のすべてのコメントに適用する指示を1つ追加",
       "show_comments": "コメントを表示",
       "submit": "送信",
       "to_send_to_this_chat": "このチャットに送信",
-      "toggle_additional_instruction": "追加指示を切り替え"
+      "toggle_additional_instruction": "全体への指示を追加"
     },
     "askAgent": {
       "ask_the_agent": "エージェントに質問",
@@ -6282,17 +6283,18 @@
     },
     "commentOverlay": {
       "add_comment": "コメント追加",
-      "add_instruction": "指示を追加",
-      "additional_prompt": "追加プロンプト",
+      "add_instruction": "全体への指示を追加",
+      "additional_prompt": "全体への指示",
       "close": "閉じる",
       "comment_other": "{{count}}件のコメント",
       "edit": "編集",
       "optional_overall_feedback_or_an_extra_instructio": "オプション: これらのコメントとともに送信する総合フィードバックまたは追加の指示…",
+      "overall_instruction_hint": "保留中のすべてのコメントに適用する指示を1つ追加",
       "pending": "保留中",
       "remove": "削除",
       "save": "保存",
       "submit_all": "すべてを送信",
-      "toggle_additional_prompt": "追加プロンプトを切り替え",
+      "toggle_additional_prompt": "全体への指示を追加",
       "write_a_comment": "コメントを書く…"
     },
     "commentThreadPopover": {

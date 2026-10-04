@@ -6016,8 +6016,8 @@
       "this_folder_contains": "Dieser Ordner enthält"
     },
     "artifactPanel": {
-      "add_instruction": "Anweisung hinzufügen",
-      "additional_instruction": "Zusätzliche Anweisung",
+      "add_instruction": "Gesamtanweisung hinzufügen",
+      "additional_instruction": "Gesamtanweisung",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Klicken, um den Slug zu kopieren",
       "comment_one": "{{count}} Kommentar",
@@ -6031,10 +6031,11 @@
       "loading_artifact": "Artefakt wird geladen…",
       "open_full_artifact_page": "Vollständige Artefaktseite öffnen",
       "optional_overall_feedback_or_an_extra_instructio": "Optional: allgemeines Feedback oder eine zusätzliche Anweisung, die mit diesen Kommentaren gesendet wird…",
+      "overall_instruction_hint": "Füge eine Anweisung hinzu, die für alle ausstehenden Kommentare gilt",
       "show_comments": "Kommentare anzeigen",
       "submit": "Absenden",
       "to_send_to_this_chat": "um an diesen Chat zu senden",
-      "toggle_additional_instruction": "Zusätzliche Anweisung umschalten"
+      "toggle_additional_instruction": "Gesamtanweisung hinzufügen"
     },
     "askAgent": {
       "ask_the_agent": "Agent fragen",
@@ -6381,18 +6382,19 @@
     },
     "commentOverlay": {
       "add_comment": "Kommentar hinzufügen",
-      "add_instruction": "Anweisung hinzufügen",
-      "additional_prompt": "Zusätzlicher Prompt",
+      "add_instruction": "Gesamtanweisung hinzufügen",
+      "additional_prompt": "Gesamtanweisung",
       "close": "Schließen",
       "comment_one": "{{count}} Kommentar",
       "comment_other": "{{count}} Kommentare",
       "edit": "Bearbeiten",
       "optional_overall_feedback_or_an_extra_instructio": "Optional: allgemeines Feedback oder eine zusätzliche Anweisung, die mit diesen Kommentaren gesendet wird…",
+      "overall_instruction_hint": "Füge eine Anweisung hinzu, die für alle ausstehenden Kommentare gilt",
       "pending": "ausstehend",
       "remove": "Entfernen",
       "save": "Speichern",
       "submit_all": "Alle absenden",
-      "toggle_additional_prompt": "Zusätzlichen Prompt umschalten",
+      "toggle_additional_prompt": "Gesamtanweisung hinzufügen",
       "write_a_comment": "Kommentar schreiben…"
     },
     "commentThreadPopover": {

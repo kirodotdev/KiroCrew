@@ -126,23 +126,23 @@ describe('CommentOverlay', () => {
       expect(container.innerHTML).toBe('')
     })
 
-    it('does not render the Additional prompt textarea by default', () => {
+    it('does not render the overall instruction textarea by default', () => {
       render(<CommentList comments={comments} onEdit={vi.fn()} onRemove={vi.fn()} onSubmitAll={vi.fn()} />)
-      expect(screen.queryByLabelText('Additional prompt')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Overall instruction')).not.toBeInTheDocument()
     })
 
-    it('does not render the "Add instruction" toggle when enableExtraPrompt is not set', () => {
+    it('does not render the "Add overall instruction" toggle when enableExtraPrompt is not set', () => {
       render(<CommentList comments={comments} onEdit={vi.fn()} onRemove={vi.fn()} onSubmitAll={vi.fn()} />)
       expect(screen.queryByRole('button', { name: /instruction|prompt/i })).not.toBeInTheDocument()
     })
 
-    it('keeps the Additional prompt textarea hidden until the toggle is clicked when enableExtraPrompt is set', async () => {
+    it('keeps the overall instruction textarea hidden until the toggle is clicked when enableExtraPrompt is set', async () => {
       const user = userEvent.setup()
       render(<CommentList comments={comments} onEdit={vi.fn()} onRemove={vi.fn()} onSubmitAll={vi.fn()} enableExtraPrompt />)
       // Toggle present, textarea still hidden before the click.
-      expect(screen.queryByLabelText('Additional prompt')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Overall instruction')).not.toBeInTheDocument()
       await user.click(screen.getByRole('button', { name: /instruction|prompt/i }))
-      expect(screen.getByLabelText('Additional prompt')).toBeInTheDocument()
+      expect(screen.getByLabelText('Overall instruction')).toBeInTheDocument()
     })
 
     it('calls onSubmitAll with the typed extra-prompt text after opening the toggle when enableExtraPrompt is set', async () => {
@@ -150,7 +150,7 @@ describe('CommentOverlay', () => {
       const onSubmitAll = vi.fn()
       render(<CommentList comments={comments} onEdit={vi.fn()} onRemove={vi.fn()} onSubmitAll={onSubmitAll} enableExtraPrompt />)
       await user.click(screen.getByRole('button', { name: /instruction|prompt/i }))
-      await user.type(screen.getByLabelText('Additional prompt'), 'Route to docs owner')
+      await user.type(screen.getByLabelText('Overall instruction'), 'Route to docs owner')
       await user.click(screen.getByRole('button', { name: /submit all/i }))
       expect(onSubmitAll).toHaveBeenCalledWith('Route to docs owner')
     })
@@ -179,9 +179,9 @@ describe('CommentOverlay', () => {
       const user = userEvent.setup()
       render(<CommentList comments={comments} onEdit={vi.fn()} onRemove={vi.fn()} onSubmitAll={vi.fn()} enableExtraPrompt />)
       await user.click(screen.getByRole('button', { name: /instruction|prompt/i }))
-      await user.type(screen.getByLabelText('Additional prompt'), 'one-time instruction')
+      await user.type(screen.getByLabelText('Overall instruction'), 'one-time instruction')
       await user.click(screen.getByRole('button', { name: /submit all/i }))
-      expect(screen.queryByLabelText('Additional prompt')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Overall instruction')).not.toBeInTheDocument()
     })
   })
 

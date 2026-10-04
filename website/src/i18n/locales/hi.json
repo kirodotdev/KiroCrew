@@ -6016,8 +6016,8 @@
       "this_folder_contains": "इस फ़ोल्डर में है"
     },
     "artifactPanel": {
-      "add_instruction": "निर्देश जोड़ें",
-      "additional_instruction": "अतिरिक्त निर्देश",
+      "add_instruction": "समग्र निर्देश जोड़ो",
+      "additional_instruction": "समग्र निर्देश",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "स्लग कॉपी करने के लिए क्लिक करें",
       "comment_one": "{{count}} टिप्पणी",
@@ -6031,10 +6031,11 @@
       "loading_artifact": "आर्टिफ़ैक्ट लोड हो रहा है…",
       "open_full_artifact_page": "पूरा आर्टिफ़ैक्ट पेज खोलें",
       "optional_overall_feedback_or_an_extra_instructio": "वैकल्पिक: इन टिप्पणियों के साथ भेजने के लिए समग्र फ़ीडबैक या कोई अतिरिक्त निर्देश…",
+      "overall_instruction_hint": "सभी लंबित टिप्पणियों पर लागू होने वाला एक निर्देश जोड़ो",
       "show_comments": "टिप्पणियाँ दिखाएँ",
       "submit": "सबमिट करें",
       "to_send_to_this_chat": "इस चैट में भेजने के लिए",
-      "toggle_additional_instruction": "अतिरिक्त निर्देश टॉगल करें"
+      "toggle_additional_instruction": "समग्र निर्देश जोड़ो"
     },
     "askAgent": {
       "ask_the_agent": "एजेंट से पूछें",
@@ -6381,18 +6382,19 @@
     },
     "commentOverlay": {
       "add_comment": "टिप्पणी जोड़ें",
-      "add_instruction": "निर्देश जोड़ें",
-      "additional_prompt": "अतिरिक्त प्रॉम्प्ट",
+      "add_instruction": "समग्र निर्देश जोड़ो",
+      "additional_prompt": "समग्र निर्देश",
       "close": "बंद करें",
       "comment_one": "{{count}} टिप्पणी",
       "comment_other": "{{count}} टिप्पणियाँ",
       "edit": "संपादित करें",
       "optional_overall_feedback_or_an_extra_instructio": "वैकल्पिक: इन टिप्पणियों के साथ भेजने के लिए समग्र फ़ीडबैक या कोई अतिरिक्त निर्देश…",
+      "overall_instruction_hint": "सभी लंबित टिप्पणियों पर लागू होने वाला एक निर्देश जोड़ो",
       "pending": "लंबित",
       "remove": "हटाएँ",
       "save": "सहेजें",
       "submit_all": "सभी सबमिट करें",
-      "toggle_additional_prompt": "अतिरिक्त प्रॉम्प्ट टॉगल करें",
+      "toggle_additional_prompt": "समग्र निर्देश जोड़ो",
       "write_a_comment": "टिप्पणी लिखें…"
     },
     "commentThreadPopover": {

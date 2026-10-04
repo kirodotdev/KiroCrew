@@ -77,7 +77,7 @@ function CommentRow({ comment, onEdit, onRemove }: {
 }
 
 /** Pending comments list with batch submit.
- *  When `enableExtraPrompt` is set, an "Add instruction" toggle appears in the
+ *  When `enableExtraPrompt` is set, an "Add overall instruction" toggle appears in the
  *  header. The optional free-form textarea is hidden by default and only
  *  revealed when the user clicks that toggle, so the default view stays a
  *  single (comment) input box rather than two competing inputs. Its value is
@@ -105,6 +105,7 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
             <button
               type="button"
               aria-label={i18nT('components.commentOverlay.toggle_additional_prompt')}
+              title={i18nT('components.commentOverlay.overall_instruction_hint')}
               aria-pressed={showExtraPrompt}
               onClick={() => setShowExtraPrompt(v => !v)}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium border cursor-pointer transition-all ${showExtraPrompt ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}

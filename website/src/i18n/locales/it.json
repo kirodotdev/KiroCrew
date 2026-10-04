@@ -6110,8 +6110,8 @@
       "this_folder_contains": "Questa cartella contiene"
     },
     "artifactPanel": {
-      "add_instruction": "Aggiungi istruzione",
-      "additional_instruction": "Istruzione aggiuntiva",
+      "add_instruction": "Aggiungi istruzione generale",
+      "additional_instruction": "Istruzione generale",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Clicca per copiare lo slug",
       "comment_many": "{{count}} commenti",
@@ -6126,10 +6126,11 @@
       "loading_artifact": "Caricamento dell'artefatto…",
       "open_full_artifact_page": "Apri la pagina completa dell'artefatto",
       "optional_overall_feedback_or_an_extra_instructio": "Facoltativo: un riscontro generale o un'istruzione aggiuntiva da inviare con questi commenti…",
+      "overall_instruction_hint": "Aggiungi un'istruzione valida per tutti i commenti in attesa",
       "show_comments": "Mostra i commenti",
       "submit": "Invia",
       "to_send_to_this_chat": "per inviare a questa chat",
-      "toggle_additional_instruction": "Attiva/disattiva l'istruzione aggiuntiva"
+      "toggle_additional_instruction": "Aggiungi istruzione generale"
     },
     "askAgent": {
       "ask_the_agent": "Chiedi all'agente",
@@ -6480,19 +6481,20 @@
     },
     "commentOverlay": {
       "add_comment": "Aggiungi commento",
-      "add_instruction": "Aggiungi istruzione",
-      "additional_prompt": "Prompt aggiuntivo",
+      "add_instruction": "Aggiungi istruzione generale",
+      "additional_prompt": "Istruzione generale",
       "close": "Chiudi",
       "comment_many": "{{count}} commenti",
       "comment_one": "{{count}} commento",
       "comment_other": "{{count}} commenti",
       "edit": "Modifica",
       "optional_overall_feedback_or_an_extra_instructio": "Facoltativo: un riscontro generale o un'istruzione aggiuntiva da inviare con questi commenti…",
+      "overall_instruction_hint": "Aggiungi un'istruzione valida per tutti i commenti in attesa",
       "pending": "in attesa",
       "remove": "Rimuovi",
       "save": "Salva",
       "submit_all": "Invia tutto",
-      "toggle_additional_prompt": "Attiva/disattiva il prompt aggiuntivo",
+      "toggle_additional_prompt": "Aggiungi istruzione generale",
       "write_a_comment": "Scrivi un commento…"
     },
     "commentThreadPopover": {

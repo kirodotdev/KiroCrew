@@ -72,7 +72,7 @@ const readSentIds = (key: string): Set<string> => {
 const STACKED_SIDEBAR_CLASS = 'w-full shrink-0 flex flex-col rounded-xl border border-border bg-card overflow-hidden'
 const STACKED_SIDEBAR_STYLE: React.CSSProperties = { maxHeight: 280, minHeight: 0 }
 
-/** Submit-to-chat bar with an optional "Add instruction" affordance. The
+/** Submit-to-chat bar with an optional "Add overall instruction" affordance. The
  *  free-form note is threaded through as the `extraPrompt` arg only when the
  *  toggle is open, and cleared after submit.
  *
@@ -105,6 +105,7 @@ export function SubmitBar({ count, submitting, onSubmit, bleed = false, connecte
           <button
             type="button"
             aria-label={i18nT('components.artifactPanel.toggle_additional_instruction')}
+            title={i18nT('components.artifactPanel.overall_instruction_hint')}
             aria-pressed={showExtraPrompt}
             onClick={() => setShowExtraPrompt(v => !v)}
             className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium border cursor-pointer transition-all shrink-0 ${showExtraPrompt ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}

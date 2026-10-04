@@ -5922,8 +5922,8 @@
       "this_folder_contains": "此文件夹包含"
     },
     "artifactPanel": {
-      "add_instruction": "添加指令",
-      "additional_instruction": "附加指令",
+      "add_instruction": "添加整体指令",
+      "additional_instruction": "整体指令",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "点击复制 slug",
       "comment_other": "{{count}} 条评论",
@@ -5936,10 +5936,11 @@
       "loading_artifact": "正在加载产物…",
       "open_full_artifact_page": "打开完整产物页面",
       "optional_overall_feedback_or_an_extra_instructio": "可选：随这些评论一并发送的整体反馈或附加指令…",
+      "overall_instruction_hint": "添加一条适用于所有待处理评论的指令",
       "show_comments": "显示评论",
       "submit": "提交",
       "to_send_to_this_chat": "发送到此聊天",
-      "toggle_additional_instruction": "切换附加指令"
+      "toggle_additional_instruction": "添加整体指令"
     },
     "askAgent": {
       "ask_the_agent": "询问代理",
@@ -6282,17 +6283,18 @@
     },
     "commentOverlay": {
       "add_comment": "添加评论",
-      "add_instruction": "添加指令",
-      "additional_prompt": "附加提示词",
+      "add_instruction": "添加整体指令",
+      "additional_prompt": "整体指令",
       "close": "关闭",
       "comment_other": "{{count}} 条评论",
       "edit": "编辑",
       "optional_overall_feedback_or_an_extra_instructio": "可选：随这些评论一起发送的整体反馈或额外指令…",
+      "overall_instruction_hint": "添加一条适用于所有待处理评论的指令",
       "pending": "待处理",
       "remove": "移除",
       "save": "保存",
       "submit_all": "全部提交",
-      "toggle_additional_prompt": "切换附加提示词",
+      "toggle_additional_prompt": "添加整体指令",
       "write_a_comment": "写下评论…"
     },
     "commentThreadPopover": {

@@ -6110,8 +6110,8 @@
       "this_folder_contains": "Esta pasta contém"
     },
     "artifactPanel": {
-      "add_instruction": "Adicionar instrução",
-      "additional_instruction": "Instrução adicional",
+      "add_instruction": "Adicionar instrução geral",
+      "additional_instruction": "Instrução geral",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Clique para copiar o slug",
       "comment_many": "{{count}} comentários",
@@ -6126,10 +6126,11 @@
       "loading_artifact": "Carregando artefato…",
       "open_full_artifact_page": "Abrir a página completa do artefato",
       "optional_overall_feedback_or_an_extra_instructio": "Opcional: feedback geral ou uma instrução extra para enviar com estes comentários…",
+      "overall_instruction_hint": "Adicione uma instrução que vale para todos os comentários pendentes",
       "show_comments": "Mostrar comentários",
       "submit": "Enviar",
       "to_send_to_this_chat": "para enviar a este chat",
-      "toggle_additional_instruction": "Alternar instrução adicional"
+      "toggle_additional_instruction": "Adicionar instrução geral"
     },
     "askAgent": {
       "ask_the_agent": "Perguntar ao agente",
@@ -6480,19 +6481,20 @@
     },
     "commentOverlay": {
       "add_comment": "Adicionar comentário",
-      "add_instruction": "Adicionar instrução",
-      "additional_prompt": "Prompt adicional",
+      "add_instruction": "Adicionar instrução geral",
+      "additional_prompt": "Instrução geral",
       "close": "Fechar",
       "comment_many": "{{count}} comentários",
       "comment_one": "{{count}} comentário",
       "comment_other": "{{count}} comentários",
       "edit": "Editar",
       "optional_overall_feedback_or_an_extra_instructio": "Opcional: feedback geral ou uma instrução extra para enviar com estes comentários…",
+      "overall_instruction_hint": "Adicione uma instrução que vale para todos os comentários pendentes",
       "pending": "pendente",
       "remove": "Remover",
       "save": "Salvar",
       "submit_all": "Enviar tudo",
-      "toggle_additional_prompt": "Alternar prompt adicional",
+      "toggle_additional_prompt": "Adicionar instrução geral",
       "write_a_comment": "Escreva um comentário…"
     },
     "commentThreadPopover": {

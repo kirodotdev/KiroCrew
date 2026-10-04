@@ -6016,8 +6016,8 @@
       "this_folder_contains": "এই ফোল্ডারে রয়েছে"
     },
     "artifactPanel": {
-      "add_instruction": "নির্দেশ যোগ করুন",
-      "additional_instruction": "অতিরিক্ত নির্দেশ",
+      "add_instruction": "সার্বিক নির্দেশ যোগ করো",
+      "additional_instruction": "সার্বিক নির্দেশ",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "slug কপি করতে ক্লিক করুন",
       "comment_one": "{{count}}টি মন্তব্য",
@@ -6031,10 +6031,11 @@
       "loading_artifact": "আর্টিফ্যাক্ট লোড হচ্ছে…",
       "open_full_artifact_page": "সম্পূর্ণ আর্টিফ্যাক্ট পৃষ্ঠা খুলুন",
       "optional_overall_feedback_or_an_extra_instructio": "ঐচ্ছিক: এই মন্তব্যগুলোর সঙ্গে পাঠানোর জন্য সামগ্রিক ফিডব্যাক বা একটি অতিরিক্ত নির্দেশ…",
+      "overall_instruction_hint": "সব অপেক্ষমাণ মন্তব্যের জন্য একটা নির্দেশ যোগ করো",
       "show_comments": "মন্তব্য দেখাও",
       "submit": "জমা দিন",
       "to_send_to_this_chat": "এই চ্যাটে পাঠাতে",
-      "toggle_additional_instruction": "অতিরিক্ত নির্দেশ দেখান বা লুকান"
+      "toggle_additional_instruction": "সার্বিক নির্দেশ যোগ করো"
     },
     "askAgent": {
       "ask_the_agent": "এজেন্টকে জিজ্ঞাসা করুন",
@@ -6381,18 +6382,19 @@
     },
     "commentOverlay": {
       "add_comment": "মন্তব্য যোগ করুন",
-      "add_instruction": "নির্দেশ যোগ করুন",
-      "additional_prompt": "অতিরিক্ত প্রম্পট",
+      "add_instruction": "সার্বিক নির্দেশ যোগ করো",
+      "additional_prompt": "সার্বিক নির্দেশ",
       "close": "বন্ধ করুন",
       "comment_one": "{{count}}টি মন্তব্য",
       "comment_other": "{{count}}টি মন্তব্য",
       "edit": "সম্পাদনা",
       "optional_overall_feedback_or_an_extra_instructio": "ঐচ্ছিক: এই মন্তব্যগুলোর সঙ্গে পাঠানোর জন্য সার্বিক মতামত বা একটি অতিরিক্ত নির্দেশ…",
+      "overall_instruction_hint": "সব অপেক্ষমাণ মন্তব্যের জন্য একটা নির্দেশ যোগ করো",
       "pending": "অপেক্ষমাণ",
       "remove": "সরান",
       "save": "সংরক্ষণ",
       "submit_all": "সব জমা দিন",
-      "toggle_additional_prompt": "অতিরিক্ত প্রম্পট চালু/বন্ধ করুন",
+      "toggle_additional_prompt": "সার্বিক নির্দেশ যোগ করো",
       "write_a_comment": "একটি মন্তব্য লিখুন…"
     },
     "commentThreadPopover": {
