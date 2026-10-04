@@ -1147,3 +1147,47 @@ class TestTheStoreListSurvivesOneDamagedStore:
         assert resp.status == 403
         assert _body(resp)["code"] == "owner_only"
         assert _FINANCE not in _text(resp)
+
+
+# ── 10. An undecodable document is refused, never served or overwritten ──────
+
+
+class TestAnUndecodableDocumentIsRefused:
+    """One non-UTF-8 byte answers 409 ``memory_document_undecodable``.
+
+    Both methods, both documents, both store shapes. The bytes are compared after
+    the PUT because the refusal is only worth anything if the file survives it.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", [DEFAULT_MEMORY_STORE, _FINANCE])
+    @pytest.mark.parametrize(
+        "route,handler,filename",
+        [
+            ("/api/memory/preferences", memory_handlers.api_memory_preferences, "preferences.md"),
+            ("/api/memory/projects", memory_handlers.api_memory_projects, "projects.md"),
+        ],
+    )
+    async def test_get_and_put_answer_409_and_leave_the_bytes(
+        self, env, store, route, handler, filename
+    ) -> None:
+        env.declare(_FINANCE)
+        mem = env.markdown(store)
+        target = mem._preferences_file if filename == "preferences.md" else mem._projects_file
+        assert env.home in target.parents, target
+        target.write_bytes(b"\xff")
+        state = env.state()
+        query = {"store": store}
+
+        read = await handler(_request("GET", route, state, query=query, owner=True))
+        assert read.status == 409, (route, store)
+        assert _body(read)["code"] == "memory_document_undecodable"
+        assert _body(read)["file"] == filename
+
+        written = await handler(
+            _request("PUT", route, state, query=query, owner=True, body={"content": "- new\n"})
+        )
+        assert written.status == 409, (route, store)
+        assert _body(written)["code"] == "memory_document_undecodable"
+        assert _body(written)["file"] == filename
+        assert target.read_bytes() == b"\xff"

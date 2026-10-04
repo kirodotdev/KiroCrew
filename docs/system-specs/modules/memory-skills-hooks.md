@@ -2674,7 +2674,9 @@ only today's file. Retained V2 aggregate reads remain available through
 `read_recent_history` and the structured history reader; daily editing does not
 copy earlier files into today or change their bytes. Previously saved duplicate
 content is not automatically removed. A changed baseline returns
-`409 memory_document_changed` without writing. The editor preserves drafts on a
+`409 memory_document_changed` without writing. A V1 preferences or projects file
+that is not valid UTF-8 answers GET and PUT with `409 memory_document_undecodable`
+naming the `file`, and is never overwritten. The editor preserves drafts on a
 refusal and disables writes during a failed or pending confirming read. These are
 shared dashboard safety changes; V1 context, retention and consolidation policy
 remain separate from this document response contract.

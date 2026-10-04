@@ -171,6 +171,18 @@ def _memory_document_changed_response() -> web.Response:
     )
 
 
+def _memory_document_undecodable_response(name: str) -> web.Response:
+    """Refuse a document whose bytes are not UTF-8; the file is left as it is."""
+    return web.json_response(
+        {
+            "error": f"{name} is not valid UTF-8 and cannot be shown or saved",
+            "code": "memory_document_undecodable",
+            "file": name,
+        },
+        status=409,
+    )
+
+
 def _redact_pip_stderr(raw: bytes) -> str:
     """Redact pip/ensurepip stderr for a log line, then bound its length.
 
@@ -438,11 +450,15 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
                         return _memory_document_changed_response()
                 except _MemoryDocumentRedacted:
                     return _memory_document_redacted_response()
+                except UnicodeDecodeError:
+                    return _memory_document_undecodable_response("preferences.md")
                 except (UnknownMemoryStore, OSError) as exc:
                     return _store_unavailable_response(store, exc)
         return web.json_response({"ok": True})
     try:
         content = await asyncio.to_thread(mem.read_preferences)
+    except UnicodeDecodeError:
+        return _memory_document_undecodable_response("preferences.md")
     except (UnknownMemoryStore, OSError) as exc:
         return _store_unavailable_response(store, exc)
     return _memory_document_response(content)
@@ -520,11 +536,15 @@ async def api_memory_projects(request: web.Request) -> web.Response:
                         return _memory_document_changed_response()
                 except _MemoryDocumentRedacted:
                     return _memory_document_redacted_response()
+                except UnicodeDecodeError:
+                    return _memory_document_undecodable_response("projects.md")
                 except (UnknownMemoryStore, OSError) as exc:
                     return _store_unavailable_response(store, exc)
         return web.json_response({"ok": True})
     try:
         content = await asyncio.to_thread(mem.read_projects)
+    except UnicodeDecodeError:
+        return _memory_document_undecodable_response("projects.md")
     except (UnknownMemoryStore, OSError) as exc:
         return _store_unavailable_response(store, exc)
     return _memory_document_response(content)
