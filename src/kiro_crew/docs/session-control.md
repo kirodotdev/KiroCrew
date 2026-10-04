@@ -5,13 +5,14 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 29 of its tools, written for the agent that is about to use them.
+for all 30 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
+  `session_set_model`, `session_reload`, `session_close`, `session_revive`,
+  `session_history_list`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_delete`,
@@ -510,6 +511,23 @@ predates it, since none of those leaves a lineage to check. The person's own ses
 unaffected. A revive also spends the caller's create budget and per-caller slot
 cap (the revived slot is charged to the reviver for the cap while keeping its own
 creator) and the global slot cap.
+
+### `session_history_list`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `folder` | no | Only sessions filed in this folder: an id or `/`-separated path. Resolved read-only; an unknown folder is refused, never created |
+| `limit` | no | Most rows to return, 1 to 100 (default 20). The reply says when more exist |
+
+Lists archived sessions newest first, one row each: the slot key `session_revive`
+takes, the title, the last activity time and the folder id. Read-only. A row is
+listed only when `session_revive` would accept that session for this caller, so
+the same containment applies: same workspace, persistent memory mode (incognito
+and temporary sessions never appear), no app-scoped, channel-linked or mirrored
+sessions, no crew member DM threads or scheduled runs. An ownership-fenced caller
+sees only sessions it created, corroborated by the crew-log lineage as for a
+revive; with the log off such a caller gets an empty list, not an error. Live
+sessions are not listed; `chat_folder_tree` shows those.
 
 ## Folders
 

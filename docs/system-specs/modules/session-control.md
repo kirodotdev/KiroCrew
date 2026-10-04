@@ -26,6 +26,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
+| `session_history_list` | `GET /api/session-control/history` | List the archived sessions the caller could revive, newest first, optionally narrowed to one folder; every row passes the same containment and ownership fence `session_revive` applies |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
@@ -1602,6 +1603,34 @@ deduplicated the slot anyway, but silently answering "done" would hide that the
 caller's model of the sidebar is stale. Member DM threads
 (`member-*`) are refused outright (`member_thread_target`): they are opened only
 through the roster route that re-checks the member binding.
+
+## Listing what can be revived
+
+`session_history_list` answers "what is there to revive?" so an agent does not
+have to guess a title. `list_archived_sessions` runs the caller side exactly as
+`revive_session` does (`refuse_caller_identity`, then `refuse_caller_surface`,
+then the fence verdict) before touching history, so a refused caller learns
+nothing about what is on disk. The catalog walk (`_scan_revivable_history`) runs
+in a worker thread, newest first, and keeps a row only when revive would accept
+it: the same key fold and `cron-`/`workflow-`/`member-` prefix guards, persistent
+memory mode, no `app`, no link on the metadata line or in the gateway session
+store, no outbound mirror, the caller's workspace, and for a fenced caller a
+`created_by` corroborated by `_slot_tree_parent`. The store probes fail closed the
+way revive's do, so a session whose link cannot be read is hidden rather than
+offered and then refused. A fenced caller whose candidates the lineage cannot
+vouch for gets `lineage_unknown: true` beside the rows it could verify, so an empty
+answer during the post-boot unseeded window is not read as "nothing archived".
+The live-slot table is snapshotted on the loop before the walk and re-read after
+it (a session revived during the scan is dropped), and the caller surface and
+workspace are re-asserted after the walk because the rows carry titles, the same
+reason `created_session_status` re-checks. `folder_id` must exist in the tree
+(`folder_not_found` otherwise); `limit` is clamped to 1..100, `omitted` counts the
+revivable sessions past it, and `more` says rows were left. The walk examines at
+most `MAX_HISTORY_SCAN_ENTRIES` (5000) catalog entries, read through
+`newest_session_stems`, which keeps only that many stems and mtimes and reads no
+title or metadata line; past that it stops and
+answers `scan_truncated: true`, so `omitted` becomes a lower bound and the scan's
+memory stays bounded however large the archive is.
 
 ## Configuration
 

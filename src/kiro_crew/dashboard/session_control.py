@@ -47,6 +47,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry
@@ -5381,6 +5382,24 @@ async def close_target(
 #: than restated as its own number: a seed prompt is that shape, the MCP schema
 #: layer already rejects on that constant, and two spellings of one 50k limit
 #: would drift apart the first time either moved.
+def _fold_slot_key(key: str) -> str:
+    """Fold a transcript stem or session key to the slot key it names.
+
+    ``_normalize_slot_key`` strips ONE transport prefix per call, so a doubled
+    ``dashboard:dashboard:member-x`` folds to ``dashboard_member-x``: a key the
+    ``member-``/``cron-`` prefix guards do not match, whose history key is
+    nevertheless the real ``dashboard:member-x`` transcript the resume core would
+    publish. Fold to the fixed point so the guards test the key that is actually
+    revived (or, for :func:`list_archived_sessions`, listed as revivable).
+    """
+    for _ in range(8):
+        folded = _normalize_slot_key(key)
+        if folded == key:
+            return key
+        key = folded
+    return key
+
+
 def _scan_archived_candidates(
     log: Any, key_candidate: str, wanted_title: str
 ) -> list[tuple[str, str, dict[str, Any]]]:
@@ -5393,20 +5412,7 @@ def _scan_archived_candidates(
     is consulted by the caller after this returns.
     """
     found: dict[str, tuple[str, dict[str, Any]]] = {}
-
-    def _fold(key: str) -> str:
-        # ``_normalize_slot_key`` strips ONE transport prefix per call, so a
-        # doubled ``dashboard:dashboard:member-x`` folds to ``dashboard_member-x``:
-        # a key the ``member-``/``cron-`` prefix guards do not match, whose
-        # history key is nevertheless the real ``dashboard:member-x`` transcript
-        # the resume core would publish. Fold to the fixed point so the guards
-        # test the key that is actually revived.
-        for _ in range(8):
-            folded = _normalize_slot_key(key)
-            if folded == key:
-                return key
-            key = folded
-        return key
+    _fold = _fold_slot_key
 
     def _consider(slot_key: str) -> None:
         if not slot_key or slot_key in found:
@@ -6017,6 +6023,254 @@ async def revive_session(
         "messages": outcome.total,
         "folder_id": slot.folder_id or "",
         "filed": filed,
+    }
+
+
+#: Default and ceiling on the rows one ``session_history_list`` call returns. The
+#: MCP schema (``SESSION_HISTORY_LIST_SCHEMA``) enforces the same ceiling; the
+#: backend clamps too, because the route is reachable without the schema layer.
+DEFAULT_HISTORY_LIST_ROWS = 20
+MAX_HISTORY_LIST_ROWS = 100
+#: How many history catalog entries one scan walks, newest first. It is the one
+#: bound on everything the scan retains: the catalog read keeps at most this
+#: many stems and mtimes, and the ``seen`` set and the overflow keys (rows past
+#: ``limit``) both grow by at most one per entry walked. Past it the
+#: walk stops and the answer says ``scan_truncated``, which makes ``omitted`` a
+#: lower bound instead of an exact count. Revivable sessions sit near the top of
+#: a newest-first catalog, so a real archive meets the row cap long before this.
+MAX_HISTORY_SCAN_ENTRIES = 5000
+
+#: Longest ``folder_id`` a history row carries. Folder ids are 12 hex characters
+#: (``chat_folders``), but the value is read from agent-writable transcript
+#: metadata, so a longer one is reported as unfiled instead of being retained. It
+#: is dropped rather than cut short because a truncated id names a different
+#: folder, or none.
+MAX_HISTORY_FOLDER_ID_CHARS = 64
+
+
+def _scan_revivable_history(
+    state: "DashboardState",
+    log: Any,
+    *,
+    caller_key: str,
+    caller_workspace: str,
+    ownership_fenced: bool,
+    folder_id: str,
+    live_keys: frozenset[str],
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[str], bool, bool]:
+    """The DISK half of :func:`list_archived_sessions`: runs in a worker thread.
+
+    Walks the newest ``MAX_HISTORY_SCAN_ENTRIES`` transcripts of the history
+    catalog (``newest_session_stems``, stems and mtimes only) newest first and
+    keeps each archived dashboard
+    session :func:`revive_session` would accept for this caller, applying the
+    target-side refusals revive applies: unattended and member DM keys,
+    non-persistent memory, app scope and metadata channel links, workspace, for
+    a fenced caller ``created_by`` corroborated by the crew-log lineage, and
+    last the gateway session-store link and outbound-mirror probe. A row
+    that would be refused is skipped, not reported, so the listing never names
+    a session the caller could not revive.
+
+    *live_keys* is the live-slot snapshot the caller took on the loop; the slot
+    table itself belongs to the loop and is not read here. Returns
+    ``(rows, omitted_keys, lineage_unknown, truncated)``: *omitted_keys* are
+    the keys of the eligible rows that fell past *limit*; no title is kept for
+    them. The walk does not stop at the row cap, so the caller can report how
+    many were left out instead of a bare "more exist", and can drop sessions
+    revived during the scan from that count. It stops after
+    ``MAX_HISTORY_SCAN_ENTRIES`` catalog entries and sets *truncated*, which
+    bounds both ``seen`` and *omitted_keys* and makes the count a lower bound.
+    *lineage_unknown* is set when a fenced
+    caller had candidates the lineage could not vouch for (crew log off,
+    unseeded, incomplete).
+    """
+    # Circular at runtime: ``members`` imports this module.
+    from kiro_crew import members as members_mod
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    omitted: list[str] = []
+    lineage_unknown = False
+    # A bounded catalog read: only the newest ``MAX_HISTORY_SCAN_ENTRIES``
+    # transcripts' stems and mtimes, with no title or metadata, so nothing the
+    # walk starts from grows with the archive or with a persisted field.
+    entries, truncated = log.newest_session_stems(MAX_HISTORY_SCAN_ENTRIES)
+    for stem, modified in entries:
+        if not stem.startswith("dashboard_"):
+            continue
+        slot_key = _fold_slot_key(stem)
+        if not slot_key or slot_key in seen or slot_key in live_keys:
+            continue
+        seen.add(slot_key)
+        folded = slot_key.casefold()
+        if folded.startswith(UNATTENDED_SLOT_PREFIXES) or folded.startswith(
+            members_mod.DM_SLOT_KEY_PREFIX
+        ):
+            continue
+        history_key = _history_key_for(slot_key)
+        meta, readable = log.get_metadata_status(history_key)
+        if not readable or not meta:
+            continue
+        if str(meta.get("memory_mode") or "persistent") != "persistent":
+            continue
+        if meta.get("app") or meta.get("linked_session_key") or meta.get("channel_origin"):
+            continue
+        if str(meta.get("workspace") or "default") != caller_workspace:
+            continue
+        if folder_id and str(meta.get("folder_id") or "") != folder_id:
+            continue
+        if ownership_fenced:
+            if str(meta.get("created_by") or "") != caller_key:
+                continue
+            tree_known, lineage_parent, _ = _slot_tree_parent(slot_key)
+            if not tree_known:
+                lineage_unknown = True
+                continue
+            if lineage_parent != caller_key:
+                continue
+        linked, mirrored = _archived_link_and_mirror(state, history_key)
+        if linked or mirrored:
+            continue
+        if len(rows) >= limit:
+            omitted.append(slot_key)
+            continue
+        last_active = datetime.fromtimestamp(modified, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        rows.append(
+            {
+                "target": slot_key,
+                "title": _bounded_status_title(str(meta.get("title") or slot_key)),
+                "last_active": last_active,
+                "folder_id": _bounded_folder_id(meta.get("folder_id")),
+            }
+        )
+    return rows, omitted, lineage_unknown, truncated
+
+
+async def list_archived_sessions(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    folder_id: str = "",
+    limit: int = DEFAULT_HISTORY_LIST_ROWS,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """The archived sessions this caller could :func:`revive_session`, newest first.
+
+    READ-ONLY. The finding half of a revive: ``session_revive`` needs a key or an
+    exact title, and nothing else on this surface lists archived sessions. The
+    listing is filtered by the rules revive enforces (see
+    :func:`_scan_revivable_history`), so every row is a target the caller may
+    pass on. The caller side runs first and in full, the same way revive runs
+    it before resolving any target, so a refused caller learns nothing about
+    what is on disk.
+
+    ``folder_id`` narrows to sessions filed in that folder; an id that is not in
+    the tree is refused ``folder_not_found`` rather than answered with an empty
+    list that looks like "nothing archived there".
+    """
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the read
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    deny = _deny_factory(caller_session_key=caller_session_key, operation="history_list", target="")
+    caller_key = refuse_caller_identity(
+        state, caller_session_key=caller_session_key, deny=deny, skip_enabled_check=False
+    )
+    log = state.conversation_log
+    if log is None:
+        raise deny("session history is unavailable", "history_unavailable")
+    caller_slot = await asyncio.to_thread(
+        refuse_caller_surface, state, caller_key=caller_key, deny=deny
+    )
+    ownership_fenced = (
+        caller_fenced
+        if caller_fenced is not None
+        else await asyncio.to_thread(_caller_is_ownership_fenced, state, caller_key)
+    )
+    limit = max(1, min(int(limit), MAX_HISTORY_LIST_ROWS))
+
+    if folder_id:
+
+        def _exists(folders: list[dict[str, Any]]) -> bool:
+            return any(str(f.get("id") or "") == folder_id for f in _safe_folder_tree(folders))
+
+        if not await state.read_folders(_exists):
+            raise deny("folder not found", "folder_not_found", status=400)
+
+    caller_workspace = str(getattr(caller_slot, "workspace", "default") or "default")
+    live_keys = frozenset(slot.key for slot in list(state._slots.values()))
+    rows, omitted_keys, lineage_unknown, truncated = await asyncio.to_thread(
+        _scan_revivable_history,
+        state,
+        log,
+        caller_key=caller_key,
+        caller_workspace=caller_workspace,
+        ownership_fenced=ownership_fenced,
+        folder_id=folder_id,
+        live_keys=live_keys,
+        limit=limit,
+    )
+
+    # The rows carry TITLES of the person's closed sessions. The caller gate ran
+    # before the scan, but a channel mirror can be bound onto the calling slot
+    # while the scan is on a worker thread, so it is re-asserted before anything
+    # is returned -- the reason ``created_session_status`` re-checks too. The
+    # workspace is compared because every row was filtered on it. Both reads
+    # touch the session store, so they run off the event loop like the first pass.
+    caller_slot_now = await asyncio.to_thread(
+        refuse_caller_surface, state, caller_key=caller_key, deny=deny
+    )
+    if str(getattr(caller_slot_now, "workspace", "default") or "default") != caller_workspace:
+        raise deny(
+            "the calling session moved workspace while history was being read; call again",
+            "caller_changed_mid_read",
+        )
+    # The ownership fence can tighten during the scan too (a channel-DM link bound
+    # onto the caller). Rows filtered under the looser rule would then leak other
+    # people's archived titles, so a tightened fence withholds the whole answer.
+    if caller_fenced is None and not ownership_fenced:
+        if await asyncio.to_thread(_caller_is_ownership_fenced, state, caller_key):
+            raise deny(
+                "the calling session's ownership rules changed while history was being read; "
+                "call again",
+                "caller_changed_mid_read",
+            )
+    # A row revived by someone else during the scan is live now; drop it here,
+    # where the slot table can be read, so the list stays "archived only".
+    rows = [row for row in rows if state.get_slot(row["target"]) is None]
+    omitted = sum(1 for key in omitted_keys if state.get_slot(key) is None)
+
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="history_list",
+        slot_key=caller_key,
+        outcome="allowed",
+        detail={
+            "rows": len(rows),
+            "omitted": omitted,
+            "truncated": truncated,
+            "folder": bool(folder_id),
+        },
+    )
+    return {
+        "ok": True,
+        "sessions": rows,
+        "more": omitted > 0 or truncated,
+        # Count of revivable sessions past ``limit``, so a capped answer is
+        # distinguishable from a complete one by how much it left out. Exact
+        # unless ``scan_truncated``, when it counts only the entries walked.
+        "omitted": omitted,
+        # The walk stopped at ``MAX_HISTORY_SCAN_ENTRIES`` catalog entries, so
+        # older sessions were not examined at all.
+        "scan_truncated": truncated,
+        # Only a fenced caller's rows rest on the lineage; for anyone else this
+        # is always False.
+        "lineage_unknown": lineage_unknown,
     }
 
 
@@ -7148,6 +7402,12 @@ def _created_tree_roster(caller_key: str) -> "tuple[list[str], str]":
             overflow = True
     children.sort()
     return children, ("incomplete" if reading.incomplete or overflow else "readable")
+
+
+def _bounded_folder_id(value: object) -> str:
+    """A persisted folder id, or ``""`` when it is longer than any real one."""
+    text = str(value or "")
+    return text if len(text) <= MAX_HISTORY_FOLDER_ID_CHARS else ""
 
 
 def _bounded_status_title(value: object) -> str:

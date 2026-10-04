@@ -441,6 +441,32 @@ async def api_session_control_revive(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_history(request: web.Request) -> web.Response:
+    """GET /api/session-control/history — archived sessions this caller could revive."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here: `list_archived_sessions` warms the SEL logger and the
+    # config itself, the same ordering `revive_session` uses.
+    state: DashboardState = request.app["state"]
+    try:
+        limit_raw = request.query.get("limit")
+        try:
+            limit = int(limit_raw) if limit_raw else sc.DEFAULT_HISTORY_LIST_ROWS
+        except ValueError:
+            raise sc.SessionControlError("limit must be an integer", code="invalid_pagination")
+        result = await sc.list_archived_sessions(
+            state,
+            caller_session_key=_read_session_key(request),
+            folder_id=(request.query.get("folder_id") or "").strip(),
+            limit=limit,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_send(request: web.Request) -> web.Response:
     """POST /api/session-control/send — deliver a message to another session."""
     refused = await _require_internal(request)
