@@ -240,19 +240,21 @@ class TestWindowsRssPrimitives:
     HEALTHY session, which is worse than not recycling at all.
     """
 
-    def test_build_child_map_has_no_windows_branch_by_design(self) -> None:
+    def test_the_child_map_has_no_windows_branch_by_design(self) -> None:
         """A raw Toolhelp parent map is deliberately NOT used here.
 
         ``th32ParentProcessID`` is never cleared when a parent exits, so pairing
         it with an aggressively recycled PID would sum an unrelated subtree and
         recycle a healthy session. Windows gets its own lineage-validated route
-        in ``get_session_rss_mb`` instead of a shareable snapshot.
+        in ``get_session_rss_mb`` instead of a shareable snapshot. The map
+        ``_build_child_map`` wraps is where such a branch would land.
         """
         import inspect
 
-        assert "_windows_process_parent_map" not in inspect.getsource(
-            session_pid._build_child_map
-        )
+        from kiro_crew import platform_compat
+
+        for function in (session_pid._build_child_map, platform_compat.proc_child_map):
+            assert "_windows_process_parent_map" not in inspect.getsource(function)
 
 
 class TestRssThresholdCheck:

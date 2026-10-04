@@ -1274,14 +1274,21 @@ against sweep completeness, and are torn down at `close_all`.
   reclaimable"; (iii) the group leader is dead OR the
   scope's `ActiveEnterTimestampMonotonic` predates this gateway's boot stamp;
   and (iv) the scope is older than the module's 600-second grace floor. Reclaim is
-  `systemctl --user stop <unit>`, then a fallback SIGTERM → 3s → SIGKILL that
+  `systemctl --user stop <unit>`, then a fallback SIGTERM → grace → SIGKILL that
   re-reads `cgroup.procs`, opens a pidfd, requires a post-pin `cgroup.procs`
-  read to retain that PID in the same scope, re-derives tree ownership, and
-  signals through that pidfd. A recycled PID can therefore never redirect a
-  signal; a host without pidfd support leaves the member untouched. `pid <= 1` and the
-  gateway's own PID are never signalled, and each reclaimed scope emits a SEL
-  `agent_scope_reap` event. Only THIS install's per-instance child slice is
-  enumerated: a degraded instance token (no per-instance child) is treated as
+  read to retain that PID in the same scope, and signals through that pidfd. A
+  member attributed before the stop is signalled on identity (same pid, same
+  stat start ticks read after the pin), so an env-cleared child whose marked
+  parent died to SIGTERM and was reparented still gets the SIGKILL; any other
+  member must pass fresh tree ownership, and one that cannot is skipped with a
+  logged reason. A recycled PID can therefore never redirect a signal; a host
+  without pidfd support leaves the member untouched. The 3 s grace and a 2 s
+  settle after SIGKILL (a killed task stays listed until its exit completes)
+  each end as soon as the members signalled in that rung have left
+  `cgroup.procs`. `pid <= 1` and the gateway's own PID are never signalled,
+  and each reclaimed scope emits a SEL `agent_scope_reap` event. Only THIS
+  install's per-instance child slice is enumerated: a degraded instance token
+  (no per-instance child) is treated as
   "nothing to reap here" rather than reaching into a co-resident gateway's
   scopes. A no-op off Linux or without cgroup v2 delegation
   (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
@@ -1293,8 +1300,9 @@ against sweep completeness, and are torn down at `close_all`.
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making
   that residual operator-visible. Each member's `/proc/<pid>/stat` is read as
-  BYTES through `platform_compat.read_proc_stat`, lazily and at most once per
-  evaluation (a scope rejected at (i) with an active-enter stamp reads none):
+  BYTES through `platform_compat.read_proc_stat`; it, `environ` and `cmdline` are
+  read lazily and at most once per pid per evaluation, and the reclaim reuses
+  those reads (a scope rejected at (i) with an active-enter stamp reads no stat):
   `comm` is whatever a process named itself through `prctl(PR_SET_NAME)`, and a
   text read raises on a name that is not UTF-8. The gateway's own boot stamp is
   read the same way, so a gateway whose `comm` is not UTF-8 still has a stamp
@@ -3592,6 +3600,22 @@ one thing a fresh runtime on a recycled root pid cannot share) together with
 cannot cover — a root that died before its first scan — and the tracked sweep
 cannot either, since nothing was recorded.  Linux only; see
 [acp-client](acp-client.md).
+
+Every `/proc/<pid>/stat` and `status` read on these teardown, sweep and reclaim
+paths is a BYTES read through `platform_compat` (`read_proc_stat`,
+`read_proc_status_int`, `linux_pgroup_members`, `proc_child_map`,
+`get_process_start_identity`), so a process whose name is not UTF-8 -- a
+multibyte script name cut at the kernel's 15 bytes is enough -- is seen like any
+other. That covers the root's exit check (`_pid_exited_but_unreaped`: a zombie
+or a pid that is gone has exited, a present pid whose state cannot be read has
+not), both group scans (`_pgroup_has_member_besides`, `_marked_group_members`,
+which takes each member's start id from the same read that admitted it), the
+session-leader check the orphan-work sweep and the reconciler ask
+(`_linux_session_leader_alive`: only a leader that is gone or reads another
+session, a kernel thread's session 0 included, counts as ended), the parent edges (`get_ppid`, `_is_our_descendant`,
+`_pid_parent_and_token`, `_our_orphan_pids`), the child map, the reconciler's
+process table, the ages (`_pid_age_seconds`, `_linux_pid_age`) and the RSS reads
+the recycle ceilings judge by.
 
 If the gateway crashes, the entries remain in the file for the next startup.
 

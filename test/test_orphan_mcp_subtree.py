@@ -26,6 +26,8 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew import platform_compat
+
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX process-management semantics only; see issue #2041"
 )
@@ -662,52 +664,41 @@ class TestPidParentAndToken:
 
     # "pid (comm) state ppid ..." -- comm here contains a space AND parens, the
     # case that breaks a naive whitespace split.
-    _STAT = "801 (my (odd) proc) S 800 " + " ".join(str(n) for n in range(5, 23))
+    _STAT = b"801 (my (odd) proc) S 800 " + b" ".join(b"%d" % n for n in range(5, 23))
 
-    def test_reads_ppid_and_starttime_from_one_stat(self) -> None:
+    @pytest.fixture()
+    def linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_compat.sys, "platform", "linux")
+
+    @staticmethod
+    def _table(root: Path, stat: bytes) -> Path:
+        (root / "801").mkdir()
+        (root / "801" / "stat").write_bytes(stat)
+        return root
+
+    def test_reads_ppid_and_starttime_from_one_stat(self, tmp_path: Path, linux: None) -> None:
         from kiro_crew.session_pid import _pid_parent_and_token
 
-        with (
-            patch("kiro_crew.session_pid.sys") as mock_sys,
-            patch.object(Path, "read_text", lambda self, *a, **k: self._STAT_DATA),
-        ):
-            mock_sys.platform = "linux"
-            Path._STAT_DATA = self._STAT  # type: ignore[attr-defined]
-            try:
-                ppid, token = _pid_parent_and_token(801)
-            finally:
-                del Path._STAT_DATA  # type: ignore[attr-defined]
-
-        assert ppid == 800
+        root = self._table(tmp_path, self._STAT)
         # field 22 (starttime) is the 20th token after the last ')'
-        assert token == "22"
+        assert _pid_parent_and_token(801, root) == (800, "22")
 
-    def test_off_linux_is_unproven(self) -> None:
+    def test_off_linux_is_unproven(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.session_pid import _pid_parent_and_token
 
-        with patch("kiro_crew.session_pid.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            assert _pid_parent_and_token(801) == (None, None)
+        monkeypatch.setattr(platform_compat.sys, "platform", "darwin")
+        assert _pid_parent_and_token(801) == (None, None)
 
-    def test_vanished_pid_is_unproven(self) -> None:
+    def test_vanished_pid_is_unproven(self, tmp_path: Path, linux: None) -> None:
         from kiro_crew.session_pid import _pid_parent_and_token
 
-        with (
-            patch("kiro_crew.session_pid.sys") as mock_sys,
-            patch.object(Path, "read_text", side_effect=ProcessLookupError),
-        ):
-            mock_sys.platform = "linux"
-            assert _pid_parent_and_token(999999) == (None, None)
+        assert _pid_parent_and_token(801, tmp_path) == (None, None)
 
-    def test_malformed_stat_is_unproven(self) -> None:
+    def test_malformed_stat_is_unproven(self, tmp_path: Path, linux: None) -> None:
         from kiro_crew.session_pid import _pid_parent_and_token
 
-        with (
-            patch("kiro_crew.session_pid.sys") as mock_sys,
-            patch.object(Path, "read_text", lambda self, *a, **k: "no parens here"),
-        ):
-            mock_sys.platform = "linux"
-            assert _pid_parent_and_token(801) == (None, None)
+        root = self._table(tmp_path, b"no parens here")
+        assert _pid_parent_and_token(801, root) == (None, None)
 
 
 @_POSIX_ONLY

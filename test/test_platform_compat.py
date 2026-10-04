@@ -562,38 +562,21 @@ class TestProcessHelpers:
             # No /proc entry: unreadable, not "not a zombie".
             assert pc.pid_is_zombie(2_000_000_000) is None
 
-    def test_pid_is_zombie_reads_the_linux_stat_state_field(self, monkeypatch):
+    def test_pid_is_zombie_reads_the_linux_stat_state_field(self, monkeypatch, tmp_path):
         # The comm field is parenthesised and may itself contain spaces and
         # parentheses, so the state is the first field after the LAST ')'.
         tail = " ".join(str(i) for i in range(4, 24))
-        seen: list[str] = []
-
-        def _stat_path(text: str):
-            class _FakeStatPath:
-                def __init__(self, path):
-                    seen.append(str(path))
-
-                def read_text(self, *args, **kwargs):
-                    return text
-
-            return _FakeStatPath
-
+        real_path = pc.Path
         monkeypatch.setattr(pc.sys, "platform", "linux")
-        for state, expected in (("Z", True), ("X", True), ("S", False), ("R", False)):
-            monkeypatch.setattr(
-                pc, "Path", _stat_path(f"4242 (kiro (cli) worker) {state} 1 {tail}")
-            )
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "Path", lambda p: tmp_path if p == "/proc" else real_path(p))
+        (tmp_path / "4242").mkdir()
+        stat = tmp_path / "4242" / "stat"
+        for state, expected in (("Z", True), ("X", True), ("x", True), ("S", False), ("R", False)):
+            stat.write_bytes(f"4242 (kiro (cli) worker) {state} 1 {tail}".encode())
             assert pc.pid_is_zombie(4242) is expected, state
-        assert seen == ["/proc/4242/stat"] * 4
 
-        class _Unreadable:
-            def __init__(self, _p):
-                pass
-
-            def read_text(self, *args, **kwargs):
-                raise PermissionError("[Errno 13] Permission denied")
-
-        monkeypatch.setattr(pc, "Path", _Unreadable)
+        stat.unlink()
         assert pc.pid_is_zombie(4242) is None
 
     def test_kill_process_group_signals_the_captured_id_and_resolves_nothing(self, monkeypatch):
@@ -2192,32 +2175,33 @@ class TestProcessStartTime:
         assert value is not None and value.isdigit()
         assert int(value) > 0
 
-    def test_linux_reads_the_starttime_field_past_a_parenthesised_comm(self, monkeypatch):
+    @staticmethod
+    def _fake_linux_proc(monkeypatch, tmp_path, stat: bytes) -> None:
+        """Serve *stat* as ``/proc/4242/stat`` on any host."""
+        (tmp_path / "4242").mkdir()
+        (tmp_path / "4242" / "stat").write_bytes(stat)
+        real_path = pc.Path
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "Path", lambda p: tmp_path if p == "/proc" else real_path(p))
+
+    def test_linux_reads_the_starttime_field_past_a_parenthesised_comm(self, monkeypatch, tmp_path):
         """Splitting on the FIRST ')' would mis-index any comm containing one."""
 
         tail = " ".join(str(i) for i in range(4, 24))
-
-        class _FakeStatPath:
-            def __init__(self, _p):
-                pass
-
-            def read_text(self):
-                return f"4242 (my (odd) proc) S 1 {tail}"
-
-        monkeypatch.setattr(pc.sys, "platform", "linux")
-        monkeypatch.setattr(pc, "Path", _FakeStatPath)
+        self._fake_linux_proc(monkeypatch, tmp_path, f"4242 (my (odd) proc) S 1 {tail}".encode())
         assert pc.process_start_time(4242) == "21"
 
-    def test_a_malformed_stat_line_fails_safe(self, monkeypatch):
-        class _FakeStatPath:
-            def __init__(self, _p):
-                pass
+    def test_a_comm_that_is_not_utf8_still_has_a_start_time(self, monkeypatch, tmp_path):
+        """A name cut mid-character at 15 bytes: the identity is still readable."""
+        tail = " ".join(str(i) for i in range(4, 24))
+        comm = "run_データ処理.py".encode()[:15]
+        self._fake_linux_proc(monkeypatch, tmp_path, b"4242 (" + comm + b") S 1 " + tail.encode())
+        assert pc.process_start_time(4242) == "21"
+        assert pc.parent_pid(4242) == 1
 
-            def read_text(self):
-                return "no closing paren here"
-
-        monkeypatch.setattr(pc.sys, "platform", "linux")
-        monkeypatch.setattr(pc, "Path", _FakeStatPath)
+    def test_a_malformed_stat_line_fails_safe(self, monkeypatch, tmp_path):
+        self._fake_linux_proc(monkeypatch, tmp_path, b"no closing paren here")
         assert pc.process_start_time(4242) is None
 
     def test_the_bsd_leg_resolves_ps_through_trusted_system_bin(self, monkeypatch):

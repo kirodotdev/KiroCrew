@@ -291,16 +291,8 @@ def _get_rss_mb(pid: int) -> float | None:
     from kiro_crew.acp.runtime import platform_compat, subprocess, sys
 
     if sys.platform == "linux":
-        try:
-            with open(f"/proc/{pid}/status") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        # Format: "VmRSS:\t   123456 kB"
-                        parts = line.split()
-                        return int(parts[1]) / 1024.0
-        except (OSError, IndexError, ValueError):
-            return None
-        return None
+        rss_kb = platform_compat.read_proc_status_int(pid, "VmRSS")
+        return None if rss_kb is None else rss_kb / 1024.0
 
     if platform_compat.IS_WINDOWS:
         # Windows ships no `ps` in the fixed system directories the POSIX

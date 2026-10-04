@@ -2053,7 +2053,12 @@ async def test_the_scope_reaper_does_not_stop_a_unit_holding_a_leased_pid(
     attributed: list[int] = []
 
     def signal_owned(
-        pid: int, sig: int, members: list[int], scope_dir: Path, proc_root: Path
+        pid: int,
+        sig: int,
+        members: list[int],
+        scope_dir: Path,
+        proc_root: Path,
+        pinned: Any,
     ) -> tuple[bool, str]:
         signalled.append((pid, sig))
         return True, ""
@@ -2110,7 +2115,7 @@ def test_the_scope_reaper_signals_every_member_when_none_is_leased(tmp_path: Pat
         "run-plain.scope",
         proc_root=tmp_path,
         stop_unit=lambda unit: True,
-        signal_owned=lambda pid, sig, members, d, p: (signalled.append(pid) or (True, "")),
+        signal_owned=lambda pid, *_rest: (signalled.append(pid) or (True, "")),
         sleep=lambda secs: None,
     )
     assert set(signalled) == {7171, 7272}
@@ -3224,7 +3229,12 @@ async def test_the_scope_reaper_does_not_stop_a_unit_holding_a_tenanted_pid(
     committed: list[int] = []
 
     def signal_owned(
-        pid: int, sig: int, members: list[int], scope_dir: Path, proc_root: Path
+        pid: int,
+        sig: int,
+        members: list[int],
+        scope_dir: Path,
+        proc_root: Path,
+        pinned: Any,
     ) -> tuple[bool, str]:
         signalled.append((pid, sig))
         return True, ""
