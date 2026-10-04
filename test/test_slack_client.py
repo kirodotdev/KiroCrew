@@ -363,15 +363,17 @@ class TestUnfurlAlwaysOff:
         assert len(calls) == 1
 
 
-class TestStartStreamRequiresRecipientUser:
-    """``chat.startStream`` requires ``recipient_user_id``.
+class TestStartStreamQuietNoRecipientLog:
+    """A no-recipient ``chat.startStream`` rejection logs one quiet line.
 
     A turn with no originating Slack user -- a subagent run, or a cron job
-    streaming into a channel -- carries ``user_id=""``. Slack rejects such a
-    call with ``missing_recipient_user_id``. The guard skips the doomed
-    round-trip: with an empty ``user_id`` it returns ``None`` (the same signal
-    the caller demotes on) without touching the API. An interactive user turn
-    carries a ``user_id`` and reaches the API unaffected.
+    streaming into a channel -- carries ``user_id=""``, so the body omits
+    ``recipient_user_id``. On an org-wide install Slack rejects that with
+    ``missing_recipient_user_id``; the call is still made and
+    ``start_stream`` returns ``None`` so the caller demotes to
+    ``chat.update``. That rejection is routine, so it is logged as a single
+    warning line WITHOUT a stack trace. Any other failure keeps the full
+    traceback.
     """
 
     def _client(self) -> RealSlackClient:
@@ -379,30 +381,19 @@ class TestStartStreamRequiresRecipientUser:
         return client
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("user_id", ["", None])
-    async def test_empty_user_skips_the_api_call_and_returns_none(self, user_id: object) -> None:
-        client = self._client()
-
-        async def _boom(*args: object, **kwargs: object) -> None:
-            raise AssertionError("chat.startStream must not be called without a recipient user")
-
-        async def _ensure_boom(*args: object, **kwargs: object) -> None:
-            raise AssertionError("must not resolve team before the recipient guard")
-
-        client._web = SimpleNamespace(api_call=_boom)
-        client.ensure_channel_team = _ensure_boom  # type: ignore[method-assign]
-
-        ts = await client.start_stream("C1", "", user_id=user_id)  # type: ignore[arg-type]
-        assert ts is None
-
-    @pytest.mark.asyncio
-    async def test_a_real_user_reaches_the_api(self) -> None:
+    @pytest.mark.parametrize("code", ["missing_recipient_user_id", "missing_recipient_team_id"])
+    async def test_no_recipient_rejection_logs_without_a_traceback(
+        self, code: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
         client = self._client()
         calls: list[str] = []
 
+        rejection = Exception("startStream rejected")
+        rejection.response = {"ok": False, "error": code}  # type: ignore[attr-defined]
+
         async def _api_call(method: str, **kwargs: object) -> dict[str, Any]:
             calls.append(method)
-            return {"ts": "111.222"}
+            raise rejection
 
         async def _ensure(*args: object, **kwargs: object) -> None:
             return None
@@ -411,6 +402,42 @@ class TestStartStreamRequiresRecipientUser:
         client.ensure_channel_team = _ensure  # type: ignore[method-assign]
         client._channel_team = {}
 
-        ts = await client.start_stream("C1", "", user_id="U123")
-        assert ts == "111.222"
+        with caplog.at_level("WARNING", logger=slack_client.logger.name):
+            ts = await client.start_stream("C1", "", user_id="")
+
+        # The call is still made (single-workspace installs stream fine), and
+        # the caller demotes on the None return.
         assert calls == ["chat.startStream"]
+        assert ts is None
+
+        records = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(records) == 1
+        record = records[0]
+        # Quiet: a single clear line naming the code, no stack trace attached.
+        assert record.exc_info is None
+        assert code in record.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_failure_keeps_the_full_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = self._client()
+
+        async def _api_call(method: str, **kwargs: object) -> dict[str, Any]:
+            raise RuntimeError("something unexpected")
+
+        async def _ensure(*args: object, **kwargs: object) -> None:
+            return None
+
+        client._web = SimpleNamespace(api_call=_api_call)
+        client.ensure_channel_team = _ensure  # type: ignore[method-assign]
+        client._channel_team = {}
+
+        with caplog.at_level("WARNING", logger=slack_client.logger.name):
+            ts = await client.start_stream("C1", "", user_id="U123")
+
+        assert ts is None
+        records = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(records) == 1
+        # Unexpected: the stack trace is preserved for diagnosis.
+        assert records[0].exc_info is not None
