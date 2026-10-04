@@ -88,6 +88,43 @@ class TestTheQuarantineSidecarIsWrittenSafely:
             svc.stop()
 
     @pytest.mark.asyncio
+    async def test_a_refused_store_does_not_tick_a_structured_monitor(self, tmp_path) -> None:
+        """A structured monitor's tick delivers before it records, so a refused store
+        must stop it the same way it stops a prompt loop, and leave it unarmed."""
+        from kiro_crew.autonudge_service.model import NudgeLoop
+        from kiro_crew.monitoring.models import MonitorState
+
+        ticks: list[object] = []
+
+        async def on_monitor_tick(loop):
+            ticks.append(loop)
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        svc._on_monitor_tick = on_monitor_tick
+        loop = NudgeLoop(
+            id="monitor1",
+            slot_key="chat-1-123",
+            message="watch it",
+            monitor=MonitorState(
+                kind="github_pull_request",
+                target="owner/repo#123",
+                objective="review_ready",
+                created_ts=1_000.0,
+            ),
+            next_due_ts=1_000.0,
+        )
+        svc._loops[loop.id] = loop
+        try:
+            svc._store.load_refused = True
+            await svc._timer(loop, delay=0)
+
+            assert not ticks, "a structured monitor ticked while no write could be recorded"
+            assert loop.id not in svc._timers, "the refused structured monitor was re-armed"
+        finally:
+            svc._store.load_refused = False
+            svc.stop()
+
+    @pytest.mark.asyncio
     async def test_a_malformed_row_survives_the_rewrite_its_dirty_sibling_triggers(
         self, tmp_path
     ) -> None:

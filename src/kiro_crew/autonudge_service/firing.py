@@ -67,6 +67,15 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
         self._pushed_running.add(loop.id)
     else:
         self._pushed_running.discard(loop.id)
+    # Reached before either dispatch: a fire settles through the same refused writer,
+    # so an unattended turn would go out with no restart able to tell that it had.
+    if self._store.load_refused:
+        logger.error(
+            "AutoNudge: not firing loop %s -- persistence is refused, so a delivered "
+            "cycle could not be recorded; fix the store and restart",
+            loop.id,
+        )
+        return
     if is_structured_monitor_loop(loop):
         assert loop.monitor is not None
         waiting_for_terminal_completion = self._waits_for_terminal_completion(loop)
@@ -103,15 +112,6 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
         logger.info("AutoNudge: stop sentinel found for %s — removing loop", loop.id)
         await self.remove(loop.id, stop_reason="stop_sentinel")
-        return
-    # Reached before either dispatch: a fire settles through the same refused writer,
-    # so an unattended turn would go out with no restart able to tell that it had.
-    if self._store.load_refused:
-        logger.error(
-            "AutoNudge: not firing loop %s -- persistence is refused, so a delivered "
-            "cycle could not be recorded; fix the store and restart",
-            loop.id,
-        )
         return
     # Cycle cap reached?
     if loop.max_cycles and loop.cycle_count >= loop.max_cycles:
