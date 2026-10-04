@@ -125,6 +125,7 @@ jobs:
               - "src/kiro_crew/platform_owner_compat.py"
               # Descriptor identity and containment depend on native APFS spelling.
               - "src/kiro_crew/hooks.py"
+              - "src/kiro_crew/hook_runtime/**"
               - "src/kiro_crew/pinned_fs.py"
               - "src/kiro_crew/dashboard/handlers/files.py"
               - "src/kiro_crew/dashboard/file_api/**"

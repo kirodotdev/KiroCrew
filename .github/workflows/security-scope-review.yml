@@ -176,6 +176,7 @@ jobs:
             'src/kiro_crew/deny_guidance.py'
             'src/kiro_crew/platform/security_authority.py'
             'src/kiro_crew/hooks.py'
+            'src/kiro_crew/hook_runtime/'
             'src/kiro_crew/builtin_skills/security-conductor/rules-of-engagement.json'
             'src/kiro_crew/builtin_skills/security-conductor/golden-paths.json'
             'scripts/deny_diff.py'

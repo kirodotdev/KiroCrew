@@ -82,7 +82,10 @@ _SURFACE_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 #: Gate frames worth naming as "stuck in": the security gate and its callers.
 #: The security gate ships as a PACKAGE, so the entry is the directory prefix and
 #: every submodule of it counts; a bare module-file spelling would name only one.
-_GATE_FILES = ("/kiro_crew/security/", "/kiro_crew/hooks.py")
+#: The hook gate is a facade plus a package for the same reason: the frame a wedged
+#: path-safe read or deny resolution leaves names its owner file, not ``hooks.py``,
+#: so both spellings are entries or such a stall stops being named a gate stall.
+_GATE_FILES = ("/kiro_crew/security/", "/kiro_crew/hooks.py", "/kiro_crew/hook_runtime/")
 
 
 @dataclass(frozen=True)

@@ -5094,7 +5094,7 @@ No new command. Users interact via the existing skill management surface:
 - Remove unwanted auto skill: use the dashboard Skills delete action
 - Audit trail: `kirocrew security events -n 20 | grep auto_skill`
 
-## Hooks (`hooks.py`)
+## Hooks (`hooks.py` and `hook_runtime/`)
 
 Config-driven from `config.json` → `hooks` section:
 - **auto_approve_tools** / **auto_deny_tools** — tool patterns (exact, `prefix*`, `*suffix`, `*contains*`). An approve pattern is matched against the display title, except for an MCP-served call whose canonical identity is verified (`mcp_server_name`/`mcp_tool_name` from `_meta.kiro` AND the event's `mcp_identity_trusted` provenance flag, which every permission-path caller threads through — non-emptiness alone is not provenance): there it is matched against that identity as `Running: @server/tool` and `@server/tool` (`mcp_identity_ref`), in place of the title — never the lossy wire form `mcp__server__tool`, under which two identities whose server or tool name contains `__` collide — so a model-authored `description` in the title cannot approve a different tool than the one that executes. An identity that is present but unproven falls back to the title match. Deny patterns keep matching the title, the raw command and the wire `mcp__server__tool` name, and now also the `@server/tool` / `Running: @server/tool` spelling whenever the server name is present (a deny target can only deny), so both lists can be written in one spelling and deny still beats approve on the identity plane. **Migration note:** for an MCP-served call with a verified identity the approve pattern is no longer compared to the title, so an approve pattern written against a title that does not spell the identity (for example one keyed on a tool's `description` text) stops auto-approving and the call shows an approval card; rewrite it as `@server/tool` (or `Running: @server/tool`, kiro-cli's own title for MCP calls). Deny patterns keep matching the title, the raw command, and the canonical `mcp__server__tool` name together.
@@ -5138,6 +5138,62 @@ or editing the member's template does not reinterpret an existing registration.
 Malformed identity refuses instead of falling back to Global. Existing ordinary
 Global hooks retain their behavior, and webhook token, signature, owner/app and
 governance checks remain independent of memory routing.
+
+### Hook runtime owners (`hooks.py` and `hook_runtime/`)
+
+`hooks.py` is the hook subsystem's import path and its patch surface: 127 production
+modules import it, and the tests rebind its names. The rules live in the modules of
+`kiro_crew.hook_runtime`, and `hook_runtime.compose` runs every function they define
+on `hooks.py`'s globals, so a patch of `hooks.<name>` reaches the moved code wherever
+it sits. Nothing but `hooks.py` imports an owner.
+
+| Owner | Owns |
+|---|---|
+| `denied_commands` | The keystone opt-out read (`load_denied_commands_state`), the boot parse and both live-reload splices, the governance force-pin lookup, and the effective regex set and operator notes the gate hands `PolicyAuthority.is_denied` |
+| `governance_gate` | The ceiling ∩ profile tool decision (`_governance_denial`), the `capabilities.spawn` decision, the `capabilities.script_hooks` gate, and their SEL audit rows |
+| `tool_identity` | What a call IS: the `spawn_run` identity test, the gate's event-field extraction (`hook_gate_kwargs`), the first-party-app and builtin-agent registry readers and writers, the host-known read-only built-in test, the canonical `@server/tool` reference, title normalization and the pattern matchers |
+| `search_targets` | The file-search deny target: the scope-only grammar, its percent encoding, the home-variable substitution and the lexical root normalization |
+| `windows_paths` | UNC shape, the extended-length fold, the trusted-root probe gate, OS-layer representability and one link target's normalization |
+| `descriptor_identity` | Whether the descriptor a reader holds is still the regular file its validated name admitted: the pinned witness walk, the macOS case alias, the hardlink sibling and kernel-pathname containment |
+| `safe_reads` | `validate_file_path` and the guarded readers — the text and byte reads, the identity samples, the no-hardlink bounded read, the prefix sniff and the private copy |
+| `pinned_writes` | The descriptor-pinned replace and its two entry points, including the compare-and-swap hash and the directory-fd-relative staged rename |
+| `internal_reads` | The edition registration seam, the fixed-path sensitive read and the two SEL audit entry points |
+| `script_validation` | The fail-soft timeout normalization and the raising field validator both store write paths share |
+| `stream_caps` | A hook's bounded output drain, the truncation-marking decode and the concurrent stdin/stdout/stderr exchange |
+| `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses, the informational tool-call fire, and the PreToolUse block gate with the names a matcher meets |
+
+What stays in `hooks.py`, and why, because a guard or a contract reads it there:
+
+- every module-level value — the constants and event vocabularies, the deny-target
+  grammar tables, `_HOOK_BASE_ENV_KEYS`, the two internal-read allowlists, the app and
+  builtin-agent registries, the two UNC root memos and the global script-hook store.
+  An owner defines none, so a test that rebinds one here is the binding every function
+  sees, and a `global` statement inside a rebound owner function writes this module's
+  namespace;
+- the public result and config types (`HookResult`, `ToolHookResult`, `HooksConfig`,
+  `ScriptHook`, `ScriptHookResult`, `FileTooLargeError` and the rule dataclasses), so
+  their `__module__` and shapes are unchanged;
+- `ToolHookResult._count`, which `test/metrics/test_business_counters.py` pins to this
+  file, and `uncounted_gate`'s ContextVar;
+- `HookManager` with every method. `on_tool_call` stays the orchestrator: it is read by
+  `inspect.getsource` and as file text by three guards, it is patched at class level,
+  and its `_fail_closed_on_gate_crash` wrapper must keep its source visible;
+- `ScriptHookStore` with every method: `fire` is the dispatch the placement ruling
+  keeps beside `run_script_hook`, `test_hook_events_kas_triggers` reads its source, and
+  a class's methods do not split across files;
+- `ScriptHook.from_dict` and `run_script_hook`, the redaction call sites
+  `security_posture.NON_EGRESS_REDACTION_MODULES` classifies by this file's name;
+- `_hook_subprocess_env`, kept beside `_HOOK_BASE_ENV_KEYS` by choice: it is the one
+  reader of the allowlist this page tells an operator to edit;
+- `_screen_windows_links`, which `test/link_screen_sites.py` keys by this path;
+- `_cu_read_only_auto_approve` and the Plane A gate threading, which `governance.md`
+  names here;
+- the two UNC root memos and their import-time priming: this module's body runs before
+  `compose`, so priming an owner function would write its memo into the owner's
+  namespace instead.
+
+New work goes to the owner of its responsibility; a new module-level value, a new
+`HookManager` method and a new store method go here.
 
 ### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
 

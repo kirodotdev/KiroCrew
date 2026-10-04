@@ -834,6 +834,7 @@ custom-rules:
       - "src/kiro_crew/sandbox_mount_sweep.py"
       - "src/kiro_crew/security.py"
       - "src/kiro_crew/hooks.py"
+      - "src/kiro_crew/hook_runtime/**"
     rule: |
       What the OS sandbox seals, masks, no-follow pins or refuses is an
       OPERATOR-FACING contract: it decides which of their own files their agent can

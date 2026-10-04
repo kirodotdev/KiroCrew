@@ -2632,7 +2632,7 @@ posts under the same check name so branch protection is satisfied on either path
 
 The lane runs only when the change touches the security surface: the deny
 composite's own modules (`src/kiro_crew/security/`, `src/kiro_crew/hooks.py`,
-`src/kiro_crew/deny_guidance.py`,
+`src/kiro_crew/hook_runtime/`, `src/kiro_crew/deny_guidance.py`,
 `src/kiro_crew/platform/security_authority.py`), the security-conductor's
 `rules-of-engagement.json` and `golden-paths.json`, and the lane's own harness
 (`scripts/deny_diff.py`, `scripts/scope_candidates.py`, `scripts/scope_redact.py`,
