@@ -102,6 +102,11 @@ grant audits retain their audit-or-deny contract.
   `verify_integrity`, `prune`) and on exit. It waits on a pending-event counter
   (a `threading.Condition`, race-free vs a bare queue-empty check), bounded by
   `_FLUSH_TIMEOUT_SECS` so a wedged writer can't hang a read.
+- **Hard exits**: gateway signal and normal-shutdown exits explicitly drain an
+  existing SEL singleton with `flush_audit_queue` and its async wrapper. The
+  async wrapper uses the teardown executor and an outer deadline; the signal
+  handler uses a two-second drain. Restart retains its inline off-loop drain.
+  These best-effort drains avoid initializing a trust root during exit.
 - **Fallback**: if the writer can't be started, `log()` writes synchronously so
   an event is never silently dropped.
 - **Write failures**: when an append or the chain lock raises `OSError`, the
