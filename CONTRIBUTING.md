@@ -288,11 +288,12 @@ git push --force-with-lease origin <feature-branch>
    git fetch origin
    git checkout -b feat/my-feature origin/main
    ```
-3. **Start from an issue.** Every PR must name an issue of this repository that
-   triage has already read, on a line of its own in the description: `Closes #N`
+3. **Start from an issue.** Every PR must name an issue of this repository
+   that has been given a tier, on a line of its own in the description: `Closes #N`
    closes the issue when the PR merges; `Part of #N` leaves it open for the
-   rest of the work. The `Issue Gate` check enforces it. No issue yet? Open one
-   and let triage run first -- see
+   rest of the work. The `Issue Gate` check enforces it once the Captain's
+   triage scan is running (it is paused until then). No issue yet? Open one
+   and let it be tiered first -- see
    [Reporting Bugs and Requesting Features](#reporting-bugs-and-requesting-features).
 4. **Make your change** and add tests (new functions/components should be tested).
 5. **Run the [gate before you commit](AGENTS.md#the-gate-before-you-commit)**

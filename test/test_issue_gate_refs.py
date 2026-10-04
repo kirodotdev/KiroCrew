@@ -12,7 +12,9 @@ line is free; `Refs` / `Part of` declare without closing; only github.com URLs).
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -167,32 +169,206 @@ class TestMalformed:
         assert well_formed is False
 
 
+def _gate_step() -> dict:
+    import yaml
+
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "issue-gate.yml").read_text(encoding="utf-8")
+    )
+    (job,) = workflow["jobs"].values()
+    return next(step for step in job["steps"] if "run" in step)
+
+
 class TestLabelContract:
-    """The verdict labels are written by the maintainer-operated triage pipeline
+    """The tier and triage labels are written by the maintainer-operated Captain
     outside this repository; this is the one place in-repo that pins the names
     the gate reads, so a rename on either side shows up as a red test rather
-    than as every PR going red on "no triage verdict label"."""
+    than as every PR going red on "no tier label"."""
 
-    def test_verdict_and_pending_labels_are_the_documented_set(self):
-        import yaml
+    def test_tier_and_triage_labels_are_the_documented_set(self):
+        env = _gate_step()["env"]
+        assert env["TIER_LABELS"].split() == ["tier:T1", "tier:T2", "tier:T3", "tier:T4"]
+        assert env["PENDING_LABEL"] == "pending-triage"
+        assert env["TRIAGED_LABEL"] == "triaged"
+        # The retired verdict labels decide dispatch, not merge; the gate must
+        # not read them again.
+        assert "TRIAGE_VERDICT_LABELS" not in env
+        assert "needs-triage" not in env.values()
 
-        workflow = yaml.safe_load(
-            (ROOT / ".github" / "workflows" / "issue-gate.yml").read_text(encoding="utf-8")
+    def test_pass_and_review_tiers_partition_the_tiers(self):
+        env = _gate_step()["env"]
+        passing = env["TIER_PASS_LABELS"].split()
+        review = env["TIER_REVIEW_LABELS"].split()
+        assert passing == ["tier:T1", "tier:T2"]
+        assert review == ["tier:T3", "tier:T4"]
+        assert sorted(passing + review) == sorted(env["TIER_LABELS"].split())
+
+    def test_the_pause_switch_is_an_explicit_boolean(self):
+        # Flipping the gate on or off is a one-line change; it must stay a
+        # literal "true" / "false" the step's `case` understands.
+        assert _gate_step()["env"]["GATE_ENFORCED"] in {"true", "false"}
+
+
+_NEEDS_SHELL = pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("jq") is None or os.name == "nt",
+    reason="the gate step runs under bash with jq, as on the ubuntu runner",
+)
+
+
+@_NEEDS_SHELL
+class TestGateStepDecisions:
+    """Run the workflow's own step script against a stubbed `gh`, so the rule is
+    proven on the shipped shell and not on a re-statement of it."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        labels: list[str] | None,
+        body: str = "Closes #7\n",
+        enforced: str = "true",
+        waived: str = "false",
+        state: str = "open",
+        reason: str = "",
+    ) -> tuple[int, str, str]:
+        step = _gate_step()
+        stub = tmp_path / "stub"
+        stub.mkdir()
+        (stub / "body.txt").write_text(body, encoding="utf-8")
+        if labels is not None:
+            (stub / "issue-7.json").write_text(
+                json.dumps(
+                    {"is_pr": False, "state": state, "reason": reason, "labels": "\n".join(labels)}
+                ),
+                encoding="utf-8",
+            )
+        gh = stub / "gh"
+        gh.write_text(
+            "#!/bin/sh\n"
+            'case "$2" in\n'
+            '  */pulls/*) cat "$STUB_DIR/body.txt" ;;\n'
+            '  */issues/*) f="$STUB_DIR/issue-${2##*/}.json"\n'
+            '    if [ -f "$f" ]; then cat "$f"; else echo "Not Found (HTTP 404)" >&2; exit 1; fi ;;\n'
+            '  *) echo "unexpected $2" >&2; exit 2 ;;\n'
+            "esac\n",
+            encoding="utf-8",
         )
-        (job,) = workflow["jobs"].values()
-        env = next(step for step in job["steps"] if "run" in step)["env"]
-        assert set(env["TRIAGE_VERDICT_LABELS"].split()) == {
-            "auto-fixable",
-            "needs-investigation",
-            "needs-human",
+        py = stub / "python3"
+        py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        gh.chmod(0o755)
+        py.chmod(0o755)
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "base").symlink_to(ROOT, target_is_directory=True)
+        summary = tmp_path / "summary.md"
+        env = {
+            **os.environ,
+            **{k: str(v) for k, v in step["env"].items()},
+            "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}",
+            "STUB_DIR": str(stub),
+            "GH_TOKEN": "unused",
+            "REPO": REPO,
+            "PR": "1",
+            "AUTHOR": "someone",
+            "WAIVED": waived,
+            "GATE_ENFORCED": enforced,
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
-        assert env["PENDING_LABEL"] == "needs-triage"
-        assert env["TIER_LABELS"].split() == [
-            "tier:T1",
-            "tier:T2",
-            "tier:T3",
-            "tier:T4",
-        ]
+        script = tmp_path / "step.sh"
+        script.write_bytes(step["run"].encode("utf-8"))
+        proc = subprocess.run(
+            ["bash", "-e", str(script)],
+            cwd=work,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        text = summary.read_text(encoding="utf-8") if summary.exists() else ""
+        return proc.returncode, proc.stdout + proc.stderr, text
+
+    @pytest.mark.parametrize(
+        "labels",
+        [
+            ["tier:T1"],
+            ["tier:T2"],
+            ["tier:T2", "pending-triage"],
+            ["tier:T1", "needs-triage"],
+            ["tier:T3", "triaged"],
+            ["tier:T4", "triaged", "bug"],
+        ],
+    )
+    def test_cleared_issues_are_green(self, tmp_path, labels):
+        rc, out, _ = self._run(tmp_path, labels=labels)
+        assert rc == 0, out
+
+    @pytest.mark.parametrize(
+        ("labels", "needle"),
+        [
+            ([], "no tier label"),
+            (["auto-fixable", "needs-human"], "no tier label"),
+            (["tier:T1", "tier:T3"], "more than one tier label"),
+            (["tier:T3", "pending-triage"], "waiting for a person"),
+            (["tier:T4"], "waiting for a person"),
+            (["tier:T3", "pending-triage", "triaged"], "both"),
+        ],
+    )
+    def test_uncleared_issues_are_red_and_say_why(self, tmp_path, labels, needle):
+        rc, out, summary = self._run(tmp_path, labels=labels)
+        assert rc == 1, out
+        assert needle in summary
+
+    def test_closed_as_not_planned_is_red_even_for_a_small_tier(self, tmp_path):
+        rc, out, summary = self._run(
+            tmp_path, labels=["tier:T1"], state="closed", reason="not_planned"
+        )
+        assert rc == 1, out
+        assert "closed as not planned" in summary
+
+    def test_closed_as_completed_is_not_refused_on_that_alone(self, tmp_path):
+        rc, out, _ = self._run(tmp_path, labels=["tier:T1"], state="closed", reason="completed")
+        assert rc == 0, out
+
+    def test_a_body_with_no_issue_is_red(self, tmp_path):
+        rc, out, summary = self._run(tmp_path, labels=["tier:T1"], body="No link here.\n")
+        assert rc == 1, out
+        assert "Issue reference required" in summary
+
+    def test_a_missing_issue_is_red(self, tmp_path):
+        rc, out, summary = self._run(tmp_path, labels=None)
+        assert rc == 1, out
+        assert "does not exist" in summary
+
+    def test_the_waiver_label_lets_an_unsized_issue_through(self, tmp_path):
+        rc, out, _ = self._run(tmp_path, labels=[], waived="true")
+        assert rc == 0, out
+
+    @pytest.mark.parametrize(
+        "labels",
+        [["tier:T4", "pending-triage"], ["tier:T3"], ["tier:T1", "tier:T2"]],
+    )
+    def test_the_waiver_label_overrides_a_red_rule_and_warns(self, tmp_path, labels):
+        rc, out, _ = self._run(tmp_path, labels=labels, waived="true")
+        assert rc == 0, out
+        assert "::warning::" in out and "overridden" in out
+
+    def test_the_waiver_label_lets_a_pr_with_no_issue_through(self, tmp_path):
+        rc, out, _ = self._run(tmp_path, labels=None, body="No link.\n", waived="true")
+        assert rc == 0, out
+
+    def test_paused_passes_without_reading_anything(self, tmp_path):
+        # No issue stub exists and the body has no reference: a paused gate must
+        # not look at either.
+        rc, out, summary = self._run(tmp_path, labels=None, body="", enforced="false")
+        assert rc == 0, out
+        assert "paused" in summary
+
+    def test_an_unknown_switch_value_fails_closed(self, tmp_path):
+        rc, out, _ = self._run(tmp_path, labels=["tier:T1"], enforced="maybe")
+        assert rc == 1, out
+        assert "GATE_ENFORCED" in out
 
 
 class TestCommandLine:

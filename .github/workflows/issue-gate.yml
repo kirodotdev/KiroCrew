@@ -1,21 +1,30 @@
 name: Issue Gate
 
-# Every pull request must trace to an issue that triage has already read.
+# Every pull request must trace to an issue that has been sized, and a big one
+# must also have been looked at by a person.
 #
-# WHY: nothing else stops a feature or fix from being built on impulse,
-# reviewed on its own terms and merged with no record of why it exists or
-# whether anyone agreed it should. Issues already carry that record: a new
-# issue arrives with `needs-triage` and leaves triage with exactly one verdict
-# label (`auto-fixable`, `needs-investigation`, `needs-human`). This gate is the
-# missing link that makes a PR consult that state.
+# PAUSED. `GATE_ENFORCED` below is "false", so this job logs a notice and
+# passes before it reads anything. The rule below is written out and ready; it
+# is not enforced until the maintainers switch it on. WHY PAUSED: the rule
+# reads labels the Captain (the maintainer-operated Kiro Crew triage crew)
+# writes, and the Captain's scheduled scan is not running yet. With no labels
+# arriving, every PR -- forks first -- would sit red on an issue nobody can
+# label. Switching it on is a one-line change: `GATE_ENFORCED: "true"`.
 #
-# WHO WRITES THOSE LABELS: not a workflow in this repository. `issue-triage.yml`
+# WHY A GATE AT ALL: nothing else stops a feature or fix from being built on
+# impulse, reviewed on its own terms and merged with no record of why it exists
+# or whether anyone agreed it should. Issues already carry that record. This
+# gate is the link that makes a PR consult it.
+#
+# WHO WRITES THE LABELS: not a workflow in this repository. `issue-triage.yml`
 # writes only `channel:`, the fixed type set, `area:` and `platform:`. The
-# `needs-triage` -> verdict transition is written by the maintainer-operated
-# Kiro Crew auto-pipeline (the Issue Radar crews, which also post the
-# "Kiro Crew Auto-Pipeline" routing comment on the issue). It runs outside
-# `.github/`, so this file names the label contract and the docs name the
-# system; see docs/ci/ci-and-reviews.md.
+# Captain writes the tier (`tier:T1` .. `tier:T4`) and `pending-triage`; the
+# person it assigns the issue to flips `pending-triage` to `triaged` once they
+# have read it. That crew runs outside `.github/`, so this file names the label
+# contract and the docs name the system; see docs/ci/ci-and-reviews.md. The
+# older verdict labels (`auto-fixable`, `needs-investigation`, `needs-human`)
+# and `needs-triage` belong to the Issue Radar dispatch pipeline and are no
+# longer read here: they decide who runs an issue, not whether a PR may merge.
 #
 # HOW IT IS ENFORCED: `pr-readiness.yml` lists this workflow in its lane specs,
 # and `PR Readiness` is the one status the branch ruleset requires. A red here
@@ -25,8 +34,8 @@ name: Issue Gate
 #
 # Deterministic on purpose: no model, one checkout of the DEFAULT branch, two API
 # reads. It answers
-# exactly one question -- "does this PR declare an issue, and has triage reached
-# a verdict on it?"
+# exactly one question -- "does this PR declare an issue, and has that issue
+# been sized (and, if it is big, read by a person)?"
 #
 # ONE GRAMMAR. Which issues a body declares is decided by
 # `.github/scripts/issue_gate_refs.py`, an adapter onto the declaration
@@ -68,12 +77,16 @@ name: Issue Gate
 # THE RULE, in full:
 #   1. The visible body declares at least one issue of this repository.
 #   2. Every declared number is an issue (not a pull request), is not closed as
-#      `not_planned`, does not still carry `needs-triage`, carries one of
-#      the triage verdict labels in TRIAGE_VERDICT_LABELS, and carries exactly
-#      one tier label from TIER_LABELS (`tier:T1` bug .. `tier:T4` new
-#      concept), so the size of the work is settled before it is built.
-#   One bad reference fails the whole PR: a triaged issue beside an untriaged
-#   one is still work nobody triaged.
+#      `not_planned`, and carries exactly one tier label from TIER_LABELS
+#      (`tier:T1` bug .. `tier:T4` new concept), so the size of the work is
+#      settled before it is built.
+#   3. A small tier (TIER_PASS_LABELS: T1, T2) needs nothing more: it is green.
+#      A big tier (TIER_REVIEW_LABELS: T3, T4) is red until a person has read
+#      the issue and flipped `pending-triage` to `triaged`. That holds for a
+#      fork PR and an in-repo PR alike; the maintainer override is the
+#      `issue-gate: waived` label below.
+#   One bad reference fails the whole PR: a sized issue beside an unsized one
+#   is still work nobody sized.
 #
 # TWO EXEMPTIONS, both visible in the run log:
 #   - the `dependabot[bot]` author: its PRs are generated from a manifest, and
@@ -82,15 +95,19 @@ name: Issue Gate
 #     to create and approve pull requests" off (see test-durations.yml), so no
 #     PR can carry that author and an arm for it would be dead code claiming
 #     coverage.
-#   - the `issue-gate: waived` label, applied by a maintainer, for the two PR
-#     shapes that legitimately have no issue: a production fire whose issue is
-#     written after the fire is out, and a release PR (version drop, CHANGELOG
-#     section) per docs/build/release.md. Logged as a WARNING so the waiver
-#     stays visible, never a silent pass. There is deliberately no self-service
-#     body marker: the point of the gate is that someone other than the author
-#     agreed to the work, so the waiver has to be a maintainer action. The same
-#     label is also the maintainer's per-PR fallback if the triage pipeline
-#     stalls -- and a run of waivers is the signal to go fix the pipeline.
+#   - the `issue-gate: waived` label, applied by a maintainer: the MANUAL
+#     OVERRIDE. Any PR a maintainer decides to let through goes green with it,
+#     whatever the issue's labels say -- a `tier:T3` / `tier:T4` issue nobody has
+#     read yet, an unsized issue, a fork PR, no issue at all. The two shapes it
+#     was first made for are a production fire whose issue is written after the
+#     fire is out, and a release PR (version drop, CHANGELOG section) per
+#     docs/build/release.md. Logged as a WARNING so the override stays visible,
+#     never a silent pass. There is deliberately no self-service body marker:
+#     the point of the gate is that someone other than the author agreed to the
+#     work, so the override has to be a maintainer action (only a user with
+#     triage rights can apply a label). The same label is also the maintainer's
+#     per-PR fallback if the Captain stalls -- and a run of overrides is the
+#     signal to go fix the Captain.
 #
 # `edited` and `labeled` are in the trigger list so adding `Closes #N` to the
 # description, or the waiver label, turns this check green WITHOUT a no-op
@@ -138,25 +155,48 @@ jobs:
           path: base
           persist-credentials: false
 
-      - name: Require a triaged issue reference
+      - name: Require a sized issue reference
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           WAIVED: "${{ contains(github.event.pull_request.labels.*.name, 'issue-gate: waived') }}"
-          # One label from this set is what "triage reached a verdict" means.
-          # These are the verdict labels the maintainer-operated Kiro Crew
-          # auto-pipeline writes (see the header); `needs-triage` is its
-          # pre-verdict state and is checked for separately below.
-          TRIAGE_VERDICT_LABELS: "auto-fixable needs-investigation needs-human"
-          PENDING_LABEL: "needs-triage"
+          # The pause switch (see the header). "false": log a notice and pass
+          # before any API read. "true": enforce the rule. Any other value fails
+          # closed below, so a typo can never read as "paused".
+          GATE_ENFORCED: "false"
           # Exactly one label from this set says how big the work is (see the
-          # header). Triage writes it beside the verdict; none, or two, is an
-          # issue whose size nobody has settled.
+          # header). The Captain writes it; none, or two, is an issue whose
+          # size nobody has settled.
           TIER_LABELS: "tier:T1 tier:T2 tier:T3 tier:T4"
+          # A small tier is green on its own. A big tier also needs a person's
+          # read: `triaged` present and `pending-triage` gone. Both sets must
+          # partition TIER_LABELS (a test pins that).
+          TIER_PASS_LABELS: "tier:T1 tier:T2"
+          TIER_REVIEW_LABELS: "tier:T3 tier:T4"
+          PENDING_LABEL: "pending-triage"
+          TRIAGED_LABEL: "triaged"
         run: |
           set -uo pipefail
+
+          case "$GATE_ENFORCED" in
+            true) ;;
+            false)
+              echo "::notice::Issue Gate is paused (GATE_ENFORCED is \"false\" in issue-gate.yml); no issue requirement applied to this PR."
+              {
+                echo "### Issue Gate is paused"
+                echo
+                echo "This check passes without reading the PR or its issue. A maintainer turns"
+                echo "it on by setting \`GATE_ENFORCED\` to \`\"true\"\` in \`.github/workflows/issue-gate.yml\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            *)
+              echo "::error::GATE_ENFORCED must be \"true\" or \"false\", got \"$GATE_ENFORCED\". Fix issue-gate.yml."
+              exit 1
+              ;;
+          esac
 
           case "$AUTHOR" in
             dependabot\[bot\])
@@ -166,7 +206,7 @@ jobs:
           esac
 
           if [ "$WAIVED" = "true" ]; then
-            echo "::warning::'issue-gate: waived' label present -- issue requirement waived for this PR by a maintainer (production fire or release PR)."
+            echo "::warning::'issue-gate: waived' label present -- issue requirement overridden for this PR by a maintainer."
             exit 0
           fi
 
@@ -200,7 +240,7 @@ jobs:
               echo "### Could not read $1"
               echo
               echo "The API read failed on every attempt, so the check could not tell whether"
-              echo "this PR traces to a triaged issue. On this evidence alone there is nothing"
+              echo "this PR traces to a sized issue. On this evidence alone there is nothing"
               echo "wrong with the PR -- re-run this job. The failing \`gh api\` output is"
               echo "above this summary in the step log."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -267,11 +307,11 @@ jobs:
           fi
 
           if [ -z "$refs" ]; then
-            echo "::error::This PR's description declares no issue of this repository. Add 'Closes #N' (closes it on merge) or 'Part of #N' (leaves it open) for the triaged issue this PR implements."
+            echo "::error::This PR's description declares no issue of this repository. Add 'Closes #N' (closes it on merge) or 'Part of #N' (leaves it open) for the issue this PR implements."
             {
               echo "### Issue reference required"
               echo
-              echo "Every PR must trace to an issue that triage has read. Add a line to the PR"
+              echo "Every PR must trace to an issue that has been sized. Add a line to the PR"
               echo "description naming it (the \`edited\` trigger re-runs this check on save, no"
               echo "push needed):"
               echo
@@ -282,12 +322,11 @@ jobs:
               echo "the issue stays open. \`OWNER/REPO#N\` and the full issue URL work in place of"
               echo "\`#N\`. The line must start with the keyword; a bare \`#N\`, a mention inside a"
               echo "sentence, a quote, an HTML comment, a code block or inline code do not count."
-              echo "The issue must already carry a"
-              echo "triage verdict label (one of: \`${TRIAGE_VERDICT_LABELS// /\`, \`}\`)"
-              echo "and exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
+              echo "The issue must carry exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
+              echo "A \`${TIER_REVIEW_LABELS// /\`/\`}\` issue must also be flipped from"
+              echo "\`$PENDING_LABEL\` to \`$TRIAGED_LABEL\` by the person it was assigned to."
               echo
-              echo "**No issue yet?** Open one first and let triage run; this gate exists so"
-              echo "that work is agreed on before it is built. A maintainer may apply the"
+              echo "**No issue yet?** Open one; the Captain tiers it. A maintainer may apply the"
               echo "\`issue-gate: waived\` label for a production fire or a release PR."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
@@ -327,21 +366,6 @@ jobs:
               problems+="- #$n is closed as not planned; triage decided against this work."$'\n'
               continue
             fi
-            if grep -qxF -- "$PENDING_LABEL" <<< "$labels"; then
-              problems+="- #$n still carries \`$PENDING_LABEL\`; triage has not read it yet."$'\n'
-              continue
-            fi
-            verdict=""
-            for label in $TRIAGE_VERDICT_LABELS; do
-              if grep -qxF -- "$label" <<< "$labels"; then
-                verdict="$label"
-                break
-              fi
-            done
-            if [ -z "$verdict" ]; then
-              problems+="- #$n has no triage verdict label (needs one of: \`${TRIAGE_VERDICT_LABELS// /\`, \`}\`)."$'\n'
-              continue
-            fi
             tiers=""
             for label in $TIER_LABELS; do
               if grep -qxF -- "$label" <<< "$labels"; then
@@ -349,33 +373,55 @@ jobs:
               fi
             done
             if [ -z "$tiers" ]; then
-              problems+="- #$n has no tier label (needs exactly one of: \`${TIER_LABELS// /\`, \`}\`)."$'\n'
+              problems+="- #$n has no tier label (needs exactly one of: \`${TIER_LABELS// /\`, \`}\`). The Captain writes it."$'\n'
               continue
             fi
             if [ "$tiers" != "${tiers%% *}" ]; then
               problems+="- #$n carries more than one tier label (\`${tiers// /\`, \`}\`); keep exactly one."$'\n'
               continue
             fi
-            echo "#$n: issue, $state, triage verdict '$verdict', tier '$tiers'."
+            # A small tier is green on its own.
+            if grep -qwF -- "$tiers" <<< "$TIER_PASS_LABELS"; then
+              echo "#$n: issue, $state, tier '$tiers' (no further review needed)."
+              continue
+            fi
+            # A big tier needs a person's read: `triaged` present, `pending-triage` gone.
+            pending=false
+            triaged=false
+            if grep -qxF -- "$PENDING_LABEL" <<< "$labels"; then
+              pending=true
+            fi
+            if grep -qxF -- "$TRIAGED_LABEL" <<< "$labels"; then
+              triaged=true
+            fi
+            if [ "$pending" = "true" ] && [ "$triaged" = "true" ]; then
+              problems+="- #$n carries both \`$PENDING_LABEL\` and \`$TRIAGED_LABEL\`; remove \`$PENDING_LABEL\`."$'\n'
+              continue
+            fi
+            if [ "$triaged" != "true" ]; then
+              problems+="- #$n is \`$tiers\` and is still waiting for a person to read it; its assignee flips \`$PENDING_LABEL\` to \`$TRIAGED_LABEL\`."$'\n'
+              continue
+            fi
+            echo "#$n: issue, $state, tier '$tiers', '$TRIAGED_LABEL'."
           done
 
           if [ -n "$problems" ]; then
-            echo "::error::This PR references an issue that triage has not cleared. See the job summary."
+            echo "::error::This PR references an issue that is not cleared yet. See the job summary."
             {
-              echo "### Referenced issue not cleared by triage"
+              echo "### Referenced issue not cleared"
               echo
               printf '%s' "$problems"
               echo
               echo "Every issue a PR declares must be a real issue of this repository, not closed"
-              echo "as not planned, and already carry a triage verdict label and exactly one"
-              echo "tier label (\`${TIER_LABELS// /\`, \`}\`). If triage has not"
-              echo "reached the issue yet, wait for it: triage is expected within 24h, and longer"
-              echo "is a defect in the triage pipeline to report. Once the verdict label lands,"
-              echo "any edit to this PR's description re-runs the check (no push, no re-run"
-              echo "button needed -- this is how a fork author goes green). A maintainer may"
-              echo "apply the \`issue-gate: waived\` label for a production fire or a release PR."
+              echo "as not planned, and carry exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
+              echo "\`${TIER_PASS_LABELS// /\`, \`}\` go green on that alone. \`${TIER_REVIEW_LABELS// /\`, \`}\`"
+              echo "also wait for \`$TRIAGED_LABEL\`, which a person sets after reading the issue."
+              echo "Once the label lands, any edit to this PR's description re-runs the check (no"
+              echo "push, no re-run button needed -- this is how a fork author goes green). A"
+              echo "maintainer may apply the \`issue-gate: waived\` label for a production fire, a"
+              echo "release PR, or any PR the maintainers decide to let through."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          echo "Every referenced issue has been triaged."
+          echo "Every referenced issue has been cleared."

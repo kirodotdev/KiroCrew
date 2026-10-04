@@ -769,11 +769,14 @@ This is the only thing that closes the issue on merge — `Related: #<n>`, `Part
 in the body means the keyword is missing or malformed, and `pr_status.py` prints a
 `NOTICE:`. The reference may be `#<n>`, `owner/repo#<n>`, or a full URL.
 
-On Kiro Crew the link is **a gate, not advice**: the `Issue Gate` lane of
+On Kiro Crew the link is **a gate, not advice** -- currently PAUSED
+(`GATE_ENFORCED: "false"` in `.github/workflows/issue-gate.yml`), so an issue-less
+PR is not red today, but write the trailer anyway: the gate is switched on once
+the Captain's scan is running. When on, the `Issue Gate` lane of
 `PR Readiness` fails a PR whose visible body declares no issue of the repository,
-or declares one that still carries `needs-triage`, has no triage verdict label
-(`auto-fixable`, `needs-investigation`, `needs-human`), or does not carry
-exactly one tier label (`tier:T1`, `tier:T2`, `tier:T3`, `tier:T4`). The gate reads the body
+or declares one that does not carry exactly one tier label (`tier:T1`, `tier:T2`,
+`tier:T3`, `tier:T4`), or is `tier:T3` / `tier:T4` and not yet flipped from
+`pending-triage` to `triaged` by a person. The gate reads the body
 with `pr_status.py`'s `declared_issue_numbers()` (through
 `.github/scripts/issue_gate_refs.py`): a declaration STARTS a line and the rest
 of the line is free, and the non-closing `Refs #<n>` / `Part of #<n>` count as
@@ -782,7 +785,7 @@ whole-line, closing-verbs-only trailer this section describes and the `NOTICE:`
 below classifies with -- so a body can pass the gate and still earn a `NOTICE:`
 (`Fixes #123 (the Windows half)`, or `Part of #123` alone). Write the trailer as
 a whole line of its own and both are satisfied. Open the issue and let triage
-reach it BEFORE Phase 1. There is no body-side opt-out: an issue-less PR is red
+reach it BEFORE Phase 1. There is no body-side opt-out: once the gate is on, an issue-less PR is red
 until a maintainer applies the `issue-gate: waived` label (production fire,
 release PR), and `pr_status.py` prints its `NOTICE:` for the missing link every
 round rather than accepting a line the gate rejects.

@@ -52,7 +52,7 @@ pull_request
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
   |-- build.yml         "Build"        wheel + desktop/installer artifacts build
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene
-  |-- issue-gate.yml    "Issue Gate"   PR names a triaged issue, blocking
+  |-- issue-gate.yml    "Issue Gate"   PR names a sized issue, blocking once enabled (paused)
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
@@ -1463,12 +1463,22 @@ and `sys.executable`, so they stay green against a simulated environment. The
 cheap fix is to run the already-built launcher once in `build-desktop`, the
 packaged analogue of the wheel lane's `--version`.
 
-## `issue-gate.yml`: every PR traces to a triaged issue
+## `issue-gate.yml`: every PR traces to a sized issue (PAUSED)
 
 Nothing else stops a feature or fix from being built on impulse, reviewed on its
 own terms and merged with no record of why it exists or whether anyone agreed it
 should. Issues already carry that record, and `Issue Gate` is the link that makes
 a pull request consult it.
+
+**Paused.** `GATE_ENFORCED` in the workflow is `"false"`: the job logs a notice,
+writes a one-line job summary and passes before it reads the PR or any issue, so
+it costs no API quota and blocks nothing. The reason is that the rule reads labels
+the Captain writes, and the Captain's scheduled scan is not running yet; with no
+labels arriving, every PR -- forks first -- would sit red on an issue nobody can
+label. To switch the rule on, set `GATE_ENFORCED: "true"`; any value other than
+`"true"` or `"false"` fails the job closed, so a typo can never read as "paused".
+`test/test_issue_gate_refs.py` pins the switch as a literal boolean and runs the
+step script, in both positions, against a stubbed `gh`.
 
 **How it is enforced.** `PR Readiness` is the one status the branch ruleset
 requires, so the gate is enrolled as a lane in `pr-readiness.yml`'s spec list
@@ -1482,15 +1492,20 @@ verdict already included this lane.
 
 **Who writes the triage state.** Not a workflow in this repository.
 `issue-triage.yml` writes only `channel:`, the fixed type set, `area:` and
-`platform:`; it never touches `needs-triage` or a verdict. The `needs-triage` ->
-verdict transition is written by the maintainer-operated Kiro Crew auto-pipeline
-(the Issue Radar crews running against this repository, which also post the
-"Kiro Crew Auto-Pipeline: Routing to ..." comment on the issue). A new issue
-arrives with `needs-triage` and leaves triage with exactly one verdict label:
-`auto-fixable`, `needs-investigation` or `needs-human`. That pipeline is the
-"captain" the rule refers to; this repository holds the label contract
-(`TRIAGE_VERDICT_LABELS` in the workflow) and not the pipeline itself, so a
-change to the verdict set is a change in both places.
+`platform:`. The Captain -- the maintainer-operated Kiro Crew triage crew (the
+Issue Radar crews running against this repository) -- scans issues that carry no
+tier and writes one of `tier:T1` .. `tier:T4`. It also marks the issue
+`pending-triage`. `tier:T1` and `tier:T2` issues are handed to everyone and need
+nothing more. A `tier:T3` or `tier:T4` issue is synced to the maintainers' task
+tracker; its point of contact reads it and flips `pending-triage` to `triaged`.
+A tier says how big the work is; it does not say anyone has looked, which is why
+`pending-triage` / `triaged` exist as a separate pair. The older `needs-triage`
+label and the verdict labels (`auto-fixable`, `needs-investigation`,
+`needs-human`) are the Issue Radar dispatch pipeline's own state: they decide who
+runs an issue, not whether a PR may merge, and the gate no longer reads them.
+This repository holds the label contract (`TIER_LABELS`, `TIER_PASS_LABELS`,
+`TIER_REVIEW_LABELS`, `PENDING_LABEL`, `TRIAGED_LABEL` in the workflow) and not
+the crew itself, so a change to the label set is a change in both places.
 
 **One grammar.** Which issues a body declares is decided by
 `.github/scripts/issue_gate_refs.py`, an adapter onto the declaration grammar
@@ -1510,14 +1525,14 @@ are masked; every reference on that line is read, and what follows is free, so
 a reference buried mid-sentence and a bare `#N` are not declarations. Only
 references naming this repository count, and a URL only on the github.com host,
 since GitHub resolves nothing from `https://example.com/.../issues/N`; that rule
-is part of the grammar itself, the adapter adds nothing to it. The verdict-label
+is part of the grammar itself, the adapter adds nothing to it. The tier and triage label
 names the gate reads are pinned by `TestLabelContract` in
 `test/test_issue_gate_refs.py`, the one in-repo place both sides of the contract
 can read, so a rename shows up as a red test rather than as every PR going red.
 
 The gate asks which issue the work is FOR, not what closes. That is why the
 non-closing verbs count here: an author shipping half of an issue writes `Part of
-#N`, the gate checks the same triage labels, and the issue stays open for the rest;
+#N`, the gate checks the same tier and triage labels, and the issue stays open for the rest;
 `Closes #N` is the author saying the merge finishes it. `pr_status.py`'s own
 `NOTICE:` path answers a different question (why did the HOST resolve no closure)
 and keeps its whole-line, closing-verbs-only classifier for it -- but it no longer
@@ -1545,17 +1560,26 @@ with a notice, never filled by running PR code, and is dead once the gate is on
 
 **The rule, in full.** The visible body declares at least one issue of this
 repository. Every declared number must be an issue (not a pull request), not
-closed as `not_planned`, free of `needs-triage`, carrying one of the verdict
-labels, and carrying exactly one tier label (`TIER_LABELS`: `tier:T1` a bug
-whose fix keeps the design, `tier:T2` a small additive feature, `tier:T3` a
-change to an existing experience that needs a one-pager, `tier:T4` a new concept
-that needs a design review). The tier is written by the same triage pipeline
-beside the verdict; none, or two, means nobody has settled how big the work is,
-so the gate reds rather than guessing. One bad reference fails the whole PR: a triaged issue beside an untriaged
-one is still work nobody triaged. The job summary lists each problem and says
-how to go green: once the verdict label lands, any edit to the description
-re-runs the check, which is how a fork author -- who cannot press re-run -- gets
-there without a push.
+closed as `not_planned`, and carry exactly one tier label (`TIER_LABELS`:
+`tier:T1` a bug whose fix keeps the design, `tier:T2` a small additive feature,
+`tier:T3` a change to an existing experience that needs a one-pager, `tier:T4` a
+new concept that needs a design review). None, or two, means nobody has settled
+how big the work is, so the gate reds rather than guessing. Then the tier decides:
+
+| Tier on the issue | Issue Gate |
+|---|---|
+| none, or more than one | red |
+| `tier:T1`, `tier:T2` | green, whatever triage labels it carries |
+| `tier:T3`, `tier:T4` with `triaged` | green |
+| `tier:T3`, `tier:T4` with `pending-triage`, or with neither | red until a person flips it to `triaged` |
+| `tier:T3`, `tier:T4` with both `pending-triage` and `triaged` | red; remove `pending-triage` |
+
+The big tiers wait on a person for everyone, fork PRs and in-repo PRs alike: a
+maintainer who wants one through sooner applies the `issue-gate: waived` label.
+One bad reference fails the whole PR: a sized issue beside an unsized one is
+still work nobody sized. The job summary lists each problem and says how to go
+green: once the label lands, any edit to the description re-runs the check, which
+is how a fork author -- who cannot press re-run -- gets there without a push.
 
 Deterministic on purpose: no model, one checkout of the default branch (for the
 grammar, nothing built), two API reads. The body is read from the API at run time rather than from
@@ -1576,47 +1600,51 @@ point at. `github-actions[bot]` is deliberately not exempted: this repository
 leaves "Allow GitHub Actions to create and approve pull requests" off (see
 `test-durations.yml`), so no PR can carry that author and an arm for it would be
 dead code claiming coverage. The `issue-gate: waived`
-label, applied by a maintainer, waives the requirement with a WARNING. It covers
-the two PR shapes that legitimately have no issue: a production fire, whose issue
-is written once the fire is out, and a release PR -- the version-drop and
+label, applied by a maintainer, is the manual override: it waives the requirement
+with a WARNING, whatever the issue's labels say. A maintainer uses it for a
+`tier:T3` / `tier:T4` issue nobody has read yet, an unsized issue, a fork PR the
+maintainers want through, a production fire (whose issue is written once the fire
+is out) and a release PR -- the version-drop and
 CHANGELOG-section PRs that [release](../build/release.md) describes, which are
 maintainer work with no tracking issue. There is no self-service body marker:
 unlike the screenshot waiver, the whole point of this gate is that someone other
-than the author agreed to the work, so the waiver has to be a maintainer action.
+than the author agreed to the work, so the override has to be a maintainer
+action (only a user with triage rights can apply a label).
 
-**Not a goal here, and what a stall looks like.** Triage is expected to reach an
-issue within 24 hours. An issue that sits in `needs-triage` longer is a defect in
-the triage pipeline, to be reported as such; it is never a reason to pick the
-issue up untriaged, and the gate deliberately has no "silence means yes"
+**Not a goal here, and what a stall looks like.** An issue is expected to get its
+tier from the Captain's scan soon after it is filed. One that sits with no tier,
+or a `tier:T3` / `tier:T4` one that sits in `pending-triage`, is a defect in the
+Captain or its hand-off, to be reported as such; it is never a reason to pick the
+issue up unsized, and the gate deliberately has no "silence means yes"
 fallback. Nothing in this repository alarms on that overdue state yet -- the
-pipeline runs outside `.github/`, and an in-repo overdue sweep is a separate
+crew runs outside `.github/`, and an in-repo overdue sweep is a separate
 change, filed as [#16308](https://github.com/kirodotdev/KiroCrew/issues/16308).
-Until it lands, a stalled pipeline is visible as PRs red on "still carries
-`needs-triage`"; the maintainer's per-PR fallback is the `issue-gate: waived`
-label, and a run of those waivers is the signal to go fix the pipeline, not to
-loosen the gate. The cost this puts on a drive-by contributor -- a one-line fix
-waits on triage too -- is accepted by the maintainer as the price of the rule
-(decided in [#16064](https://github.com/kirodotdev/KiroCrew/issues/16064)); a
-lighter path for trivial fixes is a policy change to propose on an issue, not a
-waiver to add here.
+Until it lands, a stalled crew is visible as PRs red on "no tier label" or
+"still waiting for a person"; the maintainer's per-PR fallback is the
+`issue-gate: waived` label, and a run of those waivers is the signal to go fix
+the crew, not to loosen the gate. The cost this puts on a drive-by contributor
+-- a one-line fix waits on a tier too -- is accepted by the maintainer as the
+price of the rule (decided in
+[#16064](https://github.com/kirodotdev/KiroCrew/issues/16064)); a lighter path
+for trivial fixes is a policy change to propose on an issue, not a waiver to add
+here.
 
 **Issue-less PR shapes this repository produces, and their path through the
 gate.** A `deferred-finding` issue filed from an accept-and-defer disposition
-must now also carry `needs-triage` (the prepare-pr deferral contract says so), so
-the pipeline's intake sees it and the follow-up PR can pass; of the deferred-finding
-issues open when the gate landed, only about one in ten carried a verdict, which is
-what that label fixes going forward. The three pull requests scheduled workflows
+still carries `needs-triage` (the prepare-pr deferral contract says so), which is
+the Issue Radar intake label; once the gate is on, the Captain tiers it like any
+other issue and the follow-up PR can pass. The three pull requests scheduled workflows
 generate -- `test-durations.yml` (`chore(test): refresh .test_durations`),
 `add-contributor.yml` (`docs: add new contributors to README`) and
 `memory-benchmark.yml` (`chore(bench): accept new memory-benchmark baseline`) --
 are opened by a maintainer from a compare link, so their author is human and no
 bot exemption applies; each generated body and each compare-link notice now
 carries `Part of #16362`, the standing tracking issue for workflow-generated PRs,
-so the gate passes mechanically once that issue is triaged. The release
+so the gate passes mechanically once that issue is tiered. The release
 version-drop PR uses the waiver label, above.
 
 **Known residual.** The gate judges the declared issue when a PR event runs it.
-An issue that is closed as not planned, or loses its verdict label, after the PR's
+An issue that is closed as not planned, or loses its tier or `triaged` label, after the PR's
 last `opened` / `synchronize` / `reopened` / `edited` / `labeled` / `unlabeled` event
 and before merge is not re-read: no issue-side event re-runs a `pull_request`
 lane, and `pr-readiness-sweep.yml` re-fires the readiness recompute, not the

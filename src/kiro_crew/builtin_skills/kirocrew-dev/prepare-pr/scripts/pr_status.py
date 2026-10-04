@@ -678,7 +678,7 @@ def closing_link_reason(body, closing_refs, repo=None):
         )
     return (
         "no issue link - add 'Fixes #<n>' (or 'Part of #<n>') for a triaged issue; "
-        "the Issue Gate lane fails the PR without one"
+        "the Issue Gate lane fails the PR without one once it is enabled"
     )
 
 
