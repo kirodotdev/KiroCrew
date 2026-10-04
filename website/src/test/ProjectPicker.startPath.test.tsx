@@ -15,6 +15,8 @@ vi.mock('../api/client', () => ({
   api: {
     browseDirs: (path?: string) => browseDirs(path),
     recentProjects: () => recentProjects(),
+    // Mocked even where no test reads it: the picker reads favourites on every open.
+    favoriteProjects: async () => ({ dirs: [] }),
   },
 }))
 

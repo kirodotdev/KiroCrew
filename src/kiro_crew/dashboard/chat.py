@@ -81,6 +81,9 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slots,
     api_chat_slots_cleanup,
     api_chat_slots_model,
+    api_favorite_project_add,
+    api_favorite_project_remove,
+    api_favorite_projects,
     api_recent_projects,
 )
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401

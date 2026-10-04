@@ -126,6 +126,9 @@ beforeEach(() => {
   // The picker's own directory listings. Spied on the shared client so they never
   // consume from the POST queue above.
   vi.spyOn(api, 'recentProjects').mockResolvedValue({ dirs: [ROOT, '/work/other'] })
+  // Favourites too, and for the same reason: unspied it would reach the stubbed `fetch`
+  // and take a response meant for a scan POST. Empty, so the picker still lands on Recent.
+  vi.spyOn(api, 'favoriteProjects').mockResolvedValue({ dirs: [] })
   vi.spyOn(api, 'browseDirs').mockResolvedValue({
     path: '/work', parent: '/', dirs: [{ name: 'monorepo', path: ROOT }],
   })
