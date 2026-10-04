@@ -311,7 +311,7 @@ class _StreamingProvider:
     def session_id(self) -> str:
         return self._sid
 
-    async def stream(self, message: str):
+    async def stream(self, message: str, *, allow_image: bool = True):
         for e in self._events:
             yield f"{message}:{e}"
 

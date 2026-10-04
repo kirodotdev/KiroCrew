@@ -5612,7 +5612,7 @@ class TestTitleGenerationSessionLeak:
         mock_client = MagicMock()
         mock_client.destroy = AsyncMock()
 
-        async def _exploding_prompt(prompt):
+        async def _exploding_prompt(prompt, *, allow_image=True):
             raise RuntimeError("throttle / ACP error")
             yield  # noqa: unreachable — makes this an async generator
 
@@ -5642,7 +5642,7 @@ class TestTitleGenerationSessionLeak:
         mock_client.reject_tool = AsyncMock()
         mock_client.destroy = AsyncMock()
 
-        async def _prompt(prompt):
+        async def _prompt(prompt, *, allow_image=True):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="My Title")
             yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, request_id="req-1")
             yield LLMEvent(kind=EVENT_COMPLETE)
@@ -5666,7 +5666,7 @@ class TestTitleGenerationSessionLeak:
         mock_client = MagicMock()
         mock_client.destroy = AsyncMock()
 
-        async def _prompt(prompt):
+        async def _prompt(prompt, *, allow_image=True):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Good")
             yield LLMEvent(kind=EVENT_COMPLETE)
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=" SHOULD NOT APPEAR")

@@ -76,3 +76,66 @@ def test_rendered_row_yields_no_image_block_even_when_file_is_readable(screensho
     # behaviour this change removes from the consolidation path.
     control = build_prompt_blocks(row["content"], allow_image=True)
     assert [b["type"] for b in control] == ["text", "image"]
+
+
+# ── The consolidator's turns go out text-only ───────────────────────────────
+#
+# The scrub keeps a spaced path a person typed (``Screen Shot 2024.png``), since
+# no lexical rule tells it from prose. A consolidation prompt quotes such a row
+# verbatim, so the turn itself must not inline the file: every turn the
+# consolidator sends -- the consolidation, the dedupe judge, the skill merge --
+# asks for a text-only prompt.
+
+
+class _RecordingProvider:
+    """A background provider that records how each turn asked to be sent."""
+
+    def __init__(self, reply: str) -> None:
+        self.allow_image: list[bool] = []
+        self._reply = reply
+
+    async def stream(self, message, *, allow_image=True):
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        self.allow_image.append(allow_image)
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=self._reply)
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+
+def _consolidator_on(provider, monkeypatch):
+    import contextlib
+    from unittest.mock import MagicMock
+
+    from kiro_crew import history_consolidation
+    from kiro_crew.history import HistoryConsolidator
+
+    @contextlib.asynccontextmanager
+    async def _turn(*_a, **_kw):
+        yield provider
+
+    monkeypatch.setattr(history_consolidation, "background_turn", _turn)
+    return HistoryConsolidator(log=MagicMock(), memory=MagicMock(), sessions=MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_the_consolidation_turn_is_text_only(monkeypatch):
+    provider = _RecordingProvider('{"facts": []}')
+    consolidator = _consolidator_on(provider, monkeypatch)
+
+    await consolidator._call_llm("history quoting /Users/me/Screen Shot 2024.png")
+
+    assert provider.allow_image == [False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("judge", ["dedupe", "merge"])
+async def test_the_skill_judge_turns_are_text_only(monkeypatch, judge):
+    provider = _RecordingProvider("ok")
+    consolidator = _consolidator_on(provider, monkeypatch)
+
+    if judge == "dedupe":
+        await consolidator._dedupe_judge("compare these skills")
+    else:
+        await consolidator._merge_skill_update("body", "desc", "triggers", "steps")
+
+    assert provider.allow_image == [False]
