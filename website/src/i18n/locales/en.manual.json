@@ -5662,6 +5662,12 @@
         "show_failed_files": "Show which files failed",
         "start_scanning": "Start Scanning",
         "starting": "Starting...",
+        "status": {
+          "active": "Active",
+          "error": "Error",
+          "paused": "Paused",
+          "synced": "Up to date"
+        },
         "supported_file_found_one": "{{count}} supported file found",
         "supported_file_found_other": "{{count}} supported files found",
         "supports_formats": "Supports: {{formats}}.",

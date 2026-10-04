@@ -12605,7 +12605,13 @@
         "use_sync_button_to_update": "同期ボタンを使用して更新",
         "watch_anyway": "とにかく監視",
         "watches_folder_recursively_supported_files_auto": "フォルダーを再帰的に監視します。対応ファイルは自動取り込みされます。ソースあたり最大 5,000ファイル。",
-        "watching_folder": "フォルダー監視中"
+        "watching_folder": "フォルダー監視中",
+        "status": {
+          "active": "アクティブ",
+          "error": "エラー",
+          "paused": "一時停止中",
+          "synced": "最新"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

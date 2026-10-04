@@ -12605,7 +12605,13 @@
         "use_sync_button_to_update": "동기화 버튼으로 업데이트하세요",
         "watch_anyway": "그래도 감시",
         "watches_folder_recursively_supported_files_auto": "폴더를 재귀적으로 감시합니다. 지원 파일은 자동으로 수집됩니다. 소스당 최대 5,000개 파일.",
-        "watching_folder": "폴더 감시 중"
+        "watching_folder": "폴더 감시 중",
+        "status": {
+          "active": "활성",
+          "error": "오류",
+          "paused": "일시 중지됨",
+          "synced": "최신 상태"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

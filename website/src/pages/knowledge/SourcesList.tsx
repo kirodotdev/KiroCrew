@@ -5,7 +5,7 @@ import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
-import { parseSourceProps, shouldShowWordCount } from './knowledgeUtils'
+import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
 import { fmtCompact, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
@@ -594,7 +594,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   nothing at mid widths. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
               {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : (
-                <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : s.sync_status}</Badge>
+                <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(s.sync_status, i18nT)}</Badge>
               )}
               <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>
               {/* The failed count renders on the identity meta line (the parent owns

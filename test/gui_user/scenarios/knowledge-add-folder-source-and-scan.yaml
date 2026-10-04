@@ -14,14 +14,13 @@
 # target). Only what the sources list shows is judged. Nightly: eight steps and
 # a scan to wait for is too long for the smoke tier.
 #
-# The badge the row SETTLES on is "synced", not "active". Adding the folder
-# leaves the row "Awaiting confirmation" (sync_status pending_confirmation);
-# "Start Scanning" moves it to "active" while the scan runs; the ingest then
-# writes "synced" (knowledge/ingestion.py), and SourcesList renders the status
-# verbatim as a green badge. The wait step runs until the row reads "3 items",
-# by which point the badge is already "synced", so an expectation naming
-# "active" asked for a state the final screen can never show -- and whether the
-# tester read "synced" as close enough flipped the verdict between nights.
+# The badge the row SETTLES on is "Up to date", not "Active". Adding the
+# folder leaves the row "Awaiting confirmation" (sync_status
+# pending_confirmation); "Start Scanning" moves it to "active", which the badge
+# shows as "Active"; the ingest then writes "synced" (knowledge/ingestion.py),
+# which the badge shows as "Up to date" in green. The wait step runs until the
+# row reads "3 items", by which point the badge already reads "Up to date", so
+# the expectation names that final state rather than the in-progress one.
 #
 # Retry-safe: a failed attempt is retried against the SAME live gateway with
 # nothing re-seeded (docs/build/gui-user-test.md, "Seeds"), so attempt 2 can
@@ -54,10 +53,10 @@ steps:
   - Click into the field whose placeholder reads "Folder path (e.g., /home/user/notes)" and type exactly "/tmp/kirocrew-gui-user-test/team-notes".
   - Click the "Add Folder" button at the bottom right of the form.
   - A confirmation panel appears at the top of the sources list. It names the folder path and says "3 supported files found". Click its "Start Scanning" button.
-  - Wait about ten seconds, then look at the sources list. Repeat the wait (up to five more times) until the "Team notes" row reads "3 items" and its status badge reads "synced".
+  - Wait about ten seconds, then look at the sources list. Repeat the wait (up to five more times) until the "Team notes" row reads "3 items" and its status badge reads "Up to date".
 expectations:
   - The sources list has exactly one row named "Team notes", and its second line reads "local_folder" followed by the folder path /tmp/kirocrew-gui-user-test/team-notes.
-  - That row's status badge reads "synced" in green -- the state a finished scan settles on (it reads "active" only while the scan is still running). It does not read "Awaiting confirmation", "paused" or "error".
+  - That row's status badge reads "Up to date" in green -- the state a finished scan settles on (it reads "Active" only while the scan is still running). It does not read "Awaiting confirmation", "Paused" or "Error".
   - That row shows a count of "3 items".
   - No red error text is visible on the Sources tab (for example nothing starting with "Failed to add source", "source already exists" or "Directory not found").
 max_steps: 20

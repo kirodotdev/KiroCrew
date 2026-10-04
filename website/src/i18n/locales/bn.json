@@ -12797,7 +12797,13 @@
         "use_sync_button_to_update": "আপডেট করতে সিঙ্ক বোতাম ব্যবহার করুন",
         "watch_anyway": "তবুও নজরে রাখো",
         "watches_folder_recursively_supported_files_auto": "ফোল্ডার রিকার্সিভভাবে পর্যবেক্ষণ করে। সমর্থিত ফাইল স্বয়ংক্রিয়ভাবে ইনজেস্ট হয়। প্রতি সোর্সে সর্বোচ্চ 5,000 ফাইল।",
-        "watching_folder": "ফোল্ডার নজরে রাখা হচ্ছে"
+        "watching_folder": "ফোল্ডার নজরে রাখা হচ্ছে",
+        "status": {
+          "active": "চালু",
+          "error": "ত্রুটি",
+          "paused": "থামানো",
+          "synced": "হালনাগাদ আছে"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

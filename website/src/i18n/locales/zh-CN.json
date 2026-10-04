@@ -12605,7 +12605,13 @@
         "use_sync_button_to_update": "使用“同步”按钮更新",
         "watch_anyway": "仍然监视",
         "watches_folder_recursively_supported_files_auto": "递归监视文件夹。支持的文件会自动导入。每个来源最多 5,000 个文件。",
-        "watching_folder": "正在监视文件夹"
+        "watching_folder": "正在监视文件夹",
+        "status": {
+          "active": "活跃",
+          "error": "错误",
+          "paused": "已暂停",
+          "synced": "已是最新"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

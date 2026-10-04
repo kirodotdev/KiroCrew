@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parseSourceProps,
   getSyncBadgeVariant,
+  syncStatusLabel,
   formatSourceSubtitle,
   shouldShowWordCount,
 } from '../pages/knowledge/knowledgeUtils'
@@ -87,6 +88,21 @@ describe('getSyncBadgeVariant', () => {
   it('falls back to the in-progress variant for anything else', () => {
     expect(getSyncBadgeVariant('syncing')).toBe('aim')
     expect(getSyncBadgeVariant('')).toBe('aim')
+  })
+})
+
+describe('syncStatusLabel', () => {
+  const t = (key: string) => `t:${key}`
+
+  it('maps each known status to its own locale key', () => {
+    expect(syncStatusLabel('active', t)).toBe('t:pages.knowledge.sourcesList.status.active')
+    expect(syncStatusLabel('synced', t)).toBe('t:pages.knowledge.sourcesList.status.synced')
+    expect(syncStatusLabel('error', t)).toBe('t:pages.knowledge.sourcesList.status.error')
+    expect(syncStatusLabel('paused', t)).toBe('t:pages.knowledge.sourcesList.status.paused')
+  })
+
+  it('shows an unknown status as the raw string', () => {
+    expect(syncStatusLabel('syncing', t)).toBe('syncing')
   })
 })
 

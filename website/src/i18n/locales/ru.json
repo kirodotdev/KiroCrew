@@ -13181,7 +13181,13 @@
         "use_sync_button_to_update": "Используйте кнопку «Синхронизировать» для обновления",
         "watch_anyway": "Всё равно отслеживать",
         "watches_folder_recursively_supported_files_auto": "Папка отслеживается рекурсивно. Поддерживаемые файлы импортируются автоматически. Не более 5 000 файлов на источник.",
-        "watching_folder": "Отслеживание папки"
+        "watching_folder": "Отслеживание папки",
+        "status": {
+          "active": "Активно",
+          "error": "Ошибка",
+          "paused": "Приостановлено",
+          "synced": "Актуально"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

@@ -12989,7 +12989,13 @@
         "use_sync_button_to_update": "Usa el botón Sincronizar para actualizar",
         "watch_anyway": "Vigilar de todos modos",
         "watches_folder_recursively_supported_files_auto": "Vigila la carpeta de forma recursiva. Los archivos compatibles se ingieren automáticamente. Máx. 5.000 archivos por fuente.",
-        "watching_folder": "Vigilando la carpeta"
+        "watching_folder": "Vigilando la carpeta",
+        "status": {
+          "active": "Activo",
+          "error": "Error",
+          "paused": "En pausa",
+          "synced": "Actualizado"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

@@ -12989,7 +12989,13 @@
         "use_sync_button_to_update": "Usa il pulsante Sincronizza per aggiornare",
         "watch_anyway": "Monitora comunque",
         "watches_folder_recursively_supported_files_auto": "Monitora la cartella in modo ricorsivo. I file supportati vengono acquisiti automaticamente. Massimo 5.000 file per origine.",
-        "watching_folder": "Monitoraggio della cartella"
+        "watching_folder": "Monitoraggio della cartella",
+        "status": {
+          "active": "Attivo",
+          "error": "Errore",
+          "paused": "In pausa",
+          "synced": "Aggiornato"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

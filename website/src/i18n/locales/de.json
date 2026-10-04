@@ -12797,7 +12797,13 @@
         "use_sync_button_to_update": "Verwenden Sie die Schaltfläche „Synchronisieren“ zum Aktualisieren",
         "watch_anyway": "Trotzdem überwachen",
         "watches_folder_recursively_supported_files_auto": "Überwacht den Ordner rekursiv. Unterstützte Dateien werden automatisch eingelesen. Max. 5.000 Dateien pro Quelle.",
-        "watching_folder": "Ordner wird überwacht"
+        "watching_folder": "Ordner wird überwacht",
+        "status": {
+          "active": "Aktiv",
+          "error": "Fehler",
+          "paused": "Pausiert",
+          "synced": "Aktuell"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",

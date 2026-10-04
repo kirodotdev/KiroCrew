@@ -33,6 +33,19 @@ export function getSyncBadgeVariant(syncStatus: string): 'ok' | 'err' | 'aim' | 
   return 'aim'
 }
 
+const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
+  active: 'pages.knowledge.sourcesList.status.active',
+  synced: 'pages.knowledge.sourcesList.status.synced',
+  error: 'pages.knowledge.sourcesList.status.error',
+  paused: 'pages.knowledge.sourcesList.status.paused',
+}
+
+/** Readable label for a source's sync_status; an unknown value shows as-is. */
+export function syncStatusLabel(syncStatus: string, t: (key: string) => string): string {
+  const key = SYNC_STATUS_LABEL_KEYS[syncStatus]
+  return key ? t(key) : syncStatus
+}
+
 export function formatSourceSubtitle(source: Source, filesTotal?: number, lastScan?: string): string {
   const isDir = source.source_type === 'local_folder' || source.source_type === 'obsidian_vault'
   const parts: string[] = []

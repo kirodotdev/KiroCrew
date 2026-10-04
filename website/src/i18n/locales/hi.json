@@ -12797,7 +12797,13 @@
         "use_sync_button_to_update": "अपडेट करने के लिए सिंक बटन का उपयोग करें",
         "watch_anyway": "फिर भी नज़र रखें",
         "watches_folder_recursively_supported_files_auto": "फ़ोल्डर पर रिकर्सिव रूप से नज़र रखता है। समर्थित फ़ाइलें अपने आप इनजेस्ट होती हैं। हर स्रोत में अधिकतम 5,000 फ़ाइलें।",
-        "watching_folder": "फ़ोल्डर पर नज़र रखी जा रही है"
+        "watching_folder": "फ़ोल्डर पर नज़र रखी जा रही है",
+        "status": {
+          "active": "चालू",
+          "error": "त्रुटि",
+          "paused": "रुका हुआ",
+          "synced": "अद्यतित"
+        }
       },
       "settings": {
         "title": "Ingestion Settings",
