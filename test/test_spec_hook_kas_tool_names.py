@@ -162,6 +162,51 @@ def test_a_kept_matcher_meets_the_kas_id_it_names(tmp_path, monkeypatch):
     assert ran == [hooks[0].id]
 
 
+@pytest.mark.parametrize(
+    "matcher", ["@kirocrew-core/monitor_start", "@github/create_issue", "@my.srv-2/*"]
+)
+def test_an_mcp_server_tool_matcher_is_kept_without_a_warning(matcher, caplog):
+    # The form the gate builds for an MCP call, the KAS projection reads as MCP and
+    # the agent-host contract documents; the object form's character set alone
+    # dropped it as "invalid matcher" and the guard never ran.
+    with caplog.at_level("WARNING", logger="kiro_crew.agent_sdk.spec_hooks"):
+        hooks = _pre_tool_hooks(matcher)
+    assert [h.matcher for h in hooks] == [matcher]
+    assert not caplog.records
+
+
+@pytest.mark.parametrize(
+    "matcher",
+    [
+        "@*/create_issue",  # a server glob would widen the guard across servers
+        "@gith?b/create_issue",
+        "@github",  # no tool part
+        "@/create_issue",
+        "@github/",
+        "@github/create/issue",
+        "@github/create_issue\n",  # $-before-newline must not admit this
+        "@github/create;issue",
+        "@git hub/create_issue",
+        "@" + "s" * 200 + "/t",  # over the matcher length cap
+    ],
+)
+def test_a_malformed_mcp_matcher_still_drops_the_hook(matcher):
+    assert _pre_tool_hooks(matcher) == []
+
+
+def test_an_mcp_server_tool_spec_hook_withholds_mcp_auto_approval(tmp_path, monkeypatch):
+    # Without this, KAS auto-approves the MCP call and no permission request reaches
+    # the gate, so even an accepted matcher would never see the call.
+    from kiro_crew.acp import kas_agents
+    from kiro_crew.acp.kas_permissions import hook_gated_capabilities
+
+    monkeypatch.setattr(kas_agents, "get_global_hook_store", lambda: ScriptHookStore(tmp_path))
+    spec = {"hooks": {"preToolUse": [{"matcher": "@github/create_issue", "command": "g.sh"}]}}
+    matchers = kas_agents.pre_tool_hook_matchers("a1", spec)
+    assert matchers == ("@github/create_issue",)
+    assert hook_gated_capabilities(matchers) == {"mcp"}
+
+
 def test_a_post_tool_use_title_matcher_is_kept_and_warned(caplog):
     # PostToolUse still matches the call's title, which the author is told once.
     with caplog.at_level("WARNING", logger="kiro_crew.agent_sdk.spec_hooks"):
@@ -418,6 +463,32 @@ async def test_kas_a_hooks_page_mcp_hook_meets_the_call_by_its_server_identity(
         ],
     )
     assert ran == ["page"]
+    client.reject_tool.assert_called_once()
+    client.approve_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_kas_an_mcp_server_tool_spec_hook_blocks_the_mcp_call(
+    tmp_path, agents_dir, monkeypatch
+):
+    ran = _blocking_runner(monkeypatch)
+    _write_spec(agents_dir, "@github/create_issue")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_KAS)
+    await _one_turn(
+        state,
+        client,
+        [
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="Create issue",
+                request_id="req-1",
+                tool_name="create_issue",
+                mcp_server_name="github",
+                harness_tool_id="create_issue",
+            )
+        ],
+    )
+    assert len(ran) == 1 and ran[0].startswith("spec:")
     client.reject_tool.assert_called_once()
     client.approve_tool.assert_not_called()
 
