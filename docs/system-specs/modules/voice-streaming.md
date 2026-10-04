@@ -416,6 +416,12 @@ spawning the AWS CLI. It returns no audio when consent is absent, which lets its
 callers retain their text response rather than spending through an unattended
 path.
 
+Polly's consent identity probe (`cloud.aws.run_aws`) and synthesis child drop
+`sandbox._PYTHON_ENV_PREFIXES` from their explicit environments, as the voice
+catalogue does. A Python AWS CLI therefore cannot load the gateway's interpreter
+packages, even without a sandbox backend. AWS credentials and unrelated settings
+remain available; the identity probe also retains `aws_spawn_env`'s vetted PATH.
+
 `_synthesize_polly()` and `streaming_piper_reply()` run their commands through
 `wrap_argv_async(..., _prepare=wrap_argv)`. `_synthesize_piper()` instead delegates
 to `_run_tts_subprocess()`, which uses `sandboxed_spawn_argv_async()` and the
