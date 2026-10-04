@@ -1,0 +1,105 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false
+    },
+    "agent_version": "0.2.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "fixture-lmstudio"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Checking"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Checking",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "fixture.txt"
+        },
+        "title": "read_file",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"path\": \"fixture.txt\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read_file"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject_once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "fixture.txt"
+        },
+        "request_id": "permission-1",
+        "shell_classified": true,
+        "title": "read_file",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"path\": \"fixture.txt\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_once",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "{\"output\": \"fixture\"}",
+        "tool_output_bytes": 21,
+        "tool_output_digest": "e0eb6a3a4a16f5fdedce32fb64dcdaa2f620cbbd557d58d9201b7997062af590",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

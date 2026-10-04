@@ -49,6 +49,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_PI,
     ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_KNOWN,
@@ -324,6 +325,19 @@ def _probe_codex() -> BackendInstallState:
     )
 
 
+def _probe_builtin_direct(backend: str) -> BackendInstallState:
+    """The KiroCrew-OWNED direct adapter is shipped inside KiroCrew itself.
+
+    There is nothing to install and no ``ACP_BACKEND_LAUNCH`` row to read: the
+    adapter is in-tree code Crew spawns as ``python -m
+    kiro_crew.acp.<id>_server``, so any imported build is "installed" by
+    construction. This is deliberately only an install verdict. The LM Studio
+    listener and its API key are RUNTIME readiness, not a missing component that
+    installing another harness could fix, so they are not probed here.
+    """
+    return BackendInstallState(backend, _policy_id(backend), INSTALLED)
+
+
 def _probe_pi() -> BackendInstallState:
     """The pi backend needs BOTH components, and names the absent one.
 
@@ -383,6 +397,10 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
         backend: functools.partial(_probe_self_served, backend)
         for backend in sorted(ACP_BACKENDS_SELF_SERVED_ACP)
     },
+    # The OWNED direct adapter serves ACP from in-tree code, so its probe is the
+    # built-in one rather than the self-served ladder, which searches PATH for a
+    # binary this backend does not have.
+    ACP_BACKEND_LMSTUDIO: functools.partial(_probe_builtin_direct, ACP_BACKEND_LMSTUDIO),
 }
 
 

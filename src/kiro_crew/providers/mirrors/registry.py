@@ -36,6 +36,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -43,6 +44,7 @@ from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
 from kiro_crew.providers.mirrors.goose import GooseMirror
+from kiro_crew.providers.mirrors.lmstudio import LmStudioMirror
 from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
 
@@ -198,6 +200,7 @@ class McpProjection:
 MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CLAUDE: ClaudeCodeMirror,
     ACP_BACKEND_CODEX: CodexMirror,
+    ACP_BACKEND_LMSTUDIO: LmStudioMirror,
     ACP_BACKEND_OPENCODE: OpenCodeMirror,
     ACP_BACKEND_GOOSE: GooseMirror,
 }
@@ -238,6 +241,19 @@ PROJECTIONS: dict[str, McpProjection] = {
         # control plane, which is why that stays mounted; a third-party server is
         # withheld instead, since its readOnlyHint tools are approved inside codex
         # without ever asking.
+        per_tool_deny=PerToolDeny.PER_CALL,
+    ),
+    ACP_BACKEND_LMSTUDIO: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason="lmstudio.py — the session/new mcpServers array for Kiro Crew's OWNED "
+        "LM Studio adapter, translated by the shared acp.session_mcp projection with "
+        "no new translator. The adapter reads no agent spec of its own, so the array "
+        "is the only channel Crew's tools reach it by",
+        # No per-tool slot on the wire, but the adapter asks session/request_permission
+        # per MCP call carrying the (server, tool) pair, so Crew's own client refuses a
+        # switched-off tool itself. The deny set travels on the projection for that
+        # reason, and the narrowed server is withheld from the array as the
+        # conservative direction while the array is the only channel Crew has.
         per_tool_deny=PerToolDeny.PER_CALL,
     ),
     ACP_BACKEND_KAS: McpProjection(

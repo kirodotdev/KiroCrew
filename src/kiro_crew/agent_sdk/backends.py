@@ -227,6 +227,14 @@ ACP_BACKEND_CODEX = "codex"
 # executable -- which is why its install probe names one component and its
 # ``install_command`` is the harness's own installer rather than an ``npm i -g``.
 ACP_BACKEND_OPENCODE = "opencode"
+# LM Studio: a Kiro Crew-OWNED ACP adapter, in-tree code rather than an installed
+# binary or an npm adapter, that translates ACP onto the local LM Studio server's
+# OpenAI-compatible API (``python -m kiro_crew.acp.lmstudio_server``). It reads no
+# ``~/.kiro/agents/<name>.json``, so the ``session/new`` array is the only channel
+# Crew's own tools reach it by, and it emits ``session/request_permission`` before
+# every built-in or bridged tool call by construction -- see
+# :data:`Routing.OWNED_ADAPTER`.
+ACP_BACKEND_LMSTUDIO = "lmstudio"
 # Pi: the ``pi`` coding agent reached through a third-party npm adapter, ``pi-acp``.
 # TWO components, and the split is load-bearing for the install probe: the adapter
 # is the ACP server and the agent is what it spawns (``pi --mode rpc``), and either
@@ -287,6 +295,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_LMSTUDIO,
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
@@ -425,6 +434,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_LMSTUDIO,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
     }
@@ -529,6 +539,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_LMSTUDIO,
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
@@ -554,6 +565,7 @@ POLICY_ID_BY_BACKEND: dict = {
     # nameable in a rule at all.
     ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
     ACP_BACKEND_OPENCODE: ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_LMSTUDIO: ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_PI: ACP_BACKEND_PI,
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
@@ -1269,6 +1281,12 @@ ACP_BACKENDS_HARNESS_MANAGED_COMPACTION = frozenset({ACP_BACKEND_KAS})
 # status, while its ``usage_update`` reports a real meter (``used`` 7554 -> 7695 of
 # ``size`` 8192 in one captured turn) — a reading with nowhere to go.
 #
+# ``lmstudio`` is a member on the same ground from the other direction: it is a
+# thin ACP<->OpenAI translation in front of a local LM Studio server, so its
+# session exposes no compaction channel at all — there is no ``/compact`` for Crew
+# to hand it and no harness-managed compaction to report. Recycling at
+# ``session.autocompact_pct`` is the only bound its context has.
+#
 # A harness in NONE of the three sets is deliberately not a member here. Granting
 # this by exclusion would hand a session-destroying behaviour to every harness
 # added later without anyone deciding it, which is the same defect as claiming
@@ -1277,7 +1295,7 @@ ACP_BACKENDS_HARNESS_MANAGED_COMPACTION = frozenset({ACP_BACKEND_KAS})
 # in its own words (:func:`compact_unsupported_reply` has a third sentence for
 # exactly this case), and the gate logs a WARNING naming the gap, so the condition
 # is reported rather than silent while somebody decides which set it belongs in.
-ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
+ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK, ACP_BACKEND_LMSTUDIO})
 
 # Backends that finish a manual ``/compact`` INSIDE the ``session/prompt`` turn,
 # so the turn's terminal frame is the done signal and there is no asynchronous
@@ -1884,11 +1902,17 @@ def effort_config_option_value(backend: str, level: str) -> str:
 # values are JSON-encoded ``[provider, model]`` pairs drawn from the harness's live
 # service catalog. Nothing can spell one of those from a stored bare model name, so
 # a pick that did not come from the capture is a pick the session refuses.
+#
+# ``ACP_BACKEND_LMSTUDIO`` is a member for the capture half: its ids are the keys
+# of the local LM Studio server's own downloaded-model list, which no static
+# registry names, so a pick the operator made from LM Studio's catalog is a pick
+# only the advertised list can spell back.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_LMSTUDIO,
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
@@ -1995,6 +2019,10 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # sharing the ``acp`` bucket would let one harness overwrite what the picker
     # offers for another.
     ACP_BACKEND_OPENCODE: "opencode",
+    # lmstudio likewise: its ids are the local server's own downloaded-model keys,
+    # so sharing the ``acp`` bucket would let it overwrite what the picker offers
+    # for another backend.
+    ACP_BACKEND_LMSTUDIO: "lmstudio",
     # pi likewise: ``provider/model`` pairs from the operator's own models.json.
     ACP_BACKEND_PI: "pi",
     # goose likewise, and it is the sharpest case: its ``session/new`` advertises the
@@ -2238,6 +2266,7 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_LMSTUDIO,
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
@@ -2370,6 +2399,15 @@ class Routing(str, Enum):
     told its absolute path, and nothing the agent says can change which file is
     named.
 
+    ``OWNED_ADAPTER`` -- the adapter IS Kiro Crew's own code, shipped in this
+    repository and spawned by Crew itself. It emits ``session/request_permission``
+    per tool call by construction, not through a setting an operator could leave
+    permissive, so there is nothing to probe and nothing to read back: the ask is a
+    line in the adapter Crew owns, and a call whose stdio plumbing is missing is
+    refused inside that adapter. It is not ``VERIFIED_GATE_EXTENSION`` because there
+    is no extension to load into a third party's process, and not ``AGENT_SPEC``
+    because the spawn names a module rather than an agent.
+
     ``UNVERIFIED`` -- Kiro Crew has NOT established how, or whether, this harness
     can be made to ask. This member exists so "we do not know" is a state a
     caller must handle rather than an absent case that falls through to a
@@ -2380,6 +2418,7 @@ class Routing(str, Enum):
     SESSION_CONFIG = "session_config"
     SEEDED_SETTINGS = "seeded_settings"
     VERIFIED_SEEDED_SETTINGS = "verified_seeded_settings"
+    OWNED_ADAPTER = "owned_adapter"
     VERIFIED_GATE_EXTENSION = "verified_gate_extension"
     UNVERIFIED = "unverified"
 
@@ -2394,6 +2433,7 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,
     ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
+    ACP_BACKEND_LMSTUDIO: Routing.OWNED_ADAPTER,
     ACP_BACKEND_PI: Routing.VERIFIED_GATE_EXTENSION,
     ACP_BACKEND_GOOSE: Routing.VERIFIED_SEEDED_SETTINGS,
     # deepseek reaches the same member as pi, and by the same reasoning: the harness
@@ -2643,6 +2683,13 @@ ACP_BACKEND_PROCESS_NAMES: Mapping[str, str] = {
     ACP_BACKEND_CODEX: "codex-acp",
     ACP_BACKEND_PI: "pi-acp",
     **{backend: record.binary for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
+    # Kiro Crew's OWNED adapter is in-tree code, not an installed binary: the ACP
+    # client launches it as ``[<python>, "-P", "-m",
+    # "kiro_crew.acp.lmstudio_server"]``, so the token that names one is the MODULE
+    # path. Without this the PID-file reclaim has no name for the shape Crew spawned
+    # itself, and a killed-gateway orphan of it is silently spared -- the leak
+    # ``test_pid_lifecycle`` ratchets against.
+    ACP_BACKEND_LMSTUDIO: "kiro_crew.acp.lmstudio_server",
 }
 
 

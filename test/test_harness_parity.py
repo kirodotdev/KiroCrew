@@ -737,8 +737,10 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
 #: The per-harness MCP seams spliced into ``AcpClient``'s session-setup paths, by
 #: harness. Declared rather than discovered so a DELETED splice fails the test below
 #: -- codex is absent because this PR moved its seam onto the harness, and kiro-cli
-#: has none (``--agent`` carries its servers).
-_MCP_SEAM_HOOKS = ["claude", "goose", "opencode"]
+#: has none (``--agent`` carries its servers). lmstudio joins on the same terms as its
+#: siblings: the adapter reads no agent spec of Crew's, so the array is its only
+#: channel onto Crew's own tools.
+_MCP_SEAM_HOOKS = ["claude", "goose", "lmstudio", "opencode"]
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:

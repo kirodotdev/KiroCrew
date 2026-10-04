@@ -19,6 +19,8 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 from aiohttp import BodyPartReader, web
 
@@ -57,6 +59,7 @@ from kiro_crew.agent_discovery import (
     spec_str,
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_LMSTUDIO
 from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import (
     EntitlementRevalidating,
@@ -2551,6 +2554,73 @@ def _advertised_backend_models(
     return rows
 
 
+_LMSTUDIO_PROVIDER_LABEL = "LM Studio"
+
+
+def _lmstudio_model_rows() -> list[dict]:
+    """Model choices read from the LIVE local LM Studio server.
+
+    The generic advertised-list path below falls back to the cross-session cache,
+    which is empty until an LM Studio session has run -- so a fresh install would
+    offer only ``auto``. Reading LM Studio's own typed catalog gives the picker real
+    rows before any session, and its ``max_context_length`` is the model's true window
+    rather than a reference default.
+
+    The label is the provider name, so a row is identifiable as LM Studio's in a list
+    that also carries kiro-cli's catalog. Blocking (a loopback HTTP GET), so callers
+    run it off the event loop.
+    """
+    base = os.environ.get("KIROCREW_LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+    parsed = urlsplit(base)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("LM Studio endpoint must be an http loopback URL")
+    # The OpenAI-compatible /v1/models response carries no type or context metadata;
+    # LM Studio's native route is the one that can exclude embeddings/draft heads and
+    # report each downloaded model's maximum context length.
+    url = f"{parsed.scheme}://{parsed.netloc}/api/v1/models"
+    headers: dict[str, str] = {}
+    key = os.environ.get("LM_STUDIO_API_KEY") or os.environ.get("LMSTUDIO_API_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = Request(url, headers=headers, method="GET")
+    with urlopen(request, timeout=5) as response:  # noqa: S310 - loopback validated above
+        payload = json.loads(response.read(2_000_000).decode("utf-8"))
+    data = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    rows: list[dict] = []
+    for item in data:
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "llm"
+            or not isinstance(item.get("key"), str)
+        ):
+            continue
+        model_id = item["key"].strip()
+        if not model_id or not model_registry.is_interactive_chat_model(model_id):
+            continue
+        window = item.get("max_context_length")
+        if not isinstance(window, int) or window < 1024:
+            window = model_registry.REFERENCE_WINDOW_TOKENS
+        display = item.get("display_name") or model_id
+        rows.append(
+            {
+                "model_name": model_id,
+                "display_name": f"{_LMSTUDIO_PROVIDER_LABEL} — {display}",
+                "description": "Local model served by LM Studio",
+                "context_window": window,
+            }
+        )
+    return rows
+
+
 def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     """Sandbox-wrap the ``--list-models`` argv at the configured tier.
 
@@ -2944,6 +3014,23 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
         )
+    if backend == ACP_BACKEND_LMSTUDIO:
+        # BEFORE the generic advertised-list branch below: that branch answers from
+        # the cross-session advertised cache, which is empty until an LM Studio
+        # session has run, while LM Studio's own server is the live source. A server
+        # that cannot be reached (or that holds no chat model) falls THROUGH to that
+        # same advertised path rather than failing the endpoint -- so this endpoint
+        # still answers without spawning anything, as every advertised backend must.
+        try:
+            rows = await asyncio.to_thread(_lmstudio_model_rows)
+        except Exception:
+            logger.warning(
+                "api_models: LM Studio catalog unavailable; using the advertised list",
+                exc_info=True,
+            )
+            rows = []
+        if rows:
+            return web.json_response(rows)
     if capabilities_for(backend).resolves_model_from_advertised_list:
         return web.json_response(
             _advertised_backend_models(
@@ -6422,8 +6509,6 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
 
         @memory_store_namespace_lock()
         def _delete_member() -> str:
-            nonlocal retired_store, bound_template
-
             def mutate(doc: dict) -> dict:
                 nonlocal retired_store, bound_template
                 agents = coerce_dict_section(doc, "agents")

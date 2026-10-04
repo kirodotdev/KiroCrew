@@ -78,6 +78,10 @@ _DSH_PATCH = "/opt/run/kiro_crew_dsh_gate.patch.yml"
 _OPENCODE_BIN = "/opt/bin/opencode"
 _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
+#: The interpreter a Kiro Crew-OWNED Python-module adapter is launched with. Fixed and
+#: synthetic like the PATH-resolved binaries above: the golden pins that the backend
+#: launches ``python <flags> -m kiro_crew.acp.lmstudio_server``, not which interpreter.
+_PY_BIN = "/opt/bin/python"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
 
@@ -309,6 +313,18 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             client_mod.platform_compat,
             "create_windows_cleanup_owned_process",
             side_effect=_windows_cleanup_passthrough,
+        )
+    )
+    # The interpreter path is a property of the HOST, not of the launch: the OWNED
+    # Python-module adapters are launched with the running interpreter (``-s -P -m``),
+    # so an unstubbed ``isolated_python_argv`` would leak the recording host's real
+    # path into the fixture. Pinned to a synthetic interpreter exactly as the
+    # PATH-resolved binaries above are.
+    stack.append(
+        patch.object(
+            client_mod.platform_compat,
+            "isolated_python_argv",
+            side_effect=lambda *args, **_kwargs: [_PY_BIN, *args],
         )
     )
     stack.extend(

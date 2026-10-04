@@ -68,6 +68,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_KNOWN,
@@ -738,6 +739,34 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``session/prompt`` with -32603 ``... no API key for provider route
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_LMSTUDIO,
+        # None of its own. The adapter authenticates to a LOCAL LM Studio server with
+        # an API key Crew holds, so no credential FILE on this host is read and the
+        # whole credential floor stays fenced for the child.
+        credential_leaves=(),
+        home_override_env_vars=(),
+        adapter_own_leaves=(),
+        # States the ACTION only, and asserts no state, because for this adapter
+        # there may be no sign-in to assert: an LM Studio server with its API-key
+        # check disabled needs none.
+        sign_in_remedy=(
+            "LM Studio's local server needs a key Kiro Crew holds for it. Enable the "
+            "server in LM Studio, save its API key under Settings → Secrets, and make "
+            "it available to the LM Studio adapter as LM_STUDIO_API_KEY, then restart "
+            "KiroCrew. A server whose API-key check is disabled needs no key."
+        ),
+        signed_out_message=(
+            "LM Studio rejected or did not receive its local-server API key "
+            "(LM_STUDIO_API_KEY). Save one under Settings > Secrets and make it "
+            "available to the LM Studio adapter, then start a new chat."
+        ),
+        # Excluded deliberately: the key is Crew's and the server is local, so a
+        # ``kiro-cli logout`` says nothing about whether a running session can still
+        # reach its LM Studio server.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_HOST_VAULT,
     ),
 )
 

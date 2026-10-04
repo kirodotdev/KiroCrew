@@ -118,6 +118,14 @@ except (OSError, ValueError):  # pragma: no cover - corrupt registry
 # ``usage_update.size``.
 _KIRO_WINDOWS: dict[str, int] = {}
 
+#: Operator-declared per-model OUTPUT ceilings (id -> tokens), loaded from the
+#: ``model_max_output.json`` sidecar. Empty on most installs, and that is the
+#: designed state: an adapter keeps its own default and only a declared row
+#: narrows it. Deliberately separate from ``_KIRO_WINDOWS``, which is the CONTEXT
+#: window — the two answer different questions and one must never be inferred
+#: from the other.
+_MODEL_MAX_OUTPUT: dict[str, int] = {}
+
 # Supplementary static windows for models the canonical registry does not carry
 # and kiro-cli does not advertise — chiefly fully-qualified provider model ids
 # and legacy Claude snapshots. Folded here (rather than a separate
@@ -277,6 +285,66 @@ def _load_kiro_windows() -> None:
 
 
 _load_kiro_windows()
+
+
+def _model_max_output_cache_path() -> Path:
+    """Path to the persisted per-model output-ceiling sidecar under the data home."""
+    return _sidecar_path("model_max_output.json")
+
+
+def _load_model_max_output() -> None:
+    """Load the operator's per-model output ceilings into ``_MODEL_MAX_OUTPUT``.
+
+    Called once at import, best-effort. An absent file is the normal state (most
+    installs declare none); a corrupt one is logged and ignored rather than
+    raised, because this map only ever REFINES a ceiling every caller already has
+    a default for. Retention bounds match the window sidecar — it is the same
+    kind of backend-authored population, and an oversized file must not grow
+    memory without limit.
+    """
+    try:
+        path = _model_max_output_cache_path()
+        if not path.is_file():
+            return
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for mid in _admit_ids(data.keys(), "model output sidecar"):
+                value = data[mid]
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    _MODEL_MAX_OUTPUT[mid] = value
+    except (OSError, ValueError, TypeError):  # pragma: no cover - corrupt/absent sidecar
+        logger.debug(
+            "model output-ceiling sidecar unreadable; adapter defaults stand", exc_info=True
+        )
+
+
+_load_model_max_output()
+
+
+def model_max_output(model_id: str | None) -> int | None:
+    """The model's OWN declared maximum output tokens, or ``None`` when none is set.
+
+    Looked up by the id as written, then by the model half of a qualified
+    ``<backend>::<model>`` route, then case-insensitively — the same tolerance
+    :func:`model_window` gives a stored pin. ``None`` means "nothing declared",
+    never zero: an adapter reads it as "keep my own default", so a caller must
+    not treat the absence as "no output allowed".
+    """
+    if not model_id:
+        return None
+    name = str(model_id)
+    if name in _MODEL_MAX_OUTPUT:
+        return _MODEL_MAX_OUTPUT[name]
+    if "::" in name:
+        name = name.split("::", 1)[1]
+        if name in _MODEL_MAX_OUTPUT:
+            return _MODEL_MAX_OUTPUT[name]
+    lowered = name.lower()
+    for key, value in _MODEL_MAX_OUTPUT.items():
+        if key.lower() == lowered:
+            return value
+    return None
 
 
 def admit_catalog_rows(rows: list[dict[str, Any]]) -> tuple[list[str], dict[str, int]]:
@@ -542,6 +610,30 @@ def _normalize_advertised_key(provider_id: str) -> str:
     s = re.sub(r"[-.]1m$", "", s)
     s = s.replace(".", "-")
     return s.strip("-")
+
+
+#: Model ids that name a speculative-decoding DRAFT head rather than a model a
+#: session can be served by. Local providers inventory every artifact they can
+#: see, including these; a draft head is useful only when a target runtime pairs
+#: it with its base model, and a direct adapter implements no such pairing, so
+#: choosing one would load and then produce nothing usable.
+_NON_INTERACTIVE_MODEL_TOKEN = re.compile(
+    r"(?:^|[-_. /])(?:mtp|draft|drafter)(?:$|[-_. /])", re.IGNORECASE
+)
+
+
+def is_interactive_chat_model(model_id: object) -> bool:
+    """Whether *model_id* is eligible for a standalone chat session.
+
+    Lives here, beside the other catalog predicates, so the inventory, the model
+    picker and any adapter filtering a provider's own list answer this the same
+    way instead of each carrying its own copy of the rule.
+    """
+    return (
+        isinstance(model_id, str)
+        and bool(model_id.strip())
+        and not bool(_NON_INTERACTIVE_MODEL_TOKEN.search(model_id))
+    )
 
 
 def strip_provider_id_prefix(provider_id: str) -> str:

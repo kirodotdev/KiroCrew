@@ -158,6 +158,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LMSTUDIO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -354,6 +355,12 @@ PROTOCOL_VERSION_CLAUDE = 1
 # H10): a divergence should be a one-line edit here, not a silent downgrade of
 # whichever harness moved first.
 PROTOCOL_VERSION_OPENCODE = launch_for(ACP_BACKEND_OPENCODE).protocol_version
+# The Kiro Crew-OWNED LM Studio adapter answers ``initialize`` with an integer
+# ``protocolVersion`` of 1, so it speaks the SPEC dialect. Its own literal for the
+# same H10 reason the harnesses above have one, and because it has no
+# ``ACP_BACKEND_LAUNCH`` row to read a dialect from: it is in-tree code spawned as
+# ``python -m kiro_crew.acp.lmstudio_server``, not an installed binary.
+PROTOCOL_VERSION_LMSTUDIO = 1
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
@@ -377,6 +384,9 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     # The two adapters above keep explicit rows: each is a separate package with
     # its own release cadence, and none has a launch record to read.
     **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
+    # The OWNED LM Studio adapter is in-tree code with no launch record, so its row
+    # stays explicit beside the generated ones.
+    ACP_BACKEND_LMSTUDIO: PROTOCOL_VERSION_LMSTUDIO,
 }
 
 # Every adapter/harness executable name below is READ from the backend registry
@@ -4090,6 +4100,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_OPENCODE
 
     @property
+    def _is_lmstudio(self) -> bool:
+        return self.backend == ACP_BACKEND_LMSTUDIO
+
+    @property
     def _is_pi(self) -> bool:
         return self.backend == ACP_BACKEND_PI
 
@@ -4699,6 +4713,31 @@ class AcpClient:
         In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
         this accessor adds no scheduling or failure point to a call site shared with
         kiro-cli (harness-parity H13).
+        """
+        return self._session_mcp_servers()
+
+    def _lmstudio_session_mcp_servers(self) -> list:
+        """MCP server array passed to an LM Studio ``session/new`` / ``session/load``.
+
+        The twin of :meth:`_goose_session_mcp_servers` for Kiro Crew's OWNED LM Studio
+        adapter, and it must stay non-empty for the same reason: that adapter reads no
+        ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the session
+        through any other door. Without this hook an LM Studio session holds none of
+        Crew's own tools -- no ``spawn_run``, no ``cron_add``, no ``send_message`` --
+        while working in every visible respect, and it holds no pooled broker stubs
+        either, because :meth:`_pooled_mcp_servers` answers ``[]`` for any backend in
+        ``MIRRORS`` and hands that half to the mirror instead.
+
+        The translation lives in the mirror
+        (:mod:`kiro_crew.providers.mirrors.lmstudio`), not here, for the same reason the
+        sibling hooks' does: projecting the agent spec onto a backend's native shape is
+        one named contract with one implementation per backend. No transport filter: the
+        adapter mounts stdio elements, and the direct projection already shapes every
+        element (pooled stubs included) for it.
+
+        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so this
+        accessor adds no scheduling or failure point to a call site shared with kiro-cli
+        (harness-parity H13).
         """
         return self._session_mcp_servers()
 
@@ -8273,6 +8312,28 @@ class AcpClient:
                     )
                 except acp_tool_gate.ToolGateUnroutable as exc:
                     raise AcpToolGateUnroutable(str(exc)) from None
+        elif self._is_lmstudio:
+            # This adapter is Kiro Crew's OWN code -- an ordinary ACP stdio server
+            # spawned as ``python -m kiro_crew.acp.lmstudio_server`` rather than an
+            # installed binary or a Node entry script. Its model catalog and its
+            # server endpoint belong to the operator's LM Studio instance and are
+            # resolved by the adapter itself, so nothing about a third-party install
+            # is read here and there is no routing probe: its permission relay is a
+            # line in the adapter Crew ships (:data:`Routing.OWNED_ADAPTER`), not a
+            # setting an operator can leave permissive.
+            argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew.acp.lmstudio_server")
+            spawn_label = "python -m kiro_crew.acp.lmstudio_server"
+            stderr_label = spawn_label
+            # Translate the agent spec into this session's MCP array HERE, on the
+            # adapter's own arm, for the same reason the sibling arms do it on
+            # theirs: this adapter reads no ``~/.kiro/agents/<name>.json``, so the
+            # ``session/new`` array is the only channel Crew's own tools reach it by,
+            # and the translation reads disk. Correctness does not depend on this
+            # warm -- ``_session_mcp_servers`` resolves a cold cache itself -- but
+            # doing it at the shared call site would put an executor hop and a new
+            # failure mode on every backend's construction path, kiro-cli included
+            # (harness-parity H13).
+            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -9582,6 +9643,7 @@ class AcpClient:
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(self._lmstudio_session_mcp_servers() if self._is_lmstudio else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -9650,6 +9712,7 @@ class AcpClient:
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(self._lmstudio_session_mcp_servers() if self._is_lmstudio else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ]
             # Rebuilt AFTER the array, from the same re-seed: the envelope carries
@@ -9803,6 +9866,7 @@ class AcpClient:
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(self._goose_session_mcp_servers() if self._is_goose else []),
+                            *(self._lmstudio_session_mcp_servers() if self._is_lmstudio else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }

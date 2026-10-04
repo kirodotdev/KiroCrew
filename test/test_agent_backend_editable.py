@@ -181,6 +181,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_CLAUDE,
             ACP_BACKEND_KAS,
             ACP_BACKEND_CODEX,
+            acp_backends.ACP_BACKEND_LMSTUDIO,
             ACP_BACKEND_OPENCODE,
             ACP_BACKEND_PI,
             ACP_BACKEND_GOOSE,
