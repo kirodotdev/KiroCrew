@@ -140,7 +140,7 @@ _BASE_NAMES = frozenset("""
         peer_row_metadata
         persist_deferred_notes_sync pick_epoch_host pin_private_agent_store
         published_autocompact_pct queue_entry_is_user_origin queue_entry_view
-        queue_for_next_turn queued_text_for_display re read_bounded_json
+        queue_for_next_turn queued_text_for_display read_bounded_json
         read_cached_intent_summary record_agent_selection redact_credentials
         redact_exfiltration_urls redact_peer_text register_reasoning_effort_values
         relay_remote_turn release_prewarmed_session reload_slot_session remote_bound_refusal
