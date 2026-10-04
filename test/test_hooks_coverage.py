@@ -1248,6 +1248,83 @@ class TestSafeReadFileBytesNolink:
                 str(f), max_bytes=4, allow_truncate=True, admit_hardlinked=lambda p, d: True
             )
 
+    @staticmethod
+    def _kernel_names(monkeypatch, name: Path) -> None:
+        """Make the descriptor's kernel name *name*, as macOS ``F_GETPATH`` does
+        for a hardlinked inode about one read in a hundred."""
+        spelled = os.path.realpath(name)
+        monkeypatch.setattr(hooks_mod, "_fd_real_path", lambda fd: spelled)
+
+    @pytest.mark.skipif(
+        not hooks_mod.pinned_fs.supports_pinned_walk(), reason="needs the pinned witness walk"
+    )
+    def test_a_hardlink_the_kernel_names_by_its_sibling_is_still_read(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        f = _write(root / "a.txt", "body")
+        _try_hardlink(f, tmp_path / "sibling.txt")  # outside the root, like site-packages
+        self._kernel_names(monkeypatch, tmp_path / "sibling.txt")
+        admit = lambda p, d: True  # noqa: E731
+        assert safe_read_file_bytes_nolink(str(f), admit_hardlinked=admit) == b"body"
+        assert (
+            safe_read_file_bytes_nolink(str(f), within_root=str(root), admit_hardlinked=admit)
+            == b"body"
+        )
+        with pytest.raises(FileTooLargeError):
+            safe_read_file_bytes_nolink(
+                str(f), max_bytes=2, allow_truncate=True, admit_hardlinked=admit
+            )
+
+    def test_a_single_link_file_the_kernel_names_elsewhere_is_refused(self, tmp_path, monkeypatch):
+        f = _write(tmp_path / "a.txt", "body")
+        _write(tmp_path / "other.txt", "body")  # a different inode: a swap, not a link
+        self._kernel_names(monkeypatch, tmp_path / "other.txt")
+        assert safe_read_file_bytes_nolink(str(f)) is None
+
+    def test_a_hardlink_whose_sibling_is_sensitive_is_refused(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        f = _write(root / "a.txt", "body")
+        sibling = tmp_path / "secret.txt"
+        _try_hardlink(f, sibling)
+        self._kernel_names(monkeypatch, sibling)
+        flagged = os.path.realpath(sibling)
+        real_sensitive = hooks_mod.is_sensitive_path
+        monkeypatch.setattr(
+            hooks_mod, "is_sensitive_path", lambda p: p == flagged or real_sensitive(p)
+        )
+        assert (
+            safe_read_file_bytes_nolink(
+                str(f), within_root=str(root), admit_hardlinked=lambda p, d: True
+            )
+            is None
+        )
+
+    def test_a_sensitive_sibling_named_only_at_the_containment_read_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        # The kernel answers per call: the identity check can see the opened
+        # name and the containment read the sensitive sibling. The containment
+        # branch must refuse on its own.
+        root = tmp_path / "root"
+        root.mkdir()
+        f = _write(root / "a.txt", "body")
+        sibling = tmp_path / "secret.txt"
+        _try_hardlink(f, sibling)
+        answers = iter([os.path.realpath(f)])
+        flagged = os.path.realpath(sibling)
+        monkeypatch.setattr(hooks_mod, "_fd_real_path", lambda fd: next(answers, flagged))
+        real_sensitive = hooks_mod.is_sensitive_path
+        monkeypatch.setattr(
+            hooks_mod, "is_sensitive_path", lambda p: p == flagged or real_sensitive(p)
+        )
+        assert (
+            safe_read_file_bytes_nolink(
+                str(f), within_root=str(root), admit_hardlinked=lambda p, d: True
+            )
+            is None
+        )
+
     def test_non_regular_refused(self, tmp_path):
         d = tmp_path / "adir"
         d.mkdir()

@@ -3994,6 +3994,17 @@ body = os.urandom(20_000)
 body = random.Random(20260803).randbytes(20_000)
 ```
 
+**The kernel's name for a hardlinked inode is an input too.** An inode with
+`st_nlink > 1` has several names, and macOS `F_GETPATH` returns whichever one the name
+cache holds, not the one the file was opened by: 1 read in 100 on an idle laptop named the
+sibling link, and 34 of 2000 admitted hardlink reads were refused by the old name
+comparison in `hooks._opened_file_matches_validated_path`. That was a product race, not
+a test one: a test that reads a hardlinked file through a path-identity check must not
+treat "the kernel named the other link" as a swap. The check now proves identity with
+the pinned witness walk (`_hardlink_alias_matches`) for a multi-link inode only. To test
+it, pin the kernel's answer (`monkeypatch.setattr(hooks, "_fd_real_path", ...)`) rather
+than hoping the cache picks the sibling.
+
 **Host MEMORY is the other one, and it fails with a misleading exception.**
 `SubagentManager.spawn` refuses — returning before it registers anything in
 `_tasks` — while the machine looks short of memory, and it does so twice: an
@@ -4399,6 +4410,27 @@ mark is the tool for a test that genuinely cannot share a worker.
 
 Mutate process globals through `monkeypatch`, which reverts on teardown even when the
 test fails. Raw assignment does not.
+
+**A class-level patch reaches every live instance in the worker, not just the test's.**
+`monkeypatch.setattr(SomeClass, "method", fake)` rebinds the method for the whole
+process, so any instance another test left running calls the fake too. The process-wide
+`executors.path_resolve_executor()` pool is that instance after any security test: its
+reaper ticks on its own thread and calls `_Child.ensure_spawned`. A fake that set the
+TEST pool's shutdown flag therefore fired from the shared reaper first, the test's reaper
+exited before its spawn, and nothing was killed (`assert [] == [<_Child ...>]`, 15 macOS
+runs on 14 branches in three days). Poking the shared reaper's wake event in a loop
+reproduced it 18 times in 30. Fix: the fake acts only for the instances under test and
+hands every other one to the real method (`if child not in executor._children: return
+real(child)`), as `TestShutdownRefillWindow` in `test_subprocess_pool.py` does.
+
+**Count descriptors by what they point at, never by the process total.** A shared xdist
+worker opens and closes logger, SQLite and pool handles on its own schedule, so a
+whole-process count drifts by a few under load (`assert 87 == 90` on macOS) while the
+code under test leaks nothing. Resolve each descriptor's target (`pinned_fs.fd_real_path`:
+`/proc/self/fd` on Linux, `F_GETPATH` on macOS) and count only the ones naming the object
+under test, as `_descriptors_pointing_at` in `test_chat_threads.py` does; skip where the
+host can resolve neither. Prove it with a negative control: drop the `os.close` under
+test and the count must move.
 
 **A process-wide verdict cache decides whether the code under test runs at all.**
 `cron_script._shell_is_posix_strict` caches its answer per shell for the life of the

@@ -811,16 +811,32 @@ def _stall_exit_status() -> int:
 
 def _run_child(script: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     """Run *script* in a child interpreter whose CWD is inside ``tmp_path``, so
-    nothing the child creates can land outside the test's own directory."""
+    nothing the child creates can land outside the test's own directory.
+
+    ``-X faulthandler`` is diagnostic only: the alarm path registers its own
+    ``SIGALRM`` handler either way, and this adds the fatal-signal handlers, so
+    a child that dies of ``SIGSEGV`` (``-11``, seen only on macOS) prints
+    the crashing thread's stack to stderr instead of dying silently."""
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     return subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-X", "faulthandler", "-c", script],
         capture_output=True,
         timeout=30,
         cwd=str(cwd),
         **UTF8_TEXT,
     )
+
+
+def _stall_evidence(proc: subprocess.CompletedProcess[str], dump: Path) -> tuple[object, ...]:
+    """What a failed exit-status assertion must carry: the status, the child's
+    stderr (the fatal-signal stack, when there is one) and the dump file, so a
+    red names whether the dump landed before the child died."""
+    try:
+        text = dump.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        text = f"<dump unreadable: {exc}>"
+    return proc.returncode, proc.stderr, text[-4000:]
 
 
 def _child_script(dump: Path, blocker: str) -> str:
@@ -857,7 +873,7 @@ def test_real_stall_ends_the_process_by_the_alarm(tmp_path: Path) -> None:
     signal handler, and the chained default disposition ends the process."""
     dump = tmp_path / "loopstall.txt"
     proc = _run_child(_child_script(dump, "time.sleep(10.0)"), tmp_path)
-    assert proc.returncode == _stall_exit_status(), (proc.returncode, proc.stderr)
+    assert proc.returncode == _stall_exit_status(), _stall_evidence(proc, dump)
     text = dump.read_text(encoding="utf-8", errors="replace")
     assert "Thread 0x" in text
     assert "<module>" in text
@@ -872,7 +888,7 @@ def test_real_gil_holding_stall_ends_the_process_by_the_alarm(tmp_path: Path) ->
     dump = tmp_path / "loopstall.txt"
     # Exponential backtracking: holds the GIL for far longer than any budget here.
     proc = _run_child(_child_script(dump, 're.match(r"(a+)+$", "a" * 64 + "b")'), tmp_path)
-    assert proc.returncode == _stall_exit_status(), (proc.returncode, proc.stderr)
+    assert proc.returncode == _stall_exit_status(), _stall_evidence(proc, dump)
     text = dump.read_text(encoding="utf-8", errors="replace")
     assert "Thread 0x" in text
     assert "<module>" in text
@@ -900,7 +916,7 @@ def test_alarm_dump_survives_a_temporary_sigalrm_owner_that_restores_sig_dfl(
         "wd.beat(); time.sleep(10.0)"
     )
     proc = _run_child(_child_script(dump, blocker), tmp_path)
-    assert proc.returncode == _stall_exit_status(), (proc.returncode, proc.stderr)
+    assert proc.returncode == _stall_exit_status(), _stall_evidence(proc, dump)
     text = dump.read_text(encoding="utf-8", errors="replace")
     assert "Thread 0x" in text, text
     assert "<module>" in text

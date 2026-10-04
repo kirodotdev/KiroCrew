@@ -22,7 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
-from kiro_crew import history_projection, platform_compat
+from kiro_crew import history_projection, pinned_fs, platform_compat
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_threads, ws
@@ -737,9 +737,40 @@ def test_a_leftover_staged_sidecar_is_never_written_over(tmp_path, monkeypatch):
     assert log.read_threads(key)[mid][0]["content"] == "kept"
 
 
+def _descriptors_pointing_at(directory: pathlib.Path) -> int | None:
+    """How many open descriptors of THIS process refer to *directory*.
+
+    Each descriptor's target is resolved through the kernel (``/proc/self/fd``
+    on Linux, ``F_GETPATH`` on macOS, both behind ``pinned_fs.fd_real_path``),
+    so unrelated handles a shared xdist worker opens and closes on its own
+    schedule are never counted. ``None`` when this host cannot enumerate or
+    resolve descriptors at all -- a whole-process count is not a substitute,
+    it drifts by a few on a loaded macOS runner.
+    """
+    want = os.path.realpath(directory)
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            fds = [int(name) for name in os.listdir(fd_dir) if name.isdigit()]
+        except OSError:
+            continue
+        break
+    else:
+        return None
+    resolved = 0
+    n = 0
+    for fd in fds:
+        target = pinned_fs.fd_real_path(fd)
+        if target is None:
+            continue  # closed since the listing (the listing's own fd), or unresolvable
+        resolved += 1
+        if os.path.realpath(target) == want:
+            n += 1
+    return n if resolved else None
+
+
 @pytest.mark.skipif(
-    not platform_compat.IS_POSIX or platform_compat.count_open_fds() is None,
-    reason="descriptor pinning is POSIX-only and needs a readable descriptor count",
+    not platform_compat.IS_POSIX or _descriptors_pointing_at(pathlib.Path(os.getcwd())) is None,
+    reason="descriptor pinning is POSIX-only and needs per-descriptor targets",
 )
 def test_a_failed_sidecar_staging_leaks_no_descriptor(tmp_path):
     """The delete pins the `.threads` directory before moving the sidecar aside;
@@ -760,27 +791,10 @@ def test_a_failed_sidecar_staging_leaks_no_descriptor(tmp_path):
         # Count the descriptors that point AT the sidecar directory, not every
         # descriptor in the process: unrelated handles (a logger, a database, a
         # pool worker) open and close on their own schedule in a shared worker.
-        # Only Linux exposes the target of each descriptor; elsewhere the whole
-        # process count is the best reading available.
-        def _pinned() -> int:
-            try:
-                fds = os.listdir("/proc/self/fd")
-            except OSError:
-                return platform_compat.count_open_fds() or 0
-            n = 0
-            for fd in fds:
-                try:
-                    target = os.readlink(f"/proc/self/fd/{fd}")
-                except OSError:
-                    continue
-                if target == str(path.parent):
-                    n += 1
-            return n
-
-        before = _pinned()
+        before = _descriptors_pointing_at(path.parent)
         for _ in range(5):
             assert log.delete_session(key) is False
-        after = _pinned()
+        after = _descriptors_pointing_at(path.parent)
     finally:
         os.chmod(path.parent, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- restores the fixture's own owner-only mode after the 0o500 lockout above so tmp_path can be cleaned; nothing published.  # noqa: E501  # fmt: skip
     assert after == before

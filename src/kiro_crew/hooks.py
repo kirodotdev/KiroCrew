@@ -3050,18 +3050,15 @@ def validate_file_path(raw: str) -> str | None:
     return path
 
 
-def _darwin_case_alias_matches(fd: int, path: str, opened_path: str) -> bool:
-    """Prove a case-only spelling difference without following a swapped link.
+def _validated_name_holds(fd: int, path: str) -> bool:
+    """Whether the validated name *path* holds the inode *fd* was read from.
 
-    Case folding selects candidates, never authorizes them: case-sensitive
-    volumes can hold distinct inodes at those names. Walk the validated name
-    without resolving it again, then compare against the descriptor we READ.
+    Walks *path* through a pinned parent without following a link at any
+    component, then compares against the descriptor we READ: a witness for the
+    cases where the kernel's own name for the descriptor legitimately differs
+    from the validated spelling.
     """
-    if (
-        sys.platform != "darwin"
-        or path.casefold() != opened_path.casefold()
-        or not pinned_fs.supports_pinned_walk()
-    ):
+    if not pinned_fs.supports_pinned_walk():
         return False
     try:
         witness = pinned_fs.open_in_pinned_parent(
@@ -3080,6 +3077,39 @@ def _darwin_case_alias_matches(fd: int, path: str, opened_path: str) -> bool:
         return False
 
 
+def _darwin_case_alias_matches(fd: int, path: str, opened_path: str) -> bool:
+    """Prove a case-only spelling difference without following a swapped link.
+
+    Case folding selects candidates, never authorizes them: case-sensitive
+    volumes can hold distinct inodes at those names. Walk the validated name
+    without resolving it again, then compare against the descriptor we READ.
+    """
+    if sys.platform != "darwin" or path.casefold() != opened_path.casefold():
+        return False
+    return _validated_name_holds(fd, path)
+
+
+def _hardlink_alias_matches(fd: int, path: str, opened_path: str) -> bool:
+    """Prove the kernel named a SIBLING link of the inode, not a swapped file.
+
+    An inode with ``st_nlink > 1`` has several names, and the kernel's answer
+    for a descriptor is whichever one it picks: macOS ``F_GETPATH`` (and
+    Windows ``GetFinalPathNameByHandleW``) can return the other link even when
+    the file was opened by *path* -- about one read in a hundred on an idle
+    host, more under load. A name difference alone is therefore not a swap for
+    a hardlinked inode; the witness walk of *path* decides. A single-link inode
+    keeps the strict name comparison.
+    """
+    if os.path.normcase(os.path.normpath(opened_path)) == os.path.normcase(path):
+        return False
+    try:
+        if os.fstat(fd).st_nlink <= 1:
+            return False
+    except OSError:
+        return False
+    return _validated_name_holds(fd, path)
+
+
 def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
     """Check the opened regular file against its validated, symlink-free name."""
     if not _stat.S_ISREG(os.fstat(fd).st_mode):
@@ -3089,7 +3119,9 @@ def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
         return False
     matches = os.path.normcase(os.path.normpath(opened_path)) == os.path.normcase(path)
     if not matches:
-        matches = _darwin_case_alias_matches(fd, path, os.path.normpath(opened_path))
+        matches = _darwin_case_alias_matches(
+            fd, path, os.path.normpath(opened_path)
+        ) or _hardlink_alias_matches(fd, path, opened_path)
     return matches and not is_sensitive_path(opened_path)
 
 
@@ -3397,6 +3429,14 @@ def safe_read_file_bytes_nolink(
             fd_real = _fd_real_path(fd)
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
+            if hardlinked and _hardlink_alias_matches(fd, path, fd_real):
+                # The kernel named a sibling link (outside the root, for an
+                # installed file linked into the skills tree); the witness walk
+                # proved *path* holds this inode, so containment is judged on it.
+                # A sibling under a sensitive path still refuses the read.
+                if is_sensitive_path(fd_real):
+                    return None
+                fd_real = path
             if not _opened_path_within_root(
                 fd_real, within_root, root_is_canonical=within_root_is_canonical
             ):

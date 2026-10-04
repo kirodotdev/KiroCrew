@@ -860,7 +860,15 @@ when the caller's callback accepts the exact bytes read. Its single caller is th
 global skill-body reader, which accepts an installed package `SKILL.md` whose bytes
 match the distribution `RECORD` digest
 ([memory-skills-hooks](memory-skills-hooks.md)); every other caller, and every
-agent-writable root, keeps the plain refusal. Linux and Windows retain their existing
+agent-writable root, keeps the plain refusal. The kernel may name ANY link of a
+multi-link inode (macOS `F_GETPATH` returns a sibling about one read in a hundred),
+so for `st_nlink > 1` a name that differs from the validated path is not on its own a
+swap: `_hardlink_alias_matches` walks the validated name through a pinned parent with
+no link followed and admits only when that walk lands on the descriptor's inode. The
+sibling's name is still screened as sensitive, and containment under `within_root` is
+then judged on the validated name. A single-link inode keeps the strict name
+comparison. Linux names the descriptor by the link it was opened through, so
+that branch is not reached there in practice; Linux and Windows otherwise retain their existing
 pathname and no-reparse checks. SEL event schemas are unchanged.
 
 The outbox notify and download handlers run path resolution, containment and

@@ -836,7 +836,8 @@ class TestShutdownRefillWindow:
             real_join(timeout)
 
         def kill(child):
-            order.append("kill")
+            if child in executor._children:  # not a shared pool's (see the next test)
+                order.append("kill")
             real_kill(child)
 
         try:
@@ -858,12 +859,22 @@ class TestShutdownRefillWindow:
         executor = SubprocessPoolExecutor(workers=1)
         killed: list[object] = []
         real_kill = executor_mod._Child.kill
+        real_ensure_spawned = executor_mod._Child.ensure_spawned
 
+        # The fakes patch the CLASS, so every live pool in this worker reaches them
+        # -- the process-wide ``path_resolve_executor`` pool any security test has
+        # started ticks on its own reaper. Act only for this executor's children
+        # and hand every other child to the real method; otherwise a foreign tick
+        # sets the flag first and this reaper exits before its spawn, killing
+        # nothing.
         def kill(child):
-            killed.append(child)
+            if child in executor._children:
+                killed.append(child)
             real_kill(child)
 
         def ensure_spawned(child):
+            if child not in executor._children:
+                return real_ensure_spawned(child)
             # The stage: ``shutdown`` sets its flag while this tick is already past
             # its second check. The tick reports a spawn and must now reap it.
             executor._shutdown.set()
