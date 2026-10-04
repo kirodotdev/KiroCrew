@@ -2654,6 +2654,18 @@ def _selectable_acp_backends() -> list[str]:
     return selectable_backend_values()
 
 
+# The grammar of every model PIN a Settings picker writes and `_validate_role_model`
+# then checks against the account's entitlement. The pickers list the advertised
+# model names, which OpenCode spells `provider/model`, so a pin accepts a bare id
+# OR slash-joined segments; the empty value (INHERIT / disabled, per key) still
+# matches. Malformed segments (`a//b`, `/a`, `a/`) and shell metacharacters are
+# refused. One constant so a picker cannot offer an id a sibling pin refuses.
+_MODEL_PIN_PATTERN = (
+    r"(?:[A-Za-z0-9][A-Za-z0-9._\-\[\]]*|[A-Za-z0-9][A-Za-z0-9._\-]*"
+    r"(?:/[A-Za-z0-9][A-Za-z0-9._\-]*)+)?\Z"
+)
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
@@ -2673,20 +2685,21 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # by kiro itself rather than silently accepted here. "auto"/"" = defer to
     # the agent config / kiro's own default.
     "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
-    # Per-task-class model overrides. Same grammar as agent.model (the real
-    # vocabulary is whatever the backend advertises). "" / "auto" defers to the
-    # chat default. `validate_fn` additionally rejects a well-formed id the
-    # active provider or the account's entitlement cannot honor.
+    # Per-task-class model overrides. The model-pin grammar (the real
+    # vocabulary is whatever the backend advertises, provider-qualified on
+    # OpenCode). "" / "auto" defers to the chat default. `validate_fn`
+    # additionally rejects a well-formed id the active provider or the
+    # account's entitlement cannot honor.
     "agent.role_models.background": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.role_models.subagent": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
@@ -2697,7 +2710,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Content-filter (refusal) fallback model. Single value: "" (default)
@@ -2708,7 +2721,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.refusal_fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
@@ -2982,7 +2995,7 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
         "max_len": 64,
         # OpenCode's picker advertises provider/model ids. Allow those while
         # retaining the empty INHERIT value and rejecting malformed segments.
-        "pattern": r"(?:[A-Za-z0-9][A-Za-z0-9._\-\[\]]*|[A-Za-z0-9][A-Za-z0-9._\-]*(?:/[A-Za-z0-9][A-Za-z0-9._\-]*)+)?\Z",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     }
 
@@ -3008,7 +3021,7 @@ _EDITABLE_CONFIG["decisions.nudge_wake.provider"] = {
 _EDITABLE_CONFIG["decisions.nudge_wake.llm_model"] = {
     "type": "str",
     "max_len": 64,
-    "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+    "pattern": _MODEL_PIN_PATTERN,
     "validate_fn": _validate_role_model,
 }
 
