@@ -61,6 +61,13 @@ HARNESS_BACKGROUND_WORK_HOLD_SECS = 3600.0
 #: at ~1.6-1.7x while still cutting off a runaway before it grows unbounded.
 HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR = 2
 
+#: How long after an RSS recycle a session crossing the ceiling again counts as
+#: the replacement climbing straight back. A recycled session restarts its
+#: process on its next message, which can be hours after an idle recycle, so
+#: the window spans a day. A crossing inside it suggests the ceiling sits below
+#: the workload's steady footprint rather than one session leaking.
+RSS_REBOUND_WINDOW_SECS = 86400.0
+
 
 class ShutdownSignal(Protocol):
     """The subset of ``asyncio.Event`` used by the cleanup loop."""
@@ -178,6 +185,10 @@ class CleanupState:
     # at most once per ``PROBE_FAILURE_WARN_INTERVAL_SECS`` across all keys,
     # never once per candidate per tick.
     probe_failure_warned_at: float | None = None
+    # Session key -> (monotonic time, tree RSS in MiB) of its last RSS recycle,
+    # kept for ``RSS_REBOUND_WINDOW_SECS``. The next crossing by that key pops
+    # its entry, so the rebound warning fires once per recycle cycle.
+    rss_recycled: dict[str, tuple[float, int]] = field(default_factory=dict)
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
     active_dashboard_slots: set[str] | None = None
@@ -729,6 +740,12 @@ class SessionCleanup:
         if not self.state.rss_max_mb:
             return
 
+        now = self._deps.monotonic()
+        last_recycles = self.state.rss_recycled
+        for stale, (at, _) in list(last_recycles.items()):
+            if now - at > RSS_REBOUND_WINDOW_SECS:
+                del last_recycles[stale]
+
         candidates: list[tuple[str, int, SessionEntry]] = []
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
@@ -777,6 +794,18 @@ class SessionCleanup:
                     )
                     rss_by_pid[pid] = rss
                 if rss > self.state.rss_max_mb:
+                    previous = last_recycles.pop(key, None)
+                    if previous is not None:
+                        self._deps.logger.warning(
+                            "RSS recycle rebound: session %s tree rss=%dMB is back above "
+                            "%dMB %.0fs after a recycle at %dMB; "
+                            "session.watchdog_rss_max_mb may be set too low for this workload",
+                            key,
+                            rss,
+                            self.state.rss_max_mb,
+                            now - previous[0],
+                            previous[1],
+                        )
                     victims.append((key, pid, rss, session))
 
         # One RECLAIM per runtime per tick. The threshold was crossed by a
@@ -868,6 +897,7 @@ class SessionCleanup:
                 if not recycled:
                     continue
                 recycled_pids.add(pid)
+                self.state.rss_recycled[key] = (self._deps.monotonic(), rss)
                 self._deps.logger.warning(
                     "RSS recycle: session %s tree rss=%dMB exceeds %dMB",
                     key,
