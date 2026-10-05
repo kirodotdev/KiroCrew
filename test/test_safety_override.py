@@ -1254,15 +1254,25 @@ class TestGrantLifetimeCopy:
         import kiro_crew.slack.handler as h
 
         src_dir = pathlib.Path(h.__file__).parent
+        # The native handler's owners render its ``!yolo`` replies, so they are
+        # scanned with it; the helper-call floor below fails if that copy leaves.
+        names = ("handler.py", "events.py") + tuple(
+            f"handler_runtime/{path.name}"
+            for path in sorted((src_dir / "handler_runtime").glob("[!_]*.py"))
+        )
+        helper_calls = 0
         offenders = []
-        for name in ("handler.py", "events.py"):
+        for name in names:
             # Explicit utf-8: these files contain emoji, and the Windows default
             # (cp1252) cannot decode them.
             text = (src_dir / name).read_text(encoding="utf-8")
+            helper_calls += text.count("describe_grant_lifetime(")
+            helper_calls += text.count("describe_new_grant(")
             for i, line in enumerate(text.splitlines(), 1):
                 if "remaining // 60" in line:
                     offenders.append(f"{name}:{i}")
         assert not offenders, f"raw remaining rendering reintroduced at {offenders}"
+        assert helper_calls >= 6, helper_calls
 
 
 class TestDurationResolvedLive:

@@ -2269,6 +2269,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/interactions.py",
         "slack/renderer.py",
         "slack/sessions_view.py",
+        # The owners composed into slack/handler.py, in the same class as that
+        # facade: they redact the answer stream, the approval prompts, the command
+        # replies and the thread context the native turn posts or reads, and
+        # slack/handler.py stays the registered "Slack messages" sink for all of
+        # it, so the split adds no egress path of its own.
+        "slack/handler_runtime/approvals.py",
+        "slack/handler_runtime/commands.py",
+        "slack/handler_runtime/inbound.py",
+        "slack/handler_runtime/stream.py",
+        "slack/handler_runtime/turn_context.py",
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.

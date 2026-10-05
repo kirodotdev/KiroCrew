@@ -586,7 +586,7 @@ expiry**: open the dashboard at least once a month and you need never mint
 another link.
 
 The access-session numbers still govern the initial mint. The chat-command
-default is 1 hour (`ttl = 3600` in `slack/events.py` and `slack/handler.py`);
+default is 1 hour (`ttl = 3600` in `slack/events.py` and `slack/handler_runtime/commands.py`);
 pass a duration to raise it (`/kirocrew dashboard 6h`,
 `/kirocrew dashboard 20h`). `parse_duration` accepts `<N>h` or `<N>m` and clamps
 to the 20-hour ceiling, so asking for more silently gets you 20 hours rather than

@@ -480,7 +480,7 @@ def build_allowed_origins(port: int, local_only: bool, configured_host: str = ""
 
 ### 3. `!dashboard` Command Handler
 
-Location: `src/kiro_crew/slack/handler.py` → `_handle_slash_command`
+Location: `src/kiro_crew/slack/handler_runtime/commands.py` → `_bang_dashboard`, dispatched by `_handle_slash_command` (re-exported by `slack/handler.py`)
 
 Parses `!dashboard [duration]`, delegates to `allowlist.send_dashboard_link()`:
 

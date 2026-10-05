@@ -866,7 +866,8 @@ ladder is armed lazily and only when there is something to decorate: reactions
 enabled for the channel, a transport that declares `reactions`, a recorded user
 message id, and a renderer that has not been closed, since a late event after
 teardown must not arm a fresh ladder whose timers would then outlive the turn.
-Slack still runs its own `StatusReactionController` in `slack/handler.py`, the
+Slack still runs its own `StatusReactionController` (`slack/handler_runtime/reactions.py`,
+re-exported by `slack/handler.py`), the
 implementation this module was generalized from, so until Slack moves over the
 same phase machine exists twice. `test/test_status_reactions.py` pins both: the
 shared ladder's phases, debounce, stall marks, close-drain and sink-failure
@@ -2570,7 +2571,11 @@ here so a second channel inherits the trackers, the durable flag and the audit
 rather than a second copy of them; `slack/handler.py` keeps every public symbol
 (`is_thread_temporary`, `is_thread_incognito`, `_is_slack_restricted`,
 `maybe_apply_privacy_modifiers`) as a thin wrapper, with `_thread_temporary` /
-`_thread_incognito` as **aliases of the shared objects**, not copies.
+`_thread_incognito` as **aliases of the shared objects**, not copies. The
+predicate and tracker aliases sit on `slack/handler.py` itself; the wrapper
+functions (`_is_slack_restricted`, `_hydrate_conv_flags`, `_apply_privacy_mode`,
+`maybe_apply_privacy_modifiers`) are defined in `slack/handler_runtime/inbound.py`
+and composed onto it.
 
 - **Keyed by session key, never by a platform thread id.** That is what lets one
   copy serve a Slack thread ts, a Telegram DM route and a forum Topic, and it is

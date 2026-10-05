@@ -108,7 +108,7 @@ truncation boundary cannot split and thereby hide a credential.
 
 ### Slack to dashboard
 
-`maybe_route_linked_thread` (`slack/handler.py`) runs before hook handling and
+`maybe_route_linked_thread` (`slack/handler_runtime/inbound.py`, re-exported by `slack/handler.py`) runs before hook handling and
 before any turn work, on both the native and messaging-transport paths:
 
 1. Look up `get_linked_slot(reply_ts)`. The index is keyed by the **bare

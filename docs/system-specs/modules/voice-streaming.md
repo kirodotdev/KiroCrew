@@ -139,7 +139,7 @@ Telegram and dashboard paths. Three rules:
 | Streaming playback | `website/src/hooks/websocket/voicePlayback.ts`, `website/src/lib/voicePlayback.ts` | Detects speech boundaries, coalesces pending requests, schedules PCM on one audio clock, and handles interruption. `website/src/hooks/useWebSocket.ts` composes it and routes the `voice_*` frames and the stream and turn boundaries to it. |
 | Playback failures | `website/src/components/VoicePlaybackNotice.tsx` | Displays localized playback or provider failures and retains their machine code in the error report. |
 | Settings | `website/src/pages/settings/VoicePanel.tsx` | Updates auto-speak, provider, and the selected provider's settings; fetches each provider's voice catalogue only while that provider is selected. |
-| Slack reply | `slack.handler.handle_message()` and `_safe_voice_reply()` | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
+| Slack reply | `slack.handler.handle_message()`, through `_reply_by_voice()` and `_safe_voice_reply()` (`slack/handler_runtime/voice.py`) | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
 
 ## Dashboard auto-speak
 
@@ -364,7 +364,8 @@ synthesis so simultaneous local requests cannot load unbounded models.
 ## Configuration and API
 
 Configuration is stored under `voice_reply` in the Crew configuration file.
-`slack.handler.load_voice_reply_config()` loads the live `_VoiceConfig`. A
+`slack.handler.load_voice_reply_config()` (defined in `slack/handler_runtime/voice.py`)
+loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`. A
 `PUT /api/voice/config` validates the whole patch first, then persists it as a
 locked delta read-modify-write (`run_config_write` → `update_config_locked`)
 that sets only the named keys inside `voice_reply`, so voice settings owned by
@@ -482,9 +483,11 @@ surface can show:
 
 ## Slack voice replies
 
-`slack.handler` accepts `!voice` thread commands for enabling and disabling a
+`slack.handler` accepts `!voice` thread commands (`_bang_voice`,
+`slack/handler_runtime/commands.py`) for enabling and disabling a
 thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
-`handle_message()` starts `_safe_voice_reply()` as a background task when a
+`handle_message()` calls `_reply_by_voice()` (`slack/handler_runtime/voice.py`),
+which starts `_safe_voice_reply()` as a background task when a
 thread or global setting enables replies, or when voice-input reply settings
 allow a transcribed voice message to receive audio. `_safe_voice_reply()` calls
 the provider-aware `voice_reply.voice_reply()` path, so Slack replies follow
