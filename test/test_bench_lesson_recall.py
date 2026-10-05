@@ -13,12 +13,15 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import vector_memory
 from kiro_crew.cli_bench import bench_cmd
 from kiro_crew.eval.bench.lesson_recall import (
     KEYWORD_ONLY_EMBEDDER_ID,
     LESSON_QUERY_CLASSES,
     LessonGoldenSet,
     LessonGoldenSetError,
+    _stored_rule_text,
+    _write_rules,
     default_lesson_golden_set_path,
     format_lesson_report,
     run_lesson_recall,
@@ -152,6 +155,61 @@ class TestRun:
         assert first.embedder_id == TOY_EMBEDDER_ID
         assert [r.ranked_rule_ids for r in first.results] == [
             r.ranked_rule_ids for r in second.results
+        ]
+
+    def test_tied_rules_rank_alike_whatever_instants_the_store_clock_reads(
+        self, packaged: LessonGoldenSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A store clock frozen on one instant ranks like one that never repeats.
+
+        ``get_lessons`` orders rows newest first and by key within one stamp, and
+        ``rank_lessons`` keeps that order for rules tied on every score. A coarse
+        clock (about 15.6 ms on Windows under Python 3.12) puts back-to-back
+        writes on one stamp in groups that differ from run to run; the two runs
+        here are its extremes, every write on one instant and each on its own.
+        The keyword run is used because words alone tie more rules than the toy
+        vector does. Each run must also hand the store's clock back as it found it.
+
+        Fails if the rules are stamped by the store's clock: the frozen run then
+        ranks tied rules by key, and the other newest first. Fails too if the
+        harness leaves its own clock in place after a run.
+        """
+
+        def frozen() -> str:
+            return "2026-01-01T00:00:00+00:00"
+
+        monkeypatch.setattr(vector_memory, "_now_iso", frozen)
+        one_instant = run_lesson_recall(packaged, use_embeddings=False)
+        assert vector_memory._now_iso is frozen
+        ticks = iter(f"2026-01-01T00:00:00.{tick:06d}+00:00" for tick in range(1, 1_000_000))
+
+        def ticking() -> str:
+            return next(ticks)
+
+        monkeypatch.setattr(vector_memory, "_now_iso", ticking)
+        distinct_instants = run_lesson_recall(packaged, use_embeddings=False)
+        assert vector_memory._now_iso is ticking
+        assert [r.ranked_rule_ids for r in one_instant.results] == [
+            r.ranked_rule_ids for r in distinct_instants.results
+        ]
+
+    def test_the_store_reads_the_golden_rules_back_newest_first_in_file_order(
+        self, packaged: LessonGoldenSet, tmp_path: Path, opened
+    ) -> None:
+        """Each rule is stamped after the one before it, so the store reads the file reversed.
+
+        That is the order ``rank_lessons`` keeps for rules tied on every score, and
+        the order a host whose clock never repeats already produces, so a run's
+        numbers stay comparable across hosts.
+
+        Fails if the rules share one stamp or are stamped out of file order: the
+        store then reads them back by key, or in some other order.
+        """
+        store = opened(VectorMemoryStore(db_path=tmp_path / "memory.db"))
+        store.init()
+        rule_id_by_text = _write_rules(store, packaged.rules)
+        assert [rule_id_by_text[_stored_rule_text(row)] for row in store.get_lessons()] == [
+            rule.id for rule in reversed(packaged.rules)
         ]
 
     def test_a_rule_the_store_merges_is_refused_by_name(self, tmp_path: Path) -> None:

@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import json
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterator, Sequence
 
+from kiro_crew import vector_memory
 from kiro_crew.eval.bench.errors import BenchRefusal
 from kiro_crew.eval.bench.kb_retrieval import mrr_at_k
 from kiro_crew.eval.bench.retrieval import ndcg_at_k, recall_all_at_k, recall_any_at_k
@@ -60,6 +63,10 @@ DEFAULT_LESSON_K_VALUES: tuple[int, ...] = (1, 3, 5, 10)
 
 #: A hand-authored golden set has no business approaching this.
 _GOLDEN_MAX_BYTES = 4 * 1024 * 1024
+
+#: The stamp the first golden rule is written at; each later rule is one
+#: microsecond newer.
+_FIRST_RULE_WRITTEN_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 class LessonGoldenSetError(BenchRefusal):
@@ -259,9 +266,17 @@ def _write_rules(store: VectorMemoryStore, rules: Sequence[LessonRule]) -> dict[
     longer holds the rule under its own id, which is refused here by name. A
     write that inserted and superseded nothing leaves every earlier rule in
     place, so the store then holds exactly the golden rules.
+
+    Each rule is stamped one microsecond after the one before it, not at the
+    wall clock. ``get_lessons`` orders rows newest first and by key within one
+    stamp, and ``rank_lessons`` keeps that order for rules tied on every score.
+    A coarse clock (about 15.6 ms on Windows under Python 3.12) puts
+    back-to-back writes on one stamp in groups that differ from run to run, so
+    two runs would rank the same tied rules differently.
     """
-    for rule in rules:
-        result = store.write_lesson(rule.rule, negative=rule.negative)
+    for index, rule in enumerate(rules):
+        with _store_clock_at(_FIRST_RULE_WRITTEN_AT + timedelta(microseconds=index)):
+            result = store.write_lesson(rule.rule, negative=rule.negative)
         if result.outcome is not LessonWriteOutcome.INSERTED or result.superseded:
             raise LessonGoldenSetError(
                 f"write_lesson did not store rule {rule.id!r} as written "
@@ -269,6 +284,26 @@ def _write_rules(store: VectorMemoryStore, rules: Sequence[LessonRule]) -> dict[
                 "reword it so the store's dedup does not merge it with another rule"
             )
     return {rule.rule: rule.id for rule in rules}
+
+
+@contextmanager
+def _store_clock_at(instant: datetime) -> Iterator[None]:
+    """Date the rows the store stamps through ``vector_memory._now_iso`` at *instant*.
+
+    A lesson row's ``created_at`` and ``updated_at`` come from that facade seam,
+    read at call time, so the write itself runs unchanged. Record-metadata rows
+    keep the wall clock; nothing orders on them. The replacement is process-wide
+    while it holds, which is why it covers one write and is restored after it.
+    The fixed-width form keeps string order, which is what ``ORDER BY
+    updated_at`` compares, equal to time order.
+    """
+    stamp = instant.isoformat(timespec="microseconds")
+    original = vector_memory._now_iso
+    vector_memory._now_iso = lambda: stamp
+    try:
+        yield
+    finally:
+        vector_memory._now_iso = original
 
 
 def _ranked_rule_ids(
@@ -315,7 +350,9 @@ def run_lesson_recall(
     """Score *golden* against ``rank_lessons`` and return the report.
 
     The store lives in a private temp directory removed on exit, so no live
-    memory is read or written.
+    memory is read or written. Not for a process that writes vector memory on
+    another thread: each rule write swaps ``vector_memory._now_iso``
+    process-wide while it runs.
     """
     golden.validate()
     if not use_embeddings:
