@@ -226,7 +226,7 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     ['components/notifications/NotificationFeed.tsx', 'group-hover:opacity-40 [@media(hover:none)]:opacity-60'],
     ['pages/ChatSidebar.tsx', "${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}"],
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu, not the overlay cluster.
-    ['pages/ChatSidebar.tsx', 'isMobile={isMobile || isTouchDevice}'],
+    ['pages/ChatSidebar.tsx', 'isMobile: isMobile || isTouchDevice'],
     // On touch a non-empty folder row's cluster sits inline, the shape an empty folder row already uses.
     ['pages/ChatSidebar.tsx', '[@media(hover:none)]:opacity-100 [@media(hover:none)]:static [@media(hover:none)]:translate-y-0'],
     // The table view's folder row spans the whole sideways-scrolling table, so on touch its menu sits inline, not ml-auto past the viewport.

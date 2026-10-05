@@ -13,7 +13,7 @@ import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecent
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { slotActivityTs } from '../chat/sessionOrder'
 import { decideUnreadDrain } from '../unreadDrain'
-import { isPeerRow } from './rowIdentity'
+import type { ChatFolder } from '../../types'
 
 interface SessionFilterDef {
   key: SessionFilterKey
@@ -117,6 +117,24 @@ export function useSessionFilterState() {
     setFilterHiddenFolders(new Set())
     safeSetItem(HIDDEN_FOLDERS_LS_KEY, '[]')
   }, [])
+  /** The reveal's folder clear: un-hide `folderId` and its whole ancestor chain,
+   *  persisted like `toggleFolderFilter`. Cycle-guarded like the hidden subtree: a
+   *  hand-edited folders.json can hold a parent_id loop. */
+  const unhideFolderChain = useCallback((folderId: string | undefined, folders: readonly ChatFolder[]) => {
+    setFilterHiddenFolders(prev => {
+      const next = new Set(prev)
+      const visited = new Set<string>()
+      let curId = folderId
+      while (curId && !visited.has(curId)) {
+        visited.add(curId)
+        next.delete(curId)
+        const cid = curId
+        curId = folders.find(f => f.id === cid)?.parent_id
+      }
+      safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
   /** Tag ids the list is narrowed to. Selecting several is a UNION ("Blocked or
    *  Waiting"), matching how a board column with several tags already behaves, so
    *  the two surfaces cannot disagree about what a multi-tag selection means. */
@@ -196,21 +214,20 @@ export function useSessionFilterState() {
   }, [])
   return {
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
-    filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
+    filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
   }
 }
 
-/** Which rows are running, recent or unread, the chip counts, the Recent window and the unread auto-drain. */
-export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, allRows, disableFilter }: {
+/** Which local rows are running, recent or unread, the Recent window and the unread auto-drain. */
+export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, disableFilter }: {
   unreadSlots: string[]
   activeFilters: Set<SessionFilterKey>
   /** Every active status filter is lifted, so none of them narrows the list. */
   filtersPaused: boolean
   enableFilter: (key: SessionFilterKey) => void
   localSlots: Slot[]
-  allRows: Slot[]
   disableFilter: (key: SessionFilterKey) => void
 }) {
   // Signal from the SSE/data-fetch layer indicating the initial slot list
@@ -342,30 +359,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.
   }, [localSlots, runningSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Exhaustive over `SessionFilterKey` on purpose: a new filter key becomes a
-  // type error here instead of a predicate that silently matches nothing.
-  const _derivedLookup = useMemo<Record<SessionFilterKey, (slot: Slot) => boolean>>(() => ({
-    unread: slot => !isPeerRow(slot) && unreadSet.has(slot.key),
-    running: slot => isPeerRow(slot) ? slot.running === true : runningSet.has(slot.key),
-    pinned: slot => !isPeerRow(slot) && !!slot.pinned,
-    recent: slot => isPeerRow(slot)
-      ? isWithinRecentWindow(slotActivityTs(slot), Date.now(), recentWindowMs)
-      : recentSet.has(slot.key),
-  }), [unreadSet, runningSet, recentSet, recentWindowMs])
-  const filterCounts = useMemo(() => {
-    const counts = {} as Record<SessionFilterKey, number>
-    // Counted over `allRows` — the collection the filter RENDERS — not over
-    // `localSlots`. The two diverge for `running` and `recent`, whose predicates
-    // are origin-aware and so match peer rows: counting locals while rendering
-    // the merged set made those two badges under-report by exactly the remote
-    // rows the filter goes on to show. `unread` and `pinned` are unaffected
-    // either way because their predicates are themselves local-only
-    // (`!isPeerRow(slot) && …`), so widening the collection cannot add a match —
-    // which is why the badge must follow the RENDERED set rather than each
-    // predicate's notion of scope.
-    for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = allRows.filter(_derivedLookup[filterDef.key]).length
-    return counts
-  }, [allRows, _derivedLookup])
+  // The chip predicates and their badge counts are the row model's (`./rows`), which
+  // reads these sets only for local rows.
   // Ref mirror of `activeFilters` so the auto-drain effect can read the
   // current toggle state without depending on it. Keeps the effect from
   // re-firing on its own setState output.
@@ -408,6 +403,6 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
-    commitRecentAmount, changeRecentUnit, runningSet, _derivedLookup, filterCounts,
+    commitRecentAmount, changeRecentUnit, runningSet, recentSet,
   }
 }

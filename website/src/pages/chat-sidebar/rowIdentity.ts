@@ -1,7 +1,7 @@
-/** Row identity and the origin guards on local metadata. A peer row can carry a slot
- *  key byte-identical to a local one, so every key-indexed lookup of pin, folder or
- *  unread state goes through these helpers. */
-import { type SortKey, comparePinnedThenSort, compareBySort } from '../chat/sessionOrder'
+/** Row identity and the origin test on local metadata. A peer row can carry a slot
+ *  key byte-identical to a local one, so a key-indexed lookup of pin, folder or unread
+ *  state must reject the peer origin first: the row model (`./rows`) does it once for
+ *  every row it builds, and the owners that hold their own lists use these helpers. */
 import type { Slot } from './types'
 
 /** Does this row belong to ANOTHER machine? The one question every local-only
@@ -58,38 +58,11 @@ export function historyRowIdentity(item: { key: string; instance_id?: string }):
 
 /** Local sidebar metadata is keyed only by local slot key. A remote peer may
  * emit the same deterministic key, so mixed collections must reject the remote
- * origin before consulting pin or folder state. */
+ * origin before consulting folder state. The row model (`./rows`) answers this for
+ * the rows it builds; this reader serves the owners that hold their own lists. */
 export function localSlotFolder(
   slot: Pick<Slot, 'key' | 'peer_id'>,
   slotFolders: Readonly<Record<string, string>>,
 ): string | undefined {
   return isPeerRow(slot) ? undefined : slotFolders[slot.key]
-}
-
-export function isLocallyPinned(
-  slot: Pick<Slot, 'key' | 'peer_id'>,
-  pinned: ReadonlySet<string>,
-): boolean {
-  return !isPeerRow(slot) && pinned.has(slot.key)
-}
-
-/** `comparePinnedThenSort` with the peer rows masked out of the pinned bucket.
- *
- * That shared comparator keys on the raw slot key alone, which is correct for a
- * local-only collection but not for this one: a peer key can be byte-identical
- * to a locally pinned one, and the row would then sort into the pinned section
- * of a list it cannot be pinned in. Membership is decided here; the pinned ORDER
- * itself still has exactly one implementation, delegated to below. */
-export function compareLocalPinnedThenSort(
-  a: Slot,
-  b: Slot,
-  key: SortKey,
-  pinned: ReadonlySet<string>,
-  pinnedRank?: ReadonlyMap<string, number>,
-): number {
-  const aPinned = isLocallyPinned(a, pinned)
-  const bPinned = isLocallyPinned(b, pinned)
-  if (aPinned !== bPinned) return aPinned ? -1 : 1
-  if (aPinned && bPinned) return comparePinnedThenSort(a, b, key, pinned, pinnedRank)
-  return compareBySort(a, b, key)
 }

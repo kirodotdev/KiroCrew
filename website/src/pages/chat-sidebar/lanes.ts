@@ -1,10 +1,9 @@
-/** Which lane renders: the persisted lane preference, the flat-lane projection and the
+/** Which lane renders: the persisted lane preference, the lane actually drawn, and the
  *  header's lane cycle. */
 import { useState, useCallback, useMemo } from 'react'
 import { safeSetItem } from '../../utils/safeStorage'
-import type { SidebarLane, Slot } from './types'
+import type { SidebarLane } from './types'
 import { readStoredLane, SIDEBAR_LANE_LS_KEY, FLAT_VIEW_LS_KEY } from './persistence'
-import { localSlotFolder } from './rowIdentity'
 import { i18nT } from '../../i18n/t'
 import type { ChatFolder } from '../../types'
 
@@ -34,42 +33,27 @@ export function useSidebarLane() {
   return { lane, setLanePersisted, setFlatView }
 }
 
-/** The flat lane: filtered rows minus those the folder filter conceals. */
-export function useFlatLane({ folderFilterActive, slotFolders, filterHiddenSubtree, filteredSlots }: {
-  folderFilterActive: boolean
-  slotFolders: Record<string, string>
-  filterHiddenSubtree: Set<string>
-  filteredSlots: Slot[]
-}) {
-  // Flat-view slot list: filteredSlots minus sessions in hidden folders —
-  // EXCEPT while searching, where every match must stay reachable so a hidden
-  // folder never becomes a search dead-end.
-  /** Does the folder filter conceal this row?
-   *
-   *  ONE definition because every lane that renders sessions has to ask it, and each
-   *  asks it where it builds its row POPULATION rather than at its render site: the
-   *  tree lane drops an unchecked folder's whole block, the flat lane strips the rows,
-   *  and the conductor lane keeps them out of its lineage. Asked at a render site
-   *  instead, a lane would have to remember to ask again for every set it derives --
-   *  its matches, its context anchors, its collapsed aggregates -- and the one it
-   *  forgot would put a row on screen the person asked not to see.
-   *
-   *  Distinct from `isFolderHidden`, which is the folder's OWN hide-when-empty
-   *  attribute. This one is the person's choice in the filter menu, and
-   *  `folderFilterActive` turns it off entirely while the search box has text, so a
-   *  hidden folder never becomes a search dead-end. */
-  const isRowFolderHidden = useCallback((s: Slot): boolean => {
-    if (!folderFilterActive) return false
-    const fid = localSlotFolder(s, slotFolders)
-    return !!fid && filterHiddenSubtree.has(fid)
-  }, [folderFilterActive, filterHiddenSubtree, slotFolders])
+/** What the session list actually renders. The preference picks among the
+ *  `SidebarLane`s; the tag-column board is a separate axis that PREEMPTS that choice
+ *  whenever any column is configured, and reads the flat preference as "no folder
+ *  blocks inside the columns". */
+export type RenderedLane = SidebarLane | 'board' | 'board-flat'
 
-  /** Flat-view slot list: `filteredSlots` minus every row the folder filter conceals. */
-  const flatSlots = useMemo(
-    () => (folderFilterActive ? filteredSlots.filter(s => !isRowFolderHidden(s)) : filteredSlots),
-    [filteredSlots, folderFilterActive, isRowFolderHidden],
-  )
-  return { isRowFolderHidden, flatSlots }
+/** The lane on screen, from the preference and what each lane needs to draw something:
+ *  the board needs a column, `conductor` an edge (no row carries a creator otherwise,
+ *  and the lane would be the flat list with a chevron nowhere), and `flat` a folder to
+ *  explode. A preference whose condition is missing falls back to the folder tree, the
+ *  one lane that can always render. */
+export function renderedLane({ lane, boardColumns, folders, lineageAvailable }: {
+  lane: SidebarLane
+  boardColumns: number
+  folders: number
+  lineageAvailable: boolean
+}): RenderedLane {
+  if (boardColumns > 0) return lane === 'flat' ? 'board-flat' : 'board'
+  if (lane === 'conductor' && lineageAvailable) return 'conductor'
+  if (lane === 'flat' && folders > 0) return 'flat'
+  return 'tree'
 }
 
 /** The lanes that can render, the next one, and the header button that cycles them. */

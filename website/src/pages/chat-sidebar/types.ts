@@ -200,8 +200,8 @@ export interface RevealBlockingFilter {
   hides: (slot: Slot) => boolean
   clear: (slot: Slot) => void
 }
-/** One sidebar filter dimension, declared exactly once (in the component's
- *  `filterDimensions` memo) and consumed by the three sites that must agree on
+/** One sidebar filter dimension, declared exactly once (in the row model's
+ *  `buildSidebarRows`, `./rows`) and consumed by the three sites that must agree on
  *  which filters exist: `filteredSlots` (which rows render at all),
  *  `listNarrowed` (is anything filtering right now), and
  *  `revealBlockingFilters` (does THIS row fail an active filter). Every field

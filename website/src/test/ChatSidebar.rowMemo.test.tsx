@@ -8,15 +8,21 @@
  *  1. A slotStatusDetail write for ONE slot re-renders only that slot's row —
  *     and that row's visible status text updates. Hoisting the subscription
  *     back to the sidebar shell fails this either way: as a whole-map shell
- *     read it re-renders every row (probe counts explode); as a shell read
- *     behind the memo with unchanged props it re-renders none (the status
+ *     read it re-renders every row (render counts explode); as a shell read
+ *     behind the memo with an unchanged view it re-renders none (the status
  *     text never appears).
- *  2. A shell re-render with unchanged row props re-renders NO rows. Removing
+ *  2. A shell re-render with unchanged row views re-renders NO rows. Removing
  *     the memo() wrapper fails this: every shell render re-executes all 200+
  *     row bodies, which is the whole-sidebar jank the boundary exists to stop.
  *
- * Render counts are unobservable from the DOM, so the rows report each body
- * execution through the exported sessionRowRenderProbe test seam.
+ * Render counts are unobservable from the DOM, so they are counted at the
+ * row's own boundary: every SessionRow body renders exactly one pinned-session
+ * `DndDroppable`, and a test-side wrapper around that real component records
+ * each render by slot key. The wrapper re-renders only when the row body hands
+ * it a new element, so its count is the row's body count. (A React `<Profiler>`
+ * inside the row cannot stand in: dnd-kit's context re-runs the droppable's
+ * render prop on every shell render, which a Profiler reports as a commit even
+ * while the row body bails out.)
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -112,7 +118,23 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
-import ChatSidebar, { sessionRowRenderProbe, SIDEBAR_DISPLACEMENT_WINDOW } from '../pages/ChatSidebar'
+// Per-row body renders, by slot key (see the file doc). Hoisted so the mock
+// factory below can write it.
+const { counts } = vi.hoisted(() => ({ counts: {} as Record<string, number> }))
+vi.mock('../components/dnd', async (orig) => {
+  const React = await import('react')
+  const real = await orig<typeof import('../components/dnd')>()
+  const DndDroppable = (props: React.ComponentProps<typeof real.DndDroppable>) => {
+    if (props.data?.type === 'pinned-session') {
+      const key = String(props.data.key)
+      counts[key] = (counts[key] || 0) + 1
+    }
+    return React.createElement(real.DndDroppable, props)
+  }
+  return { ...real, DndDroppable }
+})
+
+import ChatSidebar, { SIDEBAR_DISPLACEMENT_WINDOW } from '../pages/ChatSidebar'
 import { setSlotStatusDetail } from '../store/chatSlice'
 
 const slot = (key: string, over: Record<string, unknown> = {}) => ({
@@ -238,14 +260,11 @@ function renderSidebarWithSlots(slots: ReturnType<typeof slot>[]) {
   return { store, sidebarWithSlots, wrap }
 }
 
-const counts: Record<string, number> = {}
 beforeEach(() => {
   localStorage.clear()
   for (const k of Object.keys(counts)) delete counts[k]
-  sessionRowRenderProbe.current = (key) => { counts[key] = (counts[key] || 0) + 1 }
 })
 afterEach(() => {
-  sessionRowRenderProbe.current = null
   vi.clearAllMocks()
 })
 
@@ -276,7 +295,7 @@ describe('chat sidebar — session row memo boundary', () => {
     expect(counts['k-c']).toBeUndefined()
   })
 
-  it('a shell re-render with unchanged row props re-renders no rows', () => {
+  it('a shell re-render with unchanged row views re-renders no rows', () => {
     // The prop change must originate BELOW the providers: view.rerender()
     // re-renders the whole wrapper tree, and ThemeProvider mints a fresh
     // context value per render — a context update bypasses memo entirely and
@@ -396,9 +415,9 @@ describe('selectSidebarWorkflowActive — hostile session keys', () => {
  * extraction honest — the resolution has to live INSIDE the memoized row, so a
  * future refactor that moves the row body again cannot quietly drop it.
  *
- * Note on the re-tint case: `installedAgents` is an ARRAY prop on the row, so
- * under memo's default shallow compare a new array identity re-renders every
- * row, not just the affected one. That is the existing prop contract, so this
+ * Note on the re-tint case: `installedAgents` is an ARRAY member of the one row
+ * shell every view holds, so a new array identity re-renders every row, not
+ * just the affected one. That is the existing contract, so this
  * pins the CORRECTNESS claim (the tint updates) and deliberately does not
  * assert single-row isolation, which would require passing a pre-resolved
  * per-row primitive instead.

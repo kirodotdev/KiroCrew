@@ -12,7 +12,6 @@ import { i18nT } from '../../i18n/t'
 import { computeActiveSubtree, folderIsHidden } from '../../utils/folderVisibility'
 import type { ChatFolder } from '../../types'
 import type { Slot } from './types'
-import { localSlotFolder } from './rowIdentity'
 
 /** The folder sort mode read from the shared config, its save, and the reorder hint. */
 export function useFolderSort({ queryClient, mcCfg, mcCfgStatus, mcCfgError, mcCfgErrorUpdatedAt, setFolderActionError }: {
@@ -312,9 +311,9 @@ export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders,
 }
 
 /** The filter menu folder rows, in tree order with direct counts. */
-export function useFolderFilterRows({ filteredSlots, slotFolders, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree }: {
-  filteredSlots: Slot[]
-  slotFolders: Record<string, string>
+export function useFolderFilterRows({ folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree }: {
+  /** The row model's folder index: the filtered rows filed directly in each folder. */
+  folderTree: { rowsIn: (folderId: string) => Slot[] }
   folders: ChatFolder[]
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
   filterHiddenFolders: Set<string>
@@ -324,11 +323,6 @@ export function useFolderFilterRows({ filteredSlots, slotFolders, folders, folde
   // count of flat-lane sessions filed directly in it, and whether an unchecked
   // ancestor is already hiding it (that row renders inert).
   const folderFilterRows = useMemo(() => {
-    const directCounts = new Map<string, number>()
-    for (const s of filteredSlots) {
-      const fid = localSlotFolder(s, slotFolders)
-      if (fid) directCounts.set(fid, (directCounts.get(fid) ?? 0) + 1)
-    }
     // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
     // visited set so a parent_id cycle terminates instead of recursing forever.
     const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
@@ -342,7 +336,7 @@ export function useFolderFilterRows({ filteredSlots, slotFolders, folders, folde
         rows.push({
           folder: f,
           depth,
-          count: directCounts.get(f.id) ?? 0,
+          count: folderTree.rowsIn(f.id).length,
           hidden: filterHiddenFolders.has(f.id),
           hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
         })
@@ -358,13 +352,13 @@ export function useFolderFilterRows({ filteredSlots, slotFolders, folders, folde
       rows.push({
         folder: f,
         depth: 0,
-        count: directCounts.get(f.id) ?? 0,
+        count: folderTree.rowsIn(f.id).length,
         hidden: filterHiddenFolders.has(f.id),
         hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
       })
     }
     return rows
-  }, [folders, filteredSlots, slotFolders, filterHiddenFolders, filterHiddenSubtree, folderCompare])
+  }, [folders, folderTree, filterHiddenFolders, filterHiddenSubtree, folderCompare])
   return { folderFilterRows }
 }
 
@@ -487,21 +481,15 @@ export function useFolderTree({ folders, updateFolderMutation, clearBoardCollaps
   return { folderSubtrees, expandFolderAncestors }
 }
 
-/** The tree lane root folders and the ungrouped rows. */
-export function useRootFolderLanes({ folders, folderCompare, isFolderHidden, isFolderFilteredOut, filteredSlots, slotFolders }: {
+/** The tree lane's root folders. Its ungrouped rows are the row model's (`./rows`). */
+export function useRootFolderLanes({ folders, folderCompare, isFolderHidden, isFolderFilteredOut }: {
   folders: ChatFolder[]
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
   isFolderHidden: (f: ChatFolder) => boolean
   isFolderFilteredOut: (f: ChatFolder) => boolean
-  filteredSlots: Slot[]
-  slotFolders: Record<string, string>
 }) {
   const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort(folderCompare), [folders, folderCompare])
   const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
-  const ungroupedSlots = useMemo(
-    () => filteredSlots.filter(s => !localSlotFolder(s, slotFolders)),
-    [filteredSlots, slotFolders],
-  )
-  return { rootFolders, visibleRootFolders, rootFolderIds, ungroupedSlots }
+  return { rootFolders, visibleRootFolders, rootFolderIds }
 }

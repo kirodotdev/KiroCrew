@@ -234,42 +234,84 @@ order, and pins that no owner imports the facade:
 |---|---|
 | `sessionSources.ts` | the rendered row set (local tabs plus live peer rows, deduplicated by row identity, local wins), the crew groups, the peer-list error, and the federated Older Sessions search |
 | `CrewGroups.tsx` | the per-machine group chrome: the `Local` header, each crew group's header, badge, offline note and tunnel-error notice, and the collapsed-crew set |
+| `rows.ts` | the row model: the one declaration of every filter dimension and what each consumer derives from it (`filteredSlots`, `listNarrowed`, the reveal registry), the status-chip predicates and badge counts, the one lane order, the drag freeze, the split of the filtered rows between the `Local` lanes and the crew groups (each crew group's rows, the folder hide applied), the flat lane, the tree's ungrouped rows and per-folder rows, the board's pool (local rows the folder filter does not conceal), the dormant split's gates, and each rendered row's `SessionRowView` and window |
 | `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
-| `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer guards on local pin and folder state |
+| `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer test on local folder state for the owners that hold their own lists |
 | `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`; and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`) |
-| `filters.tsx` | the status chips (`SESSION_FILTERS`), the folder and tag filter state, the Recent window, the running, recent and unread sets and chip counts, and the unread auto-drain |
-| `lanes.ts`, `conductor.ts` | the lane preference, the flat-lane projection and the lane cycle; the conductor lane's lineage availability (pushed `slot_patch`, no poll), population, lineage tree and open conductors |
-| `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, and folder writes |
+| `filters.tsx` | the status chips (`SESSION_FILTERS`), the folder and tag filter state (with the reveal's folder un-hide), the Recent window, the local running, recent and unread sets, and the unread auto-drain |
+| `lanes.ts`, `conductor.ts` | the lane preference, the lane actually drawn (`renderedLane`) and the lane cycle; the conductor lane's lineage availability (pushed `slot_patch`, no poll), population, lineage tree and open conductors |
+| `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, the tree's root folders, and folder writes |
 | `board.ts` | the tag-column board: columns, the column popover, column writes, lane seeding (it widens the sidebar through `resize.ts`), per-column collapse and membership |
-| `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse, the manual pinned order, and the hover hold |
+| `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse state and exemptions, the manual pinned order, and the hover hold |
 | `reveal.ts` | reveal-in-sidebar for a session or a folder |
 | `rename.ts`, `history.ts`, `resize.ts`, `tags.ts`, `shortcuts.ts`, `create.ts` | row and folder rename, the Older Sessions pane state, the sidebar width (including the width saved while the board is open), the tag vocabulary, the chat-jump order, and session creation |
 | `dnd/` | collision geometry (`collision.ts`), drop targets and drag previews (`targets.tsx`), and the drag lifecycle with its folder writes and undo offers (`useSidebarDrag.ts`) |
 
+**The row model and peer isolation.** A live peer row's raw key can be
+byte-identical to a local slot's, and every piece of local sidebar state (folder,
+pin and pinned rank, unread, running, recent, search rank, rename, reveal flash,
+digit badge, popped-out window, sub-agent counts, the active slot) is indexed by
+local key. `rows.ts` reads that state for the rows it builds only after its one
+origin check, so a peer row never sorts into the pinned section, joins a local
+folder, rides in on a local search rank, or carries a local status into its view.
+The active row follows the same rule: a peer row is active only while the crew
+window open over the pane names its own (crew, key) pair, and a local row only while
+no crew window is open. The tag and status dimensions exempt a pinned local row, so
+the pinned band stays on screen under them; the search and a folder hide still apply
+to it, and a peer row is never exempt.
+Three reads outside the model still take the raw key: the conductor lane's collapsed
+needs-you aggregate (unread, sub-agent approvals), the pinned-section divider
+(`startsAutomaticSection` in `pinnedOrder.ts`) and the tree root's fresh/dormant
+divider (`pinned.has(...)` on the last fresh root row in `ChatSidebar.tsx`); all
+three are tracked in #16996. The facade calls `buildSidebarRows` on every render
+with the previous result. Each memoized output (the lists, the lane populations, the
+order, the predicates, the reveal registry, the chip counts) keeps its identity while
+the inputs it reads are unchanged, so an effect keyed on `filteredSlots` or
+`laneOrder` re-runs only when that output can have changed; the result object, its
+`lanes` container, `staleSplit` and `views` are fresh per build. Every closure the
+model hands out is made from only the values it reads, so a reused output never keeps
+an earlier build alive. `views(scene)` builds
+each rendered copy's `SessionRowView` (per placement, because a multi-tag row renders
+in several board columns), already masked for its origin: a peer view's local fields
+hold what a row with no local state shows, its `localKey` is `''`, and only a peer
+view carries `peerId` and `peerName`. The values every row shows alike (connection,
+mode, touch layout, palette, tags, agents, the drag in flight) are one `RowShell`
+object the shell rebuilds when any of them changes, held by reference in every view.
+`windowOf(slot)` answers what the windowed stub needs (its title, and whether the row
+must stay mounted); its dnd-kit clause compares the raw drag id with each row's raw
+key, so a peer row whose key collides with the dragged local session also stays
+mounted for the drag. `SessionRow` takes `{ view, actions }`: `actions` is one object
+of callbacks the shell builds once, and the row's memo compares it by reference and
+the view field by field (`sameRowView`, the conductor extras by value), so a row
+re-renders only when something it draws changed. Rows still subscribe to their own
+live state (status line, goal loop, queued sub-agents, workflow runs) slot-scoped,
+under `view.localKey`.
+
 Some code stays in `ChatSidebar.tsx`: `SessionRow` and its source-link chips, the
-row and folder render closures, the filter-dimension registry, the peer-session
-adopt, the idle-session cleanup, the bulk model switch and the JSX. Source pins
+row and folder render closures, the conductor lane's tree walk, the crew-window
+open, the idle-session cleanup, the bulk model switch and the JSX. Source pins
 read them in that file:
 
-- `switchSlotCallsiteClassification.test.ts` counts the four `switchSlot`
-  dispatches there, the row's three and the adopted session's activation.
+- `switchSlotCallsiteClassification.test.ts` counts the row's three `switchSlot`
+  dispatches there.
 - `listShellParity.test.ts` reads the list-shell recipes the row and the card use.
 - `useInteractiveModels.test.ts` reads the bulk model switch.
-- `ChatSidebar.filterDimensions.test.tsx` reads the filter-dimension registry.
+- `hoverVariantPolicy.test.ts` reads the row shell's touch flag.
 - The restyle ratchet counts this file's flagged sites in the header, the filter
   and folder menus and the board column.
 
 The idle-session cleanup is state that only the header menu's dialog in this file
-reads. The render closures also stamp rows in paint order, and the row memo depends
-on that order.
+reads. The render closures also stamp rows in paint order (`orderStamp`, a view field
+the row never reads), and the row memo depends on that order.
 
 New sidebar code goes to the owner whose row above names its responsibility, not
-to `ChatSidebar.tsx`. A responsibility no row names gets a new file under
-`pages/chat-sidebar/` that never imports the facade, and a new owner hook is listed
-at its call position in `CALL_ORDER` in `ChatSidebar.ownerComposition.test.ts`. A
-new browser-storage key is declared in `persistence.ts`, and a view type the owners
-share goes to `types.ts`. The facade grows only in the code listed above as staying
-there.
+to `ChatSidebar.tsx`: a new filter dimension is one entry in `rows.ts`, and a new
+piece of local per-row state is read there, behind the origin check. A
+responsibility no row names gets a new file under `pages/chat-sidebar/` that never
+imports the facade, and a new owner hook is listed at its call position in
+`CALL_ORDER` in `ChatSidebar.ownerComposition.test.ts`. A new browser-storage key
+is declared in `persistence.ts`, and a view type the owners share goes to
+`types.ts`. The facade grows only in the code listed above as staying there.
 
 ## ConversationLog (`history.py` facade)
 

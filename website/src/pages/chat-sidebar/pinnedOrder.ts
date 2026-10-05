@@ -119,9 +119,10 @@ export function usePinnedKeyboardReorder({ searchRanked, pinned, pinnedOrder, sl
   // Read through a ref, not the dependency array: `slotFolders` and
   // `pinnedOrder` are rebuilt whenever the slot list changes, so a callback
   // closing over them takes a new identity on EVERY slots frame — and this
-  // callback is a prop of every SessionRow, so one unstable reference voids
-  // all N memo boundaries per frame and defeats both the row memo and the
-  // displacement window for any membership change. The handler runs only on
+  // callback is a member of the `actions` object every SessionRow compares,
+  // so one unstable reference voids all N memo boundaries per frame and
+  // defeats both the row memo and the displacement window for any membership
+  // change. The handler runs only on
   // a keypress, where the latest values are what it wants anyway.
   const keyboardReorderInputsRef = useRef({ searchRanked, pinnedOrder, slotFolders, reorderPinned })
   keyboardReorderInputsRef.current = { searchRanked, pinnedOrder, slotFolders, reorderPinned }
