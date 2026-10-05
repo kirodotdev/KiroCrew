@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
+import { computeActiveSubtree, folderIsHidden, folderOffersHide, computePinnedSubtree, computePinnedAncestors } from '../utils/folderVisibility'
 import type { ChatFolder } from '../types'
 
 const folders: ChatFolder[] = [
@@ -65,5 +65,54 @@ describe('folderOffersHide', () => {
     expect(folderOffersHide({ ...folders[0], history_count: 0 }, active)).toBe(false)
     // history_count absent is treated as 0.
     expect(folderOffersHide(folders[0], active)).toBe(false)
+  })
+})
+
+describe('computePinnedSubtree', () => {
+  it('returns an empty set when no folder is pinned', () => {
+    expect(computePinnedSubtree(folders).size).toBe(0)
+  })
+
+  it('covers the pinned folder and everything under it, not its siblings or ancestors', () => {
+    const pinned = folders.map(f => (f.id === 'child' ? { ...f, pinned: true } : f))
+    const covered = computePinnedSubtree(pinned)
+    expect([...covered].sort()).toEqual(['child', 'grandchild'])
+  })
+
+  it('a pin on the root covers the whole tree below it', () => {
+    const pinned = folders.map(f => (f.id === 'root' ? { ...f, pinned: true } : f))
+    expect([...computePinnedSubtree(pinned)].sort()).toEqual(['child', 'grandchild', 'root'])
+  })
+
+  it('terminates on a parent_id cycle', () => {
+    const cyclic: ChatFolder[] = [
+      { id: 'a', name: 'A', order: 0, parent_id: 'b' },
+      { id: 'b', name: 'B', order: 1, parent_id: 'a' },
+    ]
+    expect(computePinnedSubtree(cyclic).size).toBe(0)
+  })
+})
+
+describe('computePinnedAncestors', () => {
+  it('returns an empty set when no folder is pinned', () => {
+    expect(computePinnedAncestors(folders).size).toBe(0)
+  })
+
+  it('names the chain above the pinned folder, not the folder, its children or its siblings', () => {
+    const pinned = folders.map(f => (f.id === 'grandchild' ? { ...f, pinned: true } : f))
+    expect([...computePinnedAncestors(pinned)].sort()).toEqual(['child', 'root'])
+  })
+
+  it('a pinned root has no ancestors', () => {
+    const pinned = folders.map(f => (f.id === 'root' ? { ...f, pinned: true } : f))
+    expect(computePinnedAncestors(pinned).size).toBe(0)
+  })
+
+  it('terminates on a parent_id cycle', () => {
+    const cyclic: ChatFolder[] = [
+      { id: 'a', name: 'A', order: 0, parent_id: 'b', pinned: true },
+      { id: 'b', name: 'B', order: 1, parent_id: 'a' },
+    ]
+    expect([...computePinnedAncestors(cyclic)]).toEqual(['b'])
   })
 })

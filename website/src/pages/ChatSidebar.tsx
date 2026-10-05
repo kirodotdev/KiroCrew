@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
+import { Plus, X, Pin, PinOff, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -2807,7 +2807,7 @@ function ChatSidebar({
   } = useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet })
 
   const {
-    slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree,
+    slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors, isSlotInPinnedFolder,
   } = useFolderVisibility({ folders, localSlots, filterHiddenFolders })
 
   useStaleMoveWatcher({ foldersLoaded, localSlots, slotFolders, setStaleRecentlyMoved })
@@ -2853,11 +2853,17 @@ function ChatSidebar({
         // Tags. Unlike the folder filter this does NOT go inert while
         // searching: it is a session property, so it behaves like the
         // Unread/Pinned status chips.
-        filtersRow: slot => activeTagIds.size === 0 || (slot.tags ?? []).some(id => activeTagIds.has(id)),
+        //
+        // A row in a pinned folder passes whatever the chips say, here and in
+        // the status dimension below: the folder pin is the person's standing
+        // answer to "do I want to see these", and a chip is the narrower,
+        // momentary one. `narrows` is untouched, so the list still reports
+        // itself as narrowed and the chip still shows, because other rows are.
+        filtersRow: slot => activeTagIds.size === 0 || isSlotInPinnedFolder(slot) || (slot.tags ?? []).some(id => activeTagIds.has(id)),
         narrows: () => activeTagIds.size > 0,
         // Raw `filterTagIds`, not resolved `activeTagIds`, and not behind
         // `excluded`: mid-flight nothing is filtered, so the row is re-hidden.
-        hides: slot => filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
+        hides: slot => filterTagIds.size > 0 && !isSlotInPinnedFolder(slot) && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
         clear: () => clearTagFilter(),
       },
       {
@@ -2898,9 +2904,10 @@ function ChatSidebar({
         // passes when any active chip's predicate matches it. `activeFilterDefs`
         // is empty while the filters are paused, so every row passes and the
         // dimension neither narrows nor hides.
-        filtersRow: slot => activeFilterDefs.length === 0 || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
+        // A row in a pinned folder passes regardless (see the tag dimension).
+        filtersRow: slot => activeFilterDefs.length === 0 || isSlotInPinnedFolder(slot) || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
         narrows: () => activeFilterDefs.length > 0,
-        hides: (slot, excluded) => activeFilterDefs.length > 0 && excluded(slot),
+        hides: (slot, excluded) => activeFilterDefs.length > 0 && !isSlotInPinnedFolder(slot) && excluded(slot),
         // Persisted inside the hook: a remount re-reads the stored '1' (or '2')
         // and would silently restore the filter that hides this row.
         clear: () => clearAllFilters(),
@@ -2935,7 +2942,7 @@ function ChatSidebar({
         },
       },
     ]
-  }, [activeFilters, filtersPaused, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, clearAllFilters, setFilterHiddenFolders])
+  }, [activeFilters, filtersPaused, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, clearAllFilters, setFilterHiddenFolders, isSlotInPinnedFolder])
 
   // State and in the memo deps on purpose, not a ref: a frozen run caches its
   // stale list against new deps, so clearing a ref would invalidate nothing.
@@ -3093,7 +3100,7 @@ function ChatSidebar({
   const {
     isFolderFilteredOut, revealedContainers, toggleReveal, hiddenByContainer, allHiddenFolders,
     hiddenFolderCount,
-  } = useFolderFilterReveal({ folderFilterActive, filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive })
+  } = useFolderFilterReveal({ folderFilterActive, filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors })
 
   const {
     isRowFolderHidden, flatSlots,
@@ -3113,7 +3120,7 @@ function ChatSidebar({
 
   const {
     folderFilterRows,
-  } = useFolderFilterRows({ filteredSlots, slotFolders, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree })
+  } = useFolderFilterRows({ filteredSlots, slotFolders, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree })
 
   const {
     createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse,
@@ -3663,13 +3670,29 @@ function ChatSidebar({
   const narrowedSubtreeShowsSomething = (folder: ChatFolder, visited = new Set<string>()): boolean => {
     if (visited.has(folder.id)) return false
     visited.add(folder.id)
-    if (filteredSlots.some(s => localSlotFolder(s, slotFolders) === folder.id)) return true
+    if (treeOwnRows(folder).length > 0) return true
     if (folderNameMatchIds?.has(folder.id)) return true
     if (folderCreateError?.folderId === folder.id) return true
     if (hiddenByContainer.get(folder.id)?.length) return true
     return folders.some(f => f.parent_id === folder.id
       && !isFolderHidden(f) && !isFolderFilteredOut(f)
       && narrowedSubtreeShowsSomething(f, visited))
+  }
+
+  /**
+   * The rows this folder's block draws as its OWN, in the tree. `localSlotFolder`,
+   * not a raw `slotFolders` lookup: a peer row is never in a folder, and a peer
+   * key colliding with a local one would otherwise count a session this machine
+   * does not own toward the folder it does. A block normally renders only when
+   * the folder filter is not hiding it, so the rows need no second look -- except
+   * the container of a pinned block, which renders whatever its checkbox says
+   * (see `isFolderFilteredOut`): THERE the person's uncheck still takes the
+   * folder's own rows, as it does in the flat lane and the board. A peeked hidden
+   * folder is never such a container, so a peek keeps showing its rows.
+   */
+  const treeOwnRows = (folder: ChatFolder): Slot[] => {
+    const withheld = pinnedFolderAncestors.has(folder.id)
+    return filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id && !(withheld && isRowFolderHidden(s)))
   }
 
   /**
@@ -3699,6 +3722,14 @@ function ChatSidebar({
     const SubTrigger = ctx ? ContextMenuSubTrigger : DropdownMenuSubTrigger
     const SubContent = ctx ? ContextMenuSubContent : DropdownMenuSubContent
     const tid = (name: string) => `folder-${name}-${folder.id}${ctx ? '-ctx' : ''}`
+    // Why the Hide folder item is inert, or null when it works. The same split
+    // the filter menu's rows make: a folder under a pin is "pinned", one above a
+    // pin "holds" it, so the reason names the right one.
+    const hideLockedReason = pinnedFolderSubtree.has(folder.id)
+      ? i18nT('pages.chatSidebar.pinned_folder_always_shown', { name: folder.name })
+      : pinnedFolderAncestors.has(folder.id)
+        ? i18nT('pages.chatSidebar.holds_pinned_folder', { name: folder.name })
+        : null
     const ephemeralRows = (
       <>
         {/* Menu create entries take NO open-in-tab gesture (#10575,
@@ -3740,15 +3771,46 @@ function ChatSidebar({
           currentFolderId={folder.parent_id || null}
           onPick={pid => moveFolderTo(folder.id, pid)} />
         <Item data-testid={tid('settings')} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
+        {/* Pin this folder: its sessions (subfolders included) stay listed while
+         *  the status chips, the tag chips or the folder checkboxes narrow the
+         *  list. Server-stored on the folder, next to the session pin, so it
+         *  follows the person across browsers. A saved hide on this folder is
+         *  left alone: the pin steps over it for as long as it holds, and the
+         *  hide comes back when the folder is unpinned, which is the preference
+         *  the person set. The rows are NOT pinned individually — no row glyph,
+         *  no pinned-reorder band — because the promise is about the folder.
+         *  The item is enabled, so its title shows on hover and says what the
+         *  pin does (the disabled items below cannot rely on a title). */}
+        <Item data-testid={tid('pin')} title={i18nT('pages.chatSidebar.pin_folder_title')} onClick={() => {
+          updateFolderMutation.mutate({ id: folder.id, body: { pinned: !folder.pinned } })
+        }}>
+          {folder.pinned
+            ? <><PinOff size={13} /> {i18nT('pages.chatSidebar.unpin_folder')}</>
+            : <><Pin size={13} /> {i18nT('pages.chatSidebar.pin_folder')}</>}
+        </Item>
         {/* Hide this folder from the session lists (flat lane + tree).
          *  Same state the filter menu's checkboxes drive, reached from the
          *  folder itself — which is where the user is looking when they
          *  decide a folder is noise. Distinct from "Hide when empty"
-         *  below, which is a server-persisted archive affordance. */}
-        <Item data-testid={tid('visibility')} onClick={() => { toggleFolderFilter(folder.id) }}>
-          {filterHiddenFolders.has(folder.id)
+         *  below, which is a server-persisted archive affordance. Inert
+         *  under a folder pin, and above one: the pin steps over the hide on
+         *  both, so the entry would toggle a checkbox that changes nothing on
+         *  screen. The item stays in the menu, disabled, with the reason as a
+         *  line under its label: a vanished entry reads as a missing feature,
+         *  and a disabled item takes no pointer events, so a title alone would
+         *  never show. Same reason strings as the filter menu's inert rows. */}
+        <Item data-testid={tid('visibility')} disabled={hideLockedReason !== null}
+          className={hideLockedReason !== null ? 'flex-wrap' : undefined}
+          onClick={() => { if (hideLockedReason === null) toggleFolderFilter(folder.id) }}>
+          {filterHiddenFolders.has(folder.id) && hideLockedReason === null
             ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
             : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
+          {/* Indented past the icon (13 + gap 8) so the reason lines up under the label. */}
+          {hideLockedReason !== null && (
+            <span className="basis-full pl-[21px] text-[11px] text-muted whitespace-normal" data-testid={tid('visibility-reason')}>
+              {hideLockedReason}
+            </span>
+          )}
         </Item>
         {folderOffersHide(folder, foldersWithActiveSubtree) && (
           <Item data-testid={tid('hide')} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
@@ -3772,10 +3834,7 @@ function ChatSidebar({
     // what this row holds either, and counting it printed a number the body below
     // could not account for.
     const childFolders = drawableChildFolders(folder)
-    // `localSlotFolder`, not a raw `slotFolders` lookup: a peer row is never in a
-    // folder, and a peer key colliding with a local one would otherwise count a
-    // session this machine does not own toward the folder it does.
-    const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
+    const childSlots = treeOwnRows(folder)
     const count = childSlots.length + childFolders.length
     const collapsed = !!folder.collapsed
     // One derivation, not two: `renderFolderBlock` decides the body from the nodes
@@ -3966,6 +4025,15 @@ function ChatSidebar({
                 <span className="shrink-0 opacity-80" aria-hidden><ChannelBrandIcon channel={folder.channel} size={11} /></span>
               )}
               {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
+              {/* The folder pin, on the folder header only: the rows under it carry
+               *  no pin glyph, because they are not pinned — the folder is. Same
+               *  colour and size as a pinned session row's glyph, so the two pins
+               *  read as one mark. */}
+              {folder.pinned && (
+                <span className="text-accent shrink-0" role="img" data-testid={`folder-pinned-${folder.id}`}
+                  aria-label={i18nT('pages.chatSidebar.pinned_folder_always_shown', { name: folder.name })}
+                  title={i18nT('pages.chatSidebar.pinned_folder_always_shown', { name: folder.name })}><Pin size={10} /></span>
+              )}
               {/* Unread dot on the RIGHT, inline before the count — a state marker
                *  reading after the text, not a gutter marker. #3903 moved it into an
                *  absolute LEFT gutter, which forced the header's pad to 18px; that
@@ -4073,7 +4141,7 @@ function ChatSidebar({
   const renderFolderBlock = (folder: ChatFolder, depth: number, visited = new Set<string>(), dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed = false): React.ReactNode[] => {
     if (depth > 10 || visited.has(folder.id)) return []
     visited.add(folder.id)
-    const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
+    const childSlots = treeOwnRows(folder)
     const childNodes: React.ReactNode[] = []
     // Nested subfolders are sortables, exactly as root folders are: dragging one
     // either re-orders it among its siblings (drop on a sibling's edges or body)
@@ -5319,33 +5387,69 @@ function ChatSidebar({
                         <span className="flex-1">{i18nT('pages.chatSidebar.show_all_folders')}</span>
                       </DropdownMenuItem>
                     )}
-                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor }) => (
-                      <DropdownMenuItem
-                        key={f.id}
-                        style={{ paddingLeft: `${8 + depth * 14}px` }}
-                        title={hiddenByAncestor
-                          ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
-                          : hidden ? i18nT('pages.chatSidebar.show_folder') : i18nT('pages.chatSidebar.hide_folder')}
-                        // Keep the menu open so several folders can be toggled.
-                        onSelect={e => { e.preventDefault(); toggleFolderFilter(f.id) }}
-                        data-testid={`folder-filter-${f.id}`}
-                        role="menuitemcheckbox"
-                        aria-checked={!hidden && !hiddenByAncestor}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
-                          style={hidden || hiddenByAncestor
-                            ? { borderColor: 'var(--border)', background: 'transparent' }
-                            : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor, pinned }) => {
+                      // A folder under a pin reads checked and inert: the pin
+                      // steps over this checkbox, so a tick here would change
+                      // nothing on screen, and the row says why instead of
+                      // offering it. The reason is drawn as a line under the
+                      // row, not only as its title: a disabled item takes no
+                      // pointer events, so a hover tooltip never shows on
+                      // exactly the row that needs explaining. The container of
+                      // a pinned block is NOT inert: its checkbox still hides
+                      // its own rows (the pinned block stays, as its container),
+                      // so the row stays a working checkbox and reads its real
+                      // state.
+                      const inert = pinned
+                      const inertReason = pinned
+                        ? i18nT('pages.chatSidebar.pinned_folder_always_shown', { name: f.name })
+                        : null
+                      return (
+                        <DropdownMenuItem
+                          key={f.id}
+                          style={{ paddingLeft: `${8 + depth * 14}px` }}
+                          // The reason wraps onto its own line under the row; the
+                          // first line keeps the one-row alignment of its neighbours.
+                          className={inert ? 'flex-wrap' : undefined}
+                          title={inertReason
+                            ?? (hiddenByAncestor
+                              ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
+                              : hidden ? i18nT('pages.chatSidebar.show_folder') : i18nT('pages.chatSidebar.hide_folder'))}
+                          // Keep the menu open so several folders can be toggled.
+                          onSelect={e => { e.preventDefault(); if (!inert) toggleFolderFilter(f.id) }}
+                          disabled={inert}
+                          data-testid={`folder-filter-${f.id}`}
+                          role="menuitemcheckbox"
+                          aria-checked={inert || (!hidden && !hiddenByAncestor)}
                         >
-                          {!hidden && !hiddenByAncestor && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
-                        </span>
-                        <FolderGlyph color={f.color} icon={f.icon} size={12} className="shrink-0 text-muted" />
-                        <span className={`flex-1 truncate${hiddenByAncestor ? ' opacity-50' : ''}`}>{f.name}</span>
-                        {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
-                      </DropdownMenuItem>
-                    ))}
+                          <span
+                            aria-hidden="true"
+                            className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
+                            style={!inert && (hidden || hiddenByAncestor)
+                              ? { borderColor: 'var(--border)', background: 'transparent' }
+                              : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                          >
+                            {/* The pin, not a tick, for an inert row: a checked box that
+                             *  cannot be unchecked would read as an ordinary checked row,
+                             *  which in dark mode is exactly what it looks like, and the
+                             *  pin is the mark the folder header already wears for this
+                             *  state. A lock read as "private" instead. */}
+                            {inert
+                              ? <Pin size={11} className="text-accent-fg" strokeWidth={2.5} data-testid={`folder-filter-lock-${f.id}`} />
+                              : (!hidden && !hiddenByAncestor) && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
+                          </span>
+                          <FolderGlyph color={f.color} icon={f.icon} size={12} className="shrink-0 text-muted" />
+                          <span className={`flex-1 truncate${hiddenByAncestor && !inert ? ' opacity-50' : ''}`}>{f.name}</span>
+                          {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
+                          {/* Indented past the checkbox and the glyph (14 + 8 + 12 + 8)
+                              so the reason lines up under the folder name. */}
+                          {inertReason && (
+                            <span className="basis-full pl-[42px] text-[11px] text-muted whitespace-normal" data-testid={`folder-filter-reason-${f.id}`}>
+                              {inertReason}
+                            </span>
+                          )}
+                        </DropdownMenuItem>
+                      )
+                    })}
                       </>
                     )}
                   </>

@@ -59,8 +59,9 @@ logger = logging.getLogger(__name__)
 
 #: Folder fields that mean the person configured the folder on purpose. A row
 #: carrying any of them is kept even when it is empty: deleting it would throw
-#: the setting away along with the row.
-_KEEP_FIELDS = ("project_dir", "default_agent", "steering_dirs", "tags", "color", "icon")
+#: the setting away along with the row. ``pinned`` is one: a folder the person
+#: pinned is a folder they asked to keep seeing.
+_KEEP_FIELDS = ("project_dir", "default_agent", "steering_dirs", "tags", "color", "icon", "pinned")
 
 
 def _order_key(folder: dict[str, Any]) -> int:

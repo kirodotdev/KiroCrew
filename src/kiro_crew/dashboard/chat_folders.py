@@ -1661,6 +1661,42 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         changes["collapsed"] = bool(body["collapsed"])
     if "hidden" in body:
         changes["hidden"] = bool(body["hidden"])
+    if "pinned" in body:
+        # A pinned folder's sessions stay listed while the sidebar's status
+        # chips, tag chips or folder checkboxes narrow the list (text search
+        # still applies). Stored here, with the session pin, so it follows
+        # the person across browsers. Not a layout field: pinning a folder is
+        # the person saying they want it, so it claims the folder like
+        # ``hidden`` does.
+        #
+        # The person's, only. The pin overrides the person's own active
+        # filters, so an app or crew member pinning its folder would force its
+        # sessions onto the person's screen past every chip until they unpin.
+        # Folder ownership grants no say over the person's view; refused and
+        # audited like ``steering_dirs``.
+        if request_app:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat.folder_pinned",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"folder={fid}",
+                error="pinned may be set only by the person",
+            )
+            return web.json_response(
+                {
+                    "error": "pinned may be set only from the person's own session",
+                    "code": "pinned_forbidden",
+                },
+                status=403,
+            )
+        if not isinstance(body["pinned"], bool):
+            # Strict, like ``regenerate_icon``: the string "false" is truthy,
+            # so coercion would pin on a request that asked to unpin.
+            return web.json_response(
+                {"error": "pinned must be a boolean", "code": "pinned_invalid"}, status=400
+            )
+        changes["pinned"] = body["pinned"]
     if "order" in body:
         # A non-numeric, null, or non-finite order is caller error, not a server
         # fault: int() would raise and surface as a 500 (no middleware maps
@@ -1863,6 +1899,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # Empty list clears the key entirely, so "absent means no tags"
             # stays the single on-disk representation (mirrors color above).
             target.pop("tags", None)
+        if not target.get("pinned"):
+            # Unpinning clears the key entirely, so "absent means not pinned"
+            # stays the single on-disk representation: every folder written
+            # before this field existed already reads that way.
+            target.pop("pinned", None)
         committed_name.append(str(target.get("name") or ""))
         return True, ""
 

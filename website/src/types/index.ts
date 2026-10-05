@@ -1382,6 +1382,12 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** The folder pin. Sessions filed in this folder or any of its subfolders stay
+   *  listed while the status chips, the tag chips or the folder checkboxes
+   *  narrow the sidebar; text search still applies. Server-stored like the
+   *  session pin, so it follows the person across browsers. Absent = not
+   *  pinned, mirroring the optional `color`. */
+  pinned?: boolean
   /** Epoch seconds the folder was created, written by every folder creator since
    *  the sidebar's `created` sort existed. Absent on a row from before that; such
    *  a row sorts as older than every stamped one. Read only through
