@@ -150,6 +150,27 @@ class TestCwdExtractionFromProvider:
 
         with patch("kiro_crew.providers.acp.AcpClient"):
             provider = AcpProvider(acp_backend="")  # kiro
+        # Before startup / on the claude seam the inner client is a raw
+        # ``AcpClient``, which has NO ``cwd`` attribute -- so ``AcpProvider.cwd``
+        # falls back to the client's ``_work_dir``. The patched client is a
+        # MagicMock that would otherwise auto-synthesize a truthy ``cwd``; pin it
+        # to "" to mirror the real client the fallback is written for.
+        provider._client.cwd = ""
         provider._client._work_dir = tmp_path
         assert provider.cwd == str(tmp_path)
         assert provider.cwd != ""
+
+    def test_acp_provider_cwd_forwards_the_started_providers_bound_cwd(self, tmp_path):
+        """After startup ``self._client`` is an ``AcpSessionProvider`` reporting
+        the session's bound directory. The wrapper every SessionMap/resume caller
+        holds must forward THAT, not the shared runtime's own ``_work_dir`` --
+        otherwise a session bound elsewhere is evicted on reuse validation."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(acp_backend="")  # kiro
+        # The started inner provider reports a session-bound dir distinct from
+        # the runtime's _work_dir; the wrapper must surface the bound dir.
+        provider._client.cwd = str(tmp_path / "session-bound")
+        provider._client._work_dir = tmp_path / "runtime-shared"
+        assert provider.cwd == str(tmp_path / "session-bound")

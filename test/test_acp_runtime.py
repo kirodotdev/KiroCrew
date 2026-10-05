@@ -397,6 +397,90 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_session_cwd_is_bound_through_real_create_and_load(
+    kas_readiness_wire, monkeypatch, tmp_path, resume
+):
+    """The directory a session opens against must survive to the PUBLIC provider cwd.
+
+    This drives the REAL ``create_session``/``load_session`` wire path (not a
+    hand-set ``handle._bound_cwd``), so it pins the wiring the unit tests cannot:
+    ``runtime.py`` records ``bound_cwd=str(session_work_dir)`` on create and
+    ``bound_cwd=str(load_params["cwd"])`` on load. Reverting either line makes
+    the handle's ``_bound_cwd`` fall back to ``""`` and both assertions below
+    fail. The runtime's ``_work_dir`` is repointed at a sibling directory while
+    the session opens against ``tmp_path`` (a different directory), which is the
+    shared-runtime case bolichen97's review is about: on a shared runtime,
+    answering reuse validation with the runtime's own directory would evict a
+    live session that bound elsewhere.
+
+    It also pins the SessionMap/resume-caller flow end to end: the inner
+    ``AcpSessionProvider.cwd`` must report the bound dir, AND the ``AcpProvider``
+    wrapper that every caller actually holds must forward it rather than
+    returning ``self._client._work_dir``.
+    """
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+
+    wire = kas_readiness_wire
+    # The fixture starts the runtime in tmp_path and the session also opens
+    # against tmp_path. Repoint the runtime's _work_dir at a DIFFERENT directory
+    # so the two genuinely diverge -- the shared-runtime case: a runtime started
+    # in A hosting a session that bound to B. If cwd leaked the runtime's dir,
+    # the assertions below would read A, not the session's B (tmp_path).
+    runtime_work_dir = tmp_path / "runtime-elsewhere"
+    runtime_work_dir.mkdir()
+    wire.runtime._work_dir = runtime_work_dir
+    assert str(wire.runtime._work_dir) != str(tmp_path)
+
+    # ``_bound_cwd`` is recorded synchronously when ``create_session`` /
+    # ``load_session`` constructs the handle, well before the session reaches
+    # readiness. Capture the handle at construction rather than driving the full
+    # readiness dance -- the wiring under test is the construction argument.
+    captured: list[AcpSessionHandle] = []
+    constructed = AcpSessionHandle.__init__
+
+    def capture_init(self, *args, **kwargs):
+        constructed(self, *args, **kwargs)
+        captured.append(self)
+
+    monkeypatch.setattr(AcpSessionHandle, "__init__", capture_init)
+
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(resume, pre_ready=True)
+        # Let the handshake get as far as constructing the handle (session/new or
+        # session/load has returned; the handle is built right after).
+        for _ in range(20):
+            if captured:
+                break
+            await asyncio.sleep(0)
+        assert captured, "the real create/load path never constructed a handle"
+        handle = captured[-1]
+
+        # The wiring recorded the session's own directory, not the runtime's.
+        assert handle._bound_cwd == str(tmp_path)
+
+        # The inner provider reads the bound dir off the handle.
+        inner = AcpSessionProvider(handle, wire.runtime)
+        assert inner.cwd == str(tmp_path)
+
+        # The wrapper every SessionMap/resume caller holds forwards the SAME
+        # bound dir, not the shared runtime's _work_dir.
+        wrapper = AcpProvider.__new__(AcpProvider)
+        wrapper._client = inner
+        assert wrapper.cwd == str(tmp_path)
+    finally:
+        if start is not None:
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
 @pytest.mark.parametrize("pre_ready", [False, True], ids=["cold", "stale-mode"])
 async def test_kas_readiness_delays_prompt_until_active_managed_tools(
     kas_readiness_wire, monkeypatch, resume, pre_ready

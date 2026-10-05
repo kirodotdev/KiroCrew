@@ -656,10 +656,19 @@ class AcpProvider(LLMProvider):
         """Working directory this provider operates in.
 
         Overrides the ``LLMProvider`` default ("") so session_map can persist
-        the real workspace path for both ACP backends. The work_dir lives on
-        the underlying client (``self._client._work_dir``), not the provider.
+        the real workspace path for both ACP backends. The wrapper is what every
+        caller holds -- ``SessionMap.set(..., cwd=provider.cwd)``, reuse
+        validation, the transport dispatchers -- so it must forward the SAME
+        session-bound directory the inner provider now reports, not the shared
+        runtime's own. After startup ``self._client`` is an
+        ``AcpSessionProvider`` whose ``cwd`` reads the handle's bound dir (a
+        shared runtime carries sessions opened against different projects);
+        answering with ``self._client._work_dir`` here would report the
+        runtime's workspace and evict a live session on reuse validation. Before
+        startup / on the claude seam ``self._client`` is a raw ``AcpClient``
+        with no ``cwd``, so the fallback reads its ``_work_dir``.
         """
-        return str(self._client._work_dir)
+        return str(getattr(self._client, "cwd", "") or self._client._work_dir)
 
     @property
     def is_claude_backend(self) -> bool:
