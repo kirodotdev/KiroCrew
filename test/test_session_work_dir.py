@@ -17,8 +17,11 @@ import os
 import threading
 import time
 import unittest.mock
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -723,8 +726,14 @@ class TestSweepBounds:
     ) -> None:
         for n in range(3):
             _residue_dir(tmp_path, f"subagent_{n:016x}", age_secs=7200, owner_pid=PREDECESSOR_PID)
-        ticks = iter([0.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
-        monkeypatch.setattr(session_work_dir.time, "monotonic", lambda: next(ticks, 10.0))
+        # The deadline, one entry counted inside it, then a spent budget: a sweep
+        # that skipped the counting pass's check would judge (and reclaim) an entry
+        # before its judging bound fired. The script replaces the module's own
+        # ``time`` name, never the shared stdlib clock, which every other reader on
+        # the worker (a loop thread, a finalizer) would draw from too.
+        ticks = iter([0.0, 0.5])
+        clock = SimpleNamespace(monotonic=lambda: next(ticks, 10.0), time=time.time)
+        monkeypatch.setattr(session_work_dir, "time", clock)
         assert _sweep(tmp_path, max_seconds=1.0) == 0
         assert all((tmp_path / f"subagent_{n:016x}").exists() for n in range(3))
 
@@ -1262,6 +1271,34 @@ class TestProviderReclaimsAtShutdown:
         assert events == ["claim-enter", "worker-enter", "worker-return", "claim-exit"]
 
 
+# One lost-run ceiling for every wait in a test together, never a race: the slowest
+# single wait below measured 1.8s with every off-loop hop 0.2s late on a GIL-starved
+# host, so only a wedged registry spends it. With the hold it stays under half the
+# suite's --timeout=120, so it fails here by name, not as a lost worker.
+_LOST_RUN_CEILING = 55.0
+# The parked loser must outlast this while the winner holds the lease. The park is
+# proven first and only ``mgr.release`` wakes it, so a correct registry never ends
+# inside it -- a cost, not a race; a lease wait that gives up sooner reds here.
+_PARKED_HOLD = 3.0
+
+
+def _ceiling_spent(what: str, give_up_at: float) -> NoReturn:
+    """Fail by name: *what* did not happen inside the test's ``_LOST_RUN_CEILING``."""
+    spent = asyncio.get_running_loop().time() - (give_up_at - _LOST_RUN_CEILING)
+    pytest.fail(
+        f"{what}: not inside _LOST_RUN_CEILING ({_LOST_RUN_CEILING:.0f}s), {spent:.1f}s spent"
+    )
+
+
+async def _await_until(predicate: Callable[[], bool], what: str, give_up_at: float) -> None:
+    """Yield the loop until *predicate* holds, failing by name at *give_up_at*."""
+    loop = asyncio.get_running_loop()
+    while not predicate():
+        if loop.time() >= give_up_at:
+            _ceiling_spent(what, give_up_at)
+        await asyncio.sleep(0.01)
+
+
 class TestRegistryLeavesASiblingsDirectory:
     """Two providers for one KEY derive one directory; the discarded one leaves it.
 
@@ -1311,23 +1348,52 @@ class TestRegistryLeavesASiblingsDirectory:
         made: list = []
         gate = asyncio.Event()
         mgr = SessionManager(_cfg(tmp_path), provider_factory=self._factory(work_dir, made, gate))
+        loop = asyncio.get_running_loop()
+        give_up_at = loop.time() + _LOST_RUN_CEILING
         first = asyncio.create_task(mgr.get_or_create(self.KEY))
         second = asyncio.create_task(mgr.get_or_create(self.KEY))
-        await asyncio.sleep(0.05)
+        # A provider is built only after its cold start read the key as free, and
+        # the gate holds both short of registration: two built IS the race. Off-loop
+        # hops precede each build, so this waits on that state, never a sleep.
+        await _await_until(
+            lambda: len(made) == 2 or first.done() or second.done(),
+            "both cold starts building a provider",
+            give_up_at,
+        )
+        assert len(made) == 2, f"a cold start ended before the race: {first!r} {second!r}"
         gate.set()
-        done, pending = await asyncio.wait({first, second}, timeout=3.0)
+        done, pending = await asyncio.wait(
+            {first, second}, timeout=give_up_at - loop.time(), return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            _ceiling_spent("a cold start winning the key", give_up_at)
         assert len(done) == 1 and len(pending) == 1, "exactly one cold start wins the key"
-        await asyncio.sleep(0.05)
+        (parked,) = pending
+        session = mgr._sessions[mgr._fold_key(self.KEY)]
+        # The loser shuts its duplicate down and only then queues on the winner's
+        # lease, so a waiter on that semaphore is a loser whose shutdown has run.
+        await _await_until(
+            lambda: bool(session.semaphore._waiters) or parked.done(),
+            "the loser queueing on the winner's lease",
+            give_up_at,
+        )
+        assert not parked.done(), "the loser did not wait for the winner's lease"
 
-        winner = mgr._sessions[mgr._fold_key(self.KEY)].provider
+        winner = session.provider
         (loser,) = [p for p in made if p is not winner]
         loser._client.shutdown.assert_awaited_once()
         assert work_dir.exists(), "the discarded provider reclaimed the live sibling's cwd"
         assert loser._disposable_work_dir is False
         assert winner._disposable_work_dir is True
+        await asyncio.wait({parked}, timeout=_PARKED_HOLD)
+        assert not parked.done(), "the loser stopped waiting for the winner's lease"
+        assert work_dir.exists(), "the discarded provider reclaimed the live sibling's cwd"
 
         mgr.release(self.KEY)
-        await asyncio.wait_for(next(iter(pending)), timeout=3.0)
+        try:
+            await asyncio.wait_for(parked, timeout=give_up_at - loop.time())
+        except asyncio.TimeoutError:
+            _ceiling_spent("the loser claiming the key once the winner released it", give_up_at)
         mgr.release(self.KEY)
         await mgr.close_all()
         assert not work_dir.exists(), "the winner still owned the directory at its shutdown"

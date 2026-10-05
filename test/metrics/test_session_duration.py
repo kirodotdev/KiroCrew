@@ -13,6 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -159,6 +160,32 @@ def _duration_calls(rec):
     return [c for c in rec.hist if c["name"] == "kirocrew.session.duration"]
 
 
+#: Two generations of one key, explicit instants rather than two wall-clock reads
+#: (see :func:`_stamp_starts`). The sub-millisecond fraction and the 1 ms gap are
+#: what keep the exact checks sharp: a start that rounds its reading, or treats a
+#: start this close behind the live one as the same generation, fails them.
+_FIRST_START = 1_700_000_000.123456
+_SECOND_START = _FIRST_START + 0.001
+
+
+def _stamp_starts(monkeypatch, *instants):
+    """Hand each ``record_session_started`` the next of *instants* as its start.
+
+    Through the module's own ``time`` binding, never the stdlib's. A sleep between
+    two real starts does not separate them: on Windows CPython 3.11 and 3.12
+    ``time.time()`` steps in 15.6 ms ticks while ``time.sleep`` is a high-resolution
+    timer, so a 10 ms sleep leaves both starts on one tick and the second is not
+    "later" at all.
+    """
+    readings = list(instants)
+
+    def _wall():
+        assert readings, "a start read the clock more often than the test stamped it"
+        return readings.pop(0)
+
+    monkeypatch.setattr(sess, "time", SimpleNamespace(time=_wall))
+
+
 class TestStart:
     def test_start_counts_and_leaves_a_crumb(self, home, rec):
         _start("dashboard:chat-1")
@@ -179,7 +206,7 @@ class TestStart:
         assert len(crumbs) == 1
         assert "passwd" not in crumbs[0].name
 
-    def test_a_second_start_overwrites_the_first(self, home, rec):
+    def test_a_second_start_overwrites_the_first(self, home, rec, monkeypatch):
         """A key re-entering the registry begins a new session with its own lifetime.
 
         Registry removal has no single choke point and not every remover records
@@ -187,11 +214,11 @@ class TestStart:
         NEW session whose lifetime must be its own -- keeping the predecessor's
         start would report a lifetime spanning two sessions.
         """
+        _stamp_starts(monkeypatch, _FIRST_START, _SECOND_START)
         _start("dashboard:chat-1")
-        first = sess._live_starts["dashboard:chat-1"]
-        time.sleep(0.01)
+        assert sess._live_starts["dashboard:chat-1"] == _FIRST_START
         _start("dashboard:chat-1")
-        assert sess._live_starts["dashboard:chat-1"] > first
+        assert sess._live_starts["dashboard:chat-1"] == _SECOND_START
 
     def test_empty_key_is_a_no_op(self, home, rec):
         _start("")
@@ -739,7 +766,7 @@ class TestWriterSelfCorrection:
         second = time.time()
         assert sess._crumb_path(key, first) != sess._crumb_path(key, second)
 
-    def test_a_superseding_start_reaps_the_generation_it_displaced(self, home, rec):
+    def test_a_superseding_start_reaps_the_generation_it_displaced(self, home, rec, monkeypatch):
         """Named generations make this a case that needs handling.
 
         Under one shared filename a second start simply overwrote the file. Now the
@@ -748,14 +775,15 @@ class TestWriterSelfCorrection:
         reported as a crash that never happened.
         """
         key = "dashboard:chat-1"
+        displaced = sess._crumb_path(key, _FIRST_START)
+        _stamp_starts(monkeypatch, _FIRST_START, _SECOND_START)
         _start(key)
-        first = sess._live_starts[key]
-        time.sleep(0.01)
+        assert sess._live_starts[key] == _FIRST_START
+        assert displaced.exists(), "the first start left no crumb to displace"
         _start(key)
-        second = sess._live_starts[key]
-        assert second > first
-        assert not sess._crumb_path(key, first).exists(), "the displaced crumb must be reaped"
-        assert sess._crumb_path(key, second).exists()
+        assert sess._live_starts[key] == _SECOND_START
+        assert not displaced.exists(), "the displaced crumb must be reaped"
+        assert sess._crumb_path(key, _SECOND_START).exists()
         assert len(_crumbs(home)) == 1
 
     def test_the_lock_order_is_io_then_table_everywhere(self):
@@ -988,7 +1016,7 @@ class TestReviewFixes:
         _start("dashboard:chat-1")
         assert len(_crumbs(home)) == 1
 
-    def test_a_superseded_start_leaves_only_the_successors_crumb(self, home, rec):
+    def test_a_superseded_start_leaves_only_the_successors_crumb(self, home, rec, monkeypatch):
         """Review rounds 3-5 all lived here; the inline write ended the class.
 
         A deferred write could land after its own session ended, or after a
@@ -1000,15 +1028,14 @@ class TestReviewFixes:
         removes the interleaving rather than detecting it: there is no window in
         which two starts are both mid-write.
         """
+        _stamp_starts(monkeypatch, _FIRST_START, _SECOND_START)
         _start("dashboard:chat-1")
-        first = sess._live_starts["dashboard:chat-1"]
-        time.sleep(0.01)
+        assert sess._live_starts["dashboard:chat-1"] == _FIRST_START
         _start("dashboard:chat-1")
-        current = sess._live_starts["dashboard:chat-1"]
-        assert current > first
+        assert sess._live_starts["dashboard:chat-1"] == _SECOND_START
         crumbs = _crumbs(home)
         assert len(crumbs) == 1, "one key is one crumb, whatever the generation"
-        assert json.loads(crumbs[0].read_text())["started_at"] == current
+        assert json.loads(crumbs[0].read_text())["started_at"] == _SECOND_START
 
     def test_the_end_unlinks_off_the_loop_without_ever_dropping_the_unlink(self):
         """A pooled unlink can be dropped; an inline one parks the loop.

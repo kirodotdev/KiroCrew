@@ -20,6 +20,8 @@ the thread each half actually ran on.
 from __future__ import annotations
 
 import threading
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -143,14 +145,26 @@ async def test_a_close_predating_the_read_does_not_block(monkeypatch) -> None:
     must not additionally reject an unrelated stale tombstone — that would make
     a reopened tab un-rehydratable for the tombstone's lifetime.
     """
-    import time as _time
-
     from kiro_crew.dashboard import channel_slots
 
     log = _Log({"title": "Reopened"}, [{"role": "user", "content": "hi"}])
     state = _state(log)
-    channel_slots.note_slot_closed(state, "chat-1-old")  # then reopened
-    _time.sleep(0.01)
+    # The close must land STRICTLY before the wrapper's own ``started =
+    # time.time()``, and ``slot_closed_since`` is inclusive (``when >= instant``). A
+    # sleep cannot promise that: on Windows through CPython 3.12 ``time.sleep`` is a
+    # high-resolution timer while ``time.time`` steps in 15.6 ms ticks, so both
+    # readings can be EQUAL. Stamp an older instant through ``channel_slots``'s own
+    # clock instead: ``started`` is read later on the real clock, so it is strictly
+    # newer whatever the tick. The gap stays small (10 ms plus the time to that
+    # read), so a guard that grew a "slack" window wider than it would block this read.
+    closed_at = time.time() - 0.01
+    with monkeypatch.context() as mp:
+        mp.setattr(channel_slots, "time", SimpleNamespace(time=lambda: closed_at))
+        stamped = channel_slots.note_slot_closed(state, "chat-1-old")  # then reopened
+    assert stamped == closed_at, "the tombstone was not stamped through the pinned clock"
+    # Non-vacuous: the tombstone EXISTS and refuses a read starting at its own
+    # instant, so only the strictly later start below may pass it.
+    assert channel_slots.slot_closed_since(state, "chat-1-old", closed_at) is True
     sentinel = MagicMock(name="slot")
     monkeypatch.setattr(cp, "_build_kiro_model_map", lambda: {})
     monkeypatch.setattr(cp, "_rehydrate_slot_from_history", lambda *a, **k: sentinel)

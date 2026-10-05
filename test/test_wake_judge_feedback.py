@@ -37,7 +37,7 @@ from kiro_crew.autonudge import (
     NudgeLoop,
     _bounded_judge_recent,
 )
-from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
+from kiro_crew.config.sections import DecisionProviderConfig, DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate as decisions_gate
 from kiro_crew.decisions import log as decisions_log
 from kiro_crew.decisions.points import nudge_wake as point
@@ -1426,8 +1426,21 @@ class TestDecisionLogGrace:
     """Only a caller asking for a receipt waits beyond the write budget."""
 
     def test_only_a_receipt_request_pays_the_commit_grace(self, monkeypatch):
+        # A lost-run ceiling on each call, never a race: a call that pays no grace was
+        # measured back in 0.53 s at worst on a loaded Windows runner, and this sits far
+        # under the suite's 120 s ``--timeout``, so a call that DOES wait fails at its
+        # ``wait_for``, by name, instead of taking the worker down.
+        ceiling_secs = 10.0
+        # The grace, the hold on every append worker and the LLM lane's provider budget
+        # (never under 8 s) all outlast the ceiling: a call that waits on any of them
+        # off the loop cannot come back inside it on any host.
+        grace_secs = 15.0
+
         class _Config:
-            decisions = DecisionsConfig(nudge_wake=NudgeWakeConfig(provider="llm"))
+            decisions = DecisionsConfig(
+                provider=DecisionProviderConfig(timeout_ms=int(grace_secs * 1000)),
+                nudge_wake=NudgeWakeConfig(provider="llm"),
+            )
 
         class _InvalidOracle:
             async def ask(self, *_args, **_kwargs):
@@ -1435,6 +1448,7 @@ class TestDecisionLogGrace:
 
         releases: list[threading.Event] = []
         started: list[threading.Event] = []
+        returned: list[threading.Event] = []
 
         def _late_append(_row, *, commit_event=None):
             # The TEST decides when this returns, so the ordering under assertion is
@@ -1442,10 +1456,13 @@ class TestDecisionLogGrace:
             # is only ever set here by the test itself.
             release = threading.Event()
             started_flag = threading.Event()
+            returned_flag = threading.Event()
             releases.append(release)
             started.append(started_flag)
+            returned.append(returned_flag)
             started_flag.set()
-            release.wait(5.0)
+            release.wait(grace_secs)
+            returned_flag.set()
             if commit_event is not None:
                 commit_event.set()
             return True
@@ -1461,8 +1478,11 @@ class TestDecisionLogGrace:
         monkeypatch.setattr(decisions_gate, "_consented_for", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_capability_denied", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_oracle", lambda *_args, **_kwargs: _InvalidOracle())
-        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0.005)
-        monkeypatch.setattr(decisions_gate, "_LOG_COMMIT_GRACE_SECS", 0.5)
+        # Zero, not a small value: the budget then expires on its first await, so both
+        # calls take the over-budget branch on every host, and the receipt call's answer
+        # can only come from inside the grace, never from an append that beat the budget.
+        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0)
+        monkeypatch.setattr(decisions_gate, "_LOG_COMMIT_GRACE_SECS", grace_secs)
         monkeypatch.setattr(decisions_log, "append", _late_append)
 
         async def drive() -> None:
@@ -1470,22 +1490,30 @@ class TestDecisionLogGrace:
                 "session_key": "chat-1",
                 "config": _Config(),
             }
-            # Elapsed time is the only thing that can tell a call that skipped the grace
-            # from one that paid it, since both return with the worker still blocked.
-            # The margin is what makes it sound: the grace is 100x the budget, and the
-            # bar sits halfway, so no scheduler or clock granularity can reach it.
-            started_at = time.monotonic()
-            await decisions_gate.decide(
-                point.POINT,
-                {"loop": {"instruction": "watch it"}},
-                point.build_questions(),
-                **kwargs,
-            )
-            elapsed = time.monotonic() - started_at
-            assert elapsed < 0.25, "a call asking for no receipt waited for the commit"
+            # Nothing here is timed. A call that waited for the commit off the loop
+            # cannot return inside the ceiling, and one that ran the append ON the loop
+            # can return only after the hold ended, which ``returned`` records.
+            loop = asyncio.get_running_loop()
+            asked_at = loop.time()
+            try:
+                await asyncio.wait_for(
+                    decisions_gate.decide(
+                        point.POINT,
+                        {"loop": {"instruction": "watch it"}},
+                        point.build_questions(),
+                        **kwargs,
+                    ),
+                    ceiling_secs,
+                )
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "a call asking for no receipt waited for the commit: not back inside "
+                    f"ceiling_secs ({ceiling_secs:.0f}s), {loop.time() - asked_at:.1f}s spent"
+                )
             await _await_worker(0)
             assert len(releases) == 1
             assert releases[0].is_set() is False
+            assert not returned[0].is_set(), "a call asking for no receipt held the append"
             releases[0].set()
             # Let the handed-off worker retire before the loop closes.
             await asyncio.sleep(0.02)
@@ -1505,8 +1533,15 @@ class TestDecisionLogGrace:
             )
             await _await_worker(1)
             assert len(releases) == 2
+            released_at = loop.time()
             releases[1].set()
-            await pending
+            try:
+                await asyncio.wait_for(pending, ceiling_secs)
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "the receipt call did not come back once its commit landed: not inside "
+                    f"ceiling_secs ({ceiling_secs:.0f}s), {loop.time() - released_at:.1f}s spent"
+                )
             assert receipt["row_written"] is True
 
         asyncio.run(drive())

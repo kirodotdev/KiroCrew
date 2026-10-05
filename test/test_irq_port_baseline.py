@@ -598,11 +598,18 @@ def test_a_nearly_spent_budget_shortens_the_call_below_the_ceiling(monkeypatch):
 
     monkeypatch.setattr(gh_pr, "resolve_gh", lambda: "/usr/bin/gh")
     monkeypatch.setattr(gh_pr, "run_gh", _fake)
+    # The tick's clock, through the module's own ``time`` name, moved only here. The
+    # real one cannot pin what is left: on Windows through 3.12 two reads inside one
+    # 15.6 ms tick return the same float, and ``(t + 2.0) - t`` then rounds to
+    # 2.000000000000057 at some uptimes. Binary fractions keep every value exact.
+    now = 1000.0
+    monkeypatch.setattr(gh_pr, "time", types.SimpleNamespace(monotonic=lambda: now))
 
     transport = gh_pr._Transport("github.com", budget_secs=2.0)
+    now += 1.75  # most of the tick is spent before this call is made
     assert transport.call(["pr", "view", "42"]).ok
     assert seen["timeout"] < gh_pr._GH_TIMEOUT_SECS, "the ceiling is not what bounds it here"
-    assert seen["timeout"] <= 2.0, "and it is bounded by what the tick actually has left"
+    assert seen["timeout"] == 0.25, "and it is exactly what the tick actually has left"
     assert seen["timeout"] > 0, "a spent budget refuses the call rather than passing zero"
 
 
