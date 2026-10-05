@@ -423,6 +423,8 @@ export interface SidebarScope {
   slotFolders: ReturnType<typeof useFolderVisibility>['slotFolders']
   foldersWithActiveSubtree: ReturnType<typeof useFolderVisibility>['foldersWithActiveSubtree']
   isFolderHidden: ReturnType<typeof useFolderVisibility>['isFolderHidden']
+  pinnedFolderSubtree: ReturnType<typeof useFolderVisibility>['pinnedFolderSubtree']
+  pinnedFolderAncestors: ReturnType<typeof useFolderVisibility>['pinnedFolderAncestors']
 
   // From `useSearchMatches`
   searchRanked: ReturnType<typeof useSearchMatches>['searchRanked']

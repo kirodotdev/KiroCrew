@@ -77,6 +77,7 @@ class TestRemovableFolderIds:
             ("tags", ["t1"]),
             ("color", "#3b82f6"),
             ("icon", "🧪"),
+            ("pinned", True),
             ("channel", "discord"),
         ],
     )

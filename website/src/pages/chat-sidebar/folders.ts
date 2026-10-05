@@ -10,7 +10,7 @@ import { api } from '../../api/client'
 import { CHAT_FOLDERS_WRITE_KEY, invalidateFoldersWhenIdle, seedCreatedChatFolder } from '../../api/chatFoldersWrite'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
-import { computeActiveSubtree, folderIsHidden } from '../../utils/folderVisibility'
+import { computeActiveSubtree, folderIsHidden, computePinnedSubtree, computePinnedAncestors, computeFirstPinnedDescendant } from '../../utils/folderVisibility'
 import type { ChatFolder } from '../../types'
 import type { Slot } from './types'
 
@@ -184,13 +184,39 @@ export function useFolderVisibility({ folders, localSlots, filterHiddenFolders }
     [foldersWithActiveSubtree, revealForcedVisible],
   )
 
+  // Folder IDs covered by a folder pin (the pinned folders and everything under
+  // them). A pinned folder's sessions stay listed while the status chips, the tag
+  // chips or the folder checkboxes narrow the list, so every consumer that
+  // narrows asks this set first. Text search is deliberately NOT stepped over:
+  // a query names what the person wants to see, a chip only trims the view.
+  const pinnedFolderSubtree = useMemo(() => computePinnedSubtree(folders), [folders])
+  // The folders ABOVE a pinned one. The pinned block renders inside them, so the
+  // folder hide cannot take them away while the pin holds: their checkboxes and
+  // Hide folder items are inert. Their own sessions still answer to the chips.
+  const pinnedFolderAncestors = useMemo(() => computePinnedAncestors(folders), [folders])
+  // The unchecks the pin leaves in force: the saved set minus every folder under
+  // or above a pin. The saved set itself is left alone, so a hide on such a folder
+  // comes back on unpin. Every lane reads the folder hide through this set.
+  const effectiveHiddenFolders = useMemo(() => {
+    if (pinnedFolderSubtree.size === 0 && pinnedFolderAncestors.size === 0) return filterHiddenFolders
+    const effective = new Set(filterHiddenFolders)
+    for (const id of pinnedFolderSubtree) effective.delete(id)
+    for (const id of pinnedFolderAncestors) effective.delete(id)
+    return effective
+  }, [filterHiddenFolders, pinnedFolderSubtree, pinnedFolderAncestors])
+
   // Folder IDs whose sessions are excluded from the flat lane because the
   // folder — or any ancestor — is unchecked in the filter menu's folder list.
   // Unchecking a parent hides its whole subtree, matching what the user sees
   // in the tree. Cycle-guarded: a hand-edited folders.json can contain a
   // parent_id loop and must not freeze the tab.
+  //
+  // Built from the effective set, so a folder under or above a pin is never in
+  // it: neither is unchecked there, and no unchecked folder sits above a pinned
+  // subtree. That is what makes a pinned folder's sessions survive the hide in
+  // the tree, the flat lane, the conductor lane and the board alike.
   const filterHiddenSubtree = useMemo(() => {
-    if (filterHiddenFolders.size === 0) return new Set<string>()
+    if (effectiveHiddenFolders.size === 0) return new Set<string>()
     const byId = new Map(folders.map(f => [f.id, f]))
     const hidden = new Set<string>()
     for (const f of folders) {
@@ -198,27 +224,31 @@ export function useFolderVisibility({ folders, localSlots, filterHiddenFolders }
       const visited = new Set<string>()
       while (cur && !visited.has(cur.id)) {
         visited.add(cur.id)
-        if (filterHiddenFolders.has(cur.id)) { hidden.add(f.id); break }
+        if (effectiveHiddenFolders.has(cur.id)) { hidden.add(f.id); break }
         cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
       }
     }
     return hidden
-  }, [folders, filterHiddenFolders])
-  return { slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree }
+  }, [folders, effectiveHiddenFolders])
+  return { slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree, effectiveHiddenFolders, pinnedFolderSubtree, pinnedFolderAncestors }
 }
 
 /** The rows that announce folders the filter menu is hiding, and their peeks. */
-export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive }: {
+export function useFolderFilterReveal({ folderFilterActive, effectiveHiddenFolders: filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive }: {
   folderFilterActive: boolean
-  filterHiddenFolders: Set<string>
+  /** The unchecks a pin leaves in force (`useFolderVisibility`). Everything below
+   *  reads this set, never the raw one, so the block, the reveal rows and the
+   *  count agree with the rows on screen. */
+  effectiveHiddenFolders: Set<string>
   folders: ChatFolder[]
   isFolderHidden: (f: ChatFolder) => boolean
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
   boardLaneActive: boolean
 }) {
-  // List view (the folder tree) drops an unchecked folder's whole block —
-  // header and sessions together. Only the folder's OWN id is checked here:
-  // removing a parent block already takes its descendants with it.
+  // List view (the folder tree) drops an unchecked folder's whole block --
+  // header and sessions together -- and the board column does the same. Only
+  // the folder's OWN id is checked: removing a parent block already takes its
+  // descendants with it.
   const isFolderFilteredOut = useCallback(
     (f: ChatFolder) => folderFilterActive && filterHiddenFolders.has(f.id),
     [folderFilterActive, filterHiddenFolders],
@@ -312,23 +342,32 @@ export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders,
 }
 
 /** The filter menu folder rows, in tree order with direct counts. */
-export function useFolderFilterRows({ folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree }: {
+export function useFolderFilterRows({ folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors }: {
   /** The row model's folder index: the filtered rows filed directly in each folder. */
   folderTree: { rowsIn: (folderId: string) => Slot[] }
   folders: ChatFolder[]
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
   filterHiddenFolders: Set<string>
   filterHiddenSubtree: Set<string>
+  pinnedFolderSubtree: Set<string>
+  pinnedFolderAncestors: Set<string>
 }) {
+  const pinnedDescendantOf = useMemo(
+    () => (pinnedFolderAncestors.size === 0 ? new Map<string, ChatFolder>() : computeFirstPinnedDescendant(folders, folderCompare)),
+    [folders, folderCompare, pinnedFolderAncestors],
+  )
+
   // Folder rows for the filter menu: every folder in tree order, each with the
-  // count of flat-lane sessions filed directly in it, and whether an unchecked
-  // ancestor is already hiding it (that row renders inert).
+  // count of flat-lane sessions filed directly in it, whether an unchecked
+  // ancestor is already hiding it, whether a folder pin covers it, and the
+  // pinned folder it holds when it sits above one. All but the first plain case
+  // render inert: the hide is the ancestor's, or the pin overrides the checkbox.
   const folderFilterRows = useMemo(() => {
     // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
     // visited set so a parent_id cycle terminates instead of recursing forever.
     const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
     const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
-    const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean }[] = []
+    const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean; pinned: boolean; pinnedDescendant: ChatFolder | null }[] = []
     const visited = new Set<string>()
     const walk = (list: ChatFolder[], depth: number) => {
       for (const f of list) {
@@ -340,6 +379,8 @@ export function useFolderFilterRows({ folderTree, folders, folderCompare, filter
           count: folderTree.rowsIn(f.id).length,
           hidden: filterHiddenFolders.has(f.id),
           hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
+          pinned: pinnedFolderSubtree.has(f.id),
+          pinnedDescendant: pinnedDescendantOf.get(f.id) ?? null,
         })
         walk(childrenOf(f.id), depth + 1)
       }
@@ -356,10 +397,12 @@ export function useFolderFilterRows({ folderTree, folders, folderCompare, filter
         count: folderTree.rowsIn(f.id).length,
         hidden: filterHiddenFolders.has(f.id),
         hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
+        pinned: pinnedFolderSubtree.has(f.id),
+        pinnedDescendant: pinnedDescendantOf.get(f.id) ?? null,
       })
     }
     return rows
-  }, [folders, folderTree, filterHiddenFolders, filterHiddenSubtree, folderCompare])
+  }, [folders, folderTree, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedDescendantOf, folderCompare])
   return { folderFilterRows }
 }
 
