@@ -2272,23 +2272,32 @@ async def _host_memory_reading_off_loop(min_gb: float) -> tuple[float, str]:
     "unmeasurable" (that fails open) and never read again on the loop (that is
     the stall this split exists to avoid).
 
-    Single-flight per bar: a caller that arrives while a read for the same
-    *min_gb* is still in flight on this loop awaits that read instead of
-    starting another. The timeout ends a caller's wait, never the worker, so
-    without this a reader that hangs would take one more executor thread at
-    every re-check until the pool every ``to_thread`` caller shares ran dry.
+    Single-flight: one read is in flight per process, whatever bar each caller
+    holds. The reading and its cause do not depend on the bar (the reader's own
+    verdict against *min_gb* is dropped), so a caller that arrives while a read
+    is in flight on this loop awaits that read and compares its figure against
+    its own bar. *min_gb* is the bar of the caller that started the read, passed
+    through to the reader unchanged. The timeout ends a caller's wait, never the
+    worker, so without this a reader that hangs would take one more executor
+    thread at every re-check, and one more for every distinct bar (the bar
+    differs per agent bucket and moves as warming rows settle), until the pool
+    every ``to_thread`` caller shares ran dry.
     """
+    global _host_read_in_flight
     loop = asyncio.get_running_loop()
-    pending = _HOST_READS_IN_FLIGHT.get(min_gb)
+    pending = _host_read_in_flight
     if pending is None or pending.done() or pending.get_loop() is not loop:
         pending = loop.create_task(asyncio.to_thread(_host_memory_reading, min_gb))
-        _HOST_READS_IN_FLIGHT[min_gb] = pending
+        _host_read_in_flight = pending
 
-        def _forget(done: "asyncio.Future[tuple[float, str]]", key: float = min_gb) -> None:
-            if _HOST_READS_IN_FLIGHT.get(key) is done:
-                del _HOST_READS_IN_FLIGHT[key]
+        def _forget(done: "asyncio.Future[tuple[float, str]]") -> None:
+            global _host_read_in_flight
+            if _host_read_in_flight is done:
+                _host_read_in_flight = None
             if not done.cancelled():
-                done.exception()  # retrieved here, so no awaiter is required to
+                # Retrieve it, so a read that raised after every waiter timed
+                # out logs no "exception was never retrieved" warning.
+                done.exception()
 
         pending.add_done_callback(_forget)
     try:
@@ -2297,10 +2306,10 @@ async def _host_memory_reading_off_loop(min_gb: float) -> tuple[float, str]:
         return -1.0, MEMORY_CAUSE_READ_UNANSWERED
 
 
-#: The host reading each bar is waiting on (:func:`_host_memory_reading_off_loop`).
-#: Process-wide, as the executor whose threads it rations is; an entry leaves
-#: when its read finishes, and one left by a loop that has gone is replaced.
-_HOST_READS_IN_FLIGHT: "dict[float, asyncio.Future[tuple[float, str]]]" = {}
+#: The one host reading every caller is waiting on (:func:`_host_memory_reading_off_loop`).
+#: Process-wide, as the executor whose threads it rations is; it is cleared when
+#: its read finishes, and one left by a loop that has gone is replaced.
+_host_read_in_flight: "asyncio.Future[tuple[float, str]] | None" = None
 
 
 def _row_settled(info: SubagentInfo, now: float) -> bool:

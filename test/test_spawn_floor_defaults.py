@@ -661,32 +661,61 @@ async def _stop(mgr, how: str, agent_id: str) -> bool:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    "blocked_in",
+    [
+        "policy-read",
+        # The floor disabled: the gate takes no host reading and starts the row
+        # in the same call, so the pump's check after its policy read is the
+        # only thing between a stop that landed there and the start.
+        "policy-read-floor-off",
+        # The gate's off-loop host read, after every pump-side check has passed:
+        # only ``_spawn_after_memory_read``'s check after the read sees the stop.
+        "host-read",
+    ],
+)
 @pytest.mark.parametrize("how", ["cancel", "stop-all", "parent-end", "stage-boundary"])
 @pytest.mark.parametrize("mode", ["incognito", "no-store"])
 async def test_a_stop_reaches_a_non_durable_row_the_pump_is_dispatching(
-    monkeypatch, tmp_path, mode, how
+    monkeypatch, tmp_path, mode, how, blocked_in
 ) -> None:
     """Between the pump's pop and the gate's start a non-durable row is in
     neither ``_queue`` nor ``_agents`` and has no claim to re-check a stop. A
-    stop landing while its off-loop reads run, by any of the stop paths, must
-    still find it, report it stopped, and keep the pump from starting it."""
-    real_policy = subagent_mod.parent_spawn_policy
+    stop landing while any of its off-loop reads runs (the pump's policy read,
+    with the floor on or off, or the gate's host-memory read), by any of the
+    stop paths, must still find it, report it stopped, and keep the pump from
+    starting it."""
     blocking: list[bool] = []
     entered = threading.Event()
     release = threading.Event()
 
-    def _policy(parent_session_key):
-        if blocking:
-            entered.set()
-            release.wait(_WAIT_SECS)
-        return real_policy(parent_session_key)
+    def _blocked(real):
+        def _read(*args, **kwargs):
+            if blocking:
+                entered.set()
+                release.wait(_WAIT_SECS)
+            return real(*args, **kwargs)
 
-    monkeypatch.setattr(subagent_mod, "parent_spawn_policy", _policy)
+        return _read
+
+    if blocked_in == "host-read":
+        monkeypatch.setattr(
+            subagent_mod, "_host_memory_reading", _blocked(subagent_mod._host_memory_reading)
+        )
+        # The read must answer once released: an unanswered one re-queues the
+        # row, which would hide a missing check after the read.
+        monkeypatch.setattr(subagent_mod, "_HOST_READ_OFF_LOOP_SECS", 2 * _WAIT_SECS)
+    else:
+        monkeypatch.setattr(
+            subagent_mod, "parent_spawn_policy", _blocked(subagent_mod.parent_spawn_policy)
+        )
     host, mgr, started, store, info = await _undurable_low_memory_wait(
         monkeypatch, tmp_path, mode, _stage_boundary_owner="owner-1"
     )
     try:
         blocking.append(True)
+        if blocked_in == "policy-read-floor-off":
+            _write_agent_config({"spawn_min_memory_gb": 0.0})
         host.set(4.5)
         await _until(entered.is_set, "the pump never dispatched the row")
         try:
@@ -1209,6 +1238,46 @@ async def test_an_unanswered_top_up_read_keeps_waiting_and_never_reads_on_the_lo
         assert on_loop == []
     finally:
         await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_callers_with_different_bars_share_one_in_flight_host_read(
+    monkeypatch, tmp_path
+) -> None:
+    """The reading does not depend on the bar, and the bar differs per agent
+    bucket and moves as warming rows settle. So a hung reader must hold one
+    executor thread whatever bars its waiters hold: a caller with a different
+    bar awaits the read already in flight, and each gets the same figure to
+    compare against its own bar."""
+    _Host(monkeypatch, tmp_path, 3.0)
+    monkeypatch.setattr(subagent_mod, "_HOST_READ_OFF_LOOP_SECS", _WAIT_SECS)
+    real_to_thread = asyncio.to_thread
+    held = asyncio.Event()
+    submitted: list[float] = []
+
+    async def _pool(func, /, *args, **kwargs):
+        if func is subagent_mod._host_memory_reading:
+            submitted.append(args[0])
+            await held.wait()
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _pool)
+    low = asyncio.ensure_future(subagent_mod._host_memory_reading_off_loop(FLOOR + SHARED))
+    await _until(lambda: submitted, "the first read never started")
+    high = asyncio.ensure_future(subagent_mod._host_memory_reading_off_loop(FLOOR + DEDICATED))
+    try:
+        # A few loop turns: enough for the second caller to reach its wait, and
+        # for any read task it started to submit its worker.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert submitted == [FLOOR + SHARED] and not low.done() and not high.done()
+    finally:
+        held.set()
+    first, second = await asyncio.wait_for(asyncio.gather(low, high), _WAIT_SECS)
+    assert first == second and first[0] == pytest.approx(3.0)
+    assert submitted == [FLOOR + SHARED]
+    assert subagent_mod._host_read_in_flight is None
 
 
 @pytest.mark.asyncio

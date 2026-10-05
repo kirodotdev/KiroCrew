@@ -226,10 +226,13 @@ on-loop fallback: a worker that misses the bound, or a pool that cannot start a
 thread, comes back as `MEMORY_CAUSE_READ_UNANSWERED`, and the start waits as
 `low_memory` ("memory headroom unknown"), re-checked after the admit wait. An
 unanswered read is never the reader's "unmeasurable" -1, which fails open. The
-read is single-flight per bar: a caller that arrives while a read for the same
-bar is in flight awaits that one (shielded, so its own timeout never cancels
-it), because the bound ends a caller's wait and not the worker, and a reader
-that hangs would otherwise take one more executor thread at every re-check. The
+read is single-flight per process, whatever the bar: the figure and its cause do
+not depend on it, so a caller that arrives while any read is in flight awaits
+that one (shielded, so its own timeout never cancels it) and compares the figure
+against its own bar. The bound ends a caller's wait and not the worker, and the
+bar differs per agent bucket and moves as warming rows settle, so a reader that
+hangs would otherwise take one more executor thread at every re-check and for
+every distinct bar. The
 re-entry re-runs the policy gates on every path, so a governance change made
 during the read still refuses it; only the batch count and the row write are not
 repeated. A refused spawn whose row already exists has that row failed in the
