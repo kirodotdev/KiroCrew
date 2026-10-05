@@ -17,7 +17,6 @@ if TYPE_CHECKING:
         _RESUME_APP_NOT_FOUND,
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
-        COLOR_HEX_RE,
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
@@ -25,28 +24,19 @@ if TYPE_CHECKING:
         _app_resume_refusal,
         _app_slot_acquisition_recheck,
         _attach_variants,
-        _bump_slot_tags_revision,
         _ChatSlot,
         _collapse_wire_rows,
         _has_validated_effort_marker,
         _history_key_for,
         _live_child_instance,
         _load_restore_cfg,
-        _local_turn_generation,
-        _local_turn_prompt,
         _normalize_slot_key,
         _prepare_messages,
-        _rebase_rehydrated_refresh_mark,
-        _reconcile_local_turn_marker,
         _redact_meta_for_role,
-        _rehydrate_slot_title,
-        _restore_dismissed_source_links,
         _restore_model_fields,
         _restored_agent_name,
-        _restored_mode,
         _sync_dashboard_slots,
         _unhide_folder,
-        _validate_autocompact_pct,
         app_owns_transcript_meta,
         audit_app_slot_denial,
         carry_provenance,
@@ -57,7 +47,6 @@ if TYPE_CHECKING:
         is_channel_session_key,
         logger,
         members_mod,
-        normalize_theme_consent_sha,
         note_crew_log_class,
         queue_entry_view,
         read_bounded_json,
@@ -486,24 +475,30 @@ def _materialise_slot_from_history(
     # consumes capacity for the process lifetime. ``slot`` may be unbound if
     # ``get_or_create_slot`` itself raised (e.g. the under-construction create
     # guard), so the rollback is conditional on it existing.
+    from kiro_crew.dashboard.slot_persistence import metadata_codec
+
     slot = None
     try:
         with state.suspend_slots_push():
+            # The BINDING is the pin's authority on a member key — not the
+            # transcript's own metadata (the guard above verified identity
+            # structurally; metadata lives in the same operator-editable file it
+            # would otherwise re-pin from). Passing mode="member" is also what
+            # admits the key through the constructor's reservation.
             slot = state.get_or_create_slot(
                 name,
-                app=app,
-                # The BINDING is the pin's authority on a member key — not the
-                # transcript's own metadata (the guard above verified identity
-                # structurally; metadata lives in the same operator-editable file it
-                # would otherwise re-pin from). Passing mode="member" here is also
-                # what admits the key through the constructor's reservation.
-                agent=(member_binding or {}).get("member", ""),
-                mode=members_mod.DM_SLOT_MODE if member_binding is not None else "",
-                # Resuming an existing channel transcript from History is an adoption
-                # of that conversation, so the tab is channel-origin even when the
-                # session map cannot name its session.
-                channel_origin=is_channel_session_key(history_key),
-                origin=str(meta.get("origin", "")),
+                **metadata_codec.slot_args(
+                    meta,
+                    metadata_codec.Resume(
+                        member=(
+                            None
+                            if member_binding is None
+                            else (member_binding.get("member", ""), members_mod.DM_SLOT_MODE)
+                        ),
+                        app=app,
+                        history_key=history_key,
+                    ),
+                ),
             )
             # Keep the slot REGISTERED in ``state._slots`` throughout hydration, and
             # mark it under construction BEFORE the block's coalesced push flushes.
@@ -583,177 +578,31 @@ def _hydrate_slot_from_history(
     metadata field set resume has always applied and never the remote binding
     (RFC 7.1b); see the parameter docs on the public function.
     """
-    # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
-    # call always sends a ``title`` (see website/src/api/client/chat.ts
-    # resumeChatSlot: ``title: title || key``), and that value is client
-    # chrome — often a STALE echo of an older name (a notification deep link,
-    # a sidebar row rendered before a background refresh landed). Classifying
-    # request titles (echo vs override) is unwinnable against staleness: a
-    # stale echo is indistinguishable from a deliberate override. So the
-    # request title is used ONLY when no persisted title exists; otherwise the
-    # persisted title and its provenance are restored exactly like the
-    # chat_persistence loaders (resume is the THIRD hydration path).
-    # Reuse the SNAPSHOT the guard above validated. A second get_metadata here
-    # would re-read the file, and a write between the two reads would hydrate
-    # values the guard never saw (validate-A / hydrate-B).
-    raw_persisted_title = meta.get("title")
-    # Accept the persisted title only when it is a string: a legacy or
-    # hand-corrupted JSONL could carry a non-string here, and redacting it
-    # would raise TypeError and 500 the resume. Non-string == absent.
-    persisted_title = raw_persisted_title if isinstance(raw_persisted_title, str) else ""
-    title = request_title
-    if persisted_title:
-        _rehydrate_slot_title(
-            slot,
-            persisted_title,
-            titled=True,
-            metadata=meta,
-        )
-    elif title:
-        # Never-titled session with a caller-supplied name: apply it, with
-        # conservative "user" provenance (unknown origin — the background
-        # refresh must never rewrite it) and an epoch bump so any in-flight
-        # background attempt stands down.
-        slot.title = title
-        slot._titled = True
-        slot._title_origin = "user"
-        slot._title_epoch += 1
-    # else: untitled on disk and no caller name — leave the slot untitled
-    # (mirrors _rehydrate_slot_from_history: ``_titled = bool(meta title)``),
-    # so the auto-titler can still name it on the next turn.
-    if meta.get("created_at"):
-        slot.created_at = meta["created_at"]
-    # Disk-identity bookkeeping for the delete-won guard in
-    # ``_save_slot_to_history``: it recognises a transcript recreated by another
-    # writer after a permanent delete, which is only meaningful when this
-    # hydration READ an existing on-disk transcript. Resume did
-    # (``disk_meta_observed=True``); import synthesised its metadata in memory
-    # and has no pre-existing file, so it passes ``False`` and the guard stays
-    # dormant rather than comparing against a disk read that never happened. The
-    # observed bit also records that a read occurred even when the metadata
-    # carried no ``created_at`` (legacy files), so the guard's evidence gate does
-    # not treat a real resume as never-hydrated.
-    slot._disk_meta_created_at = str(meta.get("created_at") or "") if disk_meta_observed else ""
-    slot._disk_meta_observed = disk_meta_observed and bool(meta)
-    # This slot's memory assignment comes from restored history, not a fresh
-    # member selection -- true for every hydration-from-a-persisted-transcript
-    # path (resume, the persistence loaders, channel/member/cron restores) and
-    # equally for an import, which materialises from a bundle transcript. The
-    # runner reads it when selecting the memory binding; the flag is not
-    # persisted in the transcript, so it must be set on each hydration.
-    slot._memory_assignment_from_history = True
-    # On a member key the pin came from the BINDING at slot creation above and
-    # metadata may not override it (same tamperable file the guard refused to
-    # trust). On an ordinary key, mode="member" may not ride in either — the
-    # guard already 409s that shape, so this arm only defends a same-request
-    # inconsistency.
-    if member_binding is None:
-        if meta.get("agent"):
-            slot.agent = meta["agent"]
-        # Same fold as the two persistence loaders: a retired mode (``crew``)
-        # comes back as plain chat, so the ``surface`` this handler returns is
-        # one the chat page can render rather than a value it dropped.
-        _mode = _restored_mode(meta.get("mode"))
-        if _mode and _mode != members_mod.DM_SLOT_MODE:
-            slot.mode = _mode
-    if meta.get("workspace"):
-        slot.workspace = meta["workspace"]
-    # The namespace the agent was picked in rides with the pick itself, exactly
-    # as in the two persistence loaders (same position, same two-value guard on
-    # the operator-editable transcript). Restoring the name without it leaves
-    # the dropdown's name-only fallback lighting the same-name MEMBER row for a
-    # template-picked slot, and the next canonical full save -- which rebuilds
-    # meta_line from the live slot -- then omits the empty field and strips the
-    # recorded namespace from disk.
-    if meta.get("agent_kind") in ("member", "template"):
-        slot.agent_kind = meta["agent_kind"]
-    if meta.get("project"):
-        slot.project = meta["project"]
-    if meta.get("channel_folder_filed"):
-        # Resuming from History must carry the filing marker forward, or the
-        # next save of this slot drops it and the conversation is re-filed.
-        slot._channel_folder_filed = True
-    if meta.get("folder_id"):
-        slot.folder_id = meta["folder_id"]
-        # Re-engaging a hidden empty folder (Model B) un-hides it so it stays
-        # visible until the user hides it again. A folder deleted since this
-        # session was last saved leaves the stored id dangling; drop it so the
-        # resumed session is plainly unfiled instead of pointing at nothing.
-        #
-        # Only when the verdict is ABOUT this folder. ``_unhide_folder`` reports
-        # existence from inside the folder-store lock precisely because a check
-        # made outside it can go stale, so re-deriving one here against
-        # ``state._folders`` is the race its own docstring warns about; and it
-        # cannot simply be re-run, because a second await here would reopen the
-        # publish-to-hydrate window this ordering exists to close. Holding no
-        # verdict for a newly filed id, we KEEP it: a dangling id is visible and
-        # self-corrects on the next folder operation, whereas erasing a live
-        # filing is silent and indistinguishable from the user unfiling the
-        # session -- and the dirty-slot flush would then persist that erasure.
-        if not folder_unhidden and meta["folder_id"] == folder_checked_id:
-            slot.folder_id = ""
-    if meta.get("pinned"):
-        slot.pinned = True
-    if meta.get("color_index") is not None:
-        slot.color_index = meta["color_index"]
-    _ch = meta.get("color_hex")
-    if isinstance(_ch, str) and COLOR_HEX_RE.match(_ch):
-        slot.color_hex = _ch.lower()
-    if meta.get("color_theme"):
-        slot.color_theme = meta["color_theme"]
-        slot.theme_consent = meta.get("theme_consent") is True
-        # Restore from history metadata: re-run the same fail-closed normalizer
-        # so a tampered/legacy JSONL can't seed a malformed sha that later
-        # crashes the compare.
-        slot.theme_consent_sha = normalize_theme_consent_sha(meta.get("theme_consent_sha"))
-    if meta.get("autocompact_pct") is not None:
-        # Restore the per-session compaction threshold, mirroring the
-        # persistence loaders: without this, a resumed slot's field stays None
-        # and the next save overwrites the persisted override with null, while
-        # the live gate silently falls back to the global.
-        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
-        if slot.autocompact_pct is not None and state.sessions:
-            state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
-    # Restore the dismissed source-link tombstones, mirroring the persistence
-    # loaders (_rehydrate_slot_from_history / _apply_recent_session). This
-    # RESUME path re-applies metadata by hand rather than going through those
-    # loaders, so without this an unlinked PR/issue/Jira chip reappears on
-    # resume and the next save — serializing an empty dismissed set — erases the
-    # persisted tombstone for good.
-    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
-    # Restore tags + the auto-tag once-flag (mirrors the persistence loaders).
-    # Without the flag, resuming a session whose auto-tag the user removed
-    # would re-run maybe_auto_tag on the next message and silently re-add it.
-    raw_tags = meta.get("tags")
-    if isinstance(raw_tags, list):
-        slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
-        # Prune ids missing from the vocabulary (crash-atomic delete leaves
-        # dangling ids on disk; see api_chat_tag_delete). FAIL-OPEN only when
-        # the vocabulary is UNKNOWN (tags.json parse/I/O failure) — pruning
-        # then would wipe every assignment. A legitimately-empty vocabulary
-        # is authoritative and must prune dangling ids.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
-        # Bump the tags revision so the first published frame advertises a fresh
-        # revision for the tags just applied (invariant: tags change => revision
-        # change). Pure counter rotation, no broadcast -- safe under construction;
-        # the single push at the caller's tail carries the bumped revision.
-        _bump_slot_tags_revision(slot)
-    if meta.get("auto_tagged"):
-        slot._auto_tagged = True
-    mm = meta.get("memory_mode", "persistent")
-    slot.memory_mode = mm
-    # ``slot.key``, not the ``name`` parameter: import mints its key inside
-    # ``get_or_create_slot`` (name=None), so only ``slot.key`` names the slot
-    # after creation. For resume the two are identical (resume passes the
-    # resolved key), so this changes nothing there.
-    if mm != "persistent":
-        state._restricted_keys.add(f"dashboard:{slot.key}")
-    else:
-        state._restricted_keys.discard(f"dashboard:{slot.key}")
-    if meta.get("forked_from") is not None:
-        slot.forked_from = meta["forked_from"]
+    from kiro_crew.dashboard.slot_persistence import metadata_codec
+
+    # Every field a resume reads from the line goes through the one field table
+    # (``slot_persistence.metadata_codec``), from the SNAPSHOT the guards
+    # validated: a second get_metadata here would re-read the file, and a write
+    # between the two reads would hydrate values the guards never saw
+    # (validate-A / hydrate-B). The remote binding is deliberately NOT among
+    # them: a session bound to a remote instance comes back LOCAL here, and
+    # rehydrating the binding is the startup restore's job.
+    applied = metadata_codec.apply(
+        state,
+        slot,
+        meta,
+        metadata_codec.Resume(
+            member=(
+                None
+                if member_binding is None
+                else (member_binding.get("member", ""), members_mod.DM_SLOT_MODE)
+            ),
+            request_title=request_title,
+            folder_unhidden=folder_unhidden,
+            folder_checked_id=folder_checked_id,
+            disk_meta_observed=disk_meta_observed,
+        ),
+    )
     disk_total = len(all_messages)
     # ``window_limit`` is a fact about the data, not a caller switch: how many of
     # the newest rows to surface as the live window, given that any rows before
@@ -816,17 +665,11 @@ def _hydrate_slot_from_history(
     slot._disk_window_len = len(slot.messages)
     # After the window boundary, like the startup restore: a local turn the
     # previous process admitted and never tore down becomes the interruption
-    # row here, so a session pulled up off disk and one restored at boot agree.
-    _reconcile_local_turn_marker(
-        slot, _local_turn_generation(meta), _local_turn_prompt(meta), persisted=all_messages
-    )
-    # Same as the two chat_persistence loaders, and after the reconcile for
-    # the same reason: a transcript past the 500-row window restores fewer user
-    # rows than its persisted refresh mark was taken over, so re-base the mark
-    # or the opt-in cadence stays silent after the resume. A mark at or below
-    # the restored count is left alone, so surfacing every row (import's
-    # ``window_limit=None``) changes nothing.
-    _rebase_rehydrated_refresh_mark(slot)
+    # row here, so a session pulled up off disk and one restored at boot agree;
+    # then the title refresh mark is re-based against the rows the window holds
+    # (a mark at or below the restored count is left alone, so surfacing every
+    # row -- import's ``window_limit=None`` -- changes nothing).
+    applied.settle(all_messages)
 
 
 async def api_chat_slot_resume(request: web.Request) -> web.Response:

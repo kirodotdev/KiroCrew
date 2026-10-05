@@ -451,17 +451,39 @@ and slot builders (`restore_open_slots`, `restore_recent_sessions`, their async
 twins, `_rehydrate_slot_from_history`, `_apply_recent_session` and the prefetch
 reads they share); the reasoning-effort allowlist; the persisted-entry memo
 `_build_message_entry` with its bounds; the private member-store assignment; and
-the retired-mode map. The rules those consult live in `dashboard/slot_persistence/`,
-and each file names the work that belongs in it:
+the request-side retired-mode coercion (`_coerce_requested_mode`). The rules those
+consult live in `dashboard/slot_persistence/`, and each file names the work that
+belongs in it:
 
 - `write_guards.py` -- the paired window/queue snapshot, the routing snapshot, the
   note-row filter, the line a full save folds, the delete witness with the
   lock-free `session_was_deleted` / `session_transcript_remains` probes,
   `_keep_owed_after_refusal`, and the guarded-write registry. New refusal paths.
-- `metadata_line.py` -- the full-save line fold (`build_full_line`), the
-  empty-window merge (`merge_empty_window`), the `memory_mode` ratchet and its
-  worker-to-loop witness, `last_user_at` and the dismissed source-link line. New
-  slot-owned metadata fields.
+- `metadata_codec.py` -- every slot field the metadata line carries, in one
+  field-by-purpose table (`FIELDS`): how the full save and the empty-window merge
+  write each key (`encode`, in the `LINE_ORDER` / `MERGE_ORDER` key order the
+  bytes follow), and which reads take it back -- `RESTORE` (the open-tab restore
+  and a targeted rehydrate, `_rehydrate_slot_from_history`), `RECENT`
+  (`_apply_recent_session`) and `RESUME` (`chat_api/resume.py`'s
+  `_hydrate_slot_from_history`, shared by History resume and the transfer
+  import) -- through `slot_args` (the constructor keywords), `apply` (every other
+  field) and `AppliedMeta.settle` (the fields that need the loaded window: held
+  notes already delivered, the turn-in-flight marker, the title refresh mark). A
+  purpose missing from a row is a declared asymmetry with its reason. The value
+  checks a read applies live beside their rows, among them the title state, the
+  auto-compaction threshold, the dismissed source links, the model and effort, the
+  retired modes and the color. Outside the table,
+  `channel_slots.surface_channel_session` and the cron binders still read a few
+  fields of the line by hand. New slot-owned metadata fields (a row, its key in
+  `LINE_ORDER` / `MERGE_ORDER`, and in `SLOT_OWNED_META_KEYS` when absence must
+  clear it) and new validation of a persisted slot field.
+- `metadata_line.py` -- what a save folds against the line on disk before it
+  encodes: the full-save line (`build_full_line`), the empty-window merge
+  (`merge_empty_window`), the `memory_mode` ratchet and its worker-to-loop
+  witness, `last_user_at`, the bounded dismissed source-link line
+  (`_capped_dismissed_line`), the held-note retirement and the rows-only
+  deferral. New rules about what a save keeps from
+  the line it replaces.
 - `transcript_merge.py` -- the frozen prefix, the foreign-append merge and its
   time-ordered interleave, the dedup and rewrite archives, and the composed
   payload (`compose_payload`). New rules about what a save keeps from the file it
@@ -469,9 +491,6 @@ and each file names the work that belongs in it:
 - `message_entries.py` -- the persisted-row projection
   (`_build_message_entry_uncached`) and the restored-variant attach. New fields a
   persisted row carries.
-- `restored_metadata.py` -- the re-validation of the title state, the
-  auto-compaction threshold and the dismissed source links on restore. New
-  validation of a persisted slot field.
 - `restore_inputs.py` -- the restore-time reads and screens: the agent-to-model
   map, the restore config, the open-tab snapshot and its key screen, the committed
   agent, the delete-during-read witness, the app-owned channel-row screen and the
@@ -482,8 +501,8 @@ and each file names the work that belongs in it:
 The orchestration stays in the facade because gates key the restore builders, the
 prefetch reads, the async drivers, `save_slot_off_loop` and the recreate-won guard
 to `chat_persistence.py`, and test fixtures reset its process state there. Every
-name the facade bound is still importable from it, and the owners read every name
-a test rebinds on it through it at call time;
+project name the facade bound is still importable from it, and the owners read
+every name a test rebinds on it through it at call time;
 `test/test_chat_persistence_composition_contract.py` pins both, plus the bytes a
 save writes.
 
@@ -933,7 +952,8 @@ no longer destroy older turns.
     narrow residual window (the dropped tail is handled by the rewrite's
     archive-diff, not the foreign scan).
 - **The metadata line is a fold, and three of its fields only move one way**
-  (`metadata_line.py`). A full save rebuilds the slot-owned fields from slot state
+  (`metadata_line.py`, encoding through `metadata_codec.py`). A full save rebuilds
+  the slot-owned fields from slot state
   and carries every key another layer owns (`carry_unowned_metadata`); a forced
   or closing save of a message-less slot merges instead, writing clearable fields
   even when empty because a merge cannot delete a key, and only into a line that
@@ -961,7 +981,7 @@ no longer destroy older turns.
   (`meta.kind = "gateway_restart_interruption"`) lands past the window boundary
   so the next save writes it. A second restart before that save re-decides from
   the same bytes, so rows do not accumulate.
-- **Title state round-trips with its provenance** (`restored_metadata.py`). The
+- **Title state round-trips with its provenance** (`metadata_codec.py`). The
   save writes `title_origin`, `title_refresh_mark` and `title_low_signal` beside
   the title; a restore redacts the title for display and resolves the three
   (a legacy titled session with no origin reads as `"user"`), then

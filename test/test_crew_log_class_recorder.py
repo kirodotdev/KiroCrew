@@ -33,13 +33,11 @@ ANNOUNCER = "_note_bind"
 #: the recorder's callers fails; an entry here naming a site that does not assign a
 #: link fails as well.
 LINK_EXEMPT: dict[str, str] = {
-    "dashboard/chat_persistence.py:_apply_recent_session": (
+    # The open-tab and recent-sessions restores read the link through the field table.
+    "dashboard/slot_persistence/metadata_codec.py:_read_linked_session_key": (
         "a restore replays a link that was already recorded when it was first set, and "
         "it runs before the restored slot takes a turn, so the opening entry of its next "
         "session states the class it comes back with"
-    ),
-    "dashboard/chat_persistence.py:_rehydrate_slot_from_history": (
-        "same as the restore above: replay, before any turn"
     ),
 }
 

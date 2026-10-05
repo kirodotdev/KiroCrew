@@ -2070,7 +2070,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The row projection and the restore-time title check, composed into that
         # facade: the same internal persisted copy, no output of their own.
         "dashboard/slot_persistence/message_entries.py",
-        "dashboard/slot_persistence/restored_metadata.py",
+        "dashboard/slot_persistence/metadata_codec.py",
         "dashboard/chat_regenerate.py",
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
