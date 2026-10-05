@@ -14,7 +14,7 @@ import { i18nT } from '../../i18n/t'
 import { SESSION_LANES, inferLane } from '../chat/sessionLane'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import type { Slot } from './types'
-import { loadBoardFolderCollapse, boardCollapseKey, persistBoardOverride, clearFolderOverrides, persistClearFolderOverrides } from '../../utils/boardFolderCollapse'
+import { loadBoardFolderCollapse, boardCollapseKey, persistBoardOverride, clearFolderOverrides, persistClearFolderOverrides, clearExpandedFolderOverrides, persistClearExpandedFolderOverrides } from '../../utils/boardFolderCollapse'
 
 /** Board column geometry, mirrored from the column strip's own classes:
  *  `min-w-[220px]` per column, `gap-2` between them, `p-2` around the strip. */
@@ -351,5 +351,12 @@ export function useBoardFolderCollapse() {
     setBoardCollapse(prev => clearFolderOverrides(prev, folderId, columnId))
     persistClearFolderOverrides(folderId, columnId)
   }, [])
-  return { clearBoardCollapse, boardFolderCollapsed, toggleColumnCollapse }
+  /** Drop the overrides that hold `folderId` OPEN, so a collapse written to the
+   *  server flag is what every column reads. The mirror of clearBoardCollapse,
+   *  minus its column scope: collapse-all names no single column. */
+  const clearBoardExpand = useCallback((folderId: string) => {
+    setBoardCollapse(prev => clearExpandedFolderOverrides(prev, folderId))
+    persistClearExpandedFolderOverrides(folderId)
+  }, [])
+  return { clearBoardCollapse, clearBoardExpand, boardFolderCollapsed, toggleColumnCollapse }
 }

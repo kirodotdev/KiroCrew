@@ -11591,6 +11591,8 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
+      "collapse_all_folders": "Contraer todas las carpetas",
+      "expand_all_folders": "Expandir todas las carpetas",
       "no_sessions_match_folders": "Ninguna sesión coincide — solo un nombre de carpeta",
       "add_column_after_this_one": "Añadir una columna después de esta",
       "agent_finished_your_turn": "El agente terminó — es tu turno",

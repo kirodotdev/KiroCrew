@@ -70,10 +70,23 @@ export function persistBoardOverride(columnId: string, folderId: string, collaps
 
 /** Persisted twin of clearFolderOverrides — same collapsed-only rule. */
 export function persistClearFolderOverrides(folderId: string, columnId?: string): void {
+  persistClearOverrides(folderId, columnId, '1')
+}
+
+/** Persisted twin of clearExpandedFolderOverrides — same expanded-only rule.
+ *  Unscoped: its one caller clears every column at once. */
+export function persistClearExpandedFolderOverrides(folderId: string): void {
+  persistClearOverrides(folderId, undefined, '0')
+}
+
+/** Remove this folder's overrides that hold the one `stored` value, leaving the
+ *  opposite ones in place. Reading each key before removing it is what keeps the
+ *  two directions from clearing each other's entries. */
+function persistClearOverrides(folderId: string, columnId: string | undefined, stored: '0' | '1'): void {
   for (const key of overrideStorageKeys()) {
     const overrideKey = key.slice(KEY_PREFIX.length)
     if (!matchesClear(overrideKey, folderId, columnId)) continue
-    if (safeGetItem(key) !== '1') continue
+    if (safeGetItem(key) !== stored) continue
     try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
   }
 }
@@ -92,9 +105,28 @@ function matchesClear(overrideKey: string, folderId: string, columnId?: string):
  *  server flag — if the server-side expansion then fails and rolls back, the
  *  folder would unexpectedly collapse. */
 export function clearFolderOverrides(overrides: Map<string, boolean>, folderId: string, columnId?: string): Map<string, boolean> {
+  return dropOverrides(overrides, folderId, columnId, true)
+}
+
+/** Drop expanded overrides for one folder, in every column — the mirror of
+ *  clearFolderOverrides, for a programmatic COLLAPSE (collapse-all) that must
+ *  win over a column's local expanded state. The same asymmetry applies in
+ *  reverse: only an EXPANDED override (false) can hold a folder open against a
+ *  server flag that now says collapsed, so only those are cleared. A collapsed
+ *  override already shows the folder shut, and deleting it would hand the
+ *  column back to the server flag — if the collapse write then fails and rolls
+ *  back, the folder would unexpectedly reopen.
+ *
+ *  Unscoped, unlike its twin: collapse-all is a whole-tree action, so no caller
+ *  has a single column to name. */
+export function clearExpandedFolderOverrides(overrides: Map<string, boolean>, folderId: string): Map<string, boolean> {
+  return dropOverrides(overrides, folderId, undefined, false)
+}
+
+function dropOverrides(overrides: Map<string, boolean>, folderId: string, columnId: string | undefined, stored: boolean): Map<string, boolean> {
   const keys: string[] = []
   for (const [key, value] of overrides) {
-    if (value === true && matchesClear(key, folderId, columnId)) keys.push(key)
+    if (value === stored && matchesClear(key, folderId, columnId)) keys.push(key)
   }
   if (keys.length === 0) return overrides
   const next = new Map(overrides)
