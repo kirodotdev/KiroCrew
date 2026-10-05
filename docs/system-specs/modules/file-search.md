@@ -404,11 +404,12 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/components/chat-input/FilePreviewStrip.tsx` | Pending file/folder preview strip: basename-first folder labels, per-tile remove |
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
 | `website/src/utils/chatFileTokenDrafts.ts` | Per-slot persistence of file-chip aliases beside the staged-file drafts |
-| `website/src/pages/ChatPage.tsx` | Send serialization (`meta.dirs`); the host that composes the owners below |
+| `website/src/chat-core/composer/outgoingTurn.ts` | Send and steer serialization: `[attached_dir N]` + `meta.dirs` on a send, `@rel/` kept on the text-only steer |
+| `website/src/pages/ChatPage.tsx` | The host that composes the owners below; sends the outgoing turn |
 | `website/src/pages/chat/page/composerStaging.ts` | Staged-resource state; folder chips derived from `@rel/` tokens (`useStagedFolderRefs`) |
 | `website/src/pages/chat/page/composerFileMentions.ts` | Caret mention insertion, file-chip ↔ alias reconciliation, chip remove and its undo |
 | `website/src/pages/chat/page/composerDrafts.ts` | Per-slot draft stores, including the picked-file aliases, and their slot-switch save/restore |
-| `website/src/pages/chat/page/busyTurnControls.ts` | Steer serialization (folder tokens stay `@rel/`) |
+| `website/src/pages/chat/page/busyTurnControls.ts` | Steer: hands the composer to the outgoing turn |
 | `website/src/pages/chat/ChatPageMessageContent.tsx` | User-message folder marker resolution and inline folder chips |
 
 ## Tests
@@ -429,6 +430,7 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/test/FilePickerMenu.dirs.test.tsx` | Folder rows, selection payloads, trailing slash |
 | `website/src/test/ChatInput.dirStripHeight.test.tsx` | Preview-strip height compensation for a folders-only strip |
 | `website/src/test/fileTokens.dirs.test.ts` | Token parse/serialize/resolve units, label widening, lossless spaced paths |
+| `website/src/chat-core/composer/outgoingTurn.test.ts` | Send and steer serialization at the turn: `[attached_dir N]` + `meta.dirs[N-1]` resolved against the project on a send, `@rel/` kept on a steer |
 | `website/src/test/ChatPage.dirStaging.test.tsx` | Token-derived staging, per-slot draft survival, remove parity, send serialization + `meta.dirs` |
 | `website/src/test/ChatPage.chipUndo.test.tsx` | File-chip remove then undo/redo: attachment restored and sent, removed again, duplicate-token, prefix-sibling, old-project-alias, after-reload and post-send cases |
 | `website/src/test/chatFileTokenDrafts.test.ts` | Alias-draft roundtrip and corruption guard |

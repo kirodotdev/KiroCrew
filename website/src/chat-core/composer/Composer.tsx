@@ -20,9 +20,12 @@
  * composition of atoms; each slice moves one capability. This slice (P3-b)
  * moves VOICE: the root mounts the dictation atom, `ChatInput` reads the
  * resulting state from the context, and the 23 `voice*`/`onVoice*` props are
- * gone. Planned atoms, in order: Paste (P3-c), Mention (P3-d),
- * Slash + Skills (P3-e), Editor + Send + Attach + FollowUps (P3-f, at which
- * point `ChatInput` is a preset and is deleted).
+ * gone. P3-c moves PASTE: the host's collapsed paste blocks
+ * (`composerPastes.ts`) ride the root as `pastes`, and `ChatInput` reads them
+ * from the root's paste context instead of its two paste props. Planned
+ * atoms, in order: Mention (P3-d), Slash + Skills (P3-e), Editor + Send +
+ * Attach + FollowUps (P3-f, at which point `ChatInput` is a preset and is
+ * deleted).
  */
 import { createContext, forwardRef, useCallback, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -30,6 +33,7 @@ import VoiceDisabledModal from '../../components/VoiceDisabledModal'
 import { settingsPath } from '../../components/settingsPath'
 import { useComposerVoice, composerVoiceInputProps, type ComposerVoice, type ComposerVoiceHost } from './useComposerVoice'
 import { useComposerDraft, type ComposerDraftStore } from './draftStore'
+import type { ComposerPasteSlice } from './composerPastes'
 
 /** Host-supplied dictation behaviour the Voice atom cannot know on its own.
  *  Everything is optional; a per-slot composer (a pane) passes nothing. */
@@ -54,6 +58,10 @@ export interface ComposerProps {
   draft?: ComposerDraftStore
   onChange: (value: string) => void
   voice?: ComposerVoiceOptions
+  /** The collapsed paste blocks behind the text's tokens (`useComposerPastes`).
+   *  `ChatInput` reads them from the root instead of its `pasteBlocks` /
+   *  `onPasteBlocksChange` props, the same way `draft` wins over `value`. */
+  pastes?: ComposerPasteSlice
   children?: ReactNode
 }
 
@@ -152,6 +160,17 @@ export function useComposerDraftText(): string | null {
   return draft ? text : null
 }
 
+/** The host's paste blocks, in their own context rather than the root's, so
+ *  a block change reaches the editor that reads them without changing the
+ *  value the Voice atom reads. Null with no root, or a root given no
+ *  `pastes`. */
+const ComposerPasteContext = createContext<ComposerPasteSlice | null>(null)
+
+/** The root's paste slice, or null (`ChatInput` then uses its paste props). */
+export function useComposerPasteSlice(): ComposerPasteSlice | null {
+  return useContext(ComposerPasteContext)
+}
+
 /** Imperative surface for the host's own send path. */
 export interface ComposerHandle {
   /** The Voice atom's controls, or null when voice is not mounted. */
@@ -159,7 +178,7 @@ export interface ComposerHandle {
 }
 
 const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { slotKey, value = '', draft, onChange, voice, children }, ref,
+  { slotKey, value = '', draft, onChange, voice, pastes, children }, ref,
 ) {
   const valueRef = useRef(value); valueRef.current = value
   // With a draft store the ref reads through to it, so an atom never sees text
@@ -186,7 +205,7 @@ const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer
   return (
     <ComposerContext.Provider value={ctx}>
       <VoiceAtom />
-      {children}
+      <ComposerPasteContext.Provider value={pastes ?? null}>{children}</ComposerPasteContext.Provider>
     </ComposerContext.Provider>
   )
 })

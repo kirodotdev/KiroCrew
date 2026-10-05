@@ -67,12 +67,13 @@ import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/Ch
 import { scaleContentWidth } from '../pages/chat/contentWidth'
 import { tryQuickSend } from '../lib/quickSend'
 import { takePaneDraft, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
-import { type PasteBlock, type CarriedPastes, carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft, pruneBlocks, saveStoredPaste } from '../utils/pasteTokens'
+import { type PasteBlock, expandAll as expandPasteTokens, mergeCarriedDraft } from '../utils/pasteTokens'
 import { sendTurn, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
-import { prependQuote } from '../chat-core/composer/messageQuote'
+import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
+import { storeSentPastes, useComposerPastes } from '../chat-core/composer/composerPastes'
 import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
@@ -83,7 +84,7 @@ import { api } from '../api/client'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { parseDirTokens, prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
+import { parseDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
@@ -239,11 +240,15 @@ export default function ChatPane({
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   const pendingDirs = useMemo(() => parseDirTokens(input).map(t => t.rel), [input])
   // Collapsed paste blocks behind the `[ Paste #N · M lines ]` tokens in
-  // `input` — the sidecar ChatInput needs before it collapses a large paste
-  // into a chip at all (it stays raw text for a host that passes no
-  // `onPasteBlocksChange`). Pane-local like `input`, parked and restored WITH
-  // it (chatPaneDrafts), expanded at send, cleared with it.
-  const [pasteBlocks, setPasteBlocks] = useState<PasteBlock[]>([])
+  // `input`: the Paste atom, carried to ChatInput by the Composer root below
+  // (without it a large paste stays raw text). Pane-local like `input`, parked
+  // and restored WITH it (chatPaneDrafts), expanded at send, cleared with it.
+  // `read()` is the latest list ahead of a render, `install` swaps it on a
+  // rebind, and `carry` brings a refused payload's blocks back renumbered past
+  // the held ones -- synchronously, so two recoveries in one React batch
+  // compose instead of the second dropping the first's blocks.
+  const composerPastes = useComposerPastes()
+  const { blocks: pasteBlocks, set: setPasteBlocks, read: readPastes, install: installPastes, carry: carryIntoComposer } = composerPastes
   // Upload failures shown as a banner, keyed by the slot they were shown for.
   // A banner belongs to the conversation it happened in: rebinding the pane to
   // another slot must not carry A's banner over B's thread, and coming back to
@@ -273,32 +278,12 @@ export default function ChatPane({
   const slotKeyRef = useRef(slotKey)
   const inputRef = useRef(input)
   const pendingFilesRef = useRef(pendingFiles)
-  const pasteBlocksRef = useRef(pasteBlocks)
   // False once the pane is gone: a recovery or upload result that lands after
   // unmount has no composer to write to (a setState on an unmounted component
   // is a silent no-op), so it goes to the store instead.
   const mountedRef = useRef(false)
   inputRef.current = input
   pendingFilesRef.current = pendingFiles
-  pasteBlocksRef.current = pasteBlocks
-  /** Bring recovered paste blocks into the live composer: the blocks behind
-   *  the tokens in `text` are re-numbered past the ones held now, and the text
-   *  with its rewritten tokens is returned for the caller's text merge.
-   *
-   *  The ref is advanced HERE, synchronously, not left to the next render:
-   *  two recoveries can land in one React batch (two sends refused together),
-   *  and both would otherwise read the same stale block list, so the second
-   *  `setPasteBlocks` would drop the first recovery's blocks while both tokens
-   *  still land in the text — a chip with nothing behind it, and a retry that
-   *  sends one paste twice and the other not at all. With the ref advanced
-   *  per call, the second recovery carries on top of the first. */
-  const carryIntoComposer = useCallback((text: string, pastes: PasteBlock[]): CarriedPastes => {
-    const carried = carryPastes(text, pastes, pasteBlocksRef.current)
-    if (!pastes.length) return carried
-    pasteBlocksRef.current = carried.pastes
-    setPasteBlocks(carried.pastes)
-    return carried
-  }, [])
   // A LAYOUT effect, not a passive one: `slotKeyRef` and the park/take below
   // must move in the same commit as the `slotKey` prop. With a passive effect
   // there is a gap between the commit and the effect in which the ref still
@@ -314,16 +299,15 @@ export default function ChatPane({
     // the one copy — the store entry is cleared so a later park cannot
     // overwrite an arrival that came in between.
     if (prev !== slotKey) {
-      writePaneDraft(prev, { text: inputRef.current, files: pendingFilesRef.current, pastes: pasteBlocksRef.current })
+      writePaneDraft(prev, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() })
       slotKeyRef.current = slotKey
       const incoming = takePaneDraft(slotKey)
       setInput(incoming.text)
       setPendingFiles(incoming.files)
-      // Ref advanced with the state (see carryIntoComposer): a recovery for the
+      // Installed, not merely set (see `composerPastes` above): a recovery for the
       // incoming slot that lands in this same commit carries on top of ITS
       // parked blocks, not the outgoing slot's.
-      pasteBlocksRef.current = incoming.pastes
-      setPasteBlocks(incoming.pastes)
+      installPastes(incoming.pastes)
     } else {
       // First mount: pick up whatever this slot parked before (a page the user
       // left mid-draft, a recovery that landed while the pane was gone). The
@@ -353,9 +337,9 @@ export default function ChatPane({
     return () => {
       unsubscribe()
       mountedRef.current = false
-      writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: pasteBlocksRef.current })
+      writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() })
     }
-  }, [slotKey, carryIntoComposer])
+  }, [slotKey, carryIntoComposer, readPastes, installPastes])
   /** Stage uploaded attachment paths for the slot they were picked in. A slow
    *  upload can resolve after the pane was rebound to another member; the
    *  paths then belong to the ORIGINATING slot's parked draft, not to whoever
@@ -1029,7 +1013,7 @@ export default function ChatPane({
     // A staged quote alone is a sendable message. An option pill's send is its
     // own text and leaves the stage untouched, as it leaves files and pastes.
     const sentQuote = optionText ? null : consumeQuote('').quote
-    if (!text && !pendingFiles.length && !sentQuote) return
+    if (isEmptyTurn({ text, files: pendingFiles, quote: sentQuote })) return
     // A send while STREAMING dictation is live ends the dictation, before the
     // composer is read and cleared (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
@@ -1054,42 +1038,20 @@ export default function ChatPane({
       setPendingFiles([])
       setPasteBlocks([])
     }
-    // Attachments take the SAME wire/bubble serialization as ChatPage
-    // (prepareSendPayload, the single owner of attachment-marker knowledge):
-    // every image becomes a producer-form `![image](dest)` line on BOTH the
-    // wire text and the bubble, every other file an `[attached_file N] path`
-    // marker on the wire with the ORDERED non-image list on `meta.files`.
-    // Before this the pane shipped the typed text verbatim and parked every
-    // path (images included) on `meta.files` alone — a shape neither side
-    // reads: the agent's image extraction matches absolute paths in the
-    // PROMPT TEXT, and the bubble renders images only from their markdown.
-    // So a picture attached in a member DM or a split pane never rendered
-    // and never reached the model, while the same send from the main chat
-    // did both (#9433).
-    const { txt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(text, files)
-    // Folder tokens take the same wire/bubble split ChatPage uses: the wire
-    // text carries `[attached_dir N] path` markers the agent can resolve, the
-    // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
-    // marker N to dirPaths[N-1] for lossless history replay. The pane has no
-    // project context, so tokens are absolute and serialize as-is. Runs AFTER
-    // the file pass: file tokens never end in `/`, so the rewrites are disjoint.
-    const { llm: dirLlm, dirPaths } = serializeDirTokens(txt, '')
-    // Collapsed pastes expand for the model only, AFTER the file and folder
-    // passes (a path inside pasted content is content, not an attachment —
-    // the same order ChatPage sends in). The bubble keeps the tokens plus the
-    // blocks on `meta.pastes` so it renders the paste as a clickable chip, and
-    // the side table (saveStoredPaste) re-collapses the server's expanded echo
-    // to that chip on history load. Blocks whose token the user deleted as
-    // text are pruned first so neither carries a block nothing points at.
-    const bubblePastes = pruneBlocks(typedDisplayTxt, blocks)
-    const expanded = bubblePastes.length ? expandPasteTokens(dirLlm, bubblePastes) : dirLlm
-    // The quoted message opens both texts (`messageQuote.ts`), so the bubble's
-    // card strips exactly what was sent. Prepended AFTER the folder and paste
-    // token passes, so the quoted text is never read as one of this send's
-    // tokens (fork Opus review).
-    const llm = sentQuote ? prependQuote(expanded, sentQuote) : expanded
-    const displayTxt = sentQuote ? prependQuote(typedDisplayTxt, sentQuote) : typedDisplayTxt
-    if (bubblePastes.length) saveStoredPaste(llm, displayTxt, bubblePastes, filePaths)
+    // The same turn ChatPage sends (`buildOutgoingTurn`, the one owner of the
+    // order): every image a producer-form `![image](dest)` line on BOTH texts
+    // and every other file an `[attached_file N] path` marker on the wire with
+    // the ORDERED non-image list on `meta.files` (the agent's image extraction
+    // matches absolute paths in the PROMPT TEXT, and the bubble renders images
+    // only from their markdown); folder tokens as `[attached_dir N]`
+    // markers with `meta.dirs` (the pane has no project context, so tokens are
+    // absolute and serialize as-is); the live paste tokens expanded on the wire
+    // while the bubble keeps them plus `meta.pastes`, and the side table
+    // re-collapses the server's expanded echo to that chip on history load; the
+    // quoted message opening both texts.
+    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote }, 'send')
+    const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
+    storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
     // from the bubble text whenever a folder token serialized, so the store's
     // content-equality fallback can never reconcile the server echo against
@@ -1100,13 +1062,7 @@ export default function ChatPane({
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running). A real queue has its own card; an immediate dispatch supplies
     // the skipped row through its correlated user echo.
-    const meta = {
-      ...(filePaths.length ? { files: filePaths } : {}),
-      ...(dirPaths.length ? { dirs: dirPaths } : {}),
-      ...(bubblePastes.length ? { pastes: bubblePastes } : {}),
-      ...(sentQuote ? { quote: sentQuote } : {}),
-      sendId,
-    }
+    const meta = { ...turn.meta, sendId }
     const bubbleMinted = !busy && (text || files.length || sentQuote)
     if (bubbleMinted) {
       dispatch(appendSlotMessage({
@@ -1212,7 +1168,7 @@ export default function ChatPane({
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
-  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto])
   // The endpointer auto-submit (handed to the Voice atom above) reads the
   // latest send through this ref.
   doSendRef.current = doSend
@@ -1243,22 +1199,20 @@ export default function ChatPane({
     const files = pendingFiles
     const sentQuote = consumeQuote('').quote
     // A steer cannot restore what it cleared on an empty payload, so refuse a
-    // payload of nothing (mirrors ChatPage.steer's `!raw && !files.length`).
+    // payload of nothing (the same `isEmptyTurn` ChatPage's steer asks).
     // A staged quote alone is a payload.
-    if (!raw && !files.length && !sentQuote) return
+    if (isEmptyTurn({ text: raw, files, quote: sentQuote })) return
     // A steer while STREAMING dictation is live ends the dictation, like
     // doSend: this path clears the composer below, and a partial landing after
     // the clear would rebuild the sent text (see useComposerVoice.disarmForSend).
     // AFTER the empty-payload check, like doSend: an Enter on an empty composer
     // before the first partial lands sends nothing and must not end the capture.
     composerRef.current?.voice()?.disarmForSend()
-    const { txt: inlined, filePaths } = prepareSendPayload(raw, files)
-    // Same expansion as doSend; the steer channel is text-only and ChatPage's
-    // steer shows the expanded text in its bubble too, so this one does.
-    const steerPastes = pruneBlocks(inlined, pasteBlocks)
-    const expanded = steerPastes.length ? expandPasteTokens(inlined, steerPastes) : inlined
-    // Quote prepended after the paste pass, as in doSend.
-    const txt = sentQuote ? prependQuote(expanded, sentQuote) : expanded
+    // The text-only steer turn: files inlined, the live paste tokens expanded
+    // (ChatPage's steer shows the expanded text in its bubble too, so this one
+    // does), the quote opening the text.
+    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocks, quote: sentQuote }, 'steer')
+    const { wire: txt, pastes: steerPastes } = turn
     const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // `meta.files` is the ORDERED non-image list the `[attached_file N]`
     // tokens index into: the transcript chip resolves marker N to
@@ -1266,7 +1220,7 @@ export default function ChatPane({
     // path capture, which truncates a filename containing spaces. The steer
     // channel itself is text-only, but the echo reconciles by merging meta
     // onto this bubble, so the index rides the row from here.
-    const steerMeta = { sendId, ...(filePaths.length ? { files: filePaths } : {}), ...(sentQuote ? { quote: sentQuote } : {}) }
+    const steerMeta = { sendId, ...turn.meta }
     // Drain the per-frame chunk buffer first, same as ChatPage's steer(): a
     // pre-steer chunk still pending in useWebSocket's buffer would otherwise
     // flush BELOW this card (see lib/pendingChunkDrain.ts).
@@ -1313,7 +1267,7 @@ export default function ChatPane({
         stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
       })
     })
-  }, [running, doSend, input, pendingFiles, pasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto])
+  }, [running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto])
 
   // Stop mirrors ChatPage's press protocol (ChatPage.onStop): the first press
   // is the cooperative cancel, a second press while the slot reports
@@ -1979,12 +1933,11 @@ export default function ChatPane({
           value={input}
           onChange={handleUserInput}
           voice={composerVoiceOptions}
+          pastes={composerPastes}
         >
         <ChatInput
           value={input}
           onChange={handleUserInput}
-          pasteBlocks={pasteBlocks}
-          onPasteBlocksChange={setPasteBlocks}
           onSend={doSend}
           terminalCommands={!paneSlot ? 'pending' : paneSlot.executor === 'remote' ? 'remote' : 'local'}
           isRunning={busy}

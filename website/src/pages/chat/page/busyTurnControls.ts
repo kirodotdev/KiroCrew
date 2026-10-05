@@ -2,7 +2,8 @@ import { useCallback, useMemo, type MutableRefObject, type RefObject } from 'rea
 
 import type { ComposerHandle } from '../../../chat-core/composer/Composer'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
-import { prependQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
+import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
+import { buildOutgoingTurn, isEmptyTurn } from '../../../chat-core/composer/outgoingTurn'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
@@ -11,7 +12,6 @@ import { store, type AppDispatch } from '../../../store'
 import { appendMessage, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
-import { prepareSendPayload } from '../../../utils/fileTokens'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
@@ -123,7 +123,7 @@ export function useBusyTurnControls({
     // A staged quote alone is a payload; a slash command is not a send, so the
     // quote stays staged through it.
     const steerQuote = isInterceptedSlashCommand(raw) ? null : messageQuote.consume('').quote
-    if (!raw && !files.length && !steerQuote) return
+    if (isEmptyTurn({ text: raw, files, quote: steerQuote })) return
     // Same rule as send(): a steer while STREAMING dictation is live ends the
     // dictation before the composer is cleared below. AFTER the empty-payload
     // check, like send(): an Enter on an empty composer before the first
@@ -176,20 +176,11 @@ export function useBusyTurnControls({
       setInput(''); setPasteBlocks([])
       return
     }
-    const { txt } = prepareSendPayload(raw, files)
-    // Folder tokens deliberately stay in their `@rel/` form on steer: the
-    // steer transport is TEXT-ONLY (no meta), so a `[attached_dir N] /abs
-    // path` marker would have no meta.dirs index to replay against and the
-    // whitespace-bounded fallback truncates a path containing spaces — the
-    // chip would then open the wrong directory. The raw token is what the
-    // agent resolved before serialization existed, and it stays correct
-    // under replay. Serialize on steer only if that transport ever carries
-    // attachment metadata.
-    const activePastes = pasteBlocksRef.current
-    const expanded = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
-    // The quoted message opens the steer exactly as it opens a send -- after
-    // the paste pass, so the quoted text is never read as a paste token.
-    const llmTxt = steerQuote ? prependQuote(expanded, steerQuote) : expanded
+    // The text-only steer turn (`buildOutgoingTurn`): files inlined, folder
+    // tokens kept in their `@rel/` form (a marker with no `meta.dirs` to
+    // replay against would truncate a spaced path), the live paste tokens
+    // expanded, the quote opening the text.
+    const llmTxt = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocksRef.current, quote: steerQuote }, 'steer').wire
     // Optimistically show the steered text immediately. Steer is the default
     // mid-turn action (split send button), so pressing Enter while a turn is
     // running routes here; without an optimistic bubble the message only appears

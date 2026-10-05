@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
 
+import { useComposerPastes, type ComposerPasteSlice } from '../../../chat-core/composer/composerPastes'
 import { useComposerDraftSelector, type ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import { parseDirTokens } from '../../../utils/fileTokens'
-import type { PasteBlock } from '../../../utils/pasteTokens'
 import type { ResizeInfo } from '../../../utils/resizeImage'
 import { addSessionRef, removeSessionRef, type SessionRef } from '../../../utils/sessionRefs'
 import { useFileMentionTokens, type PickedFileTokens } from './composerFileMentions'
@@ -40,10 +40,14 @@ export function useComposerStaging({ activeSlot, splitMode, composerSlotRef, pic
   const snipSlotRef = useRef<string | null>(null)
   const pendingFilesRef = useRef(pendingFiles)
   // Collapsed paste blocks backing the `[ Paste #N · M lines ]` tokens in
-  // `input`. Persisted per-slot via chatPasteDrafts (localStorage, 30-day TTL)
-  // so they survive slot switches / refresh; cleared on send and slot delete.
-  const [pasteBlocks, setPasteBlocks] = useState<PasteBlock[]>([])
+  // `input`: the Paste atom's state. Persisted per-slot via chatPasteDrafts
+  // (localStorage, 30-day TTL) so they survive slot switches / refresh;
+  // cleared on send and slot delete. The page reads them through its own
+  // `pasteBlocksRef`, which the staged persistence effect syncs -- not the
+  // atom's render-time `read()` -- and hands the editor only the slice.
+  const { blocks: pasteBlocks, set: setPasteBlocks } = useComposerPastes()
   const pasteBlocksRef = useRef(pasteBlocks)
+  const pasteSlice = useMemo<ComposerPasteSlice>(() => ({ blocks: pasteBlocks, set: setPasteBlocks }), [pasteBlocks, setPasteBlocks])
   // Session references staged by dragging a session from the list onto this
   // pane. Serialized as LINKS on send — never the referenced transcript.
   const [pendingSessions, setPendingSessions] = useState<SessionRef[]>([])
@@ -103,7 +107,7 @@ export function useComposerStaging({ activeSlot, splitMode, composerSlotRef, pic
     pendingFiles, setPendingFiles, pendingFilesRef,
     pickedFileTokens, currentSlotTokens, recordSlotToken, mergeSlotTokens,
     snipFrame, setSnipFrame, snipSlotRef,
-    pasteBlocks, setPasteBlocks, pasteBlocksRef,
+    pasteBlocks, setPasteBlocks, pasteBlocksRef, pasteSlice,
     pendingSessions, setPendingSessions, pendingSessionsRef,
     stagedNowRef,
     stageSessionRef, unstageSessionRef, canStageSessionRef,

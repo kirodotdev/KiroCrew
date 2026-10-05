@@ -32,7 +32,7 @@ import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-import { useComposerDraftText, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
+import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
@@ -198,8 +198,8 @@ function ChatInput({
   followUpPendingOptions,
   followUpRefusedOptions,
   followUpError,
-  pasteBlocks = [],
-  onPasteBlocksChange,
+  pasteBlocks: pasteBlocksProp = [],
+  onPasteBlocksChange: onPasteBlocksChangeProp,
   showFullPastes = false,
   lexicalComposer = false,
   knowledgeChip,
@@ -216,6 +216,12 @@ function ChatInput({
   // subscribed HERE, so a keystroke re-renders this composer and not its host.
   const draftText = useComposerDraftText()
   const value = draftText ?? valueProp ?? ''
+  // Under a `<Composer pastes>` root the collapsed paste blocks arrive the same
+  // way (the Paste atom, `composerPastes.ts`), and the root wins over the two
+  // paste props as `draft` wins over `value`. Without one, the props.
+  const pasteSlice = useComposerPasteSlice()
+  const pasteBlocks = pasteSlice ? pasteSlice.blocks : pasteBlocksProp
+  const onPasteBlocksChange = pasteSlice ? pasteSlice.set : onPasteBlocksChangeProp
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
