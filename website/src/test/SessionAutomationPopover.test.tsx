@@ -218,6 +218,15 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeInTheDocument()
   })
 
+  it('carries a held loop through the compatibility bridge: it reads paused and Play resumes it', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_899_999_880_000)
+    // A bridge that drops approval_stalled shows "next cycle due" and disables
+    // Play, which leaves the popover no way to end the hold.
+    renderPopover({ ...activeLegacyLoop, nextDueAt: 1_899_999_000, approvalStalled: true })
+    expect(screen.getByTestId('auto-nudge-status')).toHaveTextContent(/^Paused · an approval in this chat timed out\./)
+    expect(screen.getByRole('button', { name: 'Resume loop and nudge now' })).toBeEnabled()
+  })
+
   it('clears a paused legacy loop through the bridge: the record is handed up as null and the popover closes', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)

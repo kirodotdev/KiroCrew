@@ -4221,8 +4221,9 @@ The pending-decision registry is channel-neutral (`messaging/approval.py`): a
 process-global map keyed `session_key:request_id` because ACP request ids restart
 at 1 per session, deny-by-default on timeout, and a timeout also signals
 `AutoNudgeService.notify_approval_stalled` (`autonudge_service/timers.py`) so an unattended
-loop deactivates instead of
-burning its cycle budget being denied. The card's nonce is minted by that registry
+loop pauses (stays active, fires nothing) instead of
+burning its cycle budget being denied; a human's answer through the same registry
+releases that hold (`release_approval_hold`), and the loop resumes on its own. The card's nonce is minted by that registry
 against the pending entry and validated INSIDE `resolve()`, as a precondition:
 checking it around the call would approve the tool first and only then discover
 the press was stale. A press carrying no nonce or request id fails closed, and

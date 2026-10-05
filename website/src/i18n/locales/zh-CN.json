@@ -5988,6 +5988,7 @@
       "paused_cycle_cap": "已暂停 · 已达轮次上限（{{cycles}}/{{max}}）。恢复后将以新预算重新开始。",
       "paused_runtime_budget": "已暂停 · 已达时间上限。恢复后将以新预算重新开始。",
       "paused_approval_stalled": "已暂停 · 等待你的批准",
+      "paused_approval_hold": "已暂停 · 此对话中的一个批准请求已超时。点 Play 或发送消息即可继续。",
       "paused_last_cycle_failed": "已暂停 · 上一轮无法运行",
       "clear_goal_for_good": "清除",
       "cancel": "取消",

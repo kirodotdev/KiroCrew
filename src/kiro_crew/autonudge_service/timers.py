@@ -90,7 +90,7 @@ def _current_task_or_none() -> "asyncio.Task[Any] | None":
 
 
 def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
-    """Record that a tool approval in *slot_key* went unanswered.
+    """Record that a tool approval in *slot_key* went unanswered: hold the loop.
 
     Called from the approval path when a prompt times out with no decision.
     That is the only evidence available that an unattended loop cannot
@@ -98,30 +98,205 @@ def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     never reaches the interactive wait, so this is unreachable for a loop
     whose cycles only touch read-only tools.
 
-    Records the fact and returns. The STOP is left to ``_timer``, which
-    already owns every terminal decision and evaluates them serialized before
-    a fire — stopping from here would mean cancelling a timer that may be
-    mid-fire (the one thing the fire-window contracts forbid, since it kills
-    the in-flight turn) and racing the very turn that produced the evidence.
-    Deferring costs the cycle already in flight and saves every later one.
+    Schedules the durable record (``_record_approval_hold``) and returns. The
+    HOLD is applied by ``_timer``, which
+    already owns every terminal and scheduling decision and evaluates them
+    serialized before a fire -- acting from here would mean cancelling a timer
+    that may be mid-fire (the one thing the fire-window contracts forbid, since
+    it kills the in-flight turn) and racing the very turn that produced the
+    evidence. Deferring costs the cycle already in flight and saves every later
+    one.
+
+    A hold, not a stop: the loop stays active, fires nothing, spends neither
+    its cycle cap nor its runtime budget, and resumes on its own through
+    :func:`release_approval_hold` once a person is back in the slot. A stop
+    here would end a long patrol overnight for a prompt nobody was awake to
+    answer, and only a person re-arming it could bring it back.
 
     The evidence is slot-level, not cycle-level: an unanswered prompt in an
-    attended tab counts too. That is the conservative direction — the loop
-    deactivates inspectable and restartable with a notice naming the remedy,
-    and a person who was merely away resumes it — whereas the alternative
-    needs a reliable "is this turn a nudge cycle?" test, which the fire
-    window does not provide for dashboard slots (their turn outlives it).
+    attended tab counts too. That is the conservative direction -- the loop
+    only waits, and a person who was merely away releases it by acting in the
+    slot -- whereas the alternative needs a reliable "is this turn a nudge
+    cycle?" test, which the fire window does not provide for dashboard slots
+    (their turn outlives it).
     """
     loop = self._find_by_slot(slot_key)
     if not loop or not loop.active or loop.approval_stalled:
         return
-    loop.approval_stalled = True
+    try:
+        task = asyncio.ensure_future(_record_approval_hold(self, slot_key))
+    except RuntimeError:
+        # No running loop to write on. The hold is not recorded, which costs at
+        # most one more declined cycle, and the next unanswered prompt records it.
+        return
+    self._inflight_adds.add(task)
+
+    def _finish(t: "asyncio.Task[None]") -> None:
+        self._inflight_adds.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning(
+                "AutoNudge: recording the approval hold for %s failed; the loop "
+                "keeps running until the next unanswered prompt",
+                slot_key,
+                exc_info=t.exception(),
+            )
+
+    task.add_done_callback(_finish)
+
+
+async def _record_approval_hold(svc: AutoNudgeService, slot_key: str) -> None:
+    """Set *slot_key*'s approval hold durably, then announce it.
+
+    Persist before publishing, the same shape as ``release_approval_hold``: the
+    flag and its start time are written under ``_lock`` and the write is AWAITED
+    before the WARNING, the ``updated`` event and the one-time ``held`` notice.
+    A write that fails restores
+    both fields, so a hold the store never accepted is never shown or acted on.
+    A ``CancelledError`` from the writer arrives only after the write settled, so
+    the hold is kept; only the announcement is skipped.
+    """
+    async with svc._lock:
+        loop = svc._find_by_slot(slot_key)
+        if not loop or not loop.active or loop.approval_stalled:
+            return
+        # A structured monitor does not hold: its tick path never reads the flag
+        # and the release refuses it. Its action-completion path does read it,
+        # to settle the monitor as an ``approval_stall`` stop, so the flag is
+        # still recorded for it -- with no hold time and no hold notice.
+        structured = is_structured_monitor_loop(loop)
+        loop.approval_stalled = True
+        loop.approval_stalled_at = 0.0 if structured else time.time()
+        try:
+            await svc._write_monitor_snapshot_locked()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            loop.approval_stalled = False
+            loop.approval_stalled_at = 0.0
+            raise
+    if structured:
+        return
     logger.warning(
-        "AutoNudge: a tool approval went unanswered in loop %s's session — "
-        "it will stop instead of firing another cycle",
+        "AutoNudge: a tool approval went unanswered in loop %s's session -- "
+        "it is paused for approval and fires no cycle until someone answers "
+        "an approval, sends a message or fires it in that session",
         loop.id,
     )
-    self._persist_soon()
+    svc._emit("updated", loop)
+    # A one-time notice, through the observer that announces the terminal
+    # bounds: the loop is not stopped, but nobody is looking at it, and this is
+    # the only signal that reaches a person who is away from the session.
+    svc._emit("held", loop)
+
+
+async def release_approval_hold(
+    self: AutoNudgeService, slot_key: str, *, why: str, arm: bool = True
+) -> bool:
+    """End *slot_key*'s approval hold, because a person is back. True if one ended.
+
+    Reached from the places that prove a person is present in the slot: an
+    approval answered there (dashboard, Slack, Discord and the channel-neutral
+    registry, through ``autonudge.release_approval_hold_for``), a message a
+    person typed into the dashboard (``notify_user_input(human=True)``), and the
+    popover's manual fire. An agent's or app's turn does not count -- what the
+    hold waits for is someone who can answer the next prompt, and a landed turn
+    proves only that the session runs.
+
+    The held time is added to ``created_ts`` (the runtime-budget clock), so the
+    hold spends none of the budget. ``arm`` re-arms toward the loop's deadline,
+    which has usually passed while it was held, so the next cycle runs within
+    ``_OVERDUE_REARM_SECS``. A caller about to start a turn in the slot passes
+    ``arm=False``: its own turn-complete hook arms the loop when that turn ends,
+    which is the "user wins" rule ``notify_user_input`` already keeps.
+
+    Persist before publishing: the cleared hold and the moved clock are written
+    under ``_lock`` and the write is AWAITED before anything is emitted, armed or
+    reported. A write that fails restores all three fields, so the loop stays
+    held exactly as the store says. A ``CancelledError`` from the writer arrives
+    only after the write settled, so the release is durable and kept; the arm is
+    skipped then, and the reconciler re-arms the loop, which is not held any more.
+    A structured monitor never holds (its tick path does not read the flag), so
+    it is left alone.
+    """
+    async with self._lock:
+        loop = self._find_by_slot(slot_key)
+        if (
+            not loop
+            or not loop.active
+            or not loop.approval_stalled
+            or is_structured_monitor_loop(loop)
+        ):
+            return False
+        now = time.time()
+        since = loop.approval_stalled_at
+        held = 0.0
+        if isinstance(since, (int, float)) and not isinstance(since, bool) and 0 < since <= now:
+            held = now - since
+        prior = (loop.approval_stalled, loop.approval_stalled_at, loop.created_ts)
+        created = loop.created_ts
+        if (
+            held
+            and isinstance(created, (int, float))
+            and not isinstance(created, bool)
+            and created > 0
+        ):
+            loop.created_ts = created + held
+        loop.approval_stalled = False
+        loop.approval_stalled_at = 0.0
+        try:
+            await self._write_monitor_snapshot_locked()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            loop.approval_stalled, loop.approval_stalled_at, loop.created_ts = prior
+            raise
+    logger.warning(
+        "AutoNudge: loop %s resumed after %.0fs paused for approval (%s)",
+        loop.id,
+        held,
+        why,
+    )
+    self._emit("updated", loop)
+    if arm and loop.active and loop.id in self._loops:
+        if loop.id in self._firing:
+            self._rearm_pending.add(loop.id)
+        else:
+            self._arm_from_deadline(loop)
+    return True
+
+
+def _schedule_release(svc: AutoNudgeService, slot_key: str, *, why: str, arm: bool = True) -> None:
+    """Run :func:`release_approval_hold` detached, for a synchronous caller.
+
+    Supervised through ``_inflight_adds`` like the judge label and the conductor
+    wake: strongly referenced, and a failed write is logged rather than lost. A
+    plain helper rather than a service member, for the reason
+    ``_wake_bound_conductor`` gives. Never raises: the approval and message paths
+    that call it must not fail because a release could not be scheduled.
+    """
+    if not slot_key:
+        return
+    loop = svc._find_by_slot(slot_key)
+    if loop is None or not loop.approval_stalled:
+        return
+    try:
+        task = asyncio.ensure_future(svc.release_approval_hold(slot_key, why=why, arm=arm))
+    except RuntimeError:
+        # No running loop: nothing to schedule onto, and the hold stays until the
+        # next sign of a person -- the harmless direction.
+        return
+    svc._inflight_adds.add(task)
+
+    def _finish(t: "asyncio.Task[bool]") -> None:
+        svc._inflight_adds.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning(
+                "AutoNudge: approval-hold release for %s failed; the loop stays paused",
+                slot_key,
+                exc_info=t.exception(),
+            )
+
+    task.add_done_callback(_finish)
 
 
 def notify_cycle_start_failed(self: AutoNudgeService, slot_key: str) -> None:
@@ -450,8 +625,12 @@ def _wake_bound_conductor(svc: AutoNudgeService, slot_key: str) -> None:
     task.add_done_callback(_finish)
 
 
-def notify_user_input(self: AutoNudgeService, slot_key: str) -> None:
+def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = False) -> None:
     """Called when user sends a message — cancel the pending nudge task.
+
+    *human* says a PERSON typed it (not an app token). That is proof someone is
+    back in the slot, so it also ends an approval hold (``release_approval_hold``,
+    unarmed: this turn's own completion re-arms the loop).
 
     Cancelling the TASK defers delivery until the user's turn ends (a
     nudge must never race a human turn); the loop's ``next_due_ts`` is
@@ -465,6 +644,8 @@ def notify_user_input(self: AutoNudgeService, slot_key: str) -> None:
     after a restart). User priority is still honoured — the deferred re-arm
     is dropped, so no further nudge is scheduled from this cycle.
     """
+    if human:
+        _schedule_release(self, slot_key, why="a person sent a message", arm=False)
     loop = self._find_by_slot(slot_key)
     if not loop:
         return
@@ -735,6 +916,11 @@ def _reconcile_once(self: AutoNudgeService) -> None:
         if not loop.active and not self._waits_for_terminal_completion(loop):
             continue
         if loop.id in self._firing or loop.id in self._maintenance_quiescing:
+            continue
+        if loop.approval_stalled and not is_structured_monitor_loop(loop):
+            # Paused for approval: no live timer is the intended state, and
+            # ``release_approval_hold`` re-arms it. Rescuing it here would only
+            # wake a tick that holds again, every pass, for as long as it waits.
             continue
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:

@@ -1953,6 +1953,7 @@
       "paused_cycle_cap": "Paused · cycle limit reached ({{cycles}} of {{max}}). Play resumes it with a fresh budget.",
       "paused_runtime_budget": "Paused · time limit reached. Play resumes it with a fresh budget.",
       "paused_approval_stalled": "Paused · waiting for your approval",
+      "paused_approval_hold": "Paused · an approval in this chat timed out. Press Play or send a message to resume.",
       "paused_last_cycle_failed": "Paused · the last cycle could not run",
       "clear_goal_for_good": "Clear",
       "cancel": "Cancel",

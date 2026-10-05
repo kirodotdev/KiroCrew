@@ -5988,6 +5988,7 @@
       "paused_cycle_cap": "一時停止中 · サイクル上限に到達（{{cycles}}/{{max}}）。再開すると新しい予算で動きます。",
       "paused_runtime_budget": "一時停止中 · 時間上限に到達。再開すると新しい予算で動きます。",
       "paused_approval_stalled": "一時停止中 · あなたの承認を待っています",
+      "paused_approval_hold": "一時停止中 · このチャットの承認の期限が切れました。再開するには Play を押すか、メッセージを送ってください。",
       "paused_last_cycle_failed": "一時停止中 · 前回のサイクルを実行できませんでした",
       "clear_goal_for_good": "クリア",
       "cancel": "キャンセル",

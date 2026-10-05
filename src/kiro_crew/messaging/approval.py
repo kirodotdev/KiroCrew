@@ -656,6 +656,7 @@ class PendingApprovals:
         # window before denying.
         reserved = self._pending.get(k)
         if reserved is not None and reserved.done():
+            _notify_approval_answered(session_key)
             try:
                 return bool(reserved.result()), ""
             finally:
@@ -666,7 +667,9 @@ class PendingApprovals:
             fut = asyncio.get_running_loop().create_future()
             self._pending[k] = fut
         try:
-            return bool(await asyncio.wait_for(fut, APPROVAL_TIMEOUT_S)), ""
+            answer = bool(await asyncio.wait_for(fut, APPROVAL_TIMEOUT_S))
+            _notify_approval_answered(session_key)
+            return answer, ""
         except asyncio.TimeoutError:
             logger.info(
                 "%s: approval prompt unanswered after %.0fs; denying",
@@ -708,6 +711,21 @@ def _notify_approval_stalled(session_key: str) -> None:
             instance.notify_approval_stalled(slot_key)
     except Exception:
         logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
+
+
+def _notify_approval_answered(session_key: str) -> None:
+    """Tell AutoNudge a person answered a prompt in *session_key*.
+
+    The release half of :func:`_notify_approval_stalled`: a loop paused for
+    approval in this conversation resumes, because someone is there to answer the
+    next prompt. Resolved and guarded the same way, for the same reasons.
+    """
+    try:
+        from kiro_crew.autonudge import binding_key_for, release_approval_hold_for
+
+        release_approval_hold_for(binding_key_for(session_key), why="an approval was answered")
+    except Exception:
+        logger.debug("autonudge.release_approval_hold failed", exc_info=True)
 
 
 class SessionApprovalDecider:

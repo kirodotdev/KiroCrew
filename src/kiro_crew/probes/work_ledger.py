@@ -347,6 +347,24 @@ class WorkLedgerProbe(irq.Probe):
         return True
 
 
+def has_open_items(conductor_key: str) -> bool:
+    """Whether *conductor_key*'s ledger holds at least one non-terminal item.
+
+    What the AutoNudge timer asks before it lets a spent cycle cap or runtime
+    budget end a work-ledger watch. Positive evidence only: an unreadable ledger,
+    or a torn item file ``list_work_items`` skips, answers False, so doubt leaves
+    the loop's own bound in force rather than lifting it -- the opposite of the
+    tick's terminal rule above, because there doubt must keep a watch ALIVE and
+    here it must not keep one running past its bound. Read-only; blocking file
+    reads, so call it off the event loop.
+    """
+    try:
+        return any(not item.is_terminal for item in work_ledger.list_work_items(conductor_key))
+    except Exception:  # noqa: BLE001 - a read fault must leave the bound in force
+        logger.debug("work-ledger probe: open-items read failed for %s", conductor_key)
+        return False
+
+
 def _conductor_key(raw: object) -> str:
     """The conductor session key named by a watch's config message."""
     text = raw if isinstance(raw, str) else ""

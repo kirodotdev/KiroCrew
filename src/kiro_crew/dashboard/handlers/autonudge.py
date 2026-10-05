@@ -346,6 +346,9 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "created_ts": loop.created_ts,
         "next_due_ts": loop.next_due_ts,
         "stopped_reason": loop.stopped_reason,
+        # Active but holding: a cycle's approval went unanswered and it fires
+        # nothing until a person answers one, sends a message or fires it.
+        "paused_for_approval": bool(loop.approval_stalled) and not is_structured_monitor_loop(loop),
         "has_banner": bool(loop.banner),
     }
 
@@ -1382,6 +1385,24 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
                 "error": "audit log unavailable: the nudge was NOT sent, "
                 "so fix the audit store and press again",
                 "code": "audit_unavailable",
+            },
+            status=503,
+        )
+    # A person pressed fire: that ends an approval hold first, or the armed tick
+    # would find the loop still paused and the press would do nothing. Unarmed,
+    # because fire_now arms the tick itself.
+    try:
+        await svc.release_approval_hold(existing.slot_key, why="fired by hand", arm=False)
+    except Exception:
+        # The hold stays as the store has it, so a fire now would only hold
+        # again: refuse it out loud rather than report a press that did nothing.
+        logger.warning("autonudge: releasing the approval hold failed", exc_info=True)
+        await _audit("denied", existing.slot_key, "approval_hold_release_failed")
+        return web.json_response(
+            {
+                "error": "nudge not sent: the loop is paused for approval and could "
+                "not be resumed, so press again",
+                "code": "approval_hold_release_failed",
             },
             status=503,
         )

@@ -1579,7 +1579,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
         _autonudge = _autonudge_get()
         if _autonudge is not None:
-            _autonudge.notify_user_input(slot.key)
+            # A person typing also ends an approval hold. Only on positive
+            # evidence of a dashboard user: an app, or the internal loopback
+            # secret a cron script or MCP tool sends with, is not one.
+            _autonudge.notify_user_input(
+                slot.key,
+                human=request.get("is_dashboard_user") is True
+                and request.get("internal_auth") is not True,
+            )
     except Exception:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
 

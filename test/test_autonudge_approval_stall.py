@@ -9,8 +9,8 @@ from kiro_crew.autonudge import APPROVAL_STALL_REASON, AutoNudgeService, NudgeLo
 
 
 @pytest.fixture(autouse=True)
-def _enable(monkeypatch):
-    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+def _enable(_floor_monkeypatch):
+    _floor_monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +100,14 @@ async def _armed(svc, **kwargs) -> NudgeLoop:
     return loop
 
 
+async def _stall(svc: AutoNudgeService, slot_key: str = "chat-1-123") -> None:
+    """Record an unanswered approval and wait for its durable write."""
+    svc.notify_approval_stalled(slot_key)
+    inflight = list(svc._inflight_adds)
+    if inflight:
+        await asyncio.gather(*inflight)
+
+
 async def _stop_and_drain(svc: AutoNudgeService) -> None:
     """Stop work this test started before pytest closes its event loop."""
     timers = list(svc._timers.values())
@@ -129,12 +137,12 @@ async def test_starting_publishes_the_service_and_stopping_unpublishes_it(store_
 
 
 @pytest.mark.asyncio
-async def test_stall_stops_loop_before_the_next_cycle(svc, _nosleep):
-    """Recorded stall evidence deactivates the loop instead of firing again.
+async def test_stall_holds_loop_instead_of_firing(svc, _nosleep):
+    """Recorded stall evidence PAUSES the loop: it stays active and fires nothing.
 
-    Same terminal treatment as the other bounds — deactivate (not remove) plus
-    ``expired``, so the loop stays inspectable and the operator is told it
-    stopped rather than finished.
+    A hold, not a stop -- no ``expired``, no ``stopped_reason``, the cycle count
+    untouched -- so a patrol nobody was awake to answer is still there in the
+    morning, inspectable as paused for approval.
     """
     fired: list[NudgeLoop] = []
 
@@ -146,16 +154,25 @@ async def test_stall_stops_loop_before_the_next_cycle(svc, _nosleep):
     svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
     loop = await _armed(svc)
     svc._on_fire = on_fire
+    cycles = loop.cycle_count
 
-    svc.notify_approval_stalled("chat-1-123")
+    await _stall(svc)
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
 
-    assert ("expired", loop.id) in events, f"no expired event emitted; got {events}"
     refreshed = svc._loops[loop.id]
-    assert refreshed.active is False
-    assert refreshed.stopped_reason == APPROVAL_STALL_REASON
+    assert refreshed.active is True
+    assert refreshed.approval_stalled is True
+    assert refreshed.approval_stalled_at > 0
+    assert refreshed.stopped_reason == ""
+    assert refreshed.cycle_count == cycles, "a held loop must not spend its cycle cap"
     assert fired == [], "a loop proved unable to act must not burn another cycle"
+    assert ("expired", loop.id) not in events, "a hold is not a stop"
+    assert ("updated", loop.id) in events, "the hold must reach the popover"
+    assert events.count(("held", loop.id)) == 1, "the hold notice is sent once"
+    timer = svc._timers.get(loop.id)
+    assert timer is None or timer.done(), "a held tick must not arm another one"
+    await _stop_and_drain(svc)
 
 
 @pytest.mark.asyncio
@@ -196,7 +213,7 @@ async def test_cycle_cap_wins_over_stall(svc, _nosleep):
     loop = await _armed(svc, max_cycles=1)
     loop.cycle_count = loop.max_cycles  # cap reached
 
-    svc.notify_approval_stalled("chat-1-123")
+    await _stall(svc)
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
 
@@ -204,16 +221,130 @@ async def test_cycle_cap_wins_over_stall(svc, _nosleep):
 
 
 @pytest.mark.asyncio
-async def test_runtime_budget_wins_over_stall(svc, _nosleep):
-    """Same precedence for the wall-clock budget."""
-    loop = await _armed(svc, max_runtime_secs=60)
-    loop.created_ts = loop.created_ts - 120  # backdate: budget already spent
+async def test_hold_does_not_spend_the_runtime_budget(svc, _nosleep):
+    """The wall clock runs while nobody answers, and that time is handed back.
 
-    svc.notify_approval_stalled("chat-1-123")
+    Checked BEFORE the runtime budget, so a hold longer than the budget does not
+    quietly end the loop it exists to keep; on release the held time is added to
+    ``created_ts`` (the budget clock), so the loop resumes with what it had left.
+    """
+    loop = await _armed(svc, max_runtime_secs=60)
+    await _stall(svc)
+    # Armed 130s ago and held for the last 120s: measured naively, the 60s budget
+    # is spent; measured without the hold, 10s of it are.
+    now = _an.time.time()
+    loop.created_ts = now - 130
+    held_since = now - 120
+    loop.approval_stalled_at = held_since
+    created_before = loop.created_ts
+    assert _an.runtime_budget_exceeded(loop)
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
 
-    assert svc._loops[loop.id].stopped_reason == "runtime_budget"
+    assert svc._loops[loop.id].active is True
+    assert svc._loops[loop.id].stopped_reason == ""
+
+    before = _an.time.time()
+    assert await svc.release_approval_hold("chat-1-123", why="test", arm=False) is True
+    after = _an.time.time()
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.approval_stalled is False
+    assert refreshed.approval_stalled_at == 0.0
+    shift = refreshed.created_ts - created_before
+    assert before - held_since <= shift <= after - held_since
+    assert not _an.runtime_budget_exceeded(refreshed)
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_person_typing_releases_the_hold_and_an_app_does_not(svc, _nosleep):
+    """A human message proves someone is back; an app's send proves nothing."""
+    loop = await _armed(svc)
+    await _stall(svc)
+
+    svc.notify_user_input("chat-1-123")  # app / unknown origin
+    assert svc._loops[loop.id].approval_stalled is True
+
+    svc.notify_user_input("chat-1-123", human=True)
+    await asyncio.gather(*list(svc._inflight_adds))
+    assert svc._loops[loop.id].approval_stalled is False
+    assert svc._loops[loop.id].active is True
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_release_rearms_and_the_next_cycle_fires(svc, _nosleep):
+    """No user re-arm: the release itself arms the loop and the cycle goes out."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    loop = await _armed(svc)
+    svc._on_fire = on_fire
+    await _stall(svc)
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert fired == []
+
+    assert await svc.release_approval_hold("chat-1-123", why="an approval was answered") is True
+    await svc._timers[loop.id]
+
+    assert len(fired) == 1, "the released loop did not fire its next cycle"
+    assert svc._loops[loop.id].approval_stalled is False
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_release_is_inert_without_a_hold(svc, _nosleep):
+    """No hold, no loop, or an inactive loop: nothing changes, nothing is armed."""
+    assert await svc.release_approval_hold("chat-nope-000", why="test") is False
+    loop = await _armed(svc)
+    assert await svc.release_approval_hold("chat-1-123", why="test") is False
+    await svc.update(loop.id, active=False)
+    assert await svc.release_approval_hold("chat-1-123", why="test") is False
+    assert svc._loops[loop.id].active is False
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_the_reconciler_leaves_a_held_loop_alone(svc, _nosleep):
+    """No live timer is the intended state of a hold, not a stranding."""
+    loop = await _armed(svc)
+    await _stall(svc)
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+
+    svc._reconcile_once()
+    svc._reconcile_once()
+
+    timer = svc._timers.get(loop.id)
+    assert timer is None or timer.done(), "the reconciler re-armed a held loop"
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_release_approval_hold_for_is_best_effort(svc, _nosleep, monkeypatch):
+    """The approval paths' one call: inert with no service, and never raises."""
+    monkeypatch.setattr(_an, "_INSTANCE", None)
+    _an.release_approval_hold_for("chat-1-123", why="test")  # no service: no-op
+
+    loop = await _armed(svc)
+    await _stall(svc)
+    _an.release_approval_hold_for(None, why="test")  # unbound key: no-op
+    assert svc._loops[loop.id].approval_stalled is True
+    _an.release_approval_hold_for("chat-1-123", why="test")
+    await asyncio.gather(*list(svc._inflight_adds))
+    assert svc._loops[loop.id].approval_stalled is False
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_an._timers, "_schedule_release", _boom)
+    _an.release_approval_hold_for("chat-1-123", why="test")  # swallowed
+    await _stop_and_drain(svc)
 
 
 @pytest.mark.asyncio
@@ -226,7 +357,7 @@ async def test_stall_hook_records_without_stopping(svc, _nosleep):
     """
     loop = await _armed(svc)
 
-    svc.notify_approval_stalled("chat-1-123")
+    await _stall(svc)
 
     assert svc._loops[loop.id].approval_stalled is True
     assert svc._loops[loop.id].active is True
@@ -246,7 +377,7 @@ async def test_stall_hook_ignores_unknown_and_inactive_loops(svc, _nosleep):
     await svc.update(loop.id, active=False)
     assert svc._loops[loop.id].stopped_reason == "manual"
 
-    svc.notify_approval_stalled("chat-1-123")
+    await _stall(svc)
 
     assert svc._loops[loop.id].approval_stalled is False
     assert svc._loops[loop.id].stopped_reason == "manual", "a manual pause must not be relabelled"
@@ -261,7 +392,7 @@ async def test_a_settings_save_on_an_active_loop_keeps_the_evidence(svc, _noslee
     evidence recorded moments earlier and let one more doomed cycle fire.
     """
     loop = await _armed(svc)
-    svc.notify_approval_stalled("chat-1-123")
+    await _stall(svc)
 
     # An ordinary settings edit on a loop that is still active.
     await svc.update(loop.id, message="revised", active=True)
@@ -272,27 +403,27 @@ async def test_a_settings_save_on_an_active_loop_keeps_the_evidence(svc, _noslee
     )
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
-    assert svc._loops[loop.id].stopped_reason == APPROVAL_STALL_REASON
+    assert svc._loops[loop.id].approval_stalled is True
+    assert svc._loops[loop.id].active is True
 
 
 @pytest.mark.asyncio
 async def test_revival_clears_stall_evidence(svc, _nosleep):
-    """Resuming spends the evidence, so the resumed loop gets to try again.
+    """A pause-and-resume by hand spends the evidence too.
 
-    A retained flag would stop the loop on its first wake — before it ever
-    tested whether approval is available again.
+    A retained flag would hold the resumed loop on its first wake -- before it
+    ever tested whether approval is available again.
     """
     loop = await _armed(svc)
-    svc.notify_approval_stalled("chat-1-123")
-    svc._cancel_timer(loop.id)
-    await svc._timer(loop)
-    assert svc._loops[loop.id].stopped_reason == APPROVAL_STALL_REASON
+    await _stall(svc)
+    await svc.update(loop.id, active=False)
 
     await svc.update(loop.id, active=True)
 
     refreshed = svc._loops[loop.id]
     assert refreshed.approval_stalled is False
     assert refreshed.stopped_reason == ""
+    await _stop_and_drain(svc)
 
 
 @pytest.mark.asyncio
@@ -340,3 +471,91 @@ async def test_stall_reason_is_a_terminal_bound(svc, _nosleep):
     await svc.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
 
     assert svc._loops[loop.id].stopped_reason == "manual"
+
+
+def test_monitor_inspect_reading_shows_the_hold():
+    """``monitor_inspect`` reads this projection; a held loop must say so."""
+    from kiro_crew.dashboard.handlers.autonudge import _autonudge_loop_reading
+
+    loop = NudgeLoop(id="abcd1234", slot_key="chat-1-123", message="go")
+    assert _autonudge_loop_reading(loop)["paused_for_approval"] is False
+    loop.approval_stalled = True
+    reading = _autonudge_loop_reading(loop)
+    assert reading["paused_for_approval"] is True
+    assert reading["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_write_keeps_the_hold_and_publishes_nothing(
+    svc, _nosleep, monkeypatch
+):
+    """Persist before publishing: a release the store refused is undone in full."""
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    loop = await _armed(svc)
+    await _stall(svc)
+    await asyncio.gather(*list(svc._inflight_adds))
+    svc._cancel_timer(loop.id)
+    held_at = loop.approval_stalled_at
+    created = loop.created_ts
+    events.clear()
+
+    async def _refuse(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _refuse)
+    with pytest.raises(OSError):
+        await svc.release_approval_hold("chat-1-123", why="test")
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.approval_stalled is True
+    assert refreshed.approval_stalled_at == held_at
+    assert refreshed.created_ts == created
+    assert events == [], "a refused release must not be announced"
+    timer = svc._timers.get(loop.id)
+    assert timer is None or timer.done(), "a refused release must not re-arm"
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hold_write_leaves_the_loop_running_and_unannounced(
+    svc, _nosleep, monkeypatch
+):
+    """Persist before publishing, for the hold itself: no hold the store refused."""
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    loop = await _armed(svc)
+    events.clear()
+
+    async def _refuse(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _refuse)
+    svc.notify_approval_stalled("chat-1-123")
+    await asyncio.gather(*list(svc._inflight_adds), return_exceptions=True)
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.approval_stalled is False
+    assert refreshed.approval_stalled_at == 0.0
+    assert events == [], "a refused hold must not be announced"
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_structured_monitor_records_the_stall_but_never_holds(svc, _nosleep, monkeypatch):
+    """Its tick never reads the flag, so a hold there would be a false notice."""
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    loop = await _armed(svc)
+    events.clear()
+    monkeypatch.setattr(_an._timers, "is_structured_monitor_loop", lambda _loop: True)
+
+    svc.notify_approval_stalled("chat-1-123")
+    await asyncio.gather(*list(svc._inflight_adds))
+
+    # The flag is still recorded: the monitor's action-completion path reads it
+    # to settle the monitor as an approval_stall stop.
+    assert svc._loops[loop.id].approval_stalled is True
+    assert svc._loops[loop.id].approval_stalled_at == 0.0
+    assert "held" not in events and "updated" not in events
+    await _stop_and_drain(svc)

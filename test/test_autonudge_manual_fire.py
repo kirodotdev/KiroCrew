@@ -344,9 +344,14 @@ class _FakeSvc:
         self.loops = loops
         self.fired: list[str] = []
         self.result: tuple[NudgeLoop | None, str, int] | None = None
+        self.released: list[tuple[str, bool]] = []
 
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         return next((lp for lp in self.loops if lp.id == loop_id), None)
+
+    async def release_approval_hold(self, slot_key: str, *, why: str, arm: bool = True) -> bool:
+        self.released.append((slot_key, arm))
+        return False
 
     async def fire_now(self, loop_id: str) -> tuple[NudgeLoop | None, str, int]:
         self.fired.append(loop_id)
@@ -422,6 +427,28 @@ async def test_route_fires_and_returns_the_updated_loop(monkeypatch) -> None:
     assert body["ok"] is True
     assert body["loop"]["id"] == "lp-1"
     assert svc.fired == ["lp-1"]
+    # A press is a person: it ends an approval hold first, unarmed, because the
+    # fire arms the tick itself -- else the tick would find the loop still held.
+    assert svc.released == [("chat-1-111", False)]
+
+
+@pytest.mark.asyncio
+async def test_route_refuses_when_the_approval_hold_cannot_be_released(monkeypatch) -> None:
+    """A release the store refused leaves the loop held, so a fire would do nothing."""
+    loop = NudgeLoop(id="lp-1", slot_key="chat-1-111", message="check", idle_secs=300)
+
+    class _Svc(_FakeSvc):
+        async def release_approval_hold(self, slot_key: str, *, why: str, arm: bool = True) -> bool:
+            raise OSError("disk full")
+
+    svc = _Svc([loop])
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+
+    resp = await h.api_autonudge_fire(_mk("lp-1", slot=_slot()))
+
+    assert resp.status == 503
+    assert _body(resp)["code"] == "approval_hold_release_failed"
+    assert svc.fired == []
 
 
 @pytest.mark.asyncio

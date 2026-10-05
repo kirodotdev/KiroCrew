@@ -150,3 +150,23 @@ class TestSettingsListing:
         assert entry["registered"] is True
         assert entry["protected"] is False
         assert entry["default_priority"] == "default"
+
+
+class TestApprovalHoldNotice:
+    def test_held_notice_lands_on_system_monitor_and_names_the_resume(self, monkeypatch, tmp_path):
+        state = _make_state(monkeypatch, tmp_path)
+        loop = NudgeLoop(
+            id="loop-h", slot_key="chat-7-1700000000", message="patrol", cycle_count=47
+        )
+        loop.approval_stalled = True
+        assert GatewayOrchestrator._notify_nudge_held(_orch(state), loop) is True
+        [note] = state._notification_log
+        assert note["channel"] == MONITOR_CHANNEL
+        assert note["kind"] == "agent"
+        assert "paused" in note["title"].lower()
+        assert "Play" in note["body"] and "cycle 47" in note["body"]
+
+    def test_held_notice_without_a_dashboard_is_a_no_op(self):
+        loop = NudgeLoop(id="loop-h", slot_key="chat-7-1700000000", message="patrol")
+        orch = SimpleNamespace(dashboard_state=None, _notif_meta=GatewayOrchestrator._notif_meta)
+        assert GatewayOrchestrator._notify_nudge_held(orch, loop) is False

@@ -695,3 +695,31 @@ def test_the_bounded_steer_is_never_wrapped_again_at_a_call_site() -> None:
         and ast.unparse(node.args[0].func) == "_steer_policy_notice"
     ]
     assert rewrapped == [], f"the steer notice is bounded twice: {rewrapped}"
+
+
+class TestAnswerReleasesTheApprovalHold:
+    """A person's answer on the dashboard resumes a loop paused for approval.
+
+    Gated on the host attribution the crew-log closer uses, so a timeout -- a host
+    decision -- never releases it. One real turn each, through the harness.
+    """
+
+    @staticmethod
+    def _releases(record: TurnRecord) -> list[str]:
+        return [
+            call.args[0] for call in record.autonudge_calls if call.name == "release_approval_hold"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [APPROVED, REJECTED])
+    async def test_a_persons_answer_releases_the_hold(self, answer: str) -> None:
+        slot = SlotSpec(key="chat-1", autonudge=True)
+        record = await run_turn(_prompt_turn(answers={"req-1": answer}), slot=slot)
+        assert self._releases(record) == ["chat-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_expired_prompt_does_not_release_it(self) -> None:
+        slot = SlotSpec(key="chat-1", autonudge=True)
+        record = await run_turn(_prompt_turn(), slot=slot)
+        assert self._releases(record) == []
+        assert record.notify_approval_stalled == [("chat-1", 600)]

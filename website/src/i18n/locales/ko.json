@@ -5988,6 +5988,7 @@
       "paused_cycle_cap": "일시중지됨 · 주기 한도 도달({{max}} 중 {{cycles}}). 재개하면 새 예산으로 다시 시작합니다.",
       "paused_runtime_budget": "일시중지됨 · 시간 한도 도달. 재개하면 새 예산으로 다시 시작합니다.",
       "paused_approval_stalled": "일시중지됨 · 승인을 기다리고 있습니다",
+      "paused_approval_hold": "일시중지됨 · 이 채팅의 승인 시간이 만료되었습니다. 다시 시작하려면 Play를 누르거나 메시지를 보내세요.",
       "paused_last_cycle_failed": "일시중지됨 · 마지막 주기를 실행할 수 없었습니다",
       "clear_goal_for_good": "지우기",
       "cancel": "취소",

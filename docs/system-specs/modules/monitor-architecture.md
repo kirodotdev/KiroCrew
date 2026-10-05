@@ -199,6 +199,28 @@ to the ceiling and bound-checks only a budget the caller supplied.
 Explicit stops remain available.
 Quarantine remains inspectable even below the ordinary four-hour default.
 
+A prompt-path work-ledger watch is the one loop whose own bounds do not end it
+while its subject is live. When `_timer` finds the cycle cap or the runtime
+budget spent on a running loop that observes a work ledger
+(`_observes_work_ledger`) and that ledger still holds a non-terminal item
+(`probes.work_ledger.has_open_items`, positive evidence only: an unreadable
+ledger answers no), it raises the spent bound server-side instead of
+deactivating -- `max_cycles` to the count plus a quarter of the cap (at least
+10), `max_runtime_secs` to the loop's age plus a quarter of the budget (at least
+one hour), clamped to the ceiling -- logs it at WARNING and re-arms. The loop
+then ends only through the probe's terminal settlement (every item closed) or a
+user or agent stop. The runaway backstop is the same
+`monitoring.max_runtime_secs` ceiling, measured as the loop's age from
+`created_ts`: past it nothing is extended, the bound stops the loop as before,
+and the refusal is logged at WARNING.
+
+An unanswered tool approval HOLDS a prompt loop rather than stopping it: it
+stays active, fires nothing and spends neither bound, and it resumes on its own
+once a person answers an approval, types into the dashboard session or presses
+fire (`release_approval_hold`); a Slack or Discord message alone does not
+release it. `monitor_inspect` reports the hold as
+`paused_for_approval` on the loop reading.
+
 A tool's “requested” response proves receipt only. The gateway's applied notice
 and a subsequent `monitor_inspect` prove activation. Unmatched directive delivery
 produces an application-failure notice appended to the tool's own result text; its

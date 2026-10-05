@@ -6083,6 +6083,7 @@
       "paused_cycle_cap": "Pausiert · Zykluslimit erreicht ({{cycles}} von {{max}}). Fortsetzen startet ein neues Budget.",
       "paused_runtime_budget": "Pausiert · Zeitlimit erreicht. Fortsetzen startet ein neues Budget.",
       "paused_approval_stalled": "Pausiert · wartet auf deine Freigabe",
+      "paused_approval_hold": "Pausiert · eine Freigabe in diesem Chat ist abgelaufen. Drück Play oder schick eine Nachricht, um fortzufahren.",
       "paused_last_cycle_failed": "Pausiert · der letzte Zyklus konnte nicht laufen",
       "clear_goal_for_good": "Leeren",
       "cancel": "Abbrechen",

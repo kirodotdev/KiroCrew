@@ -105,6 +105,9 @@ export interface LegacyGoalLoop {
   /** The kind of subject that watch observed (`gh-pr`, `work-ledger`), from the
    *  frame's `monitor_kind`; '' with no watch. */
   monitorKind: string
+  /** An active loop holding for an unanswered approval (the REST row's and
+   *  frame's `approval_stalled`). Present only when true. */
+  approvalStalled?: boolean
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
    *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
@@ -381,6 +384,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       stoppedReason: text(loop.stopped_reason),
       monitorOutcome: text(loop.monitor_outcome, text(gatedRecord?.outcome)),
       monitorKind: text(loop.monitor_kind, text(gatedRecord?.kind)),
+      ...(loop.approval_stalled === true ? { approvalStalled: true } : {}),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),

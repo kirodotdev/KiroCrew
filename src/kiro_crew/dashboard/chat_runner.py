@@ -14199,6 +14199,13 @@ async def _run_chat(
                         ),
                         cause=_host_deny_cause,
                     )
+                    # The same attribution decides the approval hold: a decision
+                    # no host route made came from a person, and a loop paused for
+                    # approval on this slot resumes because someone is back.
+                    if not (_host_deny_cause or _host_cancelled or _host_stopped):
+                        from kiro_crew.autonudge import release_approval_hold_for
+
+                        release_approval_hold_for(slot.key, why="an approval was answered")
                     # Backstop: the future is now gone, so the permission
                     # message MUST NOT be left reading pending — the UI would
                     # keep rendering an approval bar whose every button answers

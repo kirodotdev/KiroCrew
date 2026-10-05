@@ -672,6 +672,23 @@ def get_instance() -> "AutoNudgeService | None":
     return _INSTANCE
 
 
+def release_approval_hold_for(slot_key: str | None, *, why: str) -> None:
+    """End *slot_key*'s approval hold, if its loop has one. Best-effort.
+
+    The one call the approval paths make once a person answers a prompt. It
+    schedules ``AutoNudgeService.release_approval_hold`` (which awaits its own
+    durable write) and returns at once. A monitoring convenience must never change
+    how that answer is applied, so a missing service, an empty key or a fault here
+    is swallowed.
+    """
+    try:
+        svc = _INSTANCE
+        if svc is not None and slot_key:
+            _timers._schedule_release(svc, slot_key, why=why)
+    except Exception:
+        logger.debug("autonudge.release_approval_hold failed", exc_info=True)
+
+
 def _is_torn_deactivation(loop: NudgeLoop) -> bool:
     """Whether a persisted row is inactive without any stop having been recorded.
 
@@ -1877,6 +1894,7 @@ class AutoNudgeService:
     _deactivate_and_wait_unserialized = _maintenance._deactivate_and_wait_unserialized
     # autonudge_service.timers
     notify_approval_stalled = _timers.notify_approval_stalled
+    release_approval_hold = _timers.release_approval_hold
     notify_cycle_start_failed = _timers.notify_cycle_start_failed
     notify_cycle_failed = _timers.notify_cycle_failed
     notify_cycle_landed = _timers.notify_cycle_landed
@@ -1903,6 +1921,7 @@ class AutoNudgeService:
     _persist_judge_state = _judge_tick._persist_judge_state
     # autonudge_service.firing
     _timer = _firing._timer
+    _extend_for_open_ledger = _firing._extend_for_open_ledger
     _run_fire_cycle = _firing._run_fire_cycle
     fire_now = _firing.fire_now
     # autonudge_service.mutations

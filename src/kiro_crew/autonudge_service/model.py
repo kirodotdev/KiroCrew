@@ -470,7 +470,8 @@ class NudgeLoop:
     # "autonudge_stop" (deliberate directive), "cycle_cap",
     # "runtime_budget", or "approval_stalled" (set by _timer's terminal
     # bounds), "stop_sentinel" (the stop file existed when _timer woke) or
-    # "monitor_terminal" (the watched subject merged or closed).
+    # "monitor_terminal" (the watched subject merged or closed). "approval_stalled"
+    # is from before approval stalls became a hold; it is still read on old rows.
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is
@@ -479,16 +480,22 @@ class NudgeLoop:
     stopped_reason: str = ""
     # Evidence that a cycle in this loop's session asked for tool approval and
     # nobody answered within the window. Set by ``notify_approval_stalled`` and
-    # consumed by ``_timer`` as a terminal condition on the NEXT wake, which is
-    # the whole point: the loop stops on proof that it could not act, never on a
-    # prediction that it might not be able to. A loop whose turns only touch
-    # auto-approved tools never reaches an interactive wait, so it can never be
-    # flagged here — that is what keeps a working read-only loop running instead
-    # of needing a "does this loop need approval?" guess.
-    # Persisted, because the condition that produced it (a lapsed grant) usually
-    # outlives a restart; cleared on every revival so a re-granted loop is not
-    # stopped by stale evidence.
+    # read by ``_timer`` as a HOLD on every later wake: the loop stays active but
+    # fires no cycle, so it spends neither its cycle cap nor (see
+    # ``approval_stalled_at``) its runtime budget while nobody is there to answer.
+    # It holds on proof that it could not act, never on a prediction that it
+    # might not be able to. A loop whose turns only touch auto-approved tools
+    # never reaches an interactive wait, so it can never be flagged here.
+    # Cleared by ``release_approval_hold`` once a person is back (an approval
+    # answered in the slot, a message typed into it, a manual fire), which
+    # resumes the loop with no re-arm by the user, and on every revival.
+    # Persisted, because the condition that produced it usually outlives a
+    # restart.
     approval_stalled: bool = False
+    # When the current hold began (0 = not held, or a legacy row). On release the
+    # held time is added to ``created_ts``, so a hold does not spend the runtime
+    # budget: a loop held overnight resumes with the budget it had left.
+    approval_stalled_at: float = 0.0
     # How many of this loop's cycles in a row ended without ever getting a model
     # session (``session/new`` timed out or otherwise failed). Raised by
     # ``notify_cycle_start_failed`` and zeroed by ``notify_cycle_landed``, both

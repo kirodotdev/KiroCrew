@@ -134,6 +134,8 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     // closed without merging, any other finished watch reads as a subject.
     monitor_outcome: loop.monitorOutcome,
     monitor_kind: loop.monitorKind,
+    // A held loop reads and acts paused only when this rides along.
+    ...(loop.approvalStalled ? { approval_stalled: true } : {}),
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
     ...(loop.judge !== undefined ? { judge: loop.judge } : {}),
     ...(loop.judge_last_verdict !== undefined

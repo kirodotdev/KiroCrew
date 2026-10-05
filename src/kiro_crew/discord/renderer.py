@@ -586,7 +586,12 @@ class DiscordApprovalDecider:
         )
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
-            return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
+            answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
+            # A button was pressed: a loop paused for approval in this session resumes.
+            from kiro_crew.autonudge import release_approval_hold_for
+
+            release_approval_hold_for(self._session_key, why="an approval was answered")
+            return answer
         except asyncio.TimeoutError:
             # Recorded for the driver, which steers the cause into the turn
             # before it rejects, so the model hears "expired" not "denied".

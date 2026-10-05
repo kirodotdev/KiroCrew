@@ -41,6 +41,11 @@ export interface AutoNudgeLoop {
    *  Carried by the frame beside `monitor_outcome`; the Done wording is chosen
    *  by the pair. `undefined` means the source did not carry it. */
   monitor_kind?: string
+  /** True while an ACTIVE loop holds because a cycle's approval went unanswered:
+   *  it fires nothing until a person answers an approval, sends a message or
+   *  fires it, then resumes by itself. Carried by the REST list (`asdict(loop)`)
+   *  and the `autonudge_state` frame; `undefined` reads as not held. */
+  approval_stalled?: boolean
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire

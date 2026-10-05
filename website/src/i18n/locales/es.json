@@ -6178,6 +6178,7 @@
       "paused_cycle_cap": "En pausa · límite de ciclos alcanzado ({{cycles}} de {{max}}). Reanudar inicia un presupuesto nuevo.",
       "paused_runtime_budget": "En pausa · límite de tiempo alcanzado. Reanudar inicia un presupuesto nuevo.",
       "paused_approval_stalled": "En pausa · esperando tu aprobación",
+      "paused_approval_hold": "En pausa · una aprobación de este chat caducó. Pulsa Play o envía un mensaje para reanudar.",
       "paused_last_cycle_failed": "En pausa · el último ciclo no pudo ejecutarse",
       "clear_goal_for_good": "Borrar",
       "cancel": "Cancelar",
