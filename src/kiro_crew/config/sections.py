@@ -1284,7 +1284,8 @@ class AgentConfig:
             "Subagent Queue Max Wait (seconds)",
             "How long a subagent waits for free memory before it gives up. Its "
             "parent is then told it never started. Waiting for a free slot does not "
-            "count. 0 waits forever; the most is 86400 (one day).",
+            "count, except on macOS: a start held for memory pressure is timed from "
+            "its first hold. 0 waits forever; the most is 86400 (one day).",
         ),
     )
     start_collect_timeout_secs: int = field(

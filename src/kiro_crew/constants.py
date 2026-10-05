@@ -232,7 +232,7 @@ DEFAULT_SUBAGENT_MAX_TURNS = 1000
 DEFAULT_SPAWN_MIN_MEMORY_GB = 2.0
 
 # Default of ``agent.subagent_queue_max_wait_secs``: how long a spawn the memory
-# floor or the posture gate keeps deferring may wait before it ends with the
+# floor keeps deferring (durable or in memory) may wait before it ends with the
 # delivered terminal ``never started: waiting for memory``. Finite by owner
 # decision (a memory wait is never unbounded); one number for the config default,
 # the loader fallback and the manager's boot value.

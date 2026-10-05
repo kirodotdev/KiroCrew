@@ -492,7 +492,7 @@ now classed `compat`).
 
 | Budget | Runs during | Default | Source |
 |---|---|---|---|
-| queue wait | `queued`, `waiting_infra`, `retry_wait` | unbounded unless `deadline_at`; a subagent spawn DEFERRED for memory (floor or posture) 1800s of parked time → `failed` "never started: waiting for memory" (Q10) | caller; `agent.subagent_queue_max_wait_secs` |
+| queue wait | `queued`, `waiting_infra`, `retry_wait` | unbounded unless `deadline_at`; a subagent spawn held on the memory floor (durable or in memory) 1800s of parked time → `failed` "never started: waiting for memory" (Q10) | caller; `agent.subagent_queue_max_wait_secs` |
 | admit wait | `admitted` waiting on steps 2–4 | 30s → back to `queued` | `agent.admit_wait_secs` |
 | start | `starting`, active only | 90s | `session_start_timeout_secs` |
 | start collect | `recovering` after start timeout | 300s | `agent.start_collect_timeout_secs` |

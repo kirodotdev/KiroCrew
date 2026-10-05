@@ -152,6 +152,10 @@ _REFUSAL_TEXTS = frozenset(
         # The pressure hold's terminal: ended, never started, past its bound. The
         # caller was already told the start was queued (test below).
         "<MEMORY_PRESSURE_NEVER_STARTED>",
+        # The floor's terminal for a wait with no durable row, past
+        # ``agent.subagent_queue_max_wait_secs``: also the end of a wait the
+        # caller was told was queued (test_subagent_queue_max_wait.py).
+        "<QUEUED_WAIT_EXPIRED_TEXT>",
     }
 )
 _CAPACITY_WORDS = ("GB", "memory available", "low memory", "posture", "concurrency", "capacity")

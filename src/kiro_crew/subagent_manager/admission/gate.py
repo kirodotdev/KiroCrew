@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         QUEUED_REASON_CONCURRENCY_LIMIT,
         QUEUED_REASON_LOW_MEMORY,
         QUEUED_REASON_MEMORY_PRESSURE,
+        QUEUED_WAIT_EXPIRED_TEXT,
         SEL_MEMORY_PRESSURE_NEVER_STARTED,
         AgentCheck,
         KiroCrewConfig,
@@ -1098,6 +1099,44 @@ class _GateMixin(ManagerComponent):
                 # leaves it to this gate, floor first. A refusal below forgets it.
                 self._manager._floor_deferred_ids.add(agent_id)
                 return _defer_or_refuse(memory_detail, info, wait=memory_wait)
+            # No durable row, so the store sweep cannot bound this wait: the
+            # time it has spent PARKED on the floor is kept here (closed parks,
+            # each cut at its planned end, so a later wait for a slot is not
+            # counted) and checked as it is parked again, under the same live
+            # ``agent.subagent_queue_max_wait_secs`` (0 is no bound).
+            floor_now = time.monotonic()
+            floor_parked, park_from, park_end = self._manager._floor_waits.get(
+                agent_id, (0.0, floor_now, floor_now)
+            )
+            floor_parked += max(0.0, min(park_end, floor_now) - park_from)
+            bound = self._manager._admission.taskq_memory_wait_bound_secs()
+            if bound > 0 and floor_parked >= bound:
+                logger.warning(
+                    "Subagent %s waited for memory longer than %.0fs; ending it (%s)",
+                    agent_id,
+                    bound,
+                    QUEUED_WAIT_EXPIRED_TEXT,
+                )
+                self._manager._forget_pending_start(agent_id)
+                ended = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    memory_mode=_memory_mode,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=QUEUED_WAIT_EXPIRED_TEXT,
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                self._manager._agents.setdefault(agent_id, ended)
+                self._manager._emit_queue_depth(parent_session_key, batch_id)
+                return self._manager._announce_rejection(ended)
+            self._manager._floor_waits[agent_id] = (
+                floor_parked,
+                floor_now,
+                floor_now + self._manager._admission.taskq_admit_wait_secs(),
+            )
         if (
             mem_ok
             and avail_gb < 0

@@ -1298,7 +1298,13 @@ stamps the successor's row earlier than the retired conversation's, and a time c
 would sweep it. It runs after the
 named runs are stopped, so it never delays a live reap behind a store read, and it logs
 one `parent-end teardown: … store_rows=… store_ids=…` WARNING when it finds any. A store
-it cannot read sweeps nothing (the snapshot's ids are already stopped). Pinned by
+it cannot read sweeps nothing yet (the snapshot's ids are already stopped): the sweep is
+recorded as owed (`_teardown_sweeps_owed`) and its fence stays open, still recording and
+still gating a max-wait expiry of the retired rows (`accepted_before_open_teardown`), and
+each reaper sweep runs it again (`retry_owed_teardown_sweeps`, the same cancel with no
+snapshot ids under the kept fence) until a read lands and the fence is released. The
+first refusal warns; a refused retry logs at DEBUG. Pinned by
+`test_subagent_queue_max_wait.py::TestARefusedTeardownSweepIsRetried`, and by
 `test_queue_depth_reconcile.py::test_after_each_exit_the_published_depth_equals_the_store_count`
 (`parent_end`, `session_reset`),
 `test_a_parent_end_stops_its_store_rows_without_reporting_them_home`, for a row the
@@ -2476,6 +2482,11 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   the bound PARKED in their current wait (the `deferred` events after the row's
   last `claimed`/`transition`, each counted from its `ts` to its `until`) -- and
   fails each one in the same writer-thread call, fenced by the generation it read.
+  Each `finish` commits on its own, so a store refusal partway through never
+  discards the rows already failed: their reports are still made (no later read
+  names them -- the sweep reads queued rows, the replay another incarnation's).
+  A refused `finish` ends that sweep and leaves the row and the rest queued for
+  the next one.
   A re-check does not restart the clock; a claim does. What is measured is parked
   time, not time since the first deferral: a row whose deferral merely LAPSED is
   eligible again and waits for a slot, so it is not ended, and the time it spends
@@ -2491,28 +2502,78 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   are the stop's, and so is the depth: `_report_queued_stop` re-publishes the
   parent's queued depth itself, once per row and before the terminal record is
   built (the sweep emits none of its own), which reaches 0 once nothing else
-  waits. The report's own settle then finds the row already
-  `failed`, which `taskq_report_refused_settle` logs at DEBUG rather than as a
-  lost write -- only for a record that never held a claim (`never_claimed`); a
-  claimed run finding its own state already written is still a warning, since
-  that is a newer owner having settled the same row. Rows are bounded alike whether they were accepted by this process
-  or restored from `tasks.db` (the clock is the store's event time). **A parent
-  that ended is not rebuilt:** `snapshot_teardown_children` stamps the parent key
-  (`taskq_mark_parent_retired`, store clock, kept `_RETIRED_PARENT_TTL_SECS`),
-  because a row waiting in the store alone is in no teardown snapshot; an expired
-  row accepted at or before that stamp is added to `_teardown_cancelled_ids`, so
-  its card ends but nothing injects into the retired conversation, while a
-  successor's own rows under the same key report as usual. The stamp is in this
-  process only: after a gateway restart, a store row of a parent torn down
-  before it is reported like any other (the same reach a restored row of a
-  retired parent already has when it starts and completes). Cancelling a retired
-  parent's store rows at teardown is what closes that, and is not done here.
-  The stamp is taken after the teardown's own gates, and only when the manager
-  has an admission coordinator. A spawn with no durable row is refused at the
-  memory floor, so this sweep has no in-memory deferral to bound; the one
-  in-memory memory wait, the macOS kernel memory-pressure hold, reads the same
-  key for its own per-start and per-episode bound (*macOS: the kernel
-  memory-pressure hold*). No separate "still waiting" notice is sent while a row waits: the
+  waits. The sweep's `failed` is the row's terminal write, so the report passes
+  `row_settled=True` and its settle writes no second `finish`. Rows are bounded alike whether they were accepted by this process
+  or restored from `tasks.db` (the clock is the store's event time). **The
+  report survives the process that owes it:** the failure commits before its
+  report runs, so it is written with `finish(..., report_owed=True)`, which puts
+  the owing incarnation on the terminal `transition` event in the same
+  transaction; once the report has reached the parent the mark is cleared
+  (`taskq_clear_owed_reports` posts `TaskStore.mark_reported`). For a report
+  the gateway delivered directly that is when the report task has returned
+  True; one that returned False (the injection timed out, or `_on_done`
+  raised), raised or was cancelled stays owed. So does one whose task returned
+  True although the gateway gave up on the injection: a channel or cron
+  parent's failed attempts are swallowed inside `_on_done`, so
+  `notify_injection_failed` (and the cron arm that swallows a failure without
+  a notice) marks the record `_report_undelivered`, and
+  `taskq_clear_owed_report_if_delivered` leaves the mark. A stage-boundary
+  retry that later gets a latched expiry through
+  (`_redeliver_boundary_report_payloads`, `settle_before_delete`) clears the
+  mark as the first report would have. A report it PARKED is not
+  delivered when its task returns: a wave member held for its digest
+  (`_digest_held`), an announce queued behind a busy slot
+  (`_delivery_queued`) or one handed to an idle slot's turn is then only in
+  this process's memory. The synthetic record carries `_report_owed`, so the
+  gateway hands the debt on as
+  a `SubagentDelivery(..., report_owed=True)` with the digest's held deliveries
+  or the announce's ledger entry, and the settle that delivers it
+  (`_settle_digest_holds`, `settle_queued_delivery`) clears the mark instead of
+  writing a `delivered` tombstone (the row has no run folder). The digest settle
+  clears it only on delivery: it runs whenever `_on_done` returns, so when the
+  gateway gave up on the digest's channel or cron injection (the flusher, the
+  last member or the reaper's forced flush, carries `_report_undelivered`) it
+  detaches the held expiries without clearing them, and they stay owed. A
+  digest whose flusher reports to a parent a teardown retired clears the held
+  expiry's mark, since its parent is gone. A process lost in between, or a report the
+  shutdown drain cancelled, leaves the row owed, and the next start reports it:
+  `taskq_schedule_owed_replay` (from `taskq_boot_dispatch`, from
+  `_initialize_taskq` when the store attaches after the reaper started, which is
+  the gateway's boot order and every re-open, and from each reaper sweep) runs
+  `taskq_replay_owed_expiries_async`, which reports every `failed` row
+  `TaskStore.owed_reports` names exactly as a live expiry is. It reads a page
+  at a time, resuming after the last row it reported, and is marked done only
+  once a page comes back short; a read the store refuses leaves the replay
+  unfinished for the next sweep, and one in flight is never started twice. No
+  replay runs while the gateway holds dispatch for its memory barrier
+  (`_queue_dispatch_held`): a report injected then fails on
+  `MemoryStartupUnavailable`, which the injector swallows, so the report would
+  look run and its owed mark would be cleared undelivered.
+  `release_queue_dispatch` schedules the replay instead. Rows
+  this incarnation owes are never named, since their reports are in flight
+  here. The guarantee is at least once: a clear that is itself lost (the store
+  unreachable, or the process ending between the report and the write) makes
+  the next start report the expiry again, never not at all. **A parent that ended is not rebuilt:** a parent-end
+  teardown's store sweep stops every waiting row of that parent its snapshot's
+  fence does not record, so such a row is cancelled, not expired. Between the
+  snapshot and that sweep the row is still queued and can expire; an expired row
+  whose parent has a teardown open and that the fence does not record
+  (`CancellationCoordinator.accepted_before_open_teardown`; a fence whose store
+  read was refused stays open until the reaper's retry lands) is added to
+  `_teardown_cancelled_ids`, so its card ends but nothing injects into the
+  retired conversation, while a successor's own rows under the same key report
+  as usual. The fences are this process's only: after a gateway restart, an
+  owed report of a parent torn down before it is replayed to that key like any
+  restored row. A floor wait with no durable row (incognito or temporary
+  memory, or the task queue off) is not in the store, so the gate bounds it
+  itself: `_floor_waits` keeps its parked time the same way (each park from its
+  start to its planned end, cut by now, so time waiting for a slot between
+  parks is not counted), and the re-check that finds the host still short once
+  that time reaches the bound ends it with the same `never started: waiting for
+  memory`, through `_announce_rejection` like the pressure hold's expiry.
+  `_forget_pending_start` drops the clock. The macOS kernel memory-pressure
+  hold reads the same key for its own per-start and per-episode bound (*macOS:
+  the kernel memory-pressure hold*). No separate "still waiting" notice is sent while a row waits: the
   queued card and `queued_wait_text` say why it waits until the bound ends it.
 - **Nested tree.** `taskq_accept` sets `parent_id` (and inherits `root_id`)
   when the spawning session is `subagent:<id>` and that id has a row, so the

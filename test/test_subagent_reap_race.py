@@ -1758,7 +1758,13 @@ async def test_report_retention_refusal_is_boundary_local(monkeypatch):
     assert await manager.wait_for_parent_reports(*row_scope) is False
 
 
-def _terminal_report_consumer_fields() -> set[str]:
+# The outcome of ONE delivery attempt, written by the gateway inside that
+# attempt's ``_on_done``. A redelivery is a new attempt, so the failed-report
+# snapshot must not carry it (``test_a_redelivery_does_not_inherit_a_given_up_attempt``).
+_ATTEMPT_LOCAL_FIELDS = {"_report_undelivered"}
+
+
+def _terminal_report_consumer_fields(*, exclude_attempt_local: bool = True) -> set[str]:
     """Fields read by terminal reporting and the production completion callback."""
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
     targets = {
@@ -1807,7 +1813,7 @@ def _terminal_report_consumer_fields() -> set[str]:
             )
     # The exact owner is consumed through stage_boundary_owner_for_run(info).
     fields.add("_stage_boundary_owner")
-    return fields
+    return fields - _ATTEMPT_LOCAL_FIELDS if exclude_attempt_local else fields
 
 
 def test_report_failure_snapshot_fields_match_terminal_consumers() -> None:
@@ -1815,3 +1821,16 @@ def test_report_failure_snapshot_fields_match_terminal_consumers() -> None:
     from kiro_crew.subagent import _ReportFailureSnapshot
 
     assert set(_ReportFailureSnapshot.__dataclass_fields__) == _terminal_report_consumer_fields()
+
+
+def test_a_redelivery_does_not_inherit_a_given_up_attempt() -> None:
+    """A snapshot latched after the gateway gave up on an injection redelivers as a
+    fresh attempt: carrying ``_report_undelivered`` would keep a delivered
+    redelivery's held expiries owed, and the next start would report them again."""
+    from kiro_crew.subagent import SubagentInfo, _ReportFailureSnapshot
+
+    read = _terminal_report_consumer_fields(exclude_attempt_local=False)
+    assert _ATTEMPT_LOCAL_FIELDS <= read, "an attempt-local field is no longer read"
+    info = SubagentInfo(id="given-up", task="t", done=True)
+    info._report_undelivered = True
+    assert _ReportFailureSnapshot.capture(info).delivery_info()._report_undelivered is False

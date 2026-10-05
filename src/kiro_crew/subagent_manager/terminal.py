@@ -354,11 +354,16 @@ class TerminalCoordinator(ManagerComponent):
             # the hold, and marking the siblings it was holding, leaves no injector
             # armed for the wave. The siblings are NOT marked delivered -- their results
             # never reached a parent, so orphan reconciliation must still be able to
-            # find them.
+            # find them. A memory-wait expiry held here is the exception: it has no
+            # folder, and the store owes its report only to the parent that ended,
+            # so the mark is cleared rather than left for a restart to deliver.
             info._digest_held_at = 0.0
             held, info._digest_settle_deliveries = info._digest_settle_deliveries, []
             if held:
                 self._manager._teardown_cancelled_ids.update(delivery.agent_id for delivery in held)
+                owed = [delivery.agent_id for delivery in held if delivery.report_owed]
+                if owed:
+                    self._manager._admission.taskq_clear_owed_reports(owed)
             logger.info("Reaper: skipping parent delivery for %s — its parent ended", info.id)
             # The gate has now done its job for this run: the delivery it existed to stop
             # has been stopped, and ``_on_done`` was never called, so none of the gateway's
@@ -1363,6 +1368,11 @@ class TerminalCoordinator(ManagerComponent):
             # the gateway's injection paths), so gating it once covers them all.
             logger.info("Reaper: skipping failure announce for %s — its parent ended", info.id)
             return
+        # Every route that gives up on an injection comes through here, and most
+        # then return normally from ``_on_done``, so this is where the record
+        # learns its report did not reach the parent. Set before the slot check:
+        # a parent with no tab gets no notice at all.
+        info._report_undelivered = True
         try:
             # Lazy: the dashboard layer must not be imported by a core module at
             # import time.

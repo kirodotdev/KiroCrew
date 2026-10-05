@@ -442,6 +442,79 @@ def test_deferred_longer_than_counts_the_time_a_row_was_parked(
     assert "w" in [r.id for r in store.deferred_longer_than(kind, 3)]
 
 
+def test_deferred_longer_than_bounds_every_state_defer_parks(
+    store: TaskStore, clock: Clock
+) -> None:
+    """A restart survivor (``recovering``) or a retried run (``retry_wait``) the
+    memory gates keep deferring is bounded like a ``queued`` row; a ``retry_wait``
+    row merely in its backoff (never deferred) is not a memory wait."""
+    kind = model.KIND_SUBAGENT
+    store.insert_if_absent(_rec("rec", state=model.RECOVERING))
+    store.insert_if_absent(_rec("retry", state=model.RETRY_WAIT, attempts=1))
+    store.insert_if_absent(
+        _rec("backoff", state=model.RETRY_WAIT, attempts=1, next_run_at=clock.t + 600)
+    )
+    for rid in ("rec", "retry"):
+        assert store.defer(rid, clock.t + 60, reason="low memory") is True
+    clock.t += 50
+    assert sorted(r.id for r in store.deferred_longer_than(kind, 50)) == ["rec", "retry"]
+    assert store.deferred_longer_than(kind, 51) == []
+    expired = store.deferred_longer_than(kind, 50)[0]
+    assert store.finish(expired.id, model.FAILED, generation=expired.generation, error="x")
+    assert store.state_of(expired.id) == model.FAILED
+
+
+def test_an_owed_report_outlives_the_process_that_owed_it(
+    store: TaskStore, clock: Clock, tmp_path: Path
+) -> None:
+    """``finish(report_owed=True)`` leaves the row named by ``owed_reports`` -- in
+    a LATER incarnation only -- until ``mark_reported`` clears it."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("owed"), _rec("plain"), _rec("cleared")])
+    assert store.finish("owed", model.FAILED, error="x", report_owed=True)
+    assert store.finish("plain", model.FAILED, error="x")
+    assert store.finish("cleared", model.FAILED, error="x", report_owed=True)
+    store.mark_reported("cleared")
+    # Its own incarnation's rows are in flight in this process, never named.
+    assert store.owed_reports(kind) == []
+    # A refused finish owes nothing: the row is already terminal.
+    assert store.finish("plain", model.FAILED, error="x", report_owed=True) is False
+    store.close()
+    later = TaskStore(store.path, window=4, clock=clock, network_fs=False).open()
+    try:
+        assert [r.id for r in later.owed_reports(kind)] == ["owed"]
+        assert later.owed_reports(model.KIND_CRON) == []
+        later.mark_reported("owed")
+        assert later.owed_reports(kind) == []
+    finally:
+        later.close()
+
+
+def test_owed_reports_pages_after_a_cursor(store: TaskStore, clock: Clock) -> None:
+    """``after`` names only the rows ordered after the previous page's last one, so
+    a reader pages through every owed row, ties on ``updated_at`` included, and
+    never re-reads one whose ``reported`` clear has not landed. Accepted out of
+    id order, so insertion (``rowid``) order would break each tie the other way."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("b"), _rec("a"), _rec("d"), _rec("c")])
+    for task_id in ("b", "a"):  # one tick: a tie broken by id
+        assert store.finish(task_id, model.FAILED, error="x", report_owed=True)
+    clock.advance(1.0)
+    for task_id in ("d", "c"):
+        assert store.finish(task_id, model.FAILED, error="x", report_owed=True)
+    store.close()
+    later = TaskStore(store.path, window=4, clock=clock, network_fs=False).open()
+    try:
+        first = later.owed_reports(kind, limit=3)
+        assert [r.id for r in first] == ["a", "b", "c"]
+        cursor = (first[-1].updated_at, first[-1].id)
+        assert [r.id for r in later.owed_reports(kind, limit=3, after=cursor)] == ["d"]
+        mid = (first[0].updated_at, first[0].id)
+        assert [r.id for r in later.owed_reports(kind, after=mid)] == ["b", "c", "d"]
+    finally:
+        later.close()
+
+
 def test_defer_on_terminal_row_is_a_noop(store: TaskStore, clock: Clock) -> None:
     store.accept([_rec("t")])
     assert store.cancel("t") == model.QUEUED

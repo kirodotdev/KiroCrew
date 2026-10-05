@@ -8277,11 +8277,13 @@ class GatewayOrchestrator:
         # nullability idiom reports a user-stopped agent as completed, and a
         # stopped or failed run already carries its own tombstone whose 7-day
         # post-mortem window a "delivered" write would shorten to the result TTL.
-        owed: list[SubagentDelivery] = (
-            []
-            if (flush_only or info.outcome != "completed")
-            else [SubagentDelivery(info.id, info.elapsed, info.credits)]
-        )
+        # A memory-wait expiry has no folder either, but the store owes its report
+        # until the announce is consumed, so its debt is carried the same way.
+        owed: list[SubagentDelivery] = []
+        if not flush_only and info.outcome == "completed":
+            owed.append(SubagentDelivery(info.id, info.elapsed, info.credits))
+        elif not flush_only and getattr(info, "_report_owed", False) is True:
+            owed.append(SubagentDelivery(info.id, info.elapsed, info.credits, report_owed=True))
         held = getattr(info, "_digest_settle_deliveries", None)
         if isinstance(held, list):
             owed.extend(held)
@@ -9192,6 +9194,17 @@ class GatewayOrchestrator:
                             bp["held_ok_deliveries"].append(
                                 SubagentDelivery(info.id, info.elapsed, info.credits)
                             )
+                        elif getattr(info, "_report_owed", False) is True:
+                            # A memory-wait expiry the store owes a report until
+                            # it reaches the parent: the debt rides with this
+                            # chunk, and the settle that delivers the chunk
+                            # clears it. Held only here, a restart before the
+                            # flush leaves it owed for the next start.
+                            bp["held_ok_deliveries"].append(
+                                SubagentDelivery(
+                                    info.id, info.elapsed, info.credits, report_owed=True
+                                )
+                            )
                         logger.info(
                             "Subagent %s: completion held for digest chunk (%d/%d done)",
                             info.id,
@@ -9584,9 +9597,15 @@ class GatewayOrchestrator:
                         # Computed BEFORE the transfer (which detaches the held
                         # ids); stays False when there is nothing to owe — a
                         # failed or stopped solo member settles through its own
-                        # failure tombstone, not this ledger.
+                        # failure tombstone, not this ledger. A memory-wait
+                        # expiry is the exception: it has no tombstone, and the
+                        # store owes its report until this turn consumes it.
                         _owes_delivery = bool(info._digest_settle_deliveries) or (
-                            not _flush_only and info.outcome == "completed"
+                            not _flush_only
+                            and (
+                                info.outcome == "completed"
+                                or getattr(info, "_report_owed", False) is True
+                            )
                         )
                         self._defer_queued_delivery(
                             _injection_slot, announce, info, flush_only=_flush_only
@@ -9998,6 +10017,9 @@ class GatewayOrchestrator:
                         )
                 except Exception:
                     logger.exception("Subagent %s cron injection failed", info.id)
+                    # Swallowed with no failure notice, so the record is the only
+                    # place that says the parent was never told.
+                    info._report_undelivered = True
                 finally:
                     if acquired:
                         try:

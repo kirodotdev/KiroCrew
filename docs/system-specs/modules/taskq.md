@@ -26,7 +26,7 @@ Files:
 | Module | Owns |
 |---|---|
 | `model.py` | `TaskRecord`, the state vocabulary (`STATES`), the one validated `TRANSITIONS` table, `check_transition`, side-effect classes, lease/backoff constants. |
-| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
+| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, the owed-report reads (`finish(report_owed=)`, `mark_reported`, `owed_reports`), `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
 | `migrate.py` | Schema versioning (`SCHEMA_VERSION`, `apply_schema`) and the idempotent legacy import. |
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
@@ -859,7 +859,8 @@ lanes). The adapter's in-memory queue
   after it, by accept order rather than `created_at`, which a stepped-back
   wall clock would misorder), so a row held only by the store does not
   outlive the conversation that queued it, and a row a successor under the
-  same key queued after the snapshot is never swept. See [subagent.md](subagent.md) § `cancel_for_teardown`.
+  same key queued after the snapshot is never swept. A read the store refuses
+  keeps the fence open and is retried by each reaper sweep until it lands. See [subagent.md](subagent.md) § `cancel_for_teardown`.
 - When a pass finds nothing and the window is empty, the pump arms one
   `call_later` at `next_eligible_at`: the earliest moment a row held only by
   time (deferred by `next_run_at`, or leased by `lease_expires_at`) becomes
@@ -936,8 +937,8 @@ cron and workflow `ctx.agent` gates deliberately do not read the kernel level;
 only the subagent gate acts on it.
 
 The wait is finite. `deferred_longer_than(kind, bound, *, exclude_ids, limit)`
-is the one read that measures it: `queued` rows still parked (`next_run_at` in
-the future) that have spent *bound* seconds parked in their current wait, oldest
+is the one read that measures it: waiting rows (any state `defer` parks:
+`queued`, `retry_wait`, `recovering`) still parked (`next_run_at` in the future) that have spent *bound* seconds parked in their current wait, oldest
 first. The current wait is the `deferred` events after the row's last `claimed`
 or `transition` event (the closers the queued listing applies); each one parks
 the row from its `ts` to its `until`, cut short by the next deferral or by now,
@@ -948,6 +949,19 @@ about how long the row has waited. The subagent adapter fails each row it return
 `agent.subagent_queue_max_wait_secs` with a generation-fenced `finish` and
 reports `never started: waiting for memory`
 ([subagent.md](subagent.md) § Durable task queue).
+
+That `finish` passes `report_owed=True`: the terminal `transition` event then
+carries `report_owed_by` (the writing incarnation) in the same transaction, so
+the report the commit still owes is durable. `mark_reported(task_id)` appends the
+`reported` event that clears it (the adapter calls it once the report has reached
+the parent, which for a wave member held for its digest is that digest's
+delivery; a report that timed out or failed is not cleared, nor one whose
+injection the gateway gave up on and swallowed), and `owed_reports(kind, *, limit, after)` names
+the terminal rows whose owing incarnation is NOT this one and that have no
+`reported` event after that transition, oldest terminal first (`updated_at`,
+then `id`): what a later start has to report. `after` is the `(updated_at, id)`
+of the previous page's last row, so a reader pages through every owed row
+without re-reading one whose clear has not landed yet.
 
 ## Journal mode and network filesystems
 
