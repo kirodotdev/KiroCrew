@@ -1,0 +1,427 @@
+name: Issue Gate
+
+# Every pull request must trace to an issue that has been sized, and a big one
+# must also have been looked at by a person.
+#
+# PAUSED. `GATE_ENFORCED` below is "false", so this job logs a notice and
+# passes before it reads anything. The rule below is written out and ready; it
+# is not enforced until the maintainers switch it on. WHY PAUSED: the rule
+# reads labels the Captain (the maintainer-operated Kiro Crew triage crew)
+# writes, and the Captain's scheduled scan is not running yet. With no labels
+# arriving, every PR -- forks first -- would sit red on an issue nobody can
+# label. Switching it on is a one-line change: `GATE_ENFORCED: "true"`.
+#
+# WHY A GATE AT ALL: nothing else stops a feature or fix from being built on
+# impulse, reviewed on its own terms and merged with no record of why it exists
+# or whether anyone agreed it should. Issues already carry that record. This
+# gate is the link that makes a PR consult it.
+#
+# WHO WRITES THE LABELS: not a workflow in this repository. `issue-triage.yml`
+# writes only `channel:`, the fixed type set, `area:` and `platform:`. The
+# Captain writes the tier (`tier:T1` .. `tier:T4`) and `pending-triage`; the
+# person it assigns the issue to flips `pending-triage` to `triaged` once they
+# have read it. That crew runs outside `.github/`, so this file names the label
+# contract and the docs name the system; see docs/ci/ci-and-reviews.md. The
+# older verdict labels (`auto-fixable`, `needs-investigation`, `needs-human`)
+# and `needs-triage` belong to the Issue Radar dispatch pipeline and are no
+# longer read here: they decide who runs an issue, not whether a PR may merge.
+#
+# HOW IT IS ENFORCED: `pr-readiness.yml` lists this workflow in its lane specs,
+# and `PR Readiness` is the one status the branch ruleset requires. A red here
+# therefore reds the PR without a second branch-protection entry, and the merge
+# queue needs no `merge_group` run of this file: the queue's own `PR Readiness`
+# poll admits only heads whose pull-request verdict already included this lane.
+#
+# Deterministic on purpose: no model, one checkout of the DEFAULT branch, two API
+# reads. It answers
+# exactly one question -- "does this PR declare an issue, and has that issue
+# been sized (and, if it is big, read by a person)?"
+#
+# ONE GRAMMAR. Which issues a body declares is decided by
+# `.github/scripts/issue_gate_refs.py`, an adapter onto the declaration
+# grammar `kirocrew-prepare-pr/scripts/pr_status.py` exports as
+# `declared_issue_numbers()` -- the masking and targets the local kirocrew-prepare-pr
+# loop uses too. By reference to that grammar: a line that STARTS (<=3
+# columns, optional bullet) with a closing verb
+# (`close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved`, the issue
+# auto-closes on merge) or a non-closing `Refs` / `Part of` (the issue stays
+# open: partial work), plus `#N`, `OWNER/REPO#N` or a github.com issue URL,
+# after HTML comments, fenced code blocks (an unclosed fence through end of
+# body) and inline code spans are masked; every reference on that line is read
+# and the rest of the line is free, so `Fixes #123 (the Windows half)` counts.
+# The PR template's own `<!-- ... Fixes #123 -->` hint, a `>`-quoted or
+# inline-code `Closes #N`, a four-column code line, a reference buried
+# mid-sentence and a bare `#N` are not declarations. Only references naming
+# THIS repository count, and a URL only on the github.com host (the adapter's
+# one narrowing). The gate asks which issue the work is FOR, not what closes:
+# an author doing part of an issue writes `Part of #N` and the issue stays
+# open; `Closes #N` closes it on merge. More than
+# MAX_DECLARED distinct issues is reported as a finding, not read: each one is
+# an API call against the shared hourly token pool, from a body an author
+# controls.
+#
+# THE GRAMMAR IS TAKEN FROM THE DEFAULT BRANCH, NOT THE PR. The checkout below
+# is the repository's default branch at run time -- which the PR cannot write --
+# so a PR cannot change what counts as a declaration without that change first
+# landing on main. Nothing from the PR's tree is executed here. The default
+# branch rather than `pull_request.base.sha` on purpose: a stacked PR's base is
+# a feature branch, and one cut before this gate landed would have no grammar
+# script and look like bootstrap. (The workflow FILE itself is still read from
+# the merge ref, as every `pull_request` lane in this repository is; the answer
+# to that is the fork approval gate and CODEOWNERS review, see
+# fork-workflow-guard.yml.) Bootstrap: until this gate has merged, the default
+# branch has no grammar script. That state is skipped with a notice -- it never
+# runs PR code to fill the gap, and a PR cannot bring it about -- and is dead
+# the moment the gate is on main.
+#
+# THE RULE, in full:
+#   1. The visible body declares at least one issue of this repository.
+#   2. Every declared number is an issue (not a pull request), is not closed as
+#      `not_planned`, and carries exactly one tier label from TIER_LABELS
+#      (`tier:T1` bug .. `tier:T4` new concept), so the size of the work is
+#      settled before it is built.
+#   3. A small tier (TIER_PASS_LABELS: T1, T2) needs nothing more: it is green.
+#      A big tier (TIER_REVIEW_LABELS: T3, T4) is red until a person has read
+#      the issue and flipped `pending-triage` to `triaged`. That holds for a
+#      fork PR and an in-repo PR alike; the maintainer override is the
+#      `issue-gate: waived` label below.
+#   One bad reference fails the whole PR: a sized issue beside an unsized one
+#   is still work nobody sized.
+#
+# TWO EXEMPTIONS, both visible in the run log:
+#   - the `dependabot[bot]` author: its PRs are generated from a manifest, and
+#     there is no issue to point at. Logged as a notice. `github-actions[bot]`
+#     is deliberately NOT listed: this repository leaves "Allow GitHub Actions
+#     to create and approve pull requests" off (see test-durations.yml), so no
+#     PR can carry that author and an arm for it would be dead code claiming
+#     coverage.
+#   - the `issue-gate: waived` label, applied by a maintainer: the MANUAL
+#     OVERRIDE. Any PR a maintainer decides to let through goes green with it,
+#     whatever the issue's labels say -- a `tier:T3` / `tier:T4` issue nobody has
+#     read yet, an unsized issue, a fork PR, no issue at all. The two shapes it
+#     was first made for are a production fire whose issue is written after the
+#     fire is out, and a release PR (version drop, CHANGELOG section) per
+#     docs/build/release.md. Logged as a WARNING so the override stays visible,
+#     never a silent pass. There is deliberately no self-service body marker:
+#     the point of the gate is that someone other than the author agreed to the
+#     work, so the override has to be a maintainer action (only a user with
+#     triage rights can apply a label). The same label is also the maintainer's
+#     per-PR fallback if the Captain stalls -- and a run of overrides is the
+#     signal to go fix the Captain.
+#
+# `edited` and `labeled` are in the trigger list so adding `Closes #N` to the
+# description, or the waiver label, turns this check green WITHOUT a no-op
+# push; once triage reaches the issue, any body edit re-runs the check too,
+# which matters for a fork author who cannot re-run jobs. The body is read from
+# the API at run time, not from the event payload, so an edit is always judged
+# on the current text.
+#
+# The body is UNTRUSTED author input. It only ever reaches the default branch's
+# grammar script on stdin -- never a pattern, never a shell word. Every API read fails CLOSED:
+# this is a readiness lane, so an unreadable body or an unreadable issue must
+# never pass as "no problem found"; it fails naming the read as the cause,
+# re-runnable. The step keeps the runner's default `bash -e`: every command
+# whose failure is a VERDICT rather than an error (the API reads, the grammar
+# script) is wrapped in `if`, so `-e` can only ever stop the step on a genuine
+# bug, never skip a branch.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: issue-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  issue-gate:
+    name: Issue Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The DEFAULT branch, not the PR's merge ref and not its base: this
+      # checkout exists only to run the in-tree reference grammar, and the PR
+      # must not be able to rewrite the grammar that judges it (see the
+      # header). No build, no dependencies. Credentials are not persisted:
+      # nothing here writes to the repository.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          persist-credentials: false
+
+      - name: Require a sized issue reference
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          WAIVED: "${{ contains(github.event.pull_request.labels.*.name, 'issue-gate: waived') }}"
+          # The pause switch (see the header). "false": log a notice and pass
+          # before any API read. "true": enforce the rule. Any other value fails
+          # closed below, so a typo can never read as "paused".
+          GATE_ENFORCED: "false"
+          # Exactly one label from this set says how big the work is (see the
+          # header). The Captain writes it; none, or two, is an issue whose
+          # size nobody has settled.
+          TIER_LABELS: "tier:T1 tier:T2 tier:T3 tier:T4"
+          # A small tier is green on its own. A big tier also needs a person's
+          # read: `triaged` present and `pending-triage` gone. Both sets must
+          # partition TIER_LABELS (a test pins that).
+          TIER_PASS_LABELS: "tier:T1 tier:T2"
+          TIER_REVIEW_LABELS: "tier:T3 tier:T4"
+          PENDING_LABEL: "pending-triage"
+          TRIAGED_LABEL: "triaged"
+        run: |
+          set -uo pipefail
+
+          case "$GATE_ENFORCED" in
+            true) ;;
+            false)
+              echo "::notice::Issue Gate is paused (GATE_ENFORCED is \"false\" in issue-gate.yml); no issue requirement applied to this PR."
+              {
+                echo "### Issue Gate is paused"
+                echo
+                echo "This check passes without reading the PR or its issue. A maintainer turns"
+                echo "it on by setting \`GATE_ENFORCED\` to \`\"true\"\` in \`.github/workflows/issue-gate.yml\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            *)
+              echo "::error::GATE_ENFORCED must be \"true\" or \"false\", got \"$GATE_ENFORCED\". Fix issue-gate.yml."
+              exit 1
+              ;;
+          esac
+
+          case "$AUTHOR" in
+            dependabot\[bot\])
+              echo "::notice::PR author is $AUTHOR; dependency-bump PRs have no issue to point at. Issue requirement not applied."
+              exit 0
+              ;;
+          esac
+
+          if [ "$WAIVED" = "true" ]; then
+            echo "::warning::'issue-gate: waived' label present -- issue requirement overridden for this PR by a maintainer."
+            exit 0
+          fi
+
+          # Retry wrapper for the API reads. A transient failure is absorbed
+          # here (three attempts, short backoff); a read that never succeeds
+          # returns 1 so the caller fails closed naming the read. A 404 is NOT
+          # transient: it returns 44 so the caller can report "no such issue"
+          # as a finding of its own.
+          api_read() {
+            local path="$1" jq_expr="$2" out="" attempt
+            for attempt in 1 2 3; do
+              if out="$(gh api "$path" --jq "$jq_expr" 2>api-err.txt)"; then
+                printf '%s' "$out"
+                return 0
+              fi
+              if grep -q "HTTP 404" api-err.txt; then
+                return 44
+              fi
+              echo "Reading $path failed on attempt $attempt:" >&2
+              cat api-err.txt >&2
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            return 1
+          }
+
+          fail_read() {
+            echo "::error::Could not read $1 from the API after 3 attempts, so this check cannot judge the PR. This is a read failure, not a missing issue -- re-run this job."
+            {
+              echo "### Could not read $1"
+              echo
+              echo "The API read failed on every attempt, so the check could not tell whether"
+              echo "this PR traces to a sized issue. On this evidence alone there is nothing"
+              echo "wrong with the PR -- re-run this job. The failing \`gh api\` output is"
+              echo "above this summary in the step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          if ! body="$(api_read "repos/$REPO/pulls/$PR" '.body // ""')"; then
+            fail_read "the PR description"
+          fi
+
+          # Bootstrap only (see the header): a default branch without the
+          # grammar script predates this gate. Nothing to judge with; say so
+          # and stop.
+          if [ ! -f base/.github/scripts/issue_gate_refs.py ]; then
+            echo "::notice::The default branch carries no issue-gate grammar yet (this gate has not merged); nothing to enforce on this PR."
+            exit 0
+          fi
+
+          # The declared issue numbers, by the one in-tree grammar (see the
+          # header), read from the DEFAULT-branch checkout. The body is stdin to the
+          # script, never an argument. The script's exit status is a verdict
+          # (3 = a reference names an impossible number, 4 = more issues than
+          # the gate will read) or an environment error (anything else), so it
+          # is taken through `if`/`else`; `-e` never reaches a bare `rc=$?`.
+          rc=0
+          if refs="$(python3 base/.github/scripts/issue_gate_refs.py "$REPO" <<< "$body" 2>grammar-err.txt)"; then
+            :
+          else
+            rc=$?
+          fi
+          # Every status the script does not define as a verdict (0, 3, 4) is an
+          # environment failure -- its own 2, but also 127 (no python3), 1 (an
+          # unhandled exception) or a signal -- and must never fall through to
+          # the "declares no issue" verdict below on an empty \$refs.
+          case "$rc" in
+            0|3|4) ;;
+            *)
+              cat grammar-err.txt >&2
+              echo "::error::The reference grammar (default branch's .github/scripts/issue_gate_refs.py -> kirocrew-prepare-pr/scripts/pr_status.py) exited $rc, so this check cannot judge the PR. This is an environment failure, not a missing issue -- see the step log."
+              exit 1
+              ;;
+          esac
+          if [ "$rc" -eq 4 ]; then
+            cat grammar-err.txt >&2
+            echo "::error::This PR's description declares more distinct issues than the gate will read. A PR closing that many issues is a PR to split."
+            {
+              echo "### Too many issues declared"
+              echo
+              echo "The description closes more distinct issues than the gate reads (the"
+              echo "ceiling is in \`.github/scripts/issue_gate_refs.py\`). Split the PR, or"
+              echo "name only the issues this PR actually closes."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$rc" -eq 3 ]; then
+            echo "::error::A closing reference in this PR's description names a number GitHub could never have issued. Fix the issue number."
+            {
+              echo "### Malformed issue reference"
+              echo
+              echo "A \`Closes #N\` / \`Fixes #N\` / \`Resolves #N\` line names a number outside"
+              echo "GitHub's issue-number range. Correct it; the check re-runs on save."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ -z "$refs" ]; then
+            echo "::error::This PR's description declares no issue of this repository. Add 'Closes #N' (closes it on merge) or 'Part of #N' (leaves it open) for the issue this PR implements."
+            {
+              echo "### Issue reference required"
+              echo
+              echo "Every PR must trace to an issue that has been sized. Add a line to the PR"
+              echo "description naming it (the \`edited\` trigger re-runs this check on save, no"
+              echo "push needed):"
+              echo
+              echo '    Closes #N'
+              echo
+              echo "\`Closes\` / \`Fixes\` / \`Resolves\` CLOSE the issue when this PR merges. If this"
+              echo "PR is only part of the issue, write \`Part of #N\` (or \`Refs #N\`) instead and"
+              echo "the issue stays open. \`OWNER/REPO#N\` and the full issue URL work in place of"
+              echo "\`#N\`. The line must start with the keyword; a bare \`#N\`, a mention inside a"
+              echo "sentence, a quote, an HTML comment, a code block or inline code do not count."
+              echo "The issue must carry exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
+              echo "A \`${TIER_REVIEW_LABELS// /\`/\`}\` issue must also be flipped from"
+              echo "\`$PENDING_LABEL\` to \`$TRIAGED_LABEL\` by the person it was assigned to."
+              echo
+              echo "**No issue yet?** Open one; the Captain tiers it. A maintainer may apply the"
+              echo "\`issue-gate: waived\` label for a production fire or a release PR."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Issue references found: $(printf '#%s ' $refs)"
+
+          problems=""
+          for n in $refs; do
+            # One read per issue: kind, state, and the label names. The read's
+            # exit status is a verdict (44 = no such issue) or an error (1), so
+            # it is taken through `if`/`else` rather than a bare `rc=$?`, which
+            # `-e` would never reach.
+            rc=0
+            if info="$(api_read "repos/$REPO/issues/$n" \
+              '{is_pr: (.pull_request != null), state, reason: (.state_reason // ""), labels: ([.labels[].name] | join("\n"))}')"; then
+              :
+            else
+              rc=$?
+            fi
+            if [ "$rc" -eq 44 ]; then
+              problems+="- #$n does not exist in this repository."$'\n'
+              continue
+            elif [ "$rc" -ne 0 ]; then
+              fail_read "issue #$n"
+            fi
+            is_pr="$(jq -r '.is_pr' <<< "$info")"
+            state="$(jq -r '.state' <<< "$info")"
+            reason="$(jq -r '.reason' <<< "$info")"
+            labels="$(jq -r '.labels' <<< "$info")"
+
+            if [ "$is_pr" = "true" ]; then
+              problems+="- #$n is a pull request, not an issue."$'\n'
+              continue
+            fi
+            if [ "$state" = "closed" ] && [ "$reason" = "not_planned" ]; then
+              problems+="- #$n is closed as not planned; triage decided against this work."$'\n'
+              continue
+            fi
+            tiers=""
+            for label in $TIER_LABELS; do
+              if grep -qxF -- "$label" <<< "$labels"; then
+                tiers+="${tiers:+ }$label"
+              fi
+            done
+            if [ -z "$tiers" ]; then
+              problems+="- #$n has no tier label (needs exactly one of: \`${TIER_LABELS// /\`, \`}\`). The Captain writes it."$'\n'
+              continue
+            fi
+            if [ "$tiers" != "${tiers%% *}" ]; then
+              problems+="- #$n carries more than one tier label (\`${tiers// /\`, \`}\`); keep exactly one."$'\n'
+              continue
+            fi
+            # A small tier is green on its own.
+            if grep -qwF -- "$tiers" <<< "$TIER_PASS_LABELS"; then
+              echo "#$n: issue, $state, tier '$tiers' (no further review needed)."
+              continue
+            fi
+            # A big tier needs a person's read: `triaged` present, `pending-triage` gone.
+            pending=false
+            triaged=false
+            if grep -qxF -- "$PENDING_LABEL" <<< "$labels"; then
+              pending=true
+            fi
+            if grep -qxF -- "$TRIAGED_LABEL" <<< "$labels"; then
+              triaged=true
+            fi
+            if [ "$pending" = "true" ] && [ "$triaged" = "true" ]; then
+              problems+="- #$n carries both \`$PENDING_LABEL\` and \`$TRIAGED_LABEL\`; remove \`$PENDING_LABEL\`."$'\n'
+              continue
+            fi
+            if [ "$triaged" != "true" ]; then
+              problems+="- #$n is \`$tiers\` and is still waiting for a person to read it; its assignee flips \`$PENDING_LABEL\` to \`$TRIAGED_LABEL\`."$'\n'
+              continue
+            fi
+            echo "#$n: issue, $state, tier '$tiers', '$TRIAGED_LABEL'."
+          done
+
+          if [ -n "$problems" ]; then
+            echo "::error::This PR references an issue that is not cleared yet. See the job summary."
+            {
+              echo "### Referenced issue not cleared"
+              echo
+              printf '%s' "$problems"
+              echo
+              echo "Every issue a PR declares must be a real issue of this repository, not closed"
+              echo "as not planned, and carry exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
+              echo "\`${TIER_PASS_LABELS// /\`, \`}\` go green on that alone. \`${TIER_REVIEW_LABELS// /\`, \`}\`"
+              echo "also wait for \`$TRIAGED_LABEL\`, which a person sets after reading the issue."
+              echo "Once the label lands, any edit to this PR's description re-runs the check (no"
+              echo "push, no re-run button needed -- this is how a fork author goes green). A"
+              echo "maintainer may apply the \`issue-gate: waived\` label for a production fire, a"
+              echo "release PR, or any PR the maintainers decide to let through."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Every referenced issue has been cleared."
