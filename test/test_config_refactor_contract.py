@@ -495,6 +495,21 @@ class TestLoaderSeamsReachTheOwners:
 class TestRelocatedSeamsLiveOnTheirOwners:
     """A helper read inside a relocated builder or rule is patched on its owner module."""
 
+    def test_dto_class_is_patched_on_section_builders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A builder constructs the DTO class it finds on its module, and an omitted
+        key reads that class's field default -- so a replacement must be a dataclass."""
+
+        @dataclasses.dataclass
+        class PatchedTunnel(section_builders.TunnelConfig):
+            name_mode: str = "patched-default"
+
+        monkeypatch.setattr(section_builders, "TunnelConfig", PatchedTunnel)
+        built = loader._build_tunnel_config({})
+        assert type(built) is PatchedTunnel
+        assert built.name_mode == "patched-default"
+
     def test_stub_roster_reader_is_patched_on_section_builders(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import re
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -1078,7 +1078,22 @@ class TestTheRoutesRequireTheInternalSecret:
 # ── The config switch ────────────────────────────────────────────────────────
 
 
-def test_the_switch_is_on_by_default_and_an_explicit_false_still_disables():
+_ABSENT = object()
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        pytest.param(_ABSENT, True, id="absent-the-mount-is-the-grant"),
+        pytest.param(True, True, id="explicit-true"),
+        pytest.param(False, False, id="explicit-false-withdraws"),
+        pytest.param("false", False, id="quoted-false-withdraws"),
+        pytest.param(0, False, id="number-withdraws"),
+    ],
+)
+def test_the_switch_is_on_by_default_and_an_explicit_false_still_disables(
+    tmp_path, monkeypatch, stored, expected
+):
     """``agent.session_control`` defaults ON; the agent config is the real grant.
 
     Who may reach a peer session is decided by the AGENT CONFIG, not by this
@@ -1089,46 +1104,44 @@ def test_the_switch_is_on_by_default_and_an_explicit_false_still_disables():
 
     What the switch is still for is a single withdrawal: an operator who wants it
     gone from every agent at once, without editing each spec. So the one direction
-    that must keep working is an EXPLICIT ``false``:
+    that must keep working is an EXPLICIT opt-out, including the quoted ``"false"``
+    an editor that quotes values writes: ``bool("false")`` is ``True``, so a plain
+    coercion would keep cross-session control on while the operator believes it off.
 
-    * **Absent.** Both the ``.get`` default and the dataclass field default are
-      ``True``, so a mounted server works with nothing else written down.
-    * **Malformed.** ``bool("false")`` is ``True``, so a plain coercion loads a
-      quoted opt-out as ENABLED and a user who wrote it in an editor that quotes
-      values would keep cross-session control on while believing it off.
-      ``_safe_bool`` accepts only a real bool.
-
-    Asserted on the source rather than through ``KiroCrewConfig.load()``:
-    ``load()`` merges the real data home's ``config.local.json`` and serves a
-    fingerprint-cached dict, so a per-field assertion through it depends on the
-    developer's own config rather than on the payload under test. The parse is
-    one inline expression with no seam to call directly, so the wiring itself is
-    what gets pinned.
+    Driven through the load pipeline over a document in ``tmp_path``: the document
+    read normalizes a present non-bool to the safe ``False``, and the build reads
+    an absent key as the field default.
     """
-    src = Path(loader.__file__).read_text(encoding="utf-8")
-    parse = re.search(r"^\s*session_control=(.+)$", src, re.MULTILINE)
-    assert parse is not None, "the session_control parse line is gone"
-    wiring = parse.group(1).strip().rstrip(",")
-    assert wiring.startswith(
-        "_safe_bool("
-    ), f"session_control must be parsed through _safe_bool, got: {wiring}"
-    assert (
-        '"session_control", True' in wiring
-    ), f"an absent setting must read as ENABLED -- the mount is the grant, got: {wiring}"
-    # The field default is the second absent path: it is what a config object
-    # built without going through the loader resolves to, and it must agree with
-    # the loader or the answer depends on which path produced the config.
-    assert loader.AgentConfig().session_control is True, (
-        "the dataclass default must also be True, or a config built outside the "
-        "loader disables a capability the agent's own spec was given"
-    )
-    # An explicit opt-out is the direction that still has to hold, including the
-    # quoted form `_safe_bool` exists for.
-    assert loader._safe_bool(False, True) is False
-    assert loader._safe_bool("false", True) is True, (
-        "a quoted value is not a bool, so it falls back rather than being coerced "
-        "-- the operator who means it writes a real false"
-    )
+    path = tmp_path / "config.json"
+    agent = {} if stored is _ABSENT else {"session_control": stored}
+    path.write_text(json.dumps({"agent": agent}), encoding="utf-8")
+    monkeypatch.setattr(loader, "config_path", lambda: path)
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+
+    cfg = loader.build_config(loader.read_config_document())
+
+    assert cfg.agent.session_control is expected
+
+
+def test_the_switch_defaults_on_wherever_a_config_is_built_without_the_key(tmp_path):
+    """A config built with no file, or from a value that is not a real bool, is ON.
+
+    The no-config build takes the field default. A value that reaches the build
+    without being a real bool (the document read normally repairs it first) reads
+    as that default rather than through truthiness; a real ``false`` withdraws.
+    """
+
+    def document(data, loaded=True):
+        return loader.ConfigDocument(
+            ticket=0, path=tmp_path / "config.json", data=data, loaded=loaded, content_digest=None
+        )
+
+    assert loader.build_config(document({}, loaded=False)).agent.session_control is True
+    none = loader.build_config(document({"agent": {"session_control": None}}))
+    assert none.agent.session_control is True
+    off = loader.build_config(document({"agent": {"session_control": False}}))
+    assert off.agent.session_control is False
 
 
 def test_a_config_read_that_raises_disables_the_feature(monkeypatch):

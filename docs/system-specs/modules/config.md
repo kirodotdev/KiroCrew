@@ -25,13 +25,14 @@ the loader: `config_path`, `config_dir`, `config_local_path`, `env_path`,
 `_apply_document_migrations`, `_log_config_clamp_event`,
 `_DEFAULT_CHAT_TURN_TIMEOUT_SECS`, `DEFAULT_POOL_SIZE`, `unsandboxed_exec_declared`,
 `publish_config_timezone`, `record_adoptions` (the loader passes it to the
-migration transform at call time), each `_build_*` name as `_load_resolved`
+migration transform at call time), each `_build_*` name as `build_config`
 calls it, and the published-snapshot globals. A helper or constant read INSIDE a
 relocated builder or migration rule is patched on the module that reads it:
 `config.section_builders` for the value coercers, the STT, computer-use and
 instance bounds, `coerce_runtime_ceiling` (which reads the monitoring bounds in
 `monitoring.limits`), the `_resolve_stub_*` roster
-readers and the section DTO classes a builder constructs; `config.migration` for
+readers and the section DTO classes a builder constructs (a replacement must be a
+dataclass, and its field defaults are what an omitted key reads); `config.migration` for
 `auto_adoptable`, `drop_drifted_keys`, `stored_value_or_none`,
 `superseded_default_drift` and `drift_summary`. The loader facade and
 `config.migration` hold the same warn-once set `_REPORTED_SUPERSEDED_KEYS`: clear
@@ -41,11 +42,11 @@ representative seams of each kind.
 | Owner | Owns |
 |---|---|
 | `config/fields.py` | `_meta` field metadata and the `_safe_*` value coercers every section shares. A leaf: it imports nothing from `kiro_crew`. |
-| `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. |
+| `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. It also holds `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default. |
 | `config/memory_sections.py` | `memory`, `knowledge`, `skills`, `session_summary` and the named `memory_stores` records. |
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use` and the external app `registries`. |
 | `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat` and `watchdog`. |
-| `config/section_builders.py` | The `_build_*` helper of 28 sections, grouped by the module that owns each section's DTO. Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in `KiroCrewConfig._load_resolved` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
+| `config/section_builders.py` | The `_build_*` helper of 27 sections, grouped by the module that owns each section's DTO. Each reads its section through `sections.SectionReader`, so a builder restates no field default; the deliberate departures are listed under "Defaults come from the DTO fields". Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in the loader's `build_config` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
 | `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, the legacy `skills.lazy_load` cohort test, superseded-default reporting, and the in-memory half of an adoption. |
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
 | `config/validation.py`, `config/schema.py` | Schema validation with the validated-data cache, and the JSON schema and restart registry built from the DTOs. |
@@ -83,10 +84,10 @@ because its readers look up a name the loader's callers and tests patch there:
 | Document I/O: `_raw_config`, `read_config_for_update`, `write_config_atomically`, `update_config_locked`, the meta stamp | The config-writer scans in `test_config_rmw_preserves_settings.py` exempt only `loader.py`, and the writers read this module's patched path and `atomic_write` names. |
 | Write-back persistence (`_persist_config_migration`, the backup) and the `_apply_document_migrations` seam | It rewrites `config.json` under the same writer exemption, and passes this module's `record_adoptions` to the transform as the adoption-ledger writer. |
 | The validated-document cache fingerprint, its overlay sidecar and invalidation | `_config_fingerprint` reads the patched `config_path`/`config_local_path` and is itself patched on this module; `save()` and the write-back call `_invalidate_config_cache` beside it. |
-| `KiroCrewConfig.load`, `_load_resolved` and `save` | They read `config_path`, `config_local_path`, `_config_fingerprint`, `_validate_config_data`, `_persist_config_migration` and `write_config_atomically` by name, all patched on this module. `test_config_section_construction.py` pins `_load_resolved`'s assembly shape. |
+| `KiroCrewConfig.load`, the load pipeline (`read_config_document`, `build_config`, `persist_write_back`) and `save` | They read `config_path`, `config_local_path`, `_config_fingerprint`, `_validate_config_data`, `_persist_config_migration` and `write_config_atomically` by name, all patched on this module. `test_config_section_construction.py` pins `build_config`'s assembly shape. |
 | The security clamp and its SEL event | [security](security.md), [sel](sel.md) and [resource-protection](../../architecture/resource-protection.md) name the loader. |
 | The loop-stall and managed-launch readers | `load_loop_stall_exit_after` reads the loader's patchable `KiroCrewConfig`; `resolve_loop_stall_exit_after` and `consume_managed_service_launch_environment` are its two halves, and the dashboard server imports all three from here. The consume takes the marker out of `os.environ` so descendants do not inherit it, and hands it to `platform_compat.keep_for_reexec`, so the gateway's own exec successor (an in-app restart) is still a managed launch; `launched_as_managed_service` answers from either place, so it does not change once the dashboard has started. |
-| The agent, session, telemetry and dashboard builders | The harness-parity review scope and a source check on the `session_control` read; the patchable `DEFAULT_POOL_SIZE` fallback; [metrics](metrics.md) naming the loader as the telemetry parser; the feature map naming the loader's `folder_sort` read. |
+| The agent, session, telemetry and dashboard builders | The harness-parity review scope; the patchable `DEFAULT_POOL_SIZE` fallback; [metrics](metrics.md) naming the loader as the telemetry parser; the feature map naming the loader's `folder_sort` read. |
 | Published snapshots: materialized agents, the alias table, the compaction threshold, the timezone | Tests rebind this module's snapshot state, and the second-boot witness in `test/integration/test_boot_smoke.py` keys the counters to `kiro_crew.config.loader`. |
 | Agent resolution and the provider factory | [crew-mode](crew-mode.md) and [context-management](../../architecture/context-management.md) name the loader for `resolve_agent_bindings` and `resolve_effective_model`. The agent-spec read inventory keys its call sites to this file, the ACP import is a baselined agent-SDK edge, and the blocking harness-parity and memory-store review rules cover `config/loader.py`. |
 
@@ -660,7 +661,7 @@ per-key provenance the config layer still lacks:
   that READS the base document can decide an adoption (`adoptable` is empty on a cache
   hit, by design), so a read-and-skip that left its document cached would have every
   later load serve the stale value and never retry. A contended lock and an exception
-  caught by the best-effort handler both skip the write, so `_load_resolved` tracks
+  caught by the best-effort handler both skip the write, so `persist_write_back` tracks
   `adoption_landed` separately from `persisted` (which starts True so the
   `connections_ui` marker still lands on a load that needed no migration) and
   invalidates in a `finally` both share. Both variables are bound before the `try`,
@@ -1367,17 +1368,70 @@ never as a match; two unknown provenances in particular are not equal. The membe
 log is the current consumer: see `member-event-log.md` for how a roster read and the
 startup sweep each refuse to correct the log from a config they cannot name.
 
+**The load pipeline.** `load()` publishes what `_load_resolved` returns, and that
+runs three stages in `config/loader.py`, each callable on its own:
+
+| Stage | Does | Never does |
+|---|---|---|
+| `read_config_document() -> ConfigDocument` | Draws the load-order ticket, takes one fingerprint stat pass of both files, and serves the cache entry that fingerprint names or reads, merges, repairs, validates, clamps and caches the document (a security clamp that fires records a SEL event). Reports superseded defaults, and on a disk read decides which ones are adoptable and whether the legacy `skills.lazy_load` rewrite is due. | Raise for a missing, unreadable or malformed file, or write a config file. |
+| `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the project-skills off-switch an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
+| `persist_write_back(cfg, doc)` | Returns at once for an unloaded document. Otherwise decides the pending migrations, seeds the default crew and `default_agent` into `cfg`, writes the delta under the lock, moves `cfg` to each confirmed adoption, records the `connections_ui` marker, and drops the cache when an adoption did not land. | Write after a load that degraded a section, or raise. |
+
+A `ConfigDocument` carries what the read tells the later stages: the ticket, the
+path, `data`, whether a file `loaded`, the content digest, `base_unreadable`, the
+overlay's `base_shadow`, the `overlay` as read, the `adoptable` defaults and the
+`legacy_lazy_stamp`; the one other input of the build is the process-wide sticky
+degraded set. `data` is the read stage's output, not raw file content: the
+overlay is merged, the read-stage repairs are applied (a quoted `"false"` on an
+agent off-switch reads as `false`; an unreadable source leaves
+`skills.project_skills_enabled` off), and the document is validated and clamped.
+When nothing loaded it is `{}` or carries only that project-skills marker. A cache
+hit carries no adoption and no stamp, because a load that did not read the base
+must not decide one. A document is single-use: building normalizes `data` in
+place. Tests build one in memory, holding what the read stage would produce, and
+call `build_config` with no config file on disk.
+
 **Section construction.** Compound section constructors run in small private
-helpers: `config/section_builders.py` holds 28 of them and `config/loader.py`
+helpers: `config/section_builders.py` holds 27 of them and `config/loader.py`
 keeps the agent, session, telemetry and dashboard ones (see the Overview); the
 loader re-exports all of them. This bounds each construction frame instead of
 putting every field expression in one large traced resolver frame. The helpers
-preserve field evaluation order, coercion, defaults, and section-local assignment
+preserve field evaluation order, coercion and section-local assignment
 expressions. Each call creates fresh dataclasses and mutable defaults; no resolved
-configuration or permission value is cached by a helper. File fingerprinting,
-validation, overlay handling, cache-generation fencing, migration, degradation,
-and publication remain in the existing load path. Store admission and workflow
-identity checks still run at every existing call site.
+configuration or permission value is cached by a helper. Store admission and
+workflow identity checks still run at every existing call site.
+
+**Defaults come from the DTO fields.** A builder reads its section through
+`sections.SectionReader(DTO, data)`. `get(key)` returns the stored value, `None`
+included, or the default declared on the DTO's field when the section omits the
+key. `read(key, coerce, *bounds, **options)` calls
+`coerce(value, default, *bounds, **options)`, so a `_safe_*` coercer falls back to
+that same default. A `default_factory` field gives a
+fresh value on each read, and a key with no field raises `KeyError`. The deliberate
+departures, all unchanged by the reader:
+
+- An omitted key that does not read the field default:
+  - `agent.sandbox_allow_unsandboxed_exec` folds in the platform default
+    (`unsandboxed_exec_platform_default`).
+  - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
+  - An external registry entry that omits `branch` keeps the legacy `mainline`.
+  - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to
+    `dashboard.onboarded`, and `dashboard.model_picker_configured` is inferred
+    from `model_picker_hidden_models`.
+- A built value that is not the bare dataclass's although the default is:
+  `agent.member_acp_backend` passes the selectable-backend gate, and an empty
+  `workspaces` or `memory_stores` table gains a `default` entry.
+- A malformed value that does not fall back to the field default: `auto_update`
+  reads as off, and `instances.connect_timeout_secs` / `mint_timeout_secs` fall back
+  to the transport constants.
+
+`test_config_load_pipeline.py` builds every section from an empty one and compares
+each field with the bare dataclass, allowing two declared exceptions: the
+platform-resolved `agent.sandbox_allow_unsandboxed_exec` and
+`agent.member_acp_backend` (the seeded `workspaces` / `memory_stores` entries are
+not part of that comparison). It also checks the inline entry reads and pins the
+registry branch, the pool-size seam and the platform fold-in. The top-level reads
+use `KiroCrewConfig`'s own field defaults even when `load()` builds a subclass.
 
 ### `KiroCrewConfig._resolve_agent_model() -> str`
 Reads model from installed agent config (`~/.kiro/agents/kirocrew.json`),
@@ -3538,7 +3592,9 @@ corrupt existing document as described above.
 
 - Missing file → defaults
 - Invalid JSON → defaults (warning logged)
-- Missing fields → individual defaults
+- Missing fields → individual defaults: each is the default declared on its DTO
+  field, apart from the departures listed under "Defaults come from the DTO fields"
+  above
 
 ### Default context discovery
 

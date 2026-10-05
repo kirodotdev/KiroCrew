@@ -14,11 +14,14 @@ validation modules, and the owners it re-exports never import it.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import re as _re
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import MISSING, Field, dataclass, field, fields
 from pathlib import Path
+from typing import Any, TypeVar
 from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew import model_registry
@@ -119,6 +122,65 @@ from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
 
 logger = logging.getLogger("kiro_crew.config.loader")
+
+_T = TypeVar("_T")
+_ABSENT = object()
+
+
+@functools.cache
+def _declared_fields(dto: type) -> Mapping[str, Field[Any]]:
+    """*dto*'s dataclass fields by name, computed once per DTO class."""
+    return {f.name: f for f in fields(dto)}
+
+
+class SectionReader:
+    """Read one ``config.json`` section against its DTO's declared field defaults.
+
+    The one rule it owns: a key the section OMITS resolves to the default declared on
+    the DTO's field, and a coercer handed a value it cannot read falls back to that
+    same default. A builder therefore states no default of its own. A second
+    spelling of one default in a builder could drift from the field and answer the
+    opposite value, silently, for exactly the installs whose ``config.json`` predates
+    the key -- while a home with no config file builds the bare dataclass and gets the
+    field's value.
+
+    * A PRESENT key is returned as stored, ``None`` included: only absence takes the
+      default.
+    * A ``default_factory`` field yields a fresh value on every read, so a built
+      section never shares a mutable default with another load.
+    * A key that names no field of the DTO raises ``KeyError``: it has no default to
+      fall back to.
+    """
+
+    __slots__ = ("_data", "_fields")
+
+    def __init__(self, dto: type, data: Mapping[str, Any]) -> None:
+        self._data = data
+        self._fields = _declared_fields(dto)
+
+    def default(self, key: str) -> Any:
+        """The default declared on *key*'s field (a fresh one for a factory field)."""
+        spec = self._fields[key]
+        if spec.default is not MISSING:
+            return spec.default
+        if spec.default_factory is not MISSING:
+            return spec.default_factory()
+        raise KeyError(key)
+
+    def get(self, key: str) -> Any:
+        """The stored value of *key*, or its field's default when the section omits it."""
+        if key not in self._fields:
+            raise KeyError(key)
+        value = self._data.get(key, _ABSENT)
+        return self.default(key) if value is _ABSENT else value
+
+    def read(self, key: str, coerce: Callable[..., _T], *bounds: Any, **options: Any) -> _T:
+        """``coerce(stored-or-default, default, *bounds, **options)`` for *key*.
+
+        For the ``_safe_*`` coercer family, whose second argument is the fallback for
+        a value they cannot read: the fallback is the field's default too.
+        """
+        return coerce(self.get(key), self.default(key), *bounds, **options)
 
 
 DEFAULT_MODEL = "auto"

@@ -38,8 +38,8 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 
 #: The write-back migrations a load can find pending, as recorded by
-#: :meth:`KiroCrewConfig._load_resolved` and re-checked against the on-disk
-#: document by :func:`apply_document_migrations`.
+#: :func:`~kiro_crew.config.loader.persist_write_back` and re-checked against the
+#: on-disk document by :func:`apply_document_migrations`.
 MIGRATE_WORKSPACES = "workspaces"
 MIGRATE_AGENTS = "agents"
 MIGRATE_DEFAULT_AGENT = "default_agent"
