@@ -64,7 +64,7 @@ from kiro_crew.platform_compat import SIGKILL, kill_process_tree
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 logger = logging.getLogger(__name__)
 
@@ -2042,7 +2042,7 @@ def author_bug_fix(
     require_pinned(worktree)
     where = str(Path(worktree).absolute())
     st = subprocess.run(
-        ["git", "-C", where, *_GIT_SAFE_CONFIG, "status", "--porcelain"],
+        ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), "status", "--porcelain"],
         capture_output=True,
         cwd=where,
         **UTF8_TEXT,
@@ -2201,7 +2201,7 @@ def author_perf_fix(
     # directory must be the worktree, not whatever the gateway inherited.
     where = str(Path(worktree).absolute())
     st = subprocess.run(
-        ["git", "-C", where, *_GIT_SAFE_CONFIG, "status", "--porcelain"],
+        ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), "status", "--porcelain"],
         capture_output=True,
         cwd=where,
         **UTF8_TEXT,

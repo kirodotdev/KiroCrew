@@ -47,7 +47,7 @@ from . import preflight as PF
 from .archive import Archive
 from .contracts import TRACK_BUG, TRACK_PERF, BugGateResult, Proposal, TargetProfile
 from .gate import Gate
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 from .keeper import KEPT, Keeper
 from .measurer import Measurer
 from .pr_pipeline import CrPipeline
@@ -146,6 +146,7 @@ def _git(
             "-C",
             str(cwd),
             *_GIT_SAFE_CONFIG,
+            *hook_off_args(cwd),
             "-c",
             "core.useReplaceRefs=false",
             *config,
@@ -1258,6 +1259,7 @@ class Driver:
                 "-C",
                 str(self.clone),
                 *_GIT_SAFE_CONFIG,
+                *hook_off_args(self.clone),
                 "push",
                 fetch_url,
                 f"{src}:refs/heads/{dest}",
@@ -1501,6 +1503,7 @@ class Driver:
                     "-C",
                     str(self.clone),
                     *_GIT_SAFE_CONFIG,
+                    *hook_off_args(self.clone),
                     "push",
                     fetch_url,
                     f"{rebased_id}:refs/heads/{dest}",

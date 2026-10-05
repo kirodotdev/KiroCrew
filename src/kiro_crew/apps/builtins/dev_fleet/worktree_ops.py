@@ -17,6 +17,7 @@ from typing import Any, Callable
 from kiro_crew import dep_sync, frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, npm_preflight, repository, runtime
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.git_config_hooks import ConfigHookScanError
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import sandboxed_spawn_argv, shielded_prepare_off_loop
 
@@ -2185,6 +2186,12 @@ async def _sync_start_locked() -> dict:
         cleanups += [str(dep_sync_snapshot), str(dep_sync_snapshot.parent)]
     wrapped_steps: list[dict] = []
     for argv, mode, base_env, label in raw_steps:
+        try:
+            argv = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), runtime._with_config_hooks_off, argv, str(repo), base_env
+            )
+        except ConfigHookScanError as exc:
+            return {"ok": False, "error": f"git hook config refused: {exc}"}
         w_argv, w_env, cleanup = await shielded_prepare_off_loop(
             functools.partial(sandboxed_spawn_argv, argv, mode, env=base_env),
             executor=subprocess_executor(),

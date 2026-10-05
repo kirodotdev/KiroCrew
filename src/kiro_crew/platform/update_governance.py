@@ -352,7 +352,11 @@ _REPO_EXEC_DRIVER_RE = re.compile(
     # does suppress the repo's helper, but git then treats "" as a helper name and
     # every fetch dies with `remote helper '' aborted session` -- so pinning would
     # disable the update path instead of protecting it.
-    r"|remote\.(?P<r>.+)\.vcs)$",
+    r"|remote\.(?P<r>.+)\.vcs"
+    # `hook.<name>.command` (git 2.54+) is a hook defined in config. The name is the
+    # repository's choice and `core.hooksPath` does not reach it, so no pin covers it.
+    # `fetch` and `reset` fire `reference-transaction` and `post-index-change`.
+    r"|hook\.(?P<h>.+)\.(?:command|event))$",
     re.IGNORECASE,
 )
 

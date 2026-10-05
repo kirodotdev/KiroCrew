@@ -63,7 +63,7 @@ from typing import Any, Callable
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
+from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 from . import pr_checks, store
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,7 @@ def _git(
     # need — whether the diff is EMPTY — and never fabricates emptiness, since a replaced
     # byte is still a byte.
     return subprocess.run(
-        ["git", *_GIT_SAFE_CONFIG, *argv],
+        ["git", *_GIT_SAFE_CONFIG, *(hook_off_args(cwd) if cwd else []), *argv],
         capture_output=True,
         text=True,
         encoding="utf-8",

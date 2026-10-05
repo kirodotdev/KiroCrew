@@ -36,6 +36,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import procio, store
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
 from kiro_crew.git_divergence import divergence_count_args, parse_divergence_counts
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -347,6 +348,13 @@ async def _git(
     # Attribute-driven programs are disabled by a file, not by `-c` — see
     # `_pin_attributes_sync` for why the override list cannot cover them.
     await asyncio.to_thread(_pin_attributes_sync, cwd)
+    # A hook defined in config (`hook.<name>.command`, git 2.54+) is not reached by the
+    # `core.hooksPath` pin below, and its name is the repository's choice, so each one git
+    # can see is disabled by name. See `kiro_crew.git_config_hooks`.
+    try:
+        hook_off = await asyncio.to_thread(config_hook_disable_args, cwd)
+    except ConfigHookScanError as exc:
+        raise GitError(str(exc)) from exc
     # `-c` overrides BEFORE the subcommand, which is the only place git accepts them and
     # which beats anything in `.git/config`.
     #
@@ -389,6 +397,7 @@ async def _git(
         # --- hooks that fire on ordinary porcelain ---------------------------------
         "-c",
         "core.hooksPath=/dev/null",
+        *hook_off,
         # `core.fsmonitor` holds the PATHNAME OF A HOOK that `git status`/`add` run on
         # every invocation — the same class as `sshCommand`. `false` is the documented
         # "no monitor" value; an empty string would be read as a path.

@@ -45,7 +45,7 @@ from .contracts import (
     Proposal,
     TargetProfile,
 )
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 # Module logger — the gate is Phase C, where candidates are mechanically rejected before
 # they ever reach measurement. The two highest-value signals for run analysis are the
@@ -67,7 +67,7 @@ def _git_argv(worktree: Path, *args: str) -> list[str]:
     can forget the hook/fsmonitor overrides, and the attributes pin that unbinds
     repository-controlled filter/diff drivers is refreshed here too."""
     require_pinned(worktree)
-    return ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, *args]
+    return ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, *hook_off_args(worktree), *args]
 
 
 def _changed_paths(worktree: Path, base_sha: str) -> list[str]:

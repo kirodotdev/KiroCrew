@@ -31,6 +31,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 
 logger = logging.getLogger(__name__)
@@ -429,8 +430,21 @@ async def run_git(
         # git-remote-*) resolve from trusted system dirs, not an agent-writable
         # entry inherited from the gateway's PATH.
         env["PATH"] = TRUSTED_PATH
+    # A hook defined in config (`hook.<name>.command`, git 2.54+) is not reached by the
+    # `core.hooksPath` pin above, and its name is the vault's choice, so each one git can
+    # see is disabled by name. See `kiro_crew.git_config_hooks`.
+    try:
+        hook_off = await asyncio.to_thread(
+            config_hook_disable_args,
+            cwd if cwd is not None else os.getcwd(),
+            git=_git_bin(),
+            env=env,
+        )
+    except ConfigHookScanError as exc:
+        raise GitError(str(exc)) from exc
     proc = await asyncio.create_subprocess_exec(
         _git_bin(),
+        *hook_off,
         *args,
         cwd=cwd,
         env=env,

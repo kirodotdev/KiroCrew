@@ -58,7 +58,7 @@ from typing import Any, Callable
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 # How many agent-discovered surfaces to keep per cycle. The agent is asked for a small,
 # high-signal set (not an exhaustive audit) — each surface costs a full bounded
@@ -127,7 +127,7 @@ def _git(args: list[str], cwd: Path, timeout: float = 60.0) -> str:
     where = str(Path(cwd).absolute())
     try:
         proc = subprocess.run(
-            ["git", "-C", where, *_GIT_SAFE_CONFIG, *args],
+            ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), *args],
             capture_output=True,
             timeout=timeout,
             cwd=where,

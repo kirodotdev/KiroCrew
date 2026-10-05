@@ -75,6 +75,7 @@ from typing import Callable
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
+from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
@@ -224,9 +225,17 @@ def _run_git(
     ``GIT_TERMINAL_PROMPT=0`` so a credential helper cannot block on an
     interactive prompt.
     """
+    # A hook defined in config (`hook.<name>.command`, git 2.54+) is not reached by the
+    # `core.hooksPath` override, and its name is the repository's choice, so each one git
+    # can see is disabled by name (see `kiro_crew.git_config_hooks`). When the names
+    # cannot be listed safely git does not run, and the call reads as a git failure.
+    try:
+        hook_off = config_hook_disable_args(cwd)
+    except ConfigHookScanError as exc:
+        return subprocess.CompletedProcess(["git", *args], 128, "", f"fatal: {exc}")
     try:
         argv, env, cleanup = sandboxed_spawn_argv(
-            ["git", *_git_no_repo_code(), *args], mode=_SANDBOX_MODE
+            ["git", *_git_no_repo_code(), *hook_off, *args], mode=_SANDBOX_MODE
         )
     except RuntimeError as exc:  # no sandbox backend and no explicit opt-in
         raise SandboxUnavailable(str(exc)) from exc

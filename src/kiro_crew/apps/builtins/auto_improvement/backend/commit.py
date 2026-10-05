@@ -24,7 +24,7 @@ from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact
 
 from ..profiles.github_repo.pr_recipe import _prefer_authenticated_remote
-from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
+from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 from ..spine.push_policy import (
     authorize_direct_push,
     describe_scan,
@@ -83,7 +83,7 @@ def _git(
     # ``pr_watchers._git``. Scanning REPLACED text is still correct here: the replacement
     # only affects bytes that were never valid UTF-8, so no ASCII secret can hide behind it.
     return subprocess.run(
-        ["git", "-C", str(clone), *_GIT_SAFE_CONFIG, *args],
+        ["git", "-C", str(clone), *_GIT_SAFE_CONFIG, *hook_off_args(clone), *args],
         capture_output=True,
         text=True,
         encoding="utf-8",

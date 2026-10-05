@@ -46,7 +46,7 @@ from pathlib import Path
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from ...spine.git_safety import GIT_SAFE_CONFIG, require_pinned
+from ...spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ class GitHubPRRecipe:
     def _git(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
         require_pinned(self.clone_path)
         return subprocess.run(
-            ["git", *self._GIT_SAFE_CONFIG, *args],
+            ["git", *self._GIT_SAFE_CONFIG, *hook_off_args(self.clone_path), *args],
             cwd=str(self.clone_path),
             capture_output=True,
             timeout=timeout,
