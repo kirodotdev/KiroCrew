@@ -20,11 +20,6 @@ from kiro_crew.crew_log import CrewLog, crew_log_path, emit
 # ---------------------------------------------------------------------------
 
 
-def _pending(job, what: str) -> emit._PendingJob:
-    """Wrap *job* in the record the writer's buffer holds."""
-    return emit._PendingJob(job=job, what=what)
-
-
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
@@ -234,42 +229,22 @@ class TestNothingIsShed:
     what happened, and an entry discarded while the process is healthy reads exactly
     like a fact that never occurred -- nothing recovers it and no reader detects it.
     A crash-shaped loss is a different thing: the repair names and closes what a kill
-    left behind. So the backlog is held however deep it gets, and the cost of a
-    filesystem that stops answering is memory, up to and including the process dying
-    with every session's unwritten entries in it.
+    left behind. So the backlog is held however deep it gets, short of the hard
+    memory ceilings the writer counts against (see test_crew_log_writer.py, where a
+    deep backlog behind a hung write is held entirely).
     """
 
     def test_no_ceiling_constant_exists_to_shed_against(self):
+        from dataclasses import fields
+
+        from kiro_crew.crew_log.writer import WriterLimits
+
         for name in ("_MAX_PENDING_PER_SESSION", "_MAX_PENDING_BYTES_PER_SESSION"):
             assert not hasattr(
                 emit, name
             ), f"{name} is back: a ceiling trades a possible loss for a guaranteed one"
-
-    def test_a_deep_backlog_is_held_entirely(self):
-        """Well past any former ceiling, with the writer occupied, nothing is lost."""
-        took_it = threading.Event()
-        release = threading.Event()
-
-        def _hangs():
-            took_it.set()
-            release.wait(30.0)
-
-        try:
-            sid = _sid(900)
-            emit._buffer(sid, _pending(_hangs, "a write that never returns"))
-            assert took_it.wait(20.0), "the writer never picked up the hanging job"
-            for n in range(2000):
-                emit._buffer(sid, _pending(lambda: None, f"append {n}"))
-
-            assert (
-                emit.buffered_writes() >= 2000
-            ), f"only {emit.buffered_writes()} of 2000 appends are held"
-            assert (
-                emit.dropped_writes() == 0
-            ), f"{emit.dropped_writes()} append(s) were discarded while healthy"
-        finally:
-            release.set()
-            assert emit.drain_for_shutdown(timeout=20.0)
+        per_unit = [f.name for f in fields(WriterLimits) if "per_" in f.name]
+        assert not per_unit, f"a per-unit shedding bound is back in the writer: {per_unit}"
 
 
 class TestShutdownDrainsAll:

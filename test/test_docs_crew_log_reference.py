@@ -233,13 +233,25 @@ def _pending_types() -> list[str]:
     return [t for t, cell in _EMITTER_CELL_RE.findall(_doc_text()) if cell.strip().startswith("#")]
 
 
+def _emitter_definers(package: Path) -> frozenset[str]:
+    """The ``crew_log`` modules that define a module-level ``on_*`` emitter function."""
+    definers = frozenset(
+        path.name
+        for path in package.glob("*.py")
+        if re.search(r"^def on_[a-z_]+\(", path.read_text(encoding="utf-8"), re.MULTILINE)
+    )
+    assert "emit.py" in definers, f"the emitter definitions were not found: {sorted(definers)}"
+    return definers
+
+
 @functools.lru_cache(maxsize=1)
 def _emit_functions_called_in_the_tree() -> frozenset[str]:
     """Every ``on_*`` emitter function called under ``src/kiro_crew``.
 
-    A call site is what makes a type actually written. The emitter module is skipped
-    because it DEFINES these functions -- an emitter API with no caller writes nothing,
-    which is exactly the state a pending mark claims.
+    A call site is what makes a type actually written. The module that DEFINES these
+    functions is skipped -- an emitter API with no caller writes nothing, which is exactly
+    the state a pending mark claims -- and which module that is, is read off the package
+    rather than assumed, so the skip follows the definitions wherever they live.
 
     Read ONCE for the whole module rather than once per pending mark. The tree is
     ~1570 files and ~50 MiB, so scanning it per mark multiplies that by the number of
@@ -247,9 +259,10 @@ def _emit_functions_called_in_the_tree() -> frozenset[str]:
     Windows one.
     """
     root = Path(__file__).parent.parent / "src" / "kiro_crew"
+    definers = _emitter_definers(root / "crew_log")
     called: set[str] = set()
     for path in root.rglob("*.py"):
-        if path.parent.name == "crew_log" and path.name == "emit.py":
+        if path.parent.name == "crew_log" and path.name in definers:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

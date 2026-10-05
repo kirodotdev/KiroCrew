@@ -44,9 +44,10 @@ the storage call underneath takes the unit's lock, reads a bounded tail to
 assign ``seq`` and ``fsync``s the appended line -- a waiting ``flock`` and a
 kernel ``fsync`` once per tool frame and once per turn, on the one loop that
 also drives the liveness heartbeat. So an entry point does only what must be
-measured where it is called and hands the storage call to
-:func:`kiro_crew.executors.crew_log_executor`, whose single worker drains the work
-in the order the call sites produced it.
+measured where it is called and builds the storage call as a job for the durable
+writer, :class:`kiro_crew.crew_log.writer.CrewLogWriter`, whose single worker (the
+pool :func:`kiro_crew.executors.crew_log_executor` builds) drains the work in the
+order the call sites produced it.
 
 **Which turn an entry belongs to is carried IN the entry, not looked up.** Every
 session entry that belongs to a turn names it in ``data.turn`` -- the runner's own
@@ -62,24 +63,16 @@ at another LINE's seq, which is only knowable for a unit whose anchor line is
 written before the entries that cite it; that is the crew's log shape, not
 this one's.
 
-Two rules govern the writer, and neither gives way to the other: a lifecycle
-record is not dropped merely for crossing the BACKPRESSURE high-water mark, because
-a hole in an append-only log is permanent and silent, and the event loop is never
-BLOCKED, because a turn must not wait on a disk. So a producer appends to an
-in-memory buffer and returns, and one worker drains it in batches. The buffer has
-hard count and byte ceilings to prevent an OOM from losing every session's debt;
-records refused at those ceilings are counted separately by
-:func:`overflow_writes`. Fail-soft governs ERRORS, not backpressure.
-
-A failed append is RETAINED, not swallowed. The batch goes back to the front of
-its session's bucket, every later write for that session queues behind it, and the
-writer retries with a short doubling backoff. Bounded, because entries live in
-memory until they are written: past :data:`_MAX_WRITE_ATTEMPTS` consecutive failed
-passes the batch is dropped and counted in :func:`dropped_writes`, so a wedged
-disk becomes a reported loss instead of a wait no bounded caller can finish. A
-REFUSAL -- a ``CrewLogError``, decided before any byte is written -- is not retried
-at all: it would be refused identically every time, and retrying it would hold
-that session's whole log behind one entry that can never land.
+**Two collaborators own the rest, and this module installs both.** The durable
+write policy -- the buffer and its ceilings, retention and backoff, the
+``write/dropped`` loss marker, the inline path, the shutdown drain -- is
+:mod:`kiro_crew.crew_log.writer`. The live-turn memos -- the step and call ordinals,
+the settle-once tool registry, the attempt counts, the supersede repair's debt -- are
+:class:`kiro_crew.crew_log.turn_tracker.TurnTracker`. Both are imported and built on
+first use rather than at import, for the boot-path reason :func:`_crew_log` gives,
+and :func:`reset_caches` retires both so the next use builds fresh ones. New work on
+how an append reaches the file belongs in the writer; new per-turn bookkeeping belongs
+in the tracker; what a lifecycle fact records belongs here.
 
 With no event loop running the write happens inline on the calling thread --
 which is what makes a synchronous caller, and the test suite, deterministic.
@@ -103,18 +96,21 @@ import time
 import traceback
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.constants import CREW_LOG_ENV, crew_log_enabled
 from kiro_crew.executors import crew_log_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
-if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime import stays gated
+if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay gated
+    from concurrent.futures import Executor
+
     # Type-only, so the boot-path import gate is untouched: this name exists for the
     # checker and for test_crew_log_exc_info_sites.py, which reads annotations to decide
     # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
     from kiro_crew.crew_log.store import CrewLog
+    from kiro_crew.crew_log.turn_tracker import TurnTracker
+    from kiro_crew.crew_log.writer import CrewLogWriter, WarningBudget, WriteJob, WriterLimits
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +173,6 @@ ACTORS = frozenset({"user", "app", "crew", "cron", "autonudge", "subagent", "gat
 
 #: Bounded so a long-lived gateway cannot grow any map without limit.
 _MAX_OPEN_CREW_LOGS = 128
-_MAX_PENDING_TOOLS = 512
 
 #: Ceiling for a SHORT field -- an approval's shown reason, a plan item's text, a
 #: child's failure reason. These are not bodies: a body goes through
@@ -197,306 +192,25 @@ _MAX_ID_TEXT = 64
 #: entry keeps the real count in ``total`` when it clips.
 _MAX_PLAN_ITEMS = 100
 
-#: A last-resort ceiling on live-turn records, set far above any plausible number
-#: of concurrent turns. Reaching it does not mean the gateway is busy; it means
-#: turns are ending without their terminal event landing, so nothing releases
-#: their state. At that point the records whose terminal is already queued are
-#: shed and the leak is reported at error level; a live turn is never evicted,
-#: because restarting its numbering corrupts the log, so a ceiling reached with
-#: every record still live is accepted as an overage rather than acted on.
-_MAX_LIVE_TURNS = 4096
-
-
-@dataclass
-class _LiveTurn:
-    """What a turn in flight owns. Created at its start, dropped at its end.
-
-    Two counters, and the difference between them is the point.
-
-    ``step`` numbers the turn's MODEL CALLS. One turn is several: the model
-    speaks, calls tools, and is called again with their results. It is minted by
-    :func:`on_step_started` and every entry produced inside that call carries it,
-    so a reader can ask what one model call cost without inferring boundaries.
-
-    ``call_index`` numbers the turn's TOOL CALLS, which is what this record's
-    single counter meant before a step existed. It is kept because it answers a
-    different question -- the order the runner issued the calls in -- and because a
-    step can issue several tools at once, so the step alone cannot order them.
-
-    One record rather than a map per counter: two structures can be evicted
-    separately, and losing either counter mid-turn restarts its numbering so two
-    entries claim one ordinal. One record cannot be half-dropped.
-    """
-
-    step: int = 0
-    call_index: int = 0
-    #: True once this turn's terminal event has been HANDED to the writer. The
-    #: entry is queued rather than written, so the pin is owed to the write job
-    #: that releases it -- and a claim must not take it back in the meantime.
-    #: Without this a leaked record and one whose closer is in flight are
-    #: indistinguishable, and the claim treats both as stale.
-    closer_owed: bool = False
-
-
-@dataclass
-class _RetryState:
-    """A session's retained batch: how many passes have failed, and when to retry.
-
-    ``attempts`` counts CONSECUTIVE failed passes over this session's owed
-    entries, and any append that lands resets it. Counting it that way is what
-    makes the retry terminate: a reset costs a real append, so the buffer strictly
-    shrinks between resets and an alternating failure cannot retry forever. It
-    also means the budget bounds a WEDGED writer rather than a slow one -- a pass
-    that wrote something is not wedged, however much is still owed.
-
-    ``not_before`` is the monotonic instant the next pass may claim the bucket. It
-    is per session, so a wedged crew log's backoff paces only its own entries.
-    """
-
-    attempts: int = 0
-    not_before: float = 0.0
-
-
-@dataclass
-class _PendingLoss:
-    """Loss debt that must be written before this session can append again."""
-
-    dropped_count: int = 0
-    dropped_bytes: int = 0
-
-    def merge(self, other: "_PendingLoss") -> None:
-        """Fold *other*'s debt into this marker."""
-        self.dropped_count += other.dropped_count
-        self.dropped_bytes += other.dropped_bytes
-
-    def data(self) -> dict[str, Any]:
-        """The frozen ``write/dropped`` data shape."""
-        return {
-            "dropped_count": self.dropped_count,
-            "dropped_bytes": self.dropped_bytes,
-        }
-
-
-@dataclass
-class _PendingJob:
-    """One append and the cleanup due after it lands or is dropped."""
-
-    job: Callable[[], None]
-    what: str
-    nbytes: int = 0
-    after: Callable[[], None] | None = None
-    loss: _PendingLoss | None = None
-    #: True while this job's ``nbytes`` are included in ``_pending_total_bytes``.
-    #: The inline path runs a job without ever buffering it, so a job can leave
-    #: through ``_drop`` having never been added; subtracting it anyway drove the
-    #: total negative and loosened the ceiling it exists to enforce.
-    counted: bool = False
-    #: Never refused at the memory ceiling. The ceiling bounds the memory held by
-    #: PAYLOAD entries; two jobs are O(1) per session and must not be refusable by
-    #: it. The file-CREATING record: refusing it means the crew log never exists, so
-    #: every later entry for that session -- including the ``write/dropped`` marker
-    #: that would report the damage -- is silently discarded and not counted. The
-    #: loss MARKER: a record whose job is to report that the ceiling fired must not
-    #: itself be refusable by that ceiling. An exempt job still counts toward the
-    #: buffer's bookkeeping once admitted; it is only never turned away.
-    exempt_ceiling: bool = False
-    #: Run once when this job is given up on permanently -- a refusal, or its
-    #: attempt budget spent. The file-creating record uses it to flag a session
-    #: whose crew log never came into being, so later entries for it count as loss
-    #: instead of returning a silent no-op. Never raises into the writer.
-    on_permanent_drop: Callable[[], None] | None = None
-
-
-#: How long the writer pauses before a drain pass, so one pass takes a turn's
-#: burst rather than waking per entry. Fixed, so the worst case a producer can
-#: impose on the file is a constant.
-_BATCH_DEADLINE_SECONDS = 0.02
-#: Buffered appends past which the backlog is reported once. NOT a cap: nothing
-#: is dropped for crossing it. It exists so a filesystem that has stopped keeping
-#: up shows up in the log as memory pressure instead of silently accumulating.
-_PENDING_HIGH_WATER = 4096
-
-#: The hard ceilings the buffer is bounded by: a count of appends and a byte
-#: total of their bodies, either of which caps memory. They sit far above
-#: :data:`_PENDING_HIGH_WATER` so a gateway keeping up under real load never
-#: reaches them -- crossing one means the writer has fallen so far behind that the
-#: backlog is a memory-exhaustion risk to the whole process, and losing the newest
-#: entries of one overwhelmed buffer is the smaller failure than an OOM that takes
-#: every session's unwritten entries with it, uncounted. The overflow is rejected
-#: at the buffer's tail rather than shed from its head: the entries already queued
-#: keep their order and their prefix of the log intact, and the loss is the log's
-#: tail stopping at a named, counted point instead of its middle silently
-#: disagreeing with causality. Both ceilings are observable: :func:`overflow_writes`
-#: counts what they rejected.
-_MAX_PENDING_COUNT = 100_000
-_MAX_PENDING_BYTES = 256 * 1024 * 1024
-
-
-#: How long one write may take before the writer says so. A job past this is not
-#: failed -- it may still land -- but nothing else for that session can proceed, so
-#: silence here is what a stuck filesystem looks like from the outside.
-_WRITE_STALL_SECS = 30.0
-
-#: How long a spent warning budget stays quiet before that kind of failure is
-#: named again. A store that keeps failing is named once, then once per window
-#: carrying the number of failures the window swallowed, so an ongoing failure is
-#: never silent for longer than this and never logged per entry.
-_WARN_REARM_SECONDS = 300.0
-
-#: How many failure kinds may hold a budget at once. A key is an exception class
-#: and an OS or store error code, both program constants rather than caller data,
-#: so this is a guard on the map and not a limit routine traffic reaches.
-_MAX_WARN_KINDS = 64
-
-#: How long a synchronous caller waits for an in-flight writer batch before it
-#: hands its job over instead of writing inline. Bounded because the caller is a
-#: real thread doing real work, and generous because the alternative -- writing
-#: beside a claimed batch -- reorders the file rather than merely delaying it.
-_INLINE_ORDER_SECONDS = 5.0
-
-#: How long shutdown waits for the writer to finish. Bounded so a wedged
-#: filesystem delays exit rather than hanging it.
-_SHUTDOWN_DRAIN_SECONDS = 5.0
-#: Floor on the gap between shutdown retry passes. Without it a budget already
-#: nearly spent would spin the remaining attempts away in microseconds, which is
-#: how a filesystem that needed a moment becomes a permanent hole in the log.
-_MIN_SHUTDOWN_RETRY_GAP = 0.01
-#: Budget for the second inline attempt, after the timed wait on the writer has
-#: already spent the caller's timeout. Short on purpose: exit must not be delayed
-#: twice over for the same batch.
-_SECOND_CHANCE_DRAIN_SECONDS = 0.5
-
-#: How long the writer waits before retrying a batch whose append raised, and the
-#: ceiling that wait doubles to. The errors worth retrying are the transient ones
-#: -- an ENOSPC a rotation clears, an EIO on a network mount -- which resolve on a
-#: timescale a short backoff covers. The wait is per SESSION, so one wedged crew log
-#: paces only itself and another session's entries keep flowing.
-_RETRY_BACKOFF_SECONDS = 0.05
-_RETRY_BACKOFF_MAX_SECONDS = 2.0
-
-#: How many consecutive failed passes a session's owed batch survives before it
-#: is DROPPED and counted. There has to be such a number: entries live in memory
-#: until they are written, so a filesystem that never answers would otherwise hold
-#: them forever and every bounded caller -- :func:`flush`,
-#: :func:`drain_for_shutdown` -- would time out instead of returning. A loss that
-#: is counted and named can be investigated; a hang cannot.
-_MAX_WRITE_ATTEMPTS = 6
-
+#: Guards this module's own maps below. The writer and the turn tracker each hold their
+#: own lock; when this one is held while calling the tracker (its ``trim`` and
+#: ``pop_unless_live``), the order is always this lock first, and nothing the tracker
+#: does reaches back for it. The writer's adapters (``_handle``, ``_notify_growth``,
+#: ``_writer_pool``) DO take this lock, and an inline submit runs them on the caller's
+#: thread, so the writer is never called while this lock is held.
 _lock = threading.Lock()
-#: Signals a change to the writer's state. It has its OWN lock, deliberately NOT
-#: :data:`_lock`: a condition sharing that lock makes every waiter and notifier
-#: hold the same non-reentrant mutex that guards the maps, so one helper called
-#: from inside a ``with`` block on it self-deadlocks. Here the two concerns are
-#: separate -- state is mutated under ``_lock`` and the wake is delivered outside
-#: it, by :func:`_notify` -- and a waiter's predicate takes ``_lock`` for itself.
-#: There is no lost wakeup: a notifier must acquire this lock to signal, and
-#: ``wait_for`` holds it across both the predicate and the wait.
-_drained = threading.Condition()
+#: session -> its open crew log handle, bounded by :data:`_MAX_OPEN_CREW_LOGS` under the
+#: tracker's never-evict-a-live-turn rule. This cache IS the writer's ``open_unit``
+#: adapter (see :func:`_handle`).
 _open: "OrderedDict[str, Any]" = OrderedDict()
-#: (session, turn) -> the state that turn OWNS while it is in flight, created at
-#: ``turn/started`` and dropped by that turn's own end. The step counter lives
-#: HERE, in the same record as the pin, rather than in a map of its own: two
-#: structures can be evicted separately, and losing the counter while the turn
-#: still runs restarts the numbering so two of its entries claim one ordinal.
-#: One record cannot be half-dropped.
-_live: "OrderedDict[tuple[str, int], _LiveTurn]" = OrderedDict()
-#: session -> how many of its turns are live. Derived from :data:`_live` and
-#: maintained with it under the same lock, so the two cannot drift. Read by the
-#: eviction rule, which needs the question answered per SESSION: a handle is
-#: per session, while a step ordinal is per turn.
-_pinned: "dict[str, int]" = {}
-#: (session, call_id) -> (started_monotonic, name, server, call_index, step).
-#: The completion frame repeats none of this, so the call frame's identity, its
-#: position among the turn's calls and the model call it belonged to are all
-#: remembered here and filled in when it closes.
-#: call key -> (began, name, server, call_index, step, turn). The TURN is part
-#: of the value because a closer must name the turn the call was OPENED in: a
-#: call left open by one turn and closed under the next one's ordinal is a
-#: false statement about a turn that never used the tool.
-_tool_started: "OrderedDict[tuple[str, str], tuple[float, str, str, int, int, int]]" = OrderedDict()
-#: (session, call_id) -> the turn the call was settled in. A tool call settles
-#: exactly ONCE: the first terminal frame writes its closer, and a later frame for
-#: the same id must add nothing. Both update parsers can emit a status-only result
-#: for one terminal frame, so two closers for the same call is a live hazard rather
-#: than a corner case. Popping ``_tool_started`` alone cannot tell "already settled
-#: by us" from "never opened" -- both find no started record -- so this set records
-#: the calls this emitter has closed. A frame whose id is in here is dropped; a
-#: frame whose id is in NEITHER map is a call whose ``tool/called`` was never
-#: recorded and still gets its closer, with empty name/server/elapsed as before.
-#: Pruned on the SAME lifecycle as ``_tool_started``: per turn in ``_release_live``,
-#: for a closed session's orphaned turns in ``on_session_closed``, and wholesale in
-#: ``reset_caches``. Its CAP is its own, ``_bound_settled_tools``, because a marker
-#: accumulates per completed call where a started record is popped by one, so the
-#: shared never-evict-a-live-turn rule would leave this map growing for a whole turn.
-_settled_tools: "OrderedDict[tuple[str, str], int]" = OrderedDict()
-#: session -> the appends waiting to be written, in the order they were made.
-#: Producers only ever append here; the writer prepends a batch it could not
-#: write. Keyed per session because each session is a separate file, so one slow
-#: crew log cannot reorder another's entries -- and because a retained batch has to
-#: hold back exactly the entries that belong AFTER it, which is that session's
-#: bucket and nothing else. A bucket is popped whole and is never left empty.
-#: ``nbytes`` is an O(1) size hint the producer already had -- the body length
-#: for a body-bearing entry, 0 otherwise -- carried on the record so a RETAINED
-#: batch keeps its contribution to the byte ceiling instead of being re-measured,
-#: which nothing here can do after the fact.
-_pending: "OrderedDict[str, list[_PendingJob]]" = OrderedDict()
-_pending_count = 0
-#: Approximate serialized size of every unwritten entry in the process, including
-#: jobs claimed by the writer. Released only when a job lands or is dropped.
-_pending_total_bytes = 0
-#: The most ever buffered at once, for a caller that wants to see the backlog.
-_pending_high_water = 0
-#: session -> its retained batch's state, present only while one is owed. Its
-#: presence is also what disables the inline fast path for that session, so a
-#: later write cannot overtake the entries it is queued behind.
-_retry: "dict[str, _RetryState]" = {}
-#: Losses not yet admitted into the session's own file. This debt is separate
-#: from ordinary jobs so crossing a memory ceiling cannot reject its marker too.
-#: No entry is ever appended after a loss until a marker naming that loss has
-#: been appended.
-_pending_loss: "dict[str, _PendingLoss]" = {}
-#: Sessions a synchronous caller is writing inline for right now. The writer does
-#: not claim a bucket in here: ``flock`` serializes two appends but does not order
-#: them, so claiming beside an inline write is the reordering the inline gate
-#: exists to prevent.
-_inline: "set[str]" = set()
-#: How many appends were dropped after their attempt budget was spent.
-_dropped_count = 0
 #: Sessions whose crew log CREATION failed permanently -- the file-creating record
 #: was refused or spent its attempt budget, so no crew log file exists and no later
 #: append for the session can ever land. Distinct from a session that legitimately
 #: has none (feature off, never opened): that stays a silent policy no-op, this
 #: makes later discards COUNT as loss instead of returning a silent None. Cleared
-#: only by ``reset_caches``; a permanently failed creation does not recover.
+#: when the session closes and by ``reset_caches``; a permanently failed creation does
+#: not recover on its own.
 _creation_failed: "set[str]" = set()
-#: Superseded crew logs whose tail repair STOOD DOWN for a turn still running, mapped
-#: to the slot that owes it. The stand-down is correct -- that turn ends in its own
-#: real ``turn/completed`` -- but it is correct only while that terminal is still
-#: coming, and a terminal that spends its attempt budget is dropped instead. This is
-#: what lets the drop re-queue the repair: without it the terminal's drop and the
-#: waiting repair are two facts no site holds together. Keyed by the PREDECESSOR's
-#: id, because that is the session whose terminal resolves the question and the
-#: session the repair would be written into.
-_repair_owed: "dict[str, str]" = {}
-#: Sessions whose loss has already been reported, so a wedged disk is named once
-#: rather than once per batch. Cleared by that session's next successful append,
-#: which is what makes the recovery its own single line.
-_dropped_reported: "set[str]" = set()
-#: How many appends were rejected at the buffer's tail for crossing a hard memory
-#: ceiling. A DIFFERENT cause from :data:`_dropped_count`: that one counts a
-#: storage refusal the writer gave up retrying, while this counts backpressure the
-#: buffer refused to hold. They are separate counters so :func:`dropped_writes`
-#: keeps meaning "a storage refusal" exactly, and :func:`overflow_writes` names
-#: "the writer fell too far behind" -- reading them apart is how an operator tells
-#: a stuck disk from a saturated one.
-_overflow_count = 0
-#: The same count per session, for a writer that must tell ITS OWN rejection apart
-#: from another session's -- a global delta cannot say whose append was refused.
-_overflow_by_session: dict[str, int] = {}
-#: Sessions whose overflow has already been reported, so a saturated buffer is
-#: named once rather than once per rejected entry. Cleared by that session's next
-#: successful append.
-_overflow_reported: "set[str]" = set()
 #: How many child origins were dropped while their child was still running, so
 #: the entries that pin would have carried are absent from that session's log.
 #: Counted rather than only logged: a hole an append-only reader cannot see is the
@@ -506,56 +220,11 @@ _lost_child_origins = 0
 #: Whether a lost origin is named in the log already, so the state is reported
 #: once rather than once per eviction.
 _lost_origin_reported = False
-#: Approximate serialized size of each session's unwritten entries.
-_pending_bytes: "dict[str, int]" = {}
-#: The write currently in progress: when it started, and what it was. A job that
-#: HANGS never returns, so the writer cannot report on itself -- producers read this
-#: and say so instead. 0.0 means no write is in flight.
-_inflight_since: float = 0.0
-_inflight_what: str = ""
-_stall_reported = False
-#: How many CLAIMED entries each session still owes: the ones the writer took out
-#: of ``_pending`` and has not attempted yet. A claimed batch is absent from
-#: ``_pending``, so a caller asking whether this process still owes a session
-#: anything cannot learn it there. The entry being attempted right NOW is not
-#: counted, because the only caller that asks is a job of this batch asking about
-#: its own session, and a job that counted itself would answer that it must wait
-#: for itself. Every exit from ``_write_batch`` releases what it did not attempt.
-_claimed_sessions: "dict[str, int]" = {}
-#: True while a drain pass is scheduled or running, so a producer wakes the
-#: writer once rather than per entry. Never read directly: read
-#: :func:`_writer_busy_locked`, which also answers the case where the pass this
-#: flag was set for can never run.
-_draining = False
-#: The future :func:`_start_drain` submitted for the current pass, or None. Held
-#: because the flag alone cannot say whether the pass is still coming: shutting
-#: the pool down CANCELS a queued future, and the flag would then stay set for the
-#: life of the process -- making every ``flush`` and ``drain_for_shutdown`` return
-#: False and, worse, making the exit path's inline fallback refuse to write on the
-#: belief that a batch is claimed. That loses exactly the entries the drain exists
-#: to save.
-_drain_future: "Any | None" = None
-#: True once shutdown has asked for quiescence: the writer stops pausing to batch
-#: and writes what it has as fast as it can.
-_draining_for_shutdown = False
 #: True once the backstop ``atexit`` drain has been registered. Deliberately NOT
 #: cleared by ``reset_caches``: the registration is a property of this process, not
 #: of the writer's state, and clearing it would let a second registration stack up
 #: another drain on exit.
 _shutdown_hook_registered = False
-#: Set to make the writer thread abandon its current inter-pass wait and recompute
-#: it. Without this the pause is a plain sleep: a writer that parked for the length
-#: of a retry backoff cannot learn that a shutdown has since asked for quiescence,
-#: so clamping the backoff would never reach the thread that honours it.
-_wake = threading.Event()
-#: When a bounded shutdown drain is running, the monotonic instant it gives up at.
-#: A retained batch parked BEYOND it is retried just before it instead of never:
-#: a retry schedule outliving its process does not defer a write, it loses it.
-_shutdown_deadline: float = 0.0
-#: When that drain began. The pair defines the budget, and the retry instants are
-#: absolute points inside it -- a rolling "now + slice" is always in the future and
-#: would never become claimable at all.
-_shutdown_started: float = 0.0
 #: session -> the last request configuration written for it, as a comparable
 #: tuple. ``request/configured`` is a CHANGE record: rewriting an identical
 #: configuration every turn would bury the turns where it actually moved, which
@@ -573,12 +242,6 @@ _last_config: "OrderedDict[str, tuple[Any, ...]]" = OrderedDict()
 #: value each member ever held, so a duplicate changes no verdict, while a
 #: dropped transition would silently widen who may read the log.
 _last_class: "OrderedDict[str, tuple[str, str, bool, str]]" = OrderedDict()
-#: session -> {turn ordinal -> the highest attempt opened at it}. A regenerate or
-#: a rewind reruns a turn the ordinal already names, so without this two starts
-#: at one ordinal are indistinguishable and a fold cannot tell a retry from a
-#: duplicate write. Seeded from the file on resume, so a restart between two
-#: retries does not reset the count and claim attempt 1 twice.
-_attempts: "OrderedDict[str, dict[int, int]]" = OrderedDict()
 #: dispatched child id -> (parent session id, the parent turn that asked, opened).
 #: A child's spawn entry, steer and terminal outcome are all produced after the
 #: asking turn has ended, so the ordinal cannot be re-derived when they land; it is
@@ -597,26 +260,30 @@ _child_origin: "OrderedDict[str, tuple[str, int, bool]]" = OrderedDict()
 #: is exactly the idle-teardown path where a child keeps running -- reading it
 #: would report a live child as finished. Unset means no repair closes a child.
 _child_liveness: "Callable[[str], bool] | None" = None
-#: Failure kind -> (monotonic instant it last warned, failures swallowed since).
-#: One warning budget per KIND of failure, so a store running out of space still
-#: gets named at default level after an unrelated listener error spent a slot
-#: hours earlier. The key is derived from the exception by :func:`_failure_kind`
-#: rather than from ``what``: six of the call sites interpolate a store name, an
-#: entry type or a unit into that string, so a budget keyed on it would hand
-#: every store its own warning and flood the log the budget exists to protect.
-#: Bounded FIFO, oldest kind evicted first; cleared by ``reset_caches``.
-_warn_budget: "OrderedDict[tuple[str, str, str], tuple[float, int]]" = OrderedDict()
-_warned_high_water = False
-#: True once the live-turn cap overage has been reported, so a genuinely busy
-#: gateway names the condition once rather than on every event while over the cap.
-#: Cleared when the map falls back to the cap, so a later recurrence is named
-#: again -- and by ``reset_caches``.
-_live_overage_reported = False
 
 #: Consumers to wake when a session's log grows. Registered by
-#: :func:`add_growth_listener`, held here rather than imported so this writer
-#: names no reader.
+#: :func:`add_growth_listener`, held here rather than imported so the writer
+#: names no reader. Survives ``reset_caches``: a listener is installed once per
+#: process, and each writer generation reports growth through the same list.
 _growth_listeners: "list[Callable[[str], None]]" = []
+
+#: Guards installing the collaborators below. Its own lock, so a caller already
+#: holding :data:`_lock` (the handle cache trimming through the tracker) can install
+#: the tracker without self-deadlocking.
+_install_lock = threading.Lock()
+#: The installed durable writer, the turn tracker and the shared warning budget, each
+#: built on first use (see the module docstring). ``None`` until then, and again after
+#: :func:`reset_caches`.
+_writer_instance: "CrewLogWriter | None" = None
+_tracker_instance: "TurnTracker | None" = None
+_warnings_instance: "WarningBudget | None" = None
+#: The limits the NEXT writer is built with, set by :func:`reset_caches` -- ``None``
+#: means the writer's defaults.
+_next_limits: "WriterLimits | None" = None
+
+#: How long :func:`drain_for_shutdown` gives the writer by default. Bounded so a wedged
+#: filesystem delays exit rather than hanging it.
+_SHUTDOWN_DRAIN_SECONDS: Final[float] = 5.0
 
 
 _subsystem: Any = None
@@ -647,37 +314,104 @@ def enabled() -> bool:
     return crew_log_enabled()
 
 
-def _notify() -> None:
-    """Wake every waiter on the writer's state. Called WITHOUT ``_lock`` held."""
-    with _drained:
-        _drained.notify_all()
+def _warnings() -> "WarningBudget":
+    """The warning budget every crew log failure in this process is reported through."""
+    global _warnings_instance
+    budget = _warnings_instance
+    if budget is None:
+        with _install_lock:
+            if _warnings_instance is None:
+                from kiro_crew.crew_log.writer import WarningBudget
+
+                _warnings_instance = WarningBudget(logger)
+            budget = _warnings_instance
+    return budget
 
 
-def _writer_busy_locked() -> bool:
-    """Whether a drain pass is really coming or running. ``_lock`` held.
+def _writer() -> "CrewLogWriter":
+    """The installed durable writer, built on first use.
 
-    ``_draining`` says a pass was SCHEDULED, which is not the same claim. Shutting
-    the writer pool down cancels a queued future, and the drain loop that would
-    have cleared the flag then never runs -- so the flag alone reports a batch in
-    flight forever. Deriving the answer from the future instead makes the state
-    self-healing: the next producer starts a fresh pass, and until then every
-    barrier reads the truth.
-
-    Pure on purpose. Clearing the flag here would make a waiter's predicate mutate
-    shared state, and a second waiter would still sit until its own timeout because
-    nothing notified it. Reporting instead leaves the correction to
-    :func:`_mark_draining_locked`, which assigns a new flag AND a new future
-    together.
+    Its adapters are this module's: :func:`_late_handle` opens a unit for the writer's
+    own loss markers, :func:`_writer_pool` hands it the one-worker crew-log pool (and
+    registers the exit drain on first use), :func:`_notify_growth` tells the registered
+    listeners a log grew, and :func:`_late_retry_delay` is the retry schedule. The two
+    ``_late_*`` adapters read their target by name at call time, because tests patch
+    :func:`_handle` and :func:`_retry_delay` here, and a writer built while a patch was
+    in force must not keep it after the patch is undone. Logging stays on this module's
+    logger, so every record the write path produces carries one logger name.
     """
-    if not _draining:
-        return False
-    return _drain_future is None or not _drain_future.done()
+    global _writer_instance
+    writer = _writer_instance
+    if writer is None:
+        warnings = _warnings()
+        with _install_lock:
+            if _writer_instance is None:
+                from kiro_crew.crew_log.writer import DEFAULT_LIMITS, CrewLogWriter
+
+                _writer_instance = CrewLogWriter(
+                    _late_handle,
+                    executor=_writer_pool,
+                    limits=_next_limits if _next_limits is not None else DEFAULT_LIMITS,
+                    retry_delay=_late_retry_delay,
+                    on_grew=_notify_growth,
+                    warnings=warnings,
+                    logger=logger,
+                )
+            writer = _writer_instance
+    return writer
 
 
-def _quiet() -> bool:
-    """True when nothing is owed and no batch is in flight. Takes ``_lock``."""
-    with _lock:
-        return not _pending and not _pending_loss and not _writer_busy_locked()
+def _tracker() -> "TurnTracker":
+    """The installed turn tracker, built on first use."""
+    global _tracker_instance
+    tracker = _tracker_instance
+    if tracker is None:
+        with _install_lock:
+            if _tracker_instance is None:
+                from kiro_crew.crew_log.turn_tracker import TurnTracker
+
+                _tracker_instance = TurnTracker(max_sessions=_MAX_OPEN_CREW_LOGS, logger=logger)
+            tracker = _tracker_instance
+    return tracker
+
+
+def _writer_pool() -> "Executor":
+    """The writer's executor adapter: the crew-log pool, with the exit drain registered.
+
+    The registration happens HERE, immediately before the pool is first asked for work,
+    so ``atexit``'s last-registered-first order still runs the pool's own handler ahead of
+    this module's drain (see :func:`_ensure_shutdown_hook`).
+    """
+    _ensure_shutdown_hook()
+    return crew_log_executor()
+
+
+def _late_retry_delay(attempts: int) -> float:
+    """The writer's retry schedule, read through :func:`_retry_delay` at call time."""
+    return _retry_delay(attempts)
+
+
+def _late_handle(session_id: str) -> Any:
+    """The writer's ``open_unit`` adapter, read through :func:`_handle` at call time."""
+    return _handle(session_id)
+
+
+def _retry_delay(attempts: int) -> float:
+    """How long to wait before retry number *attempts* + 1. Seconds.
+
+    The writer's schedule (``WriterLimits.retry_delay``), exposed here as one named
+    thing because the writer this module installs reads it through this name at call
+    time: a test shrinks it to zero and drives the whole attempt budget
+    deterministically, instead of waiting out real backoff under load and asserting on
+    a stopwatch. Called under the writer's lock, so it must not call back into the
+    writer.
+    """
+    writer = _writer_instance
+    if writer is None:
+        from kiro_crew.crew_log.writer import DEFAULT_LIMITS
+
+        return DEFAULT_LIMITS.retry_delay(attempts)
+    return writer.limits.retry_delay(attempts)
 
 
 def flush(timeout: float = 5.0) -> bool:
@@ -691,9 +425,10 @@ def flush(timeout: float = 5.0) -> bool:
     Terminates even against a filesystem that never answers: a batch the writer
     cannot write is retried a bounded number of times and then dropped, so the
     buffer reaches empty rather than holding entries no wait could ever satisfy.
+    A process that never wrote has no writer, and nothing to wait for.
     """
-    with _drained:
-        return _drained.wait_for(_quiet, timeout=timeout)
+    writer = _writer_instance
+    return True if writer is None else writer.flush(timeout=timeout)
 
 
 def dropped_writes() -> int:
@@ -711,8 +446,8 @@ def dropped_writes() -> int:
     time out. A loss a caller can read is the lesser failure, and this is how it
     is read.
     """
-    with _lock:
-        return _dropped_count
+    writer = _writer_instance
+    return 0 if writer is None else writer.stats().dropped
 
 
 def overflow_writes(session_id: str | None = None) -> int:
@@ -724,17 +459,19 @@ def overflow_writes(session_id: str | None = None) -> int:
 
     Distinct from :func:`dropped_writes`: that names a storage refusal the writer
     gave up on, this names backpressure the buffer refused to hold once it reached
-    :data:`_MAX_PENDING_COUNT` appends or :data:`_MAX_PENDING_BYTES` of bodies.
-    Normally 0. A non-zero reading means the writer fell so far behind that the
-    backlog became a memory-exhaustion risk, and the newest entries of the
-    overwhelmed session were rejected -- at the tail, so that log is short by them
-    from a named point rather than holed in its middle. Reading it apart from
-    :func:`dropped_writes` is how a stuck disk is told from a saturated one.
+    its count or byte ceiling (``WriterLimits.max_pending_count`` /
+    ``max_pending_bytes``). Normally 0. A non-zero reading means the writer fell so
+    far behind that the backlog became a memory-exhaustion risk, and the newest
+    entries of the overwhelmed session were rejected -- at the tail, so that log is
+    short by them from a named point rather than holed in its middle. Reading it
+    apart from :func:`dropped_writes` is how a stuck disk is told from a saturated one.
     """
-    with _lock:
-        if session_id is not None:
-            return _overflow_by_session.get(session_id, 0)
-        return _overflow_count
+    writer = _writer_instance
+    if writer is None:
+        return 0
+    if session_id is not None:
+        return writer.overflowed_for(session_id)
+    return writer.stats().overflowed
 
 
 def lost_child_origins() -> int:
@@ -763,101 +500,59 @@ def lost_child_origins() -> int:
 
 def buffered_writes() -> int:
     """How many appends are waiting on the writer right now."""
-    with _lock:
-        return _pending_count
+    writer = _writer_instance
+    return 0 if writer is None else writer.stats().buffered
 
 
 def peak_buffered_writes() -> int:
     """The most appends ever waiting at once since the last reset."""
-    with _lock:
-        return _pending_high_water
+    writer = _writer_instance
+    return 0 if writer is None else writer.stats().peak_buffered
 
 
-def _retry_delay(attempts: int) -> float:
-    """How long to wait before retry number *attempts* + 1. Seconds.
-
-    Its own function rather than an expression inline in :func:`_retain` so the
-    SCHEDULE is one named thing: a test shrinks it to zero and drives the whole
-    attempt budget deterministically, instead of waiting out real backoff under
-    load and asserting on a stopwatch.
-    """
-    return min(
-        _RETRY_BACKOFF_SECONDS * 2 ** (max(1, attempts) - 1),
-        _RETRY_BACKOFF_MAX_SECONDS,
-    )
-
-
-def reset_caches() -> None:
+def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
     """Drop cached handles, live turns and timings. Tests and restart.
 
-    Drains first: a job still holding a stale handle would otherwise write after
-    the reset that was meant to forget it.
+    Retires the installed writer first -- :meth:`CrewLogWriter.close` waits a bounded
+    moment for what it owes, because a job still holding a stale handle would otherwise
+    write after the reset that was meant to forget it, and then DISCARDS whatever it
+    could not write. Reaching that point means the writer is wedged, and the handles
+    those jobs would have written through are being dropped in this same call -- so
+    keeping them would leave the writer retrying entries against a crew log this
+    process has stopped believing in. A successful wait makes the discard a no-op,
+    which is every call that is not recovering from a wedge. The writer is retired
+    while still installed, so a job that queues follow-on work during that wait queues
+    it into the writer being retired rather than building a new one.
 
-    Whatever the drain could not write is then DISCARDED rather than carried
-    across, and so is the retry state behind it, and so is the claim on the writer.
-    Reaching that point means the writer is wedged, and the handles those jobs
-    would have written through are being dropped in this same call -- so keeping
-    them would leave the writer retrying entries against a crew log this process has
-    stopped believing in. Clearing the claim matters as much as clearing the
-    buffer: a claim nothing will ever release makes every later barrier report a
-    batch in flight, so one wedged pass would otherwise fail every ``flush`` for
-    the life of the process. A successful drain makes all of it a no-op, which is
-    every call that is not recovering from a wedge.
+    Then the writer, the turn tracker and the warning budget are uninstalled, so the
+    next use builds fresh ones -- with *limits* for the next writer when given, which is
+    how a test asks for small ceilings -- and this module's own maps are cleared. The
+    growth listeners, the child-liveness probe and the exit-hook registration are
+    properties of the process and survive.
     """
-    global _warned_high_water, _pending_high_water, _draining_for_shutdown
-    global _shutdown_deadline, _shutdown_started
-    global _inflight_since, _inflight_what, _stall_reported
-    global _pending_count, _pending_total_bytes, _dropped_count, _draining, _drain_future
-    global _overflow_count
+    global _writer_instance, _tracker_instance, _warnings_instance, _next_limits
     global _lost_child_origins, _lost_origin_reported
-    global _live_overage_reported
-    # Bounded well below the default: this wait exists so a job holding a stale
-    # handle cannot write after the reset, and it returns the instant the writer is
-    # quiet. When the writer is GONE -- the pool shut down with work still owed --
-    # no job can run at all, so waiting the full default would stall every caller
-    # for nothing and the discard below is the answer either way.
-    flush(timeout=2.0)
+    writer = _writer_instance
+    if writer is not None:
+        # Bounded well below the default: this wait exists so a job holding a stale
+        # handle cannot write after the reset, and it returns the instant the writer is
+        # quiet. When the writer is GONE -- the pool shut down with work still owed --
+        # no job can run at all, so waiting the full default would stall every caller
+        # for nothing and the discard is the answer either way.
+        writer.close(timeout=2.0)
+    with _install_lock:
+        _writer_instance = None
+        _tracker_instance = None
+        _warnings_instance = None
+        _next_limits = limits
     with _lock:
         _open.clear()
-        _live.clear()
-        _pinned.clear()
-        _tool_started.clear()
-        _settled_tools.clear()
         _last_config.clear()
         _last_class.clear()
-        _attempts.clear()
         _child_origin.clear()
-        _pending.clear()
-        _pending_loss.clear()
-        _pending_count = 0
-        _pending_total_bytes = 0
-        _retry.clear()
-        _claimed_sessions.clear()
-        _inline.clear()
-        _dropped_reported.clear()
-        _overflow_reported.clear()
         _creation_failed.clear()
-        _repair_owed.clear()
-        _pending_bytes.clear()
-        _inflight_since = 0.0
-        _inflight_what = ""
-        _stall_reported = False
-        _dropped_count = 0
-        _overflow_count = 0
-        _overflow_by_session.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
-        _pending_high_water = 0
-        _draining = False
-        _drain_future = None
-        _warn_budget.clear()
-        _warned_high_water = False
-        _live_overage_reported = False
-        _draining_for_shutdown = False
-        _shutdown_deadline = 0.0
-        _shutdown_started = 0.0
-        _wake.clear()
-    _notify()
 
 
 def session_id_of(client: Any) -> str:
@@ -877,83 +572,16 @@ def session_id_of(client: Any) -> str:
     return ""
 
 
-def _failure_kind(op: str, exc: BaseException) -> "tuple[str, str, str]":
-    """What KIND of failure this is, for the warning budget to spend a slot on.
-
-    Three stable parts: the operation that failed, the exception's class, and the
-    code the operating system or the store put on it. So a disk that is full and a
-    disk that is failing arrive as two kinds out of one ``OSError``, and a lost
-    write lease is not filed under an unrelated listener's ``RuntimeError``.
-
-    What is deliberately absent is the UNIT -- no store name, no session id, no
-    entry type. Those live in ``what`` for the message and never in the key,
-    because many units failing at once is one cause repeating, and a key holding
-    the unit would hand each of them its own warning and flood the log this budget
-    exists to protect. Every part is a program or OS constant, so the map is
-    bounded with no list of kinds for anyone to maintain: a new call site gets its
-    own slot by naming its own ``op``.
-    """
-    code = getattr(exc, "code", "") or getattr(exc, "errno", "")
-    return (op, type(exc).__qualname__, str(code or ""))
-
-
 def _report(what: str, exc: BaseException, *, op: str) -> None:
-    """Report a crew log failure at warning level once per KIND, then stay quiet.
+    """Report a crew log failure through the shared warning budget.
 
-    The budget is one slot per kind of failure, not one per process:
-    :func:`_failure_kind` builds the key from *op* and the exception, so a store
-    refused for ENOSPC is named at default level even though an unrelated listener
-    error spent a slot hours before. *op* names the operation in a fixed string and
-    is the only part of the call that reaches the key; *what* carries the store,
-    unit or entry type for the reader and is kept out of it.
-
-    Repetition of a kind already named is swallowed and COUNTED, and the count
-    rides on the next warning for that kind once ``_WARN_REARM_SECONDS`` has
-    passed -- a budget that ran out has to say so, since a silently spent one hides
-    exactly the ongoing failure it was meant to surface, and naming every repeat
-    would flood the log instead.
-
-    Both records carry the failure as TEXT -- the warning's ``%s`` argument, and on the
-    debug line the traceback RENDERED to a string while the exception is live, rather than
-    ``exc_info``. An exception object handed to a log call, or the ``exc_info`` triple,
-    rides on the record with its ``__traceback__`` and ``__context__``, and a handler
-    that keeps records (pytest's per-test capture, a ``MemoryHandler``) would keep the
-    job frames -- and the ``CrewLog`` handle in them -- for as long as it keeps the
-    record. A pre-rendered string holds no frames. See ``_run_job`` for why that handle
-    must not outlive the pass.
+    One budget for the whole write path, writer and emitter alike, so a kind of failure
+    is named once per window however many sites hit it -- see
+    :class:`kiro_crew.crew_log.writer.WarningBudget` for the key and the text-only
+    record rule. Takes the budget's own lock, so it is never called with :data:`_lock`
+    held.
     """
-    kind = _failure_kind(op, exc)
-    now = time.monotonic()
-    with _lock:
-        held = _warn_budget.get(kind)
-        if held is None:
-            speak, swallowed = True, 0
-        else:
-            warned_at, swallowed = held
-            speak = now - warned_at >= _WARN_REARM_SECONDS
-        if speak:
-            _warn_budget[kind] = (now, 0)
-            _warn_budget.move_to_end(kind)
-            while len(_warn_budget) > _MAX_WARN_KINDS:
-                _warn_budget.popitem(last=False)
-        else:
-            _warn_budget[kind] = (warned_at, swallowed + 1)
-    if speak:
-        logger.warning(
-            "session log writes are failing (%s: %s%s)%s; further failures of "
-            "this kind are logged at debug only for the next %.0fs",
-            what,
-            str(exc),
-            f", code={getattr(exc, 'code', '')}" if getattr(exc, "code", "") else "",
-            f", and {swallowed} more went unreported since it was last named" if swallowed else "",
-            _WARN_REARM_SECONDS,
-        )
-    elif logger.isEnabledFor(logging.DEBUG):
-        # The traceback rendered to text while the exception is live: full
-        # diagnostics on the record, and a string holds no frames.
-        logger.debug(
-            "session log %s failed:\n%s", what, "".join(traceback.format_exception(exc)).rstrip()
-        )
+    _warnings().report(what, exc, op=op)
 
 
 def add_growth_listener(listener: "Callable[[str], None]") -> None:
@@ -1048,107 +676,6 @@ def _note_eager(entry: Any, entry_type: str, session_id: str, data: Mapping[str,
             )
 
 
-def _on_event_loop() -> bool:
-    """True when this thread is running an asyncio event loop."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
-def _permanent(failure: type[BaseException]) -> bool:
-    """Whether retrying a *failure* of this type is pointless: it will be refused again.
-
-    A :class:`~kiro_crew.crew_log.CrewLogError` is a REFUSAL, not a failure: the
-    storage layer declines the entry before any byte is written, so the file is
-    byte-identical and nothing about this process's next attempt is different.
-    Either the entry does not fit the format, in which case the same verdict comes
-    back every time, or ANOTHER PROCESS owns that unit's log -- ownership held for
-    the life of the owning process, which no retry budget outlasts. Retaining
-    either one would spend the whole budget on a verdict that will not change, and
-    hold every later entry of that session behind it while doing so -- turning one
-    refused entry into a stall for the log it is the only casualty of. So a refusal
-    is a loss immediately, counted in :func:`dropped_writes` and named in the log;
-    only an error that MIGHT clear -- an ENOSPC, an EIO, a filesystem that stopped
-    answering, which is what this retention exists for -- is retried.
-
-    A second gateway claiming a session whose writer is alive therefore loses its
-    own entries, visibly, and writes nothing into the owner's file. That is the
-    intended trade: the entries this process cannot write are counted, while the
-    log keeps ONE writer's account of the turn instead of two interleaved ones.
-    """
-    return issubclass(failure, _crew_log().CrewLogError)
-
-
-def _run_job(job: Callable[[], None], what: str) -> type[BaseException] | None:
-    """Run one storage job. Never raises. Returns the failure's TYPE, or None.
-
-    The type is returned rather than a bare False because the caller's next
-    decision depends on WHICH failure it was: a refusal is a loss now, and
-    anything else is retried. It is already reported by the time it comes back.
-
-    The type and not the exception: the caller binds the return to a local while
-    it decides, and an exception object reaches frames three ways -- its own
-    ``__traceback__``, and the ``__context__`` / ``__cause__`` of whatever it was
-    raised while handling, each with a traceback of its own. Those frames include
-    this one (whose ``f_back`` is the caller's frame) and the job's, whose locals
-    hold the ``CrewLog`` handle it was appending through: a reference cycle through
-    the handle, and a handle's lease is released by a finalizer when the handle is
-    dropped, so the lease would stay held until the cyclic collector's next pass
-    rather than when the pass that failed returned. Stripping the tracebacks one by
-    one leaves the next link to find; a class object has no frames at all.
-    ``_permanent`` needs only the type, and the report above has already used the
-    exception.
-    """
-    global _inflight_since, _inflight_what, _stall_reported
-    with _lock:
-        _inflight_since = time.monotonic()
-        _inflight_what = what
-    try:
-        job()
-    except Exception as exc:
-        _report(what, exc, op="queued-write")
-        return type(exc)
-    finally:
-        with _lock:
-            _inflight_since = 0.0
-            _inflight_what = ""
-            # Armed again, so a SECOND stall is reported rather than swallowed as a
-            # repeat of the first.
-            _stall_reported = False
-    return None
-
-
-def _note_stall_if_any() -> None:
-    """Say once that the write in flight has been running too long.
-
-    Called by producers, because the thread that would notice is the one blocked in
-    the call. A stalled job is not a failed one -- it may still land, and its
-    retry budget has not moved, since nothing raised -- so this reports and does
-    nothing else. With no ceiling to shed against, this line is the ONLY outward
-    sign of a hung write besides memory climbing: nothing else about it is visible,
-    because it neither returns nor raises.
-    """
-    global _stall_reported
-    with _lock:
-        since = _inflight_since
-        what = _inflight_what
-        if not since or _stall_reported:
-            return
-        if time.monotonic() - since < _WRITE_STALL_SECS:
-            return
-        _stall_reported = True
-        held = _pending_count
-    logger.error(
-        "session log writer stalled: %s has been in progress for over %.0fs and "
-        "has neither returned nor failed; %d append(s) are waiting behind it",
-        what,
-        _WRITE_STALL_SECS,
-        held,
-    )
-
-
 def _submit(
     job: Callable[[], None],
     what: str,
@@ -1156,570 +683,96 @@ def _submit(
     nbytes: int = 0,
     *,
     after: Callable[[], None] | None = None,
-    exempt_ceiling: bool = False,
     on_permanent_drop: Callable[[], None] | None = None,
-    queue_only: bool = False,
 ) -> None:
-    """Hand *job* to the writer. Returns without waiting and without writing.
+    """Hand one ordinary append to the writer.
 
-    The two rules this satisfies together, which the queue-with-a-cap could not:
-
-    A lifecycle record is never dropped merely for crossing the BACKPRESSURE
-    high-water mark. A hole in an append-only log is permanent and silent -- a
-    reader cannot tell a turn that never completed from one whose completion was
-    discarded -- so the writer falling behind sheds nothing on its own. The buffer
-    does have hard COUNT and BYTE ceilings, far above that mark, that exist only so
-    a filesystem which has stopped answering cannot grow it until an OOM takes
-    every session's unwritten entries at once; an entry rejected at a ceiling is
-    counted separately in :func:`overflow_writes`, and the file-creating record and
-    loss markers are exempt from it. Otherwise an entry is given up on only when
-    the filesystem refuses it or keeps refusing to take it, and then it is counted
-    in :func:`dropped_writes` rather than lost quietly.
-
-    The event loop is never BLOCKED. A producer appends to an in-memory buffer and
-    returns; it never waits for the writer and never touches the filesystem. So a
-    disk that has stopped keeping up costs memory, which is visible and reported,
-    instead of turn latency, which stalls the gateway.
-
-    The buffer is therefore bounded by memory rather than by a backlog-depth
-    policy: crossing the high-water mark is reported rather than acted on, and only
-    the hard memory ceilings above ever reject an entry -- shedding records for
-    merely being numerous is the thing the first rule forbids.
-
-    With no event loop running the write happens inline. That is not a fallback
-    on the loop path -- there is no loop to protect, the caller is a thread that
-    asked for this, and it keeps a synchronous caller and the test suite
-    deterministic. It is ORDERED against the writer in both directions.
-    ``flock`` stops two appends from interleaving but does not decide which lands
-    first, so writing here while the writer holds a claimed batch could put this
-    entry at a lower seq than one emitted before it -- and a log whose seq
-    disagrees with causality is worse than a short one, because a fold cannot
-    detect it. So the inline path is taken only for a session that owes nothing:
-    no retained batch, no buffered entry, no other inline write. And an inline
-    write that FAILS is retained like any other, never swallowed -- otherwise a
-    synchronous caller's entry would be the one kind this writer silently loses.
-
-    ``queue_only`` declines the inline path for a caller that is ALREADY RUNNING
-    ON the writer thread -- a job queueing follow-up work of its own. Such a
-    caller is inside a drain pass, so the inline path's ordering wait would wait
-    for the pass it is inside: it cannot be satisfied, and the entry reaches the
-    buffer anyway five seconds later, having held the one writer thread for that
-    whole time. The flag only ever declines an optimisation, so it cannot make an
-    entry land in a weaker order than it would have otherwise.
+    The writer's contract applies (:meth:`kiro_crew.crew_log.writer.CrewLogWriter.submit`):
+    a lifecycle record is never dropped for backpressure alone, the event loop is never
+    blocked, and with no event loop running the write happens inline, ordered against
+    the writer. ``after`` runs once the append lands or is definitively dropped;
+    ``on_permanent_drop`` runs, ahead of it, only when it is given up on.
     """
-    pending = _PendingJob(
-        job=job,
-        what=what,
-        nbytes=nbytes,
-        after=after,
-        exempt_ceiling=exempt_ceiling,
-        on_permanent_drop=on_permanent_drop,
-    )
-    # The only thread that can notice a write which stopped answering is a
-    # PRODUCER: the one that would notice is blocked inside the call. Checked
-    # before this entry is handed over, so a stuck write is named while the
-    # backlog behind it is still growing rather than after it clears.
-    _note_stall_if_any()
-    if not queue_only and not _on_event_loop():
-        if _owes_entries(session_id):
-            # This session already owes entries this one belongs after, so there is
-            # nothing to wait for: queueing behind them keeps the order and costs
-            # the caller nothing, while waiting for the debt to clear would put a
-            # real thread behind the filesystem for as long as the debt lasts.
-            _buffer(session_id, pending)
-            return
-        with _drained:
-            _drained.wait_for(lambda: _inline_ready(session_id), timeout=_INLINE_ORDER_SECONDS)
-        if _claim_inline(session_id):
-            try:
-                failure = _run_job(job, what)
-                if failure is None:
-                    _finish(pending)
-                    _note_progress(session_id)
-                elif _permanent(failure):
-                    _drop(session_id, [pending])
-                else:
-                    _retain(session_id, [pending])
-            finally:
-                _release_inline(session_id)
-            return
-        # The writer is mid-batch. Hand the job over rather than race it: the entry
-        # then waits, which is visible in the buffer count and recoverable at
-        # shutdown, instead of landing out of order, which is neither.
-        _buffer(session_id, pending)
-        return
-    _buffer(session_id, pending)
+    from kiro_crew.crew_log.writer import WriteJob
 
-
-def _owes_entries(session_id: str) -> bool:
-    """Whether this session has entries queued, claimed or retained. Takes ``_lock``.
-
-    ``_claimed_sessions`` is the one of the four a reader would not think to ask
-    for: the writer pops a session's bucket before it writes it, so a batch in
-    flight is in none of the other three while its entries are still owed. It
-    counts what has not been ATTEMPTED, so the job running right now -- the one
-    doing the asking -- is not among them.
-    """
-    with _lock:
-        return (
-            session_id in _pending
-            or session_id in _retry
-            or session_id in _pending_loss
-            or session_id in _claimed_sessions
-        )
-
-
-def _release_claim(session_id: str, count: int) -> None:
-    """Stop counting *count* of *session_id*'s claimed entries. Takes ``_lock``.
-
-    Called for a job as it is attempted and for whatever a pass never reached. By
-    then each one is written, dropped with a loss marker, or back in the queue, so
-    releasing it here removes a count that another source now carries.
-    """
-    if count <= 0:
-        return
-    with _lock:
-        held = _claimed_sessions.get(session_id, 0) - count
-        if held > 0:
-            _claimed_sessions[session_id] = held
-        else:
-            _claimed_sessions.pop(session_id, None)
-
-
-def _inline_ready(session_id: str) -> bool:
-    """Whether an inline write for *session_id* may go ahead. Takes ``_lock``."""
-    with _lock:
-        return _inline_claimable_locked(session_id)
-
-
-def _inline_claimable_locked(session_id: str) -> bool:
-    """The inline path's whole precondition. ``_lock`` held.
-
-    Every clause is an ordering rule. ``_draining`` covers a batch the writer may
-    already hold, for any session, because a claimed batch is absent from
-    ``_pending`` and cannot be seen there. ``_pending`` and ``_retry`` cover this
-    session's own owed entries, which this one belongs after. ``_inline`` covers
-    another synchronous caller already writing for it.
-    """
-    return (
-        not _writer_busy_locked()
-        and session_id not in _pending
-        and session_id not in _retry
-        and session_id not in _pending_loss
-        and session_id not in _inline
+    _hand_over(
+        session_id,
+        WriteJob.append(job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop),
     )
 
 
-def _claim_inline(session_id: str) -> bool:
-    """Take the inline slot for *session_id*, re-checking under one lock hold.
-
-    The wait and the claim cannot be one operation -- the predicate reads ``_lock``
-    while the wait holds the condition's own lock -- so the decision is made again
-    here, atomically, and the claim is published in the same hold. Without that
-    re-read a producer could start the writer in the window between the two.
-    """
-    with _lock:
-        if not _inline_claimable_locked(session_id):
-            return False
-        _inline.add(session_id)
-        return True
-
-
-def _release_inline(session_id: str) -> None:
-    """Give the inline slot back and wake the writer, which may have been waiting."""
-    with _lock:
-        _inline.discard(session_id)
-    _notify()
-
-
-def _buffer(session_id: str, pending: _PendingJob) -> None:
-    """Append one job to its session's pending buffer and wake the writer.
-
-    Backpressure alone sheds nothing until the buffer reaches a hard memory
-    ceiling. This module does not create a hole in a log for the writer merely
-    falling behind: the record is what several subsystems read to decide what
-    happened, and a missing entry is indistinguishable from a fact that never
-    occurred. A crash-shaped loss is different in kind -- the repair machinery
-    names and closes what a kill left behind -- but a discard chosen while the
-    process is healthy has nothing that can recover it and no reader that can
-    detect it. So a filesystem that stops answering costs MEMORY, reported through
-    :func:`buffered_writes`, :func:`peak_buffered_writes` and the high-water
-    warning, and a write in flight too long is named by :func:`_note_stall_if_any`.
-
-    That memory has a ceiling. Past :data:`_MAX_PENDING_COUNT` appends or
-    :data:`_MAX_PENDING_BYTES` of bodies -- both far above the high-water mark, so a
-    gateway keeping up never reaches them -- holding more risks an OOM that takes
-    every session's unwritten entries with it, uncounted, which is the larger
-    failure. At the ceiling this entry is REJECTED at the tail rather than an
-    older one shed from the head: the queued prefix keeps its order and stays a
-    faithful run of the log, and the loss is that log's tail stopping at a counted
-    point rather than its middle disagreeing with causality. The rejection is
-    counted in :func:`overflow_writes` and named once per session, and the entry's
-    own cleanup still runs so nothing waits on a record that will never land.
-
-    Three jobs are EXEMPT from the ceiling (``_PendingJob.exempt_ceiling``) and can
-    never be refused here: the record that CREATES a session's crew log file, a
-    loss marker, and the job that closes a SUPERSEDED crew log's interrupted tail.
-    All three are O(1) per session, so none is the memory the ceiling bounds -- and
-    refusing the creating record destroys that session's whole log plus every loss
-    marker that would have reported the damage, while refusing a marker discards the
-    account of the very pressure that rejected it. The supersede repair is exempt
-    because the opening entry that queues it is: refusing only the follow-on creates
-    the successor's crew log and abandons the predecessor's open tail, and nothing
-    re-queues a one-shot job for an id that is never resumed.
-    """
-    global _pending_count, _pending_total_bytes, _pending_high_water, _overflow_count
-    overflow = False
-    with _lock:
-        would_count = _pending_count + 1
-        would_bytes = _pending_bytes.get(session_id, 0) + pending.nbytes
-        would_total_bytes = _pending_total_bytes + pending.nbytes
-        if not pending.exempt_ceiling and (
-            would_count > _MAX_PENDING_COUNT
-            or would_bytes > _MAX_PENDING_BYTES
-            or would_total_bytes > _MAX_PENDING_BYTES
-        ):
-            _overflow_count += 1
-            _overflow_by_session[session_id] = _overflow_by_session.get(session_id, 0) + 1
-            _record_loss_locked(session_id, [pending], True)
-            first_overflow = session_id not in _overflow_reported
-            _overflow_reported.add(session_id)
-            overflow_total = _overflow_count
-            overflow = True
-        else:
-            held = _pending.setdefault(session_id, [])
-            held.append(pending)
-            pending.counted = True
-            _pending_bytes[session_id] = would_bytes
-            _pending_count = would_count
-            _pending_total_bytes = would_total_bytes
-            if _pending_count > _pending_high_water:
-                _pending_high_water = _pending_count
-            over = _pending_count >= _PENDING_HIGH_WATER and not _warned_high_water
-            start_writer = not _writer_busy_locked()
-            if start_writer:
-                _mark_draining_locked()
-    if overflow:
-        # The rejected entry never enters the buffer, so nothing will ever run its
-        # after-write cleanup unless it runs here -- release the pin it holds now,
-        # then let the writer keep draining the entries that did fit.
-        if first_overflow:
-            _report_overflow(session_id, overflow_total)
-        # A ceiling rejection is a PERMANENT loss of this entry, exactly like a
-        # spent retry budget in `_drop`, so the tail repair that stood down for a
-        # dropped terminal must be re-queued here too: a terminal handed over for a
-        # superseded crew log carries `_terminal_dropped`, and its loss is the
-        # trigger that re-queues the repair. Skipping it -- and only here, because
-        # `_finish` runs `after` alone -- leaves `_repair_owed` set with nothing to
-        # consume it, so the predecessor's tail stays open for the life of the file,
-        # the very `residual/crash-data-loss-corruption` this repair exists to close.
-        #
-        # TWO constraints pull in opposite directions, and neither ordering of
-        # "finish" and "fire the hook" satisfies both, because `_finish` does two
-        # things at once. `_finish` runs this terminal's `after` = `_closing`'s
-        # `_forget_turn`, which (a) releases the turn's live pin AND (b) pops
-        # `_repair_owed` once no live turn of the session remains.
-        #   * Fire the hook BEFORE `_finish`: the hook re-queues a repair that runs
-        #     on the WRITER thread and can observe this turn's pin still live (our
-        #     `_finish` not yet run), stand down, re-record the debt -- which our
-        #     `_finish` then erases, with no trigger left. (cross-thread race)
-        #   * Fire the hook AFTER `_finish`: `_finish` has already popped the debt,
-        #     so `_terminal_dropped` reads an empty slot and re-queues nothing.
-        # So we do neither blindly. Snapshot the debt BEFORE `_finish` (preserve it
-        # through the cleanup), let `_finish` release the live-turn pin, then re-queue
-        # the repair from the snapshot -- now the pin is gone, so the repair closes
-        # the tail truthfully instead of standing down against our own dying turn.
-        # `_queue_tail_repair` is the one submission site and is guarded, so re-queuing
-        # from the snapshot is exactly what the (now no-op) hook would have done, minus
-        # the stale map read. Other permanent-drop hooks (`settle.fail`,
-        # `_flag_creation_failed`) touch no `_repair_owed` and are fired as-is.
-        with _lock:
-            owed_slot = _repair_owed.get(session_id, "")
-        drop_hook = pending.on_permanent_drop
-        pending.on_permanent_drop = None
-        _finish(pending)
-        if owed_slot:
-            # A crew-log terminal stood a repair down; its pin is released now, so
-            # re-queue the repair directly from the snapshot. `_finish` may already
-            # have popped the debt, so consume the snapshot rather than re-reading.
-            with _lock:
-                _repair_owed.pop(session_id, None)
-            logger.warning(
-                "session log %s: the terminal of superseded crew log %s was REJECTED "
-                "at the pending ceiling, so re-queueing the tail repair that stood "
-                "down for it -- the turn it deferred to has no outcome coming now, "
-                "and its tail would otherwise stay open for the life of the file",
-                owed_slot,
-                session_id,
-            )
-            _queue_tail_repair(session_id, owed_slot)
-        elif drop_hook is not None:
-            # Any other permanent-drop hook (settle failure, creation-failed flag):
-            # unrelated to the repair debt, fired as before.
-            try:
-                drop_hook()
-            except Exception as exc:
-                _report(
-                    f"flagging a permanent drop of {pending.what}",
-                    exc,
-                    op="flag-permanent-drop",
-                )
-        _notify()
+def _hand_over(session_id: str, job: "WriteJob") -> None:
+    """Submit *job* for *session_id*, and settle it here if the ceiling rejected it."""
+    if _writer().submit(session_id, job):
         return
-    if over:
-        _report_high_water()
-    if start_writer:
-        _start_drain()
+    _settle_rejected(session_id, job)
 
 
-def _retain(session_id: str, jobs: "list[_PendingJob]") -> None:
-    """Put a failed batch back at the FRONT of its session's bucket.
+def _settle_rejected(session_id: str, job: "WriteJob") -> None:
+    """Finish a job the writer rejected at its memory ceiling. Never raises.
 
-    The front, and the whole remainder rather than the one job that failed,
-    because the entries after a failure belong AFTER it in the file: writing them
-    while the failed one waits would put this session's log on disk in an order
-    that never happened, which a fold reads as fact. Producers append to the same
-    bucket behind them, so a later write queues behind the retained batch by
-    construction -- there is no second structure for it to overtake.
+    The rejected entry never entered the buffer, so nothing will ever run its cleanup
+    unless it runs here -- release the pin it holds now, and let the writer keep
+    draining the entries that did fit. A ceiling rejection is a PERMANENT loss of this
+    entry, exactly like a spent retry budget, so the tail repair that stood down for a
+    dropped terminal must be re-queued here too: a terminal handed over for a
+    superseded crew log carries :func:`_terminal_dropped`, and its loss is the trigger
+    that re-queues the repair. Skipping it leaves the repair debt set with nothing to
+    consume it, so the predecessor's tail stays open for the life of the file.
 
-    Spending the last attempt drops the batch instead. Nothing else can: entries
-    live in memory until they are written, so a filesystem that never answers
-    would hold them forever and turn every bounded caller into a timeout.
+    TWO constraints pull in opposite directions, and neither ordering of "finish" and
+    "fire the hook" satisfies both, because finishing does two things at once. The
+    terminal's ``after`` is :func:`_closing`'s release, which (a) releases the turn's
+    live pin AND (b) clears the repair debt once no live turn of the session remains.
+
+    * Fire the hook BEFORE finishing: the hook re-queues a repair that runs on the
+      WRITER thread and can observe this turn's pin still live (our finish not yet
+      run), stand down, re-record the debt -- which our finish then erases, with no
+      trigger left. (cross-thread race)
+    * Fire the hook AFTER finishing: finishing has already cleared the debt, so the
+      hook reads an empty slot and re-queues nothing.
+
+    So neither is done blindly. The debt is read BEFORE finishing (preserved through
+    the cleanup), the finish releases the live-turn pin, and the repair is re-queued
+    from that reading -- now the pin is gone, so the repair closes the tail truthfully
+    instead of standing down against our own dying turn. :func:`_queue_tail_repair` is
+    the one submission site and is guarded, so re-queuing from the reading is exactly
+    what the hook would have done, minus the stale read. A job with no debt behind it
+    fires its own drop hook as-is.
     """
-    global _pending_count, _pending_high_water, _pending_total_bytes
-    with _lock:
-        state = _retry.setdefault(session_id, _RetryState())
-        state.attempts += 1
-        spent = state.attempts >= _MAX_WRITE_ATTEMPTS
-        if spent:
-            _retry.pop(session_id, None)
-            start_writer = False
-        else:
-            state.not_before = time.monotonic() + _retry_delay(state.attempts)
-            _pending.setdefault(session_id, [])[:0] = list(jobs)
-            _pending_count += len(jobs)
-            _pending_bytes[session_id] = _pending_bytes.get(session_id, 0) + sum(
-                job.nbytes for job in jobs
-            )
-            # An inline job reaches this without ever passing `_buffer`, so it is
-            # entering the process total for the first time. A claimed job is
-            # already in it and must not be added twice.
-            _pending_total_bytes += sum(job.nbytes for job in jobs if not job.counted)
-            for job in jobs:
-                job.counted = True
-            if _pending_count > _pending_high_water:
-                _pending_high_water = _pending_count
-            start_writer = not _draining_for_shutdown and not _writer_busy_locked()
-            if start_writer:
-                _mark_draining_locked()
-    if start_writer:
-        _start_drain()
-    if spent:
-        _drop(session_id, jobs, mark=True)
-
-
-def _drop(session_id: str, jobs: "list[_PendingJob]", *, mark: bool = False) -> None:
-    """Give up on *jobs* and count them. The one place a record is lost.
-
-    Reported once per session rather than once per batch, so a wedged disk names
-    itself and then stops talking; the recovery is its own single line, written by
-    :func:`_note_progress` when a write for that session lands again. Between the
-    two, :func:`dropped_writes` is the exact count.
-    """
-    global _pending_total_bytes, _dropped_count
-    with _lock:
-        _pending_total_bytes -= sum(job.nbytes for job in jobs if job.counted)
-        for job in jobs:
-            job.counted = False
-        _dropped_count += len(jobs)
-        _record_loss_locked(session_id, jobs, mark)
-        total = _dropped_count
-        first = session_id not in _dropped_reported
-        _dropped_reported.add(session_id)
-    if first:
+    tracker = _tracker_instance
+    owed_slot = tracker.repair_debt(session_id) if tracker is not None else ""
+    if job.after is not None:
+        try:
+            job.after()
+        except Exception as exc:
+            _report(f"finishing {job.what}", exc, op="finish-write")
+    if owed_slot:
+        # A crew-log terminal stood a repair down; its pin is released now, so re-queue
+        # the repair directly from the reading. The finish may already have consumed
+        # the debt, so consume the reading rather than reading again.
+        if tracker is not None:
+            tracker.take_repair_debt(session_id)
         logger.warning(
-            "session log gave up on %d append(s) for session %s after %d failed "
-            "attempts; %d dropped in total. That log's tail is short by them. "
-            "Further losses for this session are logged at debug until one lands",
-            len(jobs),
-            session_id,
-            _MAX_WRITE_ATTEMPTS,
-            total,
-        )
-    else:
-        logger.debug(
-            "session log dropped %d more append(s) for session %s",
-            len(jobs),
+            "session log %s: the terminal of superseded crew log %s was REJECTED "
+            "at the pending ceiling, so re-queueing the tail repair that stood "
+            "down for it -- the turn it deferred to has no outcome coming now, "
+            "and its tail would otherwise stay open for the life of the file",
+            owed_slot,
             session_id,
         )
-    for job in jobs:
-        if job.on_permanent_drop is not None:
-            hook = job.on_permanent_drop
-            job.on_permanent_drop = None
-            try:
-                hook()
-            except Exception as exc:
-                _report(f"flagging a permanent drop of {job.what}", exc, op="flag-permanent-drop")
-        _finish(job)
-    _notify()
+        _queue_tail_repair(session_id, owed_slot)
+    elif job.on_drop is not None:
+        try:
+            job.on_drop()
+        except Exception as exc:
+            _report(f"flagging a permanent drop of {job.what}", exc, op="flag-permanent-drop")
 
 
-def _record_loss_locked(session_id: str, jobs: "list[_PendingJob]", mark: bool) -> None:
-    """Merge lost *jobs* into one per-session marker. ``_lock`` held.
-
-    The marker carries a COUNT and a SIZE, no reason code. The only site that
-    knows a cause cannot separate the ones that differ: ``_permanent`` collapses a
-    malformed entry and an entry refused because another process owns the log into
-    a single boolean. A reason a reader cannot trust is worse than none, so what
-    the marker states is that facts are missing and how many.
-
-    *mark* is False for a loss the log cannot admit anyway -- a process that failed
-    to claim ownership cannot append a marker either -- and a dropped marker's own
-    debt still travels through ``job.loss`` regardless.
-    """
-    if not mark and not any(job.loss is not None for job in jobs):
-        return
-    loss = _pending_loss.setdefault(session_id, _PendingLoss())
-    for job in jobs:
-        if job.loss is not None:
-            loss.merge(job.loss)
-            continue
-        if not mark:
-            continue
-        loss.dropped_count += 1
-        loss.dropped_bytes += max(0, job.nbytes)
-
-
-def _uncount_one_requeued_drop(session_id: str) -> None:
-    """Take one append back out of a loss that has NOT been written yet.
-
-    For the single caller shape this exists for: a permanent-drop hook that submits
-    its job AGAIN. The log is then short by nothing on that job's account, and a
-    marker claiming otherwise would overstate the damage in the one record a reader
-    trusts to say what is missing.
-
-    The correction is safe to make here and nowhere later. A marker is authored by a
-    LATER pass of the one writer thread, and a hook runs inside the pass that
-    recorded the debt, so no reader can have seen the count yet. Only the count
-    moves: a job re-submitted this way carries no body, so the marker's byte total
-    was already exact.
-
-    Debt that falls to nothing is REMOVED rather than left at zero, so a session
-    whose only dropped entry is coming back does not append a marker announcing that
-    nothing is missing.
-    """
-    global _dropped_count
-    with _lock:
-        if _dropped_count > 0:
-            _dropped_count -= 1
-        loss = _pending_loss.get(session_id)
-        if loss is None:
-            return
-        if loss.dropped_count > 0:
-            loss.dropped_count -= 1
-        if loss.dropped_count == 0 and loss.dropped_bytes == 0:
-            _pending_loss.pop(session_id, None)
-
-
-def _owed_loss_markers_locked() -> int:
-    """How many sessions are owed a ``write/dropped`` marker. ``_lock`` held.
-
-    A session's loss debt lives in one of two places and a count that names it has
-    to read both. It sits in :data:`_pending_loss` while no marker job exists for
-    it. Once one is built it TRAVELS IN THE JOB: :func:`_loss_marker_job` takes the
-    debt out of the map to serialize it, and an append that raises hands the job --
-    debt and all -- to :func:`_retain`, which puts it at the front of that
-    session's bucket in :data:`_pending`.
-
-    So a marker waiting to be retried is owed while the map is empty, and reading
-    only the map reports nothing owed at exactly that moment. That moment is not an
-    edge case for a bounded shutdown: a marker whose filesystem is still failing is
-    retained by every attempt the budget allows, and the budget is spent only if
-    enough paced attempts fit inside the caller's timeout.
-
-    Counted per SESSION, because one marker covers a session's whole interval --
-    the same grain the map's own length carries.
-    """
-    owed = set(_pending_loss)
-    owed.update(
-        session_id
-        for session_id, jobs in _pending.items()
-        if any(job.loss is not None for job in jobs)
-    )
-    return len(owed)
-
-
-def _loss_marker_job(session_id: str, loss: _PendingLoss) -> _PendingJob:
-    """Build the marker that must lead this session's next drain."""
-
-    def _job() -> None:
-        # Loss can continue while a retained marker waits. Claim and merge all
-        # debt immediately before serializing it, so one marker names the whole
-        # interval known before this append starts.
-        with _lock:
-            newer = _pending_loss.pop(session_id, None)
-            if newer is not None:
-                loss.merge(newer)
-        log = _handle(session_id)
-        if log is None:
-            return
-        log.append("write/dropped", loss.data(), src=_SRC_GATEWAY)
-
-    return _PendingJob(
-        job=_job,
-        what="appending write/dropped",
-        loss=loss,
-        exempt_ceiling=True,
-    )
-
-
-def _finish(job: _PendingJob) -> None:
-    """Run one append's terminal cleanup once. Never raises."""
-    after = job.after
-    job.after = None
-    if after is None:
-        return
-    try:
-        after()
-    except Exception as exc:
-        _report(f"finishing {job.what}", exc, op="finish-write")
-
-
-def _note_progress(session_id: str) -> None:
-    """An append landed: clear the retry state, and say so if it had been failing.
-
-    Clearing on progress is what makes the retry terminate. The budget counts
-    CONSECUTIVE failed passes, and a reset costs a real append -- so the buffer
-    strictly shrinks between resets and an intermittent failure cannot retry
-    without bound.
-    """
-    with _lock:
-        had_retry = _retry.pop(session_id, None) is not None
-        recovered = session_id in _dropped_reported
-        _dropped_reported.discard(session_id)
-        _overflow_reported.discard(session_id)
-    if recovered:
-        logger.warning(
-            "session log writes for session %s are landing again; the "
-            "write/dropped marker was appended before later entries",
-            session_id,
-        )
-    if had_retry or recovered:
-        _notify()
-
-
-def _mark_draining_locked() -> None:
-    """Claim the next pass. ``_lock`` held.
-
-    The future is cleared HERE rather than left pointing at the previous pass, so
-    :func:`_writer_busy_locked` reports busy for the window before
-    :func:`_start_drain` publishes the new one -- a pass that is about to be
-    submitted is coming, and a stale done-future would read as "nothing coming"
-    and let a second producer submit a duplicate.
-    """
-    global _draining, _drain_future
-    _draining = True
-    _drain_future = None
+def _writer_owes(session_id: str) -> bool:
+    """Whether the installed writer still owes *session_id* anything. Takes no lock here."""
+    writer = _writer_instance
+    return writer is not None and writer.owes(session_id)
 
 
 def _ensure_shutdown_hook() -> None:
@@ -1739,391 +792,25 @@ def _ensure_shutdown_hook() -> None:
     atexit.register(drain_for_shutdown)
 
 
-def _start_drain() -> None:
-    """Ask the writer pool for one drain pass. Never raises."""
-    global _draining, _drain_future
-    _ensure_shutdown_hook()
-    try:
-        future = crew_log_executor().submit(_drain_loop)
-    except Exception as exc:  # pool shut down, or thread creation refused
-        with _lock:
-            _draining = False
-            _drain_future = None
-        _notify()
-        _report("scheduling the crew log writer", exc, op="schedule-writer")
-        return
-    with _lock:
-        # Published so the barriers can tell a pass that is still coming from one
-        # that was CANCELLED by a pool shutdown and will never run.
-        _drain_future = future
-    _notify()
-
-
-def _drain_loop() -> None:
-    """Drain the pending buffers in batches until they are empty. Writer thread.
-
-    The pause before each pass is what makes a batch: a turn emits several entries
-    in a burst, and waiting a fixed moment lets one pass take all of them rather
-    than waking per entry. It is a fixed deadline rather than an adaptive one so
-    the worst case a producer can impose on the file is a constant.
-
-    A session inside its retry backoff is not claimable, so when nothing is
-    claimable this waits exactly as long as the soonest backoff has left rather
-    than spinning on a bucket it may not touch. Loss-only debt receives one marker
-    attempt per drain invocation; debt folded forward by a failed marker waits for
-    the next invocation rather than re-entering this one forever.
-    """
-    global _draining
-    deferred_loss: "set[str]" = set()
-    try:
-        while True:
-            with _lock:
-                loss_owed = any(session_id not in deferred_loss for session_id in _pending_loss)
-                if not _pending and not loss_owed:
-                    _draining = False
-                    idle = True
-                    delay = 0.0
-                else:
-                    idle = False
-                    delay = _next_pass_delay_locked(deferred_loss)
-            if idle:
-                _notify()
-                return
-            if delay:
-                # Interruptible: a shutdown that clamps the backoff sets this so the
-                # pause is recomputed against the new deadline rather than slept out.
-                _wake.wait(delay)
-                _wake.clear()
-            deferred_loss.update(_drain_once(deferred_loss))
-    except BaseException:
-        with _lock:
-            _draining = False
-        _notify()
-        raise
-
-
-def _next_pass_delay_locked(deferred_loss: "set[str] | None" = None) -> float:
-    """How long to wait before the next pass. ``_lock`` held, work is owed.
-
-    The batching pause when a session is claimable now -- skipped once shutdown
-    has asked for quiescence, which is the only thing that pause gives up. Nothing
-    claimable means every owed bucket is inside a backoff or held by an inline
-    write, so the wait is exactly what the soonest of those has left: the writer
-    sleeps instead of spinning, and one wedged crew log paces only its own entries.
-
-    A shutdown does not COLLAPSE the backoff -- burning six attempts in no time at
-    all against a filesystem that needed a moment converts a delay into a guaranteed
-    loss, at the one point where the entries matter most. It CLAMPS it instead, to
-    just inside the drain's own deadline, so a schedule longer than the budget still
-    gets one attempt rather than none. See :func:`_backoff_ready_at_locked`.
-    """
-    now = time.monotonic()
-    soonest: float | None = None
-    deferred_loss = deferred_loss or set()
-    session_ids = list(_pending)
-    session_ids.extend(
-        session_id
-        for session_id in _pending_loss
-        if session_id not in _pending and session_id not in deferred_loss
-    )
-    for session_id in session_ids:
-        jobs = _pending.get(session_id)
-        if not jobs and session_id not in _pending_loss:
-            continue
-        if _claimable_locked(session_id, now):
-            return 0.0 if _draining_for_shutdown else _BATCH_DEADLINE_SECONDS
-        state = _retry.get(session_id)
-        if state is None:
-            continue  # held by an inline write rather than by a backoff
-        ready_at = _backoff_ready_at_locked(state)
-        if soonest is None or ready_at < soonest:
-            soonest = ready_at
-    if soonest is None:
-        return _BATCH_DEADLINE_SECONDS
-    return max(0.0, soonest - now)
-
-
-def _claimable_locked(session_id: str, now: float) -> bool:
-    """Whether the writer may take this session's bucket. ``_lock`` held.
-
-    Two reasons to leave it alone. Its retained batch is inside its backoff, and
-    claiming early would burn an attempt against a filesystem that has not been
-    given time to recover. Or a synchronous caller is writing inline for it, and
-    claiming beside that is the reordering the inline gate exists to prevent.
-
-    A bounded shutdown CLAMPS the first reason without waiving it -- see
-    :func:`_backoff_ready_at_locked`.
-    """
-    if session_id in _inline:
-        return False
-    state = _retry.get(session_id)
-    return state is None or _backoff_ready_at_locked(state) <= now
-
-
-def _backoff_ready_at_locked(state: "_RetryState") -> float:
-    """When this retained batch may next be attempted. ``_lock`` held.
-
-    Its own schedule, except that a bounded shutdown drain pulls a time BEYOND the
-    deadline back to just inside it. Waiting out a backoff that outlasts the process
-    does not defer the write, it loses it -- and these are the last entries each
-    session produced.
-
-    Clamped rather than collapsed. Zeroing the schedule would spend every remaining
-    attempt in microseconds against a filesystem that needed a moment, converting a
-    delay into a guaranteed drop at exactly the wrong time.
-
-    The budget is divided into one slice per attempt, and attempt N is allowed at
-    ``started + N * slice``. Waiting until the deadline would leave room for a single
-    attempt; a slice each leaves room for all of them, which is strictly better for
-    the case the backoff exists for -- several chances spread across the budget beat
-    one chance at its last moment. The instants are ABSOLUTE for a reason: a rolling
-    ``now + slice`` recomputes into the future on every check and the batch would
-    never become claimable at all.
-    """
-    if not _draining_for_shutdown or _shutdown_deadline <= 0.0:
-        return state.not_before
-    budget = _shutdown_deadline - _shutdown_started
-    if budget <= 0.0:
-        return _shutdown_started
-    slice_secs = max(_MIN_SHUTDOWN_RETRY_GAP, budget / _MAX_WRITE_ATTEMPTS)
-    return min(state.not_before, _shutdown_started + state.attempts * slice_secs)
-
-
-def _drain_once(deferred_loss: "set[str] | None" = None) -> "set[str]":
-    """Write every claimable session's owed entries, in per-session order.
-
-    Returns loss-only sessions whose marker was attempted but is still owed. The
-    caller defers those until its next drain so a permanently failing marker cannot
-    re-enter the same pass forever.
-    """
-    global _pending_count
-    now = time.monotonic()
-    deferred_loss = deferred_loss or set()
-    with _lock:
-        claimed: "list[tuple[str, list[_PendingJob]]]" = []
-        session_ids = list(_pending)
-        session_ids.extend(
-            session_id
-            for session_id in _pending_loss
-            if session_id not in _pending and session_id not in deferred_loss
-        )
-        for session_id in session_ids:
-            if not _claimable_locked(session_id, now):
-                continue
-            jobs = _pending.pop(session_id, [])
-            _pending_count -= len(jobs)
-            _pending_bytes.pop(session_id, None)
-            loss = _pending_loss.pop(session_id, None)
-            if loss is not None:
-                if jobs and jobs[0].loss is not None:
-                    jobs[0].loss.merge(loss)
-                else:
-                    jobs.insert(0, _loss_marker_job(session_id, loss))
-            claimed.append((session_id, jobs))
-            _claimed_sessions[session_id] = _claimed_sessions.get(session_id, 0) + len(jobs)
-    defer_until_next_drain: "set[str]" = set()
-    for session_id, jobs in claimed:
-        marker_attempted = bool(jobs and jobs[0].loss is not None)
-        marker_landed = _write_batch(session_id, jobs)
-        if marker_attempted and not marker_landed:
-            with _lock:
-                if session_id in _pending_loss and session_id not in _pending:
-                    defer_until_next_drain.add(session_id)
-    _notify()
-    return defer_until_next_drain
-
-
-def _write_batch(session_id: str, jobs: "list[_PendingJob]") -> bool:
-    """Write one session's owed entries in order, stopping at the first FAILURE.
-
-    Stopping rather than skipping ahead: the entries after a failed append belong
-    after it in the file, so the remainder -- the failed entry and everything
-    behind it -- goes to :func:`_retain`, which puts it back at the front of this
-    session's bucket. Writing past it would put the log on disk in an order that
-    never happened, which a fold reads as fact.
-
-    A REFUSAL is different and the pass continues past it. A refused entry leaves
-    the file byte-identical and will be refused again, so it is simply gone -- and
-    the entries behind it would be waiting for something that is never going to
-    land.
-
-    A pass that wrote something before it failed calls :func:`_note_progress`
-    first, so the attempt budget starts over. That is what makes the retry
-    terminate: the budget bounds a WEDGED writer, and a pass that shortened the
-    buffer is not wedged.
-
-    Returns whether this batch's loss marker landed, so a failed marker can be
-    deferred without also deferring new loss created after a successful marker.
-    """
-    global _pending_total_bytes
-    landed = False
-    loss_marker_landed = False
-    # Each job releases its own claim as it is ATTEMPTED, so a job asking
-    # what its session still owes is never told to wait for itself, and
-    # whatever this pass does not reach is released on the way out --
-    # retained, dropped-and-marked or requeued by then, and countable there.
-    unattempted = len(jobs)
-    # One notification per pass, on whichever way this returns. The four exits
-    # each mean something different to the buffer and nothing different to a
-    # reader, whose only question is whether there is anything new on disk -- so
-    # the signal belongs where every exit passes through rather than repeated at
-    # each of them, where an exit added later would silently miss it.
-    try:
-        for index, job in enumerate(jobs):
-            unattempted -= 1
-            _release_claim(session_id, 1)
-            if job.loss is None:
-                with _lock:
-                    loss_waiting = session_id in _pending_loss
-                if loss_waiting:
-                    if landed:
-                        _note_progress(session_id)
-                    _retain_without_failure(session_id, jobs[index:])
-                    return loss_marker_landed
-            failure = _run_job(job.job, job.what)
-            if failure is None:
-                with _lock:
-                    if job.counted:
-                        _pending_total_bytes -= job.nbytes
-                        job.counted = False
-                _finish(job)
-                landed = True
-                loss_marker_landed = loss_marker_landed or job.loss is not None
-                continue
-            if _permanent(failure):
-                if job.loss is not None:
-                    _drop(session_id, jobs[index:], mark=True)
-                    return False
-                # A permanent refusal owes a marker like any other loss.
-                # `_permanent` cannot split a CrewLogError into its two causes -- a
-                # malformed entry the format rejected, or a well-formed entry
-                # refused because another process owns this log -- and the second
-                # is a genuine hole. Marking unconditionally is what makes the
-                # distinction unnecessary.
-                _drop(session_id, [job], mark=True)
-                continue
-            if landed:
-                _note_progress(session_id)
-            _retain(session_id, jobs[index:])
-            return loss_marker_landed
-        _note_progress(session_id)
-        return loss_marker_landed
-    finally:
-        # The release goes first so this pass finishes its own bookkeeping before
-        # handing the thread to a listener, which `_notify_growth` calls inline.
-        # The order is not load-bearing today: whatever this pass did not reach is
-        # in `_pending` or `_pending_loss` by the time it returns, and
-        # `_owes_entries` reads those too, so a listener asking what the session
-        # owes gets the same answer either way. It is the order that stays correct
-        # if a listener ever reads the claim count itself.
-        _release_claim(session_id, unattempted)
-        if landed:
-            _notify_growth(session_id)
-
-
-def _retain_without_failure(session_id: str, jobs: "list[_PendingJob]") -> None:
-    """Put *jobs* back at the head without spending their retry budget."""
-    global _pending_count, _pending_high_water, _pending_total_bytes
-    with _lock:
-        _pending.setdefault(session_id, [])[:0] = list(jobs)
-        _pending_count += len(jobs)
-        _pending_total_bytes += sum(job.nbytes for job in jobs if not job.counted)
-        for job in jobs:
-            job.counted = True
-        _pending_bytes[session_id] = _pending_bytes.get(session_id, 0) + sum(
-            job.nbytes for job in jobs
-        )
-        if _pending_count > _pending_high_water:
-            _pending_high_water = _pending_count
-
-
-def _report_high_water() -> None:
-    """Report the buffer growing past its mark once, then stay quiet."""
-    global _warned_high_water
-    with _lock:
-        first = not _warned_high_water
-        _warned_high_water = True
-        held = _pending_count
-    if first:
-        logger.warning(
-            "session log has %d appends buffered, past the %d mark: the writer "
-            "is not keeping up and the backlog is held in memory rather than "
-            "dropped; further growth is not reported",
-            held,
-            _PENDING_HIGH_WATER,
-        )
-
-
-def _report_overflow(session_id: str, total: int) -> None:
-    """Name a session's first buffer overflow once, at error level.
-
-    Called with the first rejection for a session; later rejections for it stay
-    silent until an append lands, which clears the flag through
-    :func:`_note_progress`. Error level rather than warning because a rejected
-    lifecycle record is a real hole in that log, not the mere memory pressure the
-    high-water mark reports.
-    """
-    logger.error(
-        "session log buffer full for session %s: the writer is too far behind "
-        "to hold more, so its newest appends are being rejected and counted; %d "
-        "rejected in total. That log's tail is short by them until writes catch "
-        "up. Further overflow for this session is not reported until one lands",
-        session_id,
-        total,
-    )
-
-
-def _drain_inline_until(deadline: float) -> bool:
-    """Write buffered entries from THIS thread until quiet or *deadline*.
-
-    Used only by :func:`drain_for_shutdown`, and only when no writer batch is
-    claimed, so there is no second appender to race.
-
-    Retries a batch that is inside its retry backoff, because the schedule cannot
-    outlive the process: honouring it here means the entries are never written at
-    all. But the attempts are PACED across the remaining budget rather than spent
-    at once -- a batch has a small, fixed number of attempts before it is dropped,
-    and burning them in microseconds would turn a filesystem that needed a moment
-    into a permanent hole. So each pass is followed by a wait sized to leave one
-    attempt per slice of what is left.
-
-    Returns True when the buffers reached empty with nothing in flight.
-    """
-    deferred_loss: "set[str]" = set()
-    while True:
-        deferred_loss.update(_drain_once(deferred_loss))
-        if _quiet():
-            return True
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        with _lock:
-            owed = bool(_pending) or any(
-                session_id not in deferred_loss for session_id in _pending_loss
-            )
-        if not owed:
-            # Nothing left to attempt; anything short is a claimed batch or a
-            # marker deferred to the next drain, neither of which this pass may
-            # touch again.
-            return _quiet()
-        time.sleep(min(remaining, max(_MIN_SHUTDOWN_RETRY_GAP, remaining / _MAX_WRITE_ATTEMPTS)))
-
-
 def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     """Write out everything buffered, then let the eager folder finish what it was handed.
 
-    Returns what :func:`_drain_writer_for_shutdown` returns -- whether the LOG is
-    complete, which is the record. The fold step after it is part of the quiescence
-    barrier and not of that answer: the eager folder runs on its own thread and writes
-    savepoints into the data home, so a caller that tears the home down (a test's temp
-    directory, a gateway exiting) right after this call would otherwise race a fold still
-    reading or writing there. It is waited for within what is left of *timeout*, with a
-    short floor so a writer that spent the whole budget does not skip it entirely, and
-    only when that module is loaded -- a process that never folded eagerly pays nothing.
-    A fold that does not settle in time costs a savepoint, never an entry.
+    Returns whether the LOG is complete, which is the record:
+    :meth:`~kiro_crew.crew_log.writer.CrewLogWriter.drain_for_shutdown` is the writer's
+    bounded quiescence barrier, and it names what it could not write. A process that
+    never wrote has no writer and nothing to drain. The fold step after it is part of
+    the quiescence barrier and not of that answer: the eager folder runs on its own
+    thread and writes savepoints into the data home, so a caller that tears the home
+    down (a test's temp directory, a gateway exiting) right after this call would
+    otherwise race a fold still reading or writing there. It is waited for within what
+    is left of *timeout*, with a short floor so a writer that spent the whole budget
+    does not skip it entirely, and only when that module is loaded -- a process that
+    never folded eagerly pays nothing. A fold that does not settle in time costs a
+    savepoint, never an entry.
     """
     started = time.monotonic()
-    drained = _drain_writer_for_shutdown(timeout)
+    writer = _writer_instance
+    drained = True if writer is None else writer.drain_for_shutdown(timeout).drained
     eager = sys.modules.get("kiro_crew.crew_log.eager")
     settle = getattr(eager, "drain", None)
     if settle is not None:
@@ -2144,112 +831,6 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
 _EAGER_SETTLE_FLOOR_SECONDS: Final[float] = 1.0
 
 
-def _drain_writer_for_shutdown(timeout: float) -> bool:
-    """Write out everything buffered, then stop accepting batching pauses.
-
-    The quiescence barrier a restart needs: entries live in memory until the
-    writer takes them, so a process that exits without this loses whatever had
-    not been written yet -- exactly the records a crash-time log is wanted for.
-
-    Blocking here is correct where blocking a producer is not: this runs on the
-    shutdown path, which has nothing left to keep responsive. Bounded all the
-    same, so a wedged filesystem delays exit by *timeout* rather than hanging it.
-    Returns True when the buffers reached empty AND no batch is still in flight.
-
-    Both conditions, because a claimed batch is not in ``_pending`` any more: the
-    writer takes a batch out of the buffer before it writes it, so an empty buffer
-    on its own says nothing about whether those entries reached the file. Reporting
-    drained there is the worst available answer -- the caller exits believing the
-    record is complete, and the entries in that batch are the last thing each
-    session did.
-
-    The inline fallback runs at most one pass, and only when NO writer batch is
-    claimed. Two threads appending to one file is not merely a race for the lock:
-    ``flock`` serializes the writes but does not order them, so the batch claimed
-    second can reach the file first and a ``turn/started`` can land at a lower seq
-    than the ``session/opened`` before it. A log whose seq disagrees with causality
-    is worse than a short one, because a fold cannot detect it. The timed wait above
-    already waits on ``not _draining``, so reaching the fallback with a batch still
-    claimed means the writer is wedged holding it -- and then the only safe answer is
-    to write nothing.
-
-    Residual, in two shapes. A batch the wedged writer holds cannot be finished from
-    this thread. And when that batch is still claimed, the entries buffered BEHIND it
-    are left alone too, so they are lost at exit rather than written out of order. A
-    False return means exactly that: the log's tail is short, and the warning says
-    how short.
-
-    A retained batch is retried rather than waited out. Its backoff is a schedule in
-    seconds and this process is leaving, so honouring it here does not defer the
-    write, it loses it. :func:`_drain_inline_until` therefore claims a batch inside
-    its backoff -- but PACES the attempts across the remaining budget, because a
-    batch has few attempts before it is dropped and spending them in microseconds
-    turns a filesystem that needed a moment into a permanent hole. What bounds this
-    path is still *timeout*; a batch still owed when it expires is reported by the
-    warning, and one that ran out of attempts is counted in :func:`dropped_writes`.
-    """
-    global _draining_for_shutdown, _shutdown_deadline, _shutdown_started
-    with _lock:
-        _draining_for_shutdown = True
-        _shutdown_started = time.monotonic()
-        # Published before anything is claimed, so the writer thread's own pass
-        # sees the same deadline this call will give up at.
-        _shutdown_deadline = _shutdown_started + timeout
-        pending = bool(_pending or _pending_loss)
-        running = _writer_busy_locked()
-    # Outside the lock, and BEFORE the wait below: a writer already parked for the
-    # length of a retry backoff has to recompute that pause against the deadline,
-    # or the clamp above changes a value nothing rereads.
-    _wake.set()
-    if not pending and not running:
-        return True
-    try:
-        if not running:
-            # Nothing is in flight, so this thread may write without racing anyone --
-            # and it does, rather than asking the pool for a pass. The pool is routinely
-            # already GONE by the time this runs (the executor's own exit hook runs
-            # first), and asking would then build a fresh one during interpreter
-            # shutdown: new non-daemon threads, plus an ``atexit`` registered while
-            # ``atexit`` is already draining. Writing here is what the promise "the drain
-            # finishes the work in its own thread instead of losing it" actually means.
-            drained = _drain_inline_until(time.monotonic() + timeout)
-        else:
-            with _drained:
-                drained = _drained.wait_for(_quiet, timeout=timeout)
-    except Exception as exc:
-        _report("draining the session log for shutdown", exc, op="shutdown-drain")
-        drained = False
-    if not drained:
-        with _lock:
-            # Re-read under the lock: the wait may have failed on either condition,
-            # and only one of them permits an inline write.
-            claimed = _writer_busy_locked()
-        if not claimed:
-            # The writer is gone rather than mid-batch, so nothing else will touch
-            # the file. Finish what is still buffered here instead of losing it.
-            # A short second budget: the first wait already spent *timeout*, and
-            # exit cannot be delayed twice over for the same batch.
-            try:
-                drained = _drain_inline_until(time.monotonic() + _SECOND_CHANCE_DRAIN_SECONDS)
-            except Exception as exc:
-                _report("draining the session log for shutdown", exc, op="shutdown-drain")
-                drained = False
-    if not drained:
-        with _lock:
-            held = _pending_count
-            loss_markers = _owed_loss_markers_locked()
-            running = _writer_busy_locked()
-        logger.warning(
-            "session log did not finish writing within %.1fs of shutdown; "
-            "%d append(s) buffered, %d loss marker(s) owed, batch in flight=%s",
-            timeout,
-            held,
-            loss_markers,
-            running,
-        )
-    return drained
-
-
 def live_turn(session_id: str) -> int:
     """The ordinal of *session_id*'s running turn, or 0 when none is running.
 
@@ -2268,145 +849,15 @@ def live_turn(session_id: str) -> int:
     caller must treat it as "no running turn" and record the fact it actually has
     -- not stamp 0 on an entry.
     """
-    if not session_id:
+    tracker = _tracker_instance
+    if not session_id or tracker is None:
         return 0
-    with _lock:
-        return max((turn for (sid, turn) in _live if sid == session_id), default=0)
-
-
-def _pin(session_id: str, turn: int) -> None:
-    """Open the live-turn record for *turn*. Caller's thread.
-
-    Idempotent on purpose: a second start for the same turn keeps the record it
-    already has, because resetting the step counter is the corruption this state
-    exists to prevent.
-    """
-    if not session_id:
-        return
-    with _lock:
-        _live_state(session_id, turn)
-
-
-def _live_state(session_id: str, turn: int) -> "_LiveTurn":
-    """The live record for one turn, created on first use. ``_lock`` held.
-
-    Creating on first use covers the turn whose start was never recorded -- the
-    flag turned on mid-turn -- so its tool calls still number consistently. The
-    record is released by that turn's end or its session closing, exactly like
-    one opened by a start.
-    """
-    key = (session_id, int(turn))
-    state = _live.get(key)
-    if state is None:
-        state = _LiveTurn()
-        _live[key] = state
-        _pinned[session_id] = _pinned.get(session_id, 0) + 1
-        # Not trimmed by pressure from other turns: every record here belongs to
-        # a turn that is still running, and dropping one corrupts that turn's
-        # numbering. The ceiling below sheds only records whose terminal is
-        # already queued, and accepts an overage of genuinely live turns rather
-        # than evicting one -- a leak alarm, not a cache policy.
-        if len(_live) > _MAX_LIVE_TURNS:
-            _drop_oldest_live()
-    return state
-
-
-def _drop_oldest_live() -> None:
-    """Shed non-live records once the ceiling is hit; never a live turn. ``_lock`` held.
-
-    A record whose terminal event has already been handed to the writer
-    (``closer_owed``) is not live: its turn is over, no further event mints into
-    it, and its numbering cannot restart. Those are the records shed here, oldest
-    first, so the cap reclaims the residue a leak would otherwise pile up.
-
-    A live turn is NEVER evicted. Evicting one drops its step/call_index counters,
-    and its next event re-creates a fresh record at step 0/call_index 0 -- two
-    entries then claim one ordinal, which is corruption a fold reads as fact in a
-    file that is never rewritten. A bounded structure over its cap is recoverable;
-    a duplicated ordinal is not. So when nothing non-live is left to shed, the
-    overage is ACCEPTED and reported once rather than acted on: reaching the
-    ceiling with every record live means that many turns are genuinely in flight,
-    and letting the map exceed the cap is the smaller failure.
-    """
-    global _live_overage_reported
-    shed = 0
-    for key in [k for k, state in _live.items() if state.closer_owed]:
-        if len(_live) <= _MAX_LIVE_TURNS:
-            break
-        old_session, _old_turn = key
-        _live.pop(key, None)
-        remaining = _pinned.get(old_session, 0) - 1
-        if remaining > 0:
-            _pinned[old_session] = remaining
-        else:
-            _pinned.pop(old_session, None)
-        shed += 1
-    if shed:
-        logger.error(
-            "session log is tracking more than %d turns in flight and shed %d "
-            "closed-but-undrained record(s): turns are ending without their "
-            "terminal event landing",
-            _MAX_LIVE_TURNS,
-            shed,
-        )
-    if len(_live) > _MAX_LIVE_TURNS:
-        if not _live_overage_reported:
-            _live_overage_reported = True
-            logger.error(
-                "session log is tracking %d turns in flight, over the %d "
-                "ceiling, and every record is a turn still running -- accepting "
-                "the overage rather than evicting a live turn and restarting its "
-                "numbering",
-                len(_live),
-                _MAX_LIVE_TURNS,
-            )
-
-
-def _release_session_live(session_id: str) -> None:
-    """Close every live-turn record of one session. Used by a fresh claim.
-
-    A record whose terminal event is already queued is LEFT ALONE. Its pin is
-    owed to the write job that will release it, and taking it back here lets
-    capacity eviction drop the handle -- and the lease with it -- while the file
-    still shows that turn open, so a successor process repairs a turn whose real
-    completion is still on its way to disk. That is the two-outcomes-for-one-turn
-    hazard, one process removed. A record with no terminal handed over is what
-    this release is for: nothing else will ever close it.
-    """
-    if not session_id:
-        return
-    with _lock:
-        for key in [k for k in _live if k[0] == session_id]:
-            state = _live.get(key)
-            if state is not None and state.closer_owed:
-                continue
-            _release_live(*key)
-
-
-def _release_live(session_id: str, turn: int) -> None:
-    """Drop one turn's live record. ``_lock`` held."""
-    global _live_overage_reported
-    if _live.pop((session_id, int(turn)), None) is None:
-        return
-    # The turn is gone, so its settled-tool markers can go too: a later frame for
-    # one of its calls can only be a duplicate of a closer already written, and the
-    # turn's own state is what a duplicate would have keyed on. Pruning here keeps
-    # ``_settled_tools`` on the same lifecycle as ``_tool_started`` rather than
-    # relying on the bound alone.
-    for key in [k for k, t in _settled_tools.items() if k[0] == session_id and t == int(turn)]:
-        _settled_tools.pop(key, None)
-    remaining = _pinned.get(session_id, 0) - 1
-    if remaining > 0:
-        _pinned[session_id] = remaining
-    else:
-        _pinned.pop(session_id, None)
-    if _live_overage_reported and len(_live) <= _MAX_LIVE_TURNS:
-        _live_overage_reported = False
+    return tracker.live_turn(session_id)
 
 
 def _bound_open() -> None:
-    """Trim the handle cache. See :func:`_bound_unpinned` for the rule."""
-    _bound_unpinned(_open, _MAX_OPEN_CREW_LOGS, lambda k: k, "open handles")
+    """Trim the handle cache. ``_lock`` held. See :meth:`TurnTracker.trim` for the rule."""
+    _tracker().trim(_open, _MAX_OPEN_CREW_LOGS, lambda k: k, "open handles")
 
 
 def _remember(session_id: str, log: CrewLog) -> None:
@@ -2419,6 +870,8 @@ def _remember(session_id: str, log: CrewLog) -> None:
 def _handle(session_id: str) -> Any:
     """An open crew log for *session_id*, or None when it has none. Never creates one.
 
+    The writer's ``open_unit`` adapter, and the handle every job here appends through.
+
     None means exactly one thing: this session has no crew log file AND its creation
     was never attempted (feature off, never opened), so an event for it is
     deliberately not written rather than starting a crew log with no header. That is
@@ -2430,7 +883,7 @@ def _handle(session_id: str) -> Any:
     counted instead of vanishing as a silent no-op.
 
     A FAILURE to reopen is different and is allowed to propagate. This runs inside
-    a queued job, so the exception reaches :func:`_run_job` and the entry is
+    a queued job, so the exception reaches the writer and the entry is
     retained and retried like any other failed append -- where returning None would
     make the job succeed with nothing written, and the entry would vanish with no
     retry and no entry in :func:`dropped_writes`. That is the same silent hole the
@@ -2454,8 +907,8 @@ def _handle(session_id: str) -> Any:
             # The file-creating record died permanently, so this session's crew log
             # will never exist -- but it was OPENED, so its later entries are a real
             # loss, not the silent no-op an unopened session gets. Raise a refusal
-            # rather than return None: the exception reaches _run_job, _permanent is
-            # true (a CrewLogError is never retried), and the entry is dropped AND
+            # rather than return None: the exception reaches the writer, which reads a
+            # CrewLogError as a refusal (never retried), and the entry is dropped AND
             # counted in dropped_writes, with a write/dropped marker owed, instead
             # of vanishing uncounted.
             raise _crew_log().CrewLogError(
@@ -2470,138 +923,6 @@ def _handle(session_id: str) -> Any:
     log = _crew_log().CrewLog.open(_KIND, session_id)
     _remember(session_id, log)
     return log
-
-
-def _bound_unpinned(
-    store: "OrderedDict[Any, Any]",
-    limit: int,
-    session_of: Callable[[Any], str],
-    what: str,
-) -> None:
-    """Trim *store* to *limit*, never dropping an entry of a live turn.
-
-    Called with ``_lock`` held. Every map in this module is state CORRELATED TO a
-    turn, and the rule is the same for all of them: an entry is released by an
-    event of its OWN turn -- ``turn/completed``, or the session closing -- never by
-    pressure from other sessions. Evicting mid-turn is what turns a bounded cache
-    into a correctness bug rather than a performance one: a dropped handle sends
-    the next emit back through ``open``, and a dropped step ordinal restarts the
-    numbering so two calls in one turn claim the same position.
-
-    When every entry belongs to a live turn the store is allowed to exceed
-    *limit*. That is the honest trade: the cap exists so UPTIME cannot grow a map
-    without limit, and each entry is released by its own turn's event, so the
-    overshoot is bounded by concurrent live turns instead.
-    """
-    if len(store) <= limit:
-        return
-    for key in list(store):
-        if len(store) <= limit:
-            break
-        if session_of(key) not in _pinned:
-            store.pop(key, None)
-    if len(store) > limit:
-        logger.debug(
-            "session log %s holds %d entries, over the %d cap: every one "
-            "belongs to a turn in flight",
-            what,
-            len(store),
-            limit,
-        )
-
-
-def _bound_settled_tools() -> None:
-    """Trim ``_settled_tools`` to its cap, OLDEST first. Called with ``_lock`` held.
-
-    This map is the one exception to :func:`_bound_unpinned`'s never-evict-a-live-turn
-    rule, and what an entry MEANS is why. Every other map holds state a later event of
-    the same turn has to read back -- a handle, a step ordinal, an open call's start
-    time -- so evicting one mid-turn corrupts that turn's own record, which is why the
-    shared rule lets a store overshoot instead. A settle marker carries only "a closer
-    for this id is already written", and the frames it suppresses come from two parsers
-    reading the SAME terminal frame, so a duplicate arrives beside its original. The
-    youngest markers are therefore the ones doing the work and the oldest are the ones
-    worth spending. Under the shared rule the map would instead grow for the whole of
-    any turn that makes more calls than the cap, since the turn stays pinned and no
-    marker is popped until it ends -- unlike ``_tool_started``, whose entries are popped
-    by each call's own completion. The cost of a dropped marker is bounded and visible:
-    at worst a second ``tool/completed`` for a call whose duplicate frame arrives after
-    the cap's worth of later calls have settled.
-    """
-    dropped = 0
-    while len(_settled_tools) > _MAX_PENDING_TOOLS:
-        _settled_tools.popitem(last=False)
-        dropped += 1
-    if dropped:
-        logger.debug(
-            "session log dropped %d settled tool marker(s) at the %d cap: a "
-            "duplicate terminal frame for one of them would write a second closer",
-            dropped,
-            _MAX_PENDING_TOOLS,
-        )
-
-
-def _mint_call_index(session_id: str, turn: int) -> int:
-    """The next TOOL-CALL ordinal inside *turn*. Caller's thread.
-
-    Numbers the tool calls of one turn in the order the runner made them, so a
-    reader can order them without comparing seq -- and can tell two calls of the
-    same tool apart when their ids are opaque. A model call may issue several
-    tools at once, so its ``step`` cannot order them and this counter is not
-    redundant with it. The counter is the turn's own state, so no pressure from
-    other sessions can reset it and hand two calls the same ordinal.
-    """
-    with _lock:
-        state = _live_state(session_id, turn)
-        state.call_index += 1
-        return state.call_index
-
-
-def _mint_step(session_id: str, turn: int) -> int:
-    """The next MODEL-CALL ordinal inside *turn*. Caller's thread."""
-    with _lock:
-        state = _live_state(session_id, turn)
-        state.step += 1
-        return state.step
-
-
-def _current_step(session_id: str, turn: int) -> int:
-    """Which model call *turn* is inside right now, or 0 before the first.
-
-    Reads without minting: every entry produced during a model call names that
-    call, and only :func:`on_step_started` may advance it. Zero means no step has
-    been announced -- the flag came on mid-turn, or a call site that does not
-    track steps produced the entry -- and the entry then omits ``step`` rather
-    than claiming to belong to a model call nobody observed.
-    """
-    if not session_id:
-        return 0
-    with _lock:
-        state = _live.get((session_id, int(turn)))
-        return 0 if state is None else state.step
-
-
-def _next_attempt(session_id: str, turn: int) -> int:
-    """Which try this is at *turn*, counting from 1. WRITER thread only.
-
-    Called from inside a queued job, never on the caller's thread: the resume
-    seed is an earlier job on the same session, so running here is what orders
-    this read behind it.
-
-    A regenerate or a rewind reruns a turn the ordinal already names. Without a
-    discriminator the two starts are identical lines, so a fold cannot tell a
-    retry from a duplicate write, and `(turn, attempt)` is the identity it groups
-    on. Derived HERE rather than asked of the call sites: `chat_regenerate` and
-    `chat_rewind` are two of several rerun paths, and a field only the audited
-    ones supply is a field a reader cannot trust.
-    """
-    with _lock:
-        seen = _attempts.setdefault(session_id, {})
-        attempt = seen.get(int(turn), 0) + 1
-        seen[int(turn)] = attempt
-        _attempts.move_to_end(session_id)
-        _bound_unpinned(_attempts, _MAX_OPEN_CREW_LOGS, lambda k: k, "turn attempts")
-        return attempt
 
 
 def _seed_attempts(session_id: str, log: CrewLog) -> None:
@@ -2638,15 +959,7 @@ def _seed_attempts(session_id: str, log: CrewLog) -> None:
     except Exception as exc:
         _report("seeding turn attempts", exc, op="seed-turn-attempts")
         return
-    if not highest:
-        return
-    with _lock:
-        seen = _attempts.setdefault(session_id, {})
-        for turn, attempt in highest.items():
-            if attempt > seen.get(turn, 0):
-                seen[turn] = attempt
-        _attempts.move_to_end(session_id)
-        _bound_unpinned(_attempts, _MAX_OPEN_CREW_LOGS, lambda k: k, "turn attempts")
+    _tracker().seed_attempts(session_id, highest)
 
 
 def close_open_tool_calls(
@@ -2689,43 +1002,24 @@ def close_open_tool_calls(
     """
     if not session_id or not enabled():
         return 0
-    with _lock:
-        # Filtered on the turn as well as the session. A transient can leave a call
-        # open and the same session then runs another turn, so selecting every open
-        # call here would close the earlier turn's call under THIS turn's ordinal --
-        # a tool attributed to a turn that never used it. The earlier turn's own
-        # closer already ran, and a call still open past it is the interrupted-turn
-        # repair's job, which works from the file rather than from memory.
-        stale = [
-            (call_id, _tool_started.pop((sid, call_id)))
-            for (sid, call_id), started in list(_tool_started.items())
-            if sid == session_id and started[5] == int(turn)
-        ]
-        # The sweep IS this call's closer, so mark each one settled: a terminal
-        # frame arriving after the sweep closed the call must not write a second
-        # ``tool/completed``. Same settle-once rule as ``on_tool_completed``, so a
-        # late duplicate is dropped there once its id is in this set.
-        for call_id, _ in stale:
-            _settled_tools[(session_id, call_id)] = int(turn)
-            _settled_tools.move_to_end((session_id, call_id))
-        if stale:
-            _bound_settled_tools()
+    # The sweep IS each call's closer, so the tracker marks each one settled: a
+    # terminal frame arriving after the sweep closed the call must not write a second
+    # ``tool/completed`` -- the same settle-once rule ``on_tool_completed`` applies.
     closed = 0
-    for call_id, started in stale:
-        began, name, server, call_index, step, _ = started
+    for call in _tracker().sweep_open_calls(session_id, turn):
         data: dict[str, Any] = {
             "turn": int(turn),
-            "call_id": call_id,
-            "name": name,
-            "server": server,
+            "call_id": call.call_id,
+            "name": call.name,
+            "server": call.server,
             "status": status,
             "result_bytes": 0,
         }
-        if call_index:
-            data["call_index"] = call_index
-        if step:
-            data["step"] = step
-        data["elapsed_ms"] = max(0, int((time.monotonic() - began) * 1000))
+        if call.call_index:
+            data["call_index"] = call.call_index
+        if call.step:
+            data["step"] = call.step
+        data["elapsed_ms"] = call.elapsed_ms
         if is_error is not None:
             data["is_error"] = bool(is_error)
         _write(session_id, "tool/completed", data)
@@ -2733,44 +1027,26 @@ def close_open_tool_calls(
     return closed
 
 
-def _forget_turn(session_id: str, turn: int) -> None:
-    # Runs when the terminal RESOLVES, written or dropped alike, which is also when a
-    # repair that stood down for this turn stops being owed anything. A drop has
-    # already re-queued it and taken the record by now -- its hook runs ahead of this
-    # -- so what this clears is the LANDED case, where the tail closed truthfully and
-    # the debt is simply paid. Without it the record would outlive every successful
-    # terminal and the map would grow once per supersede for the life of the process.
-    #
-    # But the debt is keyed by SESSION, not by turn, and a session can hold several
-    # live turns at once (a nested turn pins its own record while its parent's is
-    # still open). The stand-down was recorded because SOME live turn made closing
-    # the predecessor's tail unsafe, and it stays unsafe while ANY live turn of this
-    # session remains -- each still-running turn is producing entries the fold would
-    # be told finished. So the debt is paid only once this session has no live turn
-    # left: clearing it on the first terminal to land would let a LATER live turn's
-    # own terminal drop with nothing left to re-queue the repair, and the
-    # predecessor's tail would stay open for the life of the file.
-    with _lock:
-        _release_live(session_id, turn)
-        if not any(sid == session_id for (sid, _) in _live):
-            _repair_owed.pop(session_id, None)
-
-
 def _closing(session_id: str, turn: int) -> "Callable[[], None]":
     """Mark *turn*'s pin as owed to the writer, and return the release for it.
 
-    Called where a terminal event is HANDED OVER, which is not where it lands:
-    the entry is queued, and the pin it releases has to outlive the handover so
-    eviction cannot take the handle before the closer is on disk. The mark is set
-    synchronously here, ahead of the queueing, because a claim arriving in that
-    window reads the live map and has no other way to tell this turn from one
-    that leaked.
+    Called where a terminal event is HANDED OVER, which is not where it lands: the
+    entry is queued, and the pin it releases has to outlive the handover so eviction
+    cannot take the handle before the closer is on disk. See
+    :meth:`TurnTracker.closing` for the release and the repair debt it pays.
+
+    With no tracker installed no turn of this process is pinned, so there is nothing
+    to mark and nothing to release -- which is also what keeps a flag-off terminal
+    from building one.
     """
-    with _lock:
-        state = _live.get((session_id, int(turn)))
-        if state is not None:
-            state.closer_owed = True
-    return lambda: _forget_turn(session_id, turn)
+    tracker = _tracker_instance
+    if tracker is None:
+        return _nothing_to_release
+    return tracker.closing(session_id, turn)
+
+
+def _nothing_to_release() -> None:
+    """The release of a turn this process never pinned."""
 
 
 def _safe_text(text: Any) -> str:
@@ -3021,7 +1297,7 @@ def _latch_class(session_id: str, observed: "tuple[str, str, bool, str]") -> Non
     with _lock:
         _last_class[session_id] = observed
         _last_class.move_to_end(session_id)
-        _bound_unpinned(_last_class, _MAX_OPEN_CREW_LOGS, lambda k: k, "session classes")
+        _tracker().trim(_last_class, _MAX_OPEN_CREW_LOGS, lambda k: k, "session classes")
 
 
 def _note_class_change(
@@ -3446,7 +1722,7 @@ def _durable_previous(session_id: str) -> str:
     return unit_opened_previous(_KIND, session_id) or ""
 
 
-def _queue_tail_repair(previous_sid: str, slot: str, *, requeue_on_drop: bool = True) -> None:
+def _queue_tail_repair(previous_sid: str, slot: str) -> None:
     """Queue the tail repair for *previous_sid*. The ONE submission site for it.
 
     Three things reach this: the supersede that names the predecessor, a re-attach
@@ -3458,40 +1734,22 @@ def _queue_tail_repair(previous_sid: str, slot: str, *, requeue_on_drop: bool = 
     Queued under the PREDECESSOR's id, which IS the deferral: the writer runs a
     session's jobs in submission order, so this cannot run until everything that crew
     log already owes has been attempted -- written, or dropped and admitted in a
-    marker. ``queue_only`` because every caller is already on the writer thread, where
-    the inline path would wait for the pass it is inside.
-
-    ``exempt_ceiling`` on the ceiling's own criterion, O(1) per session: one such job
-    per supersede, carrying no ``nbytes``, so it is not the memory the ceiling bounds.
-    It needs the exemption because the opening entry that queues it HAS one -- so under
-    pressure the successor's crew log is created while its follow-on repair is refused,
-    and nothing re-queues a one-shot job for an id that is never resumed.
-
-    ``requeue_on_drop`` bounds this at ONE extra attempt per loss. The first submission
-    arms a hook that submits again if the whole retained batch is dropped; the
-    re-submission arms none, because the order the first was waiting for is gone once
-    nothing ahead of it will be written, and a hook that re-armed itself would follow a
-    wedged disk around its retry budget for as long as the disk stayed wedged.
+    marker. A ``WriteJob.follow_on``, which is the writer's whole policy for such a job:
+    never written inline (the callers that queue it from a job are on the writer
+    thread, where the inline path would wait for the pass it is inside), never refused
+    at the memory ceiling (the opening entry that queues it is exempt, so under pressure
+    the successor's crew log would be created while its follow-on repair is refused),
+    and submitted ONCE more if its whole retained batch is dropped, behind the loss
+    marker, without being counted as lost.
     """
-    hook: "Callable[[], None] | None" = None
-    if requeue_on_drop:
+    from kiro_crew.crew_log.writer import WriteJob
 
-        def _requeue_after_drop() -> None:
-            # The drop counted this job as one missing append before reaching here, and
-            # it is not missing: it is being submitted again. Correct the count first,
-            # so the marker the next pass writes states the damage the log really took.
-            _uncount_one_requeued_drop(previous_sid)
-            _queue_tail_repair(previous_sid, slot, requeue_on_drop=False)
-
-        hook = _requeue_after_drop
-
-    _submit(
-        lambda: _repair_superseded(previous_sid, slot),
-        "closing a superseded crew log's interrupted tail",
+    _hand_over(
         previous_sid,
-        queue_only=True,
-        exempt_ceiling=True,
-        on_permanent_drop=hook,
+        WriteJob.follow_on(
+            lambda: _repair_superseded(previous_sid, slot),
+            "closing a superseded crew log's interrupted tail",
+        ),
     )
 
 
@@ -3514,8 +1772,8 @@ def _terminal_dropped(session_id: str) -> "Callable[[], None]":
     """
 
     def _dropped() -> None:
-        with _lock:
-            slot = _repair_owed.pop(session_id, "")
+        tracker = _tracker_instance
+        slot = tracker.take_repair_debt(session_id) if tracker is not None else ""
         if not slot:
             return
         logger.warning(
@@ -3590,7 +1848,7 @@ def _repair_superseded(previous_sid: str, slot: str) -> None:
     those records for exactly this reason; a release here would undo that and let
     this job write an outcome ahead of a real one. A predecessor whose turn was
     still running at supersede time and whose real closer is later DROPPED is
-    covered: the stand-down records the debt in ``_repair_owed`` and the terminal's
+    covered: the stand-down records the debt with the turn tracker and the terminal's
     own permanent-drop hook (:func:`_terminal_dropped`) re-queues this job once its
     outcome is given up on, so the tail is closed rather than left open. The debt is
     cleared only once the session has no live turn left, so a nested turn landing
@@ -3614,25 +1872,14 @@ def _repair_superseded(previous_sid: str, slot: str) -> None:
     # ``turn/completed`` that is still coming. That is the two-outcomes-for-one-turn
     # hazard, in a file nothing rewrites.
     # Whether a live turn stands the repair down, and the debt recorded when one
-    # does, are read and written in ONE critical section. A separate `live_turn`
-    # read (which takes and releases `_lock`) followed by a second acquisition to
-    # set `_repair_owed` leaves a window between them: a producer-thread ceiling
-    # rejection running in that gap snapshots `_repair_owed` while it is still
-    # empty, releases the terminal's pin, and finds no debt to re-queue -- then this
-    # writes the debt with no consumer left, and the predecessor's tail stays open
-    # for the life of the file. Reading `_live` inline here (the same expression
-    # `live_turn` uses) and setting the debt without dropping the lock closes that
-    # window, the way `_forget_turn` already reads `_live` and pops the debt in one
-    # section.
-    with _lock:
-        running = max((turn for (sid, turn) in _live if sid == previous_sid), default=0)
-        if running:
-            # Standing down is right only while that terminal is still COMING, and
-            # it may instead spend its attempt budget and be dropped. Record the
-            # debt against the predecessor so the drop can re-queue this job: the
-            # terminal's drop hook is the one site that learns the deferral ended
-            # badly, and without this it has no way to know a repair was waiting.
-            _repair_owed[previous_sid] = slot
+    # does, are read and written in ONE critical section of the tracker's
+    # (`TurnTracker.stand_down`), for the window its docstring names. Standing down
+    # is right only while that terminal is still COMING, and it may instead spend its
+    # attempt budget and be dropped. The debt is recorded against the predecessor so
+    # the drop can re-queue this job: the terminal's drop hook is the one site that
+    # learns the deferral ended badly, and without the debt it has no way to know a
+    # repair was waiting.
+    running = _tracker().stand_down(previous_sid, slot)
     if running:
         logger.warning(
             "session log %s: NOT closing the interrupted tail of superseded crew "
@@ -3798,7 +2045,7 @@ def on_session_opened(
     # terminal event is already queued keeps its record, because the write job
     # owes the release and the file still shows that turn open until the entry
     # lands.
-    _release_session_live(session_id)
+    _tracker().release_unclosed(session_id)
     # Latched on the FIRST attempt and read back on every later one. The decisions
     # below are derived from filesystem state this job itself changes: a retry after
     # the header landed but the entry did not finds ``exists`` true and ``created``
@@ -3860,8 +2107,7 @@ def on_session_opened(
             # re-seeding it would rescan the whole file on the one thread that
             # serializes every session's appends -- once per open, against a file
             # that only grows.
-            with _lock:
-                needs_seed = bool(resumed) or session_id not in _attempts
+            needs_seed = bool(resumed) or not _tracker().knows_attempts(session_id)
             if needs_seed:
                 _seed_attempts(session_id, log)
             if slot:
@@ -4097,12 +2343,11 @@ def on_session_opened(
         with _lock:
             _creation_failed.add(session_id)
 
-    _submit(
-        _job,
-        "opening a crew log",
+    from kiro_crew.crew_log.writer import WriteJob
+
+    _hand_over(
         session_id,
-        exempt_ceiling=True,
-        on_permanent_drop=_flag_creation_failed,
+        WriteJob.opening(_job, "opening a crew log", on_drop=_flag_creation_failed),
     )
 
 
@@ -4131,7 +2376,7 @@ def on_turn_started(
     # deliberately not guarded -- a flag turned off mid-turn must still free what
     # it allocated while on.
     if session_id and enabled():
-        _pin(session_id, turn)
+        _tracker().begin(session_id, turn)
     data: dict[str, Any] = {
         "turn": int(turn),
         "actor": actor if actor in ACTORS else "other",
@@ -4157,7 +2402,7 @@ def on_turn_started(
         # resume then writes an attempt the file already holds. The alternative,
         # making the caller wait for a seeded event, puts a filesystem read in
         # front of the turn on the event loop.
-        n = attempt if attempt > 0 else _next_attempt(session_id, turn)
+        n = attempt if attempt > 0 else _tracker().next_attempt(session_id, turn)
         payload = dict(data)
         # Which try this is at the same turn ordinal. Omitted at 1, which is every
         # turn that was never rerun -- the common case should not pay a field for
@@ -4627,7 +2872,7 @@ def on_message_sent(
     # Derived from the live record rather than asked for, so a caller holding only
     # a slot -- the segment flush does -- has nothing to thread through and nothing
     # to get stale.
-    ordinal = int(step) if step else _current_step(session_id, turn)
+    ordinal = int(step) if step else _tracker().current_step(session_id, turn)
 
     def _job() -> None:
         log = _handle(session_id)
@@ -4703,7 +2948,7 @@ def on_request_configured(
         with _lock:
             _last_config[session_id] = fingerprint
             _last_config.move_to_end(session_id)
-            _bound_unpinned(_last_config, _MAX_OPEN_CREW_LOGS, lambda k: k, "request configs")
+            _tracker().trim(_last_config, _MAX_OPEN_CREW_LOGS, lambda k: k, "request configs")
 
     _submit(_job, "appending request/configured", session_id)
 
@@ -4790,7 +3035,7 @@ def on_step_started(session_id: str, turn: int) -> int:
     """
     if not session_id or not enabled():
         return 0
-    step = _mint_step(session_id, turn)
+    step = _tracker().next_step(session_id, turn)
     _write(
         session_id,
         "step/started",
@@ -4878,19 +3123,19 @@ def on_tool_called(
     """
     if not session_id or not enabled():
         return
-    call_index = _mint_call_index(session_id, turn)
-    step = _current_step(session_id, turn)
+    tracker = _tracker()
+    call_index = tracker.next_call_index(session_id, turn)
+    step = tracker.current_step(session_id, turn)
     if call_id:
-        with _lock:
-            _tool_started[(session_id, call_id)] = (
-                time.monotonic(),
-                name,
-                server,
-                call_index,
-                step,
-                int(turn),
-            )
-            _bound_unpinned(_tool_started, _MAX_PENDING_TOOLS, lambda k: k[0], "pending tool calls")
+        tracker.call_opened(
+            session_id,
+            call_id,
+            name=name,
+            server=server,
+            call_index=call_index,
+            step=step,
+            turn=turn,
+        )
     data: dict[str, Any] = {
         "turn": int(turn),
         "call_id": call_id,
@@ -4944,31 +3189,20 @@ def on_tool_completed(
     call_index = 0
     step = 0
     if call_id:
-        with _lock:
-            # A tool call settles exactly ONCE. Both update parsers can produce a
-            # status-only terminal frame for the same id, so a second frame arriving
-            # after the first closed the call must add NOTHING -- otherwise one call
-            # gets two ``tool/completed`` entries. The distinction that matters is
-            # "already settled by us" (drop) versus "never opened" (still write): a
-            # missing ``_tool_started`` record alone cannot separate them, because
-            # the first frame POPS that record, so a settled set records the ids this
-            # emitter has closed. A frame whose id is in ``_settled_tools`` is a
-            # duplicate and returns here; a frame whose id is in neither map is a
-            # call whose ``tool/called`` we never saw, which still gets its closer
-            # with empty name/server and no elapsed, exactly as before.
-            if (session_id, call_id) in _settled_tools:
-                return
-            started = _tool_started.pop((session_id, call_id), None)
-            _settled_tools[(session_id, call_id)] = int(turn)
-            _settled_tools.move_to_end((session_id, call_id))
-            _bound_settled_tools()
-        if started is not None:
-            began, called_name, called_server, called_index, called_step, _ = started
-            elapsed_ms = max(0, int((time.monotonic() - began) * 1000))
-            name = name or called_name
-            server = server or called_server
-            call_index = called_index
-            step = called_step
+        # A tool call settles exactly ONCE. Both update parsers can produce a
+        # status-only terminal frame for the same id, so a second frame arriving
+        # after the first closed the call must add NOTHING -- otherwise one call gets
+        # two ``tool/completed`` entries. The tracker answers None for a call it has
+        # already settled; a call whose ``tool/called`` it never saw still settles and
+        # still gets its closer, with empty name/server and no elapsed.
+        settled = _tracker().call_settled(session_id, call_id, turn)
+        if settled is None:
+            return
+        elapsed_ms = settled.elapsed_ms
+        name = name or settled.name
+        server = server or settled.server
+        call_index = settled.call_index
+        step = settled.step
     data: dict[str, Any] = {
         "turn": int(turn),
         "call_id": call_id,
@@ -5159,7 +3393,7 @@ def _child_gone_probe(session_id: str) -> "Callable[[str], bool] | None":
             return False
         if child_origin(agent_id)[0]:
             return False
-        return not _owes_entries(session_id)
+        return not _writer_owes(session_id)
 
     return _gone
 
@@ -6332,7 +4566,7 @@ def on_session_closed(session_id: str, reason: str) -> None:
     Holding the entry until the session went quiet was tried and abandoned: nothing
     in the gateway defines quiescence. A turn is pinned only once ``turn/started``
     is written, so an authorization await ahead of it is unpinned; eviction under
-    ``_MAX_LIVE_TURNS`` strands a held reason; and a resume that re-claims the id
+    the tracker's live-turn ceiling strands a held reason; and a resume that re-claims the id
     would have to decide whether the predecessor's teardown still happened. Each of
     those is a way to LOSE the terminal, which is worse than a terminal a late entry
     follows -- an absent one cannot be told apart from a crash.
@@ -6344,6 +4578,7 @@ def on_session_closed(session_id: str, reason: str) -> None:
     """
 
     def _forget() -> None:
+        tracker = _tracker_instance
         with _lock:
             # Only when no turn of this session is still running. A forced reset
             # tears a session down MID-TURN, and that turn goes on writing through
@@ -6352,15 +4587,15 @@ def on_session_closed(session_id: str, reason: str) -> None:
             # while the turn is still producing entries, and a successor's repair
             # then closes a turn that completes for real a moment later. A handle
             # left behind is not a leak: it belongs to a live turn, and the
-            # capacity rule reclaims it once that turn is gone.
-            if session_id not in _pinned:
+            # capacity rule reclaims it once that turn is gone. With no tracker
+            # installed, no turn of this process is live.
+            if tracker is not None:
+                tracker.pop_unless_live(_open, session_id)
+            else:
                 _open.pop(session_id, None)
             # A later session reusing this id must write its own configuration
             # rather than inheriting a closed session's as "unchanged".
             _last_config.pop(session_id, None)
-            # A later session reusing this id starts its own attempt counts;
-            # a resume reseeds them from the file instead.
-            _attempts.pop(session_id, None)
             # The creation-failure flag is per SESSION, so it dies with the
             # session rather than living until the next ``reset_caches``: the
             # flag makes every later entry for this id a counted loss, and a
@@ -6370,36 +4605,19 @@ def on_session_closed(session_id: str, reason: str) -> None:
             # closing entry itself was dropped -- which is the case for exactly
             # the sessions the flag is set on.
             _creation_failed.discard(session_id)
-            # The overflow count is per SESSION and is only ever read while that
-            # session is writing, so it dies with the session like every other
-            # per-session map here. Left behind, a gateway that runs for weeks keeps
-            # one entry per session that ever overflowed, released only by the global
-            # ``reset_caches``; and a successor reusing the id would inherit a count
-            # it did not earn.
-            _overflow_by_session.pop(session_id, None)
-            # Only calls whose turn is already gone -- `_tool_started` is keyed by
-            # call id, so the turn comes from the record's last field. A live turn's
-            # open calls are its own to close, and dropping them here left them open
-            # for the life of the file.
-            for tool_key in [
-                k
-                for k, rec in _tool_started.items()
-                if k[0] == session_id and (session_id, rec[5]) not in _live
-            ]:
-                _tool_started.pop(tool_key, None)
-            # Sweep this session's settled markers on the SAME rule, so a closed
-            # session leaves neither map behind: a marker whose turn is already gone
-            # from ``_live`` can only match a late duplicate of a closer already
-            # written, and the successor that reuses the id must settle its own
-            # calls afresh. Markers of turns still running are left to their own
-            # ``_release_live`` so a mid-teardown turn still suppresses its own
-            # duplicates.
-            for settled_key in [
-                k
-                for k, t in _settled_tools.items()
-                if k[0] == session_id and (session_id, t) not in _live
-            ]:
-                _settled_tools.pop(settled_key, None)
+        # The writer's overflow tally is per SESSION and is only ever read while that
+        # session is writing, so it dies with the session. Left behind, a gateway that
+        # runs for weeks keeps one entry per session that ever overflowed; and a
+        # successor reusing the id would inherit a count it did not earn.
+        writer = _writer_instance
+        if writer is not None:
+            writer.forget(session_id)
+        # The attempt counts go with the session (a resume reseeds them from the file),
+        # and so do the open calls and settled markers of turns already gone. A live
+        # turn's are its own: dropping its open calls here would leave them open for the
+        # life of the file, and a mid-teardown turn still suppresses its own duplicates.
+        if tracker is not None:
+            tracker.forget_session(session_id)
 
     _write(
         session_id,

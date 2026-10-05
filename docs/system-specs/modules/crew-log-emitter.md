@@ -4,6 +4,31 @@
 per-session crew log `kiro_crew.crew_log` keeps for each ACP session id. It is a **writer
 only**: it owns which facts matter and where they are known, not storage or its layout.
 
+## Who owns what
+
+The emitter is three modules, and the line between them is where new work goes:
+
+| Module | Owns | New work that belongs there |
+|---|---|---|
+| `crew_log/emit.py` | every `on_*` entry point and what each fact records; the open-handle cache that is the writer's `open_unit` adapter; the child-origin pins; the supersede repair, and the settlement of a job the writer rejected at its ceiling; `reset_caches`, `flush`, `drain_for_shutdown`, `live_turn` and the loss counters as the public surface | a new lifecycle fact, field or emitter |
+| `crew_log/writer.py` | `CrewLogWriter`: the per-unit buffer and its order, retention and backoff, the refusal rule, the memory ceilings, the `write/dropped` loss marker, the inline path, stall reporting and the shutdown drain, all paced by one frozen `WriterLimits`; `WriteJob`, whose named constructors (`append`, `opening`, `follow_on`) select a row of the writer's policy table; and `WarningBudget`, the one rate-limited failure report the writer and the emitter share | how an append reaches the file |
+| `crew_log/turn_tracker.py` | `TurnTracker`: each live turn's record (its step and call ordinals, whether its closer is owed), the settle-once tool registry, the attempt counts, the supersede repair's debt, and the never-evict-a-live-turn rule the emitter's own caches are trimmed by | per-turn bookkeeping |
+
+Both collaborators are built on first use and never at import, for the boot-path rule
+under "Storage runs off the event loop"; `reset_caches()` retires both -- the writer through
+`CrewLogWriter.close`, which waits a bounded moment and then discards what it could not
+write -- so the next use builds fresh ones, with test `WriterLimits` when the reset is given
+them. The writer's two seams each have two adapters: its executor is the one-worker
+crew-log pool in production and none in a test, where every pass runs on the caller's
+thread paced by an injected clock; its `open_unit` is the emitter's handle cache in
+production and a fault-injecting opener over a real temporary data home in a test.
+
+The loss counters (`dropped_writes()`, `overflow_writes()`, `buffered_writes()`,
+`peak_buffered_writes()`) are O(1) reads of counters the writer keeps, because producers
+read them around each record on the event loop while a backlog may be large. How many
+sessions are still owed a `write/dropped` marker scans the backlog, so only the shutdown
+drain's report reads it.
+
 The emitter defaults **ON** and is switched off by `KIROCREW_CREW_LOG=0`
 (`constants.crew_log_enabled`, read per call, case- and space-insensitive: unset,
 empty or a truthy value `{1, true, yes, on}` leaves it on; `{0, false, no, off}` turns it
@@ -310,7 +335,7 @@ and so does a refusal on the inline path. `dropped_bytes` is the size hint the p
 the rejected jobs.
 
 The record carries no reason code, deliberately. The only site that knows a cause cannot separate
-the ones that matter: `_permanent` collapses a malformed entry and a well-formed entry refused
+the ones that matter: the writer's refusal check collapses a malformed entry and a well-formed entry refused
 because another process owns the log into a single boolean, and it is the second that is a genuine
 hole. Marking every loss makes the distinction unnecessary, and a reason a reader cannot trust is
 worse than none. What a reader acts on is that facts are missing and how many.
@@ -390,7 +415,7 @@ because nothing in the gateway defines quiescence and each approximation loses t
 terminal outright, which is the worse failure -- an absent terminal cannot be told
 apart from a crash. A turn is pinned only once `turn/started` is written, so the
 authorization await ahead of it is unpinned and a reset landing there would still be
-followed by `turn/started` or `turn/refused`. Eviction under `_MAX_LIVE_TURNS` removes
+followed by `turn/started` or `turn/refused`. Eviction under the tracker's live-turn ceiling removes
 the pin without consuming a held reason, stranding it forever. And a resume that
 re-claims the same ACP session id would have to decide whether the predecessor's
 teardown still happened.
@@ -424,7 +449,7 @@ test on the same worker. Stripping the outer `__traceback__` is not enough: an e
 raised inside an `except` block carries the first exception as `__context__` (or
 `__cause__`), whose own traceback holds the same job frames. So the job's failure comes
 back as its TYPE, which no frame can be reached from, and both lines the report leaves
-behind -- the once-per-process warning and the per-failure debug line -- carry the failure as
+behind -- the rate-limited warning and the per-failure debug line -- carry the failure as
 text, never the exception object or an `exc_info` triple: the debug line renders the
 traceback to a string while the exception is live, so the diagnostics stay whole while a
 log handler that keeps records (a `MemoryHandler`, a test harness) keeps no frames. The
@@ -1172,8 +1197,10 @@ Tombstones, projections, a reader, and any UI are out of scope.
 ## Failure policy
 
 Every entry point is fail-soft and returns `None`. A storage error is caught, reported
-once per process at warning level, and demoted to debug afterwards so a broken crew log
-cannot flood the log. This matters at three sites: the approval decision resolves on the
+at warning level once per KIND of failure (the operation, the exception class and its
+error code -- never the unit) per window, and demoted to debug inside the window, so a
+broken crew log cannot flood the log; one `WarningBudget` governs the writer's reports and
+the emitter's alike. This matters at three sites: the approval decision resolves on the
 websocket handler task, so an exception there would break the click handler and hang the
 waiting turn; `_default_session_model` runs inside `asyncio.to_thread` behind a
 swallow-all `except`; and `_fallback_swap_for_turn` holds `slot._model_pick_lock`. The
@@ -1189,7 +1216,7 @@ invisible, which is the failure this module exists to prevent.
 
 So a failed append is RETAINED. The batch -- the failed entry and every entry behind it --
 goes back to the FRONT of its session's bucket, and the writer retries it after
-`_RETRY_BACKOFF_SECONDS`, doubling to `_RETRY_BACKOFF_MAX_SECONDS`. The front, and the whole
+`WriterLimits.retry_backoff_seconds`, doubling to `retry_backoff_max_seconds`. The front, and the whole
 remainder rather than just the entry that failed, because the entries behind it belong AFTER
 it in the file: writing them while it waits would put that log on disk in an order that never
 happened, which a fold reads as fact and cannot detect. Producers append to the same bucket,
@@ -1201,7 +1228,7 @@ itself.
 It is BOUNDED, and that bound is the honest half. Entries live in memory until they are
 written, so a filesystem that never answers would hold them forever and turn every bounded
 caller into a timeout -- `flush()` and `drain_for_shutdown()` would both report failure while
-the writer retried a batch nothing could ever accept. Past `_MAX_WRITE_ATTEMPTS` consecutive
+the writer retried a batch nothing could ever accept. Past `WriterLimits.max_write_attempts` consecutive
 failed passes the batch is dropped, counted in `dropped_writes()`, and named once per session
 at warning level, with the recovery its own single line when a write for that session lands
 again. A wedged disk therefore becomes a reported loss, never a hang. Attempts are counted
@@ -1241,17 +1268,19 @@ per turn. Every call site is inside the async chat path, so running it inline bl
 one loop that also drives the liveness heartbeat: `no-blocking-call-on-event-loop`, not a
 latency preference.
 
-So an entry point does only what must be measured where it is called, and hands the
-storage call to `executors.crew_log_executor()` -- a pool of exactly ONE worker, because the
-order entries reach a unit's file is part of the format. The call sites stay synchronous
+So an entry point does only what must be measured where it is called, builds the storage
+call as a `WriteJob`, and submits it to the installed `CrewLogWriter`, whose executor is
+`executors.crew_log_executor()` -- a pool of exactly ONE worker, because the order entries
+reach a unit's file is part of the format. The call sites stay synchronous
 and gain no suspension point; in particular `_compaction_gate_decision` and
 `_settle_compact_cooldown` are synchronous methods called from async code, which an
 `await`-based emitter could not have served without changing their signatures.
 
 Which turn an entry belongs to is CARRIED IN the entry, not looked up. Every entry that
 belongs to a turn names it in `data.turn` -- the runner's own ordinal, which the call site
-already holds -- and a tool call also carries `data.step`, its position among that turn's
-calls, reused by the completion that closes it. So an entry is self-describing the moment
+already holds -- and a tool call also carries `data.call_index`, its position among that
+turn's calls, and `data.step`, the model call that issued it, both reused by the completion
+that closes it. So an entry is self-describing the moment
 it is built: nothing has to be cached, read back from a line written earlier, or kept
 alive across the queue, and no eviction or loss of in-process state can make an entry name
 the WRONG turn. `session/opened`, `session/closed` and `compaction/applied` carry no
@@ -1298,8 +1327,8 @@ superseded id is never resumed and nothing maps to it once the successor takes o
 
 Waiting in that bucket is also how this job is LOST. A batch the filesystem refuses is retained
 with everything behind it, and once the attempt budget is spent the WHOLE retained batch is
-dropped -- the owed append and this job with it. So the job carries a permanent-drop hook that
-submits it once more, which is what makes the paragraph above hold in the dropped case rather than
+dropped -- the owed append and this job with it. So the job is a writer FOLLOW-ON
+(`WriteJob.follow_on`), and the writer's policy for that kind submits it once more, which is what makes the paragraph above hold in the dropped case rather than
 merely intend it. The re-submission lands behind the `write/dropped` marker, so the file states both
 that entries are missing and that the turn did not finish. It carries NO hook of its own, and that
 is what bounds this at one extra attempt: the order the first submission was waiting for is gone,
@@ -1334,10 +1363,19 @@ terminal handover carries a permanent-drop hook, and a drop re-queues the repair
 it. `after` cannot serve: it runs when the append RESOLVES, written or given up on alike, so it
 cannot tell the two apart, while a permanent-drop hook fires only on the giving up. The hook runs
 before the `after` that releases the live pin, so by the time the re-queued repair runs `live_turn`
-answers 0 and it closes the tail. A terminal that LANDS clears the debt instead, in `_forget_turn`:
+answers 0 and it closes the tail. A terminal that LANDS clears the debt instead, in the release
+`TurnTracker.closing` hands the terminal:
 the tail closed truthfully, and a debt never cleared would grow the record once per supersede for
 the life of the process. In-memory state is enough, because a restart is covered by the re-attach
 recovery below.
+
+A terminal can also be lost WITHOUT being dropped: refused at the writer's memory ceiling. The
+writer hands a rejected job back unsettled (`submit` answers `False`) and the emitter settles it, in
+an order neither hook alone can give: it reads the repair debt FIRST, then runs the terminal's
+release -- which frees the pin and, with no live turn left, clears that debt -- and only then
+re-queues the repair from what it read. Read after the release, the debt is gone and nothing is
+re-queued; re-queued before it, the repair can run against the still-live pin, stand down again, and
+have its renewed debt erased by the release.
 
 All three entry points -- the supersede, that re-attach, and a dropped terminal -- go through ONE
 submission site, so the guards, the bucket and the ceiling exemption cannot drift apart between
@@ -1380,23 +1418,24 @@ pressure. The record is released by an event of the turn's own -- `turn/complete
 So the live-turn map is not trimmed by pressure at all. It is bounded by the number of
 turns actually running, and each of those releases itself. The handle cache and the pending
 tool calls still have caps, and they skip any entry belonging to a live turn, which is why
-they may sit above their cap while many turns run at once. `_MAX_LIVE_TURNS` is a leak
+they may sit above their cap while many turns run at once. The tracker's live-turn ceiling
+(`turn_tracker.MAX_LIVE_TURNS`) is a leak
 alarm rather than a cache policy: reaching it means turns are ending without a terminal
 event, so the oldest records are shed and the leak is reported at error level, because past
 that point unbounded growth is the worse failure.
 
 The writer holds two rules at once, and neither may be traded for the other.
 
-Crossing `_PENDING_HIGH_WATER` alone never drops a lifecycle record; it reports
+Crossing `WriterLimits.pending_high_water` alone never drops a lifecycle record; it reports
 backpressure while producers continue to enqueue without waiting. The buffer is
-nevertheless bounded by the hard `_MAX_PENDING_COUNT` and `_MAX_PENDING_BYTES`
+nevertheless bounded by the hard `max_pending_count` and `max_pending_bytes`
 ceilings. Once either ceiling is reached, the newest tail entry is refused, counted
 by `overflow_writes()`, and folded into the session's pending `write/dropped`
-account. The create job and loss marker are ceiling-exempt, so the log can still
-exist and record that loss. This is the smaller, explicit failure than an OOM that
+account. The create job, a follow-on and the loss marker are ceiling-exempt -- rows of
+the writer's policy table -- so the log can still exist and record that loss. This is the smaller, explicit failure than an OOM that
 would lose every session's unwritten tail without an account.
 
-A storage append that raises is governed separately by `_MAX_WRITE_ATTEMPTS`; the
+A storage append that raises is governed separately by `max_write_attempts`; the
 retained batch preserves order until it lands or exhausts that retry budget. These
 two bounds cover different failures: hard ceilings bound producer-side memory,
 while the attempt ceiling bounds a storage call that returns an error.
@@ -1421,19 +1460,19 @@ this log is for. The backlog behind a hang is bounded by the hard count and byte
 in-flight storage call itself has no retry bound until it returns.
 
 **A write that HANGS is the one failure no attempt counter bounds.** A call that
-never returns cannot advance `_MAX_WRITE_ATTEMPTS`, and the single writer cannot
+never returns cannot advance `max_write_attempts`, and the single writer cannot
 drain another session meanwhile. Producers continue until the hard count or byte
 ceiling is reached; later tail entries are then refused and counted as overflow.
 The memory backlog is bounded, but the in-flight filesystem call itself cannot be
 cancelled safely from this thread.
 
-Visibility is therefore still required. A job past `_WRITE_STALL_SECS` is reported
+Visibility is therefore still required. A job past `WriterLimits.write_stall_secs` is reported
 once as a stall by a producer -- the thread that could report from the write is the
 one blocked in it -- while `buffered_writes()`, `peak_buffered_writes()`, and the
 high-water warning expose the queued backlog. A stalled job may still land and has
 not spent a retry attempt until it returns.
 
-One worker drains it in batches. It pauses `_BATCH_DEADLINE_SECONDS` before each pass, so a
+One worker drains it in batches. It pauses `WriterLimits.batch_deadline_seconds` before each pass, so a
 turn's burst of entries becomes one pass rather than a wake per entry; the deadline is fixed
 rather than adaptive so the worst case a producer can impose on the file is a constant.
 
@@ -1453,13 +1492,15 @@ registrations cover the two ways a gateway ends: the dashboard's `on_cleanup` ho
 graceful stop, which runs the drain off the loop, and an `atexit` handler for every other
 exit -- a CLI run, a cron subprocess, a signal the server never sees.
 
-The `atexit` handler is registered on the FIRST drain pass, not at import. This module is
-reachable from the gateway boot path, and AUTOSDE's `no-new-work-on-gateway-boot-path` rule
-asks for an optional subsystem's import to be gated rather than only its calls, so a launch
-with the flag unset must register nothing and load nothing. Registering on first use also
-keeps the ordering the drain depends on: `atexit` runs handlers last-registered-first, and
-the registration happens immediately before the writer pool is first asked for work, so the
-pool's own handler still runs ahead of this one.
+The `atexit` handler is registered on the FIRST drain pass, not at import: the emitter's
+executor adapter registers it immediately before the writer pool is first asked for work.
+This module is reachable from the gateway boot path, and AUTOSDE's
+`no-new-work-on-gateway-boot-path` rule asks for an optional subsystem's import to be gated
+rather than only its calls, so a launch with the flag unset must register nothing and load
+nothing -- the writer and turn-tracker modules included, which the emitter imports on first
+use. Registering on first use also keeps the ordering the drain depends on: `atexit` runs
+handlers last-registered-first, and the registration happens immediately before the pool is
+built, so the pool's own handler still runs ahead of this one.
 
 There is no second stream to reconcile with. The parallel lifecycle-event package this
 module was designed alongside is retired, so `kiro_crew.crew_log` is the only structured

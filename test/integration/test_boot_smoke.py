@@ -184,8 +184,6 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.config.loader", "_MATERIALIZED_REFRESH_APPLIED"): "counter",
     ("kiro_crew.config.loader", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
-    ("kiro_crew.crew_log.emit", "_shutdown_deadline"): "clock",
-    ("kiro_crew.crew_log.emit", "_shutdown_started"): "clock",
     ("kiro_crew.dashboard.handlers.updates", "_last_update_check"): "clock",
     ("kiro_crew.platform.context", "_GOVERNANCE_GENERATION"): "counter",
     ("kiro_crew.platform.governance_profiles", "_PROFILE_GENERATION"): "counter",

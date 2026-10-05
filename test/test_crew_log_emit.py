@@ -28,22 +28,11 @@ from kiro_crew import executors, session_map
 from kiro_crew.crew_log import crew_log_path, crew_log_root, eager, emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.lease import LEASE_FILE
+from kiro_crew.crew_log.writer import DEFAULT_LIMITS, WriterLimits
 from kiro_crew.dashboard import server as server_module
 from kiro_crew.platform_compat import file_lock
 
 SESSION = "acp-sess-0001"
-
-#: The real backoff schedule, captured before the fixture below replaces it. The
-#: schedule is production policy and one test pins its arithmetic; every OTHER test
-#: drives the retry budget with the wait removed, because waiting out real backoff
-#: makes an assertion a race against machine load rather than a statement about
-#: behaviour.
-_REAL_RETRY_DELAY = emit._retry_delay
-
-
-def _pending(job, what: str) -> emit._PendingJob:
-    """Wrap *job* in the record the writer's buffer holds."""
-    return emit._PendingJob(job=job, what=what)
 
 
 @pytest.fixture(autouse=True)
@@ -73,24 +62,6 @@ def _isolated_home(tmp_path, monkeypatch):
     # again"; `reset_caches` then drops the handles that point into it.
     emit.drain_for_shutdown(timeout=2.0)
     emit.reset_caches()
-
-
-def test_the_retry_schedule_doubles_from_its_floor_to_its_ceiling():
-    """The one place the real schedule is asserted, and it needs no clock.
-
-    Every other retention test flattens this to zero, so the schedule itself would
-    otherwise be unpinned -- and it is policy: a floor low enough that a blip costs
-    a moment, a ceiling low enough that the whole budget still fits inside a
-    bounded shutdown.
-    """
-    floor = emit._RETRY_BACKOFF_SECONDS
-    assert _REAL_RETRY_DELAY(1) == floor
-    assert _REAL_RETRY_DELAY(2) == floor * 2
-    assert _REAL_RETRY_DELAY(3) == floor * 4
-    assert _REAL_RETRY_DELAY(99) == emit._RETRY_BACKOFF_MAX_SECONDS
-    # The whole budget, so a wedged writer cannot outlast a bounded drain.
-    spent = sum(_REAL_RETRY_DELAY(n) for n in range(1, emit._MAX_WRITE_ATTEMPTS))
-    assert spent < emit._SHUTDOWN_DRAIN_SECONDS
 
 
 def _log_path(session_id: str = SESSION) -> Path:
@@ -1466,62 +1437,20 @@ def test_settle_once_holds_for_a_terminal_frame_from_either_parser():
 
 
 def test_a_settled_call_can_be_reopened_and_reclosed_in_a_later_turn():
-    # Settled markers are pruned when a turn's live record is released, so the same
-    # call_id reused in a later turn settles again rather than being dropped as a
-    # stale duplicate.
+    # Settled markers go with their turn's live record, which the turn's own terminal
+    # releases once it lands, so the same call_id reused in a later turn settles again
+    # rather than being dropped as a stale duplicate.
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_completed(SESSION, 1, call_id="reused", status="completed")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    emit._forget_turn(SESSION, 1)
+    assert emit.flush()
+    assert emit.live_turn(SESSION) == 0, "the landed terminal did not release its turn"
     emit.on_turn_started(SESSION, 2, "user")
     emit.on_tool_completed(SESSION, 2, call_id="reused", status="completed")
     assert emit.flush()
     closers = [e["data"] for e in _body() if e["type"] == "tool/completed"]
     assert [c["turn"] for c in closers] == [1, 2]
-
-
-def test_a_closed_sessions_settled_markers_are_released():
-    # on_session_closed sweeps the session's orphaned _tool_started entries; its
-    # settled markers ride the SAME lifecycle, so a marker whose turn is already
-    # gone from _live must be swept too and not left to the bound alone. A marker
-    # of a turn still running is left for that turn's own _release_live.
-    _open_session()
-    emit.on_turn_started(SESSION, 1, "user")
-    emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
-    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    emit._forget_turn(SESSION, 1)
-    # The turn is gone from _live but its marker was already pruned by the turn
-    # release, so seed a fresh orphan directly to prove the close sweep also fires.
-    emit._settled_tools[(SESSION, "orphan")] = 1
-    assert (SESSION, "orphan") in emit._settled_tools
-    emit.on_session_closed(SESSION, "reset")
-    assert emit.flush()
-    assert (SESSION, "orphan") not in emit._settled_tools
-
-
-def test_the_settled_markers_stay_under_their_cap_inside_one_live_turn():
-    # A marker accumulates per call COMPLETED, where an open-call record is popped by
-    # its own completion, so the module's shared never-evict-a-live-turn rule would
-    # let this map grow for the whole of a turn that makes more calls than the cap.
-    # This map trims its OLDEST instead: the duplicate frames a marker suppresses
-    # come from two parsers reading one terminal frame, so the youngest markers are
-    # the ones doing the work.
-    _open_session()
-    emit.on_turn_started(SESSION, 1, "user")
-    assert SESSION in emit._pinned, "the turn must be pinned for this to mean anything"
-    total = emit._MAX_PENDING_TOOLS + 20
-    for n in range(total):
-        emit.on_tool_completed(SESSION, 1, call_id=f"c{n}", status="completed")
-    assert emit.flush()
-    assert len(emit._settled_tools) <= emit._MAX_PENDING_TOOLS
-    # The oldest went and the youngest stayed.
-    assert (SESSION, "c0") not in emit._settled_tools
-    assert (SESSION, f"c{total - 1}") in emit._settled_tools
-    # Every call still got exactly one closer: trimming a marker drops the guard for
-    # a possible LATER duplicate, never an entry that was already written.
-    closers = [e for e in _body() if e["type"] == "tool/completed"]
-    assert len(closers) == total
 
 
 # --- a step may cover consecutive tool-only calls ---------------------------
@@ -1676,7 +1605,19 @@ def test_the_attempt_seed_keeps_readable_counts_before_a_backward_tail():
 
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
     assert emit.flush()
-    assert emit._next_attempt(SESSION, 7) == 3
+    seen: list[int] = []
+    real_append = lg.CrewLog.append
+
+    def _record_the_attempt(self, entry_type, data, *args, **kwargs):
+        if entry_type == "turn/started":
+            seen.append(int(data.get("attempt", 1)))
+        return real_append(self, entry_type, data, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lg.CrewLog, "append", _record_the_attempt)
+        emit.on_turn_started(SESSION, 7, "user")
+        emit.flush()
+    assert seen == [3], f"the seed lost the readable count before the backward tail: {seen}"
 
 
 def test_the_turn_closer_is_the_last_entry_of_its_turn():
@@ -1822,9 +1763,8 @@ def test_the_attempt_seed_reads_the_file_only_when_memory_cannot_answer():
         assert emit.flush()
         assert scans == [SESSION], "a resume did not seed from the file"
 
-        # An evicted map cannot answer either: scan.
-        with emit._lock:
-            emit._attempts.pop(SESSION, None)
+        # A process without the counts in memory cannot answer either: scan.
+        emit.reset_caches()
         emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
         assert emit.flush()
         assert scans == [SESSION, SESSION], "an evicted map was not re-seeded"
@@ -2178,124 +2118,21 @@ def test_close_records_the_gateway_reason_verbatim():
 # --- durable loss markers -------------------------------------------------
 
 
-def test_spent_retry_budget_flushes_loss_marker_without_a_later_append():
-    _open_session()
-    assert emit.flush()
-    before = len(_body())
-
-    def _fail() -> None:
-        raise OSError("retry loss")
-
-    emit._buffer(
-        SESSION,
-        emit._PendingJob(job=_fail, what="retry loss", nbytes=23),
-    )
-    assert emit.flush(timeout=2.0), "flush returned without writing the spent-budget loss marker"
-    assert emit.dropped_writes() == 1
-    recovered = _body()[before:]
-    assert [entry["type"] for entry in recovered] == [
-        "write/dropped"
-    ], f"flush left the loss marker owed: {[e['type'] for e in recovered]}"
-    assert recovered[0]["data"]["dropped_count"] == 1
-    assert recovered[0]["data"]["dropped_bytes"] == 23
-
-
-def _leave_spent_retry_loss_owed(*, nbytes: int = 23) -> None:
-    """Spend one job's budget without letting the following marker pass run."""
-
-    def _fail() -> None:
-        raise OSError("retry loss")
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(emit, "_start_drain", lambda: None)
-        emit._buffer(SESSION, emit._PendingJob(job=_fail, what="retry loss", nbytes=nbytes))
-        for _ in range(emit._MAX_WRITE_ATTEMPTS):
-            with emit._lock:
-                emit._draining = False
-                emit._drain_future = None
-                retry = emit._retry.get(SESSION)
-                if retry is not None:
-                    retry.not_before = 0.0
-            emit._drain_once()
-
-    with emit._lock:
-        loss = emit._pending_loss.get(SESSION)
-        assert loss is not None, "the retry budget did not leave loss debt"
-        assert SESSION not in emit._pending, "the spent job was still buffered"
-
-
-def test_ceiling_overflow_drains_with_marker_first(monkeypatch):
-    _open_session()
-    assert emit.flush()
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-    emit._buffer(
-        SESSION,
-        emit._PendingJob(job=lambda: None, what="overflowed append", nbytes=31),
-    )
-    assert emit.overflow_writes() == 1
-
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 100_000)
-    before = len(_body())
-    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush(timeout=20.0)
-    recovered = _body()[before:]
-    assert (
-        recovered[0]["type"] == "write/dropped"
-    ), f"first entry after overflow was not marker: {[e['type'] for e in recovered]}"
-    assert recovered[0]["data"]["dropped_count"] == 1
-    assert recovered[0]["data"]["dropped_bytes"] == 31
-
-
-def test_a_lost_marker_is_merged_into_one_later_marker():
-    _open_session()
-    assert emit.flush()
-    _leave_spent_retry_loss_owed(nbytes=17)
-
-    real_append = lg.CrewLog.append
-
-    def _lose_marker(self, entry_type, *args, **kwargs):
-        if entry_type == "write/dropped":
-            raise OSError("marker loss")
-        return real_append(self, entry_type, *args, **kwargs)
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(lg.CrewLog, "append", _lose_marker)
-        patch.setattr(emit, "_start_drain", lambda: None)
-        deferred_loss: set[str] = set()
-        for _ in range(emit._MAX_WRITE_ATTEMPTS):
-            with emit._lock:
-                emit._draining = False
-                emit._drain_future = None
-                retry = emit._retry.get(SESSION)
-                if retry is not None:
-                    retry.not_before = 0.0
-            deferred_loss.update(emit._drain_once(deferred_loss))
-        assert not emit.flush(
-            timeout=0.1
-        ), "flush reported quiet while the refused loss marker was still owed"
-
-    before = len(_body())
-    emit.on_turn_completed(SESSION, 2, stop_reason="recovered")
-    assert emit.flush(timeout=20.0)
-    recovered = _body()[before:]
-    markers = [entry for entry in recovered if entry["type"] == "write/dropped"]
-    assert len(markers) == 1, f"marker loss split or lost debt: {markers}"
-    assert (
-        markers[0]["data"]["dropped_count"] == 1
-    ), f"marker loss did not preserve the original debt: {markers[0]['data']}"
-
-
 def test_fold_reads_loss_marker_with_contiguous_sequence():
     _open_session()
     assert emit.flush()
-    emit._buffer(
-        SESSION,
-        emit._PendingJob(
-            job=lambda: (_ for _ in ()).throw(OSError("fold loss")),
-            what="fold loss",
-        ),
-    )
-    assert emit.flush(timeout=20.0)
+    real_append = lg.CrewLog.append
+
+    def _lose_the_call(self, entry_type, *args, **kwargs):
+        if entry_type == "tool/called":
+            raise OSError("fold loss")
+        return real_append(self, entry_type, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lg.CrewLog, "append", _lose_the_call)
+        emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
+        assert emit.flush(timeout=20.0)
+    assert emit.dropped_writes() == 1, "the append was not given up on"
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     assert emit.flush(timeout=20.0)
 
@@ -2680,26 +2517,47 @@ def test_the_child_probe_reports_present_while_this_session_owes_an_entry():
     # `unknown` ahead of the real outcome, and both stand in a file nothing
     # rewrites. The debt is keyed by session, so another session's backlog must not
     # hold this one's children open.
+    #
+    # The one writer thread is parked FIRST, inside a third session's append, so every
+    # entry submitted afterwards waits in its bucket for as long as the test looks --
+    # no batching window, backoff or failure decides what is owed.
+    other = "other-session"
+    held = "held-session"
+    _open_session()
+    emit.on_session_opened(other, agent="kirocrew", slot="chat-8")
+    emit.on_session_opened(held, agent="kirocrew", slot="chat-9")
+    assert emit.flush()
+    real_append = lg.CrewLog.append
+    holding = threading.Event()
+    release = threading.Event()
+
+    def _park_on_the_held_turn(self, entry_type, *args, **kwargs):
+        if entry_type == "turn/started" and args and args[0].get("turn") == 9:
+            holding.set()
+            release.wait(timeout=10.0)
+        return real_append(self, entry_type, *args, **kwargs)
+
+    async def _owe(session_id: str, turn: int = 1) -> None:
+        emit.on_turn_started(session_id, turn, "user")
+
     emit.set_child_liveness(lambda agent_id: False)
     try:
         gone = emit._child_gone_probe(SESSION)
         assert gone is not None
         assert gone("sub-1") is True
-        with emit._lock:
-            emit._pending[SESSION] = [emit._PendingJob(job=lambda: None, what="debt")]
-        try:
-            assert gone("sub-1") is False
-        finally:
-            with emit._lock:
-                emit._pending.pop(SESSION, None)
-        with emit._lock:
-            emit._pending["other-session"] = [emit._PendingJob(job=lambda: None, what="debt")]
-        try:
-            assert gone("sub-1") is True
-        finally:
-            with emit._lock:
-                emit._pending.pop("other-session", None)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(lg.CrewLog, "append", _park_on_the_held_turn)
+            asyncio.run(_owe(held, 9))
+            assert holding.wait(timeout=10.0), "the writer never reached the held entry"
+            asyncio.run(_owe(other))
+            assert gone("sub-1") is True, "another session's debt held this one's child open"
+            asyncio.run(_owe(SESSION))
+            assert gone("sub-1") is False, "a child was reported gone while its session owed"
+            release.set()
+            assert emit.flush(timeout=10.0)
+        assert gone("sub-1") is True, "the debt outlived the entry that landed"
     finally:
+        release.set()
         emit.set_child_liveness(None)
 
 
@@ -3050,38 +2908,6 @@ def test_a_teardown_between_turns_gives_the_write_ownership_back():
     assert _can_take_ownership(), "a torn-down session with no live turn kept the log"
 
 
-def test_a_stalled_write_is_named_by_a_producer_without_being_asked(caplog):
-    """The stall report has a production caller, not just a test that calls it.
-
-    A hung write reaches no attempt counter, so this line is the only account it
-    gives of itself. The thread that would notice is the one blocked in the call,
-    which is why a PRODUCER checks -- and a helper nothing calls reports nothing.
-    The threshold is injected rather than waited out.
-
-    Mutation guard: removing the call from `_submit` leaves an ordinary emit silent
-    and reddens the assertion.
-    """
-    _open_session()
-    assert emit.flush()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(emit, "_WRITE_STALL_SECS", 0.0)
-        with emit._lock:
-            emit._inflight_since = time.monotonic()
-            emit._inflight_what = "a write that never returns"
-            emit._stall_reported = False
-        try:
-            with caplog.at_level(logging.ERROR, logger="kiro_crew.crew_log.emit"):
-                # An ordinary producer call, nothing stall-specific about it.
-                emit.on_turn_started(SESSION, 1, "user")
-            assert any(
-                "neither returned nor failed" in r.getMessage() for r in caplog.records
-            ), "a producer passed a stalled writer without naming the stall"
-        finally:
-            with emit._lock:
-                emit._inflight_since = 0.0
-                emit._inflight_what = ""
-
-
 def test_a_warm_reuse_inside_this_process_closes_nothing():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
@@ -3123,10 +2949,9 @@ def test_a_refusal_leaves_nothing_pinned():
     # must become evictable again -- otherwise a refused turn leaks a pin.
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert SESSION in emit._pinned
+    assert emit.live_turn(SESSION) == 1
     emit.on_turn_refused(SESSION, 1, "gateway_closing", "user")
-    assert SESSION not in emit._pinned
-    assert (SESSION, 1) not in emit._live
+    assert emit.live_turn(SESSION) == 0
 
 
 def test_call_index_of_a_live_turn_survives_cache_pressure():
@@ -3151,9 +2976,12 @@ def test_call_index_of_a_live_turn_survives_cache_pressure():
         emit.on_turn_started(other, 1, "user")
         emit.on_tool_called(other, 1, name="fs_read", call_id="tc-x")
     assert emit.flush()
-    assert len(emit._live) > emit._MAX_OPEN_CREW_LOGS, "the map never came under pressure"
+    live = sum(
+        emit.live_turn(f"stepfill-{n:04d}") == 1 for n in range(emit._MAX_OPEN_CREW_LOGS + 1)
+    )
+    assert live > emit._MAX_OPEN_CREW_LOGS, "the map never came under pressure"
 
-    assert (SESSION, 3) in emit._live
+    assert emit.live_turn(SESSION) == 3
     emit.on_tool_called(SESSION, 3, name="fs_read", call_id="tc-3")
     assert emit.flush()
     steps = [e["data"]["call_index"] for e in _body() if e["type"] == "tool/called"]
@@ -3180,7 +3008,7 @@ def test_call_index_stays_unique_when_many_turns_are_live_at_once():
         emit.on_session_opened(other, agent="kirocrew")
         emit.on_turn_started(other, 1, "user")
     assert emit.flush()
-    assert SESSION in emit._pinned, "the oldest live turn lost its pin"
+    assert emit.live_turn(SESSION) == 7, "the oldest live turn lost its pin"
 
     for call in range(3):
         emit.on_tool_called(SESSION, 7, name="fs_read", call_id=f"late-{call}")
@@ -3195,29 +3023,9 @@ def test_call_index_is_released_when_the_turn_completes():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert (SESSION, 1) in emit._live
+    assert emit.live_turn(SESSION) == 1
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert (SESSION, 1) not in emit._live
-    assert SESSION not in emit._pinned
-
-
-def test_a_leaked_turn_is_never_evicted_even_past_the_ceiling(monkeypatch):
-    # The ceiling sheds only records whose terminal event is already owed, and
-    # accepts the overage when none of those are left. Shedding a LIVE record
-    # drops its step and call_index, and its next event re-mints them from zero,
-    # so two entries claim one ordinal -- in a file that is never rewritten that
-    # duplicate is read as fact. The residue is memory: a leak grows this map
-    # rather than corrupting the log, which is the recoverable half of the trade.
-    #
-    # The cap is lowered rather than reached: every turn started here costs a
-    # synchronous append, so opening the real ceiling's worth of them spends
-    # thousands of disk syncs to assert a property that a handful demonstrates.
-    monkeypatch.setattr(emit, "_MAX_LIVE_TURNS", 6)
-    _open_session()
-    for n in range(emit._MAX_LIVE_TURNS + 5):
-        emit.on_turn_started(SESSION, n + 1, "user")
-    assert emit.flush()
-    assert len(emit._live) == emit._MAX_LIVE_TURNS + 5, "a live turn was evicted"
+    assert emit.live_turn(SESSION) == 0
 
 
 # --- the flag ------------------------------------------------------------
@@ -3450,7 +3258,8 @@ def test_flag_off_allocates_no_state_either(monkeypatch):
     Writing is guarded by the entry points, but live-turn state is allocated
     before the write is handed over, so an unguarded allocation would accumulate a
     record per turn on every gateway running with the emitter off -- invisible,
-    because no file appears to give it away.
+    because no file appears to give it away. It shows the moment the flag comes
+    on: a turn the flag-off calls had numbered would continue that numbering.
     """
     monkeypatch.setenv(emit.CREW_LOG_ENV, "0")
     assert emit.enabled() is False
@@ -3460,12 +3269,18 @@ def test_flag_off_allocates_no_state_either(monkeypatch):
         emit.on_turn_started(SESSION, turn, "user")
         emit.on_tool_called(SESSION, turn, name="fs_read", call_id=f"tc-{turn}")
 
-    assert emit._live == {}, f"live-turn state allocated with the flag off: {emit._live}"
-    assert emit._pinned == {}, f"pins allocated with the flag off: {emit._pinned}"
+    assert emit.live_turn(SESSION) == 0, "live-turn state allocated with the flag off"
+    assert emit._tracker_instance is None, "the turn tracker was built with the flag off"
     assert emit._open == {}
-    assert emit._tool_started == {}
     assert emit.buffered_writes() == 0
     assert not _store_root().exists()
+
+    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+    _open_session()
+    emit.on_tool_called(SESSION, 5, name="fs_read", call_id="tc-after")
+    assert emit.flush()
+    (call,) = [e["data"] for e in _body() if e["type"] == "tool/called"]
+    assert call["call_index"] == 1, "a flag-off turn left its numbering behind"
 
 
 def test_a_flag_turned_off_mid_turn_still_releases_what_it_allocated(monkeypatch):
@@ -3474,12 +3289,11 @@ def test_a_flag_turned_off_mid_turn_still_releases_what_it_allocated(monkeypatch
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert (SESSION, 1) in emit._live
+    assert emit.live_turn(SESSION) == 1
 
     monkeypatch.setenv(emit.CREW_LOG_ENV, "0")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert (SESSION, 1) not in emit._live
-    assert SESSION not in emit._pinned
+    assert emit.live_turn(SESSION) == 0
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on", "", "  "])
@@ -3639,9 +3453,9 @@ def test_the_backlog_is_reported_rather_than_shed(monkeypatch, caplog):
     Crossing it must not shed anything -- that is what the durability half of the
     rule forbids -- so the only correct response is to say so.
     """
+    emit.reset_caches(limits=WriterLimits(pending_high_water=4))
     _open_session()
     assert emit.flush()
-    monkeypatch.setattr(emit, "_PENDING_HIGH_WATER", 4)
     original = lg.CrewLog.append
     release = threading.Event()
 
@@ -3677,11 +3491,10 @@ def test_shutdown_drains_what_the_writer_has_not_written_yet():
     assert emit.flush()
 
     async def _turn() -> None:
+        # No flush: this is the state a restart interrupts.
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-        # No flush: this is the state a restart interrupts.
-        assert emit.buffered_writes() > 0 or emit._draining
 
     asyncio.run(_turn())
 
@@ -3689,117 +3502,6 @@ def test_shutdown_drains_what_the_writer_has_not_written_yet():
     assert emit.buffered_writes() == 0
     types = [e["type"] for e in _body()]
     assert types == ["session/opened", "turn/started", "tool/called", "turn/completed"]
-
-
-def test_shutdown_writes_spent_retry_loss_without_a_later_append():
-    _open_session()
-    assert emit.flush()
-    before = len(_body())
-    _leave_spent_retry_loss_owed(nbytes=29)
-
-    assert emit.drain_for_shutdown(
-        timeout=20.0
-    ), "shutdown returned without writing the spent-budget loss marker"
-    recovered = _body()[before:]
-    assert [entry["type"] for entry in recovered] == [
-        "write/dropped"
-    ], f"shutdown left the loss marker owed: {[e['type'] for e in recovered]}"
-    assert recovered[0]["data"] == {"dropped_count": 1, "dropped_bytes": 29}
-
-
-def test_shutdown_reports_owed_loss_when_its_marker_cannot_land(monkeypatch, caplog):
-    """A shutdown whose retry budget is spent folds the debt forward and names it.
-
-    The split asserted below -- nothing buffered, one marker owed -- is the state a
-    SPENT budget leaves. Reaching it on the real budget of six takes six PACED
-    attempts inside *timeout*: `_drain_inline_until` sleeps a slice of what is left
-    between passes, so how many attempts a window buys is a property of the host
-    rather than of the emitter. A Linux runner fits six. The macOS runner fits fewer,
-    and there the same assertion reads a DIFFERENT lifecycle point -- the marker job
-    still retained, its debt riding inside that job -- which is how one assertion
-    reddens a shard for changes that never touch this code. Pinning the budget to one
-    attempt settles which point is reached: the first failed append spends it on any
-    host.
-
-    Two other repairs are weaker. A longer timeout buys margin on a fast host and
-    loses it again on a slow one, leaving the assertion resting on the same
-    stopwatch. Asserting that the append is reported as EITHER buffered or owed holds
-    in both states, and one of those states prints `0 loss marker(s) owed` while a
-    marker is genuinely owed, so the weaker form agrees with a wrong number instead
-    of describing a state.
-
-    That count belongs to the code that reads it rather than to this test: the debt
-    travels inside the retained job, so a count taken from `_pending_loss` alone
-    reads zero while a marker waits. What is pinned here is the spent budget, which
-    is the state this test names.
-
-    Mutation guard: removing the pin makes the assertion host-dependent again. It
-    still passes on a host that fits six paced attempts, which is why the failure
-    surfaces only on the slower runner.
-    """
-    _open_session()
-    assert emit.flush()
-    _leave_spent_retry_loss_owed()
-
-    def _fail_marker(self, *args, **kwargs):
-        raise OSError("filesystem still unavailable")
-
-    monkeypatch.setattr(lg.CrewLog, "append", _fail_marker)
-    # Patched AFTER the helper above, which spends a whole budget of its own.
-    monkeypatch.setattr(emit, "_MAX_WRITE_ATTEMPTS", 1)
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        drained = emit.drain_for_shutdown(timeout=0.5)
-
-    assert drained is False, "shutdown reported success with 1 loss marker still owed"
-    assert "0 append(s) buffered, 1 loss marker(s) owed" in caplog.text, (
-        "the warning did not describe a spent budget, so the drain stopped at a "
-        f"different lifecycle point: {caplog.text}"
-    )
-    with emit._lock:
-        loss = emit._pending_loss.get(SESSION)
-        assert loss is not None, "the failed marker's debt disappeared"
-        assert loss.dropped_count == 1, "the original counted loss was not folded forward"
-
-
-def test_shutdown_names_a_marker_still_waiting_to_be_retried(monkeypatch, caplog):
-    """A marker held for retry is owed, and the warning has to say so.
-
-    The other lifecycle point. A budget that is not spent leaves the marker JOB at
-    the front of its session's bucket, and the debt rides inside that job: the map
-    the count reads is empty while a marker is very much owed. The warning is the
-    only record of how short the log's tail is at exit, so a zero there tells an
-    operator nothing is missing when something is.
-
-    This is the state a bounded shutdown reaches whenever the retry budget outlasts
-    the window, which is a property of the host. Constructed here instead of raced
-    for: a budget of 10,000 attempts cannot be spent, so the marker is retained
-    however many passes the window buys.
-
-    Mutation guard: counting only ``_pending_loss`` reports ``0 loss marker(s)
-    owed`` and reddens the assertion below.
-    """
-    _open_session()
-    assert emit.flush()
-    _leave_spent_retry_loss_owed()
-
-    def _fail_marker(self, *args, **kwargs):
-        raise OSError("filesystem still unavailable")
-
-    monkeypatch.setattr(lg.CrewLog, "append", _fail_marker)
-    monkeypatch.setattr(emit, "_MAX_WRITE_ATTEMPTS", 10_000)
-    # Both windows bounded to a hair: the point is which state the warning
-    # describes, not how long the drain spins before describing it.
-    monkeypatch.setattr(emit, "_SECOND_CHANCE_DRAIN_SECONDS", 0.01)
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        drained = emit.drain_for_shutdown(timeout=0.01)
-
-    assert drained is False, "shutdown reported success with a marker still retained"
-    with emit._lock:
-        assert emit._pending_loss == {}, "the debt is meant to be riding in the retained job"
-        jobs = emit._pending.get(SESSION) or []
-        assert jobs and jobs[0].loss is not None, "the marker job was not retained"
-        assert jobs[0].loss.dropped_count == 1, "the retained marker lost its count"
-    assert "1 loss marker(s) owed" in caplog.text
 
 
 def test_a_close_under_a_live_turn_leaves_that_turn_its_open_calls():
@@ -4001,27 +3703,23 @@ def test_a_log_failure_on_the_writer_never_reaches_the_caller(monkeypatch):
     """
     _open_session()
     assert emit.flush()
+    real_append = lg.CrewLog.append
 
-    def _boom(self, *args, **kwargs):
-        raise OSError("no space left on device")
+    def _boom(self, entry_type, *args, **kwargs):
+        if entry_type == "turn/started":
+            raise OSError("no space left on device")
+        return real_append(self, entry_type, *args, **kwargs)
 
     monkeypatch.setattr(lg.CrewLog, "append", _boom)
 
     async def _turn() -> None:
         emit.on_turn_started(SESSION, 1, "user")
-        assert not emit.flush(
-            timeout=0.5
-        ), "flush reported quiet while the failed filesystem still owed a loss marker"
 
     asyncio.run(_turn())
-    with emit._drained:
-        writer_counted_loss = emit._drained.wait_for(
-            lambda: emit.dropped_writes() == 2 and emit.buffered_writes() == 0,
-            timeout=20.0,
-        )
-    assert writer_counted_loss, "writer never finished counting the entry and failed marker"
-    assert emit.dropped_writes() == 2, "the entry and its failed marker were not counted"
+    assert emit.flush(timeout=20.0), "the writer never finished giving up on the entry"
+    assert emit.dropped_writes() == 1, "the entry the writer gave up on was not counted"
     assert emit.buffered_writes() == 0
+    assert [e["type"] for e in _body()] == ["session/opened", "write/dropped"]
 
 
 def test_a_failed_append_is_retained_and_lands_on_the_next_pass(monkeypatch):
@@ -4167,80 +3865,6 @@ def test_a_retried_session_open_still_writes_the_entry_it_owes():
     assert [e["type"] for e in body] == ["session/opened"]
     assert body[0]["data"]["model"] == "claude-opus-5", "the entry kept its payload"
     assert emit.dropped_writes() == 0
-
-
-def test_a_wedged_writer_gives_up_after_the_cap_so_a_bounded_drain_finishes(caplog):
-    """Why there is a cap at all, and what it costs.
-
-    Entries live in memory until they are written, so a filesystem that never
-    answers would hold them forever and turn every bounded caller into a timeout --
-    ``flush`` and ``drain_for_shutdown`` would both report failure while the writer
-    retried a batch nothing could ever accept. So the batch is given up on, counted,
-    and named once. A reported loss can be investigated; a hang cannot.
-    """
-    _open_session()
-    assert emit.flush()
-
-    def _wedged(self, *args, **kwargs):
-        raise OSError("input/output error")
-
-    async def _turn() -> None:
-        emit.on_turn_started(SESSION, 3, "user")
-        emit.on_tool_called(SESSION, 3, name="fs_read", call_id="tc-1")
-        emit.on_turn_completed(SESSION, 3, stop_reason="end_turn")
-
-    # A scoped patch, NOT this test's ``monkeypatch``: the autouse fixture pins
-    # KIROCREW_HOME and the feature flag through that same object, so undoing it
-    # here would send the rest of the test at the real data home with the emitter
-    # switched off.
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(lg.CrewLog, "append", _wedged)
-        with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-            asyncio.run(_turn())
-            assert not emit.flush(
-                timeout=0.5
-            ), "flush reported quiet while the wedged filesystem still owed a loss marker"
-
-        with emit._drained:
-            writer_counted_loss = emit._drained.wait_for(
-                lambda: emit.dropped_writes() == 4 and emit.buffered_writes() == 0,
-                timeout=20.0,
-            )
-        assert writer_counted_loss, "writer never finished counting the batch and failed marker"
-        assert emit.buffered_writes() == 0
-        # At least the three entries and one failed marker pass. Not an exact
-        # total: every drain pass that runs while the filesystem is wedged fails
-        # the marker again and counts another loss, so the number reached by the
-        # time this line runs is a property of how many passes the machine managed,
-        # not of the emitter. The exact facts are asserted where they are exact --
-        # the marker's own ``dropped_count`` in the file below, and that recovery
-        # adds nothing further.
-        assert emit.dropped_writes() >= 4, "the batch and its failed marker were not counted"
-        assert not emit.drain_for_shutdown(
-            timeout=0.5
-        ), "shutdown reported quiet while the wedged filesystem still owed a loss marker"
-        assert [e["type"] for e in _body()] == ["session/opened"]
-        assert "gave up on" in caplog.text
-        dropped_while_wedged = emit.dropped_writes()
-
-    # Recovery first admits the loss into the file, then resumes ordinary
-    # appends. The counter remains process-lifetime cumulative.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        emit.on_turn_completed(SESSION, 3, stop_reason="end_turn")
-        assert emit.flush(timeout=20.0)
-    assert "landing again" in caplog.text
-    body = _body()
-    assert [e["type"] for e in body] == [
-        "session/opened",
-        "write/dropped",
-        "turn/completed",
-    ]
-    assert body[1]["data"]["dropped_count"] == 3
-    assert emit.dropped_writes() == dropped_while_wedged, (
-        "recovery counted a further loss: the marker landing and the appends after it "
-        "are not losses"
-    )
 
 
 # --- provenance ------------------------------------------------------------
@@ -4615,38 +4239,6 @@ def test_every_emitted_type_matches_the_documented_shape():
 # --- shutdown finishes a batch that is inside its backoff -----------------
 
 
-def test_the_shutdown_clamp_pulls_a_far_backoff_inside_the_deadline():
-    """The clamp itself, with no clock and no threads.
-
-    A retry schedule cannot outlive the process it is scheduled in: a batch parked
-    beyond a bounded drain's deadline is not retried later, it is lost. So during a
-    shutdown the ready-time is pulled back to within one slice of the remaining
-    budget -- and CLAMPED, never collapsed, because spending every remaining attempt
-    at once against a filesystem that needed a moment turns a delay into a
-    guaranteed drop.
-
-    Asserting the pure function is what makes this deterministic: the integration
-    tests below prove the batch lands, and this proves the rule they depend on.
-    """
-    state = emit._RetryState(attempts=1, not_before=time.monotonic() + 3600.0)
-    with emit._lock:
-        # Outside a shutdown the schedule is its own.
-        assert emit._backoff_ready_at_locked(state) == state.not_before
-
-    with pytest.MonkeyPatch.context() as mp:
-        started = time.monotonic()
-        mp.setattr(emit, "_draining_for_shutdown", True)
-        mp.setattr(emit, "_shutdown_started", started)
-        mp.setattr(emit, "_shutdown_deadline", started + 2.0)
-        with emit._lock:
-            ready = emit._backoff_ready_at_locked(state)
-        # Inside the budget, and by a slice rather than at the very end, so the
-        # remaining attempts fit rather than expiring unused.
-        assert ready < emit._shutdown_deadline
-        assert ready <= time.monotonic() + (2.0 / emit._MAX_WRITE_ATTEMPTS) + 0.05
-        assert ready < state.not_before
-
-
 def test_shutdown_writes_a_batch_that_had_been_failing():
     """A retained batch is written at shutdown, not abandoned.
 
@@ -4684,137 +4276,7 @@ def test_shutdown_writes_a_batch_that_had_been_failing():
     assert emit.dropped_writes() == 0, "a batch that could be written was counted lost"
 
 
-def test_a_shutdown_wakes_a_writer_parked_on_a_backoff():
-    """The clamp is useless if the thread that honours it never rereads it.
-
-    The writer computes its inter-pass pause BEFORE a shutdown is requested, so a
-    plain sleep would hold it for the whole backoff no matter what the deadline
-    became. This drives that directly: park the writer on a long backoff, then ask
-    for a shutdown and wait on the writer's OWN next pass rather than on a clock.
-    """
-    passes = threading.Event()
-    real_drain_once = emit._drain_once
-
-    def _spy(deferred_loss: set[str] | None = None) -> set[str]:
-        passes.set()
-        return real_drain_once(deferred_loss)
-
-    real_append = lg.CrewLog.append
-    calls = {"n": 0}
-
-    def _fail_first(self, *a, **kw):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise OSError("transient")
-        return real_append(self, *a, **kw)
-
-    with pytest.MonkeyPatch.context() as mp:
-        _open_session()
-        assert emit.flush()
-        mp.setattr(emit, "_retry_delay", lambda _attempts: 3600.0)
-        mp.setattr(lg.CrewLog, "append", _fail_first)
-        emit.on_turn_started(SESSION, 1, "user")
-        assert not emit.flush(timeout=2.0), "the injected failure did not park the writer"
-        passes.clear()
-        mp.setattr(emit, "_drain_once", _spy)
-
-        assert emit.drain_for_shutdown(timeout=20.0), "the parked writer never woke"
-
-    assert passes.is_set(), "no pass ran after the shutdown asked for one"
-    assert "turn/started" in [e["type"] for e in _body()]
-
-
 # --- a hung write is bounded by a ceiling, not by the attempt counter ------
-
-
-def test_a_hung_write_grows_the_buffer_and_sheds_nothing(caplog):
-    """A write that HANGS never advances the attempt counter that bounds a failure.
-
-    Every other loss here is bounded by attempts: an append raises, the batch is
-    retained, and a fixed number of failed passes drops it. A call that never returns
-    and never raises reaches none of that, so the buffer grows for as long as
-    producers keep appending.
-
-    It is allowed to grow. This log's holes may not be VOLUNTARY: several subsystems
-    read it to decide what happened, and an entry discarded while the process is
-    healthy is indistinguishable from a fact that never occurred, with nothing able to
-    recover it and no reader able to detect it. A crash-shaped loss is different --
-    the repair closes what a kill left behind. So a stuck filesystem costs memory,
-    and if that kills the process then every session's unwritten entries go with it:
-    worse in the tail, and accepted, because a ceiling only makes the hole less
-    likely while guaranteeing it happens.
-
-    What must hold instead is that the growth is VISIBLE -- the backlog readable and
-    the stall named -- so the operator sees the cause rather than a quiet gap.
-
-    Driven through the buffer with the writer genuinely occupied, and waiting on the
-    writer's own signal rather than a clock. Going through the public emitters would
-    take the INLINE path -- there is no event loop in a sync test -- and the hanging
-    job would block this thread instead of the writer's.
-
-    Mutation guard: re-introducing a shed at any depth reddens the drop count below.
-    """
-    took_it = threading.Event()
-    release = threading.Event()
-
-    def _hangs() -> None:
-        took_it.set()
-        release.wait(30.0)
-
-    try:
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
-            emit._buffer(SESSION, _pending(_hangs, "a write that never returns"))
-            assert took_it.wait(20.0), "the writer never picked up the hanging job"
-
-            # The writer is inside a call that will not come back, and producers keep
-            # appending: the shape that has no attempt counter to bound it.
-            for n in range(64):
-                emit._buffer(SESSION, _pending(lambda: None, f"an append behind it {n}"))
-
-            assert emit.buffered_writes() >= 64, (
-                f"entries went missing while the write was hung: only "
-                f"{emit.buffered_writes()} of 64 are held"
-            )
-            assert emit.dropped_writes() == 0, (
-                f"{emit.dropped_writes()} append(s) were discarded while the process "
-                "was healthy; a hole in this log may not be voluntary"
-            )
-            assert emit.peak_buffered_writes() >= 64, "the backlog peak is not readable"
-    finally:
-        release.set()
-        assert emit.drain_for_shutdown(timeout=20.0)
-
-
-def test_a_write_stuck_too_long_is_named(caplog):
-    """Growth is allowed, silence is not.
-
-    With no ceiling, a stuck write shows up only as memory climbing -- so the stall
-    itself has to be reported, or an operator sees a process growing with no stated
-    cause. The threshold is injected rather than waited out: a test that slept for it
-    would be measuring the clock instead of the behaviour.
-
-    Mutation guard: dropping the report leaves this silent and reddens the assertion.
-    """
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(emit, "_WRITE_STALL_SECS", 0.0)
-        with emit._lock:
-            emit._inflight_since = time.monotonic()
-            emit._inflight_what = "a write that never returns"
-            emit._stall_reported = False
-        try:
-            with caplog.at_level(logging.ERROR, logger="kiro_crew.crew_log.emit"):
-                emit._note_stall_if_any()
-                assert any(
-                    "neither returned nor failed" in r.getMessage() for r in caplog.records
-                ), "a write stuck past the threshold was not reported"
-                # Once, not per producer: a stuck writer would otherwise fill the log.
-                before = len(caplog.records)
-                emit._note_stall_if_any()
-                assert len(caplog.records) == before, "the stall was reported twice"
-        finally:
-            with emit._lock:
-                emit._inflight_since = 0.0
-                emit._inflight_what = ""
 
 
 def test_a_write_that_finishes_late_sheds_nothing():
@@ -4904,88 +4366,30 @@ def test_an_oversize_body_reaches_the_file_as_one_group():
 # --- one wedged session must not take another down ------------------------
 
 
-def test_a_wedged_session_neither_reorders_nor_loses_another_and_both_land():
-    """The per-session bucket, asserted rather than only claimed -- and its limit.
-
-    The buffer is keyed per session because each session is a separate file, and the
-    guarantee that shape buys is written in the spec: one slow crew log must not
-    REORDER another's entries. This pins that, and it also pins the part the spec
-    now states explicitly because writing this test is what surfaced it: ONE worker
-    drains every session, so a write that hangs does DELAY every other session's
-    entries until it clears. Bucketing protects order and content, not latency.
-
-    So what is asserted is what the design actually provides: while A is wedged, B's
-    entries are held in B's own bucket, none are shed, and when the wedge clears they
-    land in the order they were made. A test asserting B lands DURING the wedge would
-    be asserting an isolation this design does not have -- and it failed exactly that
-    way before being corrected.
-
-    Driven through the buffer with the writer genuinely occupied and synchronized on
-    the writer's own signal: the public emitters take the INLINE path in a sync test,
-    where A's hang would block this thread instead of the writer's.
-    """
-    other = "acp-sess-0002"
-    emit.on_session_opened(
-        other, agent="kirocrew", slot="chat-8", model="claude-opus-5", cwd="/tmp", owner="default"
-    )
-    _open_session()
-    assert emit.flush(), "the two headers did not land"
-
-    took_it = threading.Event()
-    release = threading.Event()
-
-    def _hangs() -> None:
-        took_it.set()
-        release.wait(30.0)
-
-    def _b_write(index: int):
-        def _job() -> None:
-            handle = lg.CrewLog.open(lg.KIND_SESSION, other)
-            handle.append("turn/started", {"turn": index, "actor": "user", "depth": 0}, src="acp")
-
-        return _job
-
-    # A occupies the single writer thread with a call that will not come back.
-    emit._buffer(SESSION, _pending(_hangs, "a write that never returns"))
-    assert took_it.wait(20.0), "the writer never picked up the hanging job"
-
-    # B's entries buffer behind it, in a DIFFERENT bucket.
-    for index in (1, 2, 3):
-        emit._buffer(other, _pending(_b_write(index), f"appending turn/started {index}"))
-    assert emit.buffered_writes() >= 3, "B's entries were not held"
-    assert emit.dropped_writes() == 0, "an entry was shed while only one session was stuck"
-    # B's header landed in the setup flush, so the check is on the entries under
-    # test: none of them may reach the file while the single worker is occupied.
-    held = [e for e in _body(other) if e["type"] == "turn/started"]
-    assert not held, "B wrote during the wedge -- the single worker was not occupied"
-
-    # The wedge clears, and B's held entries land in the order they were made.
-    release.set()
-    assert emit.drain_for_shutdown(timeout=20.0), "the drain did not finish after the wedge"
-
-    b_turns = [e["data"]["turn"] for e in _body(other) if e["type"] == "turn/started"]
-    assert b_turns == [1, 2, 3], f"a wedged session reordered another's entries: {b_turns}"
-    assert emit.dropped_writes() == 0, "an entry was lost to a wedge that later cleared"
-
-
-def test_queued_terminal_write_keeps_ownership_until_it_lands():
+def test_queued_terminal_write_keeps_ownership_until_it_lands(monkeypatch):
     """Cache pressure cannot hand away a still-open turn's write lease."""
+    blocker = "acp-sess-blocker"
     _open_session()
+    emit.on_session_opened(blocker, agent="kirocrew", slot="chat-b")
     emit.on_turn_started(SESSION, 1, "user")
     assert emit.flush()
 
     writer_entered = threading.Event()
     release_writer = threading.Event()
+    real_append = lg.CrewLog.append
 
-    def _occupy_writer() -> None:
-        writer_entered.set()
-        assert release_writer.wait(20.0)
+    def _hold_the_writer(self, entry_type, *args, **kwargs):
+        if self.id == blocker and entry_type == "turn/started":
+            writer_entered.set()
+            assert release_writer.wait(20.0)
+        return real_append(self, entry_type, *args, **kwargs)
 
+    monkeypatch.setattr(lg.CrewLog, "append", _hold_the_writer)
     try:
-        emit._buffer("blocked-writer", _pending(_occupy_writer, "holding the writer"))
-        assert writer_entered.wait(20.0), "the writer was never occupied"
 
         async def _queue_closer() -> None:
+            emit.on_turn_started(blocker, 1, "user")
+            assert writer_entered.wait(20.0), "the writer was never occupied"
             emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
 
         asyncio.run(_queue_closer())
@@ -5002,18 +4406,15 @@ def test_queued_terminal_write_keeps_ownership_until_it_lands():
 
     assert emit.flush(timeout=20.0)
     assert [e["type"] for e in _body()][-1] == "turn/completed"
-    with emit._lock:
-        assert (SESSION, 1) not in emit._live
+    assert emit.live_turn(SESSION) == 0
 
 
-def test_retryable_terminal_failure_keeps_the_turn_pinned():
+def test_retryable_terminal_failure_keeps_the_turn_pinned(monkeypatch):
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     assert emit.flush()
 
     original_append = lg.CrewLog.append
-    original_retain = emit._retain
-    retained = threading.Event()
     failures = {"left": 1}
 
     def _fail_closer_once(self, entry_type, *args, **kwargs):
@@ -5022,37 +4423,27 @@ def test_retryable_terminal_failure_keeps_the_turn_pinned():
             raise OSError("input/output error")
         return original_append(self, entry_type, *args, **kwargs)
 
-    def _observe_retain(session_id, jobs):
-        original_retain(session_id, jobs)
-        if session_id == SESSION:
-            retained.set()
+    # A backoff long enough that the retained closer is still parked when the pin is
+    # read; the shutdown drain below clamps it inside its window and lands the retry.
+    monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 3600.0)
+    monkeypatch.setattr(lg.CrewLog, "append", _fail_closer_once)
+    # No event loop: the closer is written inline, fails, and is retained before this
+    # call returns.
+    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
+    assert failures["left"] == 0, "the closer was never attempted"
+    assert emit.live_turn(SESSION) == 1, "a retryable terminal failure released the turn pin"
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(lg.CrewLog, "append", _fail_closer_once)
-        mp.setattr(emit, "_retry_delay", lambda _attempts: 30.0)
-        mp.setattr(emit, "_retain", _observe_retain)
-
-        async def _queue_closer() -> None:
-            emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-
-        asyncio.run(_queue_closer())
-        assert retained.wait(20.0), "the failed closer was never retained"
-        with emit._lock:
-            assert (SESSION, 1) in emit._live, "a retryable terminal failure released the turn pin"
-            emit._retry[SESSION].not_before = 0.0
-        emit._wake.set()
-        assert emit.flush(timeout=20.0)
-
-    assert failures["left"] == 0
+    assert emit.drain_for_shutdown(timeout=3.0)
     assert [e["type"] for e in _body()][-1] == "turn/completed"
-    with emit._lock:
-        assert (SESSION, 1) not in emit._live
+    assert emit.live_turn(SESSION) == 0
 
 
 @pytest.mark.parametrize("terminal", ["refused", "completed", "failed"])
 def test_every_terminal_path_releases_its_pin_after_a_definitive_drop(terminal):
     _open_session()
-    emit._pin(SESSION, 1)
+    emit.on_turn_started(SESSION, 1, "user")
+    assert emit.flush()
+    assert emit.live_turn(SESSION) == 1
 
     original_append = lg.CrewLog.append
 
@@ -5072,15 +4463,19 @@ def test_every_terminal_path_releases_its_pin_after_a_definitive_drop(terminal):
         assert emit.flush(timeout=20.0)
 
     assert emit.dropped_writes() == 1
-    with emit._lock:
-        assert (SESSION, 1) not in emit._live
+    assert emit.live_turn(SESSION) == 0
 
 
 # --- the gateway boot path -------------------------------------------------
 
 
 _BOOT_PROBE = """
-import atexit, importlib, json, sys
+import atexit, importlib, json, os, sys
+
+# The child runs the real boot path, so it must never see the operator's home: refuse
+# to import anything unless the home the parent isolated is the one in force.
+if os.path.expanduser("~") != os.environ["KC_PROBE_HOME"]:
+    raise SystemExit("the probe's home is not isolated: " + os.path.expanduser("~"))
 
 registered = []
 _real = atexit.register
@@ -5117,20 +4512,25 @@ def _boot_probe(tmp_path: Path) -> dict:
     imported both the emitter and its storage package, so an in-process check
     would read this test file's own imports rather than the boot path's.
     """
+    # The child's home, data home and workspace root are all this test's: the boot path
+    # resolves ``Path.home()`` at import time, and a child left to find its own would
+    # read the operator's real one.
+    user_home = tmp_path / "user"
+    user_home.mkdir()
     env = {
         "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
         "PATH": os.environ.get("PATH", ""),
         "TMPDIR": str(tmp_path),
+        "HOME": str(user_home),
+        "KC_PROBE_HOME": str(user_home),
         "KIROCREW_HOME": str(tmp_path / "home"),
+        "KIROCREW_WORKSPACE": str(tmp_path / "workspace"),
         "KIROCREW_CREW_LOG": "0",
     }
     if sys.platform == "win32":  # pragma: no cover - parity with the lease suite
         env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
-        # ``Path.home()`` runs at import time on the boot path and has no ``pwd``
-        # fallback on Windows, so the home-determining variables belong in even a
-        # minimal environment.
-        for name in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
-            env[name] = os.environ.get(name, "")
+        # ``Path.home()`` has no ``pwd`` fallback on Windows and reads ``USERPROFILE``.
+        env["USERPROFILE"] = str(user_home)
     # ``cwd`` moves off the repo, so the interpreter path has to be absolute: an interpreter
     # invoked through a relative PATH entry reports a relative ``sys.executable``, which a
     # child started elsewhere cannot find. Absolutise without resolving symlinks, because a
@@ -5201,34 +4601,46 @@ def test_overflow_while_the_creating_record_is_queued_still_creates_the_log(monk
     The ceiling bounds PAYLOAD memory, and the record that creates the crew log is
     O(1) per session -- refusing it would leave the session with no file, so every
     later entry (the loss marker included) would be a silent uncounted no-op. The
-    creating record is exempt, so it lands even at a zero-capacity ceiling and the
-    session's entries are recorded.
+    creating record is exempt, so it lands past a full buffer and the session's
+    entries are recorded.
 
-    Driven with the writer OCCUPIED so ``on_session_opened`` buffers its creating
-    record through ``_buffer`` -- the one path the ceiling guards -- instead of the
-    inline fast path a session that owes nothing would otherwise take.
+    Driven on an event loop with the writer OCCUPIED, so ``on_session_opened``
+    buffers its creating record -- the one path the ceiling guards -- instead of
+    taking the inline path a session that owes nothing would otherwise take.
     """
+    blocker = "acp-sess-blocker"
+    # One buffered append fills the buffer: the creating record is admitted past it,
+    # and the turn's start, which is not exempt, is refused.
+    emit.reset_caches(limits=WriterLimits(max_pending_count=1))
+    emit.on_session_opened(blocker, agent="kirocrew", slot="chat-b")
+    assert emit.flush()
+
     writer_entered = threading.Event()
     release_writer = threading.Event()
+    real_append = lg.CrewLog.append
 
-    def _occupy_writer() -> None:
-        writer_entered.set()
-        assert release_writer.wait(20.0)
+    def _hold_the_writer(self, entry_type, *args, **kwargs):
+        if self.id == blocker and entry_type == "turn/started":
+            writer_entered.set()
+            assert release_writer.wait(20.0)
+        return real_append(self, entry_type, *args, **kwargs)
 
+    monkeypatch.setattr(lg.CrewLog, "append", _hold_the_writer)
     try:
-        emit._buffer("blocked-writer", _pending(_occupy_writer, "holding the writer"))
-        assert writer_entered.wait(20.0), "the writer was never occupied"
 
-        # The ceiling now rejects any non-exempt append, but the creating record
-        # is exempt and must still be admitted while the writer is busy.
-        monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-        emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
-        emit.on_turn_started(SESSION, 1, "user")
-        assert emit.overflow_writes() >= 1, "a non-exempt append was expected to overflow"
+        async def _under_pressure() -> None:
+            emit.on_turn_started(blocker, 1, "user")
+            assert writer_entered.wait(20.0), "the writer was never occupied"
+            emit.on_turn_started(blocker, 2, "user")
+            emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
+            emit.on_turn_started(SESSION, 1, "user")
+
+        asyncio.run(_under_pressure())
+        assert emit.overflow_writes(SESSION) == 1, "a non-exempt append was expected to overflow"
     finally:
         release_writer.set()
 
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 100_000)
+    assert emit.flush(timeout=20.0)
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     assert emit.flush(timeout=20.0)
 
@@ -5314,162 +4726,102 @@ def test_a_closed_session_does_not_leave_its_creation_failure_flagged():
     ), "a closed session left its creation-failure flag behind"
 
 
-def test_a_closed_session_does_not_leave_its_overflow_count_behind(monkeypatch):
+def test_a_closed_session_does_not_leave_its_overflow_count_behind():
     """The per-session overflow count dies with the session, not at the next reset.
 
     ``overflow_writes(session_id)`` answers "did an append for this session overflow",
     which a writer reads to tell a landed append from a dropped one. It is therefore
-    per SESSION and read only while that session is writing -- so, like every other
-    per-session map, it is released in the close path's terminal cleanup. Left to
-    ``reset_caches`` a gateway that runs for weeks keeps one ``str -> int`` entry for
-    every session that ever overflowed, and a successor reusing the id would read a
-    count it did not earn.
-
-    Its sibling ``_overflow_reported`` is deliberately NOT touched here: that one is a
-    report-once latch cleared on recovery in ``_note_progress``, it predates this
-    change, and its own lifetime is main's to decide.
+    per SESSION and read only while that session is writing -- so it is released in
+    the close path's terminal cleanup. Left to ``reset_caches`` a gateway that runs
+    for weeks keeps one entry for every session that ever overflowed, and a successor
+    reusing the id would read a count it did not earn.
     """
+    emit.reset_caches(limits=WriterLimits(max_pending_count=0))
     _open_session()
     assert emit.flush()
 
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-    emit._buffer(
-        SESSION,
-        emit._PendingJob(job=lambda: None, what="overflowed append", nbytes=31),
-    )
+    async def _overflow() -> None:
+        emit.on_turn_started(SESSION, 1, "user")
+
+    asyncio.run(_overflow())
     assert emit.overflow_writes(SESSION) == 1, "the fixture did not record an overflow"
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 100_000)
 
+    # The ceiling refuses the closing entry too, and its cleanup still runs: the emitter
+    # settles a refused job's ``after`` itself.
     emit.on_session_closed(SESSION, reason="test")
-    assert emit.flush(timeout=20.0)
+    assert emit.overflow_writes(SESSION) == 0, "a closed session left its overflow count behind"
 
-    assert (
-        SESSION not in emit._overflow_by_session
-    ), "a closed session left its overflow count behind"
+
+def test_a_writer_built_under_a_patched_handle_uses_the_real_one_after_undo(monkeypatch):
+    """The writer opens a unit for its own loss marker through the emitter's handle
+    cache, read by NAME at call time. A writer first built while a test had ``_handle``
+    patched keeps no copy of the patch: once it is undone, a later loss still gets its
+    ``write/dropped`` marker instead of finding no log and saying nothing.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(emit, "_handle", lambda session_id: None)
+        emit.on_turn_started(SESSION, 1, "user")  # the first use builds the writer
+    _open_session()
+    assert emit.flush()
+    real_append = lg.CrewLog.append
+
+    def _refuse_turns(self, entry_type, *args, **kwargs):
+        if entry_type == "turn/started":
+            raise OSError("the disk is gone")
+        return real_append(self, entry_type, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
+        patch.setattr(lg.CrewLog, "append", _refuse_turns)
+
+        async def _lost() -> None:
+            emit.on_turn_started(SESSION, 2, "user")
+
+        asyncio.run(_lost())
+        assert emit.flush(timeout=10.0)
+    markers = [e["data"] for e in _body() if e["type"] == "write/dropped"]
+    assert markers and markers[0]["dropped_count"] == 1, "the lost entry was never admitted"
+
+
+def test_the_writer_and_the_emitter_report_through_one_budget(caplog):
+    """One kind of failure is named once per window, whichever side reports it.
+
+    The writer reports a landed job's failing cleanup, and the emitter reports a
+    ceiling-rejected job's, under the same ``finish-write`` kind. Two budgets would name
+    that one cause twice inside the window, which is the flood the budget exists to stop.
+    """
+    emit.reset_caches(limits=WriterLimits(max_pending_count=0))
+    _open_session()
+    assert emit.flush()
+
+    def _failing_cleanup() -> None:
+        raise RuntimeError("the cleanup failed")
+
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        # No loop: the append runs inline and lands, so the WRITER runs its cleanup.
+        emit._submit(lambda: None, "landed", SESSION, after=_failing_cleanup)
+
+        async def _rejected() -> None:
+            # On a loop at a zero ceiling the append is refused, so the EMITTER settles it.
+            emit._submit(lambda: None, "rejected", SESSION, after=_failing_cleanup)
+
+        asyncio.run(_rejected())
+    finishing = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "the cleanup failed" in r.getMessage()
+    ]
+    assert len(finishing) == 1, f"one cause was named {len(finishing)} times in one window"
+    assert emit.overflow_writes(SESSION) == 1, "the second append was not the rejected one"
 
 
 # --- loss debt survives until its marker lands -----------------------------
 
 
-def test_loss_debt_survives_until_the_marker_actually_lands():
-    """(c) A loss stays owed, WITH ITS COUNT, until its marker is on disk.
-
-    A dropped entry records a debt; that debt is not cleared when the entry is
-    dropped, only when a ``write/dropped`` marker naming it is appended. While the
-    marker cannot land the debt persists -- its count intact, not merely an empty
-    placeholder -- and ``flush`` does not report quiet. When the marker finally
-    lands it carries the full preserved count.
-    """
-    _open_session()
-    assert emit.flush()
-
-    real_append = lg.CrewLog.append
-
-    def _lose_marker(self, entry_type, *args, **kwargs):
-        if entry_type == "write/dropped":
-            raise OSError("marker cannot land")
-        return real_append(self, entry_type, *args, **kwargs)
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(lg.CrewLog, "append", _lose_marker)
-        patch.setattr(emit, "_start_drain", lambda: None)
-        emit._buffer(
-            SESSION,
-            emit._PendingJob(
-                job=lambda: (_ for _ in ()).throw(OSError("payload loss")),
-                what="payload loss",
-                nbytes=13,
-            ),
-        )
-        deferred_loss: set[str] = set()
-        for _ in range(emit._MAX_WRITE_ATTEMPTS * 2):
-            with emit._lock:
-                emit._draining = False
-                emit._drain_future = None
-                retry = emit._retry.get(SESSION)
-                if retry is not None:
-                    retry.not_before = 0.0
-            deferred_loss.update(emit._drain_once(deferred_loss))
-        with emit._lock:
-            owed = emit._pending_loss.get(SESSION)
-            assert owed is not None, "the loss debt was cleared before its marker landed"
-            assert owed.dropped_count == 1, (
-                "the debt count did not survive the failed marker attempts: "
-                f"{owed.dropped_count}"
-            )
-        assert not emit.flush(
-            timeout=0.1
-        ), "flush reported quiet while the loss marker was still owed"
-
-    before = len(_body())
-    emit.on_turn_completed(SESSION, 1, stop_reason="recovered")
-    assert emit.flush(timeout=20.0)
-    recovered = _body()[before:]
-    assert (
-        recovered[0]["type"] == "write/dropped"
-    ), f"the owed marker did not lead the next batch: {[e['type'] for e in recovered]}"
-    assert recovered[0]["data"]["dropped_count"] == 1, (
-        "the landed marker lost the debt it was owed: " f"{recovered[0]['data']}"
-    )
-    with emit._lock:
-        assert SESSION not in emit._pending_loss, "the debt was not cleared once the marker landed"
-
-
 # --- the live-turn cap never restarts a live turn's numbering --------------
 
 
-def test_a_live_turns_ordinals_never_restart_when_the_cap_is_reached(monkeypatch):
-    """(d) At the live-turn cap, an existing live turn's step/call_index never restart.
-
-    The oldest live record is the one an oldest-first eviction would reach first.
-    With a tiny cap and only live turns present, the cap must be ACCEPTED as an
-    overage rather than evicting the oldest live turn -- because evicting it drops
-    its counters and its next event mints a fresh 0-based ordinal, so two entries
-    claim one. Its call_index must keep climbing across the pressure.
-    """
-    monkeypatch.setattr(emit, "_MAX_LIVE_TURNS", 4)
-    _open_session()
-    emit.on_turn_started(SESSION, 1, "user")
-    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="a-1")
-    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="a-2")
-
-    # Fill past the cap with other live turns; none is closed, so none is sheddable.
-    for n in range(emit._MAX_LIVE_TURNS + 3):
-        other = f"livecap-{n:04d}"
-        emit.on_session_opened(other, agent="kirocrew")
-        emit.on_turn_started(other, 1, "user")
-    assert emit.flush()
-
-    assert (SESSION, 1) in emit._live, "the oldest live turn was evicted"
-    assert len(emit._live) > emit._MAX_LIVE_TURNS, "the overage was not accepted"
-
-    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="a-3")
-    assert emit.flush()
-    indexes = [e["data"]["call_index"] for e in _body() if e["type"] == "tool/called"]
-    assert indexes == [1, 2, 3], f"a live turn's numbering restarted at the cap: {indexes}"
-
-
 # --- the cap overage is reported once, not per event -----------------------
-
-
-def test_the_live_turn_cap_overage_is_reported_once_not_per_event(monkeypatch, caplog):
-    """(e) An accepted live-turn overage is named once, however many events follow."""
-    monkeypatch.setattr(emit, "_MAX_LIVE_TURNS", 3)
-    with caplog.at_level(logging.ERROR, logger=emit.logger.name):
-        _open_session()
-        # Enough live turns to sit over the cap, each minting several events.
-        for n in range(emit._MAX_LIVE_TURNS + 4):
-            other = f"overage-{n:04d}"
-            emit.on_session_opened(other, agent="kirocrew")
-            emit.on_turn_started(other, 1, "user")
-            emit.on_tool_called(other, 1, name="fs_read", call_id=f"c-{n}")
-        assert emit.flush()
-
-    overage_lines = [r for r in caplog.records if "accepting the overage" in r.getMessage()]
-    assert len(overage_lines) == 1, (
-        "the live-turn cap overage was reported "
-        f"{len(overage_lines)} times, not once: {[r.getMessage() for r in overage_lines]}"
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -5493,6 +4845,11 @@ def _open_successor(**kwargs) -> None:
         owner="default",
         **kwargs,
     )
+
+
+async def _open_successor_on_a_loop() -> None:
+    """Supersede ``SESSION`` from an event loop, where nothing is written inline."""
+    _open_successor(previous_sid=SESSION)
 
 
 def test_a_new_store_for_a_slot_that_had_one_names_it_as_previous():
@@ -5805,10 +5162,11 @@ def test_the_repair_refuses_a_candidate_whose_header_names_another_slot():
     emit.on_session_opened(bystander, agent="kirocrew", slot="chat-99")
     emit.on_turn_started(bystander, 1, "user")
     assert emit.flush()
-    # Nothing is live for it any more: a stale pin would stand the repair down for
-    # a reason other than the one under test, and the assertion would pass without
-    # the check it exists to pin.
-    emit._release_session_live(bystander)
+    # Nothing is live for it any more: a fresh claim ends every turn no terminal is
+    # coming for, so a stale pin cannot stand the repair down for a reason other than
+    # the one under test.
+    emit.on_session_opened(bystander, agent="kirocrew", slot="chat-99")
+    assert emit.flush()
     assert emit.live_turn(bystander) == 0
 
     emit._repair_superseded(bystander, "chat-7")
@@ -5824,16 +5182,11 @@ def test_the_repair_stands_down_for_a_turn_still_running_in_this_process(caplog)
     so the file states two outcomes for one turn with nothing able to say which
     happened.
 
-    Mutation guard: removing the `live_turn` branch writes the interrupted closer
+    Mutation guard: removing the stand-down branch writes the interrupted closer
     here and reddens the count below.
     """
     _dangling_predecessor()
-    # A closer IS owed for turn 2, the other half of the live population: its
-    # terminal is already queued in this same bucket, ahead of this job, so the tail
-    # it closes is closed truthfully and this repair has nothing to add.
-    emit._pin(SESSION, 2)
-    with emit._lock:
-        emit._live[(SESSION, 2)].closer_owed = True
+    assert emit.live_turn(SESSION) == 1
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
         emit._repair_superseded(SESSION, "chat-7")
@@ -5857,80 +5210,18 @@ def test_a_live_record_with_no_closer_owed_stands_the_repair_down():
     `on_session_closed` preserves those records for this reason, and this asserts the
     repair does not undo that.
 
-    Mutation guard: restoring a `_release_session_live(previous_sid)` call ahead of
-    the `live_turn` read releases turn 1 (its `closer_owed` is False), the stand-down
-    stops firing, and the closer count below goes from 0 to 1.
+    Mutation guard: releasing the session's unclosed turns ahead of the liveness read
+    releases turn 1 (no terminal was handed over for it), the stand-down stops firing,
+    and the closer count below goes from 0 to 1.
     """
     _dangling_predecessor()
-    # Turn 1 is pinned with NO closer owed -- the state a reset-mid-turn leaves, and
-    # the state a release keyed on `closer_owed` alone reads as certainly dead.
-    with emit._lock:
-        assert emit._live[(SESSION, 1)].closer_owed is False, "the fixture set up the wrong state"
+    # Turn 1 is live with NO terminal handed over -- the state a reset-mid-turn leaves,
+    # and the state a release keyed on `closer_owed` alone reads as certainly dead.
     assert emit.live_turn(SESSION) == 1
 
     emit._repair_superseded(SESSION, "chat-7")
 
     assert _closers(SESSION) == [], "a turn that may still be running was closed"
-
-
-def test_the_standdown_arms_the_debt_atomically_with_the_liveness_check(monkeypatch):
-    """Liveness read and debt write share ONE lock hold, so no snapshot slips between.
-
-    The producer-thread ceiling path snapshots `_repair_owed` and, finding it empty,
-    re-queues nothing before releasing the terminal's pin. If the stand-down read
-    liveness under one lock acquisition and then wrote the debt under a SECOND, that
-    snapshot could land in the gap -- see an empty slot, re-queue nothing -- and the
-    debt written afterwards would have no consumer, leaving the predecessor's tail
-    open for the life of the file (`residual/crash-data-loss-corruption`).
-
-    The fix reads `_live` inline and sets `_repair_owed` without dropping the lock, so
-    the whole stand-down decision-and-record is ONE acquisition. This counts the
-    acquisitions `_repair_superseded` makes for a live-turn predecessor: the atomic
-    form takes the lock exactly once for the read+write; the split form (`live_turn`
-    then a separate `with _lock`) takes it twice, opening the very window a concurrent
-    ceiling rejection exploits.
-
-    Mutation guard: splitting the read and write back into `running = live_turn(...)`
-    plus a separate `with _lock: _repair_owed[...] = slot` raises the count to 2 and
-    fails the assertion.
-    """
-    _dangling_predecessor()  # turn 1 pinned, closer not owed -> a genuine live turn
-
-    real_lock = emit._lock
-    acquisitions = {"n": 0}
-    counting = {"on": False}
-
-    class _CountLock:
-        def __enter__(self):
-            if counting["on"]:
-                acquisitions["n"] += 1
-            real_lock.acquire()
-            return self
-
-        def __exit__(self, *exc):
-            real_lock.release()
-
-        def acquire(self, *a, **k):
-            if counting["on"]:
-                acquisitions["n"] += 1
-            return real_lock.acquire(*a, **k)
-
-        def release(self, *a, **k):
-            return real_lock.release(*a, **k)
-
-    monkeypatch.setattr(emit, "_lock", _CountLock())
-
-    counting["on"] = True
-    emit._repair_superseded(SESSION, "chat-7")
-    counting["on"] = False
-
-    assert SESSION in emit._repair_owed, "the stand-down did not arm the debt"
-    assert _closers(SESSION) == [], "a live turn was closed instead of stood down"
-    assert acquisitions["n"] == 1, (
-        "the stand-down's liveness read and debt write must share ONE lock "
-        f"acquisition; took {acquisitions['n']} -- a gap between them lets a "
-        "concurrent ceiling rejection consume the empty debt slot"
-    )
 
 
 def test_the_repair_leaves_an_unmatched_child_open():
@@ -6023,7 +5314,7 @@ def test_the_repair_runs_after_an_abandoned_outcome_and_closes_the_tail():
     `write/dropped` marker, and the tail still ends closed.
 
     Mutation guard: deciding at create time and standing down on
-    `_owes_entries(previous_sid)` leaves the turn below open.
+    whether the predecessor still owes entries leaves the turn below open.
     """
     _dangling_predecessor()
     emit.reset_caches()
@@ -6043,7 +5334,9 @@ def test_the_repair_runs_after_an_abandoned_outcome_and_closes_the_tail():
     _open_successor(previous_sid=SESSION)
     assert emit.flush()
 
-    assert attempts == emit._MAX_WRITE_ATTEMPTS, "the append did not spend its whole budget"
+    assert (
+        attempts == DEFAULT_LIMITS.max_write_attempts
+    ), "the append did not spend its whole budget"
     # The abandoned outcome is admitted as a loss, and the tail is closed anyway.
     assert emit.dropped_writes() >= 1, "the doomed append was not given up on"
     closers = _closers(SESSION)
@@ -6082,7 +5375,7 @@ def test_a_real_outcome_that_lands_leaves_the_repair_nothing_to_close():
     assert statuses == ["completed"], "the repair added a second result for one call"
 
 
-def test_the_repair_is_queued_under_the_predecessor_not_the_successor():
+def test_the_repair_is_queued_under_the_predecessor_not_the_successor(monkeypatch):
     """The deferral IS the queue, so which bucket the job enters is the mechanism.
 
     The writer runs a session's jobs in submission order and orders nothing across
@@ -6092,30 +5385,38 @@ def test_the_repair_is_queued_under_the_predecessor_not_the_successor():
     `turn/completed` that was already on its way -- two outcomes for one turn, in a
     file nothing rewrites.
 
-    Asserted on the submission rather than on a written file because that is where
-    the invariant lives: an outcome-level test cannot tell the two readings apart
-    whenever the predecessor's bucket happens to drain first, which in a fixture
-    that fills it first is always.
+    So the predecessor here still OWES its real outcome when the successor opens: the
+    `turn/completed` is retained behind a long backoff, and the shutdown drain lands
+    it. A repair queued behind it then finds nothing open.
 
-    Mutation guard: submitting under `session_id` instead of `superseded` reddens
-    the identity below.
+    Mutation guard: submitting under `session_id` instead of `superseded` runs the
+    repair ahead of the owed outcome, and the turn ends with two outcomes.
     """
     _dangling_predecessor()
-    submitted: list[tuple[str, str]] = []
-    real_submit = emit._submit
+    # The predecessor's process is gone, so no live record stands the repair down.
+    emit.reset_caches()
+    delays = {"secs": 3600.0}
+    attempts = {"n": 0}
 
-    def _record(job, what, session_id, *args, **kwargs):
-        submitted.append((what, session_id))
-        return real_submit(job, what, session_id, *args, **kwargs)
+    def _real_outcome() -> None:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("the outcome is on its way, not yet on disk")
+        handle = emit._handle(SESSION)
+        assert handle is not None
+        handle.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
 
-    with unittest.mock.patch.object(emit, "_submit", _record):
-        _open_successor(previous_sid=SESSION)
-        assert emit.flush()
+    monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: delays["secs"])
+    emit._submit(_real_outcome, "the predecessor's real turn/completed", SESSION)
+    assert attempts["n"] == 1, "the outcome was not attempted and retained"
+    # From an event loop, so the opening is handed to the parked writer rather than
+    # waiting on it for an inline turn.
+    asyncio.run(_open_successor_on_a_loop())
+    delays["secs"] = 0.0
+    assert emit.drain_for_shutdown(timeout=3.0)
 
-    repairs = [entry for entry in submitted if "interrupted tail" in entry[0]]
-    assert len(repairs) == 1, "the repair was queued more or less than once"
-    assert repairs[0][1] == SESSION, "the repair was queued outside the predecessor's bucket"
-    assert repairs[0][1] != SUCCESSOR
+    stops = [closer["data"]["stop_reason"] for closer in _closers(SESSION)]
+    assert stops == ["end_turn"], f"the repair ran ahead of the outcome still owed: {stops}"
 
 
 def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
@@ -6128,7 +5429,7 @@ def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
 
     The crash is modelled as what a crash actually costs -- the queued repair never
     runs and the process's memory is gone -- rather than by faking a file state: the
-    supersede is driven for real with the repair job swallowed, then `reset_caches`
+    supersede is driven for real with the repair never queued, then `reset_caches`
     drops the in-memory state a restart would not have, and the successor re-attaches
     with `resumed=True`, which is what a later process does to a conversation an
     earlier one was writing.
@@ -6141,15 +5442,8 @@ def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
     emit.reset_caches()
 
     # The supersede, with the repair job LOST exactly as a crash loses it: the
-    # opening entry lands durably, the follow-on job never runs.
-    real_submit = emit._submit
-
-    def _swallow_the_repair(job, what, session_id, *args, **kwargs):
-        if "interrupted tail" in what:
-            return None
-        return real_submit(job, what, session_id, *args, **kwargs)
-
-    with unittest.mock.patch.object(emit, "_submit", _swallow_the_repair):
+    # opening entry lands durably, the follow-on job is never queued.
+    with unittest.mock.patch.object(emit, "_queue_tail_repair", lambda previous_sid, slot: None):
         _open_successor(previous_sid=SESSION)
         assert emit.flush()
 
@@ -6206,7 +5500,7 @@ def test_the_recovery_reads_this_logs_own_edge_not_the_callers(caplog):
     assert not any("recovered the superseded crew log" in r.message for r in caplog.records)
 
 
-def test_a_superseded_repair_survives_the_pending_ceiling(monkeypatch):
+def test_a_superseded_repair_survives_the_pending_ceiling():
     """Refusing only the FOLLOW-ON leaves the tail open with nothing to re-queue it.
 
     The opening entry that queues this repair is itself exempt from the ceiling, so
@@ -6216,153 +5510,70 @@ def test_a_superseded_repair_survives_the_pending_ceiling(monkeypatch):
     of a file nothing rewrites -- the exact state this job exists to remove.
 
     The ceiling has to be in force at the moment the repair is SUBMITTED, which is
-    inside the opener's job body on the writer thread -- not when `_open_successor`
-    returns. So it is held at zero across the release AND the drain, and restored
-    only afterwards. `repair_interrupted_turn` writes through the store handle
-    rather than this queue, so the closers themselves are never ceiling-gated.
+    inside the opener's job body, so the writer is built with a ceiling of zero for
+    the whole test and a non-exempt probe proves it is in force.
+    `repair_interrupted_turn` writes through the store handle rather than this
+    queue, so the closers themselves are never ceiling-gated.
 
-    Mutation guard: dropping `exempt_ceiling=True` from the repair's `_submit`
-    leaves the closer count below at 0.
+    Mutation guard: queueing the repair as an ordinary append rather than a writer
+    follow-on leaves the closer count below at 0.
     """
     _dangling_predecessor()
-    emit.reset_caches()
+    emit.reset_caches(limits=WriterLimits(max_pending_count=0))
 
-    writer_entered = threading.Event()
-    release_writer = threading.Event()
+    async def _probe() -> None:
+        emit.on_turn_started("ceiling-probe", 1, "user")
 
-    def _occupy_writer() -> None:
-        writer_entered.set()
-        assert release_writer.wait(20.0)
+    before = emit.overflow_writes()
+    asyncio.run(_probe())
+    assert emit.overflow_writes() == before + 1, "the ceiling did not reject a non-exempt job"
 
-    try:
-        emit._buffer("blocked-writer", _pending(_occupy_writer, "holding the writer"))
-        assert writer_entered.wait(20.0), "the writer was never occupied"
-
-        monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-        # Positive control that the ceiling is IN FORCE right now, independent of
-        # anything the repair does: a non-exempt probe submitted here is refused.
-        # Without it a ceiling that silently stopped applying would read as a pass.
-        before = emit.overflow_writes()
-        emit._buffer("ceiling-probe", _pending(lambda: None, "a non-exempt probe"))
-        assert emit.overflow_writes() == before + 1, "the ceiling did not reject a non-exempt job"
-
-        _open_successor(previous_sid=SESSION)
-    finally:
-        release_writer.set()
-
-    # Still at zero while the writer drains, because the opener's body -- where the
-    # repair is submitted -- runs on the writer thread.
+    _open_successor(previous_sid=SESSION)
     assert emit.flush(timeout=20.0)
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 100_000)
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the ceiling refused the repair and the tail stayed open"
     assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
 
 
-def test_the_ceiling_docstring_names_every_exempt_submission():
-    """The exempt set is enumerated in prose, so the count is DERIVED from the code.
-
-    A hand-copied membership list goes stale silently: a fourth exempt submission
-    would leave the ceiling's docstring saying "Three jobs", which reads as a
-    complete list and is not. This counts the production call sites that pass
-    `exempt_ceiling=True` and asserts the docstring's number word agrees, so adding
-    one reddens here instead of being discovered by a reader.
-
-    Mutation guard: changing the docstring's number word, or adding a fourth
-    `exempt_ceiling=True` submission without updating it, reddens this.
-    """
-    src = Path(emit.__file__).read_text(encoding="utf-8")
-    # The call sites, not the parameter's own declaration or its forwarding inside
-    # `_submit`: those spell it `exempt_ceiling: bool = False` and
-    # `exempt_ceiling=exempt_ceiling`.
-    sites = re.findall(r"^\s*exempt_ceiling=True,$", src, re.MULTILINE)
-    assert len(sites) >= 2, f"the call-site scan found {len(sites)}, so it is not measuring"
-
-    words = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
-    expected = words[len(sites)]
-    stated = re.search(r"^    (One|Two|Three|Four|Five) jobs? (?:is|are) EXEMPT", src, re.MULTILINE)
-    assert stated is not None, "the ceiling docstring no longer enumerates the exempt set"
-    assert stated.group(1) == expected, (
-        f"{len(sites)} submissions pass exempt_ceiling=True but the ceiling docstring "
-        f"says {stated.group(1)!r}; update it to {expected!r}"
-    )
-
-
-def test_a_dropped_repair_is_requeued_and_the_marker_counts_only_the_real_loss():
-    """A spent retry budget drops the whole retained batch, this job included.
+def test_a_repair_dropped_with_the_batch_it_waited_in_comes_back(monkeypatch):
+    """The repair is a writer follow-on: dropped with its batch, it is submitted again.
 
     The deferral that makes this job correct is also how it is lost: it waits in the
     predecessor's bucket BEHIND entries that crew log already owes, and a filesystem
-    that keeps refusing that session's writes until ``_MAX_WRITE_ATTEMPTS`` is spent
+    that keeps refusing that session's writes until the attempt budget is spent
     drops the entire retained batch -- the owed append and this job with it. Nothing
     re-queues a one-shot job for an id that is never resumed, so the predecessor's
     ``turn/started`` would stay open for the life of a file nothing rewrites.
 
-    Two things are asserted, because the fix has two halves. The repair comes back,
-    and it lands BEHIND the ``write/dropped`` marker, so the file states both that
-    entries are missing and that the turn did not finish. And the marker counts ONE
-    loss rather than two: the repair is not missing, it is being submitted again, and
-    counting it would overstate the damage in the one record a reader trusts to say
-    what is gone.
+    Two things are asserted, because the policy has two halves. The repair comes
+    back, and it lands BEHIND the ``write/dropped`` marker, so the file states both
+    that entries are missing and that the turn did not finish. And the marker counts
+    ONE loss rather than two: the repair is not missing, it is being submitted again.
 
-    The wedged disk is driven the way this suite's own retry-loss helper drives it,
-    a job that raises ``OSError`` with the budget spent by hand, rather than by
-    faking a dropped state, and the batch is asserted to have really dropped before
-    anything about recovery is asserted.
+    The owed append is parked behind a long backoff while the successor opens, so the
+    repair is queued into the batch BEFORE the budget is spent; the shutdown drain
+    then spends the rest of the budget inside its window.
 
-    Mutation guard: dropping ``on_permanent_drop`` from the repair's submission
-    leaves the closer count at 0; dropping the ``_uncount_one_requeued_drop`` call
-    leaves the marker claiming 2.
+    Mutation guard: queueing the repair as an ordinary append leaves the closer count
+    at 0; counting the re-submitted repair as lost makes the marker claim 2.
     """
     _dangling_predecessor()
     # A restart leaves no live record behind, and this repair only ever runs for a
-    # predecessor no process is still writing. Dropped BEFORE the loss state exists,
-    # because `reset_caches` clears `_pending_loss` too.
+    # predecessor no process is still writing.
     emit.reset_caches()
+    delays = {"secs": 3600.0}
 
     def _fail() -> None:
         raise OSError("the predecessor's disk is wedged")
 
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(emit, "_start_drain", lambda: None)
-        # The append that crew log already owes, which the repair waits behind.
-        emit._buffer(
-            SESSION,
-            emit._PendingJob(job=_fail, what="the predecessor's owed append", nbytes=23),
-        )
-        emit.on_session_opened(SUCCESSOR, agent="kirocrew", slot="chat-7", previous_sid=SESSION)
-        for _ in range(emit._MAX_WRITE_ATTEMPTS):
-            with emit._lock:
-                emit._draining = False
-                emit._drain_future = None
-                retry = emit._retry.get(SESSION)
-                if retry is not None:
-                    retry.not_before = 0.0
-            emit._drain_once()
+    monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: delays["secs"])
+    emit._submit(_fail, "the predecessor's owed append", SESSION, 23)
+    asyncio.run(_open_successor_on_a_loop())
+    delays["secs"] = 0.0
+    assert emit.drain_for_shutdown(timeout=3.0)
 
-    # The drop really happened, so what follows is about recovery rather than about a
-    # batch that was quietly written after all.
-    assert emit.dropped_writes() >= 1, "the retry budget was never spent"
-    with emit._lock:
-        assert SESSION in emit._pending_loss, "no marker is owed, so nothing was dropped"
-
-    # Driving `_drain_once` by hand above left the writer with nothing scheduled to
-    # drain it, because `_start_drain` was stubbed out for the budget spend, and
-    # `flush` only WAITS for a pass -- it never starts one. So the pass is claimed and
-    # started exactly as a producer does it, which puts the marker and the re-queued
-    # repair through the REAL drain loop. That loop is also why the re-submission
-    # needs no trigger of its own in production: it re-checks `_pending` after every
-    # pass, and the hook runs inside a pass.
-    with emit._lock:
-        retry = emit._retry.get(SESSION)
-        if retry is not None:
-            retry.not_before = 0.0
-        emit._mark_draining_locked()
-    emit._start_drain()
-
-    assert emit.flush(timeout=20.0)
-
+    assert emit.dropped_writes() == 1, "the budget was not spent, or the repair was counted"
     closers = _closers(SESSION)
     assert len(closers) == 1, "the dropped repair was not re-queued, so the tail stayed open"
     assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
@@ -6371,9 +5582,7 @@ def test_a_dropped_repair_is_requeued_and_the_marker_counts_only_the_real_loss()
     kinds = [entry["type"] for entry in body]
     markers = [entry for entry in body if entry["type"] == "write/dropped"]
     assert len(markers) == 1, f"expected exactly one marker, saw {kinds}"
-    assert (
-        markers[0]["data"]["dropped_count"] == 1
-    ), f"the marker counted the re-queued repair as a missing append: {markers[0]['data']}"
+    assert markers[0]["data"] == {"dropped_count": 1, "dropped_bytes": 23}, markers[0]["data"]
     assert kinds.index("write/dropped") < kinds.index(
         "turn/completed"
     ), f"the closer landed ahead of the marker that explains it: {kinds}"
@@ -6397,209 +5606,80 @@ def test_a_dropped_terminal_requeues_the_repair_that_stood_down_for_it():
     forced reset mid-turn leaves behind, and it is what makes the repair stand down.
 
     Mutation guard: dropping `on_permanent_drop=_terminal_dropped(...)` from the
-    terminal sites, or the `_repair_owed` write at the stand-down, leaves the closer
-    count at 0.
+    terminal sites, or the debt the stand-down records, leaves the closer count at 0.
     """
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
     assert emit.flush()
-
     assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
-    with emit._lock:
-        assert SESSION in emit._repair_owed, "the stand-down recorded no debt to pay"
 
     real_append = lg.CrewLog.append
 
-    def _lose_the_terminal(self, entry_type, *args, **kwargs):
-        if entry_type == "turn/completed":
+    def _lose_the_real_terminal(self, entry_type, data, *args, **kwargs):
+        if entry_type == "turn/completed" and data.get("stop_reason") == "end_turn":
             raise OSError("the terminal cannot be written")
-        return real_append(self, entry_type, *args, **kwargs)
+        return real_append(self, entry_type, data, *args, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(lg.CrewLog, "append", _lose_the_terminal)
-        patch.setattr(emit, "_start_drain", lambda: None)
+        patch.setattr(lg.CrewLog, "append", _lose_the_real_terminal)
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-        for _ in range(emit._MAX_WRITE_ATTEMPTS):
-            with emit._lock:
-                emit._draining = False
-                emit._drain_future = None
-                retry = emit._retry.get(SESSION)
-                if retry is not None:
-                    retry.not_before = 0.0
-            emit._drain_once()
+        assert emit.flush(timeout=20.0)
 
-    # The terminal really is gone, so what follows is about the re-queue rather than
-    # about a closer that landed after all.
-    assert emit.dropped_writes() >= 1, "the terminal's attempt budget was never spent"
-    with emit._lock:
-        assert SESSION not in emit._repair_owed, "the drop did not consume the debt"
-        retry = emit._retry.get(SESSION)
-        if retry is not None:
-            retry.not_before = 0.0
-        emit._mark_draining_locked()
-    emit._start_drain()
-    assert emit.flush(timeout=20.0)
-
+    assert emit.dropped_writes() == 1, "the terminal's attempt budget was never spent"
     closers = _closers(SESSION)
     assert len(closers) == 1, "the dropped terminal left the predecessor's tail open"
     assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
+    assert emit.live_turn(SESSION) == 0
 
 
-def test_a_terminal_rejected_at_the_ceiling_still_requeues_the_repair(monkeypatch):
-    """A ceiling REJECTION runs a job's permanent-drop hook, just as ``_drop`` does.
+def test_a_ceiling_rejected_terminal_releases_its_pin_then_requeues_the_repair(monkeypatch):
+    """A ceiling REJECTION is a permanent loss too, and the emitter settles it.
 
-    A terminal that stood a repair down carries a permanent-drop hook so its loss
-    re-queues the tail repair. There are TWO ways that terminal is permanently
-    lost, not one: the retry budget spends out in ``_drop`` (covered by the sibling
-    test), or the pending buffer is at its ceiling and the entry is REJECTED at the
-    tail in ``_buffer``'s overflow arm. That arm finishes the rejected entry, and if
-    it finishes it WITHOUT firing ``on_permanent_drop`` the hook never runs -- so a
-    terminal carrying ``_terminal_dropped`` leaves ``_repair_owed`` set with nothing
-    left to consume it, a superseded id is never resumed to re-queue anything, and
-    the predecessor's ``turn/started`` stays open for the life of a file nothing
-    rewrites: the exact ``residual/crash-data-loss-corruption`` this repair closes.
+    A terminal that stood a repair down carries the trigger that re-queues it. The
+    writer hands a rejected job back unsettled, and the emitter settles it: it reads
+    the repair debt FIRST, then runs the terminal's release -- which frees the turn's
+    pin and, the session having no live turn left, clears that debt -- and only then
+    re-queues the repair from what it read. Read after the release, the debt is gone
+    and nothing is re-queued; re-queued before the release, the repair can run against
+    the still-live pin, stand down again, and have its renewed debt erased by the
+    release. Either way the predecessor's tail stays open for the life of the file.
 
-    Driven at the ``_buffer`` seam the finding names, the way this suite's other
-    ceiling tests drive it, because the hazard is a property of the overflow arm
-    itself: the wedged-disk state the ceiling is documented for co-occurs naturally
-    with a forced mid-turn supersede, so the residual is reachable, not extreme.
+    Driven through the public terminal on an event loop, so the entry takes the
+    buffered path a ceiling of zero refuses.
 
-    Mutation guard: removing the ``on_permanent_drop`` block from ``_buffer``'s
-    overflow arm leaves ``fired`` False.
+    Mutation guard: reading the debt after the release leaves `queued` empty and the
+    closer count at 0; re-queueing before the release records the pin still live.
     """
-    emit.reset_caches()
-
-    fired: list[str] = []
-    job = emit._PendingJob(
-        job=lambda: None,
-        what="a terminal that overflows the ceiling",
-        nbytes=31,
-        on_permanent_drop=lambda: fired.append("hook"),
-    )
-
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-    before = emit.overflow_writes()
-    emit._buffer(SESSION, job)
-
-    assert emit.overflow_writes() == before + 1, "the ceiling did not reject the entry"
-    assert fired == ["hook"], (
-        "a ceiling-rejected entry did not fire its permanent-drop hook, so a "
-        "superseded terminal's loss would never re-queue the tail repair"
-    )
-    # Cleared after firing, mirroring `_drop`, so a re-submitting hook cannot see it
-    # a second time.
-    assert job.on_permanent_drop is None, "the hook was fired but not cleared"
-
-
-def test_a_ceiling_rejected_terminal_finishes_before_it_requeues(monkeypatch):
-    """The overflow arm releases the pin BEFORE the re-queue hook runs.
-
-    This arm runs on the PRODUCER thread, and its permanent-drop hook
-    (``_terminal_dropped``) re-submits the tail repair, which the WRITER thread then
-    runs and which stands down while any live turn of the session remains. If the
-    hook fired before ``_finish`` -- ``_finish`` being where this terminal's
-    ``after`` releases the turn's pin via ``_closing`` -> ``_forget_turn`` -- the
-    writer could observe the pin still live, re-record ``_repair_owed``, and then
-    ``_finish`` -> ``_forget_turn`` would erase that freshly-renewed debt with
-    nothing left to re-trigger it, leaving the predecessor's tail open for the life
-    of the file. So the contract is: FINISH first, THEN queue the repair. Unlike
-    ``_drop`` (writer thread, hook-then-finish is safe there because it is
-    serialized ahead of the repair), this call site must reverse the order.
-
-    Mutation guard: moving the ``_finish(pending)`` call back AFTER the hook block
-    in ``_buffer``'s overflow arm records ``order == ["hook", "finish"]`` and fails.
-    """
-    emit.reset_caches()
-
-    order: list[str] = []
-    real_finish = emit._finish
-
-    def _spy_finish(job):
-        order.append("finish")
-        return real_finish(job)
-
-    monkeypatch.setattr(emit, "_finish", _spy_finish)
-
-    job = emit._PendingJob(
-        job=lambda: None,
-        what="a terminal that overflows the ceiling",
-        nbytes=31,
-        on_permanent_drop=lambda: order.append("hook"),
-    )
-
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-    emit._buffer(SESSION, job)
-
-    assert order == ["finish", "hook"], (
-        "the overflow arm must finish the terminal (release its pin) BEFORE the "
-        f"re-queue hook runs, else the renewed repair debt is erased; saw {order}"
-    )
-
-
-def test_a_ceiling_rejected_terminal_with_a_real_debt_still_closes_the_tail(monkeypatch):
-    """The reviewer's finding: `_finish` clears the debt, so the STALE hook no-ops.
-
-    The overflow arm releases the live-turn pin by running `_finish`, whose `after`
-    (`_closing` -> `_forget_turn`) also pops `_repair_owed` once the session has no
-    live turn left. If the arm then relied on `_terminal_dropped` re-reading the map,
-    that read would find an empty slot and re-queue NOTHING -- the predecessor's tail
-    would stay open for the life of the file (`residual/crash-data-loss-corruption`).
-    But firing the hook BEFORE `_finish` instead re-introduces the cross-thread race
-    where the re-queued repair sees the still-live pin and its renewed debt is erased.
-    The arm must therefore SNAPSHOT the debt before `_finish` and re-queue from the
-    snapshot after the pin is released -- which is what this test pins.
-
-    Driven at the `_buffer` seam the finding names (the way the sibling ceiling test
-    drives it), with the REAL `_terminal_dropped` hook and a REAL debt armed by the
-    stand-down, so the failure mode is the actual map-clear/hook-no-op interaction
-    rather than a synthetic hook. After the rejection the debt must be consumed AND a
-    tail-repair job must be queued into the predecessor's bucket.
-
-    Mutation guard: reverting the arm to fire `_terminal_dropped` AFTER `_finish`
-    (reading the already-popped `_repair_owed`) leaves no repair queued -- `queued`
-    stays empty.
-    """
+    emit.reset_caches(limits=WriterLimits(max_pending_count=0))
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
     assert emit.flush()
-
     assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
-    with emit._lock:
-        assert SESSION in emit._repair_owed, "the stand-down recorded no debt to pay"
-        owed_slot = emit._repair_owed[SESSION]
-        # The stand-down pinned a live turn for SESSION; that pin is what `_finish`
-        # releases. Release it here is the job of `_finish` under test -- leave it.
 
-    # Capture what gets submitted to the writer, so we can prove a repair was queued
-    # rather than silently dropped.
-    queued: list = []
+    queued: list[tuple[str, str, int]] = []
     real_queue = emit._queue_tail_repair
 
-    def _spy_queue(previous_sid, slot, **kwargs):
-        queued.append((previous_sid, slot))
-        return real_queue(previous_sid, slot, **kwargs)
+    def _spy_queue(previous_sid: str, slot: str) -> None:
+        queued.append((previous_sid, slot, emit.live_turn(previous_sid)))
+        real_queue(previous_sid, slot)
 
     monkeypatch.setattr(emit, "_queue_tail_repair", _spy_queue)
 
-    # A terminal for SESSION carrying the real drop hook, rejected at the ceiling.
-    job = emit._PendingJob(
-        job=lambda: None,
-        what="SESSION's terminal that overflows the ceiling",
-        nbytes=31,
-        on_permanent_drop=emit._terminal_dropped(SESSION),
-        after=emit._closing(SESSION, 1),
-    )
-    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
-    before = emit.overflow_writes()
-    emit._buffer(SESSION, job)
+    async def _terminal() -> None:
+        emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
 
-    assert emit.overflow_writes() == before + 1, "the ceiling did not reject the terminal"
-    with emit._lock:
-        assert SESSION not in emit._repair_owed, "the debt was neither re-queued nor cleared"
-    assert queued == [(SESSION, owed_slot)], (
-        "a ceiling-rejected terminal with a real debt did not re-queue the tail "
-        f"repair from the snapshot -- the predecessor's tail stays open; saw {queued}"
-    )
+    asyncio.run(_terminal())
+    assert emit.overflow_writes(SESSION) == 1, "the ceiling did not reject the terminal"
+    assert queued == [
+        (SESSION, "chat-7", 0)
+    ], f"the repair was not re-queued after the release: {queued}"
+    assert emit.flush(timeout=20.0)
+
+    closers = _closers(SESSION)
+    assert len(closers) == 1, "a ceiling-rejected terminal left the predecessor's tail open"
+    assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
+    kinds = [e["type"] for e in _body(SESSION)]
+    assert kinds.index("write/dropped") < kinds.index("turn/completed"), kinds
 
 
 def test_a_landed_terminal_pays_the_debt_and_the_repair_writes_nothing():
@@ -6608,76 +5688,23 @@ def test_a_landed_terminal_pays_the_debt_and_the_repair_writes_nothing():
     The stand-down deferred to this turn's real outcome, and here it arrives, so the
     debt is simply paid and nothing may be re-queued or synthesised. The turn must end
     with its OWN `end_turn`, not with an `interrupted` written beside it -- two outcomes
-    for one turn is the corruption the stand-down exists to avoid, and a debt that is
-    never cleared would also grow the record once per supersede for the life of the
-    process.
-
-    Mutation guard: dropping the `_repair_owed.pop` from `_forget_turn` leaves the debt
-    standing and reddens the emptiness assertion below.
+    for one turn is the corruption the stand-down exists to avoid. That the landed
+    release pays the debt is pinned at the tracker's interface
+    (`test_a_landed_terminal_pays_the_debt` in test_crew_log_turn_tracker.py).
     """
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
     assert emit.flush()
-    with emit._lock:
-        assert SESSION in emit._repair_owed, "the stand-down recorded no debt to pay"
+    assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
 
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     assert emit.flush(timeout=20.0)
-
-    with emit._lock:
-        assert SESSION not in emit._repair_owed, "a landed terminal left the debt standing"
 
     closers = _closers(SESSION)
     assert len(closers) == 1, f"the turn got {len(closers)} outcomes, not one"
     assert closers[0]["data"]["stop_reason"] == "end_turn", (
         "the real outcome was replaced or shadowed by a synthesised one: " f"{closers[0]['data']}"
     )
-
-
-def test_a_nested_turn_landing_first_does_not_pay_a_sibling_turns_debt():
-    """The debt is keyed by SESSION, so a nested turn must not clear it early.
-
-    A session can hold several live turns at once -- a nested turn pins its own
-    record while its parent's is still open. The repair stood down because SOME
-    live turn made closing the predecessor's tail unsafe, and it stays unsafe while
-    ANY live turn of the session remains. If the FIRST terminal to land cleared the
-    per-session debt, a later live turn whose own terminal then DROPS would have
-    nothing left to re-queue the repair, and the predecessor's `turn/started` would
-    stay open for the life of a file nothing rewrites -- the
-    `residual/crash-data-loss-corruption` this repair exists to close.
-
-    Driven at the `_forget_turn` seam with two live turns pinned and a debt owed:
-    resolving the inner turn must leave the debt standing, and only resolving the
-    last live turn may pay it.
-
-    Mutation guard: reverting `_forget_turn` to pop `_repair_owed` unconditionally
-    reddens the first assertion below.
-    """
-    emit.reset_caches()
-    # Two live turns for one session -- a parent and a nested child.
-    emit._pin(SESSION, 1)
-    emit._pin(SESSION, 2)
-    with emit._lock:
-        _live_sessions = {sid for (sid, _) in emit._live}
-        assert SESSION in _live_sessions, "the fixture did not pin the live turns"
-        # The stand-down recorded a debt because a live turn made the repair unsafe.
-        emit._repair_owed[SESSION] = "chat-7"
-
-    # The inner turn's terminal lands first. Its sibling (turn 1) is still live, so
-    # the debt must NOT be paid yet.
-    emit._forget_turn(SESSION, 2)
-    with emit._lock:
-        assert SESSION in emit._repair_owed, (
-            "a nested turn landing first paid the debt while a sibling turn was "
-            "still live -- a later dropped terminal would then never re-queue the repair"
-        )
-
-    # The last live turn resolves. Now the debt is genuinely paid.
-    emit._forget_turn(SESSION, 1)
-    with emit._lock:
-        assert (
-            SESSION not in emit._repair_owed
-        ), "the debt survived after the session's last live turn resolved"
 
 
 def test_a_cleared_sid_still_names_the_predecessor():
@@ -7025,179 +6052,40 @@ def test_a_store_whose_front_retention_removed_reports_no_edge():
 # --- the failure warning budget -------------------------------------------
 
 
-def _warnings(caplog) -> list[str]:
-    """The messages a DEFAULT-level operator actually sees."""
-    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-
-
-def _age_budget(seconds: float) -> None:
-    """Move every held budget *seconds* into the past.
-
-    Drives the re-arm without a sleep and without patching the clock: the window
-    is state, so the test states it.
-    """
-    with emit._lock:
-        for key, (warned_at, swallowed) in list(emit._warn_budget.items()):
-            emit._warn_budget[key] = (warned_at - seconds, swallowed)
-
-
-def test_a_second_kind_of_failure_is_named_even_after_an_earlier_one(caplog):
-    """A spent slot must not hide a DIFFERENT failure.
-
-    The budget exists so a failing store cannot flood the log, and that intent is
-    sound; the granularity is what has to distinguish "the same failure repeating"
-    from "a different failure happening once". A disk refusing an append for
-    ENOSPC, the same disk then failing for EIO, and a lost write lease are three
-    different facts about the host, and an operator who is told only the first
-    learns nothing about the two that follow.
-    """
-    full = OSError(28, "No space left on device")
-    broken = OSError(5, "Input/output error")
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        emit._report("growth listener", RuntimeError("listener blew up"), op="growth-listener")
-        emit._report("appending an entry", full, op="crew-append")
-        emit._report("appending an entry", broken, op="crew-append")
-        emit._report("opening the crew log", RuntimeError("lease lost"), op="crew-log-open")
-    seen = _warnings(caplog)
-    assert len(seen) == 4, f"four distinct failures, {len(seen)} named: {seen}"
-    # Each one names its own operation, so the lines are told apart by a reader.
-    assert any("growth listener" in m for m in seen)
-    assert any("No space left" in m for m in seen)
-    assert any("Input/output error" in m for m in seen)
-    assert any("lease lost" in m for m in seen)
-
-
-def test_one_kind_repeating_is_named_once_not_once_per_failure(caplog):
-    """The reverse direction: the flood the budget exists to prevent.
-
-    Without this, an implementation that simply deleted the budget would satisfy
-    the test above and log a line per failed append -- which is the behaviour the
-    suppression was written for in the first place.
-    """
-    full = OSError(28, "No space left on device")
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        for _ in range(25):
-            emit._report("appending an entry", full, op="crew-append")
-    seen = _warnings(caplog)
-    assert len(seen) == 1, f"25 failures of one kind named {len(seen)} times: {seen}"
-
-
-def test_many_units_failing_at_once_are_named_once_not_once_per_unit(caplog):
-    """The other flood: one cause reaching many stores is still one cause.
-
-    A disk that fills up fails every store on it. The key holds the operation and
-    the error, never the unit, so a full disk is one warning rather than one per
-    crew log -- the unit is in the message for the reader, not in the budget.
-    """
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        for n in range(40):
-            emit._report(
-                f"appending crew_report for crew 'store-{n}'",
-                OSError(28, "No space left on device"),
-                op="crew-report-append",
-            )
-    seen = _warnings(caplog)
-    assert len(seen) == 1, f"one cause across 40 stores named {len(seen)} times: {seen}"
-
-
-def test_a_spent_budget_says_how_many_failures_it_swallowed(caplog):
-    """A budget that ran out has to say so.
-
-    A slot that is spent and then never speaks again is the original defect scoped
-    down: an ongoing failure stays invisible at default level. So the swallowed
-    failures are counted, and the count rides on the next warning for that kind
-    once the window has passed.
-    """
-    full = OSError(28, "No space left on device")
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        for _ in range(7):
-            emit._report("appending an entry", full, op="crew-append")
-        assert len(_warnings(caplog)) == 1, "the window had not passed yet"
-        _age_budget(emit._WARN_REARM_SECONDS + 1.0)
-        emit._report("appending an entry", full, op="crew-append")
-    seen = _warnings(caplog)
-    assert len(seen) == 2, f"the re-armed window did not report: {seen}"
-    assert (
-        "6 more went unreported" in seen[1]
-    ), f"the spent budget did not say how many it swallowed: {seen[1]}"
-
-
-def test_the_first_warning_scopes_its_own_promise_to_this_kind(caplog):
-    """The disclosure has to match what actually happens next.
-
-    The line is the only thing telling an operator what the log will and will not
-    carry from here, so it may not promise silence for failures that are in fact
-    still reported.
-    """
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        emit._report("appending an entry", OSError(28, "full"), op="crew-append")
-    (line,) = _warnings(caplog)
-    assert "of this kind" in line, f"the promise is not scoped to the kind: {line}"
-
-
-def test_the_budget_map_is_bounded(caplog):
-    """Keys are program constants, and the map is capped even so."""
-    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
-        for n in range(emit._MAX_WARN_KINDS * 3):
-            emit._report("appending an entry", OSError(n, f"errno {n}"), op="crew-append")
-    assert (
-        len(emit._warn_budget) <= emit._MAX_WARN_KINDS
-    ), f"budget map grew to {len(emit._warn_budget)}, cap is {emit._MAX_WARN_KINDS}"
-
-
 def test_every_report_call_site_names_a_literal_operation():
     """Enumerated from the source, so a new call site is covered by existing.
 
-    ``op`` is the only part of a call that reaches the budget key, which is what
-    keeps the map bounded and keeps one cause across many stores to one warning. A
-    site passing an f-string or a variable there would put a store name, a session
+    ``op`` is the only part of a call that reaches the warning budget's key, which is
+    what keeps the map bounded and keeps one cause across many stores to one warning.
+    A site passing an f-string or a variable there would put a store name, a session
     id or an entry type into the key and hand every unit its own warning. The
-    population is read out of the module rather than listed here, because a listed
-    set of sites goes stale the moment someone adds one.
+    population is read out of the two modules that report -- the emitter's ``_report``
+    calls and the writer's ``.report`` calls on its budget -- rather than listed here,
+    because a listed set of sites goes stale the moment someone adds one.
     """
     import ast
 
-    tree = ast.parse(Path(emit.__file__).read_text(encoding="utf-8"))
-    sites = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_report"
-    ]
-    assert sites, "no _report call sites found -- the check would pass vacuously"
+    from kiro_crew.crew_log import writer as writer_mod
+
+    sites = []
+    for module, wanted in ((emit, ast.Name), (writer_mod, ast.Attribute)):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, wanted):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+            if name in ("_report", "report"):
+                sites.append((module.__name__, node))
+    assert {m for m, _ in sites} == {
+        emit.__name__,
+        writer_mod.__name__,
+    }, "a module's report sites were not found -- the check would pass vacuously"
     offenders = []
-    for node in sites:
+    for module_name, node in sites:
         passed = {kw.arg: kw.value for kw in node.keywords}
         op = passed.get("op")
         if not isinstance(op, ast.Constant) or not isinstance(op.value, str) or not op.value:
-            offenders.append((node.lineno, ast.unparse(node)[:90]))
+            offenders.append((module_name, node.lineno, ast.unparse(node)[:90]))
     assert (
         not offenders
-    ), f"{len(offenders)} of {len(sites)} _report sites do not name a literal op: {offenders}"
-
-
-def test_the_budget_is_keyed_and_not_a_single_process_flag():
-    """The structural pin: no one module-level boolean governs the reports.
-
-    A budget that is one flag cannot tell which failure it already named, so it
-    downgrades every later one whatever it was about. Reverting any part of the key
-    to a process-wide flag has to fail here as well as behaviourally.
-    """
-    assert isinstance(
-        emit._warn_budget, dict
-    ), f"the budget is not a keyed map but a {type(emit._warn_budget).__name__}"
-    assert not isinstance(emit._warn_budget, bool)
-    key = emit._failure_kind("crew-append", OSError(28, "full"))
-    other = emit._failure_kind("crew-log-open", OSError(28, "full"))
-    same = emit._failure_kind("crew-append", OSError(28, "full"))
-    assert key != other, "the operation does not reach the key"
-    assert key == same, "the key is not stable for one kind"
-    assert (
-        emit._failure_kind("crew-append", OSError(5, "io")) != key
-    ), "the error code does not reach the key"
-    assert emit._failure_kind("crew-append", RuntimeError("x")) != emit._failure_kind(
-        "crew-append", ValueError("x")
-    ), "the exception class does not reach the key"
-    # And the unit is deliberately absent: it lives in `what`, never in the key.
-    assert "store-1" not in "".join(map(str, key)), key
+    ), f"{len(offenders)} of {len(sites)} report sites do not name a literal op: {offenders}"

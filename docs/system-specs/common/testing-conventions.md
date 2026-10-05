@@ -2799,14 +2799,14 @@ mechanism, and one of them a production defect wearing a test's clothes.
   INSTANCES (`pytest.param(OSError(errno.ENOSPC, ...))`), so `raise err` hung a
   `__traceback__` on a module-lifetime object and every frame on it -- the writer's job,
   with the `CrewLog` handle as a local -- lived until the module did. The production one:
-  `emit._run_job` returned the caught exception to `_write_batch`, which bound it to a
+  the writer's `_run_job` returned the caught exception to `_write_batch`, which bound it to a
   local while deciding whether to retry; the traceback's `_run_job` frame reaches
   `_write_batch`'s frame through `f_back`, and that frame holds the exception -- a cycle
   through the handle, so the lease (a `weakref.finalize` on the handle) was released by the
   cyclic collector at some later pass instead of at the drop, in production as well as
   here. Reproduced deterministically at `-n0` by running the two files in order; traced with
   `gc.get_referrers` from the handle up to both roots. Fixes: the errno is parametrized and
-  the exception built inside the test; `_run_job` returns the failure's TYPE (`_permanent`
+  the exception built inside the test; `_run_job` returns the failure's TYPE (`_is_refusal`
   needs only that) and `_report` hands the record `str(exc)`; and the exhaustion file's
   teardown pins `lease._held` empty, so the retention is reported where it is created. The
   first cut stripped only `exc.__traceback__`, and the review lanes caught what that
