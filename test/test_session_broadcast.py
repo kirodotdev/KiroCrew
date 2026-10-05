@@ -1529,62 +1529,58 @@ class TestEndToEnd:
     stopped agreeing.
     """
 
-    def _wire(self, state, caller, monkeypatch):
-        """Point the MCP client's transport at the real aiohttp handlers."""
+    def _wire(self, state, caller):
+        """A tool context whose dashboard is the real aiohttp handlers."""
+        import json
 
-        def _post(path, payload, *, timeout=30, session_key=""):
+        from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+        from kiro_crew.mcp_tools.table import Caller, ToolContext
+
+        def _request(req, method):
             request = MagicMock()
             request.app = {"state": state}
-            request.path = path
-            request.method = "POST"
-            request.headers = {"X-Session-Key": session_key or _key(caller)}
+            request.path = req.path.split("?")[0]
+            request.method = method
+            request.headers = {"X-Session-Key": req.session_key or _key(caller)}
             request.query = {}
             request.get = lambda key, default=None: (
                 True if key in ("internal_auth", "peer_verified") else default
             )
 
             async def _json():
-                return payload
+                return req.body
 
             request.json = _json
-            import json
+            return request
 
-            resp = asyncio.run(handlers_sc.api_session_control_broadcast(request))
+        def _post(req):
+            resp = asyncio.run(handlers_sc.api_session_control_broadcast(_request(req, "POST")))
             assert isinstance(resp.body, (bytes, bytearray))
             return json.loads(resp.body.decode())
 
-        def _get(path, session_key=""):
-            request = MagicMock()
-            request.app = {"state": state}
-            request.path = path.split("?")[0]
-            request.method = "GET"
-            request.headers = {"X-Session-Key": session_key or _key(caller)}
-            request.query = {}
-            request.get = lambda key, default=None: (
-                True if key in ("internal_auth", "peer_verified") else default
-            )
-            import json
-
-            resp = asyncio.run(handlers_sc.api_session_control_status(request))
+        def _get(req):
+            resp = asyncio.run(handlers_sc.api_session_control_status(_request(req, "GET")))
             assert isinstance(resp.body, (bytes, bytearray))
             return json.loads(resp.body.decode())
 
-        monkeypatch.setattr("kiro_crew.mcp_dashboard._post", _post)
-        monkeypatch.setattr("kiro_crew.mcp_dashboard._get", _get)
-        monkeypatch.setattr(
-            "kiro_crew.mcp_core._resolve_session_key_strict", lambda *a, **k: _key(caller)
+        dash = InMemoryDashboardClient(
+            {
+                "POST /api/session-control/broadcast": _post,
+                "GET /api/session-control/status": _get,
+            }
         )
+        return ToolContext(dash, Caller.strict(_key(caller)))
 
     def test_a_queue_broadcast_lands_in_both_targets_transcripts(self, tmp_path, monkeypatch):
-        from kiro_crew.mcp_dashboard import _call_tool_inner
+        from kiro_crew.mcp_dashboard import TABLE
 
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         a = _busy(_child(state, "chat-2", caller))
         b = _busy(_child(state, "chat-3", caller))
-        self._wire(state, caller, monkeypatch)
+        ctx = self._wire(state, caller)
 
-        out = _call_tool_inner("session_broadcast", {"message": "the base moved", "mode": "queue"})
+        out = TABLE.call("session_broadcast", {"message": "the base moved", "mode": "queue"}, ctx)
 
         assert "2/2" in out and "chat-2" in out and "chat-3" in out
         # Busy targets, so the message is QUEUED on each rather than run — which is
@@ -1600,16 +1596,17 @@ class TestEndToEnd:
         self, tmp_path, monkeypatch
     ):
         """Filtering to no targets must not widen into the default audience."""
-        from kiro_crew.mcp_dashboard import _call_tool_inner
+        from kiro_crew.mcp_dashboard import TABLE
 
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         target = _busy(_child(state, "chat-2", caller))
-        self._wire(state, caller, monkeypatch)
+        ctx = self._wire(state, caller)
 
-        out = _call_tool_inner(
+        out = TABLE.call(
             "session_broadcast",
             {"message": "stand down", "mode": "queue", "targets": []},
+            ctx,
         )
 
         assert out.startswith("Error:")
@@ -1619,16 +1616,17 @@ class TestEndToEnd:
     def test_one_dead_target_does_not_cost_the_live_one_its_message(self, tmp_path, monkeypatch):
         """The partial-delivery contract, through every layer: the refused row
         reaches the model's prose AND the other target really got the message."""
-        from kiro_crew.mcp_dashboard import _call_tool_inner
+        from kiro_crew.mcp_dashboard import TABLE
 
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         live = _busy(_child(state, "chat-2", caller))
-        self._wire(state, caller, monkeypatch)
+        ctx = self._wire(state, caller)
 
-        out = _call_tool_inner(
+        out = TABLE.call(
             "session_broadcast",
             {"message": "stand down", "mode": "queue", "targets": ["chat-2", "chat-404"]},
+            ctx,
         )
 
         assert "1/2" in out
@@ -1639,15 +1637,15 @@ class TestEndToEnd:
     def test_the_status_listing_reflects_what_the_broadcast_just_did(self, tmp_path, monkeypatch):
         """The two verbs are meant to be used together — broadcast, then patrol —
         so the roster must show the queue the broadcast created."""
-        from kiro_crew.mcp_dashboard import _call_tool_inner
+        from kiro_crew.mcp_dashboard import TABLE
 
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         _busy(_child(state, "chat-2", caller))
-        self._wire(state, caller, monkeypatch)
+        ctx = self._wire(state, caller)
 
-        _call_tool_inner("session_broadcast", {"message": "rebase", "mode": "queue"})
-        out = _call_tool_inner("session_status", {})
+        TABLE.call("session_broadcast", {"message": "rebase", "mode": "queue"}, ctx)
+        out = TABLE.call("session_status", {}, ctx)
 
         assert "chat-2" in out
         # Busy with a message waiting behind the running turn.

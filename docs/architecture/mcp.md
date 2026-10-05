@@ -1621,6 +1621,35 @@ Descriptors carry no per-caller state and are rebuilt per call, not cached: some
 quote a live value (the concurrent sub-agent cap), and a cache would pin the
 first reading for the life of the server process.
 
+### A `kirocrew-dashboard` tool is one row
+
+`kirocrew-dashboard` is built on `mcp_tools.table.ToolTable`: each tool is one
+`Tool` row in `mcp_dashboard.TABLE` carrying its descriptor, its identity
+(`"strict"` for the session-control verbs, `"attribution"` otherwise), the
+dashboard routes it may reach (`"METHOD /api/path/{id}"`), and its `_run_<tool>`
+body. `TABLE.list()` answers `tools/list`; `TABLE.call(name, args, ctx)` is one
+`tools/call` frame: argument validation against `MCP_DASHBOARD_SCHEMAS` and the SEL
+invocation record (`call_tool_with_logging`), the unknown-tool reply, the strict
+gate for a `"strict"` row, a second validation pass (a second sanitize pass can
+still compose a string the first exposed), then the body.
+
+A body reaches the gateway only through `ctx.client`, the `DashboardClient` port in
+`mcp_tools/dashboard_client.py`. `LoopbackDashboardClient` is production: each verb
+is the matching `mcp_core` helper, read at call time. `InMemoryDashboardClient`
+answers from a route table and records every request; it is what the dashboard
+tool tests drive. Both raise `DashboardError` for a reply carrying a truthy `error`,
+and the client the table hands a body refuses, before sending, any route its row
+did not declare. The caller is a port too: `ctx.caller` is `GatewayCaller`
+(`mcp_core`'s resolvers) in production and a fixed `Caller.strict(key)` /
+`Caller.unverified(...)` in tests.
+
+A new dashboard tool is one more row in the family function it belongs to
+(`_folder_tools`, `_tag_tools`, `_board_tools`, `_session_tools`), a body taking
+`(args, ctx)`, and its validation schema in `MCP_DASHBOARD_SCHEMAS`.
+`test_mcp_tool_registry.py` holds the rows to those three, and
+`test_mcp_call_site_auth_coverage.py` checks every declared route against the
+internal allowlists.
+
 External servers a user may install (a Slack server, anything else) are ordinary
 user-added servers: they live in one of the scope files and are merged into the
 agent config at render time. They are not managed, so a `mcp_server_alias`

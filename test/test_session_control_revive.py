@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
@@ -827,54 +827,45 @@ def test_route_is_registered_and_strict():
 # ── MCP tool ─────────────────────────────────────────────────────────────────
 
 
-def test_mcp_tool_posts_to_the_revive_route_with_the_callers_key(monkeypatch):
-    from kiro_crew import mcp_dashboard
+def _revive_tool(args: dict, routes: dict, caller=None):
+    """One ``session_revive`` frame through the dashboard table, in memory."""
+    from kiro_crew.mcp_dashboard import TABLE
+    from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+    from kiro_crew.mcp_tools.table import Caller, ToolContext
 
-    posted: dict = {}
+    dash = InMemoryDashboardClient(routes)
+    ctx = ToolContext(dash, caller or Caller.strict("dashboard:chat-1"))
+    return TABLE.call("session_revive", args, ctx), dash.requests
 
-    def _post(path, body, session_key=""):
-        posted.update(path=path, body=body, session_key=session_key)
-        return {"ok": True, "target": "chat-2", "title": "Lookup", "messages": 4, "filed": False}
 
-    monkeypatch.setattr(mcp_dashboard, "_post", _post)
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("dashboard:chat-1", "")
+def test_mcp_tool_posts_to_the_revive_route_with_the_callers_key():
+    reply = {"ok": True, "target": "chat-2", "title": "Lookup", "messages": 4, "filed": False}
+    out, (post,) = _revive_tool({"target": "chat-2"}, {"POST /api/session-control/revive": reply})
+
+    assert (post.path, post.body, post.session_key) == (
+        "/api/session-control/revive",
+        {"target": "chat-2"},
+        "dashboard:chat-1",
     )
-
-    out = mcp_dashboard._call_tool_inner("session_revive", {"target": "chat-2"})
-
-    assert posted == {
-        "path": "/api/session-control/revive",
-        "body": {"target": "chat-2"},
-        "session_key": "dashboard:chat-1",
-    }
     assert "Revived `chat-2`" in out and "4 messages" in out
 
 
-def test_mcp_tool_refuses_a_caller_without_a_strict_key(monkeypatch):
-    from kiro_crew import mcp_dashboard
+def test_mcp_tool_refuses_a_caller_without_a_strict_key():
+    from kiro_crew.mcp_tools.table import Caller
 
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("", "Error: nope")
+    out, requests = _revive_tool(
+        {"target": "chat-2"},
+        {"POST /api/session-control/revive": {"ok": True}},
+        Caller.unverified("dashboard:chat-1", diagnosis=" [no channel]"),
     )
-    with patch.object(mcp_dashboard, "_post") as post:
-        out = mcp_dashboard._call_tool_inner("session_revive", {"target": "chat-2"})
-    assert out == "Error: nope"
-    post.assert_not_called()
+    assert out.startswith("Error: this session cannot be identified well enough")
+    assert out.endswith(" [no channel]")
+    assert requests == []
 
 
-def test_mcp_tool_names_the_live_key_when_the_target_is_open(monkeypatch):
-    from kiro_crew import mcp_dashboard
-
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_post",
-        lambda *a, **k: {"error": "'x' is already open as `chat-5`; address it directly"},
-    )
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("dashboard:chat-1", "")
-    )
-    out = mcp_dashboard._call_tool_inner("session_revive", {"target": "x"})
+def test_mcp_tool_names_the_live_key_when_the_target_is_open():
+    refused = {"error": "'x' is already open as `chat-5`; address it directly"}
+    out, _ = _revive_tool({"target": "x"}, {"POST /api/session-control/revive": refused})
     assert out.startswith("Error: could not revive") and "chat-5" in out
 
 
@@ -1214,33 +1205,27 @@ def test_a_target_that_goes_live_during_the_scan_is_reported_live(tmp_path, monk
     assert exc.value.code == "target_already_live" and key in exc.value.message
 
 
-def test_mcp_reply_does_not_warn_when_the_session_was_already_in_the_folder(monkeypatch):
+def test_mcp_reply_does_not_warn_when_the_session_was_already_in_the_folder():
     """``revive_session`` files only when the folder differs and answers
     ``filed: False`` for a session already where it was asked to go; the reply
     must not read that as a filing failure."""
-    from kiro_crew import mcp_dashboard
-
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("dashboard:chat-1", "")
-    )
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_resolve_folder_for_new_session",
-        lambda ref, verb: ("f1", "Gamma", "", None),
-    )
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_post",
-        lambda *a, **k: {
-            "ok": True,
-            "target": "chat-2",
-            "title": "T",
-            "messages": 3,
-            "folder_id": "f1",
-            "filed": False,
+    reply = {
+        "ok": True,
+        "target": "chat-2",
+        "title": "T",
+        "messages": 3,
+        "folder_id": "f1",
+        "filed": False,
+    }
+    out, requests = _revive_tool(
+        {"target": "chat-2", "folder": "Gamma"},
+        {
+            "GET /api/chat/slots": [{"key": "chat-1", "title": "Caller"}],
+            "GET /api/chat/folders": [{"id": "f1", "name": "Gamma", "parent_id": ""}],
+            "POST /api/session-control/revive": reply,
         },
     )
-    out = mcp_dashboard._call_tool_inner("session_revive", {"target": "chat-2", "folder": "Gamma"})
+    assert requests[-1].body == {"target": "chat-2", "folder_id": "f1"}
     assert "could not be applied" not in out
     assert "Revived `chat-2`" in out
 

@@ -4121,25 +4121,97 @@ def test_the_empty_window_merge_cannot_resurrect_a_deleted_session(tmp_path):
     assert not path.exists(), "the merge must not resurrect a deleted session file"
 
 
-def test_every_session_control_refusal_is_audited_as_failed():
+#: One valid call per kirocrew-dashboard tool, for the refusal-audit sweep below.
+_DASHBOARD_TOOL_CALLS = {
+    "chat_folder_tree": {},
+    "chat_folder_create": {"name": "New"},
+    "chat_folder_move": {"folder": "Travel", "new_parent": "kirocrew"},
+    "chat_folder_move_session": {"session": "chat-3", "folder": "Travel"},
+    "chat_folder_delete": {"folder": "Travel"},
+    "chat_folder_file_self": {"folder": "Travel"},
+    "chat_tag_list": {},
+    "chat_tag_create": {"name": "urgent"},
+    "chat_tag_update": {"tag": "todo", "name": "later"},
+    "chat_tag_assign": {"session": "chat-3", "add": ["todo"]},
+    "chat_session_pin": {"session": "chat-3", "pinned": True},
+    "chat_tag_column_list": {},
+    "chat_tag_column_create": {"name": "Urgent", "tag": "todo"},
+    "chat_tag_column_move": {"column": "Todo", "after": "Live"},
+    "session_create": {},
+    "session_fork": {},
+    "session_stop": {"target": "chat-2"},
+    "session_end_wait": {"target": "chat-2"},
+    "session_set_model": {"target": "chat-2", "model": "sonnet"},
+    "session_reload": {"target": "chat-2"},
+    "session_close": {"target": "chat-2"},
+    "session_revive": {"target": "chat-2"},
+    "session_send": {"target": "chat-2", "message": "hi"},
+    "session_broadcast": {"message": "hi", "mode": "queue"},
+    "session_status": {},
+    "session_adopt": {"target": "chat-2"},
+    "session_release": {"target": "chat-2"},
+    "session_read_message": {"target": "chat-2"},
+    "session_summary": {"target": "chat-2"},
+}
+
+
+@pytest.mark.parametrize("refusal", ["route", "identity"])
+def test_every_session_control_refusal_is_audited_as_failed(monkeypatch, refusal):
     """A refused tool call must not be recorded as a completed one.
 
     `call_tool_with_logging` classifies by prefix -- `outcome="failed"` only when
     the result starts with "Error:". A refusal without it lands in the audit as a
     successful invocation, which inverts the record for exactly the calls a
-    reviewer would go looking for. Derived from the source so a new refusal that
-    forgets the prefix fails here.
+    reviewer would go looking for. Swept over every `kirocrew-dashboard` tool, the
+    session-control verbs included, for both ways one is refused: every route
+    answers a refusal, or the caller cannot be verified. The tool list is checked
+    against the server's rows, so a new tool must be added here to pass.
+
+    Mutation guard: a refusal reply opening with a cross mark instead of "Error:"
+    is recorded `completed` and fails here.
+    """
+    from kiro_crew import mcp_shared
+    from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS, TABLE
+    from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+    from kiro_crew.mcp_tools.table import Caller, ToolContext
+
+    assert set(_DASHBOARD_TOOL_CALLS) == set(TABLE.names())
+    assert set(SESSION_CONTROL_TOOLS) <= set(_DASHBOARD_TOOL_CALLS)
+    rows: list[dict] = []
+    monkeypatch.setattr(
+        mcp_shared, "sel", lambda: SimpleNamespace(log_tool_invocation=lambda **r: rows.append(r))
+    )
+    caller = (
+        Caller.strict("dashboard:chat-1")
+        if refusal == "route"
+        else Caller.unverified("dashboard:chat-1")
+    )
+    refused = {"error": "refused", "code": "x"}
+    for tool, args in _DASHBOARD_TOOL_CALLS.items():
+        dash = InMemoryDashboardClient(
+            {
+                f"{method} /api/{{route}}": refused
+                for method in ("GET", "POST", "PATCH", "PUT", "DELETE")
+            }
+        )
+        out = TABLE.call(tool, dict(args), ToolContext(dash, caller))
+        assert out.startswith("Error:"), (tool, out)
+        assert rows[-1]["tool_name"] == tool and rows[-1]["outcome"] == "failed", (tool, out)
+
+
+def test_no_dashboard_refusal_opens_with_a_cross_mark():
+    """The sweep above reaches each tool's FIRST refusal; deeper branches need this.
+
+    A refusal deeper in a body (one route answering after another refused) has
+    no fixture-free behavioural reach, so its prefix is held by the text: a
+    return whose string opens with the cross mark is audited as completed.
     """
     import re
     from pathlib import Path
 
     src = Path(sc.__file__).parent.parent / "mcp_dashboard.py"
-    body = src.read_text(encoding="utf-8")
-
-    # The dispatch's own refusal returns: a return whose string opens with the
-    # cross mark is a refusal that will be audited as completed.
-    bare = re.findall(r"return[^\n]*\\u274c[^\n]*", body)
-    assert not bare, f"session-control refusals not prefixed with 'Error:': {bare}"
+    bare = re.findall(r"return[^\n]*\\u274c[^\n]*", src.read_text(encoding="utf-8"))
+    assert not bare, f"dashboard refusals not prefixed with 'Error:': {bare}"
 
 
 def _agent_resolves(monkeypatch, workspace: str) -> None:

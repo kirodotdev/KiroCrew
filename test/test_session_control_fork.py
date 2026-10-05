@@ -5,8 +5,9 @@ exercised against real slot objects, as ``test_session_control.py`` does for the
 other verbs, because every refusal reads production attributes off the slot and a
 permissive double would let a dead guard look alive. The HTTP route is asserted
 through the handler with the same request double the other routes use. The tool
-layer is asserted on what it forwards and reports, with ``_post`` patched, the way
-``test_mcp_dashboard_session_send.py`` does.
+layer is asserted on what it forwards and reports, through the dashboard tool
+table against an in-memory dashboard, the way ``test_mcp_dashboard_session_send.py``
+does.
 
 The refactor this verb rides on -- ``chat_fork.fork_slot`` split out of the human
 fork handler -- is covered by the pre-existing fork suites, which run unchanged.
@@ -18,7 +19,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
@@ -28,7 +29,9 @@ from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
-from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS, _call_tool_inner
+from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS, TABLE
+from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 from kiro_crew.validation import SESSION_FORK_SCHEMA, ValidationError, validate_tool_args
 
 
@@ -713,20 +716,15 @@ class TestTheRoute:
 
 # ── the tool layer ──────────────────────────────────────────────────────────────
 
-
-@pytest.fixture
-def _caller():
-    with patch(
-        "kiro_crew.mcp_core._resolve_session_key_strict",
-        return_value="dashboard:chat-1-100",
-    ):
-        yield
+_CALLER = Caller.strict("dashboard:chat-1-100")
 
 
-def _tool(args: dict, resp: dict):
-    with patch("kiro_crew.mcp_dashboard._post", return_value=resp) as mock_post:
-        out = _call_tool_inner("session_fork", args)
-    return out, mock_post
+def _tool(
+    args: dict, resp: dict, caller: Caller = _CALLER, **routes: Any
+) -> tuple[str, InMemoryDashboardClient]:
+    """One ``session_fork`` frame against an in-memory dashboard."""
+    dash = InMemoryDashboardClient({"POST /api/session-control/fork": resp, **routes})
+    return TABLE.call("session_fork", args, ToolContext(dash, caller)), dash
 
 
 _OK = {
@@ -744,50 +742,51 @@ class TestTheTool:
         assert "session_fork" in SESSION_CONTROL_TOOLS
 
     def test_a_subagent_without_a_strict_key_is_refused_before_any_request(self):
-        with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""):
-            with patch("kiro_crew.mcp_dashboard._post") as mock_post:
-                out = _call_tool_inner("session_fork", {})
+        out, dash = _tool({}, _OK, Caller.unverified("dashboard:chat-1-100"))
         assert out.startswith("Error:") and "identified" in out
-        mock_post.assert_not_called()
+        assert dash.requests == []
 
-    def test_an_empty_call_forks_the_caller_under_its_own_key(self, _caller):
-        _, mock_post = _tool({}, _OK)
-        path, body = mock_post.call_args.args
-        assert path == "/api/session-control/fork"
-        assert body == {"source": "", "title": ""}
-        assert mock_post.call_args.kwargs["session_key"] == "dashboard:chat-1-100"
+    def test_an_empty_call_forks_the_caller_under_its_own_key(self):
+        _, dash = _tool({}, _OK)
+        (post,) = dash.requests
+        assert post.path == "/api/session-control/fork"
+        assert post.body == {"source": "", "title": ""}
+        assert post.session_key == "dashboard:chat-1-100"
 
-    def test_source_title_and_fork_point_are_forwarded(self, _caller):
-        _, mock_post = _tool({"source": "chat-2", "title": "cluster 3", "at_message_index": 7}, _OK)
-        assert mock_post.call_args.args[1] == {
+    def test_source_title_and_fork_point_are_forwarded(self):
+        _, dash = _tool({"source": "chat-2", "title": "cluster 3", "at_message_index": 7}, _OK)
+        assert dash.requests[-1].body == {
             "source": "chat-2",
             "title": "cluster 3",
             "at_message_index": 7,
         }
 
-    def test_the_report_names_source_child_and_what_was_carried(self, _caller):
+    def test_the_report_names_source_child_and_what_was_carried(self):
         out, _ = _tool({}, _OK)
         assert "chat-1" in out and "chat-9" in out and "12 message(s)" in out
         assert "idle" in out and "session_send" in out
 
-    def test_a_refusal_is_reported_with_the_apis_words(self, _caller):
+    def test_a_refusal_is_reported_with_the_apis_words(self):
         out, _ = _tool({}, {"error": "slot cap reached (500)", "code": "slot_cap_reached"})
         assert out.startswith("Error: could not fork the session: slot cap reached")
 
-    def test_a_folder_path_goes_through_the_tree_shaping_gate(self, _caller):
+    def test_a_folder_path_goes_through_the_tree_shaping_gate(self):
         """Filing at creation creates missing segments, which is tree shaping, so
-        it must run the same gate ``session_create`` runs -- not a second path."""
-        with (
-            patch(
-                "kiro_crew.mcp_dashboard._refuse_tree_shaping_if_unverifiable",
-                return_value=("", "", "Error: gate refused"),
-            ) as gate,
-            patch("kiro_crew.mcp_dashboard._post") as mock_post,
-        ):
-            out = _call_tool_inner("session_fork", {"folder": "Gamma/cluster 3"})
-        assert out == "Error: gate refused"
-        gate.assert_called_once()
-        mock_post.assert_not_called()
+        it must run the same gate ``session_create`` runs -- not a second path.
+
+        A cron caller is strictly identified, so session control admits it, and
+        the tree-shaping gate refuses it: a delegated caller has no scope to bound
+        a folder write to. Nothing is created and the fork is never asked for.
+        """
+        out, dash = _tool(
+            {"folder": "Gamma/cluster 3"},
+            _OK,
+            Caller.strict("cron:job-1"),
+            **{"GET /api/chat/slots": [{"key": "chat-1-100", "title": "Caller"}]},
+        )
+        assert out.startswith("Error: cannot establish what this caller is allowed to change")
+        assert "filing a forked session at creation is refused" in out
+        assert [r.route for r in dash.requests] == ["GET /api/chat/slots"]
 
 
 class TestTheSchema:

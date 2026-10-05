@@ -18,14 +18,14 @@ the other seven.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 
 from kiro_crew import mcp_dashboard as md
 from kiro_crew import validation
 from kiro_crew.dashboard import session_control as sc
-from kiro_crew.mcp_dashboard import _call_tool_inner
+from kiro_crew.mcp_dashboard import TABLE
+from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 from kiro_crew.validation import (
     SESSION_BROADCAST_SCHEMA,
     ValidationError,
@@ -33,25 +33,20 @@ from kiro_crew.validation import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _caller():
-    with patch(
-        "kiro_crew.mcp_core._resolve_session_key_strict",
-        return_value="dashboard:chat-1-100",
-    ):
-        yield
+def _frame(tool: str, args: dict, route: str, resp: dict) -> tuple[str, DashboardRequest]:
+    """One frame of ``tool``; the reply text and the one request ``route`` got."""
+    dash = InMemoryDashboardClient({route: resp})
+    out = TABLE.call(tool, args, ToolContext(dash, Caller.strict("dashboard:chat-1-100")))
+    (request,) = dash.requests
+    return out, request
 
 
-def _bc(args: dict, resp: dict):
-    with patch("kiro_crew.mcp_dashboard._post", return_value=resp) as mock_post:
-        out = _call_tool_inner("session_broadcast", args)
-    return out, mock_post
+def _bc(args: dict, resp: dict) -> tuple[str, DashboardRequest]:
+    return _frame("session_broadcast", args, "POST /api/session-control/broadcast", resp)
 
 
-def _st(resp: dict):
-    with patch("kiro_crew.mcp_dashboard._get", return_value=resp) as mock_get:
-        out = _call_tool_inner("session_status", {})
-    return out, mock_get
+def _st(resp: dict) -> tuple[str, DashboardRequest]:
+    return _frame("session_status", {}, "GET /api/session-control/status", resp)
 
 
 def _row(target: str, **kw) -> dict:
@@ -60,20 +55,20 @@ def _row(target: str, **kw) -> dict:
 
 class TestBroadcastForwarding:
     def test_the_mode_and_message_go_to_the_broadcast_route(self) -> None:
-        _, mock_post = _bc(
+        _, sent = _bc(
             {"message": "rebase first", "mode": "queue"},
             {"ok": True, "mode": "queue", "requested": 1, "delivered": 1, "results": []},
         )
-        path, body = mock_post.call_args.args
-        assert path == "/api/session-control/broadcast"
-        assert body == {"message": "rebase first", "mode": "queue"}
+        assert sent.path == "/api/session-control/broadcast"
+        assert sent.body == {"message": "rebase first", "mode": "queue"}
+        assert sent.session_key == "dashboard:chat-1-100"
 
     def test_targets_are_forwarded_when_named(self) -> None:
-        _, mock_post = _bc(
+        _, sent = _bc(
             {"message": "stop", "mode": "steer", "targets": ["chat-2", "chat-3"]},
             {"ok": True, "mode": "steer", "requested": 2, "delivered": 2, "results": []},
         )
-        assert mock_post.call_args.args[1]["targets"] == ["chat-2", "chat-3"]
+        assert sent.body["targets"] == ["chat-2", "chat-3"]
 
     def test_the_request_timeout_grows_with_the_target_cap(self) -> None:
         """The client budget must exceed the backend's worst delivery path.
@@ -88,11 +83,12 @@ class TestBroadcastForwarding:
         inequality is the contract: equality leaves no time for the per-target
         gate and audit work, the broadcast audit write, or the HTTP response.
         """
-        _, mock_post = _bc(
+        _, sent = _bc(
             {"message": "stop", "mode": "steer"},
             {"ok": True, "mode": "steer", "requested": 0, "delivered": 0, "results": []},
         )
-        timeout = mock_post.call_args.kwargs["timeout"]
+        timeout = sent.timeout
+        assert timeout is not None
         worst_case_delivery = md.MAX_BROADCAST_TARGETS * md.BROADCAST_TARGET_ALLOWANCE_SECS
         assert timeout == worst_case_delivery + md.BROADCAST_RESPONSE_MARGIN_SECS
         assert timeout > worst_case_delivery
@@ -100,11 +96,11 @@ class TestBroadcastForwarding:
 
     def test_an_omitted_targets_key_is_not_invented(self) -> None:
         """Omission selects the default audience without inventing a field."""
-        _, mock_post = _bc(
+        _, sent = _bc(
             {"message": "rebase", "mode": "queue"},
             {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []},
         )
-        assert "targets" not in mock_post.call_args.args[1]
+        assert "targets" not in sent.body
 
     def test_an_empty_target_list_is_forwarded_for_the_backend_to_refuse(self) -> None:
         """An empty list is a caller error the BACKEND owns, so it must travel.
@@ -113,11 +109,11 @@ class TestBroadcastForwarding:
         the request would arrive indistinguishable from an omitted key and reach
         the whole default audience.
         """
-        _, mock_post = _bc(
+        _, sent = _bc(
             {"message": "stop", "mode": "queue", "targets": []},
             {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []},
         )
-        body = mock_post.call_args.args[1]
+        body = sent.body
         assert "targets" in body, "an empty list must not be dropped on the client"
         assert body["targets"] == []
 
@@ -130,12 +126,12 @@ class TestBroadcastForwarding:
         ``Error: 'NoneType' object is not iterable`` where the documented
         default-audience broadcast belongs.
         """
-        out, mock_post = _bc(
+        out, sent = _bc(
             {"message": "rebase", "mode": "queue", "targets": None},
             {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []},
         )
         assert "NoneType" not in out
-        assert "targets" not in mock_post.call_args.args[1]
+        assert "targets" not in sent.body
 
     def test_the_three_target_shapes_stay_distinguishable(self) -> None:
         """Omitted, empty and null are three outcomes, never two.
@@ -157,8 +153,8 @@ class TestBroadcastForwarding:
             ("empty", {"message": "go", "mode": "queue", "targets": []}),
             ("null", {"message": "go", "mode": "queue", "targets": None}),
         ):
-            _, mock_post = _bc(args, resp)
-            bodies[label] = mock_post.call_args.args[1]
+            _, sent = _bc(args, resp)
+            bodies[label] = sent.body
 
         assert "targets" not in bodies["omitted"]
         assert "targets" not in bodies["null"]
@@ -295,8 +291,9 @@ class TestBroadcastReports:
 
 class TestStatusReports:
     def test_it_reads_the_status_route(self) -> None:
-        _, mock_get = _st({"ok": True, "caller": "chat-1", "tree": "readable", "sessions": []})
-        assert mock_get.call_args.args[0] == "/api/session-control/status"
+        _, sent = _st({"ok": True, "caller": "chat-1", "tree": "readable", "sessions": []})
+        assert sent.path == "/api/session-control/status"
+        assert sent.session_key == "dashboard:chat-1-100"
 
     def test_each_live_row_shows_its_status_and_title(self) -> None:
         out, _ = _st(

@@ -11,9 +11,9 @@ has spent an hour on a PR cannot tell whether the session watching the build has
 finished, and today the only way to find out is for the human to switch tabs and
 look. Session control lets the session ask directly.
 
-Six MCP tools on `kirocrew-dashboard`, six strict-internal routes, and two
-config switches: `agent.session_control` plus the member-dispatch bypass ceiling.
-Every route is on `_STRICT_INTERNAL_API_PATHS`; an unlisted one is
+The `session_*` tools on `kirocrew-dashboard`, one strict-internal route each, and
+two config switches: `agent.session_control` plus the member-dispatch bypass
+ceiling. Every route in the Route column is on `_STRICT_INTERNAL_API_PATHS`; an unlisted one is
 unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
@@ -29,8 +29,30 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
+| `session_adopt` | `POST /api/session-control/adopt` | Take another session under the caller in the session tree, keeping the parent it had on record; refused when the target is already above the caller |
+| `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+
+Each row above is one row of `mcp_dashboard.TABLE` (a `mcp_tools.table.ToolTable`):
+the row declares its route, its identity (`"strict"`), its descriptor and its
+`_run_session_*` body. The table runs `_session_control_gate` before every strict
+row, so a caller that cannot be verified is refused before any request is sent,
+and the body finds the verified key in `ctx.caller_key` and sends it on every
+session-control request it makes on the caller's authority. When `folder` is
+given, the folder-filing reads of `/api/chat/slots` and `/api/chat/folders` carry
+the frame's attribution key, and a folder segment the filing creates is written
+under the tree-shaping gate's own strictly verified key. The body's dashboard
+client refuses a route its row does not declare, so
+a row's routes are the complete list of what its tool reaches: the Route column
+above, plus, for `session_create`, `session_fork` and `session_revive`, the chat
+slot and folder routes that file the new session when `folder` is given.
+`test_mcp_call_site_auth_coverage.py` checks every declared route against the
+internal allowlists. `SESSION_CONTROL_TOOLS` is read off the rows
+(`TABLE.names("strict")`), which is what keeps the gate, the channel containment
+list and the registration tests' pinned set naming one set. A new session verb is
+a new row in `_session_tools()`, its body, and its schema in
+`MCP_DASHBOARD_SCHEMAS`.
 
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn

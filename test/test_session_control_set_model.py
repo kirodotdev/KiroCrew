@@ -12,7 +12,7 @@ import asyncio
 import inspect
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
@@ -20,7 +20,9 @@ from chat_test_helpers import _make_state
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
-from kiro_crew.mcp_dashboard import _call_tool_inner
+from kiro_crew.mcp_dashboard import TABLE
+from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 
 
 @pytest.fixture(autouse=True)
@@ -660,17 +662,22 @@ def test_route_renders_busy_as_409(tmp_path, monkeypatch):
 _VERIFIED = "dashboard:chat-verified"
 
 
+def _tool(name: str, args: dict, route: str, reply: dict) -> tuple[str, list[DashboardRequest]]:
+    """One frame of ``name`` as the verified caller, against one dashboard route."""
+    dash = InMemoryDashboardClient({route: reply})
+    out = TABLE.call(name, args, ToolContext(dash, Caller.strict(_VERIFIED)))
+    return out, dash.requests
+
+
 def test_tool_carries_the_verified_key_and_reports_the_model():
-    with (
-        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=_VERIFIED),
-        patch(
-            "kiro_crew.mcp_dashboard._post",
-            return_value={"ok": True, "target": "chat-2", "model": "sonnet", "pending": True},
-        ) as post,
-    ):
-        out = _call_tool_inner("session_set_model", {"target": "chat-2", "model": "sonnet"})
-    assert post.call_args.args[0] == "/api/session-control/set-model"
-    assert post.call_args.kwargs["session_key"] == _VERIFIED
+    out, (post,) = _tool(
+        "session_set_model",
+        {"target": "chat-2", "model": "sonnet"},
+        "POST /api/session-control/set-model",
+        {"ok": True, "target": "chat-2", "model": "sonnet", "pending": True},
+    )
+    assert post.path == "/api/session-control/set-model"
+    assert post.session_key == _VERIFIED
     assert "`chat-2` will switch to `sonnet` when its next turn starts" in out
 
 
@@ -717,35 +724,31 @@ def test_a_read_redacts_a_credential_shaped_model(tmp_path):
 
 
 def test_the_read_tool_renders_the_model_and_the_pending_pick():
-    with (
-        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=_VERIFIED),
-        patch(
-            "kiro_crew.mcp_dashboard._get",
-            return_value={
-                "target": "chat-2",
-                "title": "w",
-                "messages": [],
-                "total": 0,
-                "next_since": 0,
-                "model": "old-model",
-                "pending_model": "new-model",
-            },
-        ),
-    ):
-        out = _call_tool_inner("session_read_message", {"target": "chat-2"})
+    out, _ = _tool(
+        "session_read_message",
+        {"target": "chat-2"},
+        "GET /api/session-control/read",
+        {
+            "target": "chat-2",
+            "title": "w",
+            "messages": [],
+            "total": 0,
+            "next_since": 0,
+            "model": "old-model",
+            "pending_model": "new-model",
+        },
+    )
     assert "model old-model" in out
     assert "pending model new-model for its next turn" in out
 
 
 def test_tool_reports_a_busy_refusal_as_an_error():
-    with (
-        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=_VERIFIED),
-        patch(
-            "kiro_crew.mcp_dashboard._post",
-            return_value={"error": "session busy, model not changed"},
-        ),
-    ):
-        out = _call_tool_inner("session_set_model", {"target": "chat-2", "model": "sonnet"})
+    out, _ = _tool(
+        "session_set_model",
+        {"target": "chat-2", "model": "sonnet"},
+        "POST /api/session-control/set-model",
+        {"error": "session busy, model not changed"},
+    )
     assert out.startswith("Error:")
     assert "session busy, model not changed" in out
 

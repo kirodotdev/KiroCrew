@@ -38,6 +38,8 @@ from kiro_crew.crew_log.session_tree import OpenedRecord
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
+from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 
 
 @pytest.fixture(autouse=True)
@@ -353,15 +355,9 @@ class TestTheMcpQualityCaveats:
     def test_a_history_quality_gap_is_caveated_separately_from_the_tree(
         self, monkeypatch, history_state
     ):
-        monkeypatch.setattr(
-            mcp_dashboard,
-            "require_strict_session_key",
-            lambda *_args, **_kwargs: ("dashboard:chat-1", None),
-        )
-        monkeypatch.setattr(
-            mcp_dashboard,
-            "_get",
-            lambda *_args, **_kwargs: {
+        rendered = self._render(
+            monkeypatch,
+            {
                 "tree": "readable",
                 "history": history_state,
                 "sessions": [
@@ -375,20 +371,15 @@ class TestTheMcpQualityCaveats:
             },
         )
 
-        rendered = mcp_dashboard._call_tool_inner("session_status", {})
-
         assert "transcript-metadata roster" in rendered.lower()
         assert history_state in rendered.lower()
         assert "crew-log roster" not in rendered.lower()
 
     def _render(self, monkeypatch, payload):
-        monkeypatch.setattr(
-            mcp_dashboard,
-            "require_strict_session_key",
-            lambda *_args, **_kwargs: ("dashboard:chat-1", None),
-        )
-        monkeypatch.setattr(mcp_dashboard, "_get", lambda *_args, **_kwargs: payload)
-        return mcp_dashboard._call_tool_inner("session_status", {})
+        """One ``session_status`` frame whose roster route answers ``payload``."""
+        dash = InMemoryDashboardClient({"GET /api/session-control/status": payload})
+        ctx = ToolContext(dash, Caller.strict("dashboard:chat-1"))
+        return mcp_dashboard.TABLE.call("session_status", {}, ctx)
 
     def _one_row(self, status, **extra):
         row = {"target": "chat-2", "title": "worker", "status": status, "queue_depth": 0}

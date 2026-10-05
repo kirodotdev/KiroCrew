@@ -38,6 +38,8 @@ import pytest
 
 from kiro_crew import mcp_computer, mcp_dashboard
 from kiro_crew.mcp_caller import CallerContext, set_current_caller
+from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import GatewayCaller, ToolContext
 
 
 @pytest.fixture(autouse=True)
@@ -123,13 +125,23 @@ def test_computer_still_proceeds_unidentified_under_a_process_namespace(
 # --- kirocrew-dashboard -----------------------------------------------------
 #
 # Identity decides SCOPE here: which sessions a caller may see, and whether it
-# may reshape the shared folder tree at all. Both go through
-# ``_resolve_session_key_strict``, so both read the block first.
+# may reshape the shared folder tree at all. Both go through the production
+# caller (``GatewayCaller``), which asks ``mcp_core``'s strict resolver, so both
+# read the block first. Each case is one real tools/call frame: the production
+# caller, and an in-memory dashboard standing in for the gateway.
 
 
-def _rows(*rows: dict[str, Any]) -> Any:
-    """A canned ``_get_rows`` returning *rows* for every endpoint."""
-    return lambda _path: (list(rows), None)
+def _dashboard_frame(tool: str, args: dict[str, Any], *slots: dict[str, Any]) -> Any:
+    """Run ``tool`` as the production caller; the reply and the requests sent."""
+    dash = InMemoryDashboardClient(
+        {
+            "GET /api/chat/slots": list(slots),
+            "GET /api/chat/folders": [],
+            "POST /api/chat/folders": {"id": "fffffffffff1", "name": "x", "parent_id": ""},
+        }
+    )
+    ctx = ToolContext(dash, GatewayCaller(mcp_dashboard.SERVER_NAME))
+    return mcp_dashboard.TABLE.call(tool, args, ctx), dash
 
 
 def test_dashboard_scopes_the_session_list_by_the_block_identity(
@@ -142,51 +154,50 @@ def test_dashboard_scopes_the_session_list_by_the_block_identity(
     scope applied to another's call, the co-tenancy failure pooling makes
     possible.
     """
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_get_rows",
-        _rows(
-            {"key": "from-block", "app": "app-a"},
-            {"key": "from-env", "app": "app-b"},
-            {"key": "other-a", "app": "app-a"},
-            {"key": "other-b", "app": "app-b"},
-        ),
-    )
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:from-env")
     _as_session("dashboard:from-block")
 
-    visible, err = mcp_dashboard._visible_chat_slots()
-    assert err is None
-    assert sorted(r["key"] for r in visible) == ["from-block", "other-a"]
+    out, _dash = _dashboard_frame(
+        "chat_folder_tree",
+        {},
+        {"key": "from-block", "app": "app-a"},
+        {"key": "from-env", "app": "app-b"},
+        {"key": "other-a", "app": "app-a"},
+        {"key": "other-b", "app": "app-b"},
+    )
+    assert not out.startswith("Error:"), out
+    assert "from-block" in out and "other-a" in out
+    assert "from-env" not in out and "other-b" not in out
 
 
 def test_dashboard_verifies_tree_writes_against_the_block_identity(
     monkeypatch,
 ) -> None:
     """The verified key handed to every tree write is the block's, not the env's."""
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_get_rows",
-        _rows({"key": "from-block"}, {"key": "from-env", "app": "app-b"}),
-    )
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:from-env")
     _as_session("dashboard:from-block")
 
-    caller_key, _app, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
-    assert err is None
-    assert caller_key == "dashboard:from-block"
+    out, dash = _dashboard_frame(
+        "chat_folder_create",
+        {"name": "x"},
+        {"key": "from-block"},
+        {"key": "from-env", "app": "app-b"},
+    )
+    assert not out.startswith("Error:"), out
+    (create,) = dash.sent("POST /api/chat/folders")
+    assert create.session_key == "dashboard:from-block"
 
 
 def test_dashboard_falls_back_to_the_environment_without_a_block(
     monkeypatch,
 ) -> None:
     """A non-gateway launch has no block to read and must not be regressed."""
-    monkeypatch.setattr(mcp_dashboard, "_get_rows", _rows({"key": "from-env"}))
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:from-env")
 
-    caller_key, _app, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
-    assert err is None
-    assert caller_key == "dashboard:from-env"
+    out, dash = _dashboard_frame("chat_folder_create", {"name": "x"}, {"key": "from-env"})
+    assert not out.startswith("Error:"), out
+    (create,) = dash.sent("POST /api/chat/folders")
+    assert create.session_key == "dashboard:from-env"
 
 
 def test_dashboard_refuses_an_unidentified_caller(monkeypatch) -> None:
@@ -197,12 +208,9 @@ def test_dashboard_refuses_an_unidentified_caller(monkeypatch) -> None:
     empty identity does not imply a 1:1 transport and must not carry authority
     over the shared folder tree.
     """
-    monkeypatch.setattr(mcp_dashboard, "_get_rows", _rows())
+    out, dash = _dashboard_frame("chat_folder_create", {"name": "x"})
+    assert out.startswith("Error:") and "cannot verify" in out
+    assert dash.sent("POST /api/chat/folders") == []
 
-    caller_key, _app, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
-    assert caller_key == ""
-    assert err is not None and "cannot verify" in err
-
-    visible, list_err = mcp_dashboard._visible_chat_slots()
-    assert visible == []
-    assert list_err is not None and "cannot verify" in list_err
+    out, _dash = _dashboard_frame("chat_folder_tree", {})
+    assert out.startswith("Error:") and "cannot verify" in out
