@@ -3281,6 +3281,7 @@ def _path_in_home_dirs(
     *,
     strict: bool = False,
     pre_resolved: bool = False,
+    anchors_inline: bool | None = None,
 ) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
@@ -3314,15 +3315,25 @@ def _path_in_home_dirs(
     such a caller is by contract on its own worker thread, so the anchors are
     resolved inline as well (``_home_dir_targets(inline=True)``): the whole
     check then performs no ``mc-pathres`` submission.
+
+    ``anchors_inline`` decouples the ANCHOR resolution from the candidate's
+    ``pre_resolved`` form, for the one caller that has both: a canonical
+    candidate (so its tail is matched lexically and never re-resolved) that
+    nonetheless runs ON the event loop (so the ``$HOME`` anchors must go through
+    the bounded ``mc-pathres`` pool, not an unbounded inline ``realpath`` a
+    stalled share could hang). ``None`` (every other caller) keeps the historic
+    coupling ``anchors_inline == pre_resolved``.
     """
     if not path_str:
         return False
+    if anchors_inline is None:
+        anchors_inline = pre_resolved
 
     try:
         candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
-        sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
+        sensitive_targets = _home_dir_targets(home_dirs, inline=anchors_inline)
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
@@ -3355,6 +3366,7 @@ def _is_keystone_publish_artifact(
     *,
     strict: bool = False,
     pre_resolved: bool = False,
+    anchors_inline: bool | None = None,
 ) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
@@ -3378,8 +3390,10 @@ def _is_keystone_publish_artifact(
     """
     if not path_str:
         return False
+    if anchors_inline is None:
+        anchors_inline = pre_resolved
     try:
-        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, inline=pre_resolved)
+        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, inline=anchors_inline)
         candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         if strict:
@@ -3413,22 +3427,15 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     """Return True if the path points to a read+write-sensitive location.
 
     Used across every file-access surface (hooks.on_tool_call, validate_file_path,
-    artifacts, dashboard file I/O, knowledge indexing) to block BOTH reads and
-    writes of credential files and the governance trust-root
-    (:data:`_SENSITIVE_HOME_DIRS`). See :func:`_path_in_home_dirs` for the
-    symlink/casefold matching contract.
+    artifacts, dashboard file I/O, knowledge indexing) to block BOTH reads and writes
+    of credential files and the governance trust-root (:data:`_SENSITIVE_HOME_DIRS`);
+    see :func:`_path_in_home_dirs` for the symlink/casefold matching contract. It also
+    covers a protected leaf's publish artifacts (:func:`_is_keystone_publish_artifact`),
+    since the temp an ``atomic_write`` renames over the leaf holds its full payload.
 
-    Also covers a protected leaf's publish artifacts
-    (:func:`_is_keystone_publish_artifact`): the temp an ``atomic_write`` renames over
-    the leaf holds the leaf's full payload, so READ is blocked alongside write -- a
-    write-only fence there would still disclose ``.env`` or ``token_signing.key`` to a
-    reader that wins the race.
-
-    The decision is :func:`sensitive_path_refusal`'s -- this is its boolean
-    spelling, so the two cannot diverge. A stall is refused there (a string) and is
-    therefore ``True`` here: the callers that only hold this boolean keep refusing
-    fail-closed; what they lose is the distinct WORDING, which is the gate
-    consumers' business.
+    The decision is :func:`sensitive_path_refusal`'s -- this is its boolean spelling,
+    so the two cannot diverge, and a stall refused there is ``True`` here (callers keep
+    failing closed; they lose only the WORDING).
     """
     return sensitive_path_refusal(path_str, base_dir) is not None
 
@@ -3441,34 +3448,47 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     override roots, the keystone leaves) are resolved inline on the calling
     thread (:func:`_home_dir_targets` with ``inline=True``), fresh on every call
     and keying the same TTL cache the bounded path uses. *resolved* MUST be the
-    output of ``os.path.realpath`` (or ``Path.resolve``) that the caller computed
-    on its OWN worker thread: the only thing the bounded resolution would add for
-    such an input is the same string back, since a canonical path has no link
-    left to follow. Handing this an unresolved spelling is a link bypass, and
-    calling it from the event loop forfeits the bound the pool exists to give
-    that loop -- so it is for exactly one shape of caller: a bulk WALK on a
-    worker thread that already resolves every entry to detect symlink loops and
-    prove containment, and only then asks whether the entry is fenced.
-
-    Why a separate entry point rather than "just call the pool anyway": the pool
-    is sized for the event loop (two workers by default --
-    ``executors._MAX_PATH_RESOLVE_WORKERS`` -- so a wedged mount can pin at most
-    that many threads), and it is FIFO. A walk over a thousand skill directories, each
-    submitting a resolution the walk had already performed plus an anchor
-    resolution per call, fills that queue from worker threads while the loop's
-    own latency-critical resolutions wait behind it -- not for a slow disk, for
-    the queue -- and the accumulated waits cross the loop-stall watchdog. The
-    scanner's realpath is unbounded either way (it runs off the loop, and
-    ``os.walk`` on the same mount is unbounded too), so the pool bought that
-    caller nothing and cost the loop its budget.
-
-    A wedged mount therefore does not surface here as a refusal: it blocks the
-    calling thread inside ``realpath``, exactly as that thread's own walk of the
-    same mount would. Nothing is admitted while it blocks.
+    output of ``os.path.realpath`` (or ``Path.resolve``) the caller computed on its
+    OWN worker thread: a canonical path has no link left to follow, so the bounded
+    resolution would only hand it back. Handing this an unresolved spelling is a link
+    bypass, and calling it from the event loop forfeits the pool's bound -- so it is
+    for exactly one caller shape: a bulk WALK on a worker thread that already resolves
+    every entry (for symlink loops and containment) and only then asks if it is fenced.
+    Why not "just call the pool anyway": the pool is FIFO and sized for the loop
+    (two workers), so a bulk walk's thousands of (already-performed) resolutions fill
+    the queue from worker threads while the loop's latency-critical resolutions wait
+    behind it and cross the loop-stall watchdog -- the pool buys the scanner nothing
+    (its ``realpath`` is unbounded either way) and costs the loop its budget. A wedged
+    mount here blocks the calling thread inside ``realpath`` (as its own walk would),
+    admitting nothing while it blocks -- it is not a refusal.
     """
     return _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True) or (
-        _fold_windows_alias(resolved).casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
+        _may_be_keystone_artifact(resolved)
         and _is_keystone_publish_artifact(resolved, pre_resolved=True)
+    )
+
+
+def _may_be_keystone_artifact(resolved: str) -> bool:
+    """The folded keystone-artifact precheck both pre-resolved gates share (``x.tmp::$DATA``)."""
+    return _fold_windows_alias(resolved).casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
+
+
+def is_sensitive_prevalidated_bounded_path(resolved: str) -> bool:
+    """:func:`is_sensitive_resolved_path`, but with the ANCHORS resolved BOUNDED.
+
+    The one fence for a canonical candidate that must NOT be re-resolved yet runs ON
+    the event loop. ``is_sensitive_resolved_path`` matches the candidate lexically but
+    resolves the ``$HOME`` anchors INLINE -- an unbounded ``realpath`` a stalled home
+    hangs on the loop. This bounds them through the ``mc-pathres`` pool
+    (``anchors_inline=False``), so a wedged mount costs the pool's limit, not the loop.
+    Used by both arms of the held-chain validator: ``CHAIN_MISSING`` (canonical
+    prefix + text tail) and the settled ``CHAIN_HELD`` arm, both on-loop.
+    """
+    return _path_in_home_dirs(
+        resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True, anchors_inline=False
+    ) or (
+        _may_be_keystone_artifact(resolved)
+        and _is_keystone_publish_artifact(resolved, pre_resolved=True, anchors_inline=False)
     )
 
 
@@ -3543,16 +3563,14 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
     it the same way.
 
     The ONE decision: :func:`is_sensitive_path` is ``refusal is not None``. A path
-    whose canonical form (or whose anchors) could not be established within the
-    resolve budget is refused exactly as a match is, fail-closed, and this function
-    is never a way to let one through -- but the two refusals get different WORDS.
-    A match is ``Blocked: access to sensitive path: <path>``. A stall opens with
-    :data:`UNVERIFIABLE_PATH_PREFIX`, says the path is NOT a match, and quotes the
-    path LAST: a stall reported as a match leads the agent reading it to conclude,
-    reasonably and wrongly, that an ordinary project file holds a credential, that
-    the session has been locked down, or that a different spelling might pass, and
-    each of those costs a wasted round where "could not verify within budget, retry
-    shortly" costs one wait.
+    whose canonical form (or anchors) could not be established within the resolve
+    budget is refused exactly as a match is, fail-closed; this function never lets one
+    through, but the two refusals get different WORDS. A match is ``Blocked: access to
+    sensitive path: <path>``. A stall opens with :data:`UNVERIFIABLE_PATH_PREFIX`, says
+    the path is NOT a match, and quotes it LAST -- a stall reported as a match would
+    lead the agent to conclude, wrongly, that an ordinary file holds a credential or
+    that a different spelling might pass, each a wasted round where "retry shortly"
+    costs one wait.
     """
     try:
         matched = _path_in_home_dirs(

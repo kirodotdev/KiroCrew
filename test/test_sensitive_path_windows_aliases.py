@@ -97,6 +97,9 @@ def test_keystone_artifact_precheck_sees_the_folded_spelling() -> None:
     assert security.is_sensitive_resolved_path(ARTIFACT)
     assert security.is_sensitive_resolved_path(ARTIFACT + "::$DATA")
     assert security.is_sensitive_path(ARTIFACT + "::$DATA")
+    # The held-chain validator's fence shares the same folded precheck.
+    assert security.is_sensitive_prevalidated_bounded_path(ARTIFACT)
+    assert security.is_sensitive_prevalidated_bounded_path(ARTIFACT + "::$DATA")
 
 
 @pytest.mark.usefixtures("windows")

@@ -58,8 +58,8 @@ from kiro_crew.messaging.outbound_files import (
     strip_url_syntax,
     unescape_md,
 )
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.pinned_fs import screen_held_file_kind
+from kiro_crew.security import is_sensitive_path, is_sensitive_resolved_path
 from kiro_crew.widget_slug import derive_widget_slug
 
 logger = logging.getLogger(__name__)
@@ -120,21 +120,29 @@ def _local_file(raw_path: str) -> Path | None:
         return None
     # A linked ANCESTOR defeats local_destination's lexical UNC screen: the
     # destination is not itself UNC-shaped -- only the link's target is --
-    # and is_file()/is_sensitive_path below both resolve every ancestor, so
+    # and a by-name is_file()/is_sensitive_path would resolve every ancestor, so
     # the probe itself would traverse the link and open the SMB connection.
     # Same guard as the upload-side consumer (_inspect in outbound_files);
     # local_destination stays lexical by contract, so each consumer screens
     # its own probes. Windows-only: on POSIX stat-ing through a symlink is
     # harmless. Reference wiring:
     # dashboard/handlers/themes.py::_resolve_local_source.
-    if os.name == "nt" and first_linked_ancestor(p) is not None:
-        return None
-    # The LEAF gets the junction-aware check the walk deliberately excludes:
-    # is_file() below FOLLOWS a final-component link, so a leaf
-    # symlink/junction targeting a UNC share is the same probe. lstat-based,
-    # never follows.
-    if os.name == "nt" and is_link_or_junction(p):
-        return None
+    #
+    # The file-kind check runs THROUGH the held leaf descriptor, UNDER the hold:
+    # `screen_held_file_kind` refuses a link ANYWHERE in the chain (ancestor OR
+    # leaf) and reports `is_regular` from `fstat` on the descriptor the walk is
+    # still holding -- never a by-name `is_file()` after the hold closes, which
+    # a junction planted in that window would redirect into an SMB auth. The
+    # sensitivity check is LEXICAL on the held descriptor's own final path
+    # (`is_sensitive_resolved_path`), not a fresh by-name resolve.
+    if os.name == "nt":
+        screened = screen_held_file_kind(str(p))
+        if screened is None or not screened.is_regular:
+            return None
+        if is_sensitive_resolved_path(screened.canonical):
+            return None
+        return p
+    # POSIX: no UNC harm, so a by-name probe is a harmless local lookup.
     try:
         if not p.is_file():
             return None

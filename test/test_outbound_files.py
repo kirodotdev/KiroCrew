@@ -897,42 +897,47 @@ class TestLinkedAncestorGate:
     def test_linked_ancestor_is_refused_before_the_leaf_lstat(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ordering IS the property: BOTH downstream probes are wired to
-        explode -- is_sensitive_path builds realpath()/resolve() candidate
-        forms, so running it first would resolve the chain just like the
-        is_symlink lstat would. A regression that probes first fails loudly."""
+        """Ordering IS the property: the by-name probes are wired to explode, so a
+        regression that probes by name after the hold closes fails loudly. The held
+        screen reporting a link (``None``) refuses before either runs."""
         from kiro_crew.messaging import outbound_files as module
 
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: str(tmp_path))
+        monkeypatch.setattr(module, "screen_held_file_kind", lambda _p: None)
 
         def _boom_lstat(self: Path) -> bool:  # pragma: no cover
-            raise AssertionError("is_symlink ran before the ancestor walk")
+            raise AssertionError("is_symlink ran before the held screen")
 
         def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
-            raise AssertionError("is_sensitive_path ran before the ancestor walk")
+            raise AssertionError("is_sensitive_resolved_path ran before the held screen")
 
         monkeypatch.setattr(Path, "is_symlink", _boom_lstat)
-        monkeypatch.setattr(module, "is_sensitive_path", _boom_sensitive)
+        monkeypatch.setattr(module, "is_sensitive_resolved_path", _boom_sensitive)
         got = module._inspect(str(p), p, "alt", 10_000, None, None)
         assert isinstance(got, Rejection)
         assert got.reason == REASON_SYMLINK
-        # The reply matches the leaf case on purpose: which ancestor is a
+        # The reply matches the leaf case on purpose: which component is a
         # link is filesystem layout the caller supplied a path to guess at.
         assert got.detail == "symlinks are not uploaded"
 
     def test_bypassing_the_guard_restores_the_upload(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mutation check: with the walk reporting no link, the same file is
-        inspected and accepted -- the refusal above is attributable to the
-        guard, not to some other screen."""
+        """Mutation check: with the held screen admitting the path (a regular-file
+        ScreenedFile) and the lexical sensitivity check clearing it, the same file is
+        inspected and accepted -- the refusal above is attributable to the guard."""
         from kiro_crew.messaging import outbound_files as module
+        from kiro_crew.pinned_fs import ScreenedFile
 
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(
+            module,
+            "screen_held_file_kind",
+            lambda _p: ScreenedFile(str(p), True, True, False, p.stat().st_size),
+        )
+        monkeypatch.setattr(module, "is_sensitive_resolved_path", lambda _p: False)
         got = module._inspect(str(p), p, "alt", 10_000, None, None)
         assert isinstance(got, OutboundFile)
         assert got.path == str(p)
@@ -948,9 +953,9 @@ class TestLinkedAncestorGate:
         from kiro_crew.messaging import outbound_files as module
 
         def _boom(_p: object) -> None:  # pragma: no cover
-            raise AssertionError("ancestor walk ran on POSIX")
+            raise AssertionError("held screen ran on POSIX")
 
-        monkeypatch.setattr(module, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(module, "screen_held_file_kind", _boom)
         p = _png(tmp_path)
         got = module._inspect(str(p), p, "alt", 10_000, None, None)
         assert isinstance(got, OutboundFile)
@@ -978,21 +983,19 @@ class TestLinkedAncestorGate:
     def test_a_leaf_link_is_refused_before_any_resolving_call(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The walk deliberately excludes the leaf, and the all-platform
-        is_symlink() refusal is junction-blind and runs after
-        is_sensitive_path (whose candidate forms resolve the leaf) -- so on
-        Windows the leaf needs its own junction-aware check first."""
+        """The held screen refuses a link ANYWHERE in the chain -- the LEAF as
+        well as any ancestor, so one ``None`` covers both in a single hold,
+        before the lexical sensitivity check runs."""
         from kiro_crew.messaging import outbound_files as module
 
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: None)
-        monkeypatch.setattr(module, "is_link_or_junction", lambda _p: True)
+        monkeypatch.setattr(module, "screen_held_file_kind", lambda _p: None)
 
         def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
-            raise AssertionError("is_sensitive_path ran before the leaf link check")
+            raise AssertionError("is_sensitive_resolved_path ran before the held screen")
 
-        monkeypatch.setattr(module, "is_sensitive_path", _boom_sensitive)
+        monkeypatch.setattr(module, "is_sensitive_resolved_path", _boom_sensitive)
         got = module._inspect(str(p), p, "alt", 10_000, None, None)
         assert isinstance(got, Rejection)
         assert got.reason == REASON_SYMLINK

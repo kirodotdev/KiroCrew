@@ -423,17 +423,44 @@ async def index(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
-async def logo(request: web.Request) -> web.StreamResponse:
-    """Serve the logo — prefer custom avatar from config, fall back to default."""
+def _validated_avatar(avatar: str) -> str | None:
+    """Screen + canonicalise a configured avatar, entirely on a worker thread.
+
+    Every blocking step the avatar branch performs lives here so the ``logo``
+    coroutine never runs one on the event loop: the ``is_sensitive_path`` fence,
+    ``validate_file_path`` (whose Windows held-chain walk opens each component
+    with ``CreateFileW`` and can block on an unavailable UNC share), and the
+    final ``is_file`` stat. Running off the loop also means
+    ``validate_file_path``'s sensitivity check resolves inline rather than
+    through the on-loop pool, so a swapped unheld tail is never submitted for a
+    second resolution on the loop.
+
+    Returns the validated path to serve; ``"\x00sensitive"`` when the avatar
+    names a sensitive location (the caller answers 404, matching the fence's
+    historic behaviour); or ``None`` to fall through to the default logo.
+    """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
     from kiro_crew.hooks import validate_file_path  # noqa: F811
 
+    if _h.is_sensitive_path(avatar):
+        return "\x00sensitive"
+    validated = validate_file_path(avatar)
+    if validated and Path(validated).is_file():
+        return validated
+    return None
+
+
+async def logo(request: web.Request) -> web.StreamResponse:
+    """Serve the logo — prefer custom avatar from config, fall back to default."""
+    import kiro_crew.dashboard.handlers as _h  # noqa: F811
+
     cfg = _h.KiroCrewConfig.load()
     if cfg.dashboard.avatar:
-        if _h.is_sensitive_path(cfg.dashboard.avatar):
+        loop = asyncio.get_running_loop()
+        validated = await loop.run_in_executor(None, _validated_avatar, cfg.dashboard.avatar)
+        if validated == "\x00sensitive":
             return web.Response(status=404)
-        validated = validate_file_path(cfg.dashboard.avatar)
-        if validated and Path(validated).is_file():
+        if validated:
             return web.FileResponse(validated)
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,

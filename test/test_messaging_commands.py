@@ -1037,7 +1037,11 @@ class TestTaskSpecPathIsGated:
         key.write_text("PRIVATE KEY", encoding="utf-8")
         monkeypatch.setattr(
             "kiro_crew.hooks.is_sensitive_path",
-            lambda p: str(secret_dir) in str(p),
+            lambda p, *_a, **_k: str(secret_dir) in str(p),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.hooks.is_sensitive_prevalidated_bounded_path",
+            lambda p, *_a, **_k: str(secret_dir) in str(p),
         )
 
         reply = await task_arg_reply(f"run {key}", runner)
@@ -1067,7 +1071,11 @@ class TestTaskSpecPathIsGated:
         link.symlink_to(secret_dir / "id_rsa")
         monkeypatch.setattr(
             "kiro_crew.hooks.is_sensitive_path",
-            lambda p: str(secret_dir) in str(p),
+            lambda p, *_a, **_k: str(secret_dir) in str(p),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.hooks.is_sensitive_prevalidated_bounded_path",
+            lambda p, *_a, **_k: str(secret_dir) in str(p),
         )
 
         assert await task_arg_reply(f"run {link}", runner) is not None

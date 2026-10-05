@@ -104,7 +104,12 @@ def block_sensitive_reads(monkeypatch):
     while claiming to assert the read one.
     """
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: True)
-    monkeypatch.setattr("kiro_crew.hooks.is_sensitive_path", lambda p: True)
+    monkeypatch.setattr("kiro_crew.hooks.is_sensitive_path", lambda p, *_a, **_k: True)
+    # On Windows, validate_file_path's settled arm consults the bounded fence, not
+    # is_sensitive_path -- flag it too so the read refusal fires on every platform.
+    monkeypatch.setattr(
+        "kiro_crew.hooks.is_sensitive_prevalidated_bounded_path", lambda p, *_a, **_k: True
+    )
 
 
 @pytest.fixture()
@@ -513,7 +518,13 @@ class TestUserPromptDiscoveryGate:
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: "elsewhere" in str(p)
         )
-        monkeypatch.setattr("kiro_crew.hooks.is_sensitive_path", lambda p: "elsewhere" in str(p))
+        monkeypatch.setattr(
+            "kiro_crew.hooks.is_sensitive_path", lambda p, *_a, **_k: "elsewhere" in str(p)
+        )
+        monkeypatch.setattr(
+            "kiro_crew.hooks.is_sensitive_prevalidated_bounded_path",
+            lambda p, *_a, **_k: "elsewhere" in str(p),
+        )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner._find_prompt",
             lambda name, project_dir=None: {
@@ -1188,7 +1199,11 @@ class TestPromptReadsGoThroughTheDescriptorGate:
         pkg.mkdir()
         (pkg / "creds.sop.md").symlink_to(store / "credentials")
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(monkeypatch_target, lambda p: "credential-store" in str(p))
+            mp.setattr(monkeypatch_target, lambda p, *_a, **_k: "credential-store" in str(p))
+            mp.setattr(
+                "kiro_crew.hooks.is_sensitive_prevalidated_bounded_path",
+                lambda p, *_a, **_k: "credential-store" in str(p),
+            )
             listed = _list_aim_prompts()
 
         assert "SHOULD-NOT-APPEAR" not in json.dumps(listed)
@@ -1225,7 +1240,7 @@ class TestPromptReadsGoThroughTheDescriptorGate:
         secret = store / "credentials"
         secret.write_text("# aws_access_key_id = SHOULD-NOT-APPEAR\n", encoding="utf-8")
         monkeypatch.setattr(
-            "kiro_crew.hooks.is_sensitive_path", lambda p: "credential-store" in str(p)
+            "kiro_crew.hooks.is_sensitive_path", lambda p, *_a, **_k: "credential-store" in str(p)
         )
         proj, d = self._checkout_prompts(tmp_path)
         (d / "creds.md").symlink_to(secret)

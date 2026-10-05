@@ -32,7 +32,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dataclasses_replace  # noqa: F401 - owners read it
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, NamedTuple
 
 # The owners the hook subsystem's rules live in, and the names they define. Every
@@ -217,6 +217,7 @@ from kiro_crew.security import (  # noqa: F401 - the path owners read these
     audit_bash_exfiltration,
     is_sensitive_bash_command,
     is_sensitive_path,
+    is_sensitive_prevalidated_bounded_path,
     is_sensitive_write_path,
     is_unverifiable_path_refusal,
     sensitive_path_refusal,
@@ -1462,18 +1463,278 @@ _DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
 
 
-def _screen_windows_links(target: str) -> str | None:
-    """Replace Windows links with screened targets before ``realpath``.
+def _screen_one_link(target: str, anchor: str) -> tuple[str, bool] | None:
+    """One step of the Windows link screen: ``(candidate, settled)`` or ``None``.
 
     ``first_linked_ancestor`` walks root-first without traversing a link.
     Reading that link's own reparse metadata is safe. Replacing the linked
     prefix with its vetted target preserves the remaining child path while
     avoiding the blanket rejection of benign local junctions.
+
+    ``settled`` is True when no link was found and the candidate is the screen's
+    answer. It is False when a link was replaced, so the caller screens the
+    replacement. One step rather than the whole chain because each step reaches
+    its components BY NAME, and a name is only safe to look at while it is held:
+    the caller holds the candidate across the step and takes a fresh hold on the
+    replacement, so no step inspects a name another step froze and released.
+
+    *anchor* is the deepest component the caller's hold PROVED. Every name whose
+    reparse metadata this function reads must lie at or below it, which states a
+    containment the rest of this module otherwise relies on implicitly: a link the
+    screen finds on this path is a child of a proven component, and a name outside
+    that anchor did not come from the chain the caller is holding. The comparison is
+    INLINED at each read rather than factored into a helper so CodeQL's
+    intra-procedural taint tracker sees the ``is_relative_to`` sanitizer guarding the
+    SAME value the ``readlink`` below consumes -- the shape
+    ``dashboard/handlers/artifacts.py`` already uses for its relocate barrier. It is
+    spelled with ``PureWindowsPath`` because these are Windows paths whatever host the
+    code runs on: ``Path`` on POSIX reads a backslash-separated path as ONE component,
+    which would make every containment test here compare whole strings and refuse a
+    perfectly ordinary ancestor. Pure path classes are lexical, so this adds no probe.
+
+    ``None`` refuses: a name outside the anchor, an unreadable link, a target the
+    normaliser declines, or a suffix that escapes the link.
+    """
+    anchor_path = PureWindowsPath(os.path.normpath(anchor))
+    linked = platform_compat.first_linked_ancestor(target)
+    if linked is not None:
+        linked_name = os.path.normpath(linked)
+        try:
+            within = PureWindowsPath(linked_name) == anchor_path or PureWindowsPath(
+                linked_name
+            ).is_relative_to(anchor_path)
+        except (ValueError, OSError):  # pragma: no cover -- defensive
+            return None
+        if not within:
+            return None
+        try:
+            raw_target = os.readlink(linked_name)  # lgtm[py/path-injection]
+            suffix = os.path.relpath(target, linked_name)
+        except (OSError, ValueError):
+            return None
+        if suffix == ".." or suffix.startswith(".." + os.sep):
+            return None
+        normalized = _normalize_windows_link_target(linked_name, raw_target)
+        if normalized is None:
+            return None
+        return os.path.normpath(os.path.join(normalized, suffix)), False
+
+    if not platform_compat.is_link_or_junction(target):
+        return target, True
+    # Hold the containment barrier and the readlink sink on the SAME value.
+    # ``leaf_name`` is the string ``is_relative_to`` proves in-anchor AND the
+    # string ``os.readlink`` consumes -- the ``within_root`` boolean shape
+    # ``dashboard/handlers/artifacts.py`` uses, where the guarded value and the
+    # sunk value are one object so CodeQL's intra-procedural taint tracker
+    # attaches the ``is_relative_to`` sanitizer to the value that reaches the
+    # sink. The earlier form wrapped a FRESH ``PureWindowsPath(leaf_name)`` only
+    # inside the guard while the sink read the bare ``leaf_name`` string, so the
+    # barrier did not attach to the sunk value and CodeQL flagged it. The string
+    # handed to the sink is byte-for-byte ``os.path.normpath(target)`` -- the
+    # ``PureWindowsPath`` is built FROM it for the lexical containment test only
+    # and never replaces it, so behaviour is unchanged.
+    leaf_name = os.path.normpath(target)
+    leaf_path = PureWindowsPath(leaf_name)
+    try:
+        within = leaf_path == anchor_path or leaf_path.is_relative_to(anchor_path)
+    except (ValueError, OSError):  # pragma: no cover -- defensive
+        return None
+    if not within:
+        return None
+    try:
+        raw_target = os.readlink(leaf_name)
+    except OSError:
+        return None
+    normalized = _normalize_windows_link_target(leaf_name, raw_target)
+    if normalized is None:
+        return None
+    return normalized, False
+
+
+def _screen_and_resolve_held(target: str) -> str | None:
+    """Screen *target*'s link chain and canonicalize it, every step inside a hold.
+
+    The Windows tail of :func:`validate_file_path`. Both halves reach a path's
+    components BY NAME -- the screen through ``first_linked_ancestor``'s root-first
+    ``lstat`` walk, the canonicalisation through ``realpath`` -- and between any two
+    such looks, anything running as this user (which in this product includes an agent,
+    in directories an agent may write) can put a junction at a component already looked
+    at. ``realpath`` or the next ``lstat`` then follows it, and following a junction
+    aimed at a share is an outbound SMB authentication to a host the planter chose. The
+    window is ``look -> look``, not ``look -> open``: by the time a consumer opens the
+    file, the probe has already happened.
+
+    Holding the chain closes the leaf half of it (see
+    :func:`kiro_crew.pinned_fs.hold_no_follow_chain`). The walk classifies every
+    component off its own no-follow descriptor and the canonicalisation reads the proven
+    path THROUGH the deepest held descriptor (``fd_real_path``) rather than by name, so
+    the ``look -> look`` window on the settled leaf is gone: there is no second by-name
+    lookup for a junction swapped afterwards to redirect. Every step runs inside the
+    hold for that reason: the screen's own walk, the readlink that vets a link's
+    target, and the resolution that settles the answer. A step that replaces a link
+    yields a different path, so the loop takes a fresh hold on the replacement rather
+    than resolving under a hold taken for names the replacement does not contain.
+
+    One window stays open and is named rather than policed: the walk opens each
+    component by full path (Windows has no ``openat``) with an attribute-only mask that
+    pins nothing, so a junction swapped onto an already-classified INTERIOR ancestor
+    DURING the walk is followed by the next open. Closing that needs handle-relative
+    opens (``NtCreateFile`` with ``RootDirectory``), a separate change; it is an
+    acknowledged open residual on Windows, stated here and in the PR description.
+
+    The canonicalisation shares the hold of the step that SETTLED, not a second hold
+    taken afterwards: a hold released between the last screen and the resolution is the
+    window this function exists to remove.
+
+    The screen's scope is bounded by the same boundary as the resolution. A walk that
+    stops short covers a prefix, and both halves are then confined to it: the screen
+    does not inspect a name below the boundary and the canonicalisation does not resolve
+    one. Screening further would put an unheld name back inside the window, since a name
+    holding nothing when the walk passes it can be created and swapped afterwards, and
+    one ``lstat`` through a junction planted there is the outbound authentication.
+
+    The sensitive-path fence on the BOUNDED arm is asked through
+    :func:`is_sensitive_prevalidated_bounded_path`, which matches the candidate LEXICALLY
+    and never submits it for another resolution -- resolving again is the one thing the
+    bound exists to prevent, so it would re-open the window on the very tail this function
+    deliberately left as text, and on a swapped unheld component that re-resolution is
+    itself the outbound ``realpath`` the hold exists to stop. The input satisfies that
+    function's contract: the prefix is the HELD DESCRIPTOR's own final path (read through
+    :func:`kiro_crew.pinned_fs.fd_real_path`, never a second by-name ``realpath``), and
+    the tail holds no link for a resolution to follow, since the walk classified every
+    component it proved off that component's own descriptor and a name that holds nothing
+    redirects nothing.
+    The fixed anchors ($HOME, the override roots) are resolved through the BOUNDED
+    ``mc-pathres`` pool, never the attacker-reachable tail -- so this arm cannot become an
+    outbound probe, and a stalled network-backed home costs the pool's time limit rather
+    than freezing the event loop, which is why this synchronous validator can be reached
+    from an on-loop caller without a worker hop. The SETTLED arm (only ``CHAIN_HELD``
+    reaches it, so the whole path is proven) asks the same
+    :func:`is_sensitive_prevalidated_bounded_path` fence on the descriptor's own canonical
+    path: the same credential
+    targets are matched, but the candidate is matched LEXICALLY and never handed back to
+    ``realpath`` -- which would re-traverse a component the attribute-only walk does not
+    pin, the one re-resolution Design and First Principles flagged.
+
+    Fails closed three ways: a chain deeper than the bound is refused before any walk; a
+    component the screen cleared that the hold finds to be a link is refused rather than
+    resolved, since the screen either missed it or it arrived just now and neither is
+    distinguishable from here; and a path the walk declines to hold is refused rather
+    than resolved unheld.
+
+    An INTERIOR component that exists and cannot be opened attribute-only is the one hop
+    the walk cannot verify, and it is handled by FALLBACK rather than refusal: the walk
+    raises :class:`kiro_crew.pinned_fs.ChainInteriorOpenError`, and this function resolves
+    that path by the legacy by-name ``realpath`` (:func:`_resolve_legacy_fallback`),
+    admitting it exactly as the pre-walk resolver did. Refusing it instead would rest on
+    an unverifiable claim about Windows access rules (a bypass-traverse or restricted-ACL
+    ancestor the project cannot test from CI), so the one hop that cannot be verified is
+    fail-to-legacy rather than fail-closed; every path that DOES open keeps the
+    held-descriptor resolution. The sensitive-path fence still applies to the fallback's
+    resolved target.
+
+    ``CHAIN_MISSING`` is not a refusal. A validated path is routinely one that does not
+    exist yet -- every write caller hands one in -- and a LEAF that exists while
+    refusing to be pinned is the same situation for this caller: a file another process
+    holds exclusively is ordinary and must still validate, and the walk classifies it
+    through a mask no share mode can refuse before reporting it. What the walk proves
+    stops there, though: a name the hold does not cover can be exchanged a moment
+    afterwards, so resolving the whole string would hand ``realpath`` exactly the
+    component nothing is holding. The canonicalisation is bounded at the proven boundary
+    for that reason, and the remainder is re-attached as text.
     """
     for _ in range(_WINDOWS_LINK_CHAIN_MAX):
         if target.count("\\") + target.count("/") > _MAX_SCREENED_PATH_DEPTH:
             return None
+        try:
+            with pinned_fs.held_no_follow_chain(
+                target, max_depth=_MAX_SCREENED_PATH_DEPTH
+            ) as chain:
+                if chain.outcome == pinned_fs.CHAIN_MISSING:
+                    # The hold covers a PREFIX, and the screen must not reach past
+                    # it: a name the walk found holding nothing can be created and
+                    # swapped a moment later, so screening it by name is the very
+                    # probe the hold exists to prevent -- one `lstat` through a
+                    # junction planted there is the outbound authentication. There
+                    # is also nothing for the screen to do, in both directions: the
+                    # walk classified every component it PROVED off that component's
+                    # own descriptor and would have reported a reparse point instead
+                    # of this outcome, and the canonicalisation below resolves
+                    # nothing past the boundary either, so an unscreened remainder is
+                    # never traversed. The screen's scope is exactly what gets
+                    # resolved.
+                    path = _canonicalize_within_hold(target, chain)
+                    if path is None or is_sensitive_prevalidated_bounded_path(path):
+                        return None
+                    return path
+                step = _screen_one_link(target, chain.held)
+                if step is None:
+                    return None
+                candidate, settled = step
+                if settled:
+                    if chain.outcome == pinned_fs.CHAIN_REPARSE:
+                        return None
+                    path = _canonicalize_within_hold(target, chain)
+                    if path is None or is_sensitive_prevalidated_bounded_path(path):
+                        return None
+                    return path
+        except (pinned_fs.ChainInteriorOpenError, pinned_fs.ChainFinalPathUnreadable):
+            # The two hops the held walk cannot verify: an interior component that
+            # exists but cannot be opened attribute-only, OR a held descriptor whose
+            # final path cannot be read (``GetFinalPathNameByHandleW`` returns nothing
+            # on some volume types and redirectors -- a volume with no DOS name, some
+            # RAM or virtual drives, some network redirectors -- where CPython
+            # ``realpath`` falls back by name and resolves). Refusing either would fail
+            # closed on a host whose access rules the project cannot test from CI, and
+            # the final-path case would NEWLY refuse real Windows volumes (mapped
+            # network drives, RAM disks, mounted folders) that base validated. So both
+            # fall back to the legacy by-name resolution for THIS path alone -- the
+            # behaviour before the held walk existed -- rather than regress those
+            # volumes on an unprovable premise. This is a declared RESIDUAL, not a new
+            # defence: the fallback still runs the by-name link screen, the UNC gate and
+            # the sensitive-path fence, so it is no weaker than base; the swap defence
+            # the held descriptor buys applies on every path whose final path CAN be
+            # read, which is where the look->look window actually closes. Logged once so
+            # the fallback is observable without flooding the log on a repeatedly-reached
+            # ancestor.
+            return _resolve_legacy_fallback(target)
+        except (OSError, ValueError):
+            return None
+        target = candidate
+    return None
 
+
+#: Set once the interior-open fallback has logged, so a repeatedly-reached unopenable
+#: ancestor does not flood the log. The fallback itself still runs every time.
+_interior_open_fallback_logged = False
+
+
+def _screen_windows_links_by_name(target: str) -> str | None:
+    """Replace Windows links in *target* with their vetted targets, by name.
+
+    The by-name link screen the held walk's :func:`_screen_one_link` replaced for the
+    paths it can hold -- reconstructed here for the ONE arm that cannot hold the chain:
+    the interior-open fallback, reached when a component exists but cannot be opened
+    attribute-only. It cannot use the held screen (that is the open that just failed),
+    so it screens by name exactly as the pre-held resolver did: ``first_linked_ancestor``
+    finds a linked ancestor root-first and its target is vetted by
+    :func:`_normalize_windows_link_target` (an untrusted UNC share, a device namespace, a
+    drive-relative target or a ``..``-climbing suffix is refused) before the linked
+    prefix is rewritten; a leaf link is screened the same way. Returns the screened
+    candidate (a benign local junction rewritten to its target so it still resolves), or
+    ``None`` to refuse. Bounded by ``_MAX_SCREENED_PATH_DEPTH`` for the same reason the
+    held walk is: one metadata read per component makes an adversarial path a stall.
+
+    This is a by-name ``lstat``/``readlink`` screen, not a hold, so it carries a
+    residual the held path does not -- a component swapped between this screen and the
+    ``realpath`` below is followed. That residual is the legacy by-name behaviour, and
+    this arm is fail-to-legacy on exactly the hop the walk could not verify; the screen
+    runs here so the fallback is no WEAKER than base, which refused an untrusted UNC
+    link target here rather than resolving through it.
+    """
+    for _ in range(_WINDOWS_LINK_CHAIN_MAX):
+        if target.count("\\") + target.count("/") > _MAX_SCREENED_PATH_DEPTH:
+            return None
         linked = platform_compat.first_linked_ancestor(target)
         if linked is not None:
             try:
@@ -1488,7 +1749,6 @@ def _screen_windows_links(target: str) -> str | None:
                 return None
             target = os.path.normpath(os.path.join(normalized, suffix))
             continue
-
         if not platform_compat.is_link_or_junction(target):
             return target
         try:
@@ -1499,8 +1759,130 @@ def _screen_windows_links(target: str) -> str | None:
         if normalized is None:
             return None
         target = normalized
-
     return None
+
+
+def _resolve_legacy_fallback(target: str) -> str | None:
+    """Resolve *target* the pre-held-walk way: the by-name link screen, then ``realpath``.
+
+    Reached only from :func:`_screen_and_resolve_held` when the held walk raised
+    :class:`kiro_crew.pinned_fs.ChainInteriorOpenError` -- an interior component that
+    exists but cannot be opened attribute-only. Admitting the path by its legacy
+    resolution keeps a path the walk cannot verify behaving exactly as it did before
+    the walk existed, rather than refusing it on an unprovable Windows-ACL premise.
+
+    "The legacy resolver" is the WHOLE of it: on Windows the pre-held path ran the
+    link screen BEFORE ``realpath`` (an untrusted UNC link target was refused rather
+    than resolved through), so this arm runs :func:`_screen_windows_links_by_name`
+    first. Dropping that screen and calling ``realpath`` on the raw name would be
+    WEAKER than base -- a junction aimed at a share would be followed with no screen at
+    all, the outbound SMB probe this change exists to stop, reached without even a
+    race. The UNC trusted-root gate is applied to the screened result as well, and the
+    sensitive-path fence refuses a resolved target under a credential root. ``None`` on
+    any refusal.
+    """
+    global _interior_open_fallback_logged
+    if not _interior_open_fallback_logged:
+        logger.warning(
+            "validate_file_path: an interior component could not be opened for the "
+            "held walk; falling back to the legacy by-name screen + realpath for this "
+            "path (logged once)."
+        )
+        _interior_open_fallback_logged = True
+    if os.name == "nt":
+        screened = _screen_windows_links_by_name(target)
+        if screened is None:
+            return None
+        if is_unc_shape(screened) and not unc_probe_allowed(screened):
+            return None
+        target = screened
+    resolved = os.path.realpath(target)
+    if os.name == "nt" and is_unc_shape(resolved) and not unc_probe_allowed(resolved):
+        return None
+    if is_sensitive_path(resolved):
+        return None
+    return resolved
+
+
+def _canonicalize_within_hold(screened: str, chain: pinned_fs.HeldChain) -> str | None:
+    """Canonicalize *screened* without resolving a component *chain* did not prove.
+
+    A held chain covers the whole string, so ``realpath`` traverses only components
+    that cannot be swapped while it runs. A chain that stopped short covers a prefix
+    instead: ``realpath`` runs on the prefix, and the unproven remainder is joined as
+    text. That is the same answer a resolution reaches while nothing sits at those
+    names, and it declines to become an outbound probe once something does.
+
+    Which component the prefix ends at is the walk's answer to give, not this caller's
+    to recompute: ``chain.held`` is the deepest component it PROVED, which is not the
+    same as the component it stopped on -- that name is an absent one whose parent is
+    proven in one case and a real file that is proven itself in another.
+
+    ``None`` when the remainder is not below the boundary. A walk of this very string
+    cannot produce that, so it is a contradiction rather than a path, and a validator
+    holding one fails closed.
+
+    The canonical answer is derived from the HELD DESCRIPTOR, not by re-traversing the
+    names: ``pinned_fs.fd_real_path`` reads the kernel's own final path for the inode
+    the walk already holds open (``GetFinalPathNameByHandleW`` on Windows, the
+    ``/proc`` or ``F_GETPATH`` twin elsewhere). That descriptor was opened with
+    ``OPEN_REPARSE_POINT`` and its link-ness read off the handle, so it names the real
+    object the walk proved -- there is no second lookup by name for a junction swapped
+    in after the walk to redirect. This is the one thing that actually closes the
+    ``look -> look`` window: a by-name ``realpath`` here would re-traverse the proven
+    components, and a junction planted between the walk and that resolution would be
+    followed, which is the outbound SMB probe this whole path exists to prevent.
+
+    Raises :class:`kiro_crew.pinned_fs.ChainFinalPathUnreadable` when the handle's final
+    path cannot be read (``fd_real_path`` returns ``None``): on some volume types and
+    redirectors ``GetFinalPathNameByHandleW`` returns nothing where CPython ``realpath``
+    falls back by name and resolves (a volume with no DOS name, some RAM or virtual
+    drives, some network redirectors). Refusing every such path would fail closed on a
+    host the project cannot test from CI and would newly refuse real Windows volumes
+    base validated, so the caller falls back to the legacy by-name resolution for THIS
+    path alone -- the same unverifiable hop, and the same declared RESIDUAL, as the
+    interior-open failure. The fallback still runs the by-name link screen, the UNC gate
+    and the sensitive fence, so it is no weaker than base; the held-descriptor defence
+    applies on every path whose final path CAN be read. (An unaware caller still fails
+    closed: the exception subclasses ``OSError``.)
+
+    When the chain proved NO component (``CHAIN_MISSING`` at the first component, so
+    ``fds`` is empty), ``held`` is the anchor -- a drive or share root, which cannot be
+    a reparse point -- so the anchor is canonicalised by name without a window to lose.
+    """
+    held_fd = chain.fds[-1] if chain.fds else None
+    if chain.outcome == pinned_fs.CHAIN_HELD:
+        # The whole string is proven and held: the leaf's own descriptor names the
+        # real object, so its final path IS the canonical answer. The one case with no
+        # descriptor is a bare anchor -- a drive root (``C:\``) or share root
+        # (``\\server\share\``), which the walk never opens because a root cannot be a
+        # reparse point. There is no swap to defeat there, so the anchor is
+        # canonicalised by name: refusing it would reject every drive/share root.
+        if held_fd is None:
+            return os.path.realpath(chain.held)
+        held_real = _fd_real_path(held_fd)
+        if held_real is None:
+            # The handle's final path could not be read -- the same unverifiable hop
+            # as an interior-open failure. Signalled distinctly so the caller falls
+            # back to the legacy resolver for this path alone (a declared residual),
+            # rather than regress real Windows volumes base validated.
+            raise pinned_fs.ChainFinalPathUnreadable(0, "held final path unreadable", screened)
+        return held_real
+    # A prefix is proven; the unproven remainder is re-attached as text. The prefix's
+    # canonical form comes from the deepest held descriptor (never a by-name resolve of
+    # ``chain.held``), and only the anchor-only case has no descriptor to read.
+    tail = os.path.relpath(screened, chain.held)
+    if os.path.isabs(tail) or ".." in tail.split(os.sep):
+        return None
+    if held_fd is None:
+        prefix_real: str | None = os.path.realpath(chain.held)
+    else:
+        prefix_real = _fd_real_path(held_fd)
+    if prefix_real is None:
+        # Same as the CHAIN_HELD leaf: the held prefix's final path could not be read,
+        # so signal the caller to fall back rather than refuse.
+        raise pinned_fs.ChainFinalPathUnreadable(0, "held final path unreadable", screened)
+    return os.path.normpath(os.path.join(prefix_real, tail))
 
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB safety cap

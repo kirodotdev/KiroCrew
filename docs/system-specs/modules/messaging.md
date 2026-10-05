@@ -3291,8 +3291,44 @@ answer is not permission: a raised evaluation and a `Decision` without
   untrusted UNC share, a device namespace, a drive-relative target or a
   `..`-climbing suffix is refused before `realpath` can probe it, while a
   link whose target is another local directory is rewritten to that target
-  so benign junctions still resolve; canonicalizes through every symlink on
-  POSIX, and refuses a resolved
+  so benign junctions still resolve; on Windows every one of those steps runs with
+  the candidate's existing components held open
+  (`pinned_fs.hold_no_follow_chain`, reached through `_screen_and_resolve_held`), each
+  classified off its OWN no-follow descriptor rather than by a second look at the name,
+  and the canonical path is then read THROUGH the deepest held descriptor
+  (`pinned_fs.fd_real_path`) rather than by re-running `realpath` on the name. That
+  closes the `look -> look` window: a junction swapped onto a component after the walk
+  changes a name the resolution does not consult, so there is no second lookup for it
+  to redirect; a step that rewrites a link takes a fresh hold on the replacement. The
+  screen is bounded by the same boundary as the resolution: a walk that stops short
+  covers a prefix, and neither half then touches a name below it -- the screen does not
+  `lstat` one and the resolution does not read one through a descriptor it never held,
+  because a name holding nothing when the walk passes it can be created and swapped
+  afterwards. Nothing is lost by that, since the walk classified every component it
+  proved off that component's own descriptor and the unproven remainder is re-attached
+  as text. A component the
+  walk finds to be
+  a link after all refuses rather than resolve; a component whose state it cannot read
+  at all -- an interior component that exists but cannot be opened attribute-only --
+  is the one hop the walk cannot verify, and `validate_file_path` FALLS BACK to the
+  legacy by-name `realpath` for that path (`pinned_fs.ChainInteriorOpenError` ->
+  `_resolve_legacy_fallback`, logged once) rather than refusing: refusing it would rest
+  on an unverifiable claim about Windows access rules the project cannot test from CI,
+  so that single hop is fail-to-legacy while every path that opens keeps the
+  held-descriptor resolution. The SAME fallback applies when the held descriptor's final
+  path cannot be read (`pinned_fs.ChainFinalPathUnreadable` ->
+  `_resolve_legacy_fallback`): `GetFinalPathNameByHandleW` returns nothing on some
+  volume types and redirectors (volumes with no DOS name, some RAM or virtual drives,
+  some network redirectors) where CPython's `realpath` falls back by name and resolves.
+  Failing closed there would newly refuse every path on those volumes -- real Windows
+  volumes that base validated -- so this is a DECLARED RESIDUAL: the fallback still runs
+  the by-name link screen, the UNC gate and the sensitive-path fence, which is no weaker
+  than base; the held-descriptor defence applies on every path whose final path CAN be
+  read, which is where the swap window actually closes. A component that holds NOTHING does not refuse either,
+  because a path that
+  does not exist yet is what every write caller hands in. POSIX keeps
+  `realpath` on the string the gates judged and
+  canonicalizes through every symlink, and both platforms refuse a resolved
   target under a sensitive root, so an innocent-looking path that resolves into a
   blocked root is refused through the link. The **canonical** path is what reaches
   `runner.start_background`, not the raw argument, because validating one string and

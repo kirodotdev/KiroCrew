@@ -2511,7 +2511,8 @@ class GatewayOrchestrator:
         try:
             from kiro_crew.agent import missing_required_agent_specs  # circular import
 
-            missing = missing_required_agent_specs()
+            # Off the loop: the spec checks read files through the Windows held walk.
+            missing = await asyncio.to_thread(missing_required_agent_specs)
             if missing:
                 logger.error(
                     "Agent specs missing after install: %s (in %s) — every chat turn "

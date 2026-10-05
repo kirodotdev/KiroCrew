@@ -2080,7 +2080,12 @@ class TaskRunner:
         try:
             from kiro_crew.hooks import validate_file_path
 
-            safe_sp = validate_file_path(str(spec_path))
+            # Offload the whole validation: on Windows its held-chain walk opens
+            # each component with CreateFileW, which blocks the event loop if the
+            # spec sits under a stalled UNC share. The sibling spec read below is
+            # already offloaded for the same reason; keep acquisition, screening
+            # and resolution together on the worker.
+            safe_sp = await asyncio.to_thread(validate_file_path, str(spec_path))
             if input_content is not None:
                 early_content = input_content[:4000]
             elif safe_sp:

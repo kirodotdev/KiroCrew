@@ -494,7 +494,9 @@ class _BatchRuntimeHolder:
         # default). Best-effort — a bad overlay never blocks the review.
         if self._work_dir:
             try:
-                _write_effort_overlay(
+                # Off the loop: the overlay read goes through the Windows held walk.
+                await asyncio.to_thread(
+                    _write_effort_overlay,
                     self._work_dir, _reviewer_model(self._agent),
                     _get_review_settings().get("effort", _DEFAULT_EFFORT))
             except Exception:

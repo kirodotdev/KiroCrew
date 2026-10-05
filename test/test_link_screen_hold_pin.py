@@ -79,7 +79,18 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_link_screen_hold_pin")
 #: Predicates that ask the filesystem whether a path is a link. Each one marks
 #: the pattern, so keying on a single symbol under-reports: the ancestor walk and
 #: the single-path check reach the same shape by different routes.
-SCREENS = frozenset({"first_linked_ancestor", "is_link_or_junction", "is_reparse_point"})
+#: ``screen_held_file_kind`` is the HELD form of the question -- it screens the
+#: whole chain for a link under one hold and reads the leaf's kind off the held
+#: descriptor (so the caller never re-probes by name) -- so it marks a screen site
+#: exactly as the by-name predicates do.
+SCREENS = frozenset(
+    {
+        "first_linked_ancestor",
+        "is_link_or_junction",
+        "is_reparse_point",
+        "screen_held_file_kind",
+    }
+)
 
 #: By-name resolves in ``os``, ``os.path``, ``pathlib`` and ``shutil``. Both
 #: spellings of each question, because ``pathlib`` renames all of them. Plus the

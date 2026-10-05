@@ -3345,7 +3345,9 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         denied = _deny_foreign_app_skill_slot(request, state, session_key, "skill_detail")
         if denied is not None:
             return denied
-    content = skills.load_skill(name)
+    # Off the loop: load_skill reads through safe_read_file_bytes_nolink, whose
+    # Windows validation opens each path component (CreateFileW) and closes it.
+    content = await asyncio.to_thread(skills.load_skill, name)
     if content is None and name.startswith("package/"):
         pkg_name = name[len("package/") :]  # strip "package/" prefix
         # The capability manager owns skill listing + path resolution; it
@@ -3357,7 +3359,8 @@ async def api_skill_detail(request: web.Request) -> web.Response:
             package_skills = []
         row = _match_package_row(package_skills, name, pkg_name)
         if row is not None and row.get("path"):
-            resolved = validate_file_path(str(row["path"]))
+            # Off the loop for the same reason as load_skill above.
+            resolved = await asyncio.to_thread(validate_file_path, str(row["path"]))
             if resolved is None:
                 return web.json_response({"error": "access denied"}, status=403)
             # Same descriptor gate as the prompt reads above, for the same reason:

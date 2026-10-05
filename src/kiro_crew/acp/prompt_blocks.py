@@ -65,7 +65,7 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     downscale_image_block,
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.pinned_fs import screen_held_file_kind
 
 logger = logging.getLogger(__name__)
 
@@ -203,31 +203,35 @@ def build_prompt_blocks(
             # connection. Windows-only for the same reason as the UNC gate:
             # on POSIX stat-ing through a symlink is harmless. Reference
             # wiring: dashboard/handlers/themes.py::_resolve_local_source.
-            if os.name == "nt" and first_linked_ancestor(path) is not None:
-                continue
-            # The LEAF gets the junction-aware check the walk deliberately
-            # excludes: is_file() below FOLLOWS a final-component link, so a
-            # leaf symlink/junction targeting a UNC share is the same probe.
-            # lstat-based, so the link itself is never followed.
-            if os.name == "nt" and is_link_or_junction(path):
-                continue
+            #
+            # The file-kind and size checks run THROUGH the held leaf descriptor,
+            # UNDER the hold: `screen_held_file_kind` refuses a link ANYWHERE in the
+            # chain (ancestor OR leaf) and reports `is_regular`/`size` from `fstat`
+            # on the descriptor the walk is still holding -- never a by-name
+            # `is_file()`/`stat()` after the hold closes, which a junction planted in
+            # that window would redirect into an SMB auth. POSIX keeps the by-name
+            # probe (a symlink lookup there is a harmless local hop).
             # A long run of prose ending in an image suffix is not a path: a
             # component over 255 characters (past every common name limit) raises
-            # ENAMETOOLONG (pathlib on 3.12 does not swallow it), and one raise
-            # here fails the whole turn. Skip it, and treat any probe error as
-            # "not a file" so the text still goes out.
+            # ENAMETOOLONG, and one raise here fails the whole turn. Skip it.
             if any(len(part) > 255 for part in path.parts):
                 continue
-            try:
-                if not path.is_file():
+            if os.name == "nt":
+                screened = screen_held_file_kind(str(path))
+                if screened is None or not screened.is_regular:
                     continue
-            except OSError:
-                continue
-            try:
-                size = path.stat().st_size
-            except OSError:
-                logger.debug("acp prompt: could not stat image %s", raw, exc_info=True)
-                continue
+                size = screened.size
+            else:
+                try:
+                    if not path.is_file():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    logger.debug("acp prompt: could not stat image %s", raw, exc_info=True)
+                    continue
             if size > max_image_bytes:
                 # The path stays usable text, and the note says the picture
                 # was not attached, so nobody takes it as seen. The note speaks

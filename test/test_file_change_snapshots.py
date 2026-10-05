@@ -16,6 +16,7 @@ touching the live ACP runtime — every test stays in pure-Python land.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import os
 import shutil
@@ -45,7 +46,9 @@ from kiro_crew.dashboard.chat_runner import (
     _MAX_TURN_SNAPSHOT_ENTRIES,
     _apply_turn_snapshot_budget,
     _flush_file_changes,
+    _flush_file_changes_off_loop,
     _note_reply_row,
+    _read_file_change_snapshots,
     _record_turn_snapshot,
     _run_chat,
     _safe_read_snapshot,
@@ -747,6 +750,91 @@ class TestFlushFileChanges:
 
 
 # ── Regression tests: real event ordering & content-block paths ────────────
+
+
+class TestFlushFileChangesOffLoop:
+    """``_flush_file_changes_off_loop`` reads snapshots on a worker and stays
+    cancellation-safe: it never repeats the blocking read on the event loop, and
+    a cancel during the worker hop still lands the chips."""
+
+    @pytest.mark.asyncio
+    async def test_it_offloads_the_reads_and_attaches(self, tmp_path: Path) -> None:
+        target = tmp_path / "f.txt"
+        target.write_text("after")
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [{"path": str(target), "content": "before"}]
+
+        await _flush_file_changes_off_loop(slot)
+
+        change = slot.messages[-1]["meta"]["file_changes"][0]
+        assert change["path"] == str(target)
+        assert change["after"] == "after"
+
+    @pytest.mark.asyncio
+    async def test_it_forwards_the_turn_shell_flag(self, tmp_path: Path, monkeypatch) -> None:
+        """The turn exits call the off-loop wrapper, so the wrapper must hand
+        ``turn_had_shell`` to ``_flush_file_changes``; dropping it would let a
+        shell-shaped turn-end read settle a pending strReplace before."""
+        target = tmp_path / "f.txt"
+        target.write_text("after")
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [{"path": str(target), "content": "before"}]
+
+        from kiro_crew.dashboard import chat_runner as _cr
+
+        seen: list[dict] = []
+        monkeypatch.setattr(_cr, "_flush_file_changes", lambda _slot, **kw: seen.append(kw))
+
+        await _flush_file_changes_off_loop(slot, turn_had_shell=True)
+
+        assert seen and seen[0]["turn_had_shell"] is True
+        assert seen[0]["snapshots"] is not None
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_the_read_still_attaches_without_a_loop_read(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A Stop / turn-deadline cancel landing on the worker-hop await must not
+        drop the chips, and must NOT repeat the blocking read on the loop: the
+        worker ran to completion and wrote the holder, so the attach reads from
+        it. The reader is counted to prove no second (on-loop) read happens."""
+        target = tmp_path / "f.txt"
+        target.write_text("after")
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [{"path": str(target), "content": "before"}]
+
+        from kiro_crew.dashboard import chat_runner as _cr
+
+        real_reader = _cr._read_file_change_snapshots
+        reads: list[list[str]] = []
+
+        def _counting_reader(paths, holder=None):
+            reads.append(list(paths))
+            return real_reader(paths, holder)
+
+        monkeypatch.setattr(_cr, "_read_file_change_snapshots", _counting_reader)
+
+        task = asyncio.ensure_future(_flush_file_changes_off_loop(slot))
+        # Let the coroutine reach the worker-hop await, then cancel it.
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The chips still landed from the worker's holder...
+        change = slot.messages[-1]["meta"]["file_changes"][0]
+        assert change["after"] == "after"
+        # ...and the reader ran exactly ONCE (the worker), never a second
+        # inline read on the event loop.
+        assert len(reads) == 1
+
+    def test_the_reader_fills_a_passed_holder(self, tmp_path: Path) -> None:
+        target = tmp_path / "f.txt"
+        target.write_text("after")
+        holder: dict = {}
+        out = _read_file_change_snapshots([str(target)], holder)
+        assert out is holder
+        assert holder[str(target)] is not None
 
 
 class TestContentBlockBeforeText:

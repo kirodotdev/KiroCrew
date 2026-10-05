@@ -72,10 +72,9 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
 )
-from kiro_crew.pinned_fs import fd_real_path
+from kiro_crew.pinned_fs import fd_real_path, screen_held_file_kind
 from kiro_crew.platform_compat import (
     IS_WINDOWS,
-    first_linked_ancestor,
     is_link_or_junction,
     pin_directory,
 )
@@ -86,6 +85,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import (
     is_sensitive_path,
+    is_sensitive_resolved_path,
     redact_and_truncate,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -198,14 +198,10 @@ async def api_themes_create(request: web.Request) -> web.Response:
             themes_path.mkdir(parents=True, exist_ok=True)
             if target.exists() or _installed_theme_dir(slug).exists():
                 return False
-            _atomic_write_theme_json(
-                target, json.dumps(theme_data, indent=2) + "\n"
-            )
+            _atomic_write_theme_json(target, json.dumps(theme_data, indent=2) + "\n")
             return True
 
-    created = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _create_locked
-    )
+    created = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _create_locked)
     if not created:
         return web.json_response({"error": f"theme '{slug}' already exists"}, status=409)
     return web.json_response({"ok": True, "slug": slug, "theme": theme_data})
@@ -243,17 +239,35 @@ def _resolve_local_source(path_str: str) -> tuple[Path | None, str | None]:
         # real guard is `is_sensitive_path` on the RESOLVED path below -- so
         # gating this keeps macOS installs from `/tmp` and `/var` (symlinks to
         # `/private/*`) working, which an unconditional walk would refuse.
-        # The reply matches the leaf case on purpose: which ancestor is a link
-        # is filesystem layout, and the caller supplied a path to guess at it.
-        if first_linked_ancestor(p) is not None:
+        #
+        # The directory check and the sensitivity check run THROUGH the held
+        # descriptor, UNDER the hold: `screen_held_file_kind` refuses a link
+        # ANYWHERE in the chain (ancestor OR leaf) and reports `is_dir` from
+        # `fstat` on the descriptor the walk is still holding, and the canonical
+        # path it returns is the held descriptor's own final path. Using THAT --
+        # instead of a fresh by-name `p.is_dir()` / `p.resolve()` after the hold
+        # closes -- means a junction planted in that window cannot redirect the
+        # probe into an SMB auth. The sensitivity check below is LEXICAL on that
+        # canonical path (`is_sensitive_resolved_path`), not a fresh resolve.
+        # Reference wiring: pinned_fs.screen_held_file_kind.
+        screened = screen_held_file_kind(str(p))
+        if screened is None:
             return None, "local path must not be a symlink"
+        if not screened.is_dir:
+            return None, f"not a directory: {path_str}"
+        if is_sensitive_resolved_path(screened.canonical):
+            return None, "local path is not an allowed location"
+        return Path(screened.canonical), None
     # Root junction: `Path.is_symlink()` is False for a Windows junction, so a
     # junction as the pack ROOT would pass an islink-only check and be resolved
     # through -- the same predicate gap the copy walk closes for subdirectories.
+    # POSIX leaf guard (Windows returned above, through the held screen).
     if is_link_or_junction(p):
         return None, "local path must not be a symlink"
     if not p.is_dir():
         return None, f"not a directory: {path_str}"
+    # POSIX: no UNC there, so following a link is a harmless local lookup and
+    # `is_sensitive_path` on the resolved target is the real guard.
     resolved = p.resolve()
     # The source folder is user/agent-influenced (CodeQL "uncontrolled data in
     # path expression", agents.py). Block credential / trust-root locations at
@@ -523,7 +537,9 @@ def _tree_contains_directory(root: Path, expected_stat: os.stat_result) -> bool:
     return False
 
 
-def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, int]:
+def _do_install(
+    stype: Any, source: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None, int]:
     """Blocking theme-install worker — fetch → staged copy → validate the
     snapshot → promote. Runs OFF the
     event loop (discovery pool): ``_clone_github`` (subprocess), ``_validate_theme_dir``
@@ -650,9 +666,7 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
             shutil.rmtree(old, ignore_errors=True)
             return True
 
-        _source_displaced = (
-            "source directory moved into the install destination during the install"
-        )
+        _source_displaced = "source directory moved into the install destination during the install"
 
         # ── Legacy-pack continuity ──
         # An installed pack whose name filters to nothing sits at the CONSTANT
@@ -754,9 +768,7 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def _audit_theme_install_governance(
-    outcome: str, decision: object, reason: str = ""
-) -> None:
+def _audit_theme_install_governance(outcome: str, decision: object, reason: str = "") -> None:
     """Best-effort SEL audit of the theme-install admission decision.
 
     Writes to the JSONL SEL file (never stdout) and NEVER raises. A theme
@@ -868,18 +880,14 @@ async def api_theme_detail(request: web.Request) -> web.Response:
         return target.exists(), dir_target.is_dir()
 
     loop = asyncio.get_running_loop()
-    target_exists, dir_is_dir = await loop.run_in_executor(
-        discovery_executor(), _stat_targets
-    )
+    target_exists, dir_is_dir = await loop.run_in_executor(discovery_executor(), _stat_targets)
 
     if request.method == "DELETE":
         if target_exists:
             # ``missing_ok``: the stat rode an earlier hop, so a concurrent
             # delete can win the race; deleting an already-gone file is the
             # outcome the caller asked for, not a 500.
-            await loop.run_in_executor(
-                discovery_executor(), lambda: target.unlink(missing_ok=True)
-            )
+            await loop.run_in_executor(discovery_executor(), lambda: target.unlink(missing_ok=True))
             return web.json_response({"ok": True})
         if dir_is_dir:
             # Recursive delete of a many-file theme dir is blocking; run off-loop.
@@ -938,17 +946,13 @@ async def api_theme_detail(request: web.Request) -> web.Response:
                 _atomic_write_theme_json(target, json.dumps(td, indent=2) + "\n")
                 return td
 
-        theme_data = await loop.run_in_executor(
-            discovery_executor(), _update_locked
-        )
+        theme_data = await loop.run_in_executor(discovery_executor(), _update_locked)
         return web.json_response({"ok": True, "theme": theme_data})
 
     # GET — file reads and the validation walk are blocking; run off-loop.
     if target_exists:
         try:
-            raw = await loop.run_in_executor(
-                discovery_executor(), target.read_text, "utf-8"
-            )
+            raw = await loop.run_in_executor(discovery_executor(), target.read_text, "utf-8")
             data = json.loads(raw)
         except (json.JSONDecodeError, OSError):
             return web.json_response({"error": "failed to read theme"}, status=500)
@@ -1094,9 +1098,7 @@ async def api_theme_overlay(request: web.Request) -> web.Response:
     )
     if raw is None:
         return web.json_response({"error": "not found"}, status=404)
-    return _theme_asset_response(
-        request, raw, "text/html", csp=_THEME_OVERLAY_CSP, charset="utf-8"
-    )
+    return _theme_asset_response(request, raw, "text/html", csp=_THEME_OVERLAY_CSP, charset="utf-8")
 
 
 async def api_theme_topbar(request: web.Request) -> web.Response:
@@ -1124,6 +1126,4 @@ async def api_theme_topbar(request: web.Request) -> web.Response:
     )
     if raw is None:
         return web.json_response({"error": "not found"}, status=404)
-    return _theme_asset_response(
-        request, raw, "text/html", csp=_THEME_OVERLAY_CSP, charset="utf-8"
-    )
+    return _theme_asset_response(request, raw, "text/html", csp=_THEME_OVERLAY_CSP, charset="utf-8")

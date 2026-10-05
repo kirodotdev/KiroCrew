@@ -90,10 +90,11 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.messaging.split import iter_fence_spans
+from kiro_crew.pinned_fs import screen_held_file_kind
 from kiro_crew.platform import binary_content_is_flagged
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.security import (
     is_sensitive_path,
+    is_sensitive_resolved_path,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -833,24 +834,36 @@ def _inspect(
         # purpose -- which ancestor is a link is filesystem layout the caller
         # supplied a path to guess at. Reference wiring:
         # dashboard/handlers/themes.py::_resolve_local_source.
-        if os.name == "nt" and first_linked_ancestor(path) is not None:
-            return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
-        # The LEAF gets the junction-aware check the walk deliberately
-        # excludes. The all-platform is_symlink() refusal below is lstat-only
-        # (junction-blind) and runs after is_sensitive_path, whose candidate
-        # forms resolve the leaf too -- so on Windows the leaf must be
-        # screened here, before the first resolving call. lstat-based, never
-        # follows.
-        if os.name == "nt" and is_link_or_junction(path):
-            return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
-        if is_sensitive_path(str(path)):
-            return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
-        if path.is_symlink():
-            # Refused rather than resolved: the bytes below must come from the
-            # inode this path names, not from wherever a link points now.
-            return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
-        if not path.is_file():
-            return Rejection(dest, REASON_MISSING, "no such file")
+        #
+        # The sensitivity check and the file-kind check run THROUGH the held
+        # descriptor, UNDER the hold: `screen_held_file_kind` refuses a link
+        # ANYWHERE in the chain (ancestor OR leaf), reports `is_regular` from
+        # `fstat` on the descriptor the walk is still holding, and returns the
+        # held descriptor's own final path. Sensitivity is judged LEXICALLY on
+        # that canonical path (`is_sensitive_resolved_path`), never a fresh
+        # by-name resolve a junction could redirect into an SMB auth after the
+        # hold closes. The byte read goes through `safe_read_file_bytes_nolink`
+        # -> `validate_file_path`'s own held chain, so every probe runs under a
+        # hold. POSIX keeps the by-name checks (a symlink lookup there is a
+        # harmless local hop). Reference wiring:
+        # dashboard/handlers/themes.py::_resolve_local_source.
+        if os.name == "nt":
+            screened = screen_held_file_kind(str(path))
+            if screened is None:
+                return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
+            if is_sensitive_resolved_path(screened.canonical):
+                return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
+            if not screened.is_regular:
+                return Rejection(dest, REASON_MISSING, "no such file")
+        else:
+            if is_sensitive_path(str(path)):
+                return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
+            if path.is_symlink():
+                # Refused rather than resolved: the bytes below must come from the
+                # inode this path names, not from wherever a link points now.
+                return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
+            if not path.is_file():
+                return Rejection(dest, REASON_MISSING, "no such file")
         try:
             data = safe_read_file_bytes_nolink(
                 str(path), within_root=within_root, max_bytes=read_cap

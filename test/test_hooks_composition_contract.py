@@ -86,7 +86,7 @@ _BASE_NAMES = frozenset("""
     _TITLE_ONLY_GRANT_NOTED _TITLE_ONLY_GRANT_NOTED_CAP _TOOL_TITLE_PREFIXES
     _WINDOWS_LINK_CHAIN_MAX _WRITE_TOOL_KINDS _XATTR_UNSUPPORTED_ERRNOS _app_owns_mcp_server
     _audit_governance _audit_governance_hook_decision _bounded_pattern_search
-    _builtin_app_for_agent _coerce_bool _communicate_capped _config_paths _context_matches
+    _builtin_app_for_agent _canonicalize_within_hold _coerce_bool _communicate_capped _config_paths _context_matches
     _cu_read_only_auto_approve _darwin_case_alias_matches _decode_capped
     _emit_internal_read_audit _encode_search_field _expand_home_vars
     _fail_closed_on_gate_crash _fd_real_path _fold_extended_length_local
@@ -97,7 +97,7 @@ _BASE_NAMES = frozenset("""
     _normalize_hook_timeout _normalize_search_path _normalize_tool_name
     _normalize_windows_link_target _note_title_only_grant_pattern
     _opened_file_matches_validated_path _opened_path_within_root _pinned_replace
-    _read_capped_stream _screen_windows_links _script_hooks_capability_denied
+    _read_capped_stream _screen_and_resolve_held _screen_one_link _script_hooks_capability_denied
     _search_deny_target _should_carry_xattr _spawn_policy_denial _tool_matches
     _unc_agents_root _unc_agents_root_cache _unc_data_home_root _unc_data_home_root_cache
     _validated_name_holds asdict audit_bash_exfiltration computer_use_action_classes
@@ -212,7 +212,11 @@ _FACADE_DEFS = (
     "_cu_read_only_auto_approve",
     "_unc_data_home_root",
     "_unc_agents_root",
-    "_screen_windows_links",
+    "_canonicalize_within_hold",
+    "_resolve_legacy_fallback",
+    "_screen_and_resolve_held",
+    "_screen_one_link",
+    "_screen_windows_links_by_name",
     "FileTooLargeError",
     "_hook_subprocess_env",
     "ScriptHook",
@@ -307,7 +311,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Over a hundred production modules and the tests read private names off this module as
     well as public ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 197
+    assert len(_BASE_NAMES) == 199
     assert sorted(name for name in _BASE_NAMES if not hasattr(hooks_mod, name)) == []
 
 
@@ -481,7 +485,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 93
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 97
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -880,18 +884,24 @@ def test_the_gate_still_carries_what_the_source_guards_read() -> None:
     """Two guards read this file's own text rather than a symbol, so they constrain
     WHERE that construct lives: ``test_business_counters`` greps the file for the
     approval counter (its emit is ``ToolHookResult._count``), and
-    ``test/link_screen_sites.py`` keys ``_screen_windows_links`` by this path. The gate
+    ``test/link_screen_sites.py`` keys ``_screen_one_link`` and
+    ``_screen_windows_links_by_name`` by this path. The gate
     table's kinds are a closed vocabulary that ``GateTierKind`` spells for the type
     checker and ``_GATE_TIER_KINDS`` orders for the soundness check."""
     source = _FACADE_PATH.read_text(encoding="utf-8")
     assert "APPROVAL_DECISIONS" in source and "emit_counter" in source
-    assert "_screen_windows_links" in source
+    assert "_screen_and_resolve_held" in source
     module_level = {
         node.name
         for node in ast.parse(source).body
         if isinstance(node, (ast.FunctionDef, ast.ClassDef))
     }
-    assert {"HookManager", "_screen_windows_links"} <= module_level
+    assert {
+        "HookManager",
+        "_screen_and_resolve_held",
+        "_screen_one_link",
+        "_screen_windows_links_by_name",
+    } <= module_level
     assert typing.get_args(hooks_mod.GateTierKind) == hooks_mod._GATE_TIER_KINDS
     assert {tier.kind for tier in hooks_mod.GATE_TIERS} == set(hooks_mod._GATE_TIER_KINDS)
 

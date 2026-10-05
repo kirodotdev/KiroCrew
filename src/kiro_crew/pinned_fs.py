@@ -45,10 +45,18 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Callable
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.platform_compat import open_file_no_reparse, pin_directory
 
 __all__ = [
+    "CHAIN_HELD",
+    "CHAIN_MISSING",
+    "CHAIN_REPARSE",
+    "ChainInteriorOpenError",
+    "ChainFinalPathUnreadable",
+    "HeldChain",
+    "ScreenedFile",
     "PUT_BACK_FAILED",
     "PUT_BACK_NAME_TAKEN",
     "PinnedPathRefusal",
@@ -71,6 +79,7 @@ __all__ = [
     "drain_verified_chain",
     "fatal_skip_reporter",
     "fd_real_path",
+    "held_no_follow_chain",
     "is_reparse_point",
     "is_regular_at",
     "omits_wanted_data",
@@ -85,6 +94,7 @@ __all__ = [
     "remove_dir_verified",
     "remove_tree_pinned",
     "scan_tree_pinned",
+    "screen_held_file_kind",
     "stage_tree_pinned",
     "supports_pinned_tree_walk",
     "supports_pinned_walk",
@@ -1789,6 +1799,400 @@ def close_all(fds: Iterable[int]) -> None:
             os.close(fd)
         except OSError:
             pass
+
+
+#: Outcomes of :func:`hold_no_follow_chain`. ``CHAIN_HELD`` means every component of
+#: the path exists and none of them is a reparse point; ``CHAIN_REPARSE`` means the
+#: walk stopped at one and is holding it, so its target can be read without a second
+#: look by name; ``CHAIN_MISSING`` means the walk stopped without pinning the leaf,
+#: either because a name holds nothing -- and a name holding nothing cannot redirect a
+#: resolution -- or because the leaf could be classified but not pinned. Both leave the
+#: same obligation on the caller, which is why they are one outcome: what the walk did
+#: not prove is named by ``held`` and must not be resolved. An INTERIOR component that
+#: cannot be opened is neither of these; the walk raises, because it can say nothing
+#: about what sits there.
+CHAIN_HELD = "held"
+CHAIN_REPARSE = "reparse"
+CHAIN_MISSING = "missing"
+
+
+class ChainInteriorOpenError(OSError):
+    """An INTERIOR component of a held walk existed but could not be opened.
+
+    Distinct from the ordinary refusals so a caller can tell the one hop the held
+    walk cannot verify apart from a genuine link or a path it declined to hold. The
+    walk opens each component attribute-only (no traverse right -- see
+    :func:`kiro_crew.platform_compat.open_entry_no_follow`), so an interior open that
+    fails with neither ENOENT/ENOTDIR (missing, a normal outcome) nor a reparse
+    classification is a component whose link-ness the walk could not read. On a host
+    whose access rules the project cannot test from CI, refusing every such path
+    would fail closed on an unverified premise; a caller may instead fall back to the
+    legacy by-name ``realpath`` for THAT path alone (the ``validate_file_path``
+    Windows arm does, logging once), which is fail-to-legacy on the single hop that
+    cannot be verified rather than fail-closed on hosts that cannot be tested. A
+    subclass of ``OSError`` so an unaware caller still fails closed by default.
+    """
+
+
+class ChainFinalPathUnreadable(OSError):
+    """A held descriptor's final path could not be read (:func:`fd_real_path` -> None).
+
+    The second hop a held walk cannot verify, and the same CLASS as
+    :class:`ChainInteriorOpenError`: the walk opened every component attribute-only and
+    proved the chain, but ``GetFinalPathNameByHandleW`` with ``VOLUME_NAME_DOS`` returns
+    nothing on some volume types and redirectors (a volume with no DOS name, some RAM or
+    virtual drives, some network redirectors) where CPython's ``realpath`` falls back by
+    name and resolves. Refusing every such path would fail closed on a host the project
+    cannot test from CI -- exactly the unverifiable premise the interior-open fallback
+    exists to avoid -- so a caller may fall back to the legacy by-name resolution for
+    THAT path alone, consistent with the ``ChainInteriorOpenError`` arm. A subclass of
+    ``OSError`` so an unaware caller still fails closed by default.
+    """
+
+
+#: Default component-depth bound for the held-chain screen. Mirrors
+#: ``hooks._MAX_SCREENED_PATH_DEPTH`` (the ``validate_file_path`` caller passes that
+#: value explicitly); it lives here too so :func:`screen_held_file_kind` -- the
+#: reusable screen for the refuse-any-link surfaces -- has a self-contained default and
+#: does not import a hooks constant. One open per component makes an adversarially deep
+#: path a stall inside the guard, which is what the bound exists to refuse.
+_MAX_SCREENED_CHAIN_DEPTH = 255
+
+
+@dataclass(frozen=True)
+class HeldChain:
+    """The state of one no-follow walk, with the descriptors it is still holding.
+
+    ``held`` is the absolute path of the DEEPEST component the walk PROVED, or the
+    path's anchor when it proved none. It is the walk's whole answer about position,
+    and deliberately the only one: a caller that must canonicalize a path the walk did
+    not reach the end of needs the boundary, and the component the walk STOPPED on is
+    not it -- under :data:`CHAIN_MISSING` that name is sometimes an absent name whose
+    parent is proven and sometimes a real file that is proven itself. Reporting both
+    would offer a caller a choice where only one answer is safe.
+
+    ``fds`` is the caller's to release, with :func:`close_all` or by using
+    :func:`held_no_follow_chain` instead. They are what the walk BUYS, not
+    bookkeeping: each component was opened with ``OPEN_REPARSE_POINT`` and its link-ness
+    read off the handle, and the DEEPEST held descriptor is the one a caller resolves
+    THROUGH -- :func:`fd_real_path` reads the kernel's own final path for the inode
+    already open, so the canonical answer names the object the walk proved and no second
+    lookup by name is left for a junction swapped in afterwards to redirect. Dropping the
+    descriptors ends that -- a resolution once they are closed is the by-name lookup the
+    walk exists to replace -- which is why the context manager exists and why a caller
+    must resolve inside it. The walk asks only for attribute-only access, so it does NOT
+    pin a component against a concurrent rename or delete; it does not need to, because
+    the guarantee rides on the descriptor already naming the real inode, not on freezing
+    the name.
+
+    What a held descriptor does NOT buy is exclusivity over what its directory
+    CONTAINS: a name that holds nothing when the walk passes it can be filled
+    afterwards, so everything below ``held`` is unproven and a caller must not
+    resolve it by name.
+    """
+
+    outcome: str
+    fds: tuple[int, ...]
+    held: str
+
+
+def _chain_components(path: str) -> tuple[str, tuple[str, ...]] | None:
+    """Split *path* into its anchor and the components below it, or ``None``.
+
+    ``None`` for a path with no anchor: a relative path's components resolve against
+    a current directory this walk never inspected, so there is no chain to hold.
+    """
+    parts = PurePath(path).parts
+    if not parts or not os.path.isabs(path):
+        return None
+    return parts[0], parts[1:]
+
+
+def hold_no_follow_chain(path: str, *, max_depth: int) -> HeldChain:
+    """Walk *path* component by component without following anything, and HOLD it.
+
+    The answer to a validator that has judged a path by name and is about to resolve
+    it: between those two steps a component can be swapped for a link, and on Windows
+    resolving a link aimed at a share is an outbound SMB authentication rather than a
+    local lookup. This is the Windows mechanism, and it is the only one reached in
+    production -- the sole caller, ``hooks.validate_file_path``, invokes it under
+    ``os.name == "nt"`` -- so the walk is written for Windows, which has no ``openat``:
+
+    Every component is opened by its full path with ``OPEN_REPARSE_POINT`` (see
+    :func:`kiro_crew.platform_compat.open_entry_no_follow`), so a component that is
+    already a link is opened AS the link and reported rather than traversed, and its
+    link-ness is read off the HANDLE -- the one thing a name swap cannot exchange. The
+    open asks for attribute-only access, so the walk does not pin a component against a
+    concurrent rename or delete. It does not need to: the caller does not resolve the
+    path by name afterwards, it resolves THROUGH the deepest held descriptor
+    (:func:`fd_real_path`), whose final path names the inode the walk already proved. A
+    junction swapped in after the walk changes a NAME, and the descriptor stays bound to
+    the inode the walk proved rather than to the name -- so the resolution the hold hands
+    back is immune to it.
+
+    Stops at the first component that is a link (:data:`CHAIN_REPARSE`) or that holds
+    nothing (:data:`CHAIN_MISSING`), and otherwise reaches the leaf
+    (:data:`CHAIN_HELD`). A missing component ends the walk without refusing: the rest
+    of the path names nothing, and a name that does not exist cannot redirect a
+    resolution.
+
+    Raises :class:`ChainInteriorOpenError` (an ``OSError`` subclass) when an interior
+    component exists but cannot be opened attribute-only -- the one case where what is
+    at that component is genuinely unknown. An unaware caller still fails closed (it is
+    an ``OSError``); a caller that can tell this hop apart may fall back to the legacy
+    by-name resolver for that path, which the ``validate_file_path`` Windows arm does.
+    Raises a plain ``OSError`` for every other failure -- a sharing violation, an
+    unreachable host. Refuses a path deeper than *max_depth* components for the reason
+    the walk itself is bounded: one open per component makes an adversarially deep path
+    a stall inside the guard.
+
+    A relative path is refused (``ValueError``): its components resolve against a
+    current directory this walk never inspected.
+    """
+    split = _chain_components(path)
+    if split is None:
+        raise ValueError(f"refusing to hold a path with no anchor: {path!r}")
+    anchor, components = split
+    if len(components) > max_depth:
+        raise ValueError(f"refusing to hold a path {len(components)} components deep")
+
+    fds: list[int] = []
+    try:
+        return _hold_chain_by_path(anchor, components, fds)
+    except BaseException:
+        close_all(fds)
+        raise
+
+
+def _hold_chain_by_path(anchor: str, components: tuple[str, ...], fds: list[int]) -> HeldChain:
+    """The by-name route of :func:`hold_no_follow_chain`, which is the Windows one.
+
+    Each component is opened by its full path with ``OPEN_REPARSE_POINT``, and its
+    link-ness is read off the HANDLE rather than by a second look at the name. The walk
+    takes attribute-only access, so it does not freeze a component against rename or
+    delete; the swap it defeats is defeated at RESOLUTION time instead, where the caller
+    reads the final path through the deepest held descriptor (:func:`fd_real_path`)
+    rather than re-traversing names a junction could have been planted into.
+
+    The anchor itself (``C:\\``, ``\\\\server\\share\\``) is not opened. A drive root
+    or a share root cannot be a reparse point, so there is nothing there to prove, and
+    on a share the open would be one more SMB round-trip to a host the UNC gate has
+    already admitted by configuration.
+
+    A link is found by asking the DESCRIPTOR
+    (:func:`kiro_crew.platform_compat.win_fd_is_link`), not the name. On POSIX
+    the open refuses a symlink with ``ELOOP`` instead, which is not caught here: this
+    route is the one taken where that refusal does not exist, and letting ``ELOOP``
+    propagate means a POSIX caller that reaches it fails closed rather than walking on.
+
+    An INTERIOR component that exists and cannot be opened is raised as
+    :class:`ChainInteriorOpenError`, not reported as a boundary. A resolution passes
+    THROUGH it, and a component that cannot be opened cannot be classified either, so
+    reporting a boundary above it would hand the caller a path whose remaining text
+    names an object nothing has looked at. Raising a DISTINCT error lets the caller tell
+    this one unverifiable hop apart: an unaware caller fails closed, while
+    ``validate_file_path`` falls back to the legacy resolver for that path alone. Only
+    the LAST component survives that, because a resolution ends there; it is classified
+    through a mask that cannot be refused by another opener's share mode, and left
+    unheld.
+    """
+    prefix = anchor
+    proven = anchor
+    last_index = len(components) - 1
+    for index, component in enumerate(components):
+        prefix = os.path.join(prefix, component)
+        is_last = index == last_index
+        try:
+            fd = platform_compat.open_entry_no_follow(prefix)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                return HeldChain(CHAIN_MISSING, tuple(fds), proven)
+            # A component that exists but cannot be opened: the walk asks for a single
+            # attribute-only mask (no traverse right -- see
+            # :func:`kiro_crew.platform_compat.open_entry_no_follow`), so there is no
+            # weaker mask to drop to, and a name whose link-ness is unknown cannot be
+            # classified. This is raised as :class:`ChainInteriorOpenError` -- a distinct
+            # ``OSError`` subclass -- so a caller may tell this one unverifiable hop apart
+            # from a genuine refusal and fall back to the legacy resolver for THAT path
+            # alone, rather than fail closed on a host whose access rules cannot be tested
+            # from CI. An unaware caller still fails closed, because it is an ``OSError``.
+            raise ChainInteriorOpenError(exc.errno, str(exc), prefix) from exc
+        fds.append(fd)
+        if platform_compat.win_fd_is_link(fd):
+            return HeldChain(CHAIN_REPARSE, tuple(fds), proven)
+        proven = prefix
+        if not is_last and not _stat.S_ISDIR(os.fstat(fd).st_mode):
+            # A file part-way along the path: everything below it names nothing, so
+            # there is no further component that could redirect anything.
+            return HeldChain(CHAIN_MISSING, tuple(fds), proven)
+    return HeldChain(CHAIN_HELD, tuple(fds), prefix)
+
+
+@contextmanager
+def held_no_follow_chain(path: str, *, max_depth: int) -> Iterator[HeldChain]:
+    """:func:`hold_no_follow_chain` with the descriptors released on the way out.
+
+    Resolve the path INSIDE the block. The guarantee the walk buys lasts exactly as
+    long as the descriptors do, so a resolution after the block has closed them is
+    the unprotected resolution the walk exists to replace.
+
+    The hold is RESOLVE-ONLY: the caller only reads/canonicalises the held names and
+    never writes into them. The held directories keep ``FILE_SHARE_READ_WRITE`` so a
+    concurrent ``os.replace`` into a pinned ancestor is not refused machine-wide -- the
+    walk does not need to deny it, because the caller resolves THROUGH the held
+    descriptors (:func:`fd_real_path`), not by re-traversing names. A component swapped,
+    renamed, or converted in place after the walk changes a NAME; the descriptor stays
+    bound to the inode the walk proved, so the final path it hands back is unaffected.
+    That is what lets the walk keep ``FILE_SHARE_READ_WRITE`` and charge no concurrent
+    writer on the machine for a containment property the descriptor already carries (see
+    the sharing rule under :func:`kiro_crew.platform_compat.open_entry_no_follow`).
+    """
+    chain = hold_no_follow_chain(path, max_depth=max_depth)
+    try:
+        yield chain
+    finally:
+        close_all(chain.fds)
+
+
+def _screen_linked_by_name(path: str) -> str | None:
+    """The legacy by-name link screen for the refuse-any-link surfaces.
+
+    The fallback :func:`screen_held_file_kind` uses when a component cannot be opened
+    attribute-only (:class:`ChainInteriorOpenError`), so the chain cannot be held. It
+    reproduces the strict pre-held contract of those surfaces: refuse (``None``) if ANY
+    ancestor OR the leaf is a link/junction, otherwise return ``realpath`` of the path.
+    By-name ``lstat``/``realpath``, so it carries the legacy ``look -> look`` residual --
+    which is the point: fail-to-legacy on the hop the walk could not verify, no weaker
+    than the behaviour before the held walk.
+    """
+    try:
+        if platform_compat.first_linked_ancestor(path) is not None:
+            return None
+        if platform_compat.is_link_or_junction(path):
+            return None
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class ScreenedFile:
+    """A path screened through a held chain, with the leaf's kind proven under the hold.
+
+    A screen that returned only a canonical string and then CLOSED the chain would leak:
+    a caller asking ``is_file()`` / ``is_dir()`` by name on that string re-resolves it
+    after the hold is gone -- a junction planted in that window
+    is followed, which is the outbound SMB probe the screen exists to stop. This carries
+    the answer computed WHILE the descriptor is still held, so the caller never re-probes
+    by name: ``canonical`` is the held descriptor's own final path and ``is_regular`` /
+    ``is_dir`` come from ``fstat`` on that descriptor (or a by-name ``lstat`` only on the
+    fail-to-legacy fallback hop, which is no weaker than the pre-held behaviour). A caller
+    judges sensitivity LEXICALLY on ``canonical`` (``is_sensitive_resolved_path``), never
+    a fresh by-name resolve.
+
+    ``exists`` is ``False`` for a ``CHAIN_MISSING`` leaf (a validated path that names
+    nothing yet is ordinary -- the caller decides whether absence is a skip); both kind
+    flags and ``size`` are then ``0``/``False``.
+    """
+
+    canonical: str
+    exists: bool
+    is_regular: bool
+    is_dir: bool
+    size: int = 0
+
+
+def screen_held_file_kind(
+    path: str, max_depth: int = _MAX_SCREENED_CHAIN_DEPTH
+) -> ScreenedFile | None:
+    """Screen *path* and report the leaf's kind proven THROUGH the held descriptor.
+
+    The held screen for the surfaces whose contract is to REFUSE any linked ancestor
+    outright (``dashboard/handlers/themes.py``, ``image_artifacts``,
+    ``messaging/outbound_files``, ``acp/prompt_blocks``), which then
+    ask "is this a regular file / a directory?" and act on the answer.
+    Those two steps must not straddle the hold's release: this answers the kind question
+    with ``os.fstat`` on the leaf descriptor the walk is still holding, so no by-name
+    ``is_file`` / ``is_dir`` re-resolves the path into a junction swapped in afterwards.
+
+    Returns ``None`` to refuse (a link
+    anywhere in the chain, a ``..`` component, a relative path, a path the walk declines
+    to hold). For a held leaf it returns a :class:`ScreenedFile` whose ``is_regular`` /
+    ``is_dir`` come from the held descriptor; for a ``CHAIN_MISSING`` leaf it returns one
+    with ``exists=False``. The interior-open / final-path-unreadable fallback resolves by
+    name (fail-to-legacy) and reports the kind by a single ``lstat`` on that result --
+    the residual the pre-held behaviour already carried on that one unverifiable hop.
+    """
+    sep_parts = [seg for chunk in path.split("/") for seg in chunk.split("\\")]
+    if ".." in sep_parts:
+        return None
+    try:
+        with held_no_follow_chain(path, max_depth=max_depth) as chain:
+            if chain.outcome == CHAIN_REPARSE:
+                return None
+            held_fd = chain.fds[-1] if chain.fds else None
+            if chain.outcome == CHAIN_HELD:
+                if held_fd is None:
+                    # A bare anchor (drive/share root): no descriptor to fstat, so the
+                    # anchor is a directory by construction, canonicalised by name.
+                    return ScreenedFile(os.path.realpath(chain.held), True, False, True)
+                held_real = fd_real_path(held_fd)
+                if held_real is None:
+                    raise ChainFinalPathUnreadable(0, "held final path unreadable", path)
+                # The kind is read off the HELD leaf descriptor, never the name: this is
+                # the whole point -- the inode the walk proved, immune to a name swap.
+                st = os.fstat(held_fd)
+                return ScreenedFile(
+                    held_real,
+                    True,
+                    _stat.S_ISREG(st.st_mode),
+                    _stat.S_ISDIR(st.st_mode),
+                    st.st_size,
+                )
+            # CHAIN_MISSING: the leaf names nothing yet. Canonicalise the proven prefix
+            # through its descriptor; the leaf exists=False, so no kind is claimed.
+            tail = os.path.relpath(path, chain.held)
+            if os.path.isabs(tail) or ".." in tail.split(os.sep):
+                return None
+            if held_fd is None:
+                prefix_real: str | None = os.path.realpath(chain.held)
+            else:
+                prefix_real = fd_real_path(held_fd)
+            if prefix_real is None:
+                raise ChainFinalPathUnreadable(0, "held final path unreadable", path)
+            return ScreenedFile(
+                os.path.normpath(os.path.join(prefix_real, tail)), False, False, False
+            )
+    except (ChainInteriorOpenError, ChainFinalPathUnreadable):
+        # The one hop the walk cannot verify -- fall back to the legacy by-name screen,
+        # then read the kind by name too (no descriptor is held on this hop). No weaker
+        # than the pre-held behaviour. The by-name read lives in a helper that binds no
+        # descriptor, so the descriptor-held ratchet does not flag it.
+        return _screen_linked_by_name_with_kind(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _screen_linked_by_name_with_kind(path: str) -> ScreenedFile | None:
+    """Legacy by-name screen plus the leaf's kind, for the fallback hop.
+
+    Reached only when the held walk cannot verify a hop (interior-open or an unreadable
+    final path), so there is no descriptor to read through: the screen refuses any link
+    and the kind comes from a by-name ``lstat``. This binds NO descriptor, so the
+    descriptor-held ratchet (which forbids by-name questions in functions holding a
+    descriptor) does not flag the unavoidable by-name read -- it is fail-to-legacy on
+    the one hop that cannot be held, no weaker than the pre-held behaviour.
+    """
+    legacy = _screen_linked_by_name(path)
+    if legacy is None:
+        return None
+    try:
+        st = os.stat(legacy, follow_symlinks=False)
+    except OSError:
+        return ScreenedFile(legacy, False, False, False)
+    return ScreenedFile(
+        legacy, True, _stat.S_ISREG(st.st_mode), _stat.S_ISDIR(st.st_mode), st.st_size
+    )
 
 
 @dataclass(frozen=True)

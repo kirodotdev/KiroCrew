@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         _is_representable_path,
         _opened_file_matches_validated_path,
         _opened_path_within_root,
-        _screen_windows_links,
+        _screen_and_resolve_held,
         is_sensitive_path,
         is_unc_shape,
         is_unverifiable_path_refusal,
@@ -42,6 +42,16 @@ def validate_file_path(raw: str) -> str | None:
     ``realpath`` on a UNC path is itself the outbound SMB probe), the Windows
     link-target screen (a link can launder the same probe past the
     lexical UNC check), is_sensitive_path(), realpath canonicalization.
+
+    On Windows the link screen AND the canonicalization both run with the path's
+    existing components held open, and the resolution shares the hold of the screening
+    step that settled the candidate -- so every component one step looked at is frozen
+    for the step that traverses it, and no name is judged under one hold and resolved
+    under another. See :func:`_screen_and_resolve_held`. On POSIX the resolution is
+    ``realpath`` on the string the gates judged, unchanged: there is no UNC there,
+    so following a link is a local lookup rather than a network authentication, and
+    the resolved path is judged by ``is_sensitive_path`` either way.
+
     Returns the canonical path or None if rejected.
     """
     if not raw:
@@ -91,10 +101,7 @@ def validate_file_path(raw: str) -> str | None:
         # dashboard/handlers/themes.py::_resolve_local_source.
         if is_unc_shape(target) and not unc_probe_allowed(target):
             return None
-        screened = _screen_windows_links(target)
-        if screened is None:
-            return None
-        target = screened
+        return _screen_and_resolve_held(target)
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)

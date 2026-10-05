@@ -162,7 +162,6 @@ src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
 src/kiro_crew/dashboard/handlers/terminal.py
-src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
 src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
@@ -278,7 +277,6 @@ test/metrics/test_telemetry_titles.py
 test/metrics/test_watchdog_metrics.py
 test/test_acp_metadata_fields.py
 test/test_acp_offload.py
-test/test_acp_prompt_blocks.py
 test/test_acp_stale_recovery.py
 test/test_acp_tool_search.py
 test/test_acp_true_provider_error.py
@@ -448,7 +446,6 @@ test/test_dashboard_sessions_memory.py
 test/test_dashboard_sessions_search.py
 test/test_dashboard_start_site.py
 test/test_dashboard_state_ws.py
-test/test_dashboard_themes_coverage.py
 test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_ws_task_tracking.py
@@ -566,7 +563,6 @@ test/test_history_race.py
 test/test_hook_matcher_modes.py
 test/test_hooks_json_shared_file.py
 test/test_host_service_guard.py
-test/test_image_artifacts.py
 test/test_inbound_unbind_notice.py
 test/test_installer_distro.py
 test/test_instances_search_federation.py

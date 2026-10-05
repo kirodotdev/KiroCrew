@@ -343,5 +343,8 @@ def test_stat_identity_rejects_sensitive_path(tmp_path, monkeypatch):
     p = tmp_path / "creds"
     p.write_text("secret\n")
     # Gate: a resolved target flagged sensitive is refused (never stat'd through).
-    monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda _p: True)
+    monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda _p, *_a, **_k: True)
+    monkeypatch.setattr(
+        hooks_mod, "is_sensitive_prevalidated_bounded_path", lambda _p, *_a, **_k: True
+    )
     assert stat_identity(str(p)) is None

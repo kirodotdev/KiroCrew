@@ -130,9 +130,14 @@ class TestCreateImage:
 
     def test_jpeg_dimension_sniff(self, store: ArtifactStore) -> None:
         # SOI + SOF0 segment declaring 20x10, then EOI.
-        sof0 = b"\xff\xc0" + (17).to_bytes(2, "big") + b"\x08" + (10).to_bytes(2, "big") + (
-            20
-        ).to_bytes(2, "big") + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+        sof0 = (
+            b"\xff\xc0"
+            + (17).to_bytes(2, "big")
+            + b"\x08"
+            + (10).to_bytes(2, "big")
+            + (20).to_bytes(2, "big")
+            + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+        )
         data = b"\xff\xd8" + sof0 + b"\xff\xd9"
         art = store.create_image(name="J", image_bytes=data, mime="image/jpeg")
         assert art.image is not None
@@ -186,9 +191,7 @@ class TestImageMetadataTolerantLoad:
 
 
 class TestSerializeShape:
-    def test_serialize_redacts_llm_derived_image_metadata(
-        self, store: ArtifactStore
-    ) -> None:
+    def test_serialize_redacts_llm_derived_image_metadata(self, store: ArtifactStore) -> None:
         """``alt`` / ``original_filename`` must pass the same gate as ``name``.
 
         Both come from markdown the agent wrote. The dashboard prefers
@@ -245,9 +248,7 @@ class TestMarkdownDestinationParsing:
         assert got == r"C:\Users\me\shot.png"
 
     def test_balanced_parens_are_kept(self) -> None:
-        assert md_destination("/tmp/screenshot(1).png)") == (
-            "/tmp/screenshot(1).png"
-        )
+        assert md_destination("/tmp/screenshot(1).png)") == ("/tmp/screenshot(1).png")
 
     def test_markdown_escaped_paren_is_unescaped(self) -> None:
         assert md_destination(r"/tmp/a\(b.png)") == "/tmp/a(b.png"
@@ -271,9 +272,7 @@ class TestMarkdownDestinationParsing:
 
 
 class TestRegisterImages:
-    def test_per_message_image_count_is_capped(
-        self, store: ArtifactStore, tmp_path: Path
-    ) -> None:
+    def test_per_message_image_count_is_capped(self, store: ArtifactStore, tmp_path: Path) -> None:
         """One message cannot register unbounded images.
 
         Pruning runs only after the loop, so without a ceiling a message with a
@@ -297,9 +296,7 @@ class TestRegisterImages:
             image_artifacts, "safe_read_file_bytes_nolink", lambda *a, **k: b"x" * 60
         )
         # First image fits (60 <= 100); the second would exceed it.
-        slugs = image_artifacts.register_images(
-            f"![a]({big})\n![b]({big})", "ts-budget", "chat-1"
-        )
+        slugs = image_artifacts.register_images(f"![a]({big})\n![b]({big})", "ts-budget", "chat-1")
         assert len(slugs) == 1
 
     def test_two_images_on_one_line_are_both_registered(
@@ -349,9 +346,7 @@ class TestRegisterImages:
         """
         img = tmp_path / "chart.png"
         img.write_bytes(_png_bytes(6, 3))
-        slugs = image_artifacts.register_images(
-            rf"![Revenue \[Q1\]]({img})", "ts-esc", "chat-1"
-        )
+        slugs = image_artifacts.register_images(rf"![Revenue \[Q1\]]({img})", "ts-esc", "chat-1")
         assert len(slugs) == 1
         art = store.get(slugs[0])
         # The escapes are unwrapped, so the caption reads as authored.
@@ -398,9 +393,7 @@ class TestRegisterImages:
         """`![a](p "t")` — the quoted title is not part of the destination."""
         img = tmp_path / "titled.png"
         img.write_bytes(_png_bytes())
-        slugs = image_artifacts.register_images(
-            f'![a]({img} "a title")', "ts-title", "chat-1"
-        )
+        slugs = image_artifacts.register_images(f'![a]({img} "a title")', "ts-title", "chat-1")
         assert len(slugs) == 1
         assert store.get(slugs[0]).image.original_filename == "titled.png"  # type: ignore[union-attr]
 
@@ -440,9 +433,7 @@ class TestRegisterImages:
         # Bytes were copied, not referenced.
         assert store.read_image_bytes(slugs[0])[0] == _png_bytes(5, 4)
 
-    def test_second_finalize_does_not_duplicate(
-        self, store: ArtifactStore, tmp_path: Path
-    ) -> None:
+    def test_second_finalize_does_not_duplicate(self, store: ArtifactStore, tmp_path: Path) -> None:
         img = tmp_path / "s.png"
         img.write_bytes(_png_bytes())
         text = f"![a]({img})"
@@ -452,9 +443,7 @@ class TestRegisterImages:
         assert again == []  # same slug already exists → skipped
         assert len(store.list()) == 1
 
-    def test_replay_does_not_overwrite_edits(
-        self, store: ArtifactStore, tmp_path: Path
-    ) -> None:
+    def test_replay_does_not_overwrite_edits(self, store: ArtifactStore, tmp_path: Path) -> None:
         img = tmp_path / "s.png"
         img.write_bytes(_png_bytes())
         text = f"![a]({img})"
@@ -472,9 +461,7 @@ class TestRegisterImages:
         assert image_artifacts.register_images(text, "ts-r", "chat-1") == []
         assert store.list() == []
 
-    def test_missing_and_relative_files_skipped(
-        self, store: ArtifactStore, tmp_path: Path
-    ) -> None:
+    def test_missing_and_relative_files_skipped(self, store: ArtifactStore, tmp_path: Path) -> None:
         text = "![gone](/nonexistent/abs/path.png)\n![rel](relative/path.png)"
         assert image_artifacts.register_images(text, "ts-m", "chat-1") == []
 
@@ -610,9 +597,7 @@ class TestAssetReadHardening:
         """A refused read (hardlink / non-regular / sensitive) registers nothing."""
         img = tmp_path / "swapped.png"
         img.write_bytes(_png_bytes())
-        monkeypatch.setattr(
-            image_artifacts, "safe_read_file_bytes_nolink", lambda *a, **k: None
-        )
+        monkeypatch.setattr(image_artifacts, "safe_read_file_bytes_nolink", lambda *a, **k: None)
         assert image_artifacts.register_images(f"![a]({img})", "ts-rej", "chat-1") == []
         assert store.list() == []
 
@@ -632,17 +617,13 @@ class TestAssetReadHardening:
         assert image_artifacts.register_images(f"![a]({img})", "ts-big", "chat-1") == []
         assert store.list() == []
 
-    def test_read_image_bytes_does_not_hold_the_store_lock(
-        self, store: ArtifactStore
-    ) -> None:
+    def test_read_image_bytes_does_not_hold_the_store_lock(self, store: ArtifactStore) -> None:
         """The byte read happens after the lock is released.
 
         Holding the store-wide lock across a multi-MiB read serializes every
         other artifact operation behind it.
         """
-        art = store.create_image(
-            name="Pic", image_bytes=_png_bytes(3, 3), mime="image/png"
-        )
+        art = store.create_image(name="Pic", image_bytes=_png_bytes(3, 3), mime="image/png")
         seen: dict[str, bool] = {}
         original = store._read_image_asset_bytes
 
@@ -677,9 +658,7 @@ class TestAssetReadHardening:
         arbitrary file. The read is descriptor-pinned and root-contained, so the
         swap is refused instead of followed.
         """
-        art = store.create_image(
-            name="Pic", image_bytes=_png_bytes(3, 3), mime="image/png"
-        )
+        art = store.create_image(name="Pic", image_bytes=_png_bytes(3, 3), mime="image/png")
         secret = tmp_path / "outside-the-store.txt"
         secret.write_bytes(b"private-bytes")
         asset = store._artifact_dir(art.slug) / "asset.png"
@@ -715,9 +694,7 @@ class TestAssetReadHardening:
         assert art.slug == "retry-me"
         assert store.read_image_bytes("retry-me")[0] == _png_bytes(4, 4)
 
-    def test_poisoned_mime_is_refused_on_read(
-        self, store: ArtifactStore
-    ) -> None:
+    def test_poisoned_mime_is_refused_on_read(self, store: ArtifactStore) -> None:
         """A non-image mime in meta.json must never be served.
 
         ``create_image`` validates the mime, but meta.json is a file: anything
@@ -728,17 +705,13 @@ class TestAssetReadHardening:
         """
         import json
 
-        art = store.create_image(
-            name="Pic", image_bytes=_png_bytes(2, 2), mime="image/png"
-        )
+        art = store.create_image(name="Pic", image_bytes=_png_bytes(2, 2), mime="image/png")
         meta_path = store._artifact_dir(art.slug) / "meta.json"
         meta = json.loads(meta_path.read_text())
         meta["image"]["mime"] = "text/html"
         meta["image"]["ext"] = "html"
         meta_path.write_text(json.dumps(meta))
-        (store._artifact_dir(art.slug) / "asset.html").write_bytes(
-            b"<script>alert(1)</script>"
-        )
+        (store._artifact_dir(art.slug) / "asset.html").write_bytes(b"<script>alert(1)</script>")
 
         with pytest.raises(ArtifactNotFoundError):
             store.read_image_bytes(art.slug)
@@ -754,9 +727,7 @@ class TestAssetReadHardening:
         """
         from kiro_crew.dashboard.handlers import artifacts as handlers
 
-        art = store.create_image(
-            name="Pic", image_bytes=_png_bytes(2, 2), mime="image/png"
-        )
+        art = store.create_image(name="Pic", image_bytes=_png_bytes(2, 2), mime="image/png")
         monkeypatch.setattr(handlers, "get_default_store", lambda: store)
         offloaded: dict[str, bool] = {"used": False}
         real_to_thread = asyncio.to_thread
@@ -778,68 +749,74 @@ class TestAssetReadHardening:
 
 
 class TestLinkedAncestorGate:
-    """On Windows, a registration destination beneath a linked ANCESTOR must
-    be refused BEFORE the first filesystem probe -- both is_file() and
-    is_sensitive_path's resolved candidate forms traverse every ancestor, so
-    the probe itself would open the SMB connection the lexical UNC screen in
-    local_destination exists to prevent. Mirrors the guard on the
-    upload-side consumer (_inspect in outbound_files)."""
+    """On Windows, a registration destination with a link anywhere in its chain
+    (ancestor OR leaf) must be refused, and the file-kind + sensitivity checks must
+    run THROUGH the held leaf descriptor -- never a by-name is_file()/is_sensitive_path
+    after the hold closes, which a junction swapped into the window would redirect into
+    an SMB auth. ``screen_held_file_kind`` reports is_regular off the held descriptor and
+    the caller judges sensitivity lexically on its canonical path. Mirrors the upload-side
+    consumer (_inspect in outbound_files)."""
 
     def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Patch ONLY the module's view of os -- patching the global os.name
         # would make pathlib dispatch WindowsPath on a POSIX test host.
         import os as _os
 
-        monkeypatch.setattr(
-            image_artifacts, "os", types.SimpleNamespace(name="nt", path=_os.path)
-        )
+        monkeypatch.setattr(image_artifacts, "os", types.SimpleNamespace(name="nt", path=_os.path))
 
     def test_linked_ancestor_is_refused_before_any_probe(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ordering IS the property: both downstream probes are wired to
-        explode, so a regression that probes first fails loudly."""
+        """Ordering IS the property: a by-name probe is wired to explode, so a
+        regression that probes by name fails loudly. The held screen reporting a
+        link (``None``) refuses before anything runs."""
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         self._windows(monkeypatch)
-        monkeypatch.setattr(
-            image_artifacts, "first_linked_ancestor", lambda _p: str(tmp_path)
-        )
+        monkeypatch.setattr(image_artifacts, "screen_held_file_kind", lambda _p: None)
 
         def _boom_is_file(self: Path) -> bool:  # pragma: no cover
-            raise AssertionError("is_file ran before the ancestor walk")
+            raise AssertionError("is_file ran instead of the held-descriptor kind")
 
         def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
-            raise AssertionError("is_sensitive_path ran before the ancestor walk")
+            raise AssertionError("is_sensitive_resolved_path ran before the held screen")
 
         monkeypatch.setattr(Path, "is_file", _boom_is_file)
-        monkeypatch.setattr(image_artifacts, "is_sensitive_path", _boom_sensitive)
+        monkeypatch.setattr(image_artifacts, "is_sensitive_resolved_path", _boom_sensitive)
         assert image_artifacts._local_file(str(f)) is None
 
     def test_bypassing_the_guard_restores_the_probe(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mutation check: with the walk reporting no link, the same file
+        """Mutation check: with the held screen admitting the path (a regular-file
+        ScreenedFile) and the lexical sensitivity check clearing it, the same file
         resolves again -- the refusal above is attributable to the guard."""
+        from kiro_crew.pinned_fs import ScreenedFile
+
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         self._windows(monkeypatch)
-        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(
+            image_artifacts,
+            "screen_held_file_kind",
+            lambda _p: ScreenedFile(str(f), True, True, False, 24),
+        )
+        monkeypatch.setattr(image_artifacts, "is_sensitive_resolved_path", lambda _p: False)
         assert image_artifacts._local_file(str(f)) == f
 
     def test_the_walk_is_not_consulted_on_posix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """POSIX behavior is pinned unchanged: the walk must not even run."""
+        """POSIX behavior is pinned unchanged: the held screen must not even run."""
         import os as _os
 
         if _os.name == "nt":
             pytest.skip("gate is active on Windows by design")
 
         def _boom(_p: object) -> None:  # pragma: no cover
-            raise AssertionError("ancestor walk ran on POSIX")
+            raise AssertionError("held screen ran on POSIX")
 
-        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(image_artifacts, "screen_held_file_kind", _boom)
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         assert image_artifacts._local_file(str(f)) == f
@@ -847,16 +824,16 @@ class TestLinkedAncestorGate:
     def test_a_leaf_link_is_refused_before_any_probe(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The walk deliberately excludes the leaf, so the leaf gets its own
-        junction-aware check -- is_file() FOLLOWS a final-component link."""
+        """The held screen refuses a link ANYWHERE in the chain -- the LEAF as
+        well as any ancestor, so one ``None`` covers both in a single hold."""
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         self._windows(monkeypatch)
-        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", lambda _p: None)
-        monkeypatch.setattr(image_artifacts, "is_link_or_junction", lambda _p: True)
+        # The held screen reports a leaf link the same way as an ancestor one.
+        monkeypatch.setattr(image_artifacts, "screen_held_file_kind", lambda _p: None)
 
         def _boom_is_file(self: Path) -> bool:  # pragma: no cover
-            raise AssertionError("is_file ran before the leaf link check")
+            raise AssertionError("is_file ran instead of the held-descriptor kind")
 
         monkeypatch.setattr(Path, "is_file", _boom_is_file)
         assert image_artifacts._local_file(str(f)) is None

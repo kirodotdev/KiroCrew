@@ -525,6 +525,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "is_sensitive_bash_command",
     "is_sensitive_canonical_path",
     "is_sensitive_path",
+    "is_sensitive_prevalidated_bounded_path",
     "is_sensitive_resolved_path",
     "is_sensitive_write_path",
     "is_unverifiable_path_refusal",
