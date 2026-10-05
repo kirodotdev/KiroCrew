@@ -5825,8 +5825,10 @@ tracks failures, not compactions.
 On the dashboard, confirmed provider-native and manual `/compact` completion
 arms `SessionManager.mark_needs_reinjection` for the effective session key.
 The next dashboard turn consumes that one-shot flag to restore the skills
-context. Failed deferred compaction does not arm it. This completion hook does
-not add skills reinjection to messaging surfaces or the task runner.
+context. Failed deferred compaction does not arm it. The heartbeat arms the flag
+the same way when a task's stream reports a completed compaction, and the next
+task of the cycle consumes it. This completion hook does not add skills
+reinjection to messaging surfaces or the task runner.
 
 #### Model-window metadata
 

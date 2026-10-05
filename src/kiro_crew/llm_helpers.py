@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import (
@@ -2360,6 +2361,7 @@ async def stream_and_collect(
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
     on_steer_consumed: Callable[[str], None] | None = None,
     on_complete: Callable[[LLMEvent], None] | None = None,
+    on_compaction: Callable[[LLMEvent], None] | None = None,
     on_tool_gate: Callable[[str, bool, bool], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
@@ -2393,6 +2395,12 @@ async def stream_and_collect(
             ``EVENT_COMPLETE``. It is not invoked when the stream exhausts or
             the caller cancels before that event. Raising from the callback is
             swallowed so observation cannot fail the completed turn.
+        on_compaction: Optional callback invoked with each
+            ``CONTEXT_EVENT_COMPACTION`` the backend reports during the turn; its
+            ``text`` is the status (``started``, ``completed``, ``failed``). A
+            backend that compacts the session on its own drops context earlier
+            prompts carried, and this is how a caller learns of it. Raising from
+            the callback is swallowed.
         on_tool_gate: Optional callback invoked once per tool permission
             decision with ``(tool_title, approved, security_blocked)``. Lets a
             caller tell "the model did work" apart from "every tool the model
@@ -2565,6 +2573,12 @@ async def stream_and_collect(
                     )
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")
+                elif event.kind == CONTEXT_EVENT_COMPACTION:
+                    if on_compaction:
+                        try:
+                            on_compaction(event)
+                        except Exception:
+                            logger.debug("on_compaction callback failed", exc_info=True)
                 elif event.kind == EVENT_COMPLETE:
                     if on_complete:
                         try:

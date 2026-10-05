@@ -6191,9 +6191,20 @@ class GatewayOrchestrator:
             # this cycle a pointer to a body the session never received.
             _turn_landed = False
             _turn_stop: dict[str, str | None] = {"reason": None}
+            # Whether the backend compacted the session during this task's turn,
+            # which drops the skill bodies and session-start context earlier
+            # tasks of the cycle sent.
+            _turn_compaction: dict[str, bool] = {"completed": False}
+            # The one-shot post-compaction flag this task consumed, so the
+            # finally can put it back if this task's prompt never landed.
+            _needs_reinjection = False
 
             def _note_complete(ev: Any, _box: dict[str, str | None] = _turn_stop) -> None:
                 _box["reason"] = str(getattr(ev, "stop_reason", "") or "")
+
+            def _note_compaction(ev: Any, _box: dict[str, bool] = _turn_compaction) -> None:
+                if getattr(ev, "text", "") == "completed":
+                    _box["completed"] = True
 
             try:
                 # Heartbeat tasks are the operator's own queue, so nothing binds
@@ -6217,6 +6228,10 @@ class GatewayOrchestrator:
                 # system-prompt copies of the same instruction can drift out
                 # of effective context.
                 injected = _HEARTBEAT_KEEP_INJECTION + task_text
+                # A compaction during an earlier task of this cycle armed the
+                # flag: consuming it makes this prompt send the dropped context
+                # again and restart the skill-body record.
+                _needs_reinjection = consume_reinjection(self.sessions, session_key)
                 # Off-loop: build_message embeds the episodic query. Every task
                 # of a cycle runs on this one session, so the record of skill
                 # bodies it already holds is kept under the heartbeat key: a
@@ -6227,6 +6242,7 @@ class GatewayOrchestrator:
                     injected,
                     is_new,
                     memory_store=_memory_store,
+                    needs_reinjection=_needs_reinjection,
                     skill_bodies_session=session_key,
                 )
 
@@ -6253,6 +6269,7 @@ class GatewayOrchestrator:
                         hooks=heartbeat_hooks,
                         on_tool_approval=self._heartbeat_approval,
                         on_complete=_note_complete,
+                        on_compaction=_note_compaction,
                         fallback_models=configured_fallback_chain(),
                     ),
                     timeout=HEARTBEAT_TASK_TIMEOUT_SECS,
@@ -6317,9 +6334,15 @@ class GatewayOrchestrator:
                 raise
             finally:
                 if _acquired:
-                    # Settle this task's skill-body record BEFORE the release:
-                    # the next task of the cycle builds on the same session, and
-                    # a settle after it would act on that task's build instead.
+                    # Arm the flag and settle this task's skill-body record
+                    # BEFORE the release: the next task of the cycle builds on
+                    # the same session, and a settle after it would act on that
+                    # task's build instead.
+                    if _turn_compaction["completed"]:
+                        self.sessions.mark_needs_reinjection(session_key)
+                    rearm_reinjection(
+                        self.sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
+                    )
                     rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
                     # Release the per-session semaphore so the next task in
                     # this cycle (asyncio.gather'd) can acquire the SAME

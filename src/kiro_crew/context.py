@@ -3536,19 +3536,20 @@ class ContextBuilder:
         # rebuilt window never received. Clearing the record here, under the
         # same lock, keeps that impossible.
         #
-        # SOFT FAILURE (known, bounded): the flag is armed only by Kiro Crew's own
-        # session_compaction (needs_reinjection) and by a fresh session
-        # (is_new_session). It is NOT armed when the BACKEND trims or
-        # auto-compacts its own window out of band (kiro-cli's
-        # _kiro.dev/compaction completing, the claude/codex twins) — those reset
-        # the backend window without touching this flag. When that happens the
-        # record still names bodies the rebuilt backend window does not hold,
-        # so the next match of such a skill demotes it to its POINTER line, not
-        # to silence: the agent still learns the skill applies and can re-read
-        # it, it just does not get the body re-pasted that turn. Long monitor
-        # loops are where backend self-compaction is most likely. Hooking the
-        # three backend compaction chokepoints to arm this flag is a correctness
-        # refinement, not a safety fix, and is deliberately out of scope here.
+        # SOFT FAILURE (known, bounded): the flag is armed by a fresh session
+        # (is_new_session), by Kiro Crew's own session_compaction, and by the
+        # dashboard runner and the heartbeat when the backend reports a
+        # completed compaction to them (needs_reinjection). Other turn loops do
+        # not watch for that report, so when the BACKEND trims or auto-compacts
+        # its own window under them (kiro-cli's _kiro.dev/compaction
+        # completing, the claude/codex twins) the record still names bodies the
+        # rebuilt backend window does not hold, and the next match of such a
+        # skill demotes it to its POINTER line, not to silence: the agent still
+        # learns the skill applies and can re-read it, it just does not get the
+        # body re-pasted that turn. Long monitor loops are where backend
+        # self-compaction is most likely. Hooking the three backend compaction
+        # chokepoints to arm this flag is a correctness refinement, not a
+        # safety fix, and is deliberately out of scope here.
         skill_bodies_session = skill_bodies_session or session_key
         if skill_bodies_session and (is_new_session or needs_reinjection):
             self._dedup_triggered_bodies(skill_bodies_session, agent, reset=True, candidates=[])

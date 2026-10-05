@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
-from kiro_crew.acp.types import ACP_BACKEND_CODEX, STOP_REASON_CANCELLED, TurnUsage
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
+    EVENT_COMPACTION_STATUS,
+    STOP_REASON_CANCELLED,
+    TurnUsage,
+)
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
     TURN_FALLBACK_ATTR,
@@ -367,6 +372,49 @@ class TestStreamAndCollectRawCompletion:
 
         assert result == "partial"
         assert observed == []
+
+
+class TestStreamAndCollectCompaction:
+    @pytest.mark.asyncio
+    async def test_callback_receives_each_compaction_status(self) -> None:
+        """A backend that compacts on its own tells the caller through this callback."""
+        started = LLMEvent(kind=EVENT_COMPACTION_STATUS, text="started")
+        completed = LLMEvent(kind=EVENT_COMPACTION_STATUS, text="completed")
+        provider = _make_provider(
+            events=[
+                started,
+                completed,
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                LLMEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        observed: list[LLMEvent] = []
+
+        result = await stream_and_collect(provider, "test", on_compaction=observed.append)
+
+        assert result == "answer"
+        assert observed == [started, completed]
+
+    @pytest.mark.asyncio
+    async def test_a_raising_callback_does_not_fail_the_turn(self) -> None:
+        completed = LLMEvent(kind=EVENT_COMPACTION_STATUS, text="completed")
+        provider = _make_provider(
+            events=[
+                completed,
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                LLMEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        observed: list[LLMEvent] = []
+
+        def _broken(event: LLMEvent) -> None:
+            observed.append(event)
+            raise RuntimeError("observer failed")
+
+        result = await stream_and_collect(provider, "test", on_compaction=_broken)
+
+        assert observed == [completed]
+        assert result == "answer"
 
 
 # ── Transient backend (5xx / throttle / stream-reset) retry tests ──
