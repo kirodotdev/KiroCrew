@@ -127,6 +127,37 @@ objective, and the authorization audit record names that borrowed objective.
 Giving the kind its own objective (a registry row plus a per-kind stamp) is the
 next step and is not part of the change that made it reachable.
 
+A conductor does not have to remember that arm. When `work_ledger_record`
+`action=bind` commits and the conductor's slot holds no loop at all,
+`conductor_patrol.ensure_patrol` arms a default patrol on it: `watch:
+"work-ledger"`, gated, every 600 seconds, 300 cycles and 86400 seconds, which
+pass the goal-conductor skill's `patrol_budget.py check`. It goes through the
+same chokepoint as an agent's own `monitor_start`
+(`autonudge_authz.authorize_and_add_nudge`), create-only, as an OUTSIDE arm with
+no `initiator_slot_key`: the bind route knows the calling session but not the
+turn, so it cannot tell the session's own turn from a cron injection or a
+sub-agent sharing the slot. A crew/member conductor therefore refuses it. Any
+existing record -- active, approval-held, or stopped by a person -- is left
+alone, so a bind never stacks a second loop or revives a person's stop. The one
+re-arm is the gateway's own default patrol stopped by the system (its budget or
+cap ran out, the `_stopped_row_is_replaceable` allowlist): a new bind is new work,
+so it is replaced by a fresh default. A refusal is logged at WARNING and the bind
+still succeeds; the bind reply carries `patrol: armed | existing | refused |
+unsupported`, plus a `patrol_note` telling the conductor to arm its own
+`monitor_start` in the same turn whenever no `work-ledger` watch is active after
+the bind. The armed loop carries `default_patrol: true`, and that tag is the one
+exception to create-only: ANY create-only arm of a loop that is not itself a
+default patrol -- the conductor's own `monitor_start` or `monitor_watch`, and
+equally a person's dashboard create or a channel arm -- displaces an ACTIVE
+default patrol (prompt and structured add paths alike) instead
+of answering 409, even while its wake is in flight. That wake is not cancelled:
+its timer is unregistered, not cancelled, so a channel turn issuing the arm runs
+to its end. Its completion is then dropped (its record is gone), and the
+replacement starts its own cycle count. As a backstop, `work_ledger_read` flags every open item
+`unpatrolled` while the conductor holds no ACTIVE `work-ledger` watch, compact
+read included -- a loop watching something else reads no ledger, so it does not
+count. The Crew page board does not show the flag yet.
+
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus
 the data-only kind registry. The four source-provider adapters and the workflow

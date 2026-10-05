@@ -1087,6 +1087,12 @@ class AutoNudgeService:
                         redact_store_value(loop_values["self_armed"]),
                     )
                     loop_values["self_armed"] = False
+                # ``default_patrol`` only ever WIDENS what an arm on the same slot may
+                # displace, so an unreadable value resolves to the narrower False.
+                if "default_patrol" in loop_values and not isinstance(
+                    loop_values["default_patrol"], bool
+                ):
+                    loop_values["default_patrol"] = False
                 # ``config_generation`` is agent-writable persisted data and is
                 # used in arithmetic (``+= 1``) and an equality fence. A stored
                 # ``null``, string or negative would raise mid-mutation (a partial

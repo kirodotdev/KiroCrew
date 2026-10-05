@@ -1173,6 +1173,10 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "consecutive_failed_cycles",
         "next_due_ts",
         "self_armed",
+        # Same class as ``self_armed``: who armed the loop, not what it watches.
+        # It is what lets a reader tell the gateway's default conductor patrol
+        # from a loop the agent armed itself.
+        "default_patrol",
         "terminal_notification_outcome",
         "terminal_notification_stopped_at",
         # Mapped from the monitor's own accounting, not withheld -- withholding

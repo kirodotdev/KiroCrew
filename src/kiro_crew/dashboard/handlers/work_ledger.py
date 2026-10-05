@@ -48,7 +48,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import ledger_wake, session_ledger, work_ledger
+from kiro_crew import conductor_patrol, ledger_wake, session_ledger, work_ledger
 from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
@@ -1210,6 +1210,10 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     # read too: a patrol that reads only the status columns must still see a dead
     # worker.
     conductor_alive = _slot_open(state, key)
+    # One read for the whole board: an open item whose conductor holds no active
+    # work-ledger watch has nobody reading its reports, and the flag puts that in
+    # front of the conductor's next turn.
+    patrolled = conductor_patrol.has_active_patrol(state, key)
     rows: list[dict[str, Any]] = []
     for item in shown:
         row = item.to_dict()
@@ -1223,6 +1227,7 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         # it a conductor sees an item it dispatched simply missing from the batch and
         # has no way to tell "bar not filled in yet" from "the read dropped it".
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+        row["unpatrolled"] = item.state == "open" and not patrolled
         if compact:
             rows.append({name: row[name] for name in _COMPACT_ROW_FIELDS})
             continue
@@ -1272,6 +1277,7 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "orphaned",
     "stale",
     "acceptance_concrete",
+    "unpatrolled",
 )
 
 #: Query-string spellings of ``compact``. ``true`` / ``false`` is what the tool
@@ -1682,6 +1688,15 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         payload: dict[str, Any] = {"ok": True, "action": action}
         if item is not None:
             payload["item"] = item.to_dict()
+        if action == "bind":
+            # A dispatched worker must have a patrol reading its reports. After the
+            # bind committed, arm the default one when this conductor has no loop;
+            # never raises, never displaces a loop, and a refusal does not undo
+            # the bind (``conductor_patrol`` module docstring).
+            patrol = await conductor_patrol.ensure_patrol(state, key)
+            payload["patrol"] = patrol
+            if not conductor_patrol.has_active_patrol(state, key):
+                payload["patrol_note"] = conductor_patrol.ARM_YOURSELF_NOTE
         conductor = result.get("conductor")
         if conductor is not None:
             payload["conductor"] = conductor.to_dict()

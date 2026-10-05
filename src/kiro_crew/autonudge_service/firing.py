@@ -689,7 +689,11 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
         loop.cycle_count,
         loop.slot_key,
     )
-    self._emit("fired", loop)
+    # Only for a loop still in the store: a default patrol displaced mid-wake
+    # (``mutations.detach_firing_default_timer``) still delivers, and a "fired"
+    # frame for its removed row would resurrect it in the dashboard.
+    if loop.id in self._loops:
+        self._emit("fired", loop)
     # POST-DELIVERY budget check: the budget gates when turns START, so a
     # slow in-flight turn can overshoot it (bounded by the transport's
     # per-turn ceiling, constants.CHAT_TURN_TIMEOUT — this service must
