@@ -10,6 +10,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import goal_actions
 from kiro_crew.autonudge import binding_key_for
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge import is_structured_monitor_loop
@@ -241,6 +242,9 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         "judge_last_verdict",
         "judge_wake_pending",
         "judge_recent_verdicts",
+        # Goal metadata belongs to a plain pursuit loop, not this reduced
+        # structured-monitor projection.
+        "goal",
     }
 )
 
@@ -332,9 +336,12 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
 
     Only presence, cadence and progress fields are surfaced. The loop's
     ``message`` is agent-controlled free text and is NOT included — it is not
-    needed to verify arming, and leaving it out keeps this read narrow.
+    needed to verify arming, and leaving it out keeps this read narrow. A typed
+    goal adds its own snapshot: the session's agent needs ``goal_id`` and
+    ``generation`` to address a ``goal`` directive, and the goal body it reads
+    is the one ``message`` would only restate.
     """
-    return {
+    reading = {
         "id": loop.id,
         "active": bool(loop.active),
         "idle_secs": loop.idle_secs,
@@ -348,6 +355,9 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "stopped_reason": loop.stopped_reason,
         "has_banner": bool(loop.banner),
     }
+    if getattr(loop, "goal", None) is not None:
+        reading.update(goal_actions.goal_snapshot(loop))
+    return reading
 
 
 def _monitor_error(message: str, code: str, *, status: int = 400) -> web.Response:
@@ -607,7 +617,13 @@ async def api_session_monitor_get(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return web.json_response({"enabled": False, "monitor": None})
-    loop = svc.get_by_slot(binding)
+    try:
+        loop = goal_actions.goal_loop_for_session(request.app["state"], svc, binding)
+    except ValueError as exc:
+        return web.json_response(
+            {"error": str(exc), "code": "ambiguous_session_automation"},
+            status=409,
+        )
     if loop is None:
         # Nothing is armed on this session. This is the ONLY case that reads as
         # "not armed", and it is DISTINCT from an armed auto-nudge loop below.
@@ -717,6 +733,7 @@ async def api_monitor_create(request: web.Request) -> web.Response:
         caller=request.remote or "",
         monitor=config,
         replace_existing=False,
+        replace_suggested_goal=True,
         grant_owner_provider_credentials=True,
     )
     if error is not None:
@@ -1094,12 +1111,17 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         # breakpoint; a save on a running loop carries ``active: true`` too and
         # the flag is inert there.
         fresh_run=True,
+        expected_generation=body.get("expected_generation"),
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),
         source="dashboard",
         caller=request.remote or "",
     )
     if error is not None:
+        if existing is not None and existing.goal is not None:
+            return web.json_response(
+                {"error": error, "code": "autonudge_update_refused"}, status=status
+            )
         return web.json_response({"error": error}, status=status)
     return web.json_response({"ok": True, "loop": _serialize(loop)})
 
@@ -1184,6 +1206,8 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         if error is not None:
             return _monitor_error(error, "monitor_stop_denied", status=status)
         return web.json_response({"ok": True})
+    if request.query.get("intent", "") == "dismiss":
+        return await _dismiss_goal_suggestion(request, svc, loop_id, existing)
     # The structured branch above gates itself; this is the legacy row's gate.
     denied = await _require_monitor_owner(request, "autonudge_delete")
     if denied is not None:
@@ -1196,6 +1220,51 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         outcome="success" if existing else "noop",
         metadata={"loop_id": loop_id, "caller": request.remote or ""},
     )
+    return web.json_response({"ok": True})
+
+
+async def _dismiss_goal_suggestion(
+    request: web.Request, svc: Any, loop_id: str, existing: Any
+) -> web.Response:
+    """Remove an unstarted goal suggestion at the revision its owner saw.
+
+    Dismiss is the button form of ``/goal clear`` for a suggestion. It names the
+    generation the popover rendered, so a suggestion started or replaced in the
+    meantime is refused rather than removed.
+    """
+    raw = request.query.get("expected_generation", "")
+    if not (raw.isascii() and raw.isdigit()):
+        return _monitor_error(
+            "expected_generation must be a nonnegative integer", "goal_generation_invalid"
+        )
+    expected = int(raw)
+    denied = await _require_monitor_owner(request, "autonudge_delete")
+    if denied is not None:
+        return denied
+
+    def _unchanged_suggestion(live: Any) -> bool:
+        return (
+            live.goal is not None
+            and live.goal.status == "suggested"
+            and not live.active
+            and live.config_generation == expected
+        )
+
+    removed = await svc.remove(
+        loop_id, precondition=_unchanged_suggestion, stop_reason="goal_cleared"
+    )
+    sel().log_tool_invocation(
+        session_key=existing.slot_key if existing else "",
+        source="dashboard",
+        tool_name="autonudge_delete",
+        outcome="success" if removed else "denied",
+        metadata={"loop_id": loop_id, "caller": request.remote or "", "intent": "dismiss"},
+    )
+    if not removed:
+        # A fact, not a second instruction: the notice's own title says what to do.
+        return _monitor_error(
+            "This suggestion changed since it was shown.", "goal_changed", status=409
+        )
     return web.json_response({"ok": True})
 
 

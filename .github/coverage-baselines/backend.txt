@@ -34,7 +34,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8   # 35/65
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/pagerduty.py 68.8   # 75/109
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
-src/kiro_crew/apps/hooks_integration.py 43.0   # 65/151
 src/kiro_crew/apps/route_registry.py 51.9   # 67/129
 # NOT a missing-tests entry, and NOT this PR's debt -- it exempts a CI-side
 # coverage ATTRIBUTION defect in a file no PR here touches, tracked as #7597.

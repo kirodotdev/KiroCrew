@@ -19,6 +19,7 @@ import asyncio
 import logging
 import time
 import uuid
+from copy import copy, deepcopy
 from dataclasses import fields
 from typing import TYPE_CHECKING, Callable
 
@@ -39,6 +40,7 @@ from kiro_crew.autonudge_service.model import (
     MANUAL_STOP_REASON,
     RUNTIME_BUDGET_REASON,
     AutoNudgeStaleBaseline,
+    GoalUpdateConflict,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     NudgeLoop,
@@ -47,8 +49,16 @@ from kiro_crew.autonudge_service.model import (
     cap_reached,
     is_structured_monitor_loop,
     new_goal_token,
+    runtime_budget_exceeded,
 )
+from kiro_crew.autonudge_service.store import _STORE_VERSION
 from kiro_crew.autonudge_service.subject import infer_monitor, infer_subject
+from kiro_crew.goal import (
+    GOAL_CONTINUATION_DELAY_SECS,
+    GOAL_PAUSE_UNSAVED_REASON,
+    GOAL_TERMINAL_STATUSES,
+    GoalState,
+)
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorCreationSurface
 
@@ -83,6 +93,7 @@ async def add(
     self_armed: bool = False,
     loop_id: str | None = None,
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
+    goal: GoalState | None = None,
 ) -> NudgeLoop:
     # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
     # the awaiting caller is cancelled mid-write, a bare await would release
@@ -109,6 +120,7 @@ async def add(
             gate=gate,
             judge=judge,
             watch=watch,
+            goal=goal,
             replace_existing=replace_existing,
             replace_stopped=replace_stopped,
             self_armed=self_armed,
@@ -160,6 +172,7 @@ async def _add_locked(
     gate: bool = False,
     judge: dict | None = None,
     watch: str = "",
+    goal: GoalState | None = None,
     replace_existing: bool = True,
     replace_stopped: bool = False,
     self_armed: bool = False,
@@ -179,6 +192,7 @@ async def _add_locked(
             gate=gate,
             judge=judge,
             watch=watch,
+            goal=goal,
             replace_existing=replace_existing,
             replace_stopped=replace_stopped,
             self_armed=self_armed,
@@ -201,6 +215,7 @@ async def _add_unserialized(
     gate: bool = False,
     judge: dict | None = None,
     watch: str = "",
+    goal: GoalState | None = None,
     replace_existing: bool = True,
     replace_stopped: bool = False,
     self_armed: bool = False,
@@ -210,6 +225,8 @@ async def _add_unserialized(
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
     validate_runtime_secs(max_runtime_secs, allow_unbounded=True)
+    if goal is not None and (gate or goal.status not in {"suggested", "working", "waiting"}):
+        raise ValueError("a goal must be suggested, working or waiting and ungated")
     idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
     async with self._lock:
         if admission_check is not None and not admission_check():
@@ -220,6 +237,19 @@ async def _add_unserialized(
         existing = self._find_by_slot(slot_key)
         restore_existing_provider_credentials = False
         if existing:
+            if (
+                existing.goal is not None
+                and existing.goal.status not in GOAL_TERMINAL_STATUSES
+                and not (
+                    existing.goal.status == "suggested"
+                    and goal is not None
+                    and goal.status == "working"
+                )
+            ):
+                raise MonitorUpdateConflict(
+                    "this session has an unfinished goal; start the new automation or watch "
+                    "in another session to keep this goal intact"
+                )
             # Create-only (``replace_existing=False``) refuses ANY existing
             # record by default — the dashboard REST creates depend on that:
             # their documented contract is a 409 that never discards a
@@ -277,7 +307,17 @@ async def _add_unserialized(
                 existing
             )
             await self._revoke_provider_credentials_before_removal(existing.id)
-            self.remove_sync(existing.id, persist=False, emit=False)
+            try:
+                # Stop can arrive while credential cleanup awaits. Refuse
+                # before removing the row a concurrent pause already named.
+                if admission_check is not None and not admission_check():
+                    raise NudgeAdmissionRefused("session changed before nudge arm committed")
+            except BaseException:
+                if restore_existing_provider_credentials:
+                    await self._restore_provider_credentials(existing)
+                raise
+            if goal is None:
+                self.remove_sync(existing.id, persist=False, emit=False)
         now = time.time()
         # Scrubbed ONCE, then used for both the stored field and the subject the
         # monitor is built from. Two calls would be two values: the scrub may
@@ -291,6 +331,7 @@ async def _add_unserialized(
             idle_secs=idle_secs,
             max_cycles=max(0, int(max_cycles)),
             created_ts=now,
+            active=goal is None or goal.status != "suggested",
             goal_token=new_goal_token(),
             stop_sentinel_path=stop_sentinel_path,
             max_runtime_secs=max(0, int(max_runtime_secs)),
@@ -306,7 +347,16 @@ async def _add_unserialized(
             # snapshot below so it persists): the countdown starts the
             # moment the loop is armed, and user turns from here on only
             # defer delivery, never restart it.
-            next_due_ts=now + idle_secs,
+            next_due_ts=(
+                0.0
+                if goal is not None and goal.status == "suggested"
+                else now
+                + (
+                    GOAL_CONTINUATION_DELAY_SECS
+                    if goal is not None and goal.status == "working"
+                    else idle_secs
+                )
+            ),
             # The SUBJECT is decided HERE, from the instruction the caller
             # already wrote -- no target, kind or enable flag is ever passed.
             # WHETHER to look for one is the ``gate`` argument above, which the
@@ -358,26 +408,48 @@ async def _add_unserialized(
             gate=bool(gate or watch),
             banner=banner,
             self_armed=self_armed,
+            goal=goal,
         )
-        self._loops[loop.id] = loop
+        if goal is None:
+            self._loops[loop.id] = loop
         # Persist WITHOUT blocking the event loop (no-blocking-call rule:
         # _write_state fsyncs, and a wedged disk must not freeze the
         # gateway). Snapshot under the lock (mutation safety), write on a
         # worker thread, and await it so a persistence failure still
         # propagates to the caller before the loop is reported armed.
-        payload = self._serialize_state()
+        # Goal readers do not take the writer lock. Keep the retained row
+        # visible until its replacement is durable, and expose no new goal
+        # while the first write is pending.
+        payload = (
+            {
+                "version": _STORE_VERSION,
+                "loops": self._serialized_loops(
+                    skip={existing.id} if existing is not None else None,
+                    extra=[loop],
+                ),
+            }
+            if goal is not None
+            else self._serialize_state()
+        )
         try:
             await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
         except BaseException:
-            self._loops.pop(loop.id, None)
+            if goal is None:
+                self._loops.pop(loop.id, None)
             if existing is not None:
-                self._loops[existing.id] = existing
+                if goal is None:
+                    self._loops[existing.id] = existing
                 if restore_existing_provider_credentials:
                     await self._restore_provider_credentials(existing)
-                if existing.active:
+                if goal is None and existing.active:
                     self._arm_from_deadline(existing)
             raise
-        self._arm_from_deadline(loop)
+        if goal is not None:
+            if existing is not None:
+                self.remove_sync(existing.id, persist=False, emit=False)
+            self._loops[loop.id] = loop
+        if loop.active:
+            self._arm_from_deadline(loop)
         if existing is not None:
             # Committed: the displaced row is gone from the store, so its
             # self-arm entry is revoked now, not before the write.
@@ -402,6 +474,8 @@ async def update(
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
+    goal: GoalState | None = None,
+    admission_check: Callable[[], bool] | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
@@ -441,6 +515,8 @@ async def update(
             banner=banner,
             judge=judge,
             watch=watch,
+            goal=goal,
+            admission_check=admission_check,
             expected_generation=expected_generation,
             expect_fingerprint=expect_fingerprint,
             precondition=precondition,
@@ -478,6 +554,8 @@ async def _update_locked(
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
+    goal: GoalState | None = None,
+    admission_check: Callable[[], bool] | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
@@ -499,6 +577,8 @@ async def _update_locked(
             banner=banner,
             judge=judge,
             watch=watch,
+            goal=goal,
+            admission_check=admission_check,
             expected_generation=expected_generation,
             expect_fingerprint=expect_fingerprint,
             precondition=precondition,
@@ -522,6 +602,8 @@ async def _update_unserialized(
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
+    goal: GoalState | None = None,
+    admission_check: Callable[[], bool] | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
@@ -544,6 +626,53 @@ async def _update_unserialized(
         # so a pause that landed while this call waited cannot be overwritten.
         if precondition is not None and not precondition(loop):
             return None
+        if admission_check is not None and not admission_check():
+            raise NudgeAdmissionRefused("session or goal changed before update committed")
+        if active and loop.goal is not None and loop.goal.status in {"complete", "ended"}:
+            raise GoalUpdateConflict("a finished goal cannot be resumed")
+        if active and loop.goal is not None and goal is None and expected_generation is None:
+            # Native goal revisions carry their own admission check and
+            # fingerprint. Generic Resume must carry the client's read.
+            raise GoalUpdateConflict("the goal changed; refresh before resuming")
+        if loop.goal is not None:
+            if loop.goal.status == "suggested":
+                if active and goal is not None:
+                    raise GoalUpdateConflict("start a suggested goal from its owner control")
+                if goal is not None and goal.status not in {
+                    "suggested",
+                    *GOAL_TERMINAL_STATUSES,
+                }:
+                    raise GoalUpdateConflict("a suggested goal must remain unarmed until Start")
+            elif goal is not None and goal.status == "suggested":
+                raise GoalUpdateConflict("a started goal cannot become a suggestion")
+            # These bounds belong to the goal, including while its last wake
+            # is still running after expiry. Generic edits cannot renew them.
+            if any(
+                value is not None and int(value) != stored
+                for value, stored in (
+                    (max_cycles, loop.max_cycles),
+                    (max_runtime_secs, loop.max_runtime_secs),
+                )
+            ):
+                raise GoalUpdateConflict("a goal's cycle and runtime limits cannot be changed")
+            if (
+                active
+                and not loop.active
+                and (
+                    (loop.max_cycles and loop.cycle_count >= loop.max_cycles)
+                    or runtime_budget_exceeded(loop)
+                )
+            ):
+                raise GoalUpdateConflict("the goal reached a limit; review it in the goal details")
+        if (
+            loop.goal is not None
+            and goal is None
+            and message is not None
+            and message != loop.message
+        ):
+            raise GoalUpdateConflict(
+                "use the goal tool to revise this goal's objective and criteria"
+            )
         # ATOMIC generation fence (inside _lock, before any mutation): a
         # caller applying a structural-terminal stop passes the generation it
         # captured at fire time. If the loop's config generation has moved
@@ -553,6 +682,8 @@ async def _update_unserialized(
         # read-then-update, so there is no TOCTOU window between the compare
         # and the write.
         if expected_generation is not None and loop.config_generation != expected_generation:
+            if active and loop.goal is not None:
+                raise GoalUpdateConflict("the goal changed; refresh before resuming")
             logger.info(
                 "AutoNudge: loop %s structural stop refused — captured gen %s "
                 "!= current gen %s (config changed under the fired turn)",
@@ -575,6 +706,11 @@ async def _update_unserialized(
         # Keep typed nested values intact. ``asdict`` recursively converts
         # MonitorState to a plain dict, which is not a valid rollback value.
         previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
+        published_loop = loop
+        if loop.goal is not None:
+            # Readers retain this object without taking the writer lock.
+            # Stage field assignments until the goal revision is durable.
+            loop = copy(loop)
         # Set only if a retarget takes this loop's pending wake claim, so the
         # rollback below restores exactly what it removed and nothing else.
         claim_discarded_for_retarget = False
@@ -588,6 +724,14 @@ async def _update_unserialized(
         #: when both the instruction and the watched subject move together.
         generation_advanced = False
         was_active = loop.active
+        previous_delay = loop.continuation_delay
+        if goal is not None:
+            if loop.goal is None:
+                raise GoalUpdateConflict("goal metadata cannot replace another automation")
+            loop.goal = goal
+            if goal != previous["goal"] or active is False:
+                loop.config_generation += 1
+                loop.goal_token = new_goal_token()
         if message is not None:
             retarget = message != loop.message
             loop.message = message
@@ -944,16 +1088,35 @@ async def _update_unserialized(
                         # live campaign or crew every few seconds, and a
                         # ``monitor_update`` bound raise asks for its increment
                         # -- on those paths a reset would turn the user's cap
-                        # into a per-run allowance.
+                        # into a per-run allowance. A typed goal keeps its
+                        # remaining budget instead: its Resume refuses a spent
+                        # one rather than re-anchoring it.
                         stopped_with = previous["stopped_reason"]
-                        if fresh_run and (stopped_with == CYCLE_CAP_REASON or cap_reached(loop)):
+                        plain_resume = fresh_run and loop.goal is None
+                        if plain_resume and (stopped_with == CYCLE_CAP_REASON or cap_reached(loop)):
                             loop.cycle_count = 0
-                        if fresh_run and (
+                        if plain_resume and (
                             stopped_with == RUNTIME_BUDGET_REASON or budget_elapsed(loop)
                         ):
                             loop.created_ts = time.time()
-                else:
+                elif loop.goal is None or was_active or stopped_reason is not None:
                     loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
+        if loop.goal is not None and goal is None and active is not None:
+            if loop.active:
+                if loop.goal.status == "suggested":
+                    # Owner Start anchors the first budget and deadline;
+                    # ordinary resumes retain their original runtime budget.
+                    loop.created_ts = time.time()
+                    loop.next_due_ts = loop.created_ts + GOAL_CONTINUATION_DELAY_SECS
+                loop.goal = loop.goal.revised({"status": "working"})
+            elif loop.goal.status in {"working", "waiting"}:
+                loop.goal = loop.goal.revised({"status": "paused"})
+            if loop.goal != previous["goal"] or active is False:
+                # An explicit repeated Stop supersedes earlier Resume
+                # requests even when its visible goal state is unchanged.
+                loop.config_generation += 1
+                loop.goal_token = new_goal_token()
+        interval_changed = interval_changed or previous_delay != loop.continuation_delay
         revived = loop.active and not was_active
         if revived:
             # A revival re-arms the loop for a fresh run: a structural verdict
@@ -977,13 +1140,16 @@ async def _update_unserialized(
         if not loop.active:
             loop.next_due_ts = 0.0
         elif interval_changed and loop.next_due_ts > 0:
-            loop.next_due_ts = time.time() + loop.idle_secs
+            loop.next_due_ts = time.time() + loop.continuation_delay
         # Persist WITHOUT blocking the event loop — _write_state fsyncs, and
         # a wedged disk must not freeze chat/heartbeat/liveness. Snapshot
         # under THIS lock hold (mutation safety + serialization vs the
         # post-fire write) and await the offloaded write so a persistence
         # failure still reaches the caller. Same contract as _add_locked.
-        payload = self._serialize_state()
+        payload = {
+            "version": _STORE_VERSION,
+            "loops": self._serialized_loops(replace={loop.id: loop}),
+        }
         claim_was_held = claim_discarded_for_retarget
         try:
             await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
@@ -1007,6 +1173,17 @@ async def _update_unserialized(
                 # rather than a fifth.
                 self._pending_floor_tick.add(loop.id)
             raise
+        if loop is not published_loop:
+            for field_name, prior_value in previous.items():
+                value = getattr(loop, field_name)
+                # A field the fire cycle wrote while the write awaited (a
+                # delivered wake clears ``next_due_ts``) keeps that newer
+                # value, as it did when this update mutated the live loop.
+                if value != prior_value and getattr(published_loop, field_name) == prior_value:
+                    setattr(published_loop, field_name, value)
+            # Keep timer/caller references and any unrelated activity
+            # recorded while the write awaited its worker.
+            loop = published_loop
         # Re-arm the timer with the new settings — but NEVER while its
         # callback is mid-fire. Cancelling a firing timer cancels the
         # in-flight turn itself (channel loops run the turn inline in
@@ -1176,6 +1353,56 @@ async def remove_by_slot(self: AutoNudgeService, slot_key: str) -> NudgeLoop | N
             return loop
         finally:
             _unclaim_mutation_lock(lock)
+
+
+async def restore_goal_after_failed_session_close(
+    self: AutoNudgeService,
+    loop: NudgeLoop,
+    *,
+    admission_check: Callable[[], bool] | None = None,
+) -> NudgeLoop | None:
+    """Put back an inactive typed goal that a failed slot close removed.
+
+    ``add()`` cannot do this: it admits only a suggested, working or waiting
+    goal and arms whatever is not a suggestion. The retired record returns as it
+    was -- same id, status, counters and budgets -- and stays inactive, so no
+    timer is armed and nothing resumes on the user's behalf.
+    """
+    if loop.goal is None or loop.active or loop.monitor is not None:
+        return None
+
+    async def _restore_locked() -> NudgeLoop | None:
+        async with _maintenance_lock(self._base_dir):
+            async with self._lock:
+                if admission_check is not None and not admission_check():
+                    return None
+                if loop.id in self._loops or self._find_by_slot(loop.slot_key) is not None:
+                    return None
+                restored = deepcopy(loop)
+                restored.next_due_ts = 0.0
+                restored.goal_token = new_goal_token()
+                payload = {
+                    "version": _STORE_VERSION,
+                    "loops": self._serialized_loops(extra=[restored]),
+                }
+                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+                self._loops[restored.id] = restored
+        self._emit("added", restored)
+        return restored
+
+    # Shielded and supervised like add(): a cancelled caller must not leave the
+    # locks while the worker thread still writes this snapshot, or a later commit
+    # could land first and then be overwritten by it.
+    inner: "asyncio.Task[NudgeLoop | None]" = asyncio.ensure_future(_restore_locked())
+    self._inflight_adds.add(inner)
+
+    def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
+        self._inflight_adds.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning("AutoNudge: detached goal restore failed", exc_info=t.exception())
+
+    inner.add_done_callback(_finish)
+    return await asyncio.shield(inner)
 
 
 async def clear_terminal_monitor(self: AutoNudgeService, monitor_id: str) -> bool:
@@ -1385,3 +1612,124 @@ async def _restore_provider_credentials(loop: NudgeLoop) -> None:
         state.kind,
         state.target,
     )
+
+
+async def pause_goal(self: AutoNudgeService, loop_id: str) -> bool:
+    """Pause pursuit without letting a storage error prevent user Stop.
+
+    The ordinary update persists the pause. If that write fails, keep this
+    process paused and expose the lost durability; never roll back a human
+    Stop into another automatic turn. Only a saved pause returns success.
+    """
+    return await self._supervise_goal_pause(asyncio.create_task(self._pause_goal_locked(loop_id)))
+
+
+async def pause_goals_by_slot(self: AutoNudgeService, slot_keys: set[str]) -> bool:
+    """Resolve and pause exact session bindings inside creation's transaction."""
+    return await self._supervise_goal_pause(
+        asyncio.create_task(self._pause_goals_by_slot_locked(slot_keys))
+    )
+
+
+async def _supervise_goal_pause(self: AutoNudgeService, inner: asyncio.Task[bool]) -> bool:
+    self._inflight_adds.add(inner)
+
+    def finish(task: asyncio.Task[bool]) -> None:
+        self._inflight_adds.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("AutoNudge: goal pause failed", exc_info=task.exception())
+
+    inner.add_done_callback(finish)
+    return await asyncio.shield(inner)
+
+
+async def _pause_goals_by_slot_locked(self: AutoNudgeService, slot_keys: set[str]) -> bool:
+    paused = []
+    for slot_key in sorted(slot_keys):
+        current = self._find_by_slot(slot_key)
+        if current is None or current.slot_key != slot_key:
+            # An absent primary key can still belong to a quiescing alias.
+            # Use an owned row only as a wait fence, never as the pause target.
+            owned = [loop for loop in self._loops.values() if loop.slot_key in slot_keys]
+            current = next(
+                (loop for loop in owned if loop.id in self._maintenance_quiescing),
+                next(iter(owned), None),
+            )
+        if current is not None:
+            # This read only chooses the quiescing fence. Resolve the row
+            # again under the lock: a pending add may replace this id.
+            lock = await self._acquire_mutation_lock(current.id)
+            if lock is None:
+                if current.goal is not None:
+                    paused.append(False)
+                continue
+        else:
+            # A first goal has no published id while its write is pending.
+            # Wait for that add before deciding whether there is a goal.
+            lock = _maintenance_lock(self._base_dir)
+            await lock.acquire()
+            _claim_mutation_lock(lock)
+        try:
+            loop = self._find_by_slot(slot_key)
+            if loop is not None and loop.slot_key == slot_key and loop.goal is not None:
+                paused.append(await self._pause_goal_unserialized(loop.id))
+        finally:
+            _release_mutation_lock(lock)
+    return bool(paused) and all(paused)
+
+
+async def _pause_goal_locked(self: AutoNudgeService, loop_id: str) -> bool:
+    lock = await self._acquire_mutation_lock(loop_id)
+    if lock is None:
+        return False
+    try:
+        return await self._pause_goal_unserialized(loop_id)
+    finally:
+        _release_mutation_lock(lock)
+
+
+async def _pause_goal_unserialized(self: AutoNudgeService, loop_id: str) -> bool:
+    loop = self._loops.get(loop_id)
+    if loop is None or loop.goal is None or loop_id in self._maintenance_quiescing:
+        return False
+    if loop.goal.status in GOAL_TERMINAL_STATUSES:
+        return False
+    if (
+        not loop.active
+        and loop.goal.status != "suggested"
+        and loop.stopped_reason != GOAL_PAUSE_UNSAVED_REASON
+        and (
+            (loop.max_cycles and loop.cycle_count >= loop.max_cycles)
+            or runtime_budget_exceeded(loop)
+        )
+    ):
+        # Resume already refuses spent budgets; retain the original
+        # reason and evidence instead of rewriting a terminal pause.
+        return False
+    reason = (
+        MANUAL_STOP_REASON
+        if loop.active or loop.stopped_reason == GOAL_PAUSE_UNSAVED_REASON
+        else None
+    )
+    try:
+        await self._update_unserialized(loop_id, active=False, stopped_reason=reason)
+    except Exception:
+        if loop.active:
+            if loop.goal.status != "suggested":
+                loop.goal = loop.goal.revised({"status": "paused"})
+            loop.stopped_reason = GOAL_PAUSE_UNSAVED_REASON
+        loop.active = False
+        loop.next_due_ts = 0.0
+        # update rolled back its failed write. Stop must still fence
+        # an older Resume in this process, even on a repeat press.
+        loop.config_generation += 1
+        loop.goal_token = new_goal_token()
+        if loop.id not in self._firing:
+            self._cancel_timer(loop.id)
+        self._emit("updated", loop)
+        logger.exception(
+            "AutoNudge: goal %s paused in memory; saving the pause failed",
+            loop.id,
+        )
+        return False
+    return True

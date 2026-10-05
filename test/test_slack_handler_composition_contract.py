@@ -1495,7 +1495,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cmd_sessions": "637197868fc541a4013406679648954e232c2467f86a34afcee2c9c09ba8bf15",
     "cmd_status": "ca11627ca9d9be58a362650d9a04591b8f6179c7579ef8bffc1479b2757d1e5f",
     "cmd_stop_no_session": "de5c5a671702ba32d7a8fef5d2528b07a3803d772f21f8d5a0aa64206f5b1d42",
-    "cmd_stop_running": "7a8a362aa0e8c73282bfcaefe11938c8112f066fbfa8a6bcbdafc0ddb04ab91f",
+    "cmd_stop_running": "a8495a5d4587cc632747a4217539961e93a1ee6556f335e7c2a50e1b35d2aecb",
     "cmd_ta_and_project": "0c1a7c878d745efc579eff89b6ebc4de99cb1fdfadecb29560afa5942a370443",
     "cmd_title": "d2d928c6a0e2a5a6b1b0cafe0cad309a92d321947c1e42e4f35de7b240b40bd5",
     "cmd_unknown_bang": "3ac3bfd77e7207cdf6a0a2d5c394d7acdcf42c7833ef8f49d17bdd4ff17ddc4a",

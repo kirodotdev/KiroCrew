@@ -344,6 +344,63 @@ describe('useWebSocket automation seed vs live frames', () => {
     expect(automations()['chat-1-1721']).toMatchObject({ cycleCount: 9, maxCycles: 24 })
   })
 
+  it.each([false, true])('keeps completion evidence when an older slot read settles (cached: %s)', async cached => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const queryKey = ['session-automation', LOOP.slot_key]
+    const working = {
+      ...LOOP,
+      goal: {
+        objective: 'Add keyboard navigation',
+        criteria: ['Arrow keys move focus'],
+        progress: 'Checking focus behavior',
+        status: 'working',
+        evidence: [],
+      },
+    }
+    const complete = {
+      ...working, active: false, stopped_reason: 'goal_complete',
+      goal: {
+        ...working.goal, status: 'complete',
+        progress: 'Keyboard navigation is ready',
+        evidence: ['Keyboard tests pass'],
+      },
+    }
+    if (cached) queryClient.setQueryData(queryKey, normalizeAutomationRecord(working))
+    const staleRead = newDeferred()
+    const otherRead = newDeferred()
+    const otherKey = ['session-automation', OTHER_LOOP.slot_key]
+    // Like ChatPage's REST query, these reads do not consume AbortSignal.
+    const pending = queryClient.fetchQuery({
+      queryKey,
+      queryFn: () => staleRead.promise,
+    })
+    const otherPending = queryClient.fetchQuery({
+      queryKey: otherKey,
+      queryFn: () => otherRead.promise,
+    })
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('fetching')
+
+    act(() => {
+      WS_INSTANCES[0].simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'updated', slot: LOOP.slot_key, loop: complete },
+      })
+    })
+    const expected = normalizeAutomationRecord(complete)
+    expect(queryClient.getQueryData(queryKey)).toEqual(expected)
+    expect(automations()[LOOP.slot_key]).toBeUndefined()
+    expect(queryClient.getQueryState(otherKey)?.fetchStatus).toBe('fetching')
+
+    await act(async () => {
+      staleRead.resolve(normalizeAutomationRecord(working))
+      otherRead.resolve(normalizeAutomationRecord(OTHER_LOOP))
+      await Promise.all([pending, otherPending])
+    })
+    expect(queryClient.getQueryData(queryKey)).toEqual(expected)
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('idle')
+    expect(queryClient.getQueryData(otherKey)).toEqual(normalizeAutomationRecord(OTHER_LOOP))
+  })
+
   it('reconciles channel frames and snapshots under the dashboard slot key', async () => {
     renderHook(() => useWebSocket(), { wrapper })
     act(() => { WS_INSTANCES[0].simulateOpen() })

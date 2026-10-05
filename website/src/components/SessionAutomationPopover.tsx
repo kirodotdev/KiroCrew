@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Activity, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
+import { motion, useReducedMotion } from 'framer-motion'
+import { Activity, ChevronDown, Goal, Play, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
@@ -21,6 +22,24 @@ import { i18nT } from '../i18n/t'
 import MonitorRadar from './MonitorRadar'
 import ErrorNotice from './ErrorNotice'
 import { useQueryIsFetching } from '../hooks/useQueryIsFetching'
+import { errMessage } from '../utils/thunkError'
+import GoalProgressContent, { goalStatusLabel } from './GoalProgressContent'
+import { AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
+import { SettingsToggle } from './settings'
+
+const MotionIconButton = motion.create(IconButton)
+
+class GoalPauseRefreshError extends Error {
+  constructor(cause: unknown) {
+    super(i18nT('components.goalProgress.pause_refresh_failed'), { cause })
+  }
+}
+
+type GoalRequest = {
+  loop: LegacyGoalLoop
+  slotKey: string
+  action: 'change' | 'refresh' | 'refresh_pause' | 'dismiss'
+}
 
 interface Props {
   slotKey: string
@@ -125,6 +144,7 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     max_cycles: loop.maxCycles,
     cycle_count: loop.cycleCount,
     active: loop.active,
+    goal: loop.goal,
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
     // The goal editor words a paused loop by this field; dropping it rendered
@@ -204,6 +224,7 @@ export default function SessionAutomationPopover({
   interrupted = false,
   sessionMode = '',
 }: Props) {
+  const reducedMotion = useReducedMotion()
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   /* WHICH VIEW THIS OPENS ON, and the goal loop is the default. The bounded
      monitor accepts exactly one thing -- a pull request URL, validated against
@@ -234,13 +255,69 @@ export default function SessionAutomationPopover({
   const [confirmClear, setConfirmClear] = useState(false)
   const id = useId()
   const queryClient = useQueryClient()
+  // Subscribe without another request. A concurrent Start must also retire an
+  // open watch form while the parent still holds the suggested Redux record.
+  const { data: goalSnapshot } = useQuery<AutomationRecord | null>({
+    queryKey: ['session-automation', slotKey], enabled: false,
+  })
+  const liveLoop = automation?.kind === 'legacy_goal_loop' ? automation : null
+  const newerGoalSnapshot = liveLoop?.goal && goalSnapshot?.kind === 'legacy_goal_loop'
+    && goalSnapshot.goal && goalSnapshot.id === liveLoop.id && goalSnapshot.slotKey === liveLoop.slotKey
+    && ((goalSnapshot.goalGeneration !== undefined
+      && (liveLoop.goalGeneration === undefined || goalSnapshot.goalGeneration > liveLoop.goalGeneration))
+      || goalSnapshot.goal.status === 'complete' || goalSnapshot.goal.status === 'ended')
+  const legacyLoop = newerGoalSnapshot ? goalSnapshot : liveLoop
+  const replaceableSuggestion = legacyLoop?.goal?.status === 'suggested'
+    && !legacyLoop.active && legacyLoop.cycleCount === 0 && legacyLoop.lastFireAt === 0
+    && !legacyLoop.stoppedReason
+  const recognition = useQuery<{ monitoring?: { goal_suggestions?: boolean } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    enabled: open || (automation?.kind === 'legacy_goal_loop' && automation.goal?.status === 'suggested'),
+  })
+  const recognitionMutation = useMutation({
+    retry: false,
+    mutationFn: (enabled: boolean) => api.patchConfig('monitoring.goal_suggestions', enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+  const suggestionsEnabled = recognition.data?.monitoring?.goal_suggestions !== false
+  const recognitionError = recognitionMutation.isError ? recognitionMutation.error
+    : recognition.isError ? recognition.error : null
+  const recognitionErrorText = recognitionError ? errMessage(recognitionError) : ''
+  const recognitionErrorTitle = recognitionMutation.isError ? i18nT('components.goalProgress.recognition_save_failed')
+    : recognition.isError ? i18nT('components.goalProgress.recognition_load_failed') : ''
+  const suggestionsSetting = (
+    <div className="border-t border-border pt-3 mt-3 space-y-2">
+      <SettingsToggle
+        configKey="monitoring.goal_suggestions"
+        label={i18nT('components.goalProgress.recognition')}
+        description={i18nT('components.goalProgress.recognition_help')}
+        checked={suggestionsEnabled}
+        disabled={!recognition.isSuccess || recognitionMutation.isPending}
+        onChange={enabled => recognitionMutation.mutate(enabled)}
+      />
+      {/* No hand-off beside the unsaved manual-loop draft. Typed goals are already saved. */}
+      {/* The rejection's own text is the journal key Ask Agent recovers the
+          endpoint, status and code from; the translated cause leads as title. */}
+      <ErrorNotice
+        variant="inline" askAgent={automation?.kind === 'legacy_goal_loop' && Boolean(automation.goal)}
+        title={recognitionErrorText ? recognitionErrorTitle : undefined}
+        message={recognitionErrorText || recognitionErrorTitle}
+      />
+      {recognition.isError && (
+        <Btn onClick={() => { void recognition.refetch() }} disabled={recognition.isFetching}>
+          {i18nT('components.goalProgress.recognition_retry')}
+        </Btn>
+      )}
+    </div>
+  )
   const snapshotFetching = useQueryIsFetching(['session-automation', slotKey])
   const automationRef = useRef(automation)
   automationRef.current = automation
   const slotKeyRef = useRef(slotKey)
   slotKeyRef.current = slotKey
   const sessionModeUnsupported = sessionMode === 'crew' || sessionMode === 'member'
-  const legacyView = automation?.kind === 'legacy_goal_loop'
+  const legacyView = (legacyLoop !== null && !(replaceableSuggestion && boundedModeSlot === slotKey))
     || (!monitor && boundedModeSlot !== slotKey)
   /* THE RUNTIME INPUT'S REAL CEILING. `contract.json` carries the ABSOLUTE
      maximum any install may configure (30 days), while the create/update
@@ -326,14 +403,25 @@ export default function SessionAutomationPopover({
     onSuccess: (result, request) => {
       const next = normalizeAutomationRecord(result.monitor)
       const current = automationRef.current
-      const responseIsCurrent = request.captured !== null && current === request.captured
-      if (responseIsCurrent && next?.kind === 'structured_monitor') {
+      const cached = queryClient.getQueryData<AutomationRecord | null>(['session-automation', request.slotKey])
+      const replacingSuggestion = request.action === 'create'
+        && request.captured?.kind === 'legacy_goal_loop' && request.captured.goal?.status === 'suggested'
+      const suggestionChanged = replacingSuggestion
+        && cached !== undefined && (cached?.kind !== 'legacy_goal_loop'
+          || cached.id !== request.captured?.id || cached.slotKey !== request.captured?.slotKey
+          || cached.goal?.status !== 'suggested' || cached.active)
+      const responseIsCurrent = current === request.captured && !suggestionChanged
+      if (responseIsCurrent && request.captured !== null && next?.kind === 'structured_monitor') {
+        // Publish the successor before React delivers new props. An outstanding
+        // goal response must already see that this slot now holds a watch.
+        if (replacingSuggestion) queryClient.setQueryData(['session-automation', request.slotKey], next)
         onChange(next)
       }
       // Refetch remains authoritative. Only an existing captured identity can
       // safely accept the bounded response; a null create identity cannot be
       // distinguished from a later clear tombstone.
       queryClient.invalidateQueries({ queryKey: ['session-automation', request.slotKey] })
+      if (replacingSuggestion && !responseIsCurrent) return
       setEditors(current => {
         const next = { ...current }
         delete next[request.editorKey]
@@ -356,14 +444,117 @@ export default function SessionAutomationPopover({
     },
   })
 
+  const goalMutation = useMutation({
+    retry: false,
+    mutationFn: async ({ loop: captured, slotKey: capturedSlot, action }: GoalRequest) => {
+      if (action === 'refresh') return api.autonudgeForSlot(captured.slotKey)
+      if (action === 'dismiss') {
+        if (captured.goalGeneration === undefined) return api.autonudgeForSlot(captured.slotKey)
+        await api.autonudgeDismiss(captured.id, captured.goalGeneration)
+        return { loop: null }
+      }
+      if (action === 'refresh_pause' || captured.active || captured.stoppedReason === 'goal_pause_unsaved') {
+        if (action !== 'refresh_pause') {
+          const result = await api.stopChatSlot(capturedSlot)
+          if (result?.ok !== true || result?.compacting === true) throw new Error(i18nT('components.goalProgress.pause_failed'))
+        }
+        try {
+          return await api.autonudgeForSlot(captured.slotKey)
+        } catch (error) {
+          throw new GoalPauseRefreshError(error)
+        }
+      }
+      // A typed goal without a revision must be read before a separate resume click.
+      if (captured.goalGeneration === undefined) return api.autonudgeForSlot(captured.slotKey)
+      return api.autonudgeResume(captured.id, captured.goalGeneration)
+    },
+    onSuccess: (result, captured) => {
+      if (slotKeyRef.current !== captured.slotKey) return
+      const next = result.loop ? normalizeAutomationRecord(result.loop) : null
+      const cached = queryClient.getQueryData<AutomationRecord | null>(['session-automation', captured.slotKey])
+      // Check both live props and the cache: a late response must not republish
+      // older active work into Redux, where it would outrank subsequent refetches.
+      for (const current of [automationRef.current, cached]) {
+        if (current === null || (current && (current.kind !== 'legacy_goal_loop'
+          || current.id !== captured.loop.id || current.slotKey !== captured.loop.slotKey))) return
+        if (current?.kind === 'legacy_goal_loop') {
+          if (current.goal?.status === 'complete' || current.goal?.status === 'ended') return
+          const responseGeneration = next?.kind === 'legacy_goal_loop' ? next.goalGeneration : captured.loop.goalGeneration
+          if (current.goalGeneration !== undefined && responseGeneration !== undefined
+            && current.goalGeneration > responseGeneration) return
+        }
+      }
+      onChange(next)
+      // A dismissed suggestion leaves nothing to show; do not fall through to the create form.
+      if (captured.action === 'dismiss') onOpenChange(false)
+    },
+    onSettled: (_result, _error, captured) => {
+      void queryClient.invalidateQueries({ queryKey: ['session-automation', captured.slotKey] })
+      void queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+    },
+  })
+  const capturedGoal = goalMutation.variables
+  const goalRequestMatches = capturedGoal?.slotKey === slotKey
+    && capturedGoal.loop.id === legacyLoop?.id && capturedGoal.loop.slotKey === legacyLoop.slotKey
+  const unchangedGoalState = (current: AutomationRecord | null | undefined) => (
+    current?.kind === 'legacy_goal_loop' && current.id === capturedGoal?.loop.id
+    && current.slotKey === capturedGoal.loop.slotKey
+    && current.goalGeneration === capturedGoal.loop.goalGeneration
+    && current.active === capturedGoal.loop.active
+    && current.stoppedReason === capturedGoal.loop.stoppedReason
+    && current.goal?.status === capturedGoal.loop.goal?.status
+    && current.goal?.status !== 'complete' && current.goal?.status !== 'ended'
+  )
+  // Reconnect may advance Redux while leaving this same-goal cache behind.
+  // Only a strictly older, nonterminal snapshot is irrelevant to the request.
+  const olderGoalSnapshot = goalSnapshot?.kind === 'legacy_goal_loop' && goalSnapshot.goal
+    && goalSnapshot.id === capturedGoal?.loop.id && goalSnapshot.slotKey === capturedGoal.loop.slotKey
+    && goalSnapshot.goalGeneration !== undefined && capturedGoal.loop.goalGeneration !== undefined
+    && goalSnapshot.goalGeneration < capturedGoal.loop.goalGeneration
+    && goalSnapshot.goal.status !== 'complete' && goalSnapshot.goal.status !== 'ended'
+  const goalStateUnchanged = Boolean(goalRequestMatches
+    && unchangedGoalState(legacyLoop)
+    && (goalSnapshot === undefined || olderGoalSnapshot || unchangedGoalState(goalSnapshot)))
+  const pauseUnconfirmed = Boolean(goalStateUnchanged
+    && (goalMutation.error instanceof GoalPauseRefreshError
+      || (capturedGoal?.action === 'refresh_pause' && !goalMutation.isSuccess)))
+  let goalChangeFailure: string | undefined
+  if (goalMutation.error && goalRequestMatches) {
+    if (goalMutation.error instanceof GoalPauseRefreshError) {
+      if (pauseUnconfirmed) goalChangeFailure = i18nT('components.goalProgress.pause_refresh_failed')
+    } else if (capturedGoal.action === 'refresh') {
+      if (goalStateUnchanged) goalChangeFailure = i18nT('components.goalProgress.refresh_failed')
+    } else if (capturedGoal.action === 'dismiss') {
+      goalChangeFailure = i18nT('components.goalProgress.dismiss_failed')
+    } else if (capturedGoal.loop.stoppedReason === 'goal_pause_unsaved') {
+      goalChangeFailure = i18nT('components.goalProgress.retry_pause_failed')
+    } else if (capturedGoal.loop.active) {
+      goalChangeFailure = i18nT('components.goalProgress.pause_failed')
+    } else if (capturedGoal.loop.goal?.status === 'suggested') {
+      goalChangeFailure = i18nT('components.goalProgress.start_failed')
+    } else {
+      goalChangeFailure = i18nT('components.goalProgress.resume_failed')
+    }
+  }
+  // The rejection's own text, so the notice keeps the journal key Ask Agent
+  // recovers the request's context from; a refresh failure wraps its cause.
+  const goalChangeDetail = goalChangeFailure && goalMutation.error
+    ? errMessage(goalMutation.error instanceof GoalPauseRefreshError ? goalMutation.error.cause : goalMutation.error)
+    : ''
+
   const terminal = monitor?.terminal ?? null
   const status = monitor ? deriveAutomationStatus(monitor) : 'arm_pending'
   const statusLabel = i18nT(MONITOR_STATUS_KEYS[status])
-  const legacyLoop = automation?.kind === 'legacy_goal_loop' ? automation : null
   const legacyCycle = legacyLoop?.maxCycles
     ? `${legacyLoop.cycleCount}/${legacyLoop.maxCycles}`
     : String(legacyLoop?.cycleCount ?? 0)
-  const triggerLabel = legacyLoop?.active
+  const pursuedGoal = legacyLoop?.goal
+  const suggested = pursuedGoal?.status === 'suggested'
+  const pursuedStatusLabel = pauseUnconfirmed ? i18nT('components.goalProgress.pause_unconfirmed')
+    : legacyLoop ? goalStatusLabel(legacyLoop) : ''
+  const triggerLabel = pursuedGoal && legacyLoop
+    ? `${suggested ? i18nT('components.goalProgress.suggestion_question') : pursuedStatusLabel}: ${pursuedGoal.objective}`
+    : legacyLoop?.active
     ? i18nT(
       interrupted
         ? 'components.autoNudgePopover.goal_interrupted_cycle'
@@ -404,6 +595,8 @@ export default function SessionAutomationPopover({
 
   function writeMonitor() {
     if (sessionModeUnsupported) return
+    if (legacyLoop?.goal && !replaceableSuggestion) return
+    if (goalMutation.isPending && goalRequestMatches) return
     if (!editedMonitor && !creationReady) return
     if (editedMonitor && !hasDirtyFields) return
     const cadence = boundedInteger(draft.cadence, STRUCTURED_MONITOR_LIMITS.cadenceSecs)
@@ -508,8 +701,9 @@ export default function SessionAutomationPopover({
   }
 
   return (
+    <div data-goal-suggestion={suggested ? '' : undefined} className={`flex items-center gap-1 min-w-0 max-w-full ${suggested ? 'w-full' : ''}`}>
     <AutoNudgePopover
-      key={legacyLoop?.id ?? `bounded:${slotKey}`}
+      key={legacyLoop && !legacyLoop.goal ? legacyLoop.id : `bounded:${slotKey}`}
       slotKey={slotKey}
       loop={legacyLoop ? legacyWire(legacyLoop) : null}
       open={open}
@@ -535,15 +729,18 @@ export default function SessionAutomationPopover({
       onSetUpBoundedMonitor={legacyLoop ? undefined : () => setBoundedModeSlot(slotKey)}
       writeDisabled={sessionModeUnsupported}
       interrupted={interrupted}
+      footer={suggestionsSetting}
       trigger={(
-        <IconButton
+        <MotionIconButton
+          layout={!reducedMotion}
+          transition={{ duration: reducedMotion ? 0 : 0.18 }}
           aria-label={triggerLabel}
-          variant={monitor?.active || legacyLoop?.active ? 'active' : 'default'}
+          variant={!pauseUnconfirmed && (monitor?.active || legacyLoop?.active) ? 'active' : 'default'}
           /* IconButton is a plain block button, so without a flex row the
              inline glyph sits on the text baseline of this 32px box rather
              than at its centre, and the count would trail it without a gap.
              Same row layout the legacy goal trigger has always used. */
-          className="h-8 px-2 rounded-lg shrink-0 flex items-center gap-1"
+          className={`px-2 rounded-lg flex items-center ${pursuedGoal ? 'min-h-10 min-w-0 w-full max-w-96 py-1 text-left gap-2' : 'h-8 shrink-0 gap-1'}`}
         >
           {/* The glyph promises the same thing the label does. With nothing
               armed this button opens "Set a goal", whose own panel is headed by
@@ -551,23 +748,59 @@ export default function SessionAutomationPopover({
               fixes in the label -- and there is no probing to depict. Once
               anything IS armed the radar is accurate and carries the
               action-running pulse. */}
-          {monitor || legacyLoop ? (
+          {pursuedGoal ? (
+            <Goal className="lucide-inline shrink-0" aria-hidden />
+          ) : monitor || legacyLoop ? (
             <MonitorRadar actionRunning={status === 'action_running'} />
           ) : (
             <Goal className="lucide-inline shrink-0" aria-hidden />
           )}
-          {monitor ? (
+          {pursuedGoal && legacyLoop ? (
+            <span className="min-w-0 flex-1">
+              <span className="block whitespace-normal break-words text-[11px]" role="status" aria-live="polite">{suggested ? i18nT('components.goalProgress.suggestion_question') : pursuedStatusLabel}</span>
+              <span className="block truncate text-[12px] text-text">{pursuedGoal.objective}</span>
+              {suggested && (
+                <span id={`${id}-start-limit`} className="block whitespace-normal break-words text-[11px] text-muted">
+                  {legacyLoop.maxCycles > 0
+                    ? i18nT('components.goalProgress.start_cycle_limit', { limit: fmtNumber(legacyLoop.maxCycles) })
+                    : i18nT('components.goalProgress.start_no_cycle_limit')}
+                </span>
+              )}
+            </span>
+          ) : monitor ? (
             <span className="text-[11px] font-mono">{fmtNumber(monitor.usage.probes)}</span>
           ) : legacyLoop?.cycleCount ? (
             <span className="text-[11px] font-mono">{legacyCycle}</span>
           ) : null}
-        </IconButton>
+          {pursuedGoal && <ChevronDown className={`lucide-inline shrink-0 text-muted ${open ? 'rotate-180' : ''}`} aria-hidden />}
+        </MotionIconButton>
       )}
-      content={legacyView ? undefined : (
+      content={legacyLoop?.goal && legacyView ? (
+        <GoalProgressContent
+          loop={legacyLoop}
+          statusLabel={pursuedStatusLabel}
+          changeFailure={goalChangeFailure}
+          changeFailureDetail={goalChangeDetail}
+          pauseUnconfirmed={pauseUnconfirmed}
+          pending={busy || (goalMutation.isPending && Boolean(goalRequestMatches))}
+          settings={suggestionsSetting}
+          onSetUpBoundedMonitor={replaceableSuggestion ? () => setBoundedModeSlot(slotKey) : undefined}
+          onDismiss={legacyLoop.goal.status === 'suggested' && legacyLoop.goalGeneration !== undefined
+            ? () => goalMutation.mutate({ loop: legacyLoop, slotKey, action: 'dismiss' })
+            : undefined}
+          onAction={() => goalMutation.mutate({
+            loop: legacyLoop, slotKey,
+            action: pauseUnconfirmed ? 'refresh_pause'
+              : !legacyLoop.active && legacyLoop.stoppedReason !== 'goal_pause_unsaved' && legacyLoop.goalGeneration === undefined
+                ? 'refresh' : 'change',
+          })}
+        />
+      ) : legacyView ? undefined : (
         <PopoverContent
           side="top"
           align="start"
-          className="w-[min(calc(100vw-1rem),32rem)] max-h-[min(80vh,42rem)] overflow-y-auto p-4 text-[12px]"
+          collisionPadding={8}
+          className="w-[min(calc(100vw-1rem),32rem)] max-h-[min(80vh,42rem,var(--radix-popover-content-available-height))] overflow-y-auto p-4 text-[12px]"
         >
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0">
@@ -821,6 +1054,9 @@ export default function SessionAutomationPopover({
 
         {/* No hand-off: navigating away would discard the unsaved monitor draft. */}
         <ErrorNotice message={errors.request} className="mt-3" />
+        {replaceableSuggestion && <p className="mt-3 text-[12px] text-muted">
+          {i18nT('components.goalProgress.watch_replaces_suggestion')}
+        </p>}
         {ceilingFailed || snapshotNoticeDue ? (
           <div className="mt-3 space-y-2">
             {/* ONE notice for the two reads that can fail together. The snapshot
@@ -863,11 +1099,13 @@ export default function SessionAutomationPopover({
                    control that WRITES on this form stays gated. */
                 onClick={() => setBoundedModeSlot(null)}
               >
-                {i18nT('components.sessionAutomationPopover.use_legacy_costly')}
+                {i18nT(replaceableSuggestion ? 'components.goalProgress.back_to_suggestion'
+                  : 'components.sessionAutomationPopover.use_legacy_costly')}
               </Btn>
               <SendBtn
                 type="button"
-                disabled={busy || !creationReady || sessionModeUnsupported}
+                disabled={busy || !creationReady || sessionModeUnsupported
+                  || (goalMutation.isPending && Boolean(goalRequestMatches))}
                 onClick={writeMonitor}
               >
                 {i18nT('components.sessionAutomationPopover.start_monitor')}
@@ -947,5 +1185,24 @@ export default function SessionAutomationPopover({
         </PopoverContent>
       )}
     />
+    {/* One Start per layout: the open details card carries its own. */}
+    {suggested && legacyLoop && !open && (
+      <Btn
+        aria-describedby={`${id}-start-limit`}
+        disabled={busy || (goalMutation.isPending && Boolean(goalRequestMatches))}
+        onClick={() => {
+          setBoundedModeSlot(null)
+          onOpenChange(true)
+          goalMutation.mutate({
+            loop: legacyLoop, slotKey,
+            action: legacyLoop.goalGeneration === undefined ? 'refresh' : 'change',
+          })
+        }}
+      >
+        {legacyLoop.goalGeneration === undefined ? <RotateCw className="lucide-inline" aria-hidden /> : <Play className="lucide-inline" aria-hidden />}
+        {i18nT(legacyLoop.goalGeneration === undefined ? 'components.goalProgress.refresh_status' : 'components.goalProgress.start')}
+      </Btn>
+    )}
+    </div>
   )
 }

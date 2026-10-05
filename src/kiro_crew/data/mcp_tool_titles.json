@@ -30,6 +30,7 @@
     "monitor_stop": "Stop monitor",
     "monitor_start": "Start monitor",
     "monitor_update": "Update monitor",
+    "goal": "Update goal",
     "set_project": "Set project",
     "reset_conversation": "Reset conversation",
     "chat_tag": "Tag session",

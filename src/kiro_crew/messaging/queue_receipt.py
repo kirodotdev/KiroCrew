@@ -414,18 +414,24 @@ class QueueReceipt:
         self.omitted_records = 0
         return given_up
 
-    def withdraw(self, owner: str) -> list[str]:
+    def withdraw(self, owner: str, only: tuple[ReceiptLine, ...] | None = None) -> list[str]:
         """Drop *owner*'s lines and return what they showed, in order.
 
         An empty *owner* drops nothing, matching the queue-side predicate: a caller that
         cannot name its principal withdraws nothing rather than everybody's lines.
+        *only* narrows it to lines held since a Stop was pressed, so a message queued
+        during the Stop keeps its line.
         """
         if not owner:
             return []
-        taken = [line.text for line in self.lines if line.owner == owner]
-        if taken:
-            self.lines = [line for line in self.lines if line.owner != owner]
-        return taken
+        gone = [
+            line
+            for line in self.lines
+            if line.owner == owner and (only is None or any(line is held for held in only))
+        ]
+        if gone:
+            self.lines = [line for line in self.lines if not any(line is g for g in gone)]
+        return [line.text for line in gone]
 
     def drop_answered(self, owner: str, still_queued: int) -> None:
         """Drop *owner*'s answered lines here, keeping their *still_queued* NEWEST.
@@ -557,6 +563,11 @@ class ReceiptQueue:
     def lock(self) -> asyncio.Lock:
         """The lock callers MUST hold across compound operations (see class doc)."""
         return self._lock
+
+    def lines_queued_by(self, session_key: str, owner: str) -> tuple[ReceiptLine, ...]:
+        """*owner*'s receipt lines now, read before a Stop's first await."""
+        receipt = self._receipts.get(session_key)
+        return tuple(line for line in receipt.lines if line.owner == owner) if receipt else ()
 
     def has_receipt(self, session_key: str) -> bool:
         """Whether a LIVE receipt exists for this session.
@@ -816,7 +827,11 @@ class ReceiptQueue:
             await self._owe_record(session_key, receipt, body)
 
     async def finish_cancelled_locked(
-        self, session_key: str, surface: ReceiptSurface, owner: str = ""
+        self,
+        session_key: str,
+        surface: ReceiptSurface,
+        owner: str = "",
+        only: tuple[ReceiptLine, ...] | None = None,
     ) -> None:
         """Finalize the receipt to a "🛑 Cancelled" record, if present.
 
@@ -867,7 +882,7 @@ class ReceiptQueue:
                 self._receipts.pop(session_key, None)
             return
         if owner:
-            withdrawn = receipt.withdraw(owner)
+            withdrawn = receipt.withdraw(owner, only)
             if not withdrawn:
                 return
             if receipt.texts_at_address():

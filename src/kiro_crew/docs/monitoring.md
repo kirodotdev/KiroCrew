@@ -42,7 +42,7 @@ Unless you choose different limits, the monitor uses:
 |---|---:|
 | Probe interval | 5 minutes |
 | Runtime | 4 hours |
-| Completed agent turns | 8 |
+| Completed agent turns | Unlimited (0) |
 | Reported aggregate input and output tokens | 250,000 |
 | Consecutive provider errors | 3 |
 
@@ -79,7 +79,7 @@ even if the pull request needs no action.
 Use `monitor_inspect` on a later turn to see the target, objective, next probe,
 limits, latest classification, usage, and final outcome.
 
-You can change the cadence, positive limits, and wake instructions without
+You can change the cadence, limits, and wake instructions without
 discarding the comparison baseline. Changing the target or objective starts a
 new baseline and is refused while an action is in flight.
 

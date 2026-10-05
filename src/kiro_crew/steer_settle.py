@@ -1,16 +1,15 @@
 """Settlement of pending mid-turn steers against a ``steering_consumed`` echo.
 
-Pure and shared: the main chat and the ``/side`` sidecar both hand kiro-cli
-fire-and-forget steers, and both need the same answer to "which of these did the
-backend actually inject?". One subtle parser, two callers — a second copy would
-drift, and the failure mode of a wrong answer is a silently lost question.
+Pure and shared by the main chat, the ``/side`` sidecar and channel turns.
+Each needs the same answer to "which of these steers did the backend actually
+inject?". A second parser would drift, and a wrong answer silently loses a question.
 """
 
 from __future__ import annotations
 
 import re
 
-from kiro_crew.acp._dispatch import redact_text
+from kiro_crew.agent_sdk.drivers.acp import redact_text
 
 #: kiro-cli wraps each injected steer in this envelope inside the echo text.
 _BLOCK_RE = re.compile(r"<user_message>\n(.*?)\n</user_message>", re.DOTALL)

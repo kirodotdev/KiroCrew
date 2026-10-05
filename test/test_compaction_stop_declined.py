@@ -883,6 +883,8 @@ def test_the_shared_channel_force_stop_goes_through_the_queue_keeping_helper():
     bob = ("ts-b", "bob's", {QUEUED_OWNER_KEY: "bob"})
     alice = ("ts-a", "alice's", {QUEUED_OWNER_KEY: "alice"})
     sessions.detach_queue = MagicMock(return_value=(bob, alice))
+    # What was queued at the press, read before the goal pause's awaited write.
+    sessions.peek_queue = MagicMock(return_value=(bob, alice))
     sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
     queue = MagicMock()
     queue.lock = asyncio.Lock()

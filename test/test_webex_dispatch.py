@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
@@ -419,6 +419,47 @@ def _deny_webex_profile(monkeypatch, tmp_path):
 
 
 class TestTurn:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("gate", ["admission", "governance"])
+    @pytest.mark.parametrize("generated", [False, True], ids=["human", "goal"])
+    async def test_pre_turn_refusal_preserves_wake_delivery_result(
+        self, monkeypatch, gate, generated
+    ) -> None:
+        """A refused goal wake stays undelivered without starting a turn."""
+        from kiro_crew.messaging import turn_ceiling
+        from kiro_crew.monitoring.models import MonitorDispatchResult
+
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+        reservation = None if gate == "admission" else mock.Mock()
+        reserve = mock.Mock(return_value=reservation)
+        monkeypatch.setattr(sessions, "reserve_inbound_callback", reserve, raising=False)
+        permitted = mock.AsyncMock(return_value=gate != "governance")
+        monkeypatch.setattr(webex_dispatch, "inbound_permitted", permitted)
+        get_or_create = mock.AsyncMock(wraps=sessions.get_or_create)
+        monkeypatch.setattr(sessions, "get_or_create", get_or_create)
+
+        with turn_ceiling.generated_turn() if generated else nullcontext():
+            result = await d.handle_message(
+                _inbound("Continue current work"), interpret_commands=not generated
+            )
+
+        # Admission is a transient refusal; a governance deny stands until the policy changes.
+        refused = (
+            MonitorDispatchResult.BUSY if gate == "admission" else MonitorDispatchResult.UNAVAILABLE
+        )
+        assert result is (refused if generated else None)
+        permitted.assert_awaited_once_with("webex")
+        reserve.assert_called_once_with()
+        get_or_create.assert_not_awaited()
+        assert sessions.begin_turns == 0
+        assert provider.steered == []
+        assert sessions.queued == []
+        assert client.sent == []
+        assert client.edits == []
+
     @pytest.mark.asyncio
     async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
         # A channels DENY must stop handle_message from driving a turn. This
@@ -3437,3 +3478,268 @@ class TestGovernanceOnPresses:
             await d.handle_message(_options_press("0", "N1"))
 
         assert client.sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "matched",
+        "bare",
+        "muted",
+        "ack-only",
+        "empty",
+        "unmatched",
+        "marker",
+        "automation",
+        "other-tool",
+    ],
+)
+async def test_goal_wake_honors_consumed_human_steer(monkeypatch, case):
+    """A delivered human correction gains goal authority only at consumption."""
+    from kiro_crew import session_directive
+    from kiro_crew.acp.types import EVENT_STEER_CONSUMED, EVENT_TOOL_CALL, EVENT_TOOL_RESULT
+    from kiro_crew.messaging import turn_ceiling
+
+    provider = FakeProvider([])
+    sessions = FakeSessions(provider)
+    dispatcher = _dispatcher(sessions, FakeCtx(), FakeClient())
+    entered = asyncio.Event()
+    delivered = asyncio.Event()
+    applied = []
+    correction = "End this goal; I no longer need it"
+    tool = "monitor_start" if case == "other-tool" else "goal"
+    if case == "muted":
+        monkeypatch.setattr(
+            "kiro_crew.messaging.dispatch.conversation_is_muted", lambda *args: True
+        )
+
+    async def apply(state, slot, session_key, kind, args, **provenance):
+        applied.append((kind, provenance["producer_is_user_facing"]))
+        return "Goal updated"
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.session_directive_apply.apply_session_directive", apply
+    )
+
+    async def stream(message):
+        sessions._busy = True
+        entered.set()
+        await asyncio.wait_for(delivered.wait(), 5)
+        assert provider.steered == ([] if case == "automation" else [correction])
+        if case == "marker":
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="[STEERING steer-ab12: end the goal]")
+        elif case != "ack-only":
+            echo = f"<user_message>\n{correction}\n</user_message>"
+            if case == "bare":
+                echo = correction
+            elif case == "empty":
+                echo = ""
+            elif case == "unmatched":
+                echo = "An unrelated host-generated notice"
+            yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=echo)
+        yield AcpEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id="goal-end",
+            title=tool,
+            tool_name=tool,
+            mcp_server_name=session_directive.CORE_MCP_SERVER,
+        )
+        yield AcpEvent(
+            kind=EVENT_TOOL_RESULT,
+            tool_call_id="goal-end",
+            tool_final=True,
+            tool_output=session_directive.encode(
+                tool,
+                (
+                    {"message": "Watch the build", "idle_secs": 30}
+                    if tool == "monitor_start"
+                    else {"action": "end", "goal_id": "current", "generation": 0}
+                ),
+                "Goal change requested.",
+            ),
+        )
+        yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+        sessions._busy = False
+
+    monkeypatch.setattr(provider, "stream", stream)
+
+    async def human_input():
+        await asyncio.wait_for(entered.wait(), 5)
+        if case == "automation":
+            from kiro_crew.monitoring.models import MonitorDispatchResult
+
+            with turn_ceiling.generated_turn():
+                result = await dispatcher.handle_message(
+                    _inbound(correction), interpret_commands=False
+                )
+            assert result is MonitorDispatchResult.BUSY
+        else:
+            await dispatcher.handle_message(_inbound(correction))
+        delivered.set()
+
+    # The receiving task is created outside the generated wake's ContextVar scope.
+    task = asyncio.create_task(human_input())
+    try:
+        with turn_ceiling.generated_turn():
+            await asyncio.wait_for(
+                dispatcher.handle_message(
+                    _inbound("Continue current goal"), interpret_commands=False
+                ),
+                5,
+            )
+        await asyncio.wait_for(task, 5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert applied == [(tool, case in {"matched", "bare", "muted"})]
+    assert not dispatcher._goal_steers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_before_gate", [False, True])
+async def test_generated_turn_hands_queued_human_its_own_provenance(monkeypatch, fail_before_gate):
+    """A pre-stream failure must not leave the generated pass for a queued human."""
+    from kiro_crew import session_directive
+    from kiro_crew.acp.types import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
+    from kiro_crew.messaging import turn_ceiling
+
+    provider = FakeProvider([])
+    sessions = FakeSessions(provider)
+    dispatcher = _dispatcher(sessions, FakeCtx(), FakeClient())
+    ceiling = turn_ceiling.ConversationTurnCeiling(max_turns=1)
+    monkeypatch.setattr(turn_ceiling, "_SHARED", ceiling)
+    applied = []
+    streamed = []
+    human_text = "Start the requested goal"
+    sessions.queued.append(_entry("1", human_text))
+
+    async def apply(state, slot, session_key, kind, args, **provenance):
+        applied.append(
+            (kind, provenance["producer_is_user_facing"], provenance["producer_is_self_wake"])
+        )
+        return "Goal started"
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.session_directive_apply.apply_session_directive", apply
+    )
+
+    async def stream(message):
+        streamed.append(message)
+        if message == human_text:
+            yield AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="human-goal",
+                title="goal",
+                tool_name="goal",
+                mcp_server_name=session_directive.CORE_MCP_SERVER,
+            )
+            yield AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="human-goal",
+                tool_final=True,
+                tool_output=session_directive.encode(
+                    "goal", {"action": "start", "objective": "Requested work"}, "Goal requested."
+                ),
+            )
+        yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="Done")
+        yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+    monkeypatch.setattr(provider, "stream", stream)
+    if fail_before_gate:
+        build_message = dispatcher.ctx_builder.build_message
+
+        def build(text, *args, **kwargs):
+            if text == "Continue the wake":
+                raise OSError("context unavailable")
+            return build_message(text, *args, **kwargs)
+
+        monkeypatch.setattr(dispatcher.ctx_builder, "build_message", build)
+    with turn_ceiling.generated_turn():
+        await dispatcher.handle_message(_inbound("Continue the wake"), interpret_commands=False)
+
+    assert applied == [("goal", True, False)]
+    assert streamed == ([human_text] if fail_before_gate else ["Continue the wake", human_text])
+    assert sessions.queued == []
+    with pytest.raises(turn_ceiling.TurnCeilingExceeded):
+        turn_ceiling.gate(dispatcher._session_key(_EMAIL))()
+
+
+@pytest.mark.asyncio
+async def test_waiting_goal_wake_does_not_publish_steer_evidence_before_acquisition(monkeypatch):
+    from kiro_crew.messaging import turn_ceiling
+
+    provider = FakeProvider([])
+    sessions = FakeSessions(provider)
+    dispatcher = _dispatcher(sessions, FakeCtx(), FakeClient())
+    first_waiting = asyncio.Event()
+    second_waiting = asyncio.Event()
+    acquire_first = asyncio.Event()
+    streaming = asyncio.Event()
+    finish = asyncio.Event()
+    allocations = 0
+
+    async def acquire(key, **kwargs):
+        nonlocal allocations
+        allocations += 1
+        if allocations == 1:
+            first_waiting.set()
+            await asyncio.wait_for(acquire_first.wait(), 5)
+            sessions._busy = True
+            return provider, True, False
+        second_waiting.set()
+        await asyncio.wait_for(finish.wait(), 5)
+        raise SessionClosingError("waiting wake refused")
+
+    async def stream(message):
+        streaming.set()
+        await asyncio.wait_for(finish.wait(), 5)
+        yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+    monkeypatch.setattr(sessions, "get_or_create", acquire)
+    monkeypatch.setattr(provider, "stream", stream)
+    current = asyncio.create_task(dispatcher.handle_message(_inbound("A human turn")))
+    waiting = None
+    try:
+        await asyncio.wait_for(first_waiting.wait(), 5)
+        with turn_ceiling.generated_turn():
+            waiting = asyncio.create_task(
+                dispatcher.handle_message(_inbound("Goal wake"), interpret_commands=False)
+            )
+        await asyncio.wait_for(second_waiting.wait(), 5)
+        acquire_first.set()
+        await asyncio.wait_for(streaming.wait(), 5)
+        # The running turn is human; the generated turn still owns no provider.
+        assert not dispatcher._goal_steers
+        await dispatcher.handle_message(_inbound("A correction for the human turn"))
+        assert provider.steered == ["A correction for the human turn"]
+        finish.set()
+        await asyncio.wait_for(asyncio.gather(current, waiting), 5)
+        assert not dispatcher._goal_steers
+    finally:
+        finish.set()
+        for task in (current, waiting):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(task for task in (current, waiting) if task), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generated", [False, True])
+async def test_goal_steer_evidence_overflow_queues_full_input_only_for_generated_turns(
+    monkeypatch, generated
+):
+    from kiro_crew.messaging import dispatch
+
+    provider = FakeProvider([])
+    sessions = FakeSessions(provider)
+    dispatcher = _dispatcher(sessions, FakeCtx(), FakeClient())
+    key = dispatcher._session_key(_EMAIL)
+    sessions._busy = True
+    if generated:
+        dispatcher._goal_steers[key] = dispatch.GoalSteerState()
+    monkeypatch.setattr(dispatch, "MAX_GOAL_STEER_CHARS", 8)
+    text = "A complete human correction that must not be truncated"
+    await dispatcher.handle_message(_inbound(text))
+    assert provider.steered == ([] if generated else [text])
+    assert [entry[1] for entry in sessions.queued] == ([text] if generated else [])

@@ -10,6 +10,7 @@ from kiro_crew.validation import (
     CRON_ADD_SCHEMA,
     FILE_READ_SCHEMA,
     FILE_WRITE_SCHEMA,
+    GOAL_SCHEMA,
     LEARN_ADD_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SET_PROJECT_SCHEMA,
@@ -36,6 +37,17 @@ from kiro_crew.validation import (
 )
 
 # ── String Sanitization ──
+
+
+@pytest.mark.parametrize("field", ["criteria", "evidence"])
+def test_goal_lists_sanitize_each_string_and_enforce_type_and_count(field):
+    args = validate_tool_args(
+        {"action": "start", field: ["AKIA\u200dIOSFODNN7EXAMPLE"] * 8}, GOAL_SCHEMA
+    )
+    assert args[field] == ["AKIAIOSFODNN7EXAMPLE"] * 8
+    for invalid in ([1], ["criterion"] * 9, "criterion"):
+        with pytest.raises(ValidationError):
+            validate_tool_args({"action": "start", field: invalid}, GOAL_SCHEMA)
 
 
 class TestStripHiddenUnicode:

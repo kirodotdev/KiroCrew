@@ -1680,6 +1680,21 @@ class SessionAllocationService:
         session = self._sessions.get(self._owner._fold_key(key))
         return bool(session and session.semaphore.locked())
 
+    def turn_mark(self, key: str) -> tuple[Any, int] | None:
+        session = self._sessions.get(self._owner._fold_key(key))
+        if session is None:
+            return None
+        return session.semaphore, getattr(session.semaphore, "acquisitions", 0)
+
+    def turn_began_since(self, key: str, mark: tuple[Any, int] | None) -> bool:
+        session = self._sessions.get(self._owner._fold_key(key))
+        if session is None or not session.semaphore.locked():
+            return False
+        if mark is None or mark[0] is not session.semaphore:
+            # No session when the mark was read, or another one replaced it.
+            return True
+        return getattr(session.semaphore, "acquisitions", 0) != mark[1]
+
     def touch(self, key: str) -> bool:
         session = self._sessions.get(self._owner._fold_key(key))
         if session is None:
@@ -1756,6 +1771,11 @@ class SessionAllocationService:
         taken = tuple(session.queue)
         session.queue.clear()
         return taken
+
+    def peek_queue(self, key: str) -> tuple[Any, ...]:
+        """The queued entries, left in place."""
+        session = self._sessions.get(self._owner._fold_key(key))
+        return tuple(session.queue) if session is not None else ()
 
     def restore_queue(self, key: str, entries: tuple[Any, ...]) -> None:
         """Put ``detach_queue``'s entries back at the head, ahead of newer arrivals."""

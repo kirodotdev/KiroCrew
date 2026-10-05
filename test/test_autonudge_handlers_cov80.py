@@ -6,13 +6,14 @@ between them: the read routes (list / get), the "service is absent" 503+``enable
 shapes, the malformed-body 400s, and the DELETE route's audit record — which has to name
 the removed loop's ``slot_key`` even though the loop is gone by the time it logs.
 
-Everything is driven through aiohttp's ``make_mocked_request`` (no socket bound) against a
-fake service, so no timer task is armed and no loop store is written. ``sel()`` is replaced
-with a mock so the audit call can be asserted on rather than appended to a real event log.
+Most mappings use aiohttp's ``make_mocked_request`` against a fake service. The
+session-ownership regression uses a real loaded service and HTTP authentication.
+Audit sinks are mocked; stores and HTTP listeners are private test fixtures.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 from types import SimpleNamespace
@@ -20,11 +21,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
+from aiohttp import ClientTimeout, web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
+from kiro_crew.goal import GoalState, continuation_message
 from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
     MonitorObservationStatus,
@@ -297,6 +299,242 @@ def test_session_monitor_read_is_strict_internal() -> None:
     path = "/api/autonudge/session-monitor"
     assert path in _STRICT_INTERNAL_API_PATHS
     assert path not in _MIXED_INTERNAL_API_PATHS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["goal", "plain", "structured"])
+@pytest.mark.parametrize("ownership", ["foreign", "channel", "dashboard"])
+async def test_authenticated_session_monitor_requires_exact_record_binding(
+    tmp_path, monkeypatch, sel_mock, shape, ownership
+) -> None:
+    from kiro_crew.dashboard import token_auth
+    from kiro_crew.mcp_tools.control import _compact_monitor_inspection
+
+    path = "/api/autonudge/session-monitor"
+    secret = "session-monitor-test-secret"
+    channel_key, slot_key = "slack:1.1", "slack_1.1"
+    session_key = channel_key if ownership == "channel" else "dashboard:" + slot_key
+    binding = slot_key if ownership == "dashboard" else channel_key
+    loop = (
+        _monitor_loop(loop_id="owned01", slot_key=binding)
+        if shape == "structured"
+        else _loop(loop_id="owned01", slot_key=binding)
+    )
+    if shape == "goal":
+        loop.goal = GoalState.from_dict(
+            {
+                "objective": "Private channel objective",
+                "criteria": ["Private channel criterion"],
+                "progress": "Private channel progress",
+                "evidence": ["Private channel evidence"],
+            }
+        )
+        loop.message = continuation_message(loop.goal)
+    service = AutoNudgeService(base_dir=tmp_path)
+    service._loops[loop.id] = loop
+    if ownership == "dashboard":
+        foreign = _monitor_loop(loop_id="foreign1", slot_key=channel_key)
+        service._loops[foreign.id] = foreign
+    service._path.write_text(json.dumps(service._serialize_state()), encoding="utf-8")
+    service._loops.clear()
+    service._load()
+    _svc(monkeypatch, service)
+    # Keep the real legacy fallback, including exact-match precedence.
+    assert service.get_by_slot(slot_key).id == loop.id
+    before = service._serialize_state()
+    persisted = service._path.read_bytes()
+    monkeypatch.setattr(token_auth, "_sel_fn", lambda: sel_mock)
+    app = web.Application(
+        middlewares=[
+            token_auth.token_auth_middleware(
+                internal_paths=frozenset({path}), internal_secret=secret
+            )
+        ]
+    )
+    app["state"] = SimpleNamespace(
+        _slots={slot_key: SimpleNamespace(key=slot_key, linked_session_key="", _app="test-app")},
+        crons=SimpleNamespace(_jobs=[]),
+        subagents=SimpleNamespace(_agents={}),
+    )
+    app.router.add_get(path, h.api_session_monitor_get)
+    try:
+        async with TestClient(TestServer(app), timeout=ClientTimeout(total=5)) as client:
+            denied = await client.get(
+                path, headers={"X-Internal-Secret": "wrong", "X-Session-Key": session_key}
+            )
+            assert denied.status == 403
+            response = await client.get(
+                path, headers={"X-Internal-Secret": secret, "X-Session-Key": session_key}
+            )
+            assert response.status == 200
+            payload = await response.json()
+        if ownership == "foreign":
+            assert payload == {"enabled": True, "monitor": None, "autonudge_loop": None}
+            assert _compact_monitor_inspection(payload) == payload
+        elif shape == "structured":
+            assert payload["monitor_id"] == loop.id
+            assert payload["monitor"]["target"] == loop.monitor.target
+            assert payload["autonudge_loop"] is None
+        else:
+            reading = payload["autonudge_loop"]
+            assert reading["id"] == loop.id
+            assert payload["monitor"] is None
+            if shape == "goal":
+                assert reading["goal_id"] == loop.id
+                assert reading["goal"] == dataclasses.asdict(loop.goal)
+            else:
+                assert "goal" not in reading
+                assert "message" not in reading
+        assert service._serialize_state() == before
+        assert service._path.read_bytes() == persisted
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["goal", "plain", "structured"])
+@pytest.mark.parametrize("ownership", ["alias_only", "canonical_and_alias", "two_aliases"])
+async def test_authenticated_inspection_follows_trusted_reconciliation(
+    tmp_path, monkeypatch, sel_mock, shape, ownership
+) -> None:
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import mcp_core
+    from kiro_crew.dashboard import channel_slots, token_auth
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.mcp_tools import control
+
+    path = "/api/autonudge/session-monitor"
+    secret = "reconciled-session-test-secret"
+    channel = "slack:900.0"
+    state = _make_state(tmp_path / "history")
+    slot = state.get_or_create_slot("retained-chat")
+    assert not slot.linked_session_key
+    slot.channel_origin = True
+    slot._channel_runtime_origin = True
+
+    def make_loop(loop_id, binding):
+        loop = (
+            _monitor_loop(loop_id=loop_id, slot_key=binding)
+            if shape == "structured"
+            else _loop(loop_id=loop_id, slot_key=binding)
+        )
+        loop.config_generation = 7
+        if shape == "goal":
+            loop.goal = GoalState.from_dict(
+                {
+                    "objective": "Private retained objective",
+                    "criteria": ["Private retained criterion"],
+                    "progress": "Private retained progress",
+                    "evidence": ["Private retained evidence"],
+                }
+            )
+            loop.message = continuation_message(loop.goal)
+        return loop
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    retained = make_loop("retained01", slot.key)
+    service._loops[retained.id] = retained
+    if ownership == "canonical_and_alias":
+        other = make_loop("other01", channel)
+        service._loops[other.id] = other
+    elif ownership == "two_aliases":
+        other_slot = state.get_or_create_slot("retained-chat-two")
+        assert not other_slot.linked_session_key
+        other_slot.channel_origin = True
+        other_slot._channel_runtime_origin = True
+        other = make_loop("other01", other_slot.key)
+        service._loops[other.id] = other
+        assert channel_slots._rebind_unbound_channel_slot(state, other_slot, channel)
+    foreign = make_loop("foreign01", "slack:1.1")
+    service._loops[foreign.id] = foreign
+    lookalike = state.get_or_create_slot("slack_1.1")
+    assert not lookalike.linked_session_key
+    assert service.get_by_slot(lookalike.key) is foreign
+
+    assert channel_slots._rebind_unbound_channel_slot(state, slot, channel)
+    assert effective_session_key(slot) == channel
+    await asyncio.to_thread(
+        service._path.write_text, json.dumps(service._serialize_state()), encoding="utf-8"
+    )
+    service._loops.clear()
+    await asyncio.to_thread(service._load)
+    assert service.get_by_slot(slot.key).id == retained.id
+    if ownership != "canonical_and_alias":
+        assert service.get_by_slot(channel) is None
+    before = service._serialize_state()
+    persisted = await asyncio.to_thread(service._path.read_bytes)
+    _svc(monkeypatch, service)
+    monkeypatch.setattr(token_auth, "_sel_fn", lambda: sel_mock)
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", lambda _: (channel, ""))
+    monkeypatch.setattr(mcp_core, "directive_capture_active", lambda: False)
+    monkeypatch.setattr(mcp_core, "_internal_secret", lambda: secret)
+    monkeypatch.setattr(mcp_core, "_caller_header", lambda: {})
+    monkeypatch.setattr(mcp_core, "_session_token_header", lambda: {})
+    monkeypatch.setattr(
+        mcp_core,
+        "_resolve_session_key",
+        MagicMock(side_effect=AssertionError("inspection must retain strict identity")),
+    )
+    app = web.Application(
+        middlewares=[
+            token_auth.token_auth_middleware(
+                internal_paths=frozenset({path}), internal_secret=secret
+            )
+        ]
+    )
+    app["state"] = state
+    app.router.add_get(path, h.api_session_monitor_get)
+    try:
+        async with TestClient(TestServer(app), timeout=ClientTimeout(total=5)) as client:
+            monkeypatch.setattr(
+                mcp_core,
+                "_resolve_api_target",
+                lambda: (str(client.make_url("/")).rstrip("/"), ""),
+            )
+            response = await client.get(
+                path, headers={"X-Internal-Secret": secret, "X-Session-Key": channel}
+            )
+            payload = await response.json()
+            if ownership == "alias_only":
+                assert response.status == 200
+                if shape == "structured":
+                    assert payload["monitor_id"] == retained.id
+                    assert payload["monitor"]["target"] == retained.monitor.target
+                else:
+                    reading = payload["autonudge_loop"]
+                    assert reading["id"] == retained.id
+                    if shape == "goal":
+                        assert reading["goal_id"] == retained.id
+                        assert reading["generation"] == 7
+                        assert reading["goal"] == dataclasses.asdict(retained.goal)
+                    else:
+                        assert "goal" not in reading
+                        assert "message" not in reading
+            else:
+                assert response.status == 409
+                assert set(payload) == {"error", "code"}
+                assert payload["code"] == "ambiguous_session_automation"
+                assert "multiple automation records" in payload["error"]
+                assert "Private retained" not in json.dumps(payload)
+                assert retained.id not in json.dumps(payload)
+                assert other.id not in json.dumps(payload)
+            assert foreign.id not in json.dumps(payload)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(control.monitor_inspect, "monitor_inspect", {}), 10
+            )
+            if ownership == "alias_only":
+                assert json.loads(result) == control._compact_monitor_inspection(payload)
+            else:
+                assert result.startswith("Error:")
+                assert payload["error"] in result
+                assert "autonudge_loop" not in result
+                assert retained.id not in result
+                assert other.id not in result
+        assert service._serialize_state() == before
+        assert await asyncio.to_thread(service._path.read_bytes) == persisted
+    finally:
+        service.stop()
 
 
 @pytest.mark.asyncio

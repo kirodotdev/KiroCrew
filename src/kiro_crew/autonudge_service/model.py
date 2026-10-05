@@ -17,6 +17,10 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
+from kiro_crew.goal import (
+    GOAL_CONTINUATION_DELAY_SECS,
+    GoalState,
+)
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState, retained_outcome_blocks_rearm
 
 #: ``stopped_reason`` for a loop whose watched subject finished (a merged or
@@ -535,7 +539,8 @@ class NudgeLoop:
     # was armed under the old rule, which admitted no self-arm.
     self_armed: bool = False
     # Monotonic per-loop CONFIG generation. Advanced by ``_update_unserialized``
-    # ONLY on a real configuration change (a changed ``message``) or a revival
+    # on a real configuration change (a changed ``message``), goal metadata,
+    # or a revival
     # (inactive -> active), never by internal timer/cycle bookkeeping. Captured
     # at fire time and compared atomically (under the service ``_lock``) before a
     # structural-terminal stop is applied, so a stale completion of an OLD
@@ -545,6 +550,14 @@ class NudgeLoop:
     # concurrency framework. Absent in a store written before this field ->
     # decodes to 0, and a first fire simply captures 0.
     config_generation: int = 0
+    goal: GoalState | None = None
+
+    @property
+    def continuation_delay(self) -> int:
+        """Ready goal work can continue promptly; watches retain their cadence."""
+        if self.goal is not None and self.goal.status == "working":
+            return GOAL_CONTINUATION_DELAY_SECS
+        return self.idle_secs
 
 
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
@@ -580,6 +593,8 @@ def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool
     trips the budget — there is no anchor to measure from, and guessing one
     could kill a healthy loop on its first cycle after an upgrade.
     """
+    if loop.goal is not None and loop.goal.status == "suggested":
+        return False
     if not loop.max_runtime_secs or not loop.created_ts:
         return False
     return (now if now is not None else time.time()) - loop.created_ts >= loop.max_runtime_secs
@@ -679,3 +694,7 @@ def nudge_cycle_header(loop: "NudgeLoop", now: float | None = None) -> str:
     if not parts:
         return tag
     return f"{tag}\n[patrol budget: {', '.join(parts)}{'; 10% or less left' if due else ''}]"
+
+
+class GoalUpdateConflict(ValueError):
+    """A generic mutation conflicts with the goal's objective or final state."""

@@ -1926,6 +1926,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # before they are held in memory or written to the gateway log or the
         # stop file under ``logs/``. Local diagnostics, not an egress pass.
         "autonudge_stop_log.py",
+        # Goal text is scrubbed while validating the retained state, before its
+        # field bounds apply. This helper owns no transport; the existing loop
+        # serializer and gateway broadcast serve the resulting state.
+        "goal.py",
         # Inbound structured-monitor target validation. A canonical provider URL
         # is rejected when its path contains credential-shaped text, before the
         # target reaches persistence, inspection, or a wake envelope.
@@ -1998,7 +2002,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # raw pending text never matched and the consumed steer got requeued and
         # run twice. Nothing redacted here is written or shown — the ledger and
         # the transcript keep the original text.
-        "dashboard/steer_settle.py",
+        "steer_settle.py",
+        # Delegates that comparison redaction to the backend's single source.
+        # The driver returns the key to the matcher; it does not emit the text.
+        "agent_sdk/drivers/acp.py",
         # DETECTOR, not a redactor: the pre-push content scan calls both scanners only
         # to COUNT findings and then refuses the push. It deliberately discards the
         # cleaned text — rewriting a code diff would corrupt the very fix the gate

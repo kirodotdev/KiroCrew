@@ -14,6 +14,7 @@ differ by a known sign, which back-to-back store writes cannot guarantee.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew import work_ledger as wl
 from kiro_crew.dashboard.handlers import work_ledger as wlh
 from kiro_crew.dashboard.handlers import work_ledger_board as board
+from kiro_crew.goal import GOAL_PAUSE_UNSAVED_MESSAGE
 
 CONDUCTOR = "chat-1-conductor"
 OTHER_CONDUCTOR = "chat-9-other-conductor"
@@ -466,6 +468,73 @@ async def test_an_unreachable_worker_is_audited_as_a_failure(monkeypatch, _audit
     outcome, resources = _audits[-1]
     assert outcome == "failure"
     assert "remote_stop_unreachable" in resources
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stop_ok,compacting",
+    [(True, False), (False, False), (True, True)],
+    ids=["stopped", "unreachable", "compaction-declined"],
+)
+async def test_stop_preserves_unsaved_goal_warning_without_exposing_session_keys(
+    monkeypatch, _audits, stop_ok, compacting
+):
+    """Pause persistence is reported separately from the worker Stop outcome."""
+
+    async def _unsaved_pause(state, slot, *, source="dashboard", escalate=True):
+        return {
+            "ok": stop_ok,
+            "compacting": compacting,
+            "code": "remote_stop_unreachable",
+            "goal_pause_saved": False,
+            "warning": f"private details for {CONDUCTOR} and {WORKER}",
+            "chat_key": WORKER,
+            "worker_session_key": WORKER,
+        }
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers.stop_slot_turn", _unsaved_pause, raising=True
+    )
+    item_id = _orphaned_item()
+    body, response = await asyncio.wait_for(
+        _act(_state({WORKER: _slot(running=True)}), CONDUCTOR, item_id, "stop"),
+        timeout=10,
+    )
+
+    assert response.status == 200
+    assert body == {
+        "ok": stop_ok and not compacting,
+        "action": "stop",
+        "item_id": item_id,
+        "goal_pause_saved": False,
+        "warning": GOAL_PAUSE_UNSAVED_MESSAGE,
+    }
+    raw = response.body.decode()
+    assert CONDUCTOR not in raw
+    assert WORKER not in raw
+    assert "worker_session_key" not in raw
+    assert _audits[-1][0] == ("ok" if stop_ok and not compacting else "failure")
+    if compacting:
+        assert "compacting" in _audits[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_stop_declined_during_compaction_is_unconfirmed(monkeypatch, _audits):
+    """An HTTP 200 decline must not clear the row's retained pause-save warning."""
+
+    async def declined(state, slot, *, source, escalate):
+        assert source == "crew_board" and escalate is False
+        return {"ok": True, "info": "compacting", "compacting": True}
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", declined)
+    item_id = _orphaned_item()
+    body, response = await asyncio.wait_for(
+        _act(_state({WORKER: _slot(running=True)}), CONDUCTOR, item_id, "stop"), 10
+    )
+    assert response.status == 200
+    assert body == {"ok": False, "action": "stop", "item_id": item_id}
+    assert _audits[-1][0] == "failure"
+    assert "compacting" in _audits[-1][1]
 
 
 @pytest.fixture

@@ -89,7 +89,7 @@ from kiro_crew.messaging.queue_receipt import (
     receipt_address_key,
 )
 from kiro_crew.messaging.session_resume import refused_resume_is_restricted
-from kiro_crew.messaging.upload_gate import session_is_restricted
+from kiro_crew.messaging.upload_gate import live_dashboard_slot, session_is_restricted
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import person_priority
@@ -361,6 +361,9 @@ class TeamsDispatcher:
         # answered and resolve an option chip against the labels that turn
         # actually offered. Read by _handle_card_action.
         self._active_renderers: dict[str, TeamsRenderer] = {}
+        # Match the session's lease owner, including peer-woken drains and
+        # post-stream persistence. Choice renderers can outlive that ownership.
+        self._executing_turn_tasks: set[asyncio.Task[Any]] = set()
         # Owner-only dashboard-session picker + the durable resume binding. Constructed
         # here (not in the gateway) so `handle_message` can route every message through
         # it; the gateway only attaches `dashboard_state` afterwards.
@@ -567,7 +570,10 @@ class TeamsDispatcher:
         # the single-decision shape exists to prevent.
         session_key = route.resumed_key or self._session_key(email)
         if self.sessions.is_busy(session_key):
-            await self._handle_busy(inbound, session_key, text, override_mode)
+            if route.resumed_key and session_key.startswith("dashboard:"):
+                await self._handle_resumed_busy(inbound, session_key, text, override_mode)
+            else:
+                await self._handle_busy(inbound, session_key, text, override_mode)
             return
 
         # Attachments are downloaded HERE -- after the governance gate, after the
@@ -669,6 +675,9 @@ class TeamsDispatcher:
         self._bind_origin_mirror(session_key, inbound)
 
         self._active_renderers[session_key] = renderer
+        turn_task = asyncio.current_task()
+        if turn_task is not None:
+            self._executing_turn_tasks.add(turn_task)
         try:
             await drive_turn(
                 ChannelTurn(
@@ -713,6 +722,8 @@ class TeamsDispatcher:
                 ctx_builder=self.ctx_builder,
             )
         finally:
+            if turn_task is not None:
+                self._executing_turn_tasks.discard(turn_task)
             # An approval window the driver never awaited -- the card went out and
             # the turn then ended before the decider -- has no wait of its own to
             # close it, so it would outlive this turn with its nonce still armed
@@ -735,6 +746,96 @@ class TeamsDispatcher:
         # released so the drained turn can acquire it.
         if drain:
             await self._drain_queue(session_key, inbound)
+
+    async def _handle_resumed_busy(
+        self,
+        inbound: "TeamsInbound",
+        session_key: str,
+        text: str,
+        override_mode: str | None,
+    ) -> None:
+        """Route a resumed session's input through its current turn owner."""
+        # Deferred: channel dispatchers are imported during dashboard boot.
+        from kiro_crew.dashboard.channel_handoff import (
+            HANDOFF_STEERED,
+            QUEUED_BY_CLOSE,
+            RAN_ON_SUCCESSOR,
+            REFUSED_ATTACHMENTS,
+            REFUSED_MOVED,
+            REFUSED_QUEUE_FULL,
+            REFUSED_UNSAVED_CLOSE,
+            hand_to_resumed_slot,
+        )
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        state = getattr(self._session_resume, "dashboard_state", None)
+        slot = live_dashboard_slot(state, session_key)
+        if (
+            self._executing_turn_tasks
+            and slot is not None
+            and getattr(slot, "executor", None) == "local"
+            and getattr(slot, "is_closing", True) is False
+            and effective_session_key(slot) == session_key
+        ):
+            session = self.sessions._sessions.get(self.sessions._fold_key(session_key))
+            owner = getattr(session, "turn_owner", None)
+            if owner in self._executing_turn_tasks and not owner.done():
+                await self._handle_busy(inbound, session_key, text, override_mode)
+                return
+
+        outcome = await hand_to_resumed_slot(
+            state,
+            session_key,
+            text,
+            mode=override_mode or self._live_cfg().messaging.queue_mode,
+            has_attachments=bool(inbound.attachments),
+            channel_type=_CHANNEL,
+            conversation_id=inbound.conversation_id,
+            principal=self._identity(inbound),
+        )
+        if outcome.refused:
+            if outcome.reason == REFUSED_ATTACHMENTS:
+                reply = (
+                    "⏳ That session is busy, and a message with attachments cannot wait in its "
+                    "queue. Send it again once the turn finishes."
+                )
+            elif outcome.reason == REFUSED_MOVED:
+                reply = (
+                    "⏳ That session changed while your message was in flight, so it was NOT "
+                    "delivered. Send it again."
+                )
+            elif outcome.reason == REFUSED_QUEUE_FULL:
+                reply = (
+                    "⏳ That session's queue is full, so this message was NOT added. "
+                    "Send it again once some of the waiting messages have run."
+                )
+            elif outcome.reason == REFUSED_UNSAVED_CLOSE:
+                reply = (
+                    "⏳ That session closed while your message was in flight, and the message "
+                    "had not been saved with it yet. If it does not run once the session is "
+                    "reopened, send it again."
+                )
+            else:
+                reply = (
+                    "⏳ That session is busy with a turn started elsewhere. "
+                    "Send it again once it finishes, or `/unlink` to go back to "
+                    "your own conversation."
+                )
+        elif outcome.kind == HANDOFF_STEERED:
+            reply = f"{STEER_ACK_EMOJI} Folded into the reply in progress."
+        elif outcome.reason == QUEUED_BY_CLOSE:
+            reply = (
+                "⏳ Queued for that session — it closed while your message was in flight; "
+                "the message runs when the session is next resumed."
+            )
+        elif outcome.reason == RAN_ON_SUCCESSOR:
+            reply = (
+                "✅ Delivered to that session — it was reopened while your message was in "
+                "flight, and the message ran there as its own turn."
+            )
+        else:
+            reply = "⏳ Queued for that session — it runs when the current turn finishes."
+        await self._reply(inbound, reply)
 
     async def _handle_busy(
         self,
@@ -1216,6 +1317,7 @@ class TeamsDispatcher:
         await stop_running_turn(
             self.sessions,
             resumed_key or self._session_key(self._identity(inbound)),
+            goal_state=getattr(self, "dashboard_state", None),
             queue=self._queue,
             surface=self._receipt_surface(inbound),
             owner=_entry_owner(inbound),

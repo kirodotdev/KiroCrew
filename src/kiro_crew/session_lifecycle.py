@@ -22,6 +22,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from kiro_crew import goal_actions
 from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
     identity_stamp_mismatch,
@@ -2897,6 +2898,8 @@ class SessionLifecycleService:
         preserve_queue: bool = False,
         on_soft: Callable[[], Awaitable[None]] | None = None,
         on_hard: Callable[[], Awaitable[None]] | None = None,
+        goal_state: Any = None,
+        pause_goal: bool = False,
     ) -> StopOutcome:
         """Cooperatively stop a turn, escalating to reset and eager respawn."""
         owner = self._owner
@@ -2918,11 +2921,26 @@ class SessionLifecycleService:
         # gap has no session yet still owes the record, or the replay that
         # follows would run the prompt this Stop was aimed at.
         self.note_stop(key)
+
+        # Before the pause write awaits, so a message admitted during it survives.
+        if session and not preserve_queue:
+            owner.clear_queue(key)
+        # The permit's count tells the turn running now from one admitted while the
+        # pause saves (``TurnPermit``).
+        permit = getattr(session, "semaphore", None)
+        taken = getattr(permit, "acquisitions", 0)
+        # Queue preservation also serves explicit Stops that retain other
+        # senders' work. Only a plain queue handover leaves goal pursuit active.
+        # The compaction refusal above must precede this durable mutation.
+        if pause_goal or force or not preserve_queue:
+            await goal_actions.pause_session_goal(key, state=goal_state)
         if not session:
             return "idle"
+        if permit is not None and permit.locked() and getattr(permit, "acquisitions", 0) != taken:
+            # Admitted while the pause saved: newer intent than this Stop.
+            logger.info("stop_turn outcome=idle session=%s (a newer turn began)", key)
+            return "idle"
 
-        if not preserve_queue:
-            owner.clear_queue(key)
         budget: float = owner._cfg.agent.soft_stop_budget_secs
         t0 = self._deps.monotonic()
 

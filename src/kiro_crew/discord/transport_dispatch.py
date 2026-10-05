@@ -77,6 +77,7 @@ from kiro_crew.messaging.commands import (
 )
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
+    GoalSteerState,
     admit_inbound_callback,
     build_auto_approve,
     build_directive_consumer,
@@ -501,6 +502,7 @@ class DiscordDispatcher:
         self._queue = ReceiptQueue()
         # session_key -> the running turn's renderer (for steer chips).
         self._active_renderers: dict[str, DiscordRenderer] = {}
+        self._goal_steers: dict[str, GoalSteerState] = {}
         # channel_id -> (lock, in-flight deciders); dropped when the last one leaves.
         self._routing_locks: dict[str, tuple[asyncio.Lock, list[int]]] = {}
         # A message in governance predates a refusal but is not a decider yet.
@@ -616,6 +618,7 @@ class DiscordDispatcher:
         (pre-provenance) presses are refused at the interaction boundary in
         :meth:`on_interaction`, never dispatched here.
         """
+        _goal_self_wake = turn_ceiling.generated_turn_pending()
         assert self.client is not None, "DiscordDispatcher.client must be set"
         monitor_result = (
             MonitorDispatchResult.UNAVAILABLE if monitor_completion is not None else None
@@ -637,7 +640,13 @@ class DiscordDispatcher:
                 self._routing_checks.pop(channel_id)
         if not permitted:
             logger.info("discord inbound dropped: denied by channels governance policy")
-            return monitor_result
+            # A standing refusal, not a busy session: retrying it cannot succeed
+            # until the policy changes, so a goal wake hears UNAVAILABLE too.
+            return (
+                MonitorDispatchResult.UNAVAILABLE
+                if monitor_completion is None and _goal_self_wake
+                else monitor_result
+            )
         user_id = msg.user_id
         thread_id = msg.thread_id or ""
         scope_id = self._scope_id(user_id, thread_id)
@@ -673,7 +682,11 @@ class DiscordDispatcher:
             route=inbound_route,
             restricted=(True if monitor_completion is not None else _refused_turn_restricted),
         ):
-            return MonitorDispatchResult.BUSY if monitor_completion is not None else None
+            return (
+                MonitorDispatchResult.BUSY
+                if monitor_completion is not None or _goal_self_wake
+                else None
+            )
 
         # Attachments make this a content-bearing turn, not a control command.
         # Otherwise a caption such as ``!help`` would intercept before ingestion
@@ -835,10 +848,10 @@ class DiscordDispatcher:
                 # press-specific remedy instead of the typed-message one.
                 await self.client.send_message(channel_id, _BUSY_OPTIONS_REFUSAL)
                 return monitor_result
-            if monitor_completion is not None:
+            if monitor_completion is not None or _goal_self_wake:
                 # This is the dispatcher's concurrency boundary. A synthetic
-                # monitor wake must retry its durable claim, never steer or
-                # queue itself into an unrelated in-flight turn.
+                # wake must retry through its loop, never steer or queue itself
+                # into human work that would replay it without its provenance.
                 return MonitorDispatchResult.BUSY
             if resumed_key is not None:
                 # NOT `_handle_busy`: that queues into THIS dispatcher's queue,
@@ -851,7 +864,9 @@ class DiscordDispatcher:
                 # stays for the cases the slot cannot take.
                 await self._handle_resumed_busy(session_key, msg, text, override_mode)
                 return monitor_result
-            await self._handle_busy(session_key, msg, text, override_mode)
+            await self._handle_busy(
+                session_key, msg, text, override_mode, human_request=not _goal_self_wake
+            )
             return monitor_result
 
         if monitor_completion is None:
@@ -1012,6 +1027,7 @@ class DiscordDispatcher:
         # Bound before the try so the except branch can read what the driver had
         # accumulated when run() raised; None until the turn reaches the driver.
         driver: TurnDriver | None = None
+        goal_steers = GoalSteerState()
 
         # Everything acquire-dependent runs INSIDE the try so the finally
         # always finalizes the renderer; release() is gated on _acquired.
@@ -1201,6 +1217,8 @@ class DiscordDispatcher:
                     raise _MonitorGenerationChanged
                 self.sessions.begin_turn(session_key)
 
+            if _goal_self_wake:
+                self._goal_steers[session_key] = goal_steers
             driver = TurnDriver(
                 provider,
                 out_renderer,
@@ -1223,8 +1241,14 @@ class DiscordDispatcher:
                 # turn's session key (dashboard-only directives stay refused
                 # for channel sessions).
                 directive_consumer=build_directive_consumer(
-                    session_key=session_key, sessions=self.sessions, dispatcher=self
+                    session_key=session_key,
+                    sessions=self.sessions,
+                    dispatcher=self,
+                    human_request=not _goal_self_wake,
+                    self_wake=_goal_self_wake,
+                    goal_steers=goal_steers,
                 ),
+                on_steer_consumed=goal_steers.consume,
                 audit_session_key=session_key,
                 audit_agent=agent or "kirocrew",
                 closing_gate=(
@@ -1556,6 +1580,8 @@ class DiscordDispatcher:
                     exc_info=True,
                 )
             self._active_renderers.pop(session_key, None)
+            if self._goal_steers.get(session_key) is goal_steers:
+                self._goal_steers.pop(session_key)
             if _acquired:
                 self.sessions.release(session_key)
             await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
@@ -1660,6 +1686,8 @@ class DiscordDispatcher:
         msg: InboundMessage,
         text: str,
         override_mode: str | None,
+        *,
+        human_request: bool = True,
     ) -> None:
         """A message arrived mid-turn: steer the running turn or queue it."""
         assert self.client is not None
@@ -1672,11 +1700,14 @@ class DiscordDispatcher:
             # dispatcher for the post-turn-bookkeeping race rationale).
             has_active = getattr(provider, "has_active_turn", None)
             live = has_active is None or bool(has_active())
+            goal_steers = self._goal_steers.get(session_key) if human_request else None
             steered = bool(
                 live
                 and getattr(provider, "supports_steer", False)
                 and steer is not None
-                and await steer(text)
+                and await (
+                    goal_steers.steer(provider, text) if goal_steers is not None else steer(text)
+                )
             )
             if steered:
                 r = self._active_renderers.get(session_key)
@@ -2013,6 +2044,7 @@ class DiscordDispatcher:
         await stop_running_turn(
             self.sessions,
             resumed_key or self._session_key(user_id, thread_id),
+            goal_state=getattr(self, "dashboard_state", None),
             queue=self._queue,
             surface=self._receipt_surface(channel_id),
             owner=_entry_owner(

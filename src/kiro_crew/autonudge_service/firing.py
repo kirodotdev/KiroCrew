@@ -53,7 +53,7 @@ logger = logging.getLogger("kiro_crew.autonudge")
 
 async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = None) -> None:
     try:
-        await asyncio.sleep(loop.idle_secs if delay is None else delay)
+        await asyncio.sleep(loop.continuation_delay if delay is None else delay)
     except asyncio.CancelledError:
         return
     if shutdown_event.is_set():
@@ -334,7 +334,7 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
         # in-flight tick.
         if loop.active and loop.id in self._loops:
             now = time.time()
-            fresh = now + loop.idle_secs
+            fresh = now + loop.continuation_delay
             if pushed and loop.next_due_ts > now:
                 # A tick a worker's push brought forward is EXTRA. Re-arming it at a
                 # full interval from now would move a deadline that was still ahead

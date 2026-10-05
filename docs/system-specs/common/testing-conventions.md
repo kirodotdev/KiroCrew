@@ -43,6 +43,14 @@ valid member or template identity. Session context doubles implement the async
 `memory_mode_for_session()` accessor and return a concrete retention mode.
 Session-start collector tests declare their
 MCP roster explicitly rather than inheriting the installed agent's tools.
+`SessionManager.stop_turn` doubles declare `goal_state` and `pause_goal` explicitly
+when their callers supply them. Assert the exact dashboard-state identity,
+including the keyword's presence when the expected value is `None`, and
+`pause_goal=True` for explicit Stops that preserve queued messages. Plain queue
+handovers leave that option unset; forced Stops pause through `force=True`.
+Preserve the soft/hard callbacks and their existing behavior assertions instead
+of accepting `**kwargs`. Thread-owner lookup doubles return a concrete session key
+or `None`; an unconfigured mock must not become a Stop marker key.
 
 ```python
 @pytest.mark.asyncio

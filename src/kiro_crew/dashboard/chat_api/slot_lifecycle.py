@@ -156,7 +156,9 @@ async def _restore_slot_nudge_loop(
     here instead: a failed close must not buy unattended cycles the user never
     granted. A loop whose cycle cap or wall-clock budget is already spent is not
     restored at all (it was one tick from terminal), and neither is a paused one
-    — reviving that would override an explicit stop.
+    — reviving that would override an explicit stop. An inactive typed goal is
+    the exception to the second rule: its record comes back unchanged and still
+    inactive, because the close removed it durably and nothing else rebuilds it.
     """
     if loop is None:
         return
@@ -185,6 +187,20 @@ async def _restore_slot_nudge_loop(
                 )
         return
     if not loop.active:
+        if getattr(loop, "goal", None) is None:
+            return
+        # A saved suggestion or paused goal is a record, not a running clock:
+        # put it back as it was, without reviving it.
+        try:
+            from kiro_crew import autonudge  # circular, as below
+
+            svc = autonudge.get_instance()
+            if svc is not None:
+                await svc.restore_goal_after_failed_session_close(
+                    loop, admission_check=admission_check
+                )
+        except Exception:
+            logger.warning("goal restore after failed slot close failed", exc_info=True)
         return
     try:
         from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
@@ -220,6 +236,7 @@ async def _restore_slot_nudge_loop(
             # good.
             banner=loop.banner,
             admission_check=admission_check,
+            goal=loop.goal,
         )
     except Exception:
         # Same wedged disk that failed the persist most likely fails this write

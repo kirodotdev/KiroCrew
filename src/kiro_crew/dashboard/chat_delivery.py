@@ -745,9 +745,13 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
-    slot._steer_user_origin.pop(message, None)
-    slot._steer_channel_origin.pop(message, None)
-    slot._steer_admissions.pop(message, None)
+    # A written steer is still pending until the turn confirms consumption.
+    # Settlement needs its ingress provenance, and a requeue needs the original
+    # admission; neither may be inferred from the slot after the write returns.
+    if not still_registered:
+        slot._steer_user_origin.pop(message, None)
+        slot._steer_channel_origin.pop(message, None)
+        slot._steer_admissions.pop(message, None)
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
     # turn-end requeue stamping it on the queue entry too would put one decision on

@@ -559,11 +559,13 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     countdown from now, and the assignment is persisted through a
     supervised background write so a restart resumes this countdown
     rather than restarting the interval. A deadline still in the future
-    resumes with exactly the remaining time; only one already in the past
-    fires after a short beat (``_OVERDUE_REARM_SECS``) rather than
-    instantly, so a user mid-conversation keeps deferring it simply by
-    sending another message. The delay is capped at ``idle_secs`` so a
-    clock jump can never park the timer beyond one full interval.
+    resumes with the remaining time, capped at ``continuation_delay``.
+    An overdue deadline waits for the smaller of ``_OVERDUE_REARM_SECS``
+    and ``continuation_delay`` rather than firing instantly, so a user
+    mid-conversation keeps deferring it by sending another message.
+    Working goals use a one-second continuation delay; other loops retain
+    their configured idle interval. The cap also prevents a clock jump
+    from parking the timer beyond one full interval.
 
     A monitor loop arms through this same path and on the same deadline. Its
     cadence is the interval the user already set, not a second clock on the
@@ -597,15 +599,15 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         return
     now = time.time()
     if loop.next_due_ts <= 0:
-        loop.next_due_ts = now + loop.idle_secs
+        loop.next_due_ts = now + loop.continuation_delay
         if loop.monitor is not None:
             loop.monitor.next_probe_at = loop.next_due_ts
         self._persist_soon()
     remaining = loop.next_due_ts - now
     if remaining <= 0:
-        delay = float(seams._OVERDUE_REARM_SECS)
+        delay = float(min(seams._OVERDUE_REARM_SECS, loop.continuation_delay))
     else:
-        delay = min(remaining, float(loop.idle_secs))
+        delay = min(remaining, float(loop.continuation_delay))
     self._arm_timer(loop, delay=delay)
 
 

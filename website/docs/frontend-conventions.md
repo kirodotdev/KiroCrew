@@ -93,6 +93,82 @@ Other shared modules:
 - `ColumnResizer.tsx` + `hooks/useTableColumnWidths` (the drag grip on a TABLE
   column) — see below
 
+### Composer goal suggestions
+
+`SessionAutomationPopover` keeps one mounted trigger as a saved, inactive
+`suggested` goal becomes a started goal. Its single instance stays in a separate
+row above the composer text input for empty, manual-loop, watch and typed-goal
+states. The row sits outside the manually resized input wrapper, inside the same
+animated Glass dock, so its height does not consume the saved input height and it
+collapses with the composer. That row holds only the details trigger and the
+suggestion's Start or Refresh status action, and yields that action to the open
+details card so each layout shows one Start. Goal status wraps within the available
+width; the bottom toolbar keeps its controls on their own row without
+goal-specific wrapping.
+The suggestion asks “Keep working until this is verified?” beside its clickable
+objective and explicit Start action. A wrapping caption inside the trigger shows
+the saved step limit before Start, using locale-aware numbers; zero reads as no
+step limit. Goal copy calls one automatic continuation a step and never a turn,
+which elsewhere means a chat turn. The help in goal details says in task words
+what Start does and that approvals work as in chat. The strip's caption says it
+too, before the details are opened: work continues in this chat, one visible reply
+per step, until it shows its completion criteria are met, then the step limit.
+Both tell users before Start that they can pause it at any time; neither promises
+a Stop the card does not offer. Start
+keeps its action label and references the caption as its accessible description.
+Opening the objective shows its scope, completion criteria and saved continuation
+cycle limit; runtime appears only when the saved value is positive. The details
+scroll within the smaller of their existing height cap and Radix’s available
+height, with an 8px collision gutter, so the popup stays inside the viewport and
+all goal content and controls remain reachable. There is no
+money estimate or implied permission grant. Rendering, opening details and changing
+recognition never start a goal. Start uses the existing owner resume request with
+the displayed goal's generation; a missing generation requires a read and a
+separate click. Dismiss beside Start removes the suggestion at that generation
+without starting it; it appears only once the generation is known, and a refusal
+keeps the suggestion with its own notice. Start is the primary button and
+Dismiss its only peer; "Watch a pull request instead" is a secondary path, so it
+sits below them as a link rather than a third button. Existing started-goal Pause, Resume and
+refusal notices remain; Retry saving pause carries a retry icon, not Pause's.
+A waiting goal's help names the in-progress operation it waits on, so it reads
+apart from a working goal's chat-steering help. The details card fades its top
+or bottom edge while content is hidden past it.
+Pause and Retry saving pause treat Stop replies marked `compacting: true` as
+declined, retain the current goal state and show the existing action-failure
+notice; unsaved-pause warnings continue to come from the goal snapshot.
+Approval-timeout help locates the tool approval in chat. The Board's pause-save
+retry hint connects its Stop action to stopping the current turn, pausing the goal
+and retrying the save while keeping the session open. A failed Stop retry
+and its retained pause-save warning share one notice; the message preserves their
+paragraph breaks while long lines still wrap.
+
+The popup's reversible `monitoring.goal_suggestions` toggle uses the shared
+`kirocrewConfig` query and config PATCH, without polling. Recognition defaults to
+true when the loaded config omits the key. Disabling it stops new suggestions.
+Existing suggestions stay visible, so their saved record never silently occupies
+the session's automation slot. A never-started suggestion offers the existing
+watch form through “Watch a pull request instead.” Opening it writes nothing;
+Back to suggestion preserves both the saved goal and the editable watch draft.
+The form explains that starting the watch replaces the suggestion. A failed
+create retains both, and only a successful create publishes the watch. A
+concurrent Start restores the goal view, and started or paused goals offer no
+watch switch. The accepted watch reaches the shared cache before parent props
+update, so an outstanding goal response cannot republish the replaced suggestion.
+The watch form uses the same available-height bound and collision gutter as goal
+details. The details still name `/goal clear` as the explicit discard command.
+Started goals and manual `/goal` remain available. A failed config read offers
+Retry loading setting and keeps the toggle disabled; it does not remove saved-goal
+controls. Goal recovery retains its distinct Refresh status label. An ordinary
+paused goal without a saved generation shows “Goal status needs refresh” in both
+the trigger and details badge until a successful read supplies a generation,
+including zero; Resume still requires a separate click. This label does not
+describe a Pause request or replace unsaved-pause, approval, limit, input-needed
+or terminal status labels. When a finished, limited or input-needed card has no
+goal action, its local opening-focus handler focuses the labeled popover content.
+Tab still reaches the setting, Escape returns to the opener, and config or goal
+updates do not refocus the card. Cards with a goal action retain normal opening
+focus.
+
 ### User-resizable table columns
 
 A data table whose values get truncated lets the user drag its column

@@ -29,7 +29,7 @@ this consumer applies (and may refuse) after the fact.
 
 IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
 Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
-constant. ``sel`` is a genuine cycle
+constant and the goal path's dependencies. ``sel`` is a genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
 before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
 security, chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are
@@ -38,16 +38,20 @@ import from the turn loop's import graph, and they resolve the symbol at CALL
 time so patching the SOURCE module is what tests (and any runtime override)
 actually observe — a module-scope ``from X import name`` would freeze a stale
 binding and silently bypass it.
+The goal path uses module-scope imports; authorizer calls still resolve through
+the source module so those existing patch-at-source seams remain observable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 
+from kiro_crew import autonudge, autonudge_authz
 from kiro_crew.apps.builtins.auto_research.session_keys import (
     is_owned_research_slot,
 )
@@ -59,7 +63,21 @@ from kiro_crew.autonudge import (
     is_channel_key,
 )
 from kiro_crew.autonudge_judge import screen_phrase
+from kiro_crew.goal import (
+    GOAL_BLOCKED_REASON,
+    GOAL_COMPLETE_REASON,
+    GOAL_ENDED_REASON,
+    GOAL_IDLE_SECS,
+    GOAL_INPUT_REASON,
+    GOAL_TERMINAL_STATUSES,
+    GOAL_WAIT_SECS,
+    GoalState,
+    continuation_message,
+    goal_suggestions_enabled,
+)
+from kiro_crew.goal_actions import goal_loop_for_session, goal_snapshot
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.monitoring.models import MonitorCreationSurface
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
@@ -256,6 +274,7 @@ async def apply_session_directive(
     producer_is_self_wake: bool = False,
     producer_is_channel: bool = False,
     producer_wake_loop_id: str = "",
+    producer_turn_is_current: Callable[[], bool] | None = None,
 ) -> str:
     """Apply directive *kind* with *args* to *slot*/*session_key*; return a
     confirmation string for the model. Fail-soft: any error is returned as a
@@ -336,7 +355,22 @@ async def apply_session_directive(
             )
         elif producer_is_self_wake and producer_wake_loop_id and kind in _STOP_DIRECTIVES:
             _refuse_stale_wake_stop(session_key, producer_wake_loop_id)
-        if kind == "monitor_start":
+        if kind == "goal":
+            try:
+                snapshot = await apply_goal(
+                    state,
+                    session_key,
+                    args,
+                    slot=slot,
+                    human_request=producer_is_user_facing,
+                    self_wake=producer_is_self_wake,
+                    turn_is_current=producer_turn_is_current,
+                    channel=producer_is_channel,
+                )
+            except ValueError as exc:
+                raise _DirectiveDenied(f"Error: Goal not changed: {exc}") from exc
+            result = "Goal updated: " + json.dumps(snapshot, ensure_ascii=False)
+        elif kind == "monitor_start":
             result = await _monitor_start(
                 state,
                 session_key,
@@ -428,6 +462,204 @@ async def apply_session_directive(
     # failed), keeping the audit truthful for the failure paths too.
     _audit(session_key, kind, "error" if result.startswith("Error:") else "success")
     return result
+
+
+async def apply_goal(
+    state: Any,
+    session_key: str,
+    args: dict[str, Any],
+    *,
+    human_request: bool,
+    slot: Any = None,
+    self_wake: bool = False,
+    turn_is_current: Callable[[], bool] | None = None,
+    channel: bool = False,
+    max_cycles: int = 50,
+    explicit_start: bool = False,
+) -> dict[str, Any]:
+    """Apply only to the producing session, with identity checked at commit."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    service = autonudge.get_instance()
+    binding = autonudge.binding_key_for(session_key)
+    if service is None or binding is None:
+        raise ValueError("goal pursuit is unavailable for this session")
+    action = args.get("action")
+    if not (human_request or self_wake):
+        raise ValueError("only a human request or this goal's own continuation may change it")
+    if turn_is_current is not None and not turn_is_current():
+        raise ValueError("this turn was stopped; the goal was not changed")
+    current = goal_loop_for_session(state, service, binding)
+    if slot is None:
+        slot = state._slots.get(binding)
+    slot_key = slot.key if slot is not None else binding
+
+    def admitted() -> bool:
+        try:
+            current_loop = goal_loop_for_session(state, service, binding)
+        except ValueError:
+            return False
+        return (
+            (turn_is_current is None or turn_is_current())
+            and current_loop is current
+            and (
+                slot is None
+                or (
+                    state._slots.get(slot_key) is slot
+                    and autonudge.binding_key_for(effective_session_key(slot)) == binding
+                    and not bool(getattr(slot, "is_closing", False))
+                )
+            )
+        )
+
+    if action in {"start", "suggest"}:
+        if not human_request:
+            raise ValueError("automated messages cannot create a new user goal")
+        # Only the slash-command dispatcher supplies explicit_start. A model's
+        # old action='start' call remains a proposal, never spending consent.
+        starting = action == "start" and explicit_start
+        if not starting and not goal_suggestions_enabled():
+            raise ValueError("goal suggestions are disabled; use /goal to start explicitly")
+        if not starting and is_channel_key(binding):
+            raise ValueError("goal suggestions need the dashboard's Start control; use /goal here")
+        if current and (
+            current.goal is None
+            or (
+                current.goal.status not in GOAL_TERMINAL_STATUSES
+                and not (starting and current.goal.status == "suggested")
+            )
+        ):
+            raise ValueError("this session already has automation; inspect and preserve it")
+        goal = GoalState.from_dict(
+            {
+                **{key: args[key] for key in ("objective", "criteria") if key in args},
+                "status": "working" if starting else "suggested",
+            }
+        )
+        if not starting and not goal.criteria:
+            raise ValueError("a suggestion needs concise completion criteria")
+        loop, error, _ = await autonudge_authz.authorize_and_add_nudge(
+            svc=service,
+            state=state,
+            slot_key=binding,
+            message=continuation_message(goal),
+            goal=goal,
+            idle_secs=GOAL_IDLE_SECS,
+            max_cycles=max_cycles,
+            # Preserve /goal's existing cycle budget. A runtime-policy change
+            # is independent of presenting and accepting a goal.
+            max_runtime_secs=0,
+            banner=(
+                ""
+                if is_channel_key(binding)
+                else autonudge_authz.normalize_banner(
+                    goal.objective, absent_ok=True, truncate=True
+                )[0]
+            ),
+            source="goal",
+            initiator_slot_key=binding,
+            replace_existing=current is not None,
+            goal_admission_check=lambda: admitted() and (starting or goal_suggestions_enabled()),
+            creation_surface=(
+                MonitorCreationSurface.CHANNEL if channel else MonitorCreationSurface.DASHBOARD
+            ),
+        )
+        if error or loop is None:
+            raise ValueError(error or "goal could not be armed")
+        return goal_snapshot(loop)
+    if current is None or current.goal is None:
+        raise ValueError("this session has no goal to change")
+    generation = args.get("generation")
+    if (
+        args.get("goal_id") != current.id
+        or type(generation) is not int
+        or generation != current.config_generation
+    ):
+        raise ValueError("the goal changed; inspect its current identity before updating")
+    if current.goal.status in GOAL_TERMINAL_STATUSES:
+        raise ValueError("this goal has finished; a new human request may start another")
+    suggested = current.goal.status == "suggested"
+    if suggested and action not in {"update", "complete", "end"}:
+        raise ValueError(
+            "this goal is a suggestion; choose Start or use /goal to enable continuation"
+        )
+    if not current.active and not human_request:
+        raise ValueError("this goal is paused; changing it requires a human request")
+    if not human_request and ("objective" in args or "criteria" in args):
+        raise ValueError(
+            "changing a goal objective or completion criteria requires a human request"
+        )
+    goal = current.goal.revised(
+        {key: args[key] for key in ("objective", "criteria", "progress", "evidence") if key in args}
+    )
+    active = current.active
+    reason: str | None = None
+    if action == "complete":
+        if not current.active and not suggested:
+            raise ValueError("a paused goal cannot be completed by a late response")
+        goal = goal.revised({"status": "complete"})
+        active, reason = False, GOAL_COMPLETE_REASON
+    elif action == "end":
+        if not human_request:
+            raise ValueError("ending an unfinished goal requires a human request")
+        goal = goal.revised({"status": "ended"})
+        active, reason = False, GOAL_ENDED_REASON
+    elif action == "pause":
+        goal = goal.revised({"status": "paused"})
+        active = False
+    elif action == "blocked":
+        if not goal.progress:
+            raise ValueError("a blocked goal needs the reason in progress")
+        goal = goal.revised({"status": "blocked"})
+        active, reason = False, GOAL_BLOCKED_REASON
+    elif action == "resume":
+        if not human_request:
+            raise ValueError("resuming a paused goal requires a human request")
+        if (
+            current.max_cycles and current.cycle_count >= current.max_cycles
+        ) or autonudge.runtime_budget_exceeded(current):
+            raise ValueError("the goal reached a limit; review it in the goal details")
+        goal = goal.revised({"status": "working"})
+        active = True
+    elif action == "update":
+        status = args.get("status", current.goal.status)
+        if suggested and status != "suggested":
+            raise ValueError("a suggestion stays inactive until the user chooses Start")
+        if status not in {"suggested", "working", "waiting", "needs_input", "paused", "blocked"}:
+            raise ValueError("use the matching goal action for this status")
+        if not suggested and status == "suggested":
+            raise ValueError("an existing run cannot become a new suggestion")
+        if not current.active and status in {"working", "waiting"}:
+            raise ValueError("updating a paused goal does not resume it; use resume")
+        goal = goal.revised({"status": status})
+        if status == "needs_input":
+            if not goal.progress:
+                raise ValueError("state what input is needed in progress")
+            active, reason = False, GOAL_INPUT_REASON
+    else:
+        raise ValueError("unsupported goal action")
+
+    baseline = current.goal_token
+    result, error, _ = await autonudge_authz.authorize_and_update_nudge(
+        svc=service,
+        loop_id=current.id,
+        goal=goal,
+        message=continuation_message(goal),
+        banner=(
+            ""
+            if is_channel_key(binding)
+            else autonudge_authz.normalize_banner(goal.objective, absent_ok=True, truncate=True)[0]
+        ),
+        idle_secs=GOAL_WAIT_SECS if goal.status == "waiting" else GOAL_IDLE_SECS,
+        active=active,
+        stopped_reason=reason,
+        expect_fingerprint=baseline,
+        goal_admission_check=lambda: admitted() and current.config_generation == generation,
+        source="goal",
+    )
+    if error or result is None:
+        raise ValueError(error or "the goal was removed before the update committed")
+    return goal_snapshot(result)
 
 
 # ── autonudge trio ──────────────────────────────────────────────────────────
@@ -842,6 +1074,10 @@ async def _monitor_update(
     loop = svc.get_by_slot(binding)
     if not loop:
         raise _DirectiveDenied("No active monitor loop on this session to update.")
+    if getattr(loop, "goal", None) is not None:
+        raise _DirectiveDenied(
+            "Use the goal tool to manage this goal; monitor_update cannot change it."
+        )
     if not allow_rearm and not loop.active:
         # SELF-WAKE REVIVAL: a delivered wake can outlive a Stop, so a stopped
         # loop is NOT a wake's to revive -- with one exception the bound-revival
@@ -1235,12 +1471,14 @@ async def _stop_resolved_loop(
     *,
     wake_loop_id: str = "",
 ) -> str:
-    """Stop the loop bound to this session, whatever shape it holds.
+    """Stop the bound non-goal loop; typed goals require dedicated goal controls.
 
     The single implementation shared by both stop entry points, so the two can
     never route the same loop differently. Both ``autonudge_stop`` and
     ``monitor_stop`` resolve the general binding, fetch the loop, and hand it
-    here; the shape test and the routing live in one place.
+    here; the typed-goal refusal, shape test and routing live in one place.
+    Typed goals retain their objective and evidence even when paused or complete;
+    a generic stop cannot bypass the goal tool's human-only abandonment rule.
 
     Routing is asymmetric because the data model is. A structured monitor goes
     through ``authorize_and_stop_monitor``, which RETAINS a terminal record for
@@ -1252,6 +1490,11 @@ async def _stop_resolved_loop(
     agent's own explanation rides along on the removal path only). Callers that
     need a retained terminal record must be watching a structured monitor.
     """
+    if getattr(loop, "goal", None) is not None:
+        raise _DirectiveDenied(
+            "Error: Use the goal tool to manage this goal; generic stop tools cannot remove it."
+        )
+
     from kiro_crew.autonudge import is_structured_monitor_loop
 
     loop_id = loop.id

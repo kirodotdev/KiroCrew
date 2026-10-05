@@ -3553,9 +3553,9 @@ class KiroCrewConfig:
         default_factory=MonitoringConfig,
         metadata=_meta(
             "Monitoring",
-            "How a session's choice between the two monitoring paths is framed. "
-            "Neither path is gated by this section; both are armable with it at "
-            "its default.",
+            "Goal suggestions, monitor arming guidance and finite runtime limits. "
+            "Turning off goal suggestions leaves running goals, manual goals and "
+            "monitoring available.",
         ),
     )
     decisions: DecisionsConfig = field(
@@ -4299,7 +4299,7 @@ class KiroCrewConfig:
         )
         if heartbeat_default_deliver not in ("slack", "dashboard"):
             heartbeat_default_deliver = "slack"
-        # A stored document written before this key existed has no "monitoring"
+        # A document without monitoring.prefer_structured_arming may have no "monitoring"
         # object at all, and that is the case that must keep working: the miss
         # resolves to the dataclass default, which is the off position. So an
         # already-installed gateway needs nothing written to be correct here --

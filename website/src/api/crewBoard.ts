@@ -115,6 +115,9 @@ export interface CrewBoardActionResult {
   ok: boolean
   action: CrewBoardAction
   item_id: string
+  /** The current process paused pursuit, but the pause may not survive a restart. */
+  goal_pause_saved?: false
+  warning?: string
 }
 
 /** How often the browser re-reads the board. The RFC's figure: slow enough to

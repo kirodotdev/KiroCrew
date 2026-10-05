@@ -53,9 +53,11 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew import goal_actions
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid, transcript_stem
+from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -67,6 +69,7 @@ from kiro_crew.messaging.commands import (
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
+    GoalSteerState,
     admit_inbound_callback,
     build_directive_consumer,
     drive_turn,
@@ -88,15 +91,17 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
-    entries_queued_by,
+    entries_queued_at_press,
     entry_channel,
     entry_person_origin,
     owner_token,
     person_tag,
     register_drain,
     tag_entry,
+    turn_began_after_press,
 )
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
+from kiro_crew.monitoring.models import MonitorDispatchResult
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.session_lifecycle import (
@@ -409,6 +414,7 @@ class WebexDispatcher:
             self, "webex", "messaging", target="transport", name="WebexDispatcher"
         )
         self._queue = ReceiptQueue()
+        self._goal_steers: dict[str, GoalSteerState] = {}
         # Publish this drain so a peer transport that set aside one of THIS channel's
         # entries can wake it. Required for the set-aside to be a deferral rather than an
         # indefinite wait: a drain otherwise runs only from the tail of its own channel's
@@ -479,7 +485,7 @@ class WebexDispatcher:
         *,
         interpret_commands: bool = True,
         drain: bool = True,
-    ) -> None:
+    ) -> MonitorDispatchResult | None:
         """Drive one authorized inbound Webex message through TurnDriver.
 
         ``interpret_commands=False`` is used by the drain: a queued ``/new`` is
@@ -491,6 +497,7 @@ class WebexDispatcher:
         own would nest one Python frame per burst — a sustained burst would grow
         the stack without bound. The outer loop owns the pumping.
         """
+        _goal_self_wake = turn_ceiling.generated_turn_pending()
         assert self.client is not None, "WebexDispatcher.client must be set"
         # Inbound channels-governance gate (off-loop) — recheck per message so a
         # host-profile deny added after connect stops dispatch without a restart
@@ -513,7 +520,7 @@ class WebexDispatcher:
             channel_type="webex",
             route=inbound_route,
         ):
-            return
+            return MonitorDispatchResult.BUSY if _goal_self_wake else None
 
         # ── Card press intercept ──
         # A press is not a message: it carries no text, so every path below would
@@ -521,7 +528,7 @@ class WebexDispatcher:
         # text it carries, so a crafted press cannot become an instruction.
         if inbound.card_inputs is not None:
             await self._handle_card_press(inbound, permitted=permitted)
-            return
+            return None
 
         # ── @mention strip ──
         # In a group space Webex only delivers messages that @mention the bot, and
@@ -546,9 +553,11 @@ class WebexDispatcher:
         if _APPROVALS.has_pending(self._approval_key(route)):
             answered = await self._maybe_answer_approval(inbound, session_key, permitted=permitted)
             if answered:
-                return
+                return None
         if not permitted:
-            return
+            # A standing refusal, not a busy session: retrying it cannot succeed
+            # until the policy changes.
+            return MonitorDispatchResult.UNAVAILABLE if _goal_self_wake else None
         logger.info(
             "Webex inbound from %s: %d chars",
             email[:3] + "***" if email else "?",
@@ -563,7 +572,7 @@ class WebexDispatcher:
                     "ℹ️ `/queue` and `/steer` need a message after them — "
                     "e.g. `/queue also check the logs`.",
                 )
-                return
+                return None
             cmd = parse_command(text)
             if cmd == "new":
                 self._conv.bump_gen(route)
@@ -576,40 +585,40 @@ class WebexDispatcher:
                 if not saved:
                     message += "\n⚠️ The new conversation could not be saved for restart."
                 await self._reply(inbound, message)
-                return
+                return None
             if cmd == "compact":
                 self._conv.clear_awaiting(route)
                 await self._handle_compact(inbound)
-                return
+                return None
             if cmd == "help":
                 await self._reply(inbound, build_help_text())
-                return
+                return None
             if cmd == "stop":
                 await self._handle_stop(inbound)
-                return
+                return None
             if cmd == "link":
                 await self._handle_link(inbound)
-                return
+                return None
             if cmd == "unlink":
                 await self._handle_unlink(inbound)
-                return
+                return None
             if cmd == "yolo":
                 await self._handle_yolo(inbound)
-                return
+                return None
             if cmd == "dashboard":
                 await self._handle_dashboard(inbound)
-                return
+                return None
             if cmd == "model":
                 await self._handle_model(inbound)
-                return
+                return None
             if cmd == "sessions":
                 await self._handle_sessions(inbound)
-                return
+                return None
             if is_unknown_command(text):
                 # Answer with the card rather than spending a whole turn having
                 # the model explain that it does not know what "/nwe" means.
                 await self._reply(inbound, f"❓ Unknown command.\n\n{build_help_text()}")
-                return
+                return None
 
         # Busy check, then rotation, then a re-derived key -- ``resolve_pre_turn``
         # owns that sequence (messaging.pre_turn) and its ordering reasons. The
@@ -629,10 +638,12 @@ class WebexDispatcher:
             session_key_for=self._session_key,
             idle_minutes=int(self._live_cfg().messaging.idle_reset_minutes),
             daily_reset_hour=int(self._live_cfg().messaging.daily_reset_hour),
-            on_busy=lambda sk: self._handle_busy(inbound, sk, body, override_mode),
+            on_busy=lambda sk: self._handle_busy(
+                inbound, sk, body, override_mode, human_request=not _goal_self_wake
+            ),
         )
         if resolved_key is None:
-            return  # folded into the running turn
+            return MonitorDispatchResult.BUSY if _goal_self_wake else None
         session_key = resolved_key
         conversation_id = f"webex:{route}"
         # Per-conversation key for the approval + choice registries, so a
@@ -698,6 +709,14 @@ class WebexDispatcher:
 
             await surface_dispatcher_session(self)
 
+        goal_steers = GoalSteerState()
+
+        def _bind_provider(provider: Any) -> None:
+            # Publish only after this turn owns the provider's session lease.
+            if _goal_self_wake:
+                self._goal_steers[session_key] = goal_steers
+            renderer.authorize_upload_root(getattr(provider, "cwd", "") or "")
+
         try:
             await drive_turn(
                 ChannelTurn(
@@ -710,8 +729,14 @@ class WebexDispatcher:
                     # turn's session key (dashboard-only directives stay refused
                     # for channel sessions).
                     directive_consumer=build_directive_consumer(
-                        session_key=session_key, sessions=self.sessions, dispatcher=self
+                        session_key=session_key,
+                        sessions=self.sessions,
+                        dispatcher=self,
+                        human_request=not _goal_self_wake,
+                        self_wake=_goal_self_wake,
+                        goal_steers=goal_steers,
                     ),
+                    on_steer_consumed=goal_steers.consume,
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=body,
@@ -736,9 +761,7 @@ class WebexDispatcher:
                     # the session map up here: on the FIRST turn of a generation no
                     # session exists yet, so reading it early leaves uploads off
                     # for exactly that turn. Without a root they stay off.
-                    bind_provider=lambda p: renderer.authorize_upload_root(
-                        getattr(p, "cwd", "") or ""
-                    ),
+                    bind_provider=_bind_provider,
                     persist=lambda user_text, reply, is_new: self._persist_turn(
                         session_key, user_text, reply, is_new, agent
                     ),
@@ -751,6 +774,8 @@ class WebexDispatcher:
                 ctx_builder=self.ctx_builder,
             )
         finally:
+            if self._goal_steers.get(session_key) is goal_steers:
+                self._goal_steers.pop(session_key)
             # A reservation the driver never awaited (the prompt rendered, then the
             # turn failed before the decider) would otherwise outlive this turn and
             # be resolved by a stray answer to a later prompt.
@@ -763,6 +788,7 @@ class WebexDispatcher:
         # and anything queued during the turn can run now.
         if drain:
             await self._drain_queue(session_key, inbound)
+        return None
 
     async def _handle_busy(
         self,
@@ -770,6 +796,8 @@ class WebexDispatcher:
         session_key: str,
         text: str,
         override_mode: str | None = None,
+        *,
+        human_request: bool = True,
     ) -> None:
         """A message arrived mid-turn: queue it for after, or steer the turn.
 
@@ -781,6 +809,9 @@ class WebexDispatcher:
         ``has_active_turn`` (parity with Telegram/WeCom): steering a prompt that
         already ended would falsely acknowledge a merge.
         """
+        if not human_request:
+            # The loop retries generated work; a human queue cannot retain its provenance.
+            return
         if not self.sessions.is_busy(session_key):
             await self.handle_message(inbound)
             return
@@ -796,11 +827,14 @@ class WebexDispatcher:
             steer = getattr(provider, "steer", None)
             has_active = getattr(provider, "has_active_turn", None)
             live = has_active is None or bool(has_active())
+            goal_steers = self._goal_steers.get(session_key) if human_request else None
             steered = bool(
                 live
                 and getattr(provider, "supports_steer", False)
                 and steer is not None
-                and await steer(text)
+                and await (
+                    goal_steers.steer(provider, text) if goal_steers is not None else steer(text)
+                )
             )
             if steered:
                 await self._reply(inbound, "⏳ Folded into the reply in progress.")
@@ -1582,19 +1616,28 @@ class WebexDispatcher:
         # between an abandoned attempt and its replay still counts (see
         # ``note_user_stop``).
         note_user_stop(self.sessions, session_key)
+
+        goal_state = getattr(self, "dashboard_state", None)
+        pressed = entries_queued_at_press(self.sessions, session_key, owner)
+        pressed_lines = self._queue.lines_queued_by(session_key, owner)
+        began_after_press = turn_began_after_press(self.sessions, session_key)
+        await goal_actions.pause_session_goal(session_key, state=goal_state)
         cancelled_turn = False
-        if force:
+        # A turn that began while the pause saved is newer intent; it keeps running.
+        newer_turn = began_after_press()
+        hard = force and not newer_turn
+        if hard:
             try:
                 # The reset is this member's, the queue is the whole space's: the
                 # hard stop pops the session and its queue, so the other members'
                 # entries are carried to the successor and only this member's are
                 # dropped (``force_stop_keeping_others``).
                 cancelled_turn = await force_stop_keeping_others(
-                    self.sessions, session_key, entries_queued_by(owner)
+                    self.sessions, session_key, pressed
                 )
             except Exception:
                 logger.warning("Webex /stop: force stop failed for %s", session_key, exc_info=True)
-        elif self.sessions.is_busy(session_key):
+        elif not newer_turn and self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)
             # ``cancel`` is declared on the LLMProvider ABC, so the guard is for
             # a session with no live provider, not for a provider missing it.
@@ -1608,15 +1651,14 @@ class WebexDispatcher:
             # On the forced repeat the helper already dropped this member's
             # press-time entries and carried the rest; a second clear here would
             # take a message the same member sent during the stop's awaits.
-            if not force:
-                self.sessions.clear_queue(session_key, entries_queued_by(owner))
+            if not hard:
+                self.sessions.clear_queue(session_key, pressed)
             await self._queue.finish_cancelled_locked(
-                session_key, self._receipt_surface(inbound), owner
+                session_key, self._receipt_surface(inbound), owner, pressed_lines
             )
-        await self._reply(
-            inbound,
-            "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared.",
-        )
+        reply = "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared."
+        warning = goal_actions.goal_pause_warning(session_key, state=goal_state)
+        await self._reply(inbound, f"{reply}\n\n{warning}" if warning else reply)
 
     def _origin_mirror_link(self, room_id: str) -> ChannelLink:
         """The mirror location for the room a conversation is being read in.

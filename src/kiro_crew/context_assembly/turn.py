@@ -420,6 +420,10 @@ def interactive_guidance(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     _interactive_guidance: list[str] = []
+    if ctx._agent_includes_crew_context(agent) and session_key:
+        _goal_guidance = ctx.goal.goal_context(session_key)
+        if _goal_guidance:
+            _interactive_guidance.append("\n\n" + _goal_guidance)
     if interactive:
         _interactive_guidance.append(
             "\n\n(If presenting choices, end with [OPTIONS: choice1 | choice2 | choice3] "

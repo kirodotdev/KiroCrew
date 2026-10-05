@@ -2020,6 +2020,20 @@ the agent and silently falls back to default.
 
 ## Monitoring runtime policy
 
+`monitoring.goal_suggestions` is a boolean that defaults to `true`. It controls
+recognition of new goal proposals from human requests. Setting it to `false`
+does not stop running goals, prevent manually created goals, or disable
+monitoring. It grants no tool permissions. Missing or malformed non-boolean
+values load as `true`; config writes must supply a JSON boolean.
+
+The field is exposed by the normal config read/write API and generated schema metadata
+without a restart requirement. Recognition and proposal authorization read it at
+the point of use through `goal_suggestions_enabled()`, which uses the live snapshot
+or loads the config before the watcher is armed. A saved preference reaches
+subsequent requests through the existing config watcher. Tests in
+`test/test_goal_suggestions_config.py` cover defaults, schema type validation,
+metadata, config API reads and save/load/live round trips.
+
 `monitoring.max_runtime_secs` is the finite wall-clock ceiling shared by monitor
 MCP tools and API mutations; it is checked when a budget is written, never
 against a persisted record on load. It defaults to 604800

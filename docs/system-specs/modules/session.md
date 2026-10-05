@@ -1442,7 +1442,7 @@ against sweep completeness, and are torn down at `close_all`.
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
 | `release(key)` | Release per-session semaphore (must call in `finally`). |
 | `cancel_current(key, *, wait_ack_timeout=0.0)` | Cancel in-flight operation without destroying session. Returns `CancelOutcome`. Default `wait_ack_timeout=0.0` preserves fire-and-forget behavior for internal callers (taskrunner, subagent, llm_helpers). |
-| `stop_turn(key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None)` | Cooperative stop with kill fallback. Returns `StopOutcome` (`"soft"`, `"hard"`, `"idle"`, or `"compacting"`). A cooperative stop on a session whose own automatic `/compact` turn holds it answers `"compacting"` BEFORE recording the Stop or clearing anything: cancelling that turn would fail the compaction and recycle the session. Otherwise records the Stop, clears the queue unless `preserve_queue`, then sends `session/cancel` and waits up to `agent.soft_stop_budget_secs`; falls back to `reset()` + eager respawn on timeout or error. `force=True` is never declined: it skips cancel and goes straight to hard kill. `on_soft`/`on_hard` callbacks fire before return. Callers with side effects of their own (a queue clear, a pending-file unlink, a task pop) probe `session_lifecycle.compaction_in_flight` first and run them only after an outcome other than `"compacting"`. |
+| `stop_turn(key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None, goal_state=None, pause_goal=False)` | Cooperative stop with kill fallback. Returns `StopOutcome` (`"soft"`, `"hard"`, `"idle"`, or `"compacting"`). A cooperative stop on a session whose own automatic `/compact` turn holds it answers `"compacting"` BEFORE recording the Stop, pausing a goal or clearing anything: cancelling that turn would fail the compaction and recycle the session. Otherwise records the Stop, pauses goals unless this is a plain queue handover, clears the queue unless `preserve_queue`, then sends `session/cancel` and waits up to `agent.soft_stop_budget_secs`; falls back to `reset()` + eager respawn on timeout or error. `pause_goal=True` identifies an explicit Stop that preserves queued messages. `force=True` is never declined and always pauses goals: it skips cancel and goes straight to hard kill. `on_soft`/`on_hard` callbacks fire before return. Callers with side effects of their own (a queue clear, a pending-file unlink, a task pop) probe `session_lifecycle.compaction_in_flight` first and run them only after an outcome other than `"compacting"`. |
 | `reset(key, *, expect_session=None, skip_if_busy=False, clear_conversation=False)` | Kill session; returns `bool` (True iff a session was actually torn down). Does NOT delete session map entry (kiro-cli file persists for future resume). Optional guards evaluated atomically under the lock with the pop, used by the RSS-recycle watchdog: `expect_session` only resets if that exact session object still occupies the key (guards against recycling a reset+recreated session on a stale off-lock RSS reading); `skip_if_busy` skips when the current session's semaphore is held so a live stream is never cut mid-turn. `clear_conversation=True` additionally clears the native resume sid in the SAME event-loop tick as the pop (entry + channel bindings survive, as in `_recycle_held`) — used by the still-critical post-compaction escalation so the overflowed conversation is not reloaded, without a delayed clear ever erasing a racing successor's sid. |
 | `discard_conversation(key)` | Kill session AND clear only the resume sid (`SessionMap.clear_sid`) — the map ENTRY survives, preserving Slack thread/channel linkage and the reverse thread→session index. The cleared sid is stashed as `discarded_sid` in the entry, so the discard is diagnosable and manually reversible (the native conversation persists on disk; only the pointer is dropped). Every path that empties `sid` in place records what it dropped, through one shared `_stash_and_clear_sid` — this discard, the provider switch, the startup prune and the per-read stale repair — because a history reader answers from that field and cannot tell which path wrote it, so a field written by only some of them holds a genuine id that is not the latest one. The next turn cold-starts a fresh native conversation instead of `session/load`-ing the old one. Used by the poisoned-conversation escalation in `chat_runner` (canary-verified backend rejection of a specific persisted conversation), by typed `IMAGE_FORMAT_UNSUPPORTED` recovery when a dashboard turn supplied no new attachment (the native history retains unsupported image bytes while the bounded Kiro Crew replay is text-only), and by the Slack / Discord / Telegram `/compact` failure recovery: the conversation is unusable but the session's channel identity must persist. This is the shape every HOUSEKEEPING teardown takes — `SessionMap.prune` refuses to delete an entry carrying a channel binding, and `_recycle_held` clears the sid for the same reason. Only an explicit user action (`destroy`) may remove a channel identity. Sits between `reset` (sid kept, resume expected) and `remove` (entry deleted, no resume). |
 | `remove(key)` | Shut down a session but PRESERVE the session map entry — the kiro-cli session files remain on disk, so a future `get_or_create` restores the conversation losslessly via `session/load`. For revivable teardown (tab close, agent switch, idle kill). Permanent deletion is `destroy(key)`. |
@@ -1543,7 +1543,9 @@ applier — a raised turn budget is in force on the next prompt.
    `SessionLifecycleState`). This runs BEFORE anything is awaited so the
    dashboard runner's end-of-turn gates -- which may run the moment the
    provider's cancel lands -- already see it; `prev_turn_cancelled` is set only
-   after the ack and is too late for them.
+   after the ack and is too late for them. Pause linked typed goals before
+   provider cancellation, unless this is a plain queue handover
+   (`preserve_queue=True`, `pause_goal=False`, `force=False`).
 2. `clear_queue(key)` — queue drop is unconditional on first press (skipped
    with `preserve_queue=True`). Passing no ownership predicate is what makes the
    drop whole-session, which is what a Stop button press means. A per-sender
@@ -1568,6 +1570,47 @@ signal (`_stop_pressed()`) treats any later change as a user Stop, next to the
 slot's in-flight state and the slot's own `_stop_generation`; every
 end-of-turn continuation gate (refusal recovery, Stop-hook continuation,
 promise-only recovery, post-compaction continuation) reads that one signal.
+Manual `/goal` dispatch carries the same live signal through its asynchronous
+authorization and store admission, so a Stop completed during either wait still
+refuses that start.
+
+`stop_turn(..., goal_state=None)` accepts the caller's existing dashboard state
+for goal lookup. Dashboard and channel Stop callers forward it; lifecycle pauses
+typed goals through the same explicit-link collection used by goal admission before
+cancelling the provider. This covers a retained exact slot-key row after trusted
+channel reconciliation. No channel alias is guessed from spelling, and
+the existing `canonical_key` shim preserves lookup after a legacy Slack key
+fold. Stop can follow an explicit link even when the channel cannot arm new
+goals. If reconciliation joins two typed goals, Stop pauses both; goal creation
+and revision still refuse to select a single owner. Goal-less watches stay
+untouched. Plain `preserve_queue=True` handovers still leave pursuit active.
+Explicit Stops that preserve queued messages pass `pause_goal=True`; a forced
+Stop also pauses goals while retaining other senders' queued work. A turn whose
+permit was taken while the pause saved is newer intent: `stop_turn` answers
+`"idle"` without cancelling or resetting it (the permit is a `TurnPermit`, which
+counts its acquisitions). The final lifecycle compaction refusal precedes goal pausing, including when compaction
+starts after a caller's precheck. A declined Stop leaves the goal and any pending
+pause-save warning unchanged; it never pauses then automatically resumes a goal.
+Stop callers retain that resolved key and captured state for their pause-save
+warning, including stopped, idle and no-session replies. A failed save still
+pauses this process, but the reply warns that a restart may lose the pause.
+Crew Board's `POST /api/crew-board/action` preserves the delegate's `ok` outcome
+except that a compaction decline is reported and audited as an unconfirmed Stop
+(`ok: false`), not a successful pause-save retry. Board retries remain
+non-escalating.
+When the delegate reports `goal_pause_saved: false`, its allowlisted reply adds
+that flag and the fixed `GOAL_PAUSE_UNSAVED_MESSAGE` together, on either `ok`
+outcome. Other replies omit both fields. Worker/session identifiers and arbitrary
+delegate warning text remain excluded.
+Loaded board rows retain an unresolved pause warning across failed Stop retries
+and failed background refreshes. A successful Stop without a pause-save warning,
+or explicit dismissal, clears the notice. Retry errors keep their own backend
+message alongside the unresolved warning. When Stop is available, the unsaved-pause
+hint names **Stop current turn** as the retry and retains its cancellation
+consequence. Failed refreshes identify retained rows or an empty board as the last
+loaded version. A 404 without loaded data stays a neutral no-ledger gap; a 404
+after a successful load keeps the backend's exact absence message alongside the
+mounted rows and unresolved pause warnings.
 
 Lifetime: the record is keyed by session key rather than stored on the
 `_Session` object, so it survives the `reset()` a hard stop performs (a flag on
@@ -2054,6 +2097,9 @@ state a close compensates is not all scoped the same way.
   ORIGINAL two rollbacks, and both are conditional on the original getting its key
   back — not on the original merely existing. The nudge loop already is, through
   `_restore_slot_nudge_loop`'s own `state.get_slot(name) is slot` admission check.
+  An inactive typed goal (a suggestion or a paused goal) comes back through
+  `restore_goal_after_failed_session_close` with its record unchanged and still
+  inactive: the close removed it durably, and `add()` would arm it.
   `notify_slot_close_undone` is coupled the same way rather than gated on
   `slot._app` alone: with a replacement on the key there is no tab to put back, so
   the dismissal DID happen for the original, and resuming the app's worker re-arms
@@ -3945,6 +3991,39 @@ session/turn/input-bound pending record. An unmatched final delivery surfaces a
 NOT-applied notice; acknowledgement alone never confirms activation. The
 subagent, caller, single-consumption and argument-matching fences still apply.
 
+The `goal` directive uses this same session-owned dispatch. Genuine human
+requests in supported sessions can save an inactive goal suggestion. Only the
+owner's Start control or the explicit manual `/goal` command enables its
+continuation. Proposal admission respects `monitoring.goal_suggestions`; disabling
+new suggestions leaves existing goals and manual controls available. A goal
+continuation can update its own progress or complete it with evidence. Proposal,
+objective or criteria revision, explicit resume, and abandonment require human
+provenance. A nonhuman
+mutation that supplies either target field is refused as a whole before any
+progress or status changes. Generic `monitor_stop` and `autonudge_stop` refuse
+typed goals; goal controls retain their ownership and generation checks.
+Pending steers retain their captured human and channel provenance and admission
+until consumption or requeue. Settlement clears all three records; a requeue
+carries them into the next turn. Channel input keeps its narrower authority even
+when it arrives during a dashboard goal turn.
+Both native and out-of-band consumers
+pass the live Stop-generation predicate; a stopped turn cannot arm or revise a
+goal after waiting for a mutation lock. Goal state survives context rollover in
+the existing auto-nudge store and is read through authenticated `monitor_inspect`.
+Slot-bearing goal directives carry the actual producing slot into commit admission,
+which rechecks its registry identity, effective session ownership and closing state.
+This includes linked channel slots whose tab name differs from the session binding;
+native channel consumers without a tab continue to use the session's existing fences.
+The `goal` tool carries mutations only, so goal inspection never passes through
+the directive refusal formatter.
+Per-turn guidance contains no retained state; continuations carry the objective
+and criteria as ordinary task text.
+An explicit Stop pauses pursuit; a queue-preserving `stop_turn` handover cancels
+the old response while keeping the goal available to the queued correction.
+Failed tab-close recovery retains the goal's full objective, criteria, progress,
+evidence and working/waiting status while restoring only its remaining cycle and
+runtime budgets. Waiting goals retain their waiting cadence; paused or exhausted
+loops are not revived by this recovery.
 
 Eight session-bound MCP tools — `monitor_start`, `monitor_update`, `autonudge_stop`, `set_project`, `suggest_followup`, `ask_question`, `reset_conversation`, `chat_tag` — used to resolve their OWN session identity (the strict sidecar resolver above) and call a loopback HTTP endpoint, which only produced a usable per-call caller when MCP-gateway **pooling** was enabled. They are now **stateless**: the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, `dashboard/chat_runner._run_chat`'s `EVENT_TOOL_RESULT` handler, decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session, so no per-process identity source is needed.
 

@@ -2766,6 +2766,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # cannot open an unattended path -- it only changes which of the two the
     # monitor tool descriptions name as the default.
     "monitoring.prefer_structured_arming": {"type": "bool"},
+    "monitoring.goal_suggestions": {"type": "bool"},
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {
         "type": "int",

@@ -3035,7 +3035,7 @@ importing at load time only those listed before it and never the facade:
 | `autonudge_service/gate.py` | `_monitor_tick_is_quiet`, `_publish_pr_observation`, `_terminal_still_holds` |
 | `autonudge_service/judge_tick.py` | `_judge_tick_is_quiet` and the verdict stamp, labels and calibration rows |
 | `autonudge_service/firing.py` | `_timer`, `_run_fire_cycle`, `fire_now` |
-| `autonudge_service/mutations.py` | `add()`, `update()`, `remove()` and their unserialized bodies, `remove_sync`, `remove_by_slot`, `clear_terminal_monitor` |
+| `autonudge_service/mutations.py` | `add()`, `update()`, `remove()` and their unserialized bodies, `remove_sync`, `remove_by_slot`, `clear_terminal_monitor`; typed-goal lifecycle and shielded session-key pause transactions |
 | `autonudge_service/monitor_records.py` | `add_monitor`, `apply_monitor_probe`, `update_monitor`, `record_monitor_turn_completion` and every other structured-monitor transition |
 
 Each owner function that takes the service as `self` is a service method, bound on
@@ -3124,7 +3124,7 @@ deactivates with `completion_evidence_unavailable` while retaining the
 acknowledged fingerprint, so restart cannot duplicate the wake. Completion stops
 on the first exhausted runtime, turn, or token bound (in that precedence), and
 the completed-turn bound is skipped when it is zero, its unlimited sentinel, and
-otherwise validated against the universal eight-turn ceiling when constructed or
+otherwise validated against `MAX_MONITOR_AGENT_TURNS` when constructed or
 loaded. Approval-stall completion is terminal and budget exhaustion takes
 precedence when both apply.
 Claim, budget-stop, completion, and pre-turn dispatch-failure mutations are
@@ -4331,7 +4331,7 @@ the one exception and reads zero as unlimited, the same meaning legacy
 `max_cycles` carries: zero is skipped rather than enforced, an explicit positive
 value is bounded by `MAX_MONITOR_AGENT_TURNS`, and MCP schemas, `validation.py`,
 the REST handler, the session directive applier and the dashboard contract all
-publish a minimum of 0 for it alone. Its default stays a positive eight turns.
+publish a minimum and default of 0 for it alone.
 Raising
 or lowering the policy never rewrites an existing loop's timestamps, runtime or
 active state; a stored budget above the ceiling runs to its stored deadline.
@@ -4795,7 +4795,8 @@ ancestor fallback. `monitor_inspect` and `monitor_stop` resolve the general
 nudge binding, so both reach whichever shape the session's loop holds and a
 Webex key valid for finite legacy loops reaches them too. Inspect returns the
 structured record when one exists and the legacy presence/cadence reading under
-`autonudge_loop` otherwise; stop routes by the resolved loop's shape. Only
+`autonudge_loop` otherwise, plus the goal snapshot when the loop carries a typed
+goal; stop routes by the resolved loop's shape. Only
 `monitor_watch`, `monitor_update`, and the strict-internal structured create/update
 path keep the narrower structured resolver, since structured wake delivery is
 unavailable on Webex. Internal read failures carry the MCP failure marker and are
@@ -4860,8 +4861,9 @@ requires loopback plus `X-Internal-Secret`, the handler reasserts that trust
 before accepting `X-Session-Key`, and browser-cookie fallback is forbidden.
 Both the internal-secret decision and a missing or unsupported session binding
 are best-effort SEL audited before the handler returns.
-Creation uses the same positive defaults and bounds as MCP; zero is never
-unlimited. Dashboard creation is create-only under the service lock and returns
+Creation uses the same defaults and bounds as MCP. Only `max_agent_turns`
+defaults to zero for unlimited wakes; runtime, token and provider-error budgets
+remain positive. Dashboard creation is create-only under the service lock and returns
 409 if any automation already occupies the slot, even when that record was armed
 after the dashboard's last read.
 Structured creation never resolves or unlinks the legacy loop stop sentinel, so
@@ -4891,8 +4893,12 @@ same service lock as structured creation, so a stale empty snapshot cannot
 replace an automation armed by another tab. Other legacy callers retain explicit
 replacement semantics, but the agent-facing `monitor_start` and `monitor_watch`
 directives are create-only across both record kinds, with one deliberate split.
-Dashboard REST creates keep any-record occupancy: a 409 that never discards a
-retained record, active or stopped, preserving inspection evidence. The two
+Dashboard REST creates keep any-record occupancy, except an explicit owner watch
+through `POST /api/monitors` may replace an inactive `suggested` goal. A separate
+internal flag grants this exception; the store rechecks status under its mutation
+lock and uses the existing atomic replacement and credential rollback. Started
+and paused goals and retained monitor evidence remain protected. The audit
+`source` label and model directive provenance do not grant the exception. The two
 session-directive arms additionally opt into `replace_stopped`, which narrows
 their refusal to records that still occupy the session — an ACTIVE automation,
 or a retained stop that is evidence. Only system-imposed stops are re-armable:
@@ -5035,6 +5041,22 @@ non-actionable blocked state instead. The normalizer consumes the durable
 provider-error, and token counters. It never infers wakes from current delivery
 state.
 
+Typed goal suggestions travel through that same legacy record and query with
+`goal.status="suggested"` and `active=false`. The composer offers Start beside the
+suggested outcome and opens its criteria and run limits in the existing popup.
+The owner-authenticated PATCH sends `active=true` and the observed
+`expected_generation`; the service accepts only the current revision and persists
+the first start before scheduling work. Model goal directives cannot perform this
+transition. The trusted `/goal` slash dispatcher supplies explicit-start authority
+directly and remains usable when `monitoring.goal_suggestions` is disabled.
+Dismiss beside Start is the button form of `/goal clear`: the owner-gated
+`DELETE /api/autonudge/{loop_id}?intent=dismiss&expected_generation=N` removes
+the record only while, under the service lock, it is still an inactive suggestion
+at that generation, and answers 409 otherwise.
+A typed goal's Resume keeps its remaining budget and refuses a spent one; the
+spent-bound reset of the AutoNudge resume rules above applies only to loops
+without a typed goal ([babysit-pr-watch](babysit-pr-watch.md)).
+
 Redux owns the only mutable automation collection. Initial connection starts the
 legacy and structured list reads together, fences their combined result by
 connection generation, protects each slot changed by a newer live frame or
@@ -5114,13 +5136,13 @@ cannot host a direct monitor turn and disables create, edit, restart, and
 legacy-loop controls for those modes; that explanation renders on BOTH views,
 so a disabled goal form is never left without a reason. Stop remains available for an existing
 monitor so an operator can always disarm stale state. A new pull-request monitor
-starts from the 300-second cadence, 14,400-second runtime, eight-turn,
-250,000-token, and three-provider-error defaults. Terminal evidence remains read-only and exposes
+defaults to a 300-second cadence, a 14,400-second runtime, unlimited completed
+turns, 250,000 tokens, and three provider errors. Terminal evidence remains read-only and exposes
 Restart as its sole mutation. Creating a different monitor while terminal evidence
 is retained is disabled until bulk slot cleanup fences every slot before awaiting,
 so an archived slot cannot be repopulated by an in-flight replacement. The form
 enforces the backend bounds: cadence 15–86,400 seconds, runtime 1–604,800 seconds,
-agent turns 0–8 where 0 is unlimited, tokens
+agent turns 0–1,000 where 0 is unlimited, tokens
 1–1,000,000, provider errors 1–20, and at most 1,000 wake-instruction characters.
 Each field exposes the same HTML bound and a localized inline error. Updates
 track dirty fields, reconcile untouched values from same-monitor WebSocket

@@ -109,6 +109,7 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeStaleBaseline,
     AutoNudgeStoreUnvetted,
+    GoalUpdateConflict,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     NudgeLoop,
@@ -156,6 +157,10 @@ from kiro_crew.config.loader import data_home  # noqa: F401 -- re-exported
 from kiro_crew.config.loader import config_dir
 from kiro_crew.config.paths import legacy_home
 from kiro_crew.constants import MAX_BANNER_CHARS
+from kiro_crew.goal import (
+    GoalState,
+    continuation_message,
+)
 from kiro_crew.monitoring.decision import (  # noqa: F401 -- re-exported
     decide_monitor,
     monitor_budget_reason,
@@ -1084,6 +1089,15 @@ class AutoNudgeService:
                             _cg,
                         )
                         loop_values["config_generation"] = 0
+                if loop_values.get("goal") is not None:
+                    stored_goal = loop_values["goal"]
+                    loop_values["goal"] = GoalState.from_dict(stored_goal)
+                    if any(
+                        stored_goal[name] != getattr(loop_values["goal"], name)
+                        for name in ("objective", "criteria", "progress", "evidence")
+                        if name in stored_goal
+                    ):
+                        self._store_dirty = True
                 loop = NudgeLoop(**loop_values)
                 # Rotated on EVERY load: a human may have hand-edited the goal while we
                 # were down, so a pre-restart token must not authorise overwriting it.
@@ -1421,7 +1435,19 @@ class AutoNudgeService:
                 # the banner this is redaction ONLY, never blank-on-length:
                 # ``message`` is the payload the model receives and has no
                 # fallback row, and its 8000-char limit is a write-path concern.
-                if isinstance(loop.message, str) and loop.message:
+                if loop.goal is not None:
+                    # Typed goal data owns this derived prompt, including after an offline edit.
+                    canonical_message = continuation_message(loop.goal)
+                    if loop.message != canonical_message:
+                        loop.message = canonical_message
+                        self._store_dirty = True
+                    if loop.goal.status == "suggested":
+                        # A stored proposal cannot authorize its own first wake.
+                        if loop.active is not False or loop.next_due_ts != 0.0:
+                            self._store_dirty = True
+                        loop.active = False
+                        loop.next_due_ts = 0.0
+                elif isinstance(loop.message, str) and loop.message:
                     scrubbed_msg, _ = redact_exfiltration_urls(loop.message)
                     scrubbed_msg, _ = redact_credentials(scrubbed_msg)
                     if scrubbed_msg != loop.message:
@@ -1903,6 +1929,12 @@ class AutoNudgeService:
     _run_fire_cycle = _firing._run_fire_cycle
     fire_now = _firing.fire_now
     # autonudge_service.mutations
+    pause_goal = _mutations.pause_goal
+    pause_goals_by_slot = _mutations.pause_goals_by_slot
+    _supervise_goal_pause = _mutations._supervise_goal_pause
+    _pause_goals_by_slot_locked = _mutations._pause_goals_by_slot_locked
+    _pause_goal_locked = _mutations._pause_goal_locked
+    _pause_goal_unserialized = _mutations._pause_goal_unserialized
     add = _mutations.add
     _mint_loop_id = _mutations._mint_loop_id
     _add_locked = _mutations._add_locked
@@ -1915,6 +1947,7 @@ class AutoNudgeService:
     _revoke_self_arm = staticmethod(_mutations._revoke_self_arm)
     remove = _mutations.remove
     remove_by_slot = _mutations.remove_by_slot
+    restore_goal_after_failed_session_close = _mutations.restore_goal_after_failed_session_close
     clear_terminal_monitor = _mutations.clear_terminal_monitor
     _remove_unserialized = _mutations._remove_unserialized
     _revoke_provider_credentials_before_removal = staticmethod(

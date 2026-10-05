@@ -40,6 +40,7 @@ import { Badge, Btn, Card, CardTitle, EmptyState, PageHeader } from '../componen
 import InfoTip from '../components/InfoTip'
 import ErrorNotice from '../components/ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { recordError, reportForError, type ErrorReport } from '../utils/errorReport'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { fmtRelative } from '../i18n/format'
@@ -168,7 +169,12 @@ function RowActions({
   // backend code for the agent hand-off, so the backend's own sentence belongs
   // there and the translated lead belongs in `title`. Collapsing them into one
   // string loses whichever of the two is not kept.
-  const [failure, setFailure] = useState<{ title?: string; message: string } | null>(null)
+  const [failure, setFailure] = useState<{
+    title?: string
+    message: string
+    pauseWarning?: string
+    report?: ErrorReport
+  } | null>(null)
 
   const act = useMutation({
     mutationFn: (action: CrewBoardAction) => api.crewBoardAction(conductor, item.item_id, action),
@@ -180,8 +186,19 @@ function RowActions({
       // the worker should not keep going.
       //
       // The board is re-read either way: on a failure it is what shows the row
-      // still alive, which is the evidence for the message.
-      setFailure(result.ok ? null : { message: i18nT('pages.crewBoard.stop_not_confirmed') })
+      // still alive, which is the evidence for the message. An acknowledged Stop
+      // can still fail to save its goal pause; keep that restart-risk warning,
+      // alongside the refusal when both facts arrive.
+      const refusal = result.ok ? undefined : i18nT('pages.crewBoard.stop_not_confirmed')
+      setFailure((previous) => {
+        // A failed retry cannot establish that an earlier unsaved pause was saved.
+        const warning = result.goal_pause_saved === false
+          ? result.warning
+          : result.ok ? undefined : previous?.pauseWarning
+        return warning
+          ? { title: refusal, message: warning, pauseWarning: warning }
+          : refusal ? { message: refusal } : null
+      })
       void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(conductor) })
     },
     onError: (err) => {
@@ -204,7 +221,16 @@ function RowActions({
       // gives no sentence at all there is nothing to look up, so the translated
       // line is the message instead of a lead over an empty notice.
       const detail = errMessage(err)
-      setFailure(detail ? { title: lead, message: detail } : { message: lead })
+      const report = reportForError(err) ?? recordError({ source: 'api', message: detail || lead })
+      setFailure((previous) => ({
+        ...(detail ? { title: lead, message: detail } : { message: lead }),
+        pauseWarning: previous?.pauseWarning,
+        // Preserve the journal's request context and raw detail; the single
+        // hand-off also carries the earlier pause-save failure still on screen.
+        report: previous?.pauseWarning && previous.pauseWarning !== report.message
+          ? { ...report, message: [report.message, previous.pauseWarning].join('\n\n') }
+          : report,
+      }))
       if (stale) void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(conductor) })
     },
   })
@@ -227,7 +253,11 @@ function RowActions({
   // whether this item's own worker session is still open. Take-over renders NO
   // control while it is unavailable: a button that can never work is noise on every
   // row of a board whose whole job is scanning.
-  const hint = stopReason || i18nT('pages.crewBoard.stop_consequence')
+  const hint = stopReason || (
+    failure?.pauseWarning
+      ? i18nT('pages.crewBoard.retry_pause_hint', { action: i18nT('pages.crewBoard.action_stop') })
+      : i18nT('pages.crewBoard.stop_consequence')
+  )
 
   return (
     <div className="ml-[15px] mt-1 flex flex-col gap-1">
@@ -261,10 +291,13 @@ function RowActions({
       {failure ? (
         <ErrorNotice
           title={failure.title}
-          message={failure.message}
+          message={failure.pauseWarning && failure.report ? failure.report.message : failure.message}
+          report={failure.report}
           onDismiss={() => setFailure(null)}
           askAgent
           variant="inline"
+          messagePlacement="below"
+          messageClassName="whitespace-pre-line"
         />
       ) : null}
 
@@ -454,11 +487,23 @@ export function CrewBoard({ conductor }: { conductor: string }) {
     return <EmptyState icon={<Inbox size={20} />} title={i18nT('pages.crewBoard.missing_conductor')} />
   }
 
+  const readFailure = board.isError ? (
+    <ErrorNotice
+      title={i18nT(
+        board.data
+          ? 'components.pullRequestPanel.could_not_refresh_showing_cached'
+          : 'pages.crewBoard.error_title',
+      )}
+      message={errMessage(board.error) || i18nT('components.errorBoundary.something_went_wrong')}
+      askAgent
+    />
+  ) : null
+
   // A session that owns no work ledger is an expected GAP, not a failure: only a
   // session dispatched through the conductor tooling opens one, so an ad-hoc
   // conductor legitimately has none. Rendering it as an error would teach people
   // the board is broken.
-  if (board.isError) {
+  if (board.isError && !board.data) {
     // A 404 is the ad-hoc-conductor GAP, not a failure, so it stays a neutral
     // EmptyState: rendering it as an error would teach people the board is broken.
     if (isNotFoundError(board.error)) {
@@ -474,13 +519,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
     // neutral container, which is what keeps the structured context and the agent
     // hand-off instead of a dead end. `askAgent` is safe on this surface: the board
     // is read-only and holds no unsaved draft for the hand-off to navigate away from.
-    return (
-      <ErrorNotice
-        title={i18nT('pages.crewBoard.error_title')}
-        message={errMessage(board.error) || i18nT('components.errorBoundary.something_went_wrong')}
-        askAgent
-      />
-    )
+    return readFailure
   }
 
   if (!board.data) return null
@@ -508,14 +547,20 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col">
+        {readFailure}
         {header}
-        <EmptyState icon={<Inbox size={20} />} title={i18nT('pages.crewBoard.empty_title')} />
+        <EmptyState
+          icon={<Inbox size={20} />}
+          title={i18nT(board.isError ? 'pages.crewBoard.cached_empty_title' : 'pages.crewBoard.empty_title')}
+        />
       </div>
     )
   }
 
   return (
     <div className="flex flex-col">
+      {/* A failed refresh keeps the loaded rows, including unresolved Stop warnings. */}
+      {readFailure}
       {header}
 
       {bands.ruling.length > 0 ? (

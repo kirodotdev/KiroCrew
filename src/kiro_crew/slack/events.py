@@ -31,7 +31,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kiro_crew import __version__
+from kiro_crew import __version__, goal_actions
 from kiro_crew.agent_discovery import agent_spec_stems
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
@@ -113,6 +113,7 @@ from kiro_crew.slack.handler import (
     set_yolo_mode,
     slack_cfg,
 )
+from kiro_crew.slack.interactions import _goal_stop_reply, _stop_session_key
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
@@ -2734,8 +2735,9 @@ async def _route_message(
         # session that owns it, and that is the key the replay reads. For a flat
         # DM session_key is already the channel-scoped owning key, so the lookup
         # falls back to it unchanged.
+        cancel_key = _stop_session_key(orch.sessions, session_key)
         force_stop = False
-        if _compaction_in_flight(orch.sessions, session_key):
+        if _compaction_in_flight(orch.sessions, cancel_key):
             # A repeat !stop within the window is the second press and forces
             # (the Kill Now button is the other route). The first is declined
             # BEFORE any side effect: the Stop record, the queue clear, the
@@ -2744,8 +2746,8 @@ async def _route_message(
             # ends nothing. Same answer ``stop_turn`` gives for the race. Keyed
             # by the presser too: a thread's session key is every member's, and
             # another member's declined !stop must not arm this member's first.
-            force_stop = consume_stop_declined(session_key, sender_id)
-        if _compaction_in_flight(orch.sessions, session_key) and not force_stop:
+            force_stop = consume_stop_declined(cancel_key, sender_id)
+        if _compaction_in_flight(orch.sessions, cancel_key) and not force_stop:
             # Posted before the marker is armed, and nothing is armed when there
             # is no client to post with: an undelivered warning plus an armed
             # escalation is a retry that hard-resets the session with this member
@@ -2761,7 +2763,7 @@ async def _route_message(
                     )
                 )
 
-            await decline_stop(session_key, sender_id, _say_declined)
+            await decline_stop(cancel_key, sender_id, _say_declined)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2771,8 +2773,8 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             return
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
-        has_session = orch.sessions.has_session(session_key)
+        note_user_stop(orch.sessions, cancel_key)
+        has_session = orch.sessions.has_session(cancel_key)
         # READ, not popped: the task is removed only once the cancel is known
         # to have gone through, below.
         active_task = orch._session_tasks.get(session_key)
@@ -2784,7 +2786,7 @@ async def _route_message(
             # await (files kept), and either dropped once the stop went through
             # or put back if the stop is declined. A message admitted after this
             # line is newer intent and is never touched.
-            queued_at_press = orch.sessions.detach_queue(session_key)
+            queued_at_press = orch.sessions.detach_queue(cancel_key)
             pending_at_press = list(orch._pending_queue.pop(session_key, None) or ())
             try:
                 # Post ephemeral "Stopping…" block with Kill Now button
@@ -2793,18 +2795,24 @@ async def _route_message(
                         channel,
                         sender_id,
                         "Stopping…",
-                        blocks=build_stopping_blocks(session_key),
+                        blocks=build_stopping_blocks(cancel_key),
                         thread_ts=stop_post_ts,
                     )
 
                 async def _on_soft() -> None:
                     if orch.slack:
-                        await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
+                        await orch.slack.post_message(
+                            channel,
+                            _goal_stop_reply(cancel_key, "⏹ Execution stopped."),
+                            stop_post_ts,
+                        )
 
                 async def _on_hard() -> None:
                     if orch.slack:
                         await orch.slack.post_message(
-                            channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                            channel,
+                            _goal_stop_reply(cancel_key, "⛔ Execution stopped — session reset."),
+                            stop_post_ts,
                         )
 
                 # ``force`` only when set: the default call shape is what every
@@ -2815,7 +2823,13 @@ async def _route_message(
                 # newer intent this Stop was never aimed at.
                 _kw = {"force": True} if force_stop else {}
                 outcome = await orch.sessions.stop_turn(
-                    session_key, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard, **_kw
+                    cancel_key,
+                    preserve_queue=True,
+                    on_soft=_on_soft,
+                    on_hard=_on_hard,
+                    goal_state=getattr(orch, "dashboard_state", None),
+                    pause_goal=True,
+                    **_kw,
                 )
             except BaseException:
                 # The detached work is held only in these locals. If the ephemeral
@@ -2825,13 +2839,13 @@ async def _route_message(
                 # staged attachment files. A forced stop whose reset raised AFTER
                 # popping the session leaves no queue to put it back on; there the
                 # handles' files are unlinked rather than leaked.
-                if orch.sessions.has_session(session_key):
-                    orch.sessions.restore_queue(session_key, queued_at_press)
+                if orch.sessions.has_session(cancel_key):
+                    orch.sessions.restore_queue(cancel_key, queued_at_press)
                 elif queued_at_press:
                     # No session to put it back on: handed to the successor the
                     # hard stop respawns, or parked for a later start, the way
                     # the other channels' forced stop keeps co-tenants' work.
-                    await hand_queue_to_successor(orch.sessions, session_key, queued_at_press)
+                    await hand_queue_to_successor(orch.sessions, cancel_key, queued_at_press)
                 if pending_at_press:
                     later = orch._pending_queue.get(session_key) or []
                     orch._pending_queue[session_key] = pending_at_press + list(later)
@@ -2841,7 +2855,7 @@ async def _route_message(
                 # the ephemeral post. ``stop_turn`` is the authority: nothing was
                 # stopped, so what was detached goes back, ahead of anything
                 # admitted since, and the task stays tracked.
-                orch.sessions.restore_queue(session_key, queued_at_press)
+                orch.sessions.restore_queue(cancel_key, queued_at_press)
                 if pending_at_press:
                     later = orch._pending_queue.get(session_key) or []
                     orch._pending_queue[session_key] = pending_at_press + list(later)
@@ -2861,7 +2875,7 @@ async def _route_message(
                         )
                     )
 
-                await decline_stop(session_key, sender_id, _say_declined_race)
+                await decline_stop(cancel_key, sender_id, _say_declined_race)
             else:
                 # The destructive half, AFTER the outcome: a Stop that ended a
                 # turn drops what was queued behind it. Placed before the cancel
@@ -2887,12 +2901,12 @@ async def _route_message(
                     # other channels' forced stop carries co-tenants' entries
                     # (``force_stop_keeping_others``). Pending (pre-session)
                     # entries go back to their stash for the same reason.
-                    await hand_queue_to_successor(orch.sessions, session_key, queued_at_press)
+                    await hand_queue_to_successor(orch.sessions, cancel_key, queued_at_press)
                     if pending_at_press:
                         later = orch._pending_queue.get(session_key) or []
                         orch._pending_queue[session_key] = pending_at_press + list(later)
                 else:
-                    orch.sessions.clear_queue(session_key, only=queued_at_press)
+                    orch.sessions.clear_queue(cancel_key, only=queued_at_press)
                     # Dropped pending (pre-session) entries never reach
                     # _dispatch_queued's cleanup, so unlink their temp files here.
                     # Only the ones detached at the press; later arrivals stay.
@@ -2903,7 +2917,9 @@ async def _route_message(
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
+                await orch.slack.post_message(
+                    channel, _goal_stop_reply(cancel_key, "Nothing running."), stop_post_ts
+                )
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2913,6 +2929,10 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
         else:
+            # A goal can be waiting between turns with no provider to cancel.
+            await goal_actions.pause_session_goal(
+                canonical_key(cancel_key), state=getattr(orch, "dashboard_state", None)
+            )
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2922,7 +2942,9 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+                await orch.slack.post_message(
+                    channel, _goal_stop_reply(cancel_key, "Nothing running."), stop_post_ts
+                )
         return
 
     # ── !restart: bang alias for /kirocrew restart — intercept here so it

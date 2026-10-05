@@ -285,7 +285,11 @@ class TestOwnerLoggers:
 class TestMonitoringRuntimeCeiling:
     def test_field_order_default_and_bounds(self) -> None:
         fields = dataclasses.fields(sections.MonitoringConfig)
-        assert [f.name for f in fields] == ["max_runtime_secs", "prefer_structured_arming"]
+        assert [f.name for f in fields] == [
+            "max_runtime_secs",
+            "goal_suggestions",
+            "prefer_structured_arming",
+        ]
         ceiling = fields[0]
         assert ceiling.type == "int"
         assert ceiling.default == DEFAULT_RUNTIME_CEILING_SECS == 604800
@@ -294,12 +298,22 @@ class TestMonitoringRuntimeCeiling:
         assert ceiling.metadata["help"] == _MONITORING_HELP
         assert ceiling.metadata["min"] == 1
         assert ceiling.metadata["max"] == MAX_RUNTIME_CEILING_SECS
-        assert fields[1].default is False
+        assert fields[1].type == "bool"
+        assert fields[1].default is True
+        assert fields[2].default is False
 
     def test_serialized_section_keeps_its_key_order(self) -> None:
         section = loader.KiroCrewConfig().to_dict()["monitoring"]
-        assert list(section) == ["max_runtime_secs", "prefer_structured_arming"]
-        assert section == {"max_runtime_secs": 604800, "prefer_structured_arming": False}
+        assert list(section) == [
+            "max_runtime_secs",
+            "goal_suggestions",
+            "prefer_structured_arming",
+        ]
+        assert section == {
+            "max_runtime_secs": 604800,
+            "goal_suggestions": True,
+            "prefer_structured_arming": False,
+        }
 
     def test_unset_value_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING):

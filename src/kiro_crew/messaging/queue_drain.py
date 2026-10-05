@@ -43,7 +43,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any, Iterator
+
+from kiro_crew.messaging.turn_ceiling import finish_generated_turn
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +197,32 @@ def entries_queued_by(owner: str) -> Callable[[dict], bool]:
     return lambda kwargs: entry_owner(kwargs) == owner
 
 
+def entries_queued_at_press(sessions: Any, key: str, owner: str) -> Callable[[dict], bool]:
+    """*owner*'s entries queued NOW, read before a Stop's first await.
+
+    Holding them means the Stop later drops exactly these, never a message the
+    same person sent while the Stop was still awaiting.
+    """
+    owned = entries_queued_by(owner)
+    if getattr(sessions, "peek_queue", None) is None:
+        return owned
+    pressed = [e[2] for e in sessions.peek_queue(key) if owned(e[2])]
+    return lambda kwargs: any(kwargs is held for held in pressed)
+
+
+def turn_began_after_press(sessions: Any, key: str) -> Callable[[], bool]:
+    """Whether a turn on *key* began after this call, read before a Stop's first await.
+
+    The Stop then cancels only the turn it was pressed against: one admitted while
+    it awaited is newer intent, as a message queued in that window is.
+    """
+    if getattr(sessions, "turn_mark", None) is None:
+        return lambda: False
+    mark = sessions.turn_mark(key)
+    # ``is True``: a stand-in session manager answers with a truthy mock.
+    return lambda: sessions.turn_began_since(key, mark) is True
+
+
 def entry_channel(kwargs: dict) -> str:
     """Which channel recorded this queue entry, or "" if it did not say.
 
@@ -302,6 +330,7 @@ async def drain_until_quiet(
     sequence, and a channel that got the order wrong -- waking under its own queue lock,
     or outside its own marker -- would be a defect with no local symptom.
     """
+    finish_generated_turn()
     with draining(channel, session_key):
         for round_no in range(1, _MAX_WAKE_ROUNDS + 1):
             foreign: set[str] = set()

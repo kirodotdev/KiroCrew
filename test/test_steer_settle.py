@@ -7,8 +7,15 @@ Shared by the main chat and the /side sidecar.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 from kiro_crew.acp._dispatch import redact_text
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.steer_settle import settle_consumed_steers
 
 
 def _echo(*messages: str) -> str:
@@ -17,6 +24,46 @@ def _echo(*messages: str) -> str:
 
 def test_a_consumed_steer_is_settled():
     assert settle_consumed_steers(["use QUIC"], _echo("use QUIC")) == []
+
+
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_settlement_uses_the_defining_backend_redactor(monkeypatch, wrapped):
+    calls = []
+
+    def backend_redact(text):
+        calls.append(text)
+        return text.replace("private-material", "[masked]")
+
+    monkeypatch.setattr("kiro_crew.acp._dispatch.redact_text", backend_redact)
+    pending = ["send private-material", "keep this pending"]
+    echoed = "send [masked]"
+    snapshot = _echo(echoed) if wrapped else echoed
+
+    assert settle_consumed_steers(pending, snapshot) == ["keep this pending"]
+    assert pending == ["send private-material", "keep this pending"]
+    assert "send private-material" in calls
+    assert echoed in calls
+
+
+def test_importing_the_matcher_keeps_acp_runtime_lazy(tmp_path):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    probe = (
+        "import sys\n"
+        "from kiro_crew.steer_settle import settle_consumed_steers\n"
+        "assert 'kiro_crew.agent_sdk.drivers.acp' in sys.modules\n"
+        "assert 'kiro_crew.acp' not in sys.modules\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", probe],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_a_steer_registered_after_the_snapshot_stays_pending():

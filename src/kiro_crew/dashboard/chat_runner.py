@@ -88,8 +88,8 @@ from kiro_crew.agent_sdk.spec_hooks import (
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
-from kiro_crew.autonudge import get_instance
-from kiro_crew.autonudge_authz import normalize_banner
+from kiro_crew.autonudge import binding_key_for, get_instance
+from kiro_crew.autonudge_authz import normalize_banner  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
     data_home,
@@ -115,7 +115,7 @@ from kiro_crew.context_blocks import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, session_directive_apply
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
@@ -408,7 +408,6 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
 )
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import (
     format_approval_no_budget_card,
     format_approval_timeout_card,
@@ -579,6 +578,7 @@ from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.start_priority import StartPriority, person_priority
+from kiro_crew.steer_settle import settle_consumed_steers
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
     approval_command,
@@ -6079,36 +6079,56 @@ async def _handle_workflow_command(
     state.push_slots_update()
 
 
-async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
-    """Handle the ``/goal`` slash command (v0 self-verdict loop).
+async def _handle_goal_command(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    message: str,
+    *,
+    turn_is_current: Callable[[], bool] | None = None,
+    human_request: bool = False,
+) -> None:
+    """Inspect, clear, or explicitly start the same goal used by automatic pursuit.
 
-    Extracted from ``_run_chat`` so it is unit-testable in isolation. Pure glue
-    over the async ``AutoNudgeService`` (``add`` / ``get_by_slot`` / ``remove``);
-    no autonudge-internals change. Subcommands: ``status`` (default/empty),
-    ``clear``, else arm with an optional ``--max N`` budget (default 50, clamped
-    1..50).
+    Starting or clearing spends the owner's consent, so it needs the turn's own
+    human provenance (``_directive_user_origin``): an app-authored or automated
+    ``/goal`` can only inspect.
     """
+
     _goal_svc = get_instance()
+    _goal_binding = binding_key_for(effective_session_key(slot)) or slot.key
     _parts = message.split(None, 1)
     _rest = _parts[1].strip() if len(_parts) > 1 else ""
+    _binding_error = ""
+    _loop = None
+    if _goal_svc is not None:
+        try:
+            _loop = session_directive_apply.goal_loop_for_session(state, _goal_svc, _goal_binding)
+        except ValueError as exc:
+            _binding_error = str(exc)
     if _goal_svc is None:
         body = (
             "🎯 Goal loops are unavailable (AutoNudge is disabled). "
             "Set `KIROCREW_AUTONUDGE=1` and restart the gateway."
         )
+    elif _binding_error:
+        body = f"Goal not changed: {_binding_error}"
+    elif _rest not in ("", "status") and not human_request:
+        body = "Goal not changed: starting or clearing a goal needs a message you typed."
     elif _rest in ("", "status"):
-        _loop = _goal_svc.get_by_slot(slot.key)
         if _loop is not None:
             _cap = _loop.max_cycles or "∞"
-            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
+            _goal = getattr(_loop, "goal", None)
+            if _goal is not None:
+                body = f"🎯 {_goal.objective}\nStatus: {_goal.status} (budget {_cap} turns)."
+            else:
+                body = "No active goal. This session has other automation."
         else:
             body = (
                 "No active goal. Set one with `/goal <objective>` "
                 "(optionally `/goal --max N <objective>`)."
             )
     elif _rest == "clear":
-        _loop = _goal_svc.get_by_slot(slot.key)
-        if _loop is not None:
+        if _loop is not None and _loop.goal is not None:
             await _goal_svc.remove(_loop.id, stop_reason="goal_cleared")
             body = "🎯 Goal cleared."
         else:
@@ -6125,44 +6145,23 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         if not _objective:
             body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
         else:
-            _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
-            Path(_sentinel).unlink(missing_ok=True)
-            _nudge = (
-                f"Goal: {_objective}\n"
-                "Each idle cycle, in order: "
-                f'(1) if the file {_sentinel} exists -> autonudge_stop(reason="sentinel") and stop; '
-                "(2) if the goal is fully met by concrete evidence (a passing test, a built file, "
-                'command output — not a guess) -> autonudge_stop(reason="goal met"), post a one-line '
-                "summary citing the evidence, and stop; "
-                "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
-                "(write the file / run the check) before claiming progress.\n"
-                "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
-                f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
-                "the cap). One short progress line per cycle."
-            )
-            await _goal_svc.add(
-                slot.key,
-                message=_nudge,
-                idle_secs=15,
-                max_cycles=_max_cycles,
-                stop_sentinel_path=_sentinel,
-                # The objective is the reader-facing row; the full instruction
-                # above is served by GET /api/autonudge. Routed through the
-                # authorizer's ``normalize_banner`` so this producer gets the
-                # SAME redaction + cap policy as the REST/MCP paths. ``truncate``
-                # (not a pre-slice) because the objective is arbitrarily long:
-                # the FULL text is redacted first and only then cut to the cap,
-                # so a credential straddling the cap boundary is masked whole
-                # rather than sliced into a raw prefix.
-                banner=normalize_banner(_objective, absent_ok=True, truncate=True)[0],
-                admission_check=lambda: state.get_slot(slot.key) is slot,
-            )
-            body = (
-                f"⊙ Goal set ({_max_cycles}-turn budget): {_objective}\n\n"
-                "I'll work toward it across turns and stop when it's met "
-                "(verified by evidence) — or run `/goal clear` to stop."
-            )
+            try:
+                snapshot = await session_directive_apply.apply_goal(
+                    state,
+                    effective_session_key(slot),
+                    {"action": "start", "objective": _objective},
+                    human_request=True,
+                    turn_is_current=turn_is_current,
+                    max_cycles=_max_cycles,
+                    explicit_start=True,
+                )
+                body = (
+                    f"🎯 Working toward: {snapshot['goal']['objective']}\n\n"
+                    "You can steer me in chat, inspect the goal in the composer, "
+                    "or use Stop to pause."
+                )
+            except ValueError as exc:
+                body = f"Goal not started: {exc}"
     body = _redact_for_display(body)
     sel().log_tool_invocation(
         session_key=slot.key,
@@ -8072,6 +8071,7 @@ async def _run_chat(
     # death before even that point. See _persist_abnormal_turn_usage(since=).
     _turn_stats0: object = _NO_PRIOR_STATS
 
+    _goal_human_steer = False
     # A decision outcome still pending when a turn STARTS belongs to a turn that
     # has already finished, and one whose own turn produced no assistant row has
     # no reply left to describe. Dropped here rather than on each way a turn can
@@ -9070,10 +9070,21 @@ async def _run_chat(
     # text, so empty-response recovery must not inject a closing continuation.
     _terminal_question_posted = False
 
-    def _record_terminal_question(kind: str, outcome: str) -> None:
+    def _record_directive_outcome(kind: str, outcome: str) -> None:
         nonlocal _terminal_question_posted
         if kind == "ask_question" and outcome.startswith(QUESTION_CARD_SHOWN_PREFIX):
             _terminal_question_posted = True
+        elif (
+            kind == "goal"
+            and outcome.startswith("Error:")
+            and not (_directive_user_origin or _goal_human_steer)
+            and getattr(client, "steer_needs_loss_recovery", False) is True
+            and any(slot._steer_user_origin.get(text, False) for text in slot._pending_steers)
+        ):
+            # Codex confirms consumption only at the terminal, after this goal
+            # action needed human authority. Preserve the refused correction as
+            # its own human turn before that late echo can remove it as consumed.
+            _requeue_unconsumed_steers(state, slot)
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn
@@ -9312,13 +9323,16 @@ async def _run_chat(
         state.push_slots_update()
         return
 
-    # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
-    # v0 rides AutoNudgeService unchanged: the nudge instructs the agent to
-    # self-check its Definition of Done each cycle and call autonudge_stop when
-    # met.
+    # Explicit /goal uses the same pursuit contract as automatic goal recognition.
     if first_word == "/goal":
         turn_exit.local_command = first_word
-        await _handle_goal_command(state, slot, message)
+        await _handle_goal_command(
+            state,
+            slot,
+            message,
+            turn_is_current=lambda: not _stop_pressed(),
+            human_request=_directive_user_origin,
+        )
         return
 
     if first_word == "/workflow":
@@ -12506,12 +12520,14 @@ async def _run_chat(
                             session_key,
                             _applied_kind,
                             dict(_oob.get("args") or {}),
-                            producer_is_user_facing=_directive_user_origin,
+                            producer_is_user_facing=_directive_user_origin
+                            or (_applied_kind == "goal" and _goal_human_steer),
                             producer_is_self_wake=_directive_self_wake,
                             producer_is_channel=_directive_producer_is_channel(),
                             producer_wake_loop_id=_directive_loop_id,
+                            producer_turn_is_current=lambda: not _stop_pressed(),
                         )
-                        _record_terminal_question(_applied_kind, _applied_one)
+                        _record_directive_outcome(_applied_kind, _applied_one)
                         logger.info(
                             "session-directive applied OUT OF BAND for %s "
                             "(tool_call_id=%s, kind=%s): the marker was unavailable; "
@@ -12719,12 +12735,14 @@ async def _run_chat(
                                 session_key,
                                 _dir_tool,
                                 _dir_args,
-                                producer_is_user_facing=_directive_user_origin,
+                                producer_is_user_facing=_directive_user_origin
+                                or (_dir_tool == "goal" and _goal_human_steer),
                                 producer_is_self_wake=_directive_self_wake,
                                 producer_is_channel=_directive_producer_is_channel(),
                                 producer_wake_loop_id=_directive_loop_id,
+                                producer_turn_is_current=lambda: not _stop_pressed(),
                             )
-                            _record_terminal_question(_dir_tool, _applied_one)
+                            _record_directive_outcome(_dir_tool, _applied_one)
                             _out = _redact_tool_field(_applied_one)
                             _dir_consumed_out[event.tool_call_id] = _out
                         else:
@@ -14459,7 +14477,8 @@ async def _run_chat(
                     )
                     continue
             elif event.kind == EVENT_STEER_CONSUMED:
-                _settle_consumed_steers(slot, event.text or "", state)
+                _consumed_human = _settle_consumed_steers(slot, event.text or "", state)
+                _goal_human_steer = _goal_human_steer or _consumed_human
                 if _refusal_notices:
                     # Same echo, same parser as the user-steer ledger: an
                     # empty echo is no evidence, and treating it as delivery

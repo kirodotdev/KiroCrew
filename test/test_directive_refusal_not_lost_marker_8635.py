@@ -352,6 +352,7 @@ class TestTheRefusalTagSurvivesDelivery:
 _HOSTILE_CALLS: dict[str, dict] = {
     "autonudge_stop": {"reason": "x" * 1391},
     "ask_question": {"questions": [{"text": "", "options": []}]},
+    "goal": {"action": "start", "objective": "   ", "criteria": ["Finish the work"]},
     "monitor_start": {"message": "   "},
     "monitor_watch": {
         "kind": "github_pull_request",

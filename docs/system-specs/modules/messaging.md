@@ -2,6 +2,54 @@
 
 ## Overview
 
+Slack, Discord and Webex's supported goal sessions pass authenticated human
+versus gateway-wake provenance to the shared session-directive consumer.
+Discord and Webex capture the wake marker at dispatch entry, before the turn
+ceiling spends it. The shared queue drain expires any unspent marker before
+pumping queued messages or waking peer sessions, so queued humans retain their
+own turn identity and ordinary ceiling accounting even after a monitor turn or
+a return before the ceiling gate. If a generated wake reaches a busy dispatcher,
+it is refused before steering, queueing or acknowledging delivery. The gateway
+honors that busy outcome for plain goal wakes as well as monitor wakes; a skipped
+wake is not delivered later as a human message.
+Discord and Webex also return `BUSY` when admission refuses a plain goal wake
+before its turn starts, and `UNAVAILABLE` when channels governance does: that
+deny stands until the policy changes, so retrying it would keep a goal working
+forever without spending a cycle. On that answer the gateway marks a still-running
+typed goal `blocked` (`goal_actions.block_goal_on_channel_denial`), naming the
+policy in its progress, so Resume after allowing the channel continues it; a
+goal-less loop keeps its delivered accounting. Only the revision that fired is
+blocked: the gateway reads the goal and generation before dispatching, because
+the live row changes in place while the dispatch awaits, so a pause, edit or
+resume that lands meanwhile keeps its own state. Human refusals keep their
+existing return behavior; Discord monitor refusals remain `BUSY` at admission
+and `UNAVAILABLE` at governance, including inside a generated-turn scope.
+The consumer also captures the session Stop generation and rechecks it when a
+goal mutation commits. Channel Stop commands pause the existing goal as well
+as cancelling the current response. Other transports keep their existing
+directive behavior until they support the auto-nudge binding contract.
+Slack goal wakes run through the shared directive-capable driver. A failed pause
+save stays paused in memory and appears in the Stop reply with a restart warning.
+A Stop reads the presser's queued entries (`peek_queue`) and receipt lines
+(`lines_queued_by`) before the pause's write awaits and drops only those, so a
+message sent meanwhile survives and its receipt still reads queued. It reads the
+turn permit's mark (`turn_mark`) at the same point, and a turn that began during
+the pause (`turn_began_since`) is neither cancelled nor force-reset.
+
+Teams input into a busy **resumed dashboard session** uses the dashboard handoff
+when the dashboard owns the turn, including human/channel provenance through
+steer consumption and queue fallback. A Teams-owned turn keeps Teams' existing
+steer/queue handler and attachment-preserving drain, including while its completed
+response is being persisted. This requires a live local non-closing slot bound to
+the same session and the session's exact lease-owning task currently executing
+Teams' `drive_turn`; that task registration ends in `finally` before queue drain.
+Retained choice renderers confer no turn ownership. Unknown ownership and
+unavailable, closing or remote slots retain the handoff's refusal. Attachments
+remain refused for dashboard-owned turns. The per-message `/queue` or `/steer`
+override takes precedence over `messaging.queue_mode`. Native Teams sessions,
+including resumed earlier generations, keep their existing busy handler and do
+not gain goal support.
+
 `kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, WhatsApp, and Feishu integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
 **Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), `sel` for audit, and, function-locally from `privacy_mode`, `session_map` (the durable flag) and `history` (the transcript header the mode is stamped into).
@@ -1804,6 +1852,23 @@ dispatcher also records the user's own words on the live renderer via
 `note_steer` so the rendered chip quotes the user rather than the redacted
 backend echo.
 
+During a generated Discord or Webex turn, `GoalSteerState` registers human
+steers before the write awaits. The driver's `on_steer_consumed` callback
+matches the backend consumption echo through `settle_consumed_steers`; a
+confirmed human match permits goal directives to act on that correction.
+The matcher lives in the shared `kiro_crew.steer_settle` leaf, below both
+messaging and dashboard; main chat and the sidecar call the same implementation.
+Its comparison redaction delegates through `agent_sdk.drivers.acp.redact_text`
+to the backend's exact redactor, resolved at call time so imports stay ACP-free.
+Write acknowledgements, inline display markers, empty or unmatched echoes,
+and automation-origin steers confer no human authority. Other directives keep
+the turn's original provenance, and every goal mutation still checks its live
+Stop generation and admission. This record belongs to the turn, independently
+of whether its renderer is muted, and is discarded when the turn exits.
+Pending evidence is bounded by `MAX_PENDING_GOAL_STEERS` and
+`MAX_GOAL_STEER_CHARS`; overflow follows the existing queue path with the full
+message. Ordinary human-started turns retain their steering behavior.
+
 Attachments force the queue path on Discord: `_session/steer` carries text only,
 so a mid-turn message with files would lose them.
 
@@ -2308,9 +2373,26 @@ the receipt -- finalizing it to `🛑 Cancelled` only once nothing else is queue
 `clear_queue` and the receipt finalize run together under `ReceiptQueue.lock`.
 All of that, including both reply strings, is
 `messaging/commands.py::stop_running_turn(sessions, session_key, *, queue,
-surface, owner, deliver)`; a dispatcher supplies the session key, its bound
-`ReceiptSurface`, the caller's owner token and a `deliver` that sends one reply
-to the caller's own address and hands back what landed.
+surface, owner, deliver, goal_state=None)`; a dispatcher supplies the session key,
+its bound `ReceiptSurface`, the caller's owner token, its existing dashboard state
+and a `deliver` that sends one reply to the caller's own address and hands back
+what landed. Goal pause and pause-save warnings use the shared `goal_actions`
+binding collection with that state's explicit session links, including retained
+exact dashboard aliases after channel reconciliation. An accepted Stop pauses
+every typed goal on those bindings and appends any unsaved-pause warning before
+the single `deliver` call, while preserving goal-less watches and foreign
+name-fold lookalikes. A first Stop declined during automatic compaction neither
+pauses the goal nor retries its save. The shared messaging layer imports no
+dashboard implementation to obtain this state.
+
+WhatsApp and the native Slack fallback append the same pause-save warning to
+their existing stopped or idle reply. They capture the dashboard state and
+resolved control key before pausing, and use those same values when reading the
+warning. The native Slack fallback also pauses retained goals when no provider
+session exists; suffix forms such as `!stop please` keep the same owner as the
+thread's Stop control. Native Slack's explicit Stop passes `pause_goal=True`
+when preserving the queue for its detach-and-settle protocol; the lifecycle's
+compaction refusal still precedes the goal mutation.
 
 **The queue drop is the CALLER's, not the session's.** Under `unified` one queue
 holds several principals, so `clear_queue` takes an ownership predicate over an
@@ -2496,7 +2578,7 @@ user-facing string has exactly one owner.
 
 | Command | Shared half | Per-channel half |
 |---|---|---|
-| `/stop` | `commands.stop_running_turn(sessions, session_key, *, queue, surface, owner, deliver) -> str` | the `deliver` that performs the send and reports what landed; which session key a resumed conversation stops; the caller's `owner_token` |
+| `/stop` | `commands.stop_running_turn(sessions, session_key, *, queue, surface, owner, deliver, goal_state=None) -> str` | the `deliver` that performs the send and reports what landed; which session key a resumed conversation stops; the caller's `owner_token` and existing dashboard state |
 | `/yolo` | `commands.run_yolo_command(arg, *, source, caller, phrasing) -> str` | the send; `source` (also the grant's audit source), the trusted `caller`, and a `YoloPhrasing` |
 | `/link` | `link.rebind_conversation_location(sessions, *, key, location, unlink_command) -> str` | the send; `location` (the channel's one spelling of "this conversation"); any refusal only a resume-capable channel can hit |
 | `/unlink` | `link.release_conversation_location(sessions, *, key, location, channel) -> (str, swept)` | the send; the opt-out write ordered before it; any dashboard nudge for a swept binding |
@@ -5946,6 +6028,10 @@ and `/compact` act on whichever bucket is live (`_live_session_key`); a refused 
 is a configuration answer and is not charged to the session's circuit breaker. They may talk to the agent; they cannot make it act. Steering
 is gated the same way, since it injects text into a turn already running, which
 under a unified DM scope is the operator's.
+
+Stop selects the live session key once and passes the captured dashboard state
+to `SessionManager.stop_turn` as `goal_state`. Its pause-durability warning uses
+that same key and state.
 
 **Private context is withheld per SESSION, not per sender.** `minimal_context` is
 `group or not is_operator`, and the `group` half is the one that is easy to get

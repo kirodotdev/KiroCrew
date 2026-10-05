@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -582,6 +584,609 @@ class TestRoutingComesFirst:
         await d.handle_message(_inbound("carry on"))
 
         assert seen == ["dashboard:chat-1"], "the turn must land in the resumed session"
+
+    @pytest.mark.asyncio
+    async def test_busy_native_generation_keeps_its_steer_after_picker_resume(
+        self, monkeypatch
+    ) -> None:
+        prior = "teams:kirocrew:direct:owner@example.com:gen4"
+        log = _ConversationLog(
+            [
+                {
+                    "key": transcript_stem(prior),
+                    "title": "Earlier Teams",
+                    "memory_mode": "persistent",
+                }
+            ],
+            {prior: []},
+        )
+        sessions, client = _Sessions(), _Client()
+        sessions.channel_keys.add(prior)
+        dispatcher = _dispatcher(sessions, client, log)
+        monkeypatch.setattr(dispatcher, "_live_cfg", lambda: dispatcher.cfg)
+        await dispatcher.handle_message(_inbound("/sessions"))
+        await dispatcher.handle_message(_inbound("", value=_press(client.cards[0], 0)))
+        assert (await dispatcher._session_resume.route("CONV")).resumed_key == prior
+        provider = SimpleNamespace(
+            supports_steer=True,
+            has_active_turn=lambda: True,
+            steer=AsyncMock(return_value=True),
+        )
+        sessions.is_busy = lambda key: key == prior
+        sessions.get_provider = Mock(return_value=provider)
+        client.sent.clear()
+
+        await asyncio.wait_for(dispatcher.handle_message(_inbound("Check the remaining item")), 5)
+
+        sessions.get_provider.assert_called_once_with(prior)
+        provider.steer.assert_awaited_once_with("Check the remaining item")
+        assert len(client.sent) == 1 and "Folded" in client.sent[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("phase", ["running", "finishing"])
+    @pytest.mark.parametrize("attachment", [False, True], ids=["text", "attachment"])
+    @pytest.mark.parametrize("peer_wake", [False, True], ids=["direct", "peer-wake"])
+    async def test_teams_owned_resumed_dashboard_turn_drains_its_midturn_input(
+        self, tmp_path, monkeypatch, phase, attachment, peer_wake
+    ) -> None:
+        from chat_test_helpers import _make_state, drain_background_tasks
+        from test_teams_dispatch import FakeCtx, FakeProvider, FakeSessions
+
+        from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+        from kiro_crew.messaging.attachments import IngestResult
+        from kiro_crew.messaging.queue_drain import wake_other_drains
+
+        class ResumableSessions(FakeSessions, _Sessions):
+            find_mirror_sessions = _Sessions.find_mirror_sessions
+            set_mirror_link = _Sessions.set_mirror_link
+
+            def __init__(self, provider):
+                _Sessions.__init__(self)
+                FakeSessions.__init__(self, provider, is_new=False)
+                self._sessions = {}
+
+            def _fold_key(self, key):
+                return key
+
+            async def get_or_create(self, key, **kwargs):
+                result = await super().get_or_create(key, **kwargs)
+                self._busy = True
+                self._sessions[key] = SimpleNamespace(turn_owner=asyncio.current_task())
+                self.acquired.append(key)
+                return result
+
+            def release(self, key):
+                self._busy = False
+                super().release(key)
+
+        session_key = "dashboard:chat-1"
+        provider = FakeProvider([])
+        sessions, client = ResumableSessions(provider), _Client()
+        dispatcher = _dispatcher(
+            sessions, client, _ConversationLog(_rows("Navigation"), {session_key: []})
+        )
+        dispatcher.ctx_builder = FakeCtx()
+        dispatcher.cfg.messaging.queue_mode = "queue"
+        monkeypatch.setattr(dispatcher, "_live_cfg", lambda: dispatcher.cfg)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        dispatcher._session_resume.dashboard_state = state
+        await dispatcher.handle_message(_inbound("/sessions"))
+        await dispatcher.handle_message(_inbound("", value=_press(client.cards[0], 0)))
+        assert (await dispatcher._session_resume.route("CONV")).resumed_key == session_key
+        entered, release_stream = asyncio.Event(), asyncio.Event()
+        release_persist = threading.Event()
+        event_loop = asyncio.get_running_loop()
+        messages, typing_tasks = [], []
+        downloaded = tmp_path / "focus.txt"
+
+        async def stream(message):
+            messages.append(message)
+            renderer = dispatcher._active_renderers[session_key]
+            typing_tasks.append(renderer._typing_task)
+            provider.active_turn = True
+            try:
+                if message == "begin" and phase == "running":
+                    entered.set()
+                    await asyncio.wait_for(release_stream.wait(), 10)
+                if message != "begin" and attachment:
+                    assert downloaded.exists()
+                yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="Navigation checked.")
+                yield AcpEvent(kind=EVENT_COMPLETE)
+            finally:
+                provider.active_turn = False
+
+        def persist(key, text, reply, is_new, agent):
+            assert key == session_key
+            if text == "begin" and phase == "finishing":
+                event_loop.call_soon_threadsafe(entered.set)
+                if not release_persist.wait(10):
+                    raise TimeoutError("Teams persistence was not released")
+
+        async def ingest(_client, descriptors):
+            assert descriptors == inbound.attachments
+            await asyncio.to_thread(downloaded.write_text, "focus report", encoding="utf-8")
+            return IngestResult(file_paths=[str(downloaded)], text_blocks=["Focus report attached"])
+
+        provider.stream = stream
+        monkeypatch.setattr(dispatcher, "_persist_turn", persist)
+        download = AsyncMock(side_effect=ingest)
+        monkeypatch.setattr(
+            "kiro_crew.teams.transport_dispatch.process_teams_attachments", download
+        )
+        inbound = _inbound("Check Shift+Tab too")
+        if attachment:
+            inbound.attachments.append({"contentType": "text/plain", "name": "focus.txt"})
+        if peer_wake:
+            sessions._busy = True
+            assert await dispatcher._enqueue_with_receipt(session_key, _inbound("begin"), "begin")
+            sessions._busy = False
+            turn = asyncio.create_task(
+                wake_other_drains(waker="slack", session_key=session_key, channels=["teams"])
+            )
+        else:
+            turn = asyncio.create_task(dispatcher.handle_message(_inbound("begin")))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert sessions.is_busy(session_key) and not slot.running
+            assert sessions._sessions[session_key].turn_owner is turn
+            assert dispatcher._active_renderers[session_key]._finalized == (phase == "finishing")
+            client.sent.clear()
+            await asyncio.wait_for(dispatcher.handle_message(inbound), 5)
+            queued = sessions.queues.get(session_key, [])
+            assert len(queued) == 1, client.sent
+            assert queued[0][1] == inbound.text
+            assert queued[0][2]["attachments"] == inbound.attachments
+            download.assert_not_awaited()
+            assert not slot._queue and not slot._pending_steers
+            release_stream.set()
+            release_persist.set()
+            await asyncio.wait_for(turn, 10)
+            assert sessions.acquired == [session_key, session_key]
+            assert sessions.released == [session_key, session_key]
+            assert not dispatcher._executing_turn_tasks
+            assert len(messages) == 2 and messages[1].startswith(inbound.text)
+            assert not sessions.queues[session_key] and not sessions.is_busy(session_key)
+            assert (await dispatcher._session_resume.route("CONV")).resumed_key == session_key
+            if attachment:
+                download.assert_awaited_once()
+                assert "Focus report attached" in messages[1]
+                assert not downloaded.exists()
+            else:
+                download.assert_not_awaited()
+            assert not any("Send it again" in text for text in client.sent)
+        finally:
+            release_stream.set()
+            release_persist.set()
+            await asyncio.wait_for(asyncio.gather(turn, return_exceptions=True), 10)
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(task for task in typing_tasks if task is not None), return_exceptions=True
+                ),
+                5,
+            )
+            await asyncio.wait_for(drain_background_tasks(state), 5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "foreign-owner",
+            "missing-owner",
+            "missing-state",
+            "missing-slot",
+            "closing",
+            "remote",
+            "wrong-session",
+            "unknown-executor",
+        ],
+    )
+    async def test_resumed_busy_refuses_unproven_or_unavailable_teams_owner(
+        self, tmp_path, monkeypatch, case
+    ) -> None:
+        from chat_test_helpers import _make_state, drain_background_tasks
+
+        session_key = "dashboard:chat-1"
+        sessions, client = _Sessions(), _Client()
+        sessions.set_mirror_link(session_key, ChannelLink("teams", "CONV"), accepts_inbound=True)
+        lease = SimpleNamespace(turn_owner=None)
+        sessions._sessions = {session_key: lease}
+        sessions._fold_key = lambda key: key
+        sessions.is_busy = lambda key: lease.turn_owner is not None
+        sessions.get_provider = Mock(
+            return_value=SimpleNamespace(
+                supports_steer=True,
+                has_active_turn=lambda: True,
+                steer=AsyncMock(return_value=True),
+            )
+        )
+        dispatcher = _dispatcher(sessions, client, _ConversationLog(_rows("Navigation")))
+        monkeypatch.setattr(dispatcher, "_live_cfg", lambda: dispatcher.cfg)
+        monkeypatch.setattr(dispatcher, "_enqueue_with_receipt", AsyncMock())
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        dispatcher._session_resume.dashboard_state = state
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def drive(turn, **kwargs):
+            lease.turn_owner = asyncio.current_task()
+            entered.set()
+            try:
+                await asyncio.wait_for(release.wait(), 10)
+            finally:
+                await turn.renderer.close()
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", drive)
+        turn = asyncio.create_task(dispatcher.handle_message(_inbound("begin")))
+        foreign = asyncio.create_task(release.wait())
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert lease.turn_owner is turn and turn in dispatcher._executing_turn_tasks
+            assert not slot.running
+            if case == "foreign-owner":
+                lease.turn_owner = foreign
+            elif case == "missing-owner":
+                lease.turn_owner = None
+            elif case == "missing-state":
+                dispatcher._session_resume.dashboard_state = None
+            elif case == "missing-slot":
+                state._slots.pop(slot.key)
+            elif case == "closing":
+                slot.begin_close()
+            elif case == "remote":
+                slot.executor = "remote"
+            elif case == "wrong-session":
+                slot.linked_session_key = "teams:another"
+            elif case == "unknown-executor":
+                slot.executor = ""
+            sessions.is_busy = lambda key: key == session_key
+            client.sent.clear()
+
+            await asyncio.wait_for(dispatcher.handle_message(_inbound("Check focus")), 5)
+
+            assert len(client.sent) == 1 and "Send it again" in client.sent[0]
+            sessions.get_provider.assert_not_called()
+            dispatcher._enqueue_with_receipt.assert_not_awaited()
+            assert not slot._queue and not slot._pending_steers
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(turn, foreign, return_exceptions=True), 10)
+            await asyncio.wait_for(drain_background_tasks(state), 5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ending", ["success", "error", "cancel"])
+    async def test_teams_turn_ownership_expires_before_drain_and_retained_choices(
+        self, tmp_path, monkeypatch, ending
+    ) -> None:
+        from chat_test_helpers import _make_state, drain_background_tasks
+
+        session_key = "dashboard:chat-1"
+        sessions, client = _Sessions(), _Client()
+        sessions.set_mirror_link(session_key, ChannelLink("teams", "CONV"), accepts_inbound=True)
+        dispatcher = _dispatcher(sessions, client, _ConversationLog(_rows("Navigation")))
+        monkeypatch.setattr(dispatcher, "_live_cfg", lambda: dispatcher.cfg)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        dispatcher._session_resume.dashboard_state = state
+        entered, release = asyncio.Event(), asyncio.Event()
+        lease = SimpleNamespace(turn_owner=None)
+        sessions._sessions = {session_key: lease}
+        sessions._fold_key = lambda key: key
+
+        async def drive(turn, **kwargs):
+            lease.turn_owner = asyncio.current_task()
+            assert lease.turn_owner in dispatcher._executing_turn_tasks
+            await turn.renderer.on_text_chunk("Pick one\n[OPTIONS: yes | no]")
+            await turn.renderer.on_done()
+            entered.set()
+            try:
+                await asyncio.wait_for(release.wait(), 10)
+                if ending == "error":
+                    raise RuntimeError("drive failed")
+            finally:
+                await turn.renderer.close()
+
+        async def drain(key, inbound=None):
+            assert key == session_key
+            assert not dispatcher._executing_turn_tasks
+            assert dispatcher._active_renderers[key].has_pending_choices
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", drive)
+        drain_spy = AsyncMock(side_effect=drain)
+        monkeypatch.setattr(dispatcher, "_drain_queue", drain_spy)
+        turn = asyncio.create_task(dispatcher.handle_message(_inbound("begin")))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert dispatcher._active_renderers[session_key].has_pending_choices
+            assert turn in dispatcher._executing_turn_tasks
+            if ending == "cancel":
+                turn.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(turn, 5)
+            else:
+                release.set()
+                if ending == "error":
+                    with pytest.raises(RuntimeError, match="drive failed"):
+                        await asyncio.wait_for(turn, 5)
+                else:
+                    await asyncio.wait_for(turn, 5)
+            assert not dispatcher._executing_turn_tasks
+            assert dispatcher._active_renderers[session_key].has_pending_choices
+            if ending == "success":
+                drain_spy.assert_awaited_once()
+            else:
+                drain_spy.assert_not_awaited()
+
+            # The retained renderer and old lease task cannot authorize a later input.
+            sessions.is_busy = lambda key: key == session_key
+            sessions.get_provider = Mock()
+            enqueue = AsyncMock()
+            monkeypatch.setattr(dispatcher, "_enqueue_with_receipt", enqueue)
+            client.sent.clear()
+            await asyncio.wait_for(dispatcher.handle_message(_inbound("Check focus")), 5)
+            assert len(client.sent) == 1 and "Send it again" in client.sent[0]
+            sessions.get_provider.assert_not_called()
+            enqueue.assert_not_awaited()
+            assert not slot._queue and not slot._pending_steers
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(turn, return_exceptions=True), 10)
+            await asyncio.wait_for(drain_background_tasks(state), 5)
+
+    @pytest.mark.asyncio
+    async def test_resumed_goal_consumes_human_criteria_correction(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from chat_test_helpers import drain_background_tasks
+        from test_dashboard_chat import TestRunChatSegmentFlush, _provider_mock
+
+        from kiro_crew import autonudge, session_directive
+        from kiro_crew.acp.types import (
+            EVENT_COMPLETE,
+            EVENT_STEER_CONSUMED,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            AcpEvent,
+        )
+        from kiro_crew.dashboard import chat_runner, session_control
+        from kiro_crew.goal import GoalState, continuation_message
+        from kiro_crew.goal_actions import goal_snapshot
+        from kiro_crew.history import HUMAN_TURN_META_KEY
+
+        state = TestRunChatSegmentFlush._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("chat-1")
+        service = autonudge.AutoNudgeService(base_dir=tmp_path)
+        monkeypatch.setattr(autonudge, "get_instance", lambda: service)
+        goal = GoalState.from_dict(
+            {"objective": "Verify keyboard navigation", "criteria": ["Arrow keys work"]}
+        )
+        provider = _provider_mock()
+        provider.supports_steer = provider.client.supports_steer = True
+        provider.steer_needs_loss_recovery = provider.client.steer_needs_loss_recovery = False
+        provider.has_active_turn = Mock(return_value=True)
+        provider.client.steer = AsyncMock(return_value=True)
+        provider.steer = provider.client.steer
+        state.sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        sessions, client = _Sessions(), _Client()
+        sessions.set_mirror_link(
+            "dashboard:chat-1", ChannelLink("teams", "CONV"), accepts_inbound=True
+        )
+        sessions.is_busy = lambda key: key == "dashboard:chat-1"
+        sessions.get_provider = Mock(return_value=provider)
+        dispatcher = _dispatcher(sessions, client, _ConversationLog(_rows("Navigation")))
+        dispatcher._session_resume.dashboard_state = state
+        monkeypatch.setattr(dispatcher, "_live_cfg", lambda: dispatcher.cfg)
+        monkeypatch.setattr(dispatcher, "_enqueue_with_receipt", AsyncMock())
+        monkeypatch.setattr(dispatcher, "_run_turn", AsyncMock())
+        correction = "Also verify Shift+Tab returns focus"
+        outcomes = []
+        admissions = []
+        real_apply = chat_runner.apply_session_directive
+
+        async def capture(*args, **kwargs):
+            result = await real_apply(*args, **kwargs)
+            outcomes.append(
+                (kwargs["producer_is_user_facing"], kwargs["producer_is_channel"], result)
+            )
+            return result
+
+        monkeypatch.setattr(chat_runner, "apply_session_directive", capture)
+
+        async def stream(message):
+            await asyncio.wait_for(dispatcher.handle_message(_inbound(correction)), 5)
+            admissions.append(slot._steer_admissions.get(correction))
+            yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=correction)
+            yield AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="criteria",
+                title="goal",
+                tool_name="goal",
+                mcp_server_name=session_directive.CORE_MCP_SERVER,
+            )
+            yield AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="criteria",
+                tool_final=True,
+                tool_output=session_directive.encode(
+                    "goal",
+                    {
+                        "action": "update",
+                        "goal_id": before["goal_id"],
+                        "generation": before["generation"],
+                        "criteria": [*goal.criteria, correction],
+                    },
+                    "Goal change requested.",
+                ),
+            )
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="I have checked the navigation criteria.")
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        provider.stream = stream
+        turn = None
+        try:
+            loop = await service.add(slot.key, continuation_message(goal), goal=goal, max_cycles=50)
+            before = goal_snapshot(loop)
+            budgets = (loop.max_cycles, loop.max_runtime_secs, loop.created_ts)
+            turn = asyncio.create_task(
+                chat_runner._run_chat(
+                    state,
+                    slot,
+                    loop.message,
+                    _directive_user_origin=False,
+                    _directive_self_wake=True,
+                    _directive_loop_id=loop.id,
+                    _directive_loop_gen=loop.config_generation,
+                )
+            )
+            slot.task = turn
+            await asyncio.wait_for(turn, 10)
+            provider.client.steer.assert_awaited_once_with(correction)
+            assert any("Folded" in text for text in client.sent), client.sent
+            assert len(outcomes) == 1
+            assert outcomes[0][:2] == (True, True), outcomes
+            assert outcomes[0][2].startswith("Goal updated:"), outcomes
+            assert loop.goal.criteria == [*goal.criteria, correction]
+            assert loop.id == before["goal_id"] and loop.goal.objective == goal.objective
+            assert (loop.max_cycles, loop.max_runtime_secs, loop.created_ts) == budgets
+            assert not slot._queue and not slot._pending_steers
+            rows = [row for row in slot.messages if row.get("role") == "user"]
+            row = next(row for row in rows if row.get("content") == correction)
+            assert row["meta"]["steerState"] == "consumed"
+            assert row["meta"][HUMAN_TURN_META_KEY] is True
+            (admission,) = admissions
+            assert admission[session_control.CHANNEL_RECIPIENT_META_KEY] == {
+                "channel_type": "teams",
+                "conversation_id": "CONV",
+                "principal": _OWNER,
+            }
+            assert not slot._steer_admissions
+            assert not slot._steer_user_origin and not slot._steer_channel_origin
+            dispatcher._enqueue_with_receipt.assert_not_awaited()
+            dispatcher._run_turn.assert_not_awaited()
+        finally:
+            if turn is not None and not turn.done():
+                turn.cancel()
+                await asyncio.wait_for(asyncio.gather(turn, return_exceptions=True), 5)
+            tasks = list(service._timers.values()) + list(service._inflight_adds)
+            service.stop()
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+            await asyncio.wait_for(drain_background_tasks(state), 5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case,expected",
+        [
+            ("config-queue", "queued"),
+            ("queue-override", "queued"),
+            ("steer-override", "steered"),
+            ("declined-steer", "queued"),
+            ("no-client", "queued"),
+            ("attachments", "refused"),
+            ("missing", "refused"),
+            ("closing", "refused"),
+            ("idle", "refused"),
+            ("remote", "refused"),
+        ],
+    )
+    async def test_resumed_busy_input_keeps_dashboard_delivery_ownership(
+        self, tmp_path, monkeypatch, case, expected
+    ) -> None:
+        from chat_test_helpers import _make_state, drain_background_tasks
+
+        from kiro_crew.dashboard import session_control
+        from kiro_crew.history import HUMAN_TURN_META_KEY
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        released = asyncio.Event()
+        steer_client = SimpleNamespace(
+            supports_steer=True,
+            steer_needs_loss_recovery=False,
+            steer=AsyncMock(return_value=case != "declined-steer"),
+        )
+        slot._acp_client = None if case == "no-client" else steer_client
+        if case == "missing":
+            state._slots.pop(slot.key)
+        elif case == "closing":
+            slot.begin_close()
+        elif case == "remote":
+            slot.executor = "remote"
+        sessions, client = _Sessions(), _Client()
+        sessions.set_mirror_link(
+            "dashboard:chat-1", ChannelLink("teams", "CONV"), accepts_inbound=True
+        )
+        sessions.is_busy = lambda key: key == "dashboard:chat-1"
+        sessions.get_provider = Mock(return_value=steer_client)
+        dispatcher = _dispatcher(sessions, client, _ConversationLog(_rows("Navigation")))
+        dispatcher._session_resume.dashboard_state = state
+        if case in {"config-queue", "steer-override"}:
+            dispatcher.cfg.messaging.queue_mode = "queue"
+        monkeypatch.setattr(dispatcher, "_live_cfg", lambda: dispatcher.cfg)
+        monkeypatch.setattr(dispatcher, "_enqueue_with_receipt", AsyncMock())
+        monkeypatch.setattr(dispatcher, "_run_turn", AsyncMock())
+        download = AsyncMock()
+        monkeypatch.setattr(
+            "kiro_crew.teams.transport_dispatch.process_teams_attachments", download
+        )
+        text = "Check Shift+Tab too"
+        prefix = {"queue-override": "/queue ", "steer-override": "/steer "}.get(case, "")
+        inbound = _inbound(prefix + text)
+        if case == "attachments":
+            inbound.attachments.append({"contentType": "image/png", "name": "focus.png"})
+        busy = asyncio.create_task(released.wait())
+        try:
+            slot.task = busy if case != "idle" else None
+            await asyncio.wait_for(dispatcher.handle_message(inbound), 5)
+            assert len(client.sent) == 1
+            if expected == "steered":
+                steer_client.steer.assert_awaited_once_with(text)
+                assert "Folded" in client.sent[0]
+                assert not slot._queue
+                assert slot._pending_steers == [text]
+                assert slot._steer_user_origin == {text: True}
+                assert slot._steer_channel_origin == {text: True}
+                row = next(row for row in slot.messages if row.get("content") == text)
+                assert row["meta"][HUMAN_TURN_META_KEY] is True
+                admission = slot._steer_admissions[text]
+            elif expected == "queued":
+                assert "Queued" in client.sent[0]
+                (entry,) = slot._queue
+                assert entry["content"] == text
+                assert entry["_directive_user_origin"] is True
+                assert entry["_directive_channel_origin"] is True
+                assert not slot._pending_steers
+                admission = entry["meta"]
+                if case == "declined-steer":
+                    steer_client.steer.assert_awaited_once_with(text)
+                else:
+                    steer_client.steer.assert_not_awaited()
+            else:
+                assert "Send it again" in client.sent[0]
+                assert "Folded" not in client.sent[0] and "Queued" not in client.sent[0]
+                if case == "attachments":
+                    assert "attachments" in client.sent[0]
+                    assert inbound.attachments == [
+                        {"contentType": "image/png", "name": "focus.png"}
+                    ]
+                steer_client.steer.assert_not_awaited()
+                assert not slot._queue and not slot._pending_steers
+            if expected != "refused":
+                assert session_control.QUEUED_CONTAINMENT_META_KEY in admission
+                assert admission[session_control.CHANNEL_RECIPIENT_META_KEY] == {
+                    "channel_type": "teams",
+                    "conversation_id": "CONV",
+                    "principal": _OWNER,
+                }
+            sessions.get_provider.assert_not_called()
+            dispatcher._enqueue_with_receipt.assert_not_awaited()
+            dispatcher._run_turn.assert_not_awaited()
+            download.assert_not_awaited()
+        finally:
+            released.set()
+            await asyncio.wait_for(busy, 5)
+            slot.task = None
+            await asyncio.wait_for(drain_background_tasks(state), 5)
 
     @pytest.mark.asyncio
     async def test_stop_targets_the_resumed_session_not_the_native_one(self) -> None:

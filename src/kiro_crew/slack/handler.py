@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
+from kiro_crew import goal_actions  # noqa: F401 - read by the owners
 from kiro_crew import name_grant, runtime_death
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (

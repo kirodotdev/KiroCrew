@@ -627,6 +627,89 @@ class TestTheSharedStopPath:
         assert not any("bob asked" in body for _, body in surface.edits[before:])
         assert queue.has_receipt("unified:agent"), "and his bubble keeps its only handle"
 
+    def test_a_message_sent_while_the_goal_pause_saves_survives_the_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stop drops what was queued at the press, not what arrived during its awaits."""
+        from kiro_crew import goal_actions
+
+        class _Peekable(_Sessions):
+            def peek_queue(self, key: str) -> tuple[Any, ...]:
+                return tuple(self.entries)
+
+        sessions = _Peekable([("1", "alice asked", _queued(ALICE, "a"))])
+        queue, surface = ReceiptQueue(), _Surface()
+
+        async def pausing(key: str, *, state: Any = None) -> bool:
+            sessions.entries.append(("2", "alice again", _queued(ALICE, "later")))
+            await _bubble(queue, surface, [(ALICE, "alice again")], "unified:agent")
+            return True
+
+        async def go() -> None:
+            await _bubble(queue, surface, [(ALICE, "alice asked")], "unified:agent")
+            await stop_running_turn(
+                sessions,
+                "unified:agent",
+                queue=queue,
+                surface=surface,
+                owner=ALICE,
+                deliver=AsyncMock(),
+            )
+
+        monkeypatch.setattr(goal_actions, "pause_session_goal", pausing)
+        asyncio.run(go())
+        assert [kwargs["mark"] for _, _, kwargs in sessions.entries] == ["later"]
+        # Its receipt line is kept too, so the bubble still reads queued, not cancelled.
+        assert [line.text for line in queue.lines_queued_by("unified:agent", ALICE)] == [
+            "alice again"
+        ]
+
+    @pytest.mark.parametrize(
+        "at_press, during_pause, cancelled",
+        [
+            ("idle", "take", False),
+            ("held", "keep", True),
+            ("held", "release-and-take", False),
+        ],
+    )
+    def test_stop_cancels_only_the_turn_running_when_it_was_pressed(
+        self, monkeypatch: pytest.MonkeyPatch, at_press: str, during_pause: str, cancelled: bool
+    ) -> None:
+        """A turn that took the permit while the goal pause saved is newer intent."""
+        from kiro_crew import goal_actions
+        from kiro_crew.messaging.commands import STOP_REPLY_CANCELLED, STOP_REPLY_IDLE
+        from kiro_crew.session import SessionManager, _Session
+
+        provider = AsyncMock()
+        sessions = SessionManager.__new__(SessionManager)
+        sessions._sessions = {"unified:agent": _Session(provider=provider)}
+        permit = sessions._sessions["unified:agent"].semaphore
+
+        async def pausing(key: str, *, state: Any = None) -> bool:
+            if during_pause == "release-and-take":
+                permit.release()
+            if during_pause != "keep":
+                await permit.acquire()
+            return True
+
+        async def go() -> str:
+            if at_press == "held":
+                await permit.acquire()
+            return await stop_running_turn(
+                sessions,
+                "unified:agent",
+                queue=ReceiptQueue(),
+                surface=_Surface(),
+                owner=ALICE,
+                deliver=AsyncMock(),
+            )
+
+        monkeypatch.setattr(goal_actions, "pause_session_goal", pausing)
+        monkeypatch.setattr(goal_actions, "goal_pause_warning", lambda key, *, state=None: "")
+        reply = asyncio.run(go())
+        assert provider.cancel.await_count == int(cancelled)
+        assert reply == (STOP_REPLY_CANCELLED if cancelled else STOP_REPLY_IDLE)
+
     def test_the_owner_argument_is_required(self) -> None:
         """No default, so a channel added later cannot inherit the whole-queue clear.
 

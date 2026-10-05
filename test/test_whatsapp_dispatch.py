@@ -9,12 +9,15 @@ never imported: the client is a fake and the transport is a lightweight stand-in
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from kiro_crew import autonudge, goal_actions
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.goal import GOAL_PAUSE_UNSAVED_MESSAGE, GoalState, continuation_message
 from kiro_crew.messaging.commands import compact_refusal_plain_text
 from kiro_crew.messaging.driver import APPROVAL_AUTO
 from kiro_crew.messaging.transport import InboundMessage
@@ -27,6 +30,8 @@ from kiro_crew.whatsapp.commands import (
     COMPACT_TIMED_OUT_TEXT,
     COMPACTED_TEXT,
     CONTEXT_LONG_TEXT,
+    STOP_NOTHING_RUNNING_TEXT,
+    STOPPED_TEXT,
 )
 from kiro_crew.whatsapp.group_gate import SILENCE_SENTINEL, GroupVerdict
 from kiro_crew.whatsapp.transport_dispatch import (
@@ -289,6 +294,94 @@ def _msg(text="hi", conv=_DM, user="447700900000"):
     return InboundMessage(channel_type="whatsapp", user_id=user, conversation_id=conv, text=text)
 
 
+@pytest.fixture
+def retained_whatsapp_goal(tmp_path, monkeypatch, event_loop):
+    dispatcher, _, sessions, transport = _make()
+    service = autonudge.AutoNudgeService(base_dir=tmp_path)
+    monkeypatch.setattr(autonudge, "get_instance", lambda: service)
+    monkeypatch.setattr(service, "_arm_from_deadline", lambda loop: None)
+    key = dispatcher._session_key(_DM)
+    alias = "retained-whatsapp-tab"
+    state = SimpleNamespace(_slots={alias: SimpleNamespace(key=alias, linked_session_key=key)})
+    dispatcher.dashboard_state = state
+    goal = GoalState(objective="Finish the requested report", progress="Draft written")
+    loop = event_loop.run_until_complete(service.add(alias, continuation_message(goal), goal=goal))
+    try:
+        yield SimpleNamespace(
+            dispatcher=dispatcher,
+            sessions=sessions,
+            transport=transport,
+            service=service,
+            state=state,
+            loop=loop,
+            key=key,
+        )
+    finally:
+        tasks = list(service._inflight_adds)
+        service.stop()
+        if tasks:
+            event_loop.run_until_complete(
+                asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["soft", "hard", "idle"])
+@pytest.mark.parametrize("save_fails", [False, True])
+async def test_stop_reports_retained_goal_pause_durability(
+    retained_whatsapp_goal, monkeypatch, outcome, save_fails
+):
+    case = retained_whatsapp_goal
+    before = await asyncio.to_thread(case.service._path.read_bytes)
+    generation = case.loop.config_generation
+    calls = []
+
+    async def stop_turn(key, *, goal_state=None):
+        calls.append(key)
+        assert key == case.key
+        assert goal_state is case.state
+        await goal_actions.pause_session_goal(key, state=goal_state)
+        # The reply must use the state captured for this Stop, not a later binding.
+        case.dispatcher.dashboard_state = SimpleNamespace(_slots={})
+        return outcome
+
+    case.sessions.stop_turn = stop_turn
+    if save_fails:
+
+        def fail_write(payload):
+            raise OSError("test pause persistence failure")
+
+        monkeypatch.setattr(case.service, "_write_state", fail_write)
+    await asyncio.wait_for(case.dispatcher.handle_message(_msg("/stop")), 5)
+
+    reply = STOPPED_TEXT if outcome != "idle" else STOP_NOTHING_RUNNING_TEXT
+    expected = f"{reply}\n\n{GOAL_PAUSE_UNSAVED_MESSAGE}" if save_fails else reply
+    assert case.transport.sent == [(_DM, expected)]
+    assert calls == [case.key]
+    assert not case.loop.active
+    assert case.loop.config_generation > generation
+    assert case.loop.goal.objective == "Finish the requested report"
+    assert case.loop.goal.progress == "Draft written"
+    stored = await asyncio.to_thread(case.service._path.read_bytes)
+    if save_fails:
+        assert stored == before
+    else:
+        assert json.loads(stored)["loops"][0]["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_nonoperator_stop_cannot_pause_or_disclose_retained_goal(retained_whatsapp_goal):
+    case = retained_whatsapp_goal
+    case.transport._is_operator = False
+    before = await asyncio.to_thread(case.service._path.read_bytes)
+    generation = case.loop.config_generation
+    await asyncio.wait_for(case.dispatcher.handle_message(_msg("/stop")), 5)
+    assert case.loop.active
+    assert case.loop.config_generation == generation
+    assert await asyncio.to_thread(case.service._path.read_bytes) == before
+    assert case.transport.sent == []
+
+
 # ── dispatcher: DM happy path ───────────────────────────────────────────────
 def test_dispatcher_drives_a_turn_and_replies():
     provider = FakeProvider("42 is the answer")
@@ -455,7 +548,8 @@ def test_stop_acts_on_the_members_bucket_when_that_is_the_live_one():
     sessions.is_busy = lambda key: key == member_key  # type: ignore[method-assign]
     stopped: list[str] = []
 
-    async def stop_turn(key):
+    async def stop_turn(key, *, goal_state):
+        assert goal_state is None
         stopped.append(key)
         return "soft"
 
@@ -478,13 +572,14 @@ def test_a_repeat_stop_while_compacting_forces_and_keeps_the_shared_queue():
     sessions.is_compacting = lambda key: True  # type: ignore[attr-defined]
     calls: list[dict] = []
 
-    async def stop_turn(key, **kw):
-        calls.append(kw)
-        return "compacting" if not kw.get("force") else "hard"
+    async def stop_turn(key, *, goal_state, force=False, preserve_queue=False):
+        assert goal_state is None
+        calls.append({"force": force, "preserve_queue": preserve_queue})
+        return "hard" if force else "compacting"
 
     sessions.stop_turn = stop_turn  # type: ignore[attr-defined]
     asyncio.run(d._handle_stop(_GROUP))
-    assert calls == [{}]
+    assert calls == [{"force": False, "preserve_queue": False}]
     assert [t for _, t in transport.sent] == [STOP_DECLINED_COMPACTING_TEXT]
     asyncio.run(d._handle_stop(_GROUP))
     assert calls[-1] == {"force": True, "preserve_queue": True}
@@ -1291,7 +1386,8 @@ def test_a_decline_whose_reply_never_sends_leaves_the_next_press_a_first_press()
     sessions.is_compacting = lambda key: True  # type: ignore[attr-defined]
     calls: list[dict] = []
 
-    async def stop_turn(key, **kw):
+    async def stop_turn(key, *, goal_state, **kw):
+        assert goal_state is None
         calls.append(kw)
         return "compacting" if not kw.get("force") else "hard"
 

@@ -1025,6 +1025,24 @@ class FirstTurnState(Enum):
         return self is FirstTurnState.RESUMED
 
 
+class TurnPermit(asyncio.BoundedSemaphore):
+    """A session's turn permit, counting how often it has been taken.
+
+    The count tells one holding apart from the next, which ``locked()`` alone
+    cannot: a Stop that awaits before it cancels reads it to leave alone a turn
+    that began after the press (``SessionManager.turn_began_since``).
+    """
+
+    def __init__(self, value: int = 1) -> None:
+        super().__init__(value)
+        self.acquisitions = 0
+
+    async def acquire(self) -> Literal[True]:
+        await super().acquire()
+        self.acquisitions += 1
+        return True
+
+
 @dataclass
 class _Session:
     provider: LLMProvider
@@ -1065,7 +1083,7 @@ class _Session:
     # SessionManager.release) must raise instead of silently pushing the
     # counter above 1, which would let a second turn acquire concurrently
     # with one still in flight.
-    semaphore: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
+    semaphore: asyncio.BoundedSemaphore = field(default_factory=TurnPermit)
     # The task that acquired the turn permit above, recorded at every acquire
     # site and read by ``reset``: a session popped while its permit is held
     # remembers WHO held it, so that task's later key-only ``release`` is
@@ -3297,6 +3315,14 @@ class SessionManager:
         """Return whether a folded session lease is held."""
         return self._allocation_boundary().is_busy(key)
 
+    def turn_mark(self, key: str) -> tuple[Any, int] | None:
+        """An opaque mark of *key*'s turn permit, for ``turn_began_since``."""
+        return self._allocation_boundary().turn_mark(key)
+
+    def turn_began_since(self, key: str, mark: tuple[Any, int] | None) -> bool:
+        """Whether *key*'s permit was taken after *mark* was read, and is held now."""
+        return self._allocation_boundary().turn_began_since(key, mark)
+
     def touch(self, key: str) -> bool:
         """Refresh a folded live session timestamp."""
         return self._allocation_boundary().touch(key)
@@ -3322,6 +3348,10 @@ class SessionManager:
     def detach_queue(self, key: str) -> tuple[Any, ...]:
         """Take the queued entries out of the live queue, keeping their files."""
         return self._allocation_boundary().detach_queue(key)
+
+    def peek_queue(self, key: str) -> tuple[Any, ...]:
+        """The queued entries, left in place."""
+        return self._allocation_boundary().peek_queue(key)
 
     def restore_queue(self, key: str, entries: tuple[Any, ...]) -> None:
         """Put ``detach_queue``'s entries back at the head of the queue."""
@@ -3691,6 +3721,8 @@ class SessionManager:
         preserve_queue: bool = False,
         on_soft: Callable[[], Awaitable[None]] | None = None,
         on_hard: Callable[[], Awaitable[None]] | None = None,
+        goal_state: Any = None,
+        pause_goal: bool = False,
     ) -> StopOutcome:
         """Cooperatively stop a turn, escalating to reset and eager respawn."""
         return await self._lifecycle_boundary().stop_turn(
@@ -3699,6 +3731,8 @@ class SessionManager:
             preserve_queue=preserve_queue,
             on_soft=on_soft,
             on_hard=on_hard,
+            goal_state=goal_state,
+            pause_goal=pause_goal,
         )
 
     def stop_generation(self, key: str) -> int:

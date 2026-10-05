@@ -2417,6 +2417,123 @@ def _webex_orchestrator(transport: MagicMock | None) -> Any:
     return orch
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["discord", "webex"])
+@pytest.mark.parametrize("queue_mode", ["steer", "queue"])
+async def test_plain_nudge_losing_busy_race_never_enters_human_work(
+    monkeypatch, channel, queue_mode
+):
+    """The dispatcher observes a human claim made after the gateway's idle check."""
+    from test_discord import _dispatcher as discord_dispatcher
+    from test_discord import _prime_live as prime_discord
+    from test_webex_dispatch import FakeClient, FakeCtx, FakeProvider, FakeSessions
+    from test_webex_dispatch import _dispatcher as webex_dispatcher
+    from test_webex_dispatch import _prime_live as prime_webex
+
+    if channel == "discord":
+        dispatcher, client, sessions = discord_dispatcher({"u1"})
+        provider = sessions._gp
+        key = dispatcher.current_session_key("u1")
+        transport = _discord_transport(current_key=key)
+        orch = _discord_orchestrator(transport)
+        fire = orch._fire_discord_nudge
+        room = "c1"
+        prime = prime_discord
+    else:
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        dispatcher = webex_dispatcher(sessions, FakeCtx(), client)
+        key = dispatcher.current_session_key("a@b.test")
+        transport = _webex_transport(current_key=key)
+        orch = _webex_orchestrator(transport)
+        fire = orch._fire_webex_nudge
+        room = "ROOM"
+        prime = prime_webex
+        monkeypatch.setattr(sessions, "get_origin_link", lambda key: None, raising=False)
+    dispatcher.cfg.messaging.queue_mode = queue_mode
+    prime(dispatcher.cfg)
+    transport.dispatcher = dispatcher
+    resolved = []
+
+    async def resolve(principal):
+        assert not sessions.is_busy(key)
+        sessions._busy = True
+        resolved.append(principal)
+        return room
+
+    transport.resolve_conversation = resolve
+    result = await fire(_loop(key))
+
+    assert resolved, "the gateway's idle check must pass before the human takes the session"
+    assert result is False
+    assert provider.steered == []
+    assert sessions.queued == []
+    assert client.sent == []
+    assert sessions.begin_turns == 0
+    orch.autonudge_svc.remove.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed", [True, False], ids=["goal", "plain"])
+async def test_a_standing_channel_refusal_blocks_a_goal_instead_of_retrying(typed):
+    """UNAVAILABLE on a plain wake is the governance deny: a goal stops, visibly."""
+    from kiro_crew.goal import GoalState
+    from kiro_crew.goal_actions import CHANNEL_DENIED_PROGRESS
+
+    transport = _discord_transport(current_key=_DKEY)
+    transport.dispatcher.handle_message = AsyncMock(
+        return_value=monitor_models.MonitorDispatchResult.UNAVAILABLE
+    )
+    orch = _discord_orchestrator(transport)
+    orch.autonudge_svc.update = AsyncMock(return_value=object())
+    goal = GoalState(objective="Ship it", criteria=["Tests pass"], status="working")
+    loop = _loop(_DKEY, active=True, goal=goal if typed else None)
+
+    result = await orch._fire_discord_nudge(loop)
+
+    if typed:
+        assert result is False
+        kwargs = orch.autonudge_svc.update.await_args.kwargs
+        assert orch.autonudge_svc.update.await_args.args == (loop.id,)
+        assert kwargs["active"] is False
+        assert kwargs["stopped_reason"] == "goal_blocked"
+        assert kwargs["goal"].status == "blocked"
+        assert kwargs["goal"].progress == CHANNEL_DENIED_PROGRESS
+        assert kwargs["precondition"](loop)
+    else:
+        # A goal-less loop keeps the delivered accounting it had before goals.
+        assert result is True
+        orch.autonudge_svc.update.assert_not_awaited()
+    orch.autonudge_svc.remove.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_channel_refusal_blocks_only_the_revision_that_fired():
+    """A resume that lands while the denied wake awaits keeps its own state."""
+    from kiro_crew.goal import GoalState
+
+    transport = _discord_transport(current_key=_DKEY)
+    goal = GoalState(objective="Ship it", criteria=["Tests pass"], status="working")
+    loop = _loop(_DKEY, active=True, goal=goal)
+    fired_generation = loop.config_generation
+
+    async def resumed_meanwhile(*_args, **_kwargs):
+        # The owner paused and resumed the same live row during the dispatch.
+        loop.config_generation += 2
+        return monitor_models.MonitorDispatchResult.UNAVAILABLE
+
+    transport.dispatcher.handle_message = AsyncMock(side_effect=resumed_meanwhile)
+    orch = _discord_orchestrator(transport)
+    orch.autonudge_svc.update = AsyncMock(return_value=None)
+
+    assert await orch._fire_discord_nudge(loop) is False
+
+    kwargs = orch.autonudge_svc.update.await_args.kwargs
+    assert not kwargs["precondition"](loop)
+    assert loop.config_generation == fired_generation + 2
+
+
 class TestFireWebexNudge:
     """Synthetic-injection path for a Webex DM babysit loop."""
 

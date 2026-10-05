@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import goal_actions
 from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
@@ -4133,6 +4134,13 @@ async def stop_slot_turn(
         # the mirrored chat_done. Nothing local to tear down.
         return {"ok": True}
 
+    def stop_result(**details: Any) -> dict[str, Any]:
+        result = {"ok": True, **details}
+        warning = goal_actions.goal_pause_warning(cancel_key, state=state)
+        if warning:
+            result.update(goal_pause_saved=False, warning=warning)
+        return result
+
     # Escalation path: a second stop press while a cooperative cancel is
     # already pending hard-kills. We escalate on ANY second press — not only
     # when the client computed force=true — because the client derives force
@@ -4206,6 +4214,7 @@ async def stop_slot_turn(
             force=True,
             preserve_queue=compaction_escape,
             on_hard=_on_hard_force,
+            goal_state=state,
         )
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
@@ -4218,10 +4227,11 @@ async def stop_slot_turn(
             # the backend actually performed (always a hard kill here).
             metadata={"slot": name, "via": source, "force": force, "escalated": True},
         )
-        return {"ok": True}
+        return stop_result()
 
     # Already stopping or not running — no-op (idempotent repeat press guard)
     if slot._stop_state != "idle" or not slot.running:
+        await goal_actions.pause_session_goal(cancel_key, state=state)
         if not slot.running:
             logger.info("Stop: slot %s not running, ignoring", name)
             _info = "not running"
@@ -4249,7 +4259,7 @@ async def stop_slot_turn(
         # ``info``, and a caller that renders them alike tells the second one the
         # opposite of what happened — which the de-duplicated retry above now
         # reaches routinely.
-        return {"ok": True, "info": _info, "already_stopping": bool(slot.running)}
+        return stop_result(info=_info, already_stopping=bool(slot.running))
 
     # A cooperative Stop while the session's own automatic /compact holds it is
     # DECLINED, before any of the soft-stop side effects below run. Cancelling
@@ -4313,6 +4323,8 @@ async def stop_slot_turn(
         preserve_queue=True,
         on_soft=_on_soft,
         on_hard=_on_hard,
+        goal_state=state,
+        pause_goal=True,
     )
     # A genuine in-flight turn whose cooperative cancel does not confirm within
     # the budget answers ``stop_turn`` with a non-acked outcome, which that
@@ -4356,8 +4368,8 @@ async def stop_slot_turn(
         # The provider held no active turn to cancel while the slot still read
         # running: the turn ended at the provider but the slot had not settled.
         # Naming it keeps the reply from reading as "stopped a running turn".
-        return {"ok": True, "info": "no active turn"}
-    return {"ok": True}
+        return stop_result(info="no active turn")
+    return stop_result()
 
 
 def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
