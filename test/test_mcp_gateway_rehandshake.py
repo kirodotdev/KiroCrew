@@ -54,10 +54,6 @@ def _make_backend() -> Backend:
         work_dir="/nonexistent",
         binary_version="1",
         os_uid=1000,
-        sandbox_mode="none",
-        autoapprove_set_hash="a",
-        approval_mode="reads",
-        trust_all_tools=False,
         config_snapshot_hash="s",
     )
     return Backend(

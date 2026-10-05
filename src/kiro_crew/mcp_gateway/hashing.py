@@ -458,7 +458,6 @@ _LABEL_FIELDS = (
     "agent_name",
     "server_name",
     "os_uid",
-    "sandbox_mode",
     "command_args_hash",
     "effective_env_hash",
     "work_dir",
@@ -491,7 +490,7 @@ def format_pool_label(fields: Mapping[str, Any]) -> str:
 
     return (
         f"{fields['agent_name']}:{fields['server_name']} "
-        f"uid={fields['os_uid']} sbx={fields['sandbox_mode']} "
+        f"uid={fields['os_uid']} "
         f"cmd={short(fields['command_args_hash'])} "
         f"env={short(fields['effective_env_hash'])} ws={fields['work_dir']}"
     )

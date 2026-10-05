@@ -3986,8 +3986,9 @@ class Backend:
                 # Exact-identity binding for the app→gateway callback: the
                 # callback resolves its backend EXCLUSIVELY by this digest, so
                 # an app can only ever call back into the same pool partition
-                # (same credentials/sandbox/approval identity) that produced
-                # it — never a co-pooled tenant's backend for the same server.
+                # (same server, command, env, work dir and OS user) that
+                # produced it — never a co-pooled tenant's backend for the
+                # same server.
                 "pool_digest": self.storage_digest,
                 "html": html,
                 "csp": csp,

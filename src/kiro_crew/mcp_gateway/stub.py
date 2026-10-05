@@ -318,9 +318,11 @@ _CAPACITY_ERROR_CODE = -32001
 _BINARY_HASH_CAP_BYTES = 4 * 1024 * 1024
 # Placeholder: stub does not yet observe a config snapshot, so all
 # same-session stubs agree on this value (never a false split).
-# Safety note: approval_mode and sandbox_mode are already separate PoolKey
-# dimensions, so the dangerous config divergences (permission escalation,
-# sandbox escape) are already covered by distinct pool entries.
+# Safety note: the config divergences a reader reaches for first --
+# permission escalation and sandbox escape -- are not pool concerns. The
+# sandbox is not applied to a gateway-spawned backend at all, and kiro-cli
+# evaluates the permission surface per agent before a call reaches this
+# process; the ``pool`` module docstring carries the full argument.
 # TODO: Hash relevant config fields (e.g. tool allowlists,
 # hook settings) in a future iteration to detect non-security config drift
 # that could cause subtle behavioral differences across pooled sessions.
@@ -559,8 +561,14 @@ def _parse_auto_approve(raw: str) -> list[str]:
 def _hash_permission_profile(
     auto_approve: list[str], approval_mode: str, trust_all: bool
 ) -> str:
-    """Hash ``(autoApprove sorted, approval_mode, trust_all)`` — two
-    sessions with different permission surfaces MUST NOT share a backend."""
+    """Hash ``(autoApprove sorted, approval_mode, trust_all)`` for the
+    ``autoapprove_set_hash`` register field.
+
+    Wire-compat ballast for an adopted daemon that still keys on it, which is
+    why the encoding stays injective. A current daemon ignores the field --
+    see the ``pool`` module docstring on why a permission surface kiro-cli
+    evaluates per agent, before any call reaches this process, does not
+    partition the pool."""
     h = hashlib.sha256()
     for tool in sorted(auto_approve):
         h.update(tool.encode("utf-8"))
@@ -792,6 +800,16 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # SID-derived int on Windows, so the PoolKey dimension keeps both its
         # type and its partitioning meaning.
         "os_uid": platform_compat.local_user_id(),
+        # Wire-compat ballast, NOT pool dimensions — same treatment as
+        # ``user_identity`` below, and for the same reason: an adopted daemon
+        # predating their removal runs a ``PoolKey.from_register`` that
+        # hard-requires all four, so omitting them would make that daemon
+        # reject every register as malformed and un-pool the whole install.
+        # A current daemon ignores them; the ``pool`` module docstring records
+        # why none of them isolates anything (the sandbox is not applied to a
+        # pooled backend, and kiro-cli decides approval per agent before a
+        # call reaches this process). Safe to drop once no daemon predating
+        # their removal can be adopted.
         "sandbox_mode": args.sandbox_mode,
         "autoapprove_set_hash": _hash_permission_profile(
             auto_approve, args.approval_mode, bool(args.trust_all)

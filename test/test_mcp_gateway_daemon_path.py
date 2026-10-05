@@ -100,10 +100,6 @@ def _pool_key(tmp_path: Path) -> PoolKey:
         work_dir=str(tmp_path),
         binary_version="1.0",
         os_uid=1000,
-        sandbox_mode="none",
-        autoapprove_set_hash="b" * 8,
-        approval_mode="reads",
-        trust_all_tools=False,
         config_snapshot_hash="c" * 8,
     )
 

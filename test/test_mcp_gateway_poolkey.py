@@ -1,10 +1,14 @@
 """PoolKey.from_register security-boundary validation.
 
-``trust_all_tools`` and ``os_uid`` are part of the security partition of the
-PoolKey. They must be type-checked, not coerced: ``bool("false")`` is ``True``
-and ``int`` on a bool silently passes, so a stub sending a JSON string/number
-for these could land in the wrong trust/uid partition and share a backend it
-should not.
+``os_uid`` is the one security dimension of the PoolKey. It must be
+type-checked, not coerced: ``int`` on a bool silently passes, so a stub
+sending a JSON number or bool could land in the wrong uid partition and share
+a backend it should not.
+
+The approval and sandbox fields a stub also reports (``sandbox_mode``,
+``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``) are NOT
+dimensions. ``TestApprovalAndSandboxAreNotPoolDimensions`` below is the pin on
+that, with the reasoning in the ``pool`` module docstring.
 """
 
 from __future__ import annotations
@@ -30,13 +34,14 @@ _VALID = {
 }
 
 
-def test_pool_key_field_set_is_exactly_the_twelve_dimensions() -> None:
+def test_pool_key_field_set_is_exactly_the_eight_dimensions() -> None:
     """The key's field set is asserted EXPLICITLY so adding or removing a
     pool dimension has to be a deliberate test change, never a silent one.
     ``user_identity`` is intentionally absent: nothing populates its
     ``KIROCREW_PRINCIPAL`` source, so it always collapses to the OS user and
     never isolates anything — adding it must come with a real
-    multi-principal design, not just a field.
+    multi-principal design, not just a field. The four approval/sandbox
+    fields are absent for the reasons in the ``pool`` module docstring.
     """
     assert set(PoolKey.__dataclass_fields__) == {
         # identity
@@ -49,10 +54,6 @@ def test_pool_key_field_set_is_exactly_the_twelve_dimensions() -> None:
         "binary_version",
         # security boundary
         "os_uid",
-        "sandbox_mode",
-        "autoapprove_set_hash",
-        "approval_mode",
-        "trust_all_tools",
         # config drift
         "config_snapshot_hash",
     }
@@ -61,13 +62,7 @@ def test_pool_key_field_set_is_exactly_the_twelve_dimensions() -> None:
 def test_valid_register_roundtrips() -> None:
     key = PoolKey.from_register(dict(_VALID))
     assert key.os_uid == 1000
-    assert key.trust_all_tools is False
-
-
-def test_string_trust_all_tools_is_rejected_not_coerced() -> None:
-    # bool("false") == True — coercion would wrongly key this as trusted.
-    with pytest.raises(ValueError, match="trust_all_tools must be bool"):
-        PoolKey.from_register({**_VALID, "trust_all_tools": "false"})
+    assert key.server_name == "slack-mcp"
 
 
 def test_bool_os_uid_is_rejected() -> None:
@@ -79,6 +74,101 @@ def test_bool_os_uid_is_rejected() -> None:
 def test_string_os_uid_is_rejected_not_coerced() -> None:
     with pytest.raises(ValueError, match="os_uid must be int"):
         PoolKey.from_register({**_VALID, "os_uid": "1000"})
+
+
+class TestApprovalAndSandboxAreNotPoolDimensions:
+    """The four fields labeled "security boundary" do not partition the pool.
+
+    None of them changes how a pooled backend behaves:
+
+    * ``gatewayd`` spawns backends outside any mount namespace, so two
+      sessions configured for different sandbox tiers are confined
+      identically — splitting them buys a second unsandboxed process.
+    * kiro-cli decides tool visibility and approval per agent, against that
+      agent's own overlay entry, BEFORE a ``tools/call`` reaches the stub. A
+      backend never reads these values, so it cannot act on them.
+
+    The fields are still accepted on a register payload and ignored, the same
+    wire-compat treatment ``user_identity`` and ``channel_id`` get.
+    """
+
+    _FIELDS = (
+        ("sandbox_mode", "none"),
+        ("autoapprove_set_hash", "a-completely-different-hash"),
+        ("approval_mode", "yolo"),
+        ("trust_all_tools", True),
+    )
+
+    def test_each_field_alone_shares_one_backend(self) -> None:
+        base = PoolKey.from_register(dict(_VALID))
+        for field, other in self._FIELDS:
+            variant = PoolKey.from_register({**_VALID, field: other})
+            assert variant.stable_hash() == base.stable_hash(), field
+            assert variant == base, field
+
+    def test_all_four_differing_together_share_one_backend(self) -> None:
+        """One agent on one server, whose approval posture and sandbox tier
+        both change -- every other dimension held equal, including
+        ``agent_name``, which partitions on its own."""
+        permissive = PoolKey.from_register(
+            {
+                **_VALID,
+                "agent_name": "agent-a",
+                "sandbox_mode": "off",
+                "autoapprove_set_hash": "wide-open",
+                "approval_mode": "yolo",
+                "trust_all_tools": True,
+            }
+        )
+        strict = PoolKey.from_register(
+            {
+                **_VALID,
+                "agent_name": "agent-a",
+                "sandbox_mode": "strict",
+                "autoapprove_set_hash": "nothing-approved",
+                "approval_mode": "interactive",
+                "trust_all_tools": False,
+            }
+        )
+        assert permissive.stable_hash() == strict.stable_hash()
+
+    def test_payload_omitting_all_four_is_accepted(self) -> None:
+        """They are not fields at all — not special-cased optional ones — so a
+        current stub's payload is complete rather than tolerated."""
+        payload = {k: v for k, v in _VALID.items() if k not in {f for f, _ in self._FIELDS}}
+        key = PoolKey.from_register(payload)
+        assert key.stable_hash() == PoolKey.from_register(dict(_VALID)).stable_hash()
+
+    def test_malformed_values_do_not_break_register(self) -> None:
+        """An older stub still reports all four, and a value of any shape must
+        not fail a register that does not read it. A string ``trust_all_tools``
+        is the pointed case: type-checking it guarded against ``bool("false")``
+        keying a session as trusted, and with the field out of the key there is
+        no trust partition left for any value to land in."""
+        base = PoolKey.from_register(dict(_VALID))
+        for field, _ in self._FIELDS:
+            for bogus in ("false", 123, {"a": 1}, ["x"], None, ""):
+                variant = PoolKey.from_register({**_VALID, field: bogus})
+                assert variant.stable_hash() == base.stable_hash(), (field, bogus)
+
+    def test_absent_from_repr(self) -> None:
+        text = str(PoolKey.from_register(dict(_VALID)))
+        for field, _ in self._FIELDS:
+            assert field not in text, field
+
+    def test_absent_from_the_log_label(self) -> None:
+        """The stub and the daemon match pool identities by eye off this
+        label, so it names what actually partitions the pool."""
+        label = PoolKey.from_register(dict(_VALID)).human_readable()
+        assert "sbx=" not in label
+        assert "uid=1000" in label
+
+    def test_os_uid_still_partitions(self) -> None:
+        """Negative control: the one real security dimension still splits, so
+        dropping the four has not made the key permissive."""
+        base = PoolKey.from_register(dict(_VALID))
+        variant = PoolKey.from_register({**_VALID, "os_uid": 1001})
+        assert variant.stable_hash() != base.stable_hash()
 
 
 class TestChannelIsNotAPoolDimension:
@@ -138,7 +228,7 @@ class TestChannelIsNotAPoolDimension:
         base = PoolKey.from_register(dict(_VALID))
         for field, other in (
             ("os_uid", 1001),
-            ("sandbox_mode", "none"),
+            ("binary_version", "2.0"),
             ("effective_env_hash", "different"),
             ("work_dir", "/tmp/other"),
         ):

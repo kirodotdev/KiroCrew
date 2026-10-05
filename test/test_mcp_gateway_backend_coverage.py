@@ -101,10 +101,6 @@ def _pool_key(server: str = "example-mcp") -> PoolKey:
         work_dir="/nonexistent-work-dir",
         binary_version="1.0",
         os_uid=1000,
-        sandbox_mode="none",
-        autoapprove_set_hash="aah",
-        approval_mode="reads",
-        trust_all_tools=False,
         config_snapshot_hash="csh",
     )
 

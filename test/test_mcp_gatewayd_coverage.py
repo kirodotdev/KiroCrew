@@ -95,10 +95,6 @@ def _pool_key(server: str = "demo-mcp", agent: str = "cov-agent", env_hash: str 
         work_dir="/tmp/cov",
         binary_version="1.0",
         os_uid=1000,
-        sandbox_mode="none",
-        autoapprove_set_hash="b" * 8,
-        approval_mode="reads",
-        trust_all_tools=False,
         config_snapshot_hash="c" * 8,
     )
 

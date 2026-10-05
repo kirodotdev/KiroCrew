@@ -827,6 +827,66 @@ the daemon's command line or size structures built once at spawn, so they too
 are marked `restart=True` in the config schema and apply to a broker started
 after the change.
 
+### What partitions the pool, and what deliberately does not
+
+`PoolKey` (`mcp_gateway/pool.py`) is the sharing boundary: two stubs whose keys
+hash equal get one backend process. Its rule is that **every attribute which
+changes backend behaviour must be a dimension**, or two sessions can see
+cross-tenant state. The eight dimensions are `server_name`, `agent_name`,
+`command_args_hash`, `effective_env_hash`, `work_dir`, `binary_version`,
+`os_uid` and `config_snapshot_hash`.
+
+The rule has a second edge that matters just as much: **an attribute which does
+NOT change backend behaviour must stay out.** The hash is injective over every
+field, so a difference in one that isolates nothing still forks a process.
+
+Read the cost carefully before tuning the pool from it. A field is only as
+expensive as the number of distinct values that reach it, and `agent_name` is
+itself a dimension — so two agents never share a backend regardless of what
+else the key holds. Dropping a field that does not isolate anything removes a
+split that is real but narrow on its own (one agent across a config change, or
+its own `autoApprove` list) and is a precondition for the broader sharing that
+dropping an identity dimension would unlock.
+
+Four fields a stub reports under a "security boundary" label are in that class
+and are **not** dimensions: `sandbox_mode`, `autoapprove_set_hash`,
+`approval_mode`, `trust_all_tools`.
+
+- **The sandbox is not applied to a pooled backend at all.** `gatewayd` spawns
+  backends outside any mount namespace, as an accepted and documented risk
+  (`backend.spawn_backend`'s security-boundary note, and `security.md` under MCP
+  Gateway). The per-session sandbox wraps kiro-cli, not a gateway-spawned
+  server. Two sessions configured for different sandbox tiers therefore get
+  processes confined identically, so splitting them buys a second unsandboxed
+  process rather than a second sandbox. The compensating controls that do the
+  real work here — the target command coming only from the rewriter's
+  `KIROCREW_MCP_TARGET_<SERVER>` vars, credential-env scrubbing before `gatewayd`
+  inherits, and backends running as the invoking user — are all per-host, not
+  per-key.
+- **Approval is decided before a call reaches the gateway.** Tool visibility, the
+  `autoApprove` list, the approval mode and trust-all are kiro-cli's own
+  per-agent decision, taken against that agent's overlay entry. What arrives at
+  the stub is a `tools/call` kiro-cli has already authorised. A backend never
+  receives these values and cannot act on them, so they cannot change its
+  behaviour. The rewriter deliberately **preserves `autoApprove` on each wrapped
+  entry** (`_build_stub_entry`) precisely so that per-agent surface survives
+  pooling; the stub's `--auto-approve` / `--approval-mode` / `--trust-all` flags
+  feed only the register payload.
+
+`os_uid` stays a dimension. The cross-OS-user boundary is real, and it is
+independently enforced as well (the broker socket is `0600` and the daemon
+checks the peer uid), so the dimension costs nothing it does not also deliver.
+
+The four fields are still **accepted on a register payload and ignored** — the
+same wire-compat treatment `user_identity` and `channel_id` get. A stub and a
+daemon are upgraded separately, and an adopted daemon predating the change runs
+a `PoolKey.from_register` that hard-requires all four, so a stub omitting them
+would have every register rejected as malformed and the whole install silently
+un-pooled. `test_mcp_gateway_poolkey.py` pins both halves: the field set is
+asserted explicitly, so adding or removing a dimension is a deliberate test
+change, and a payload carrying any value for the four still registers to the
+same key.
+
 ### Admission before allocation
 
 The daemon bounds how many backend processes it FORKS AND INITIALISES at once,
