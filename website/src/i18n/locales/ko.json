@@ -11365,6 +11365,7 @@
       "filter_pinned_description": "고정한 세션만 표시",
       "filter_recent": "최근",
       "filter_recent_description": "선택한 기간에 활동한 세션만 표시",
+      "filter_paused_while_searching": "검색 중에는 일시 중지됨",
       "filter_running": "진행 중",
       "filter_running_description": "에이전트가 작업 중인 세션만 표시",
       "filter_tags": "태그 필터: {{name}}",

@@ -11364,6 +11364,7 @@
       "filter_pinned_description": "固定したセッションのみ表示",
       "filter_recent": "最近",
       "filter_recent_description": "選択した期間内にアクティブだったセッションのみ表示",
+      "filter_paused_while_searching": "検索中は一時停止",
       "filter_running": "進行中",
       "filter_running_description": "エージェントが作業中のセッションのみ表示",
       "filter_tags": "タグをフィルター：{{name}}",

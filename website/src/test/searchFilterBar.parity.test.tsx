@@ -93,6 +93,28 @@ describe('FilterChip contract', () => {
     expect(onClear).toHaveBeenCalledTimes(1)
   })
 
+  it('`pausedLabel` is the SAME mark plus the reason: in the tooltip ahead of the click, and as a description', () => {
+    // A pause the person did not choose (the sidebar's chips while a search is
+    // typed) wears exactly the `paused` mark, so the row has one look for "set
+    // but not narrowing", and adds why. The reason goes ahead of the clear
+    // action in the hover text and into an `aria-describedby` text for focus,
+    // where no native tooltip ever shows. The name stays the click's meaning.
+    const onClear = vi.fn()
+    const { getByTestId } = render(
+      <FilterChip label="Starred (2)" color="var(--accent)" pausedLabel="Paused while searching" clearLabel="Clear Starred filter" onClear={onClear} testId="p" />,
+    )
+    const chip = getByTestId('p')
+    expect(chip.className.split(/\s+/)).toContain('border-dashed')
+    expect(chip.getAttribute('title')).toBe('Paused while searching · Clear Starred filter')
+    expect(chip.getAttribute('aria-label')).toBe('Clear Starred filter')
+    expect(chip).toHaveAccessibleDescription('Paused while searching')
+    // The description is for assistive tech only; the visible label is unchanged.
+    expect(chip.textContent).toBe('Paused while searchingStarred (2)')
+    expect(chip.querySelector('.sr-only')?.textContent).toBe('Paused while searching')
+    fireEvent.click(chip)
+    expect(onClear).toHaveBeenCalledTimes(1)
+  })
+
   it('the aggregate variant is the neutral clear-all pill: no filter colour, the sidebar tag chip\'s chrome', () => {
     const { getByTestId } = render(
       <FilterChip aggregate label="Starred (2), Mine (6)" clearLabel="Clear Starred and Mine filter" onClear={() => {}} testId="a" />,

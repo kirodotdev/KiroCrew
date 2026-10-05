@@ -11527,6 +11527,7 @@
       "filter_pinned_description": "শুধু পিন করা সেশনগুলো দেখায়",
       "filter_recent": "সাম্প্রতিক",
       "filter_recent_description": "শুধু নির্বাচিত সময়সীমার মধ্যে সক্রিয় ছিল এমন সেশনগুলো দেখায়",
+      "filter_paused_while_searching": "খোঁজার সময় বিরত",
       "filter_running": "চলমান",
       "filter_running_description": "শুধু যেসব সেশনে এজেন্ট সক্রিয়ভাবে কাজ করছে সেগুলো দেখায়",
       "filter_tags": "ট্যাগ ফিল্টার: {{name}}",

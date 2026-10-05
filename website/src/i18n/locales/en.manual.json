@@ -5179,6 +5179,7 @@
       "filter_pinned_description": "Show only sessions you have pinned",
       "filter_recent": "Recent",
       "filter_recent_description": "Show only sessions active within the selected window",
+      "filter_paused_while_searching": "Paused while searching",
       "sort_newest": "Newest",
       "sort_oldest": "Oldest",
       "sort_created_newest": "Created (Newest)",

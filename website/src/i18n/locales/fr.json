@@ -11689,6 +11689,7 @@
       "filter_pinned_description": "Afficher uniquement les sessions épinglées",
       "filter_recent": "Récentes",
       "filter_recent_description": "Afficher uniquement les sessions actives dans la période sélectionnée",
+      "filter_paused_while_searching": "En pause pendant la recherche",
       "filter_running": "En cours",
       "filter_running_description": "Afficher uniquement les sessions sur lesquelles l’agent travaille activement",
       "filter_tags": "Filtrer les étiquettes : {{name}}",

@@ -11365,6 +11365,7 @@
       "filter_pinned_description": "仅显示你已置顶的会话",
       "filter_recent": "最近",
       "filter_recent_description": "仅显示所选时间窗口内活跃过的会话",
+      "filter_paused_while_searching": "搜索时已暂停",
       "filter_running": "运行中",
       "filter_running_description": "仅显示代理正在处理的会话",
       "filter_tags": "筛选标签：{{name}}",

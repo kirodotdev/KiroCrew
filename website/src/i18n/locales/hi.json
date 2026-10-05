@@ -11527,6 +11527,7 @@
       "filter_pinned_description": "केवल पिन किए गए सत्र दिखाता है",
       "filter_recent": "हाल के",
       "filter_recent_description": "केवल चुनी गई अवधि में सक्रिय रहे सत्र दिखाता है",
+      "filter_paused_while_searching": "खोज के दौरान रोका गया",
       "filter_running": "चल रहे",
       "filter_running_description": "केवल वे सत्र दिखाता है जिन पर एजेंट सक्रिय रूप से काम कर रहा है",
       "filter_tags": "टैग फ़िल्टर करें: {{name}}",

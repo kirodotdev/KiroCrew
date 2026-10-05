@@ -11689,6 +11689,7 @@
       "filter_pinned_description": "Mostrar apenas sessões que você fixou",
       "filter_recent": "Recentes",
       "filter_recent_description": "Mostrar apenas sessões ativas no período selecionado",
+      "filter_paused_while_searching": "Pausado durante a pesquisa",
       "filter_running": "Em execução",
       "filter_running_description": "Mostrar apenas sessões em que o agente está trabalhando ativamente",
       "filter_tags": "Filtrar tags: {{name}}",

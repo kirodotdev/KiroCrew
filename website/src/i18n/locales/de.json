@@ -11527,6 +11527,7 @@
       "filter_pinned_description": "Nur Sitzungen anzeigen, die du angepinnt hast",
       "filter_recent": "Kürzlich",
       "filter_recent_description": "Nur Sitzungen anzeigen, die im gewählten Zeitraum aktiv waren",
+      "filter_paused_while_searching": "Während der Suche pausiert",
       "filter_running": "Läuft",
       "filter_running_description": "Nur Sitzungen anzeigen, an denen der Agent aktiv arbeitet",
       "filter_tags": "Tags filtern: {{name}}",

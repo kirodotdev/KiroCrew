@@ -233,6 +233,54 @@ describe('SessionsPage', () => {
     expect(screen.queryByTestId('sessions-row-s2')).toBeNull()
   })
 
+  it('a search bypasses the Unread chip, and clearing the search resumes it (#14886)', async () => {
+    // Same rule as the sidebar: a query is a request for a specific session, so
+    // an active chip pauses instead of intersecting with it.
+    renderPage(
+      [slot('s1', 'Read alpha', NOW - 60_000), slot('s2', 'Unread', NOW - 120_000)],
+      ['s2'],
+    )
+    await screen.findByTestId('sessions-row-s1')
+    fireEvent.click(screen.getByTestId('sessions-chip-unread'))
+    expect(screen.queryByTestId('sessions-row-s1')).toBeNull()
+    const search = screen.getByTestId('sessions-search')
+    fireEvent.change(search, { target: { value: 'alpha' } })
+    expect(screen.getByTestId('sessions-row-s1')).toBeInTheDocument()
+    // The search still narrows on its own terms.
+    expect(screen.queryByTestId('sessions-row-s2')).toBeNull()
+    // The chip stays on, paused: dimmed, with the paused text as tooltip and description.
+    const chip = screen.getByTestId('sessions-chip-unread')
+    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    // The sidebar's paused mark (pause glyph, dashed border), not a dim.
+    expect(chip.className.split(/\s+/)).toContain('border-dashed')
+    // The hover text also tells a mouse user that a click clears the chip.
+    expect(chip).toHaveAttribute('title', 'Paused while searching · Clear Unread filter')
+    expect(chip).toHaveAccessibleDescription('Paused while searching')
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.queryByTestId('sessions-row-s1')).toBeNull()
+    expect(screen.getByTestId('sessions-row-s2')).toBeInTheDocument()
+    expect(chip.className.split(/\s+/)).not.toContain('border-dashed')
+    expect(chip).not.toHaveAttribute('title')
+  })
+
+  it('a search bypasses an active tag chip (#14886)', async () => {
+    chatTags.mockResolvedValue([
+      { id: 'review', name: 'Review', color: '#a78bfa', order: 1, status: true },
+    ])
+    renderPage([
+      slot('s1', 'In review', NOW - 60_000, { tags: ['review'] }),
+      slot('s2', 'Plain beta', NOW - 120_000),
+    ])
+    fireEvent.click(await screen.findByTestId('sessions-chip-tag-review'))
+    expect(screen.queryByTestId('sessions-row-s2')).toBeNull()
+    fireEvent.change(screen.getByTestId('sessions-search'), { target: { value: 'beta' } })
+    expect(screen.getByTestId('sessions-row-s2')).toBeInTheDocument()
+    expect(screen.queryByTestId('sessions-row-s1')).toBeNull()
+    expect(screen.getByTestId('sessions-chip-tag-review')).toHaveAttribute('title', 'Paused while searching · Clear Review filter')
+    // The All chip is not a narrowing and never reads as paused.
+    expect(screen.getByRole('button', { name: 'All' })).not.toHaveAttribute('title')
+  })
+
   it('excludes non-chat surfaces (app worker slots)', async () => {
     renderPage([
       slot('s1', 'Chat one', NOW - 60_000),

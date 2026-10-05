@@ -1,4 +1,4 @@
-import { forwardRef, type ComponentProps, type ReactNode } from 'react'
+import { forwardRef, useId, type ComponentProps, type ReactNode } from 'react'
 import { ListFilter, Pause, Search, X } from 'lucide-react'
 
 import { Glass } from './Glass'
@@ -153,7 +153,7 @@ export const FILTER_CHIP_ROW_CLS = 'px-3 pb-1 flex items-center gap-1.5 flex-wra
  *  `label` is the caller's — the sidebar appends its window and count, the
  *  roster its counts — so one recipe carries whatever a list has to say about
  *  the filter without knowing what it is. */
-export function FilterChip({ label, color, aggregate, paused, clearLabel, onClear, testId }: {
+export function FilterChip({ label, color, aggregate, paused, pausedLabel, clearLabel, onClear, testId }: {
   label: string
   /** The filter's colour token, e.g. `var(--accent)` or `var(--warn)`; omit for an aggregate chip. */
   color?: string
@@ -163,11 +163,22 @@ export function FilterChip({ label, color, aggregate, paused, clearLabel, onClea
    *  now (the sidebar's menu can pause every status filter at once). A mark on
    *  the chip, never a second meaning for the click: the click still clears. */
   paused?: boolean
+  /** WHY the filter is lifted, when the person did not lift it themselves (the
+   *  sidebar's chips while a search is typed: "Paused while searching"). Implies
+   *  `paused`, so the chip wears the one paused mark, and adds the reason where
+   *  the mark alone cannot say it: ahead of the clear action in the tooltip,
+   *  and as an `aria-describedby` text for focus (a native tooltip never shows
+   *  on focus). The click still clears, so the accessible name stays
+   *  `clearLabel`. Omit it for a pause the person chose from the menu: that
+   *  pause needs no explaining. */
+  pausedLabel?: string
   /** Accessible name and tooltip: what the click does ("Clear Starred filter"). */
   clearLabel: string
   onClear: () => void
   testId?: string
 }) {
+  const pausedId = useId()
+  const isPaused = paused || !!pausedLabel
   return (
     <button
       type="button"
@@ -177,15 +188,19 @@ export function FilterChip({ label, color, aggregate, paused, clearLabel, onClea
         // Same colour token paused or not, so the chip still reads as ITS
         // filter; the glyph and the dashed border say "not narrowing right
         // now" without leaning on contrast alone.
-        paused && 'border-dashed',
+        isPaused && 'border-dashed',
       )}
       style={aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
       onClick={onClear}
-      title={clearLabel}
+      // Paused keeps the clear action in the hover text: the X glyph alone does
+      // not say a click clears, and the pause text alone would drop that.
+      title={pausedLabel ? `${pausedLabel} · ${clearLabel}` : clearLabel}
       aria-label={clearLabel}
+      aria-describedby={pausedLabel ? pausedId : undefined}
       data-testid={testId}
     >
-      {paused && <Pause size={11} className="shrink-0" aria-hidden="true" />}
+      {isPaused && <Pause size={11} className="shrink-0" aria-hidden="true" />}
+      {pausedLabel && <span id={pausedId} className="sr-only">{pausedLabel}</span>}
       {aggregate ? <span className="truncate">{label}</span> : label}
       <X size={11} className="shrink-0" />
     </button>

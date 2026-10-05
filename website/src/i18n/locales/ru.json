@@ -11851,6 +11851,7 @@
       "filter_pinned_description": "Показывать только закреплённые сессии",
       "filter_recent": "Недавние",
       "filter_recent_description": "Показывать только сессии, активные в выбранном периоде",
+      "filter_paused_while_searching": "Приостановлен во время поиска",
       "filter_running": "В работе",
       "filter_running_description": "Показывать только сессии, над которыми агент активно работает",
       "filter_tags": "Фильтр по тегам: {{name}}",

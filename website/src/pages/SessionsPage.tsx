@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Plus, MessagesSquare } from 'lucide-react'
+import { Plus, MessagesSquare, Pause } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { readPinnedSessionOrder } from '../utils/pinnedSessionOrder'
@@ -92,12 +92,20 @@ export default function SessionsPage() {
   }, [tags, visible])
   const tagById = useMemo(() => new Map(tags.map(t => [t.id, t])), [tags])
 
+  // A query is an explicit request for a specific session, so it wins over
+  // the browsing chip: while the box has text the chip pauses (it filters
+  // nothing) rather than intersecting with the search, the same rule the
+  // sidebar's tag filter, status chips and folder filter follow.
+  const searchActive = query.trim() !== ''
+  // `aria-describedby` target for the paused chip's text below.
+  const chipPausedId = useId()
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return visible.filter(s => {
+      if (q) return (s.title ?? s.key).toLowerCase().includes(q)
       if (chip === 'unread' && !unread.has(s.key)) return false
       if (chip.startsWith('tag:') && !(s.tags ?? []).includes(chip.slice(4))) return false
-      if (q && !(s.title ?? s.key).toLowerCase().includes(q)) return false
       return true
     })
   }, [visible, chip, query, unread])
@@ -146,11 +154,22 @@ export default function SessionsPage() {
   }
 
   const chipCls = (active: boolean) =>
-    `text-[13px] px-3 py-1 rounded-full border transition-colors cursor-pointer ${
+    `text-[13px] px-3 py-1 rounded-full border transition-colors cursor-pointer inline-flex items-center gap-1 ${
       active
         ? 'bg-accent-subtle border-accent text-accent'
         : 'border-border-strong text-muted hover:border-[var(--border-hover)]'
-    }`
+    }${active && chip !== 'all' && searchActive ? ' border-dashed' : ''}`
+  // The one active narrowing chip while a search is typed wears the sidebar's
+  // paused mark (pause glyph, dashed border: the look the sidebar's FilterChip
+  // gives a filter that is set but not narrowing), with the paused text as
+  // tooltip and description. `all` is not a narrowing and never pauses.
+  const chipPaused = (active: boolean) => active && chip !== 'all' && searchActive
+  const pausedText = i18nT('pages.chatSidebar.filter_paused_while_searching')
+  // The hover text also says that a click clears the chip (it resets to All),
+  // the same composition the sidebar's paused chips use. The description stays
+  // the bare paused text: the click is already the button's own affordance.
+  const pausedTitle = (name: string) =>
+    `${pausedText} · ${i18nT('pages.chatSidebar.clear_named_filter', { filter: name })}`
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden" data-testid="sessions-page">
@@ -202,9 +221,12 @@ export default function SessionsPage() {
         <button
           className={chipCls(chip === 'unread')}
           aria-pressed={chip === 'unread'}
+          title={chipPaused(chip === 'unread') ? pausedTitle(i18nT('pages.sessionsPage.filter_unread')) : undefined}
+          aria-describedby={chipPaused(chip === 'unread') ? chipPausedId : undefined}
           onClick={() => setChip(chip === 'unread' ? 'all' : 'unread')}
           data-testid="sessions-chip-unread"
         >
+          {chipPaused(chip === 'unread') && <Pause size={11} className="shrink-0" aria-hidden="true" />}
           {i18nT('pages.sessionsPage.filter_unread')}
           {unreadVisible > 0 && <span className="ml-1">{unreadVisible}</span>}
         </button>
@@ -213,12 +235,16 @@ export default function SessionsPage() {
             key={t.id}
             className={chipCls(chip === `tag:${t.id}`)}
             aria-pressed={chip === `tag:${t.id}`}
+            title={chipPaused(chip === `tag:${t.id}`) ? pausedTitle(t.name) : undefined}
+            aria-describedby={chipPaused(chip === `tag:${t.id}`) ? chipPausedId : undefined}
             onClick={() => setChip(chip === `tag:${t.id}` ? 'all' : `tag:${t.id}`)}
             data-testid={`sessions-chip-tag-${t.id}`}
           >
+            {chipPaused(chip === `tag:${t.id}`) && <Pause size={11} className="shrink-0" aria-hidden="true" />}
             {t.name}
           </button>
         ))}
+        {chip !== 'all' && searchActive && <span id={chipPausedId} className="sr-only">{pausedText}</span>}
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto pb-8 md:px-6">

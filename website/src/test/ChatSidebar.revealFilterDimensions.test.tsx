@@ -189,6 +189,35 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual([])
     })
   })
+
+  it('clears the chips a search had paused, so the revealed row survives the search clearing', async () => {
+    // While a search is typed, the tag and status chips are inert (they filter
+    // nothing) but the reveal still has to clear them: the reveal effect makes
+    // ONE pass over the registry, and clearing the search resumes the chips on
+    // the next commit. A `hides` that went inert with the filter would leave
+    // the chips on, and the resumed chips would hide the row the pass revealed.
+    await withScrollStub(async () => {
+      localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+      localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t1']))
+      const utils = renderSidebar()
+      await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
+      // The search names alpha only, so beta stays out for a third reason.
+      const search = utils.getByPlaceholderText('Search sessions…')
+      fireEvent.change(search, { target: { value: 'alpha' } })
+      await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+      expect(utils.queryByText('beta session')).toBeNull()
+
+      utils.store.dispatch(requestSlotReveal('k-beta'))
+
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+      expect(search).toHaveValue('')
+      expect(localStorage.getItem(RUNNING_ONLY_LS_KEY)).toBe('0')
+      expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual([])
+      // Still visible once the resumed chips have had a commit to act.
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(utils.queryByText('beta session')).not.toBeNull()
+    })
+  })
 })
 
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
