@@ -718,6 +718,7 @@ export default function FolderConfigModal({
           open={true}
           onOpenChange={o => { if (!o) setPickerOpen(false) }}
           anchorRef={pickerTarget === 'steering' ? steeringBrowseRef : browseRef}
+          startPath={draft.projectDir}
           onSelect={path => {
             setDraft(d => pickerTarget === 'steering'
               // Append to the ordered list, ignoring a path already present so a

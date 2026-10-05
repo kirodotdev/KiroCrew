@@ -120,9 +120,16 @@ interface Props {
    * (folder form), RepoSettings (repo form) and ProjectScaffolderPage (wizard).
    */
   errorHandoff?: boolean
+  /**
+   * The caller's current selection: the directory the Browse pane opens in.
+   * Empty or absent opens at `$HOME`, the backend's default listing. Read once
+   * per open, so editing the caller's field while the picker is up does not
+   * move the listing under the user.
+   */
+  startPath?: string
 }
 
-export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, errorHandoff = false }: Props) {
+export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, errorHandoff = false, startPath = '' }: Props) {
   const [tab, setTab] = useState<'recent' | 'browse'>('recent')
   const [input, setInput] = useState('')
   const ime = useImeGuard()
@@ -167,6 +174,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // retired by a newer recents read (for example, after close/reopen), never by
   // borrowing the ticket from an unrelated directory or drive-list request.
   const recentSeq = useRef(0)
+  // Read by the open effect only, so a caller whose field changes while the picker is up does
+  // not re-run the open (which would also re-read recents and reset the tab).
+  const startPathRef = useRef(startPath)
+  startPathRef.current = startPath
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -181,13 +192,21 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     return anchorRectRef.current
   }, [btnRef])
 
-  const browse = useCallback((path?: string, preserveInput = false) => {
+  // `homeOnGone`: the opening read of the caller's selection. A path that no longer lists
+  // (deleted, or refused as sensitive) leaves nothing to show, so the pane falls back to the
+  // `$HOME` listing under a fresh ticket -- and `carried` keeps that refusal, so the notice
+  // names the selection and says the list shows home instead (the opening path changing from
+  // the user's project to `~` is never silent). A timeout or other failure takes the notice
+  // with no fallback, and its Retry re-asks that path.
+  const browse = useCallback((path?: string, preserveInput = false, homeOnGone = false, carried?: { path: string; err: unknown }) => {
     const ticket = ++listingSeq.current
     setListingInFlight(true)
     api.browseDirs(path).then(d => {
       if (ticket !== listingSeq.current) return
       setListingInFlight(false)
-      setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0); setListFailure(null); setListing('dir')
+      setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0); setListing('dir')
+      if (carried) noteFailure('dir', carried.path, carried.err)
+      else setListFailure(null)
       // Append the path delimiter after a browse/drill so the user can start
       // typing the next segment immediately (#1196). Derive the separator from
       // the returned path so a native Windows path (C:\Users\me) stays all-`\`
@@ -206,6 +225,8 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
       requestAnimationFrame(() => inputRef.current?.focus())
     }).catch((err: unknown) => {
       if (ticket !== listingSeq.current) return
+      const cause = searchErrorCause(err)
+      if (homeOnGone && path && (cause === 'root_missing' || cause === 'denied')) { browse(undefined, false, false, { path, err }); return }
       setListingInFlight(false); noteFailure('dir', path ?? '', err)
     })
   }, [])
@@ -289,7 +310,9 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     setListFailure(null)
     setRecentFailure(null)
     const ticket = ++recentSeq.current
-    browse()
+    const start = startPathRef.current.trim()
+    if (start) browse(start, false, true)
+    else browse()
     api.recentProjects().then(d => {
       if (ticket !== recentSeq.current) return
       setRecentDirs(d.dirs || [])
