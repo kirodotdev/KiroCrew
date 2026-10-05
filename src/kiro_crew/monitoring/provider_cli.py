@@ -22,7 +22,11 @@ from kiro_crew.github_runner import (
     provider_executable_candidates,
     validate_provider_executable,
 )
-from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    carveout_shadowed_by_foreign_mask,
+    popen_limited,
+    sandboxed_spawn_argv,
+)
 from kiro_crew.sel import sel
 
 _PASSTHROUGH = {
@@ -193,6 +197,20 @@ def run_provider_cli(
             if executable == "az"
             else ()
         )
+        # In a pod both Azure dirs sit beneath the crew data home, so a data
+        # home relocated beneath a foreign mask would lift that mask for this
+        # child; each dir is its own carve-out entry, so the equality-exempt
+        # guard refuses only a foreign ancestor. Off-pod the dirs stay within
+        # HOME/.azure and outside agent-writable roots, and the extension dir
+        # is a descendant of the `.azure` mask entry the grant lifts, so the
+        # guard is not asked there.
+        if os.environ.get("KIROCREW_POD") and any(
+            carveout_shadowed_by_foreign_mask(path, mode="standard") for path in visible_dirs
+        ):
+            raise SetupError(
+                "Azure CLI state sits beneath an independently masked directory; "
+                "carving it out would unmask that tree"
+            )
         spawn_args, spawn_env, cleanup_path = sandboxed_spawn_argv(
             args,
             mode="standard",

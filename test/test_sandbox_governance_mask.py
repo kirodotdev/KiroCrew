@@ -941,27 +941,26 @@ class TestForeignMaskShadowGuard:
     def test_every_crew_home_carveout_producer_asks_the_guard(self) -> None:
         """The guard's worth is the SET of producers that call it.
 
-        Three crew-home carve-out producers exist, and each asks the guard before
-        handing a spelling to a spawn. A fourth that forgets is the defect this
+        Four crew-home carve-out producers exist, and each asks the guard before
+        handing a spelling to a spawn. A fifth that forgets is the defect this
         test catches. Structural, like the two sibling tests in this class, so
         deleting a call reds here instead of silently unmasking a tree.
 
         NOT a closed set over every ``extra_visible_dirs`` producer: three of the
-        six in ``src/`` name a workspace or clone root, and
-        ``monitoring/provider_cli.py`` hands over ``AZURE_CONFIG_DIR`` while
-        ``.azure`` is itself a ``_STANDARD_DIRS`` entry. Whether that one is a
-        crew-home producer is a separate question carrying its own tracked issue,
-        so this test neither guards it nor lists it as exempt.
+        six in ``src/`` name a workspace or clone root. The Azure provider CLI
+        spawn is a crew-home producer only in a pod, which is where it asks.
         """
         import inspect
 
         from kiro_crew.apps import backend as backend_mod
         from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
+        from kiro_crew.monitoring import provider_cli as provider_cli_mod
 
         for name, obj in (
             ("app_backend_visible_targets", sandbox.app_backend_visible_targets),
             ("policy-cache spawn", backend_mod._start_app_backend_body),
             ("aws-control preview staging", storage_mod.get_object_head_bytes),
+            ("pod Azure provider CLI spawn", provider_cli_mod.run_provider_cli),
         ):
             assert "carveout_shadowed_by_foreign_mask(" in inspect.getsource(obj), name
 

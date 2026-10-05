@@ -1350,10 +1350,11 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
     beneath an independently masked directory takes that whole foreign mask
     down with it — a data home relocated beneath a credential directory (e.g.
     ``KIROCREW_HOME`` under ``~/.aws``) would hand every spawn that asks for a
-    crew-home carve-out the entire credential tree. Both EQUALITY-shaped
-    crew-home carve-out producers call this before adding a spelling —
-    :func:`app_backend_visible_targets` and the policy-cache site in
-    ``apps/backend.py``. The aws-control per-call staging carve-out is the
+    crew-home carve-out the entire credential tree. Every EQUALITY-shaped
+    crew-home carve-out producer calls this before adding a spelling —
+    :func:`app_backend_visible_targets`, the policy-cache site in
+    ``apps/backend.py``, and the pod Azure provider CLI spawn in
+    ``monitoring/provider_cli.py``. The aws-control per-call staging carve-out is the
     ANCESTOR-LIFT shape instead: its temp dir is a proper descendant of the mask
     entry the lift cancels, so asking about that dir refuses on every layout,
     the default one included. It asks about the staging ROOT instead — the mask
