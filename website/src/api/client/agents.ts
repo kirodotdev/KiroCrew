@@ -163,6 +163,14 @@ export interface AgentResolvedModel {
   harnesses?: string[]
   /** The harnesses a crewmate's worker sessions can run on. */
   worker_harnesses?: string[]
+  /** The harness whose own model list the editor offers, when it is not the configured one. */
+  models_backend?: string
+  /** The id that harness serves the pin as (`''` for none); absent until a session advertises. */
+  pin_served_as?: string
+  /** Whether a pair-id harness's build takes an effort pin; `null` until a live session answers. */
+  effort_supported?: boolean | null
+  /** The levels that build takes, when it answered. */
+  effort_levels?: string[]
 }
 
 export interface MemberActivityEntry {
