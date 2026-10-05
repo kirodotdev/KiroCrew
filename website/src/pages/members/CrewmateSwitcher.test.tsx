@@ -35,7 +35,7 @@ const MEMBERS = [
 function setup(props: Partial<Parameters<typeof CrewmateSwitcher>[0]> = {}) {
   const onPick = vi.fn()
   const onCreate = vi.fn()
-  render(<CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={onPick} onCreate={onCreate} {...props} />)
+  render(<CrewmateSwitcher members={MEMBERS} defaultAgent="" activeName="scribe" onPick={onPick} onCreate={onCreate} {...props} />)
   return { onPick, onCreate }
 }
 
@@ -133,6 +133,30 @@ describe('CrewmateSwitcher open list', () => {
     expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No crewmate matches')
     // The create door is still offered under an empty result.
     expect(screen.getByTestId('crewmate-switcher-create')).toBeInTheDocument()
+  })
+
+  it('runs the column\'s hide rule: an unchatted app row is neither listed nor counted, and the search still reaches it', async () => {
+    // `has_dm_message: false` + `dashboard_created: false` is exactly what the
+    // column hides -- a row created by sync or an app that nobody has chatted
+    // with. The chip used to list it, so the two disagreed about the crew.
+    const hidden = row('ghostwriter', { kiro_agent: 'kirocrew-ghost', has_dm_message: false, dashboard_created: false } as Partial<MemberRosterRow>)
+    setup({ members: [...MEMBERS, hidden] })
+    expect(screen.getByTestId('crewmate-switcher-count')).toHaveTextContent('4')
+    const list = await open()
+    expect(options(list).map((o) => within(o).getByTestId('avatar-stub').textContent)).toEqual(['oncall', 'scribe', 'Radar One', 'fixer'])
+
+    fireEvent.change(screen.getByTestId('crewmate-switcher-search'), { target: { value: 'ghost' } })
+    expect(options(list).map((o) => within(o).getByTestId('avatar-stub').textContent)).toEqual(['ghostwriter'])
+  })
+
+  it('keeps the OPEN crewmate listed even when the hide rule would drop it', async () => {
+    const hidden = row('ghostwriter', { has_dm_message: false, dashboard_created: false } as Partial<MemberRosterRow>)
+    setup({ members: [...MEMBERS, hidden], activeName: 'ghostwriter' })
+    expect(screen.getByTestId('crewmate-switcher-count')).toHaveTextContent('5')
+    const list = await open()
+    const opts = options(list)
+    expect(opts.map((o) => within(o).getByTestId('avatar-stub').textContent)).toEqual(['oncall', 'scribe', 'Radar One', 'fixer', 'ghostwriter'])
+    expect(opts[4]).toHaveAttribute('aria-selected', 'true')
   })
 
   it('reports a pick by name and closes; picking the current crewmate reports nothing', async () => {

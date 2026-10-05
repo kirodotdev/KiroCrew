@@ -104,6 +104,7 @@ interface RosterRowLike {
   name: string; display_name?: string; starred?: boolean; source?: unknown; last_active_ts?: number
   last_chat_ts?: number
   dashboard_created?: unknown; has_dm_message?: unknown; last_message?: unknown
+  kiro_agent?: unknown
 }
 
 /** What the roster row RENDERS as its title: the display label when set, the
@@ -113,11 +114,18 @@ function rowLabel(m: RosterRowLike): string {
   return m.display_name?.trim() || m.name
 }
 
-/** The search box's match: a case-insensitive substring of the name or of
- *  the displayed label. One function so the hide rule below and the narrowing
- *  agree on what "the search reaches" means. */
+/** The search box's match: a case-insensitive substring of the name, of the
+ *  displayed label, or of the agent template the row runs. One function so the
+ *  hide rule below, the narrowing, and the folded roster in the header chip all
+ *  agree on what "the search reaches" means -- the template term is how the
+ *  chip's search has always reached a row by what it RUNS (`kirocrew-oncall`)
+ *  rather than by what it is called. */
 function matchesSearch(m: RosterRowLike, needle: string): boolean {
-  return m.name.toLowerCase().includes(needle) || rowLabel(m).toLowerCase().includes(needle)
+  return (
+    m.name.toLowerCase().includes(needle) ||
+    rowLabel(m).toLowerCase().includes(needle) ||
+    (typeof m.kiro_agent === 'string' && m.kiro_agent.toLowerCase().includes(needle))
+  )
 }
 
 /** Whether the roster lists a row WITHOUT being asked for it: only a crew the

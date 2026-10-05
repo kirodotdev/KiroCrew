@@ -148,6 +148,12 @@ describe('listedByDefault / rosterShows', () => {
     expect(listedByDefault({ ...byName('app-bot'), last_message: 'hi' }, 'default')).toBe(true)
     expect(listedByDefault({ ...byName('app-bot'), last_message: '  ' }, 'default')).toBe(false)
   })
+  it('the search also reads the agent template, so a row is reachable by what it RUNS', () => {
+    // The folded roster in the header chip has always offered this term; it
+    // lives here now so the column's search reaches the same rows.
+    expect(rosterShows({ name: 'oncall', kiro_agent: 'kirocrew-oncall' }, { search: 'kirocrew-onc', defaultAgent: 'default' })).toBe(true)
+    expect(rosterShows({ name: 'oncall', kiro_agent: 'kirocrew-oncall' }, { search: 'radar', defaultAgent: 'default' })).toBe(false)
+  })
   it('a typed search decides alone: it reaches hidden rows and skips listed ones it misses', () => {
     expect(rosterShows(byName('legacy-aim'), { search: 'aim', defaultAgent: 'default' })).toBe(true)
     expect(rosterShows(byName('pkg-tool'), { search: ' PKG ', defaultAgent: 'default' })).toBe(true)

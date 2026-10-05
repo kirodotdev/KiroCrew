@@ -3848,6 +3848,7 @@ export default function MembersPage() {
                 <CrewmateSwitcher
                   className="hidden md:flex"
                   members={orderedMembers}
+                  defaultAgent={defaultAgent}
                   activeName={active.name}
                   signals={signalsOf}
                   onPick={(name) => {

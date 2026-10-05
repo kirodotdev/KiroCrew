@@ -7,7 +7,7 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { fmtList } from '../../i18n/format'
 import { cn } from '../../lib/utils'
-import type { MemberSignals } from './rosterFilter'
+import { rosterPopulation, rosterShows, type MemberSignals } from './rosterFilter'
 
 /** How many faces the closed chip stacks. Three is enough to read as "a crew"
  *  without the chip growing with the roster; the count beside them says how many
@@ -53,9 +53,17 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
  * question is visible without opening the list. The open crewmate's own
  * needs-you state is excluded from the chip on purpose: its thread is on
  * screen, where the parked turn already shows itself.
+ *
+ * Folded or standing, it is ONE roster: this list runs the column's own hide
+ * rule (`rosterPopulation` / `rosterShows` over the full roster the page hands
+ * in), so the chip's count can never disagree with the column's count and a row
+ * the column keeps hidden -- an app's row, a sync-generated template nobody has
+ * chatted with -- is not listed here either. Typing in the search box reaches
+ * those hidden rows exactly as the column's search does.
  */
 export default function CrewmateSwitcher({
   members,
+  defaultAgent,
   activeName,
   onPick,
   onCreate,
@@ -64,8 +72,14 @@ export default function CrewmateSwitcher({
   signals = rowOnlySignals,
   className,
 }: {
-  /** The roster, in the page's display order. */
+  /** The FULL roster, in the page's display order. The hide rule below decides
+   *  which of these rows the chip lists, so hidden rows must be passed: they are
+   *  what the search reaches. */
   members: MemberRosterRow[]
+  /** The default crew's name, for the hide rule -- the page's `['default-agent']`
+   *  read. `''` while unknown, `null` when that read FAILED, which lists every
+   *  row rather than risk hiding the default crew (see `listedByDefault`). */
+  defaultAgent: string | null
   /** The crewmate whose thread is open, by exact name. */
   activeName: string
   onPick: (name: string) => void
@@ -87,10 +101,18 @@ export default function CrewmateSwitcher({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
+  // The rows the roster is ABOUT, through the column's own rule: created and
+  // chatted-with crewmates, the starred, the default crew, plus whichever one is
+  // open. Searched over below, but the chip's count and faces read THIS -- a
+  // tally over `members` counted rows the user cannot see in the column.
+  const population = useMemo(
+    () => rosterPopulation(members, { search: '', defaultAgent, chosen: activeName }),
+    [members, defaultAgent, activeName],
+  )
   // Somebody you are NOT talking to is waiting on you.
   const othersNeedYou = useMemo(
-    () => members.some((m) => m.name !== activeName && signals(m).needsYou),
-    [members, activeName, signals],
+    () => population.some((m) => m.name !== activeName && signals(m).needsYou),
+    [population, activeName, signals],
   )
   // The chip carries the page's own name as visible text: a bare /members opens
   // the last crewmate's thread, so this chip is the roster a first look sees,
@@ -102,26 +124,22 @@ export default function CrewmateSwitcher({
   const needsYouLabel = t('pages.membersPage.filter_status_needs_you')
   // Joined by the locale's list formatter, not a literal separator (i18n-catalog).
   const chipLabel = othersNeedYou ? fmtList([rosterLabel, needsYouLabel], { type: 'unit' }) : rosterLabel
+  // With a search typed the search decides alone, over the FULL roster, so a
+  // hidden row is reachable here the same way it is from the column's search.
   const shown = useMemo(
-    () =>
-      q
-        ? members.filter((m) => {
-            const label = crewDisplayName(m).toLowerCase()
-            return label.includes(q) || m.name.toLowerCase().includes(q) || (m.kiro_agent ?? '').toLowerCase().includes(q)
-          })
-        : members,
-    [members, q],
+    () => members.filter((m) => rosterShows(m, { search: q, defaultAgent, chosen: activeName })),
+    [members, q, defaultAgent, activeName],
   )
   // The OTHER crewmates lead the stack, in roster order: the open one is already
   // named by the identity pill beside this chip, and a second copy of its face
   // here read as a duplicate rather than as "the rest of the crew". It joins the
   // stack only when it is the whole roster, so the chip never draws empty.
   const stack = useMemo(() => {
-    const rest = members.filter((m) => m.name !== activeName)
+    const rest = population.filter((m) => m.name !== activeName)
     if (rest.length > 0) return rest.slice(0, STACK_FACES)
-    const active = members.find((m) => m.name === activeName)
+    const active = population.find((m) => m.name === activeName)
     return active ? [active] : []
-  }, [members, activeName])
+  }, [population, activeName])
 
   return (
     <Popover
@@ -168,7 +186,7 @@ export default function CrewmateSwitcher({
             )}
           </span>
           <span className="text-[12.5px] font-semibold" aria-hidden="true" data-testid="crewmate-switcher-label">{rosterLabel}</span>
-          <span className="text-[12.5px] text-muted tabular-nums" aria-hidden="true" data-testid="crewmate-switcher-count">{members.length}</span>
+          <span className="text-[12.5px] text-muted tabular-nums" aria-hidden="true" data-testid="crewmate-switcher-count">{population.length}</span>
           <ChevronDown size={13} className={cn('text-muted transition-transform', open && 'rotate-180')} aria-hidden="true" />
         </button>
       </PopoverTrigger>
