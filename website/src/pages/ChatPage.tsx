@@ -6228,6 +6228,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <FollowUpCard
                     items={pendingFollowup.items}
                     projectDir={currentSlot?.project || undefined}
+                    // The worktree action is only offered for a project that is
+                    // a git repo. Reuse the composer-chips `projectGit` probe:
+                    // `undefined` while it resolves (card is optimistic), `false`
+                    // once it confirms a non-repo or the probe errors (hide the
+                    // button rather than let it fail "not a git repository").
+                    projectIsRepo={projectGitError ? false : projectGit?.repo}
                     onAddToSession={followupAddToSession}
                     onStartInWorktree={followupStartInWorktree}
                     onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}

@@ -65,33 +65,69 @@ describe('FollowUpCard', () => {
     expect(onSkip).toHaveBeenCalledWith(1)
   })
 
-  it('disables the worktree action when the session has no project dir', () => {
+  it('does not offer the worktree action when the session has no project dir', () => {
     setup({ projectDir: undefined })
-    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeDisabled()
+    // The worktree button is NOT rendered — a session with no project has no
+    // repo to branch from, so offering a dead button is user-hostile.
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
     // The in-session route stays available — it needs no repo.
     expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
   })
 
-  it('demotes the disabled worktree button from the accent style so it does not read as the primary action', () => {
-    // A permanently-disabled button that keeps the accent background at 40%
-    // opacity still looks like the main CTA on a dark theme — users click it,
-    // meet a not-allowed cursor, and report a dead button. Unscoped sessions
-    // must render it in the secondary (bordered) look instead.
-    setup({ projectDir: undefined })
-    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
-    expect(worktree.className).not.toContain('bg-accent')
-    expect(worktree.className).toContain('border-border')
+  it('does not offer the worktree action when the project dir is not a git repo', () => {
+    // The core bug: a session scoped to a real directory that is NOT a git
+    // repo (e.g. the default ~/.kiro/crew/workspace) used to show an enabled
+    // button that failed "not a git repository" on click. Now it is hidden.
+    setup({ projectDir: '/not/a/repo', projectIsRepo: false })
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
   })
 
-  it('keeps the accent style on the worktree button when the session is scoped', () => {
-    setup()
+  it('offers the worktree action when the project is a confirmed git repo', () => {
+    setup({ projectDir: '/repo', projectIsRepo: true })
+    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
+  })
+
+  it('offers the worktree action optimistically while the repo probe is unresolved', () => {
+    // `projectIsRepo === undefined` means "not resolved yet". A slow git probe
+    // must not hide a button that will work; the server still refuses a genuine
+    // non-repo and the card renders that inline.
+    setup({ projectDir: '/repo', projectIsRepo: undefined })
+    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
+  })
+
+  it('keeps the accent (primary) style on the worktree button when it is offered', () => {
+    setup({ projectDir: '/repo', projectIsRepo: true })
     const worktree = screen.getByRole('button', { name: /start in new worktree/i })
     expect(worktree.className).toContain('bg-accent')
   })
 
-  it('explains the disabled worktree button in the footer instead of claiming both actions work', () => {
-    setup({ projectDir: undefined })
-    expect(screen.getByText(/this session has no project directory/i)).toBeInTheDocument()
+  it('explains the missing worktree action in the footer with the right reason', () => {
+    // No project at all → "no project directory"; a non-repo project →
+    // "not a git repository". Neither footer claims "both actions".
+    const { rerender } = render(
+      <FollowUpCard
+        items={[item()]}
+        projectDir={undefined}
+        onAddToSession={vi.fn()}
+        onStartInWorktree={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/no project directory/i)).toBeInTheDocument()
+    expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
+
+    rerender(
+      <FollowUpCard
+        items={[item()]}
+        projectDir="/not/a/repo"
+        projectIsRepo={false}
+        onAddToSession={vi.fn()}
+        onStartInWorktree={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/not a git repository/i)).toBeInTheDocument()
     expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
   })
 

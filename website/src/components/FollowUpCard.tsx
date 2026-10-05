@@ -19,9 +19,23 @@ export interface FollowUpCardProps {
   onSkip: (index: number) => void
   /**
    * Absent when the active session has no project directory. The worktree
-   * button is disabled in that case — there is no repo to branch from.
+   * button is not offered in that case — there is no repo to branch from.
    */
   projectDir?: string
+  /**
+   * Whether ``projectDir`` is actually a git work tree. The worktree action
+   * is only offered when the project is a repo it can branch from, so a
+   * session scoped to a non-repo directory (e.g. the default
+   * ``~/.kiro/crew/workspace``) shows ONLY the in-session action rather than a
+   * worktree button that is guaranteed to fail "not a git repository".
+   *
+   * ``undefined`` means "not resolved yet" — treated as a repo so the action
+   * is offered optimistically and a slow git probe never hides a button that
+   * will work; the server still refuses a genuine non-repo and the card
+   * renders that inline. Pass ``false`` only once the probe has confirmed the
+   * directory is not a repo.
+   */
+  projectIsRepo?: boolean
 }
 
 /**
@@ -43,8 +57,15 @@ function FollowUpCard({
   onStartInWorktree,
   onSkip,
   projectDir,
+  projectIsRepo,
 }: FollowUpCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Offer the worktree action only when there is a project directory AND it is
+  // a git repo to branch from. `projectIsRepo === undefined` means the probe
+  // has not resolved yet: treat it as a repo so a slow git check never hides a
+  // button that would work, and let the server refuse a genuine non-repo (the
+  // card renders that inline). Only an explicit `false` hides the action.
+  const canWorktree = !!projectDir && projectIsRepo !== false
   // Index of the item whose worktree is being created, so only that row shows
   // a pending state and double-clicks cannot fire two `worktree add` calls.
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
@@ -109,30 +130,21 @@ function FollowUpCard({
               <div className="text-[12px] text-muted mt-1 leading-relaxed">{item.description}</div>
             )}
             <div className="flex flex-wrap items-center gap-2 mt-2.5">
-              <button
-                onClick={() => startWorktree(item, index)}
-                disabled={busy || busyIndex !== null || !projectDir}
-                title={
-                  projectDir
-                    ? i18nT('components.followUpCard.create_worktree_and_open_session', { path: projectDir })
-                    : i18nT('components.followUpCard.this_session_has_no_project_directory_so_there_i')
-                }
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-                  // Accent (primary-CTA) styling ONLY when the action can work.
-                  // An unscoped session disables this button permanently, and a
-                  // dimmed accent button still reads as "the main action" on a
-                  // dark theme — users click it, meet a not-allowed cursor, and
-                  // report it as a dead button. Demote it to the secondary
-                  // look so "Add to this session" is the visual default, and let
-                  // the footer (below) say WHY instead of hiding the feature.
-                  projectDir
-                    ? 'bg-accent text-accent-fg hover:bg-accent-hover border-none'
-                    : 'border border-border text-muted bg-bg'
-                }`}
-              >
-                <GitBranch size={13} aria-hidden="true" />
-                {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
-              </button>
+              {/* The worktree action is offered ONLY when the session's
+                  project is a git repo it can branch from. A session scoped to
+                  a non-repo directory shows just "Add to this session" — never
+                  a button that would fail "not a git repository" on click. */}
+              {canWorktree && (
+                <button
+                  onClick={() => startWorktree(item, index)}
+                  disabled={busy || busyIndex !== null}
+                  title={i18nT('components.followUpCard.create_worktree_and_open_session', { path: projectDir })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
+                >
+                  <GitBranch size={13} aria-hidden="true" />
+                  {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
+                </button>
+              )}
               <button
                 onClick={() => onAddToSession(item)}
                 disabled={busyIndex !== null}
@@ -166,13 +178,15 @@ function FollowUpCard({
         )
       })}
       <div className="px-4 pb-3 text-[11px] text-muted">
-        {projectDir
+        {canWorktree
           ? i18nT('components.followUpCard.both_actions_pre_fill_the_composer_nothing_is_se')
-          // The unscoped variant must not claim "both actions": the worktree
-          // button is disabled above, and this line is where the user learns
-          // why — the tooltip alone hides behind a hover the not-allowed
-          // cursor has already soured.
-          : i18nT('components.followUpCard.worktree_disabled_no_project_directory')}
+          // The worktree button is NOT rendered above when the action cannot
+          // work, so the footer must not claim "both actions". It names the one
+          // remaining action and says why the worktree route is absent — no
+          // project at all, or a project that is not a git repo to branch from.
+          : projectDir
+            ? i18nT('components.followUpCard.worktree_unavailable_project_not_a_repo')
+            : i18nT('components.followUpCard.worktree_disabled_no_project_directory')}
       </div>
     </div>
   )
