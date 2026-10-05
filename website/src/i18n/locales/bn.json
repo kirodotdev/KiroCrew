@@ -10482,7 +10482,7 @@
         "reject": "প্রত্যাখ্যান করুন",
         "rejected": "প্রত্যাখ্যাত",
         "resolved": "সমাধান হয়েছে",
-        "never_started": "কখনও শুরু হয়নি",
+        "no_record": "কোনো রেকর্ড নেই",
         "resolving": "রিজলভ হচ্ছে…",
         "resolving_2": "রিজলভ হচ্ছে...",
         "resource_type_issue": "ইস্যু",

@@ -10638,7 +10638,7 @@
         "reject": "Refuser",
         "rejected": "Refusé",
         "resolved": "Résolu",
-        "never_started": "Jamais démarré",
+        "no_record": "Aucun enregistrement",
         "resolving": "Résolution…",
         "resolving_2": "résolution...",
         "resource_type_issue": "Issue",

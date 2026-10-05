@@ -176,6 +176,10 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // reported rather than swallowed; the next successful read clears it. It
   // never settles the card: a failed read is not evidence of either outcome.
   const [livenessFailed, setLivenessFailed] = useState(false)
+  // A spawn frame or a card's own re-read can settle the last gone approval
+  // without this poll succeeding, so the flag would outlive the cards it was
+  // about and greet the next refusal before any read for it had failed.
+  useEffect(() => { if (unresolved === 0) setLivenessFailed(false) }, [unresolved])
   // Cancel a running subagent. A refused spawnDelete used to be swallowed with a
   // console breadcrumb; it now surfaces on the chip.
   const stopAgent = useCallback((id: string, name: string) => {
@@ -238,7 +242,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     const reconcile = setInterval(() => {
       api.spawnList().then(d => {
         if (cancelled) return
-        const backendIds = new Set((d.agents || []).filter((a) => !a.done && a.parent === `dashboard:${slot}`).map((a) => a.id))
+        // Live rows by run id alone, as the gone-approval branch matches them:
+        // ids are unique, and a nested, cron- or channel-born run's `parent` is
+        // not this tab's key. A parent filter here would mark such a live run
+        // failed, and "Dismiss done" would then DELETE (cancel) it.
+        const backendIds = new Set((d.agents || []).filter((a) => !a.done).map((a) => a.id))
         activeListRef.current.forEach(a => {
           if (isSpawnApprovalGone(a) && a.approval_id) {
             const agent = (d.agents || []).find(candidate => candidate.id === a.id) ?? null
@@ -344,28 +352,19 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             {waitText}
           </div>
         )}
-        {unresolved > 0 && (
-          // The approval request itself failed (404/gone): that is an error and
-          // says so once, here. Whether the agent launched anyway is a separate,
-          // still-open question, which each row below states as neutral status.
+        {unresolved > 0 && livenessFailed && (
+          // The refused approval request reports itself once, on the surface
+          // that sent it (the composer or the activity card); this chip states
+          // each unresolved row as neutral status. What it does own is its own
+          // failed read of the inventory, the poll that settles those rows.
           // Not in the row: each row is a button, and the hand-off is another.
           <div className="px-3 pb-1.5">
             <ErrorNotice
               variant="inline"
-              message={i18nT('components.approvalCard.approval_no_longer_pending')}
+              message={i18nT('pages.chat.subagentProgressBar.liveness_check_failed')}
               askAgent
-              testId="subagent-approval-gone-error"
+              testId="subagent-liveness-error"
             />
-            {livenessFailed && (
-              <div className="mt-1">
-                <ErrorNotice
-                  variant="inline"
-                  message={i18nT('pages.chat.subagentProgressBar.liveness_check_failed')}
-                  askAgent
-                  testId="subagent-liveness-error"
-                />
-              </div>
-            )}
           </div>
         )}
         {actionError && (

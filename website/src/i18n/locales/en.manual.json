@@ -4407,7 +4407,7 @@
         "no_pull_requests_yet": "No pull requests in this session yet",
         "pending_approval": "Pending Approval",
         "resolved": "Resolved",
-        "never_started": "Never started",
+        "no_record": "No record",
         "resource_type_issue": "Issue",
         "resource_type_link": "Link",
         "resource_type_pr": "PR",

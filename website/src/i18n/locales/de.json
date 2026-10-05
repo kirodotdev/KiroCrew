@@ -10482,7 +10482,7 @@
         "reject": "Ablehnen",
         "rejected": "Abgelehnt",
         "resolved": "Aufgelöst",
-        "never_started": "Nie gestartet",
+        "no_record": "Kein Eintrag",
         "resolving": "Wird aufgelöst…",
         "resolving_2": "wird aufgelöst…",
         "resource_type_issue": "Issue",

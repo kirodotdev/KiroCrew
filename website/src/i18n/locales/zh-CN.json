@@ -10326,7 +10326,7 @@
         "reject": "拒绝",
         "rejected": "已拒绝",
         "resolved": "已解决",
-        "never_started": "未启动",
+        "no_record": "无记录",
         "resolving": "解析中…",
         "resolving_2": "解析中…",
         "resource_type_issue": "问题",

@@ -10326,7 +10326,7 @@
         "reject": "却下",
         "rejected": "却下済み",
         "resolved": "解決済み",
-        "never_started": "開始されませんでした",
+        "no_record": "記録なし",
         "resolving": "解決中…",
         "resolving_2": "解決中…",
         "resource_type_issue": "イシュー",

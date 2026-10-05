@@ -10794,7 +10794,7 @@
         "reject": "Отклонить",
         "rejected": "Отклонено",
         "resolved": "Обработано",
-        "never_started": "Не запускался",
+        "no_record": "Нет записи",
         "resolving": "Разрешение…",
         "resolving_2": "разрешение...",
         "resource_type_issue": "Задача",

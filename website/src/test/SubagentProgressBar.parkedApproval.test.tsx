@@ -149,20 +149,17 @@ describe('subagent whose spawn approval is gone', () => {
     expect(container.textContent).not.toContain(PARKED_LABEL)
   })
 
-  it('reports the failed approval request through ErrorNotice, and liveness as neutral status', () => {
+  it('states liveness as neutral status and leaves the refusal to the surface that sent it', () => {
     const { container } = chip({ parked: 2, seed: goneSeed })
-    // The failure sentence: once, as an ErrorNotice with its alert semantics.
-    const notice = container.querySelector('[data-testid="subagent-approval-gone-error"]')
-    expect(notice).not.toBeNull()
-    expect(notice!.getAttribute('role')).toBe('alert')
-    expect(text(notice)).toContain(GONE_ERROR)
-    expect(container.textContent!.split(GONE_ERROR)).toHaveLength(2)
-    // The open liveness question: neutral, on the row and the count, never the
-    // failure sentence and never inside the notice's alert.
+    // The refused request already reported itself where it was pressed (the
+    // composer or the activity card); a second copy here would show the same
+    // red sentence on two surfaces at once.
+    expect(container.textContent).not.toContain(GONE_ERROR)
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    // The open liveness question: neutral, on the row and the count.
     const rows = container.querySelectorAll('[data-testid="subagent-row-checking"]')
     expect(rows).toHaveLength(1)
     expect(text(rows[0])).toBe(CHECKING)
-    expect(rows[0].closest('[role="alert"]')).toBeNull()
     expect(container.querySelector('[data-testid="subagent-unresolved-count"]')!.getAttribute('title')).toBe(CHECKING)
   })
 
@@ -177,7 +174,6 @@ describe('subagent whose spawn approval is gone', () => {
     })
     expect(runningCount(container)).toBe('1')
     expect(container.querySelector('[data-testid="subagent-unresolved-count"]')).toBeNull()
-    expect(container.querySelector('[data-testid="subagent-approval-gone-error"]')).toBeNull()
     expect(container.querySelector('[data-testid="subagent-row-checking"]')).toBeNull()
     expect(container.textContent).toContain('→ shell')
   })
@@ -247,7 +243,25 @@ describe('liveness poll for a gone spawn approval', () => {
     await tick()
     expect(container.querySelector('[data-testid="subagent-liveness-error"]')).toBeNull()
     expect(unresolvedCount(container)).toBe('1')
-    expect(container.querySelector('[data-testid="subagent-approval-gone-error"]')).not.toBeNull()
+    expect(text(container.querySelector('[data-testid="subagent-row-checking"]'))).toBe(CHECKING)
+  })
+
+  it('forgets the failure once no gone approval is left, however it settled', async () => {
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new Error('503'))
+    const { container, store } = chip({ parked: 2, running: 1, seed: goneSeed })
+    await tick()
+    expect(container.querySelector('[data-testid="subagent-liveness-error"]')).not.toBeNull()
+
+    // Settled by a spawn frame, not by the poll: the poll never gets to clear it.
+    await act(async () => {
+      store.dispatch(sseSubagentSpawn({ slot: SLOT, id: 'p0', task: 'launched elsewhere', agent: 'kirocrew' }))
+      store.dispatch(sseSubagentTool({ slot: SLOT, id: 'p0', tool: 'shell' }))
+    })
+    expect(unresolvedCount(container)).toBe('')
+    // A second refusal: nothing has failed to read for p1 yet.
+    await act(async () => { store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'spawn:p1' })) })
+    expect(unresolvedCount(container)).toBe('1')
+    expect(container.querySelector('[data-testid="subagent-liveness-error"]')).toBeNull()
   })
 
   it('stays silent when the failed poll had no gone approval to settle', async () => {
@@ -280,6 +294,24 @@ describe('settling a gone spawn approval from the inventory', () => {
     const { store } = chip({ parked: 1, seed: goneSeed })
     await tick()
     expect(store.getState().chat.subagents.p0.status).toBe('running')
+  })
+
+  it.each([
+    ['a nested child', 'subagent:root0001'],
+    ['a cron-born run', 'cron:abc'],
+  ])('keeps %s it settled as running on the next poll, not failed', async (_label, parent) => {
+    // Settled to running by run id; the following phantom sweep must match the
+    // same live row by id too, or the card reads failed and "Dismiss done"
+    // would DELETE (cancel) the still-running task.
+    const live = { agents: [{ id: 'p0', task: 'launched', done: false, parent }] }
+    vi.mocked(api.spawnList).mockResolvedValueOnce(live).mockResolvedValueOnce(live)
+    const { store } = chip({ parked: 1, seed: goneSeed })
+    await tick()
+    expect(store.getState().chat.subagents.p0.status).toBe('running')
+    await tick()
+    expect(api.spawnList).toHaveBeenCalledTimes(2)
+    expect(store.getState().chat.subagents.p0.status).toBe('running')
+    expect(store.getState().chat.subagents.p0.error).toBeUndefined()
   })
 
   it('does not tally a retired never-launched card as stopped', async () => {

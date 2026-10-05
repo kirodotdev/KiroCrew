@@ -10638,7 +10638,7 @@
         "reject": "Rifiuta",
         "rejected": "Rifiutato",
         "resolved": "Risolto",
-        "never_started": "Mai avviato",
+        "no_record": "Nessun record",
         "resolving": "Risoluzione in corso…",
         "resolving_2": "risoluzione in corso...",
         "resource_type_issue": "Issue",

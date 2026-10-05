@@ -3,12 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
+import { reconcileGoneSubagent } from '../store/chatSlice'
 
 vi.mock('../api/client', () => {
   // Declared INSIDE the factory: vi.mock is hoisted above module-level
@@ -712,8 +713,9 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await waitFor(() => {
       expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
     })
-    // A rejected request is an error (AUTOSDE errors-use-error-notice), and the
-    // panel shows this same sentence through ErrorNotice: not the status strip.
+    // A rejected request is an error (AUTOSDE errors-use-error-notice), so it is
+    // an ErrorNotice, not the status strip. This banner sent it, so it is the
+    // one surface that reports it; the panel shows only neutral liveness.
     expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
     expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
@@ -734,13 +736,22 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
 
-    // The rejected reconciliation is observable, through the same error surface.
+    // The rejected reconciliation is observable, as an error notice of its own.
     await waitFor(() => {
-      expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      expect(screen.getByTestId('spawn-liveness-error')).toHaveTextContent(
         i18nT('pages.chat.subagentProgressBar.liveness_check_failed'),
       )
     })
-    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('spawn-liveness-error')).toHaveAttribute('role', 'alert')
+    // Beside the refusal, not over it: the failed read lands a microtask after
+    // the refusal is shown, and one shared notice would leave no surface
+    // reporting the refusal this banner sent.
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    expect(screen.getByTestId('approval-decision-error')).not.toHaveTextContent(
+      i18nT('pages.chat.subagentProgressBar.liveness_check_failed'),
+    )
     expect(api.spawnList).toHaveBeenCalledTimes(1)
     // A failed read settles nothing: still gone-and-unresolved, never retired,
     // and the stale approval controls do not come back.
@@ -748,6 +759,41 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     expect(card.status).toBe('pending')
     expect(card.approvalGone).toBe('spawn:a1')
     expect(screen.queryByRole('button', { name: /^Approve$/ })).not.toBeInTheDocument()
+  })
+
+  it('drops the liveness notice once another reader settles the card, keeping the refusal', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    await waitFor(() => expect(screen.getByTestId('spawn-liveness-error')).toBeInTheDocument())
+
+    // The chip's poll (or the card's re-read) answers: the inventory holds no
+    // row, so the card retires and "couldn't check" is no longer true.
+    await store.dispatch(reconcileGoneSubagent({ slot: 'slot-1', id: 'a1', approval_id: 'spawn:a1' }))
+    await waitFor(() => expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument())
+    expect(store.getState().chat.subagents.a1.status).toBe('stopped')
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+  })
+
+  it('dismisses the liveness notice on its own, leaving the refusal and the unresolved card', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    const notice = await screen.findByTestId('spawn-liveness-error')
+
+    fireEvent.click(within(notice).getByRole('button'))
+    expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument()
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    // Dismissing the notice settles nothing: the chip's poll still owns that.
+    expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
   })
 
   it('keeps the buttons and reports the failure after a refusal that is not terminal', async () => {

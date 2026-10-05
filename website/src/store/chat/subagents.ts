@@ -475,11 +475,11 @@ export const subagentReducers = {
       return
     }
 
-    // No backend record with this id: it never launched
-    // (or is no longer retained). Retire the card instead of preserving a
-    // reconnect-proof pending zombie. Keep the scoped approval verdict so the
-    // card can explain why it retired; a later sseSubagentPending overwrites
-    // the whole entry and re-arms a fresh id normally.
+    // No backend record with this id: it never launched, or it is no longer
+    // retained, and the card claims only the absent record. Retire the card
+    // instead of preserving a reconnect-proof pending zombie. Keep the scoped
+    // approval verdict so no surface re-offers the dead decision; a later
+    // sseSubagentPending overwrites the whole entry and re-arms a fresh id.
     current.status = 'stopped'
     current.approving = false
     current.approvalRetired = true

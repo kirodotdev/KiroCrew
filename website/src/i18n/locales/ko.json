@@ -10326,7 +10326,7 @@
         "reject": "거부",
         "rejected": "거부됨",
         "resolved": "해결됨",
-        "never_started": "시작되지 않음",
+        "no_record": "기록 없음",
         "resolving": "확인 중…",
         "resolving_2": "확인 중…",
         "resource_type_issue": "이슈",

@@ -11,8 +11,13 @@
  * per theme: a gone refusal pressed on the activity card whose liveness read
  * (`GET /api/spawn`) fails, so the card reports that failure and stays
  * unresolved rather than retiring. One more per theme: the same failed read
- * after a refusal pressed on the COMPOSER banner, so the banner's notice and,
- * after the chip's 30s re-read also fails, the progress bar's notice say so.
+ * after a refusal pressed on the COMPOSER banner, so the composer shows the
+ * refusal and, in a notice of its own beside it, the failed read; after the
+ * chip's 30s re-read also fails, the progress bar's notice says so too.
+ *
+ * The refused request is reported once, by the surface that sent it: every
+ * frame asserts the "expired or already decided" sentence appears on exactly
+ * one surface, and a retired card reads "No record", never "Never started".
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6824 --strictPort   # in another shell
@@ -25,6 +30,8 @@ const BASE = process.argv[2] || 'http://127.0.0.1:6824'
 const OUT = process.argv[3] || '../temp-screenshots/spawn-approval-gone'
 const EXPECTED = 'This approval has expired or was already decided'
 const LIVENESS_FAILED = "Couldn't check whether it started. Retrying…"
+// How many alerts on the page carry the refusal sentence; the press surface owns it.
+const goneAlerts = async (page) => (await page.getByRole('alert').allInnerTexts()).filter(n => n.includes(EXPECTED)).length
 mkdirSync(OUT, { recursive: true })
 
 const browser = await chromium.launch()
@@ -38,9 +45,9 @@ for (const theme of ['dark', 'light']) {
   await composer.getByText(/awaiting your approval to run/).waitFor()
 
   await composer.locator('button', { hasText: /^\s*Approve\s*$/ }).click()
-  // The banner and the progress bar's ErrorNotice both carry the sentence.
+  // The banner sent the refused request, so it alone carries the sentence;
+  // the chip and the card show only neutral liveness status.
   await composer.getByRole('alert').filter({ hasText: EXPECTED }).first().waitFor()
-  await page.getByTestId('subagent-approval-gone-error').waitFor()
   await page.getByTestId('subagent-unresolved-count').waitFor()
   await panel.getByText('Checking whether it started…').waitFor()
   // The banner animates out; count its controls once the exit has finished.
@@ -52,8 +59,9 @@ for (const theme of ['dark', 'light']) {
     approval: await page.getByTestId('capture-approval-count').innerText(),
     composer: await page.getByTestId('capture-composer-state').innerText(),
     reload: await page.getByTestId('capture-reload-state').innerText(),
+    goneAlerts: await goneAlerts(page),
   }
-  const unresolvedOk = unresolved.composerLive === 0 && unresolved.panelLive === 0
+  const unresolvedOk = unresolved.composerLive === 0 && unresolved.panelLive === 0 && unresolved.goneAlerts === 1
     && unresolved.running.endsWith('1') && unresolved.approval.endsWith('0')
     && unresolved.composer.endsWith('Busy') && unresolved.reload.endsWith('Blocked')
   console.log(`${theme} unresolved: ${JSON.stringify(unresolved)} ${unresolvedOk ? 'OK' : 'MISMATCH'}`)
@@ -68,10 +76,13 @@ for (const theme of ['dark', 'light']) {
     composer: await page.getByTestId('capture-composer-state').innerText(),
     reload: await page.getByTestId('capture-reload-state').innerText(),
     panelNotice: (await panel.getByRole('alert').allInnerTexts()).join(' '),
+    noRecord: await panel.getByText('No record', { exact: true }).count(),
+    neverStarted: await panel.getByText('Never started').count(),
   }
   const retiredOk = retired.progress === 0 && retired.running.endsWith('0')
     && retired.approval.endsWith('0') && retired.composer.endsWith('Idle')
-    && retired.reload.endsWith('Available') && retired.panelNotice.includes(EXPECTED)
+    && retired.reload.endsWith('Available') && !retired.panelNotice.includes(EXPECTED)
+    && retired.noRecord === 1 && retired.neverStarted === 0
   console.log(`${theme} retired: ${JSON.stringify(retired)} ${retiredOk ? 'OK' : 'MISMATCH'}`)
   if (!retiredOk) { failed = true; continue }
   await page.screenshot({ path: `${OUT}/spawn-approval-gone-${theme}-retired.png` })
@@ -102,8 +113,9 @@ for (const theme of ['dark', 'light']) {
   const multi = {
     rows: await composer.getByRole('button', { name: /^Approve sub-agent:/ }).count(),
     goneRow: await composer.getByRole('button', { name: 'Approve sub-agent: Check the changelog links' }).count(),
+    goneAlerts: await goneAlerts(page),
   }
-  const multiOk = multi.rows === 2 && multi.goneRow === 0
+  const multiOk = multi.rows === 2 && multi.goneRow === 0 && multi.goneAlerts === 1
   console.log(`${theme} multi: ${JSON.stringify(multi)} ${multiOk ? 'OK' : 'MISMATCH'}`)
   if (!multiOk) { failed = true; continue }
   await page.screenshot({ path: `${OUT}/spawn-approval-multi-${theme}.png` })
@@ -115,6 +127,8 @@ for (const theme of ['dark', 'light']) {
   await panel.locator('button', { hasText: /^\s*Approve\s*$/ }).waitFor()
   await panel.locator('button', { hasText: /^\s*Approve\s*$/ }).click()
   await panel.getByRole('alert').filter({ hasText: LIVENESS_FAILED }).waitFor()
+  // The composer's copy of the banner animates out too; shoot once it is gone.
+  await composer.locator('button', { hasText: /^\s*Approve(?: all)?\s*$/ }).first().waitFor({ state: 'detached' })
   const liveness = {
     notices: await panel.getByRole('alert').allInnerTexts(),
     panelLive: await panel.locator('button', { hasText: /^\s*(Approve|Reject)\s*$/ }).count(),
@@ -122,8 +136,9 @@ for (const theme of ['dark', 'light']) {
     approval: await page.getByTestId('capture-approval-count').innerText(),
     composer: await page.getByTestId('capture-composer-state').innerText(),
     reload: await page.getByTestId('capture-reload-state').innerText(),
+    goneAlerts: await goneAlerts(page),
   }
-  const livenessOk = liveness.notices.some(n => n.includes(LIVENESS_FAILED))
+  const livenessOk = liveness.goneAlerts === 1 && liveness.notices.some(n => n.includes(LIVENESS_FAILED))
     && liveness.notices.some(n => n.includes(EXPECTED)) && liveness.panelLive === 0
     && liveness.running.endsWith('1') && liveness.approval.endsWith('0')
     && liveness.composer.endsWith('Busy') && liveness.reload.endsWith('Blocked')
@@ -132,14 +147,25 @@ for (const theme of ['dark', 'light']) {
   await page.screenshot({ path: `${OUT}/spawn-approval-liveness-fail-${theme}.png` })
 
   // The same failed read after a refusal pressed on the composer banner: its
-  // immediate re-read fails and the banner says so (that notice clears itself
-  // after 8s); the chip's 30s re-read then fails too and the progress bar
-  // says so beside the gone sentence. One frame for each.
+  // immediate re-read fails, and the composer reports that in a notice of its
+  // own BESIDE the refusal, which must survive it (both notices clear
+  // themselves after 8s); the chip's 30s re-read then fails too and the
+  // progress bar reports its own failed read. One frame for each.
   await page.goto(`${BASE}/capture/spawn-approval-gone.html?theme=${theme}&scenario=liveness-fail`, { waitUntil: 'domcontentloaded', timeout: 120000 })
   await composer.getByText(/awaiting your approval to run/).waitFor()
   await composer.locator('button', { hasText: /^\s*Approve\s*$/ }).click()
-  await page.getByTestId('approval-decision-error').filter({ hasText: LIVENESS_FAILED }).waitFor()
-  const composerNotice = await page.getByTestId('approval-decision-error').innerText()
+  await page.getByTestId('spawn-liveness-error').filter({ hasText: LIVENESS_FAILED }).waitFor()
+  await composer.locator('button', { hasText: /^\s*Approve(?: all)?\s*$/ }).first().waitFor({ state: 'detached' })
+  const composerFrame = {
+    refusal: await page.getByTestId('approval-decision-error').innerText(),
+    liveness: await page.getByTestId('spawn-liveness-error').innerText(),
+    goneAlerts: await goneAlerts(page),
+  }
+  const composerFrameOk = composerFrame.refusal.includes(EXPECTED) && !composerFrame.refusal.includes(LIVENESS_FAILED)
+    && composerFrame.liveness.includes(LIVENESS_FAILED) && composerFrame.goneAlerts === 1
+  console.log(`${theme} composer-liveness-fail: ${JSON.stringify(composerFrame)} ${composerFrameOk ? 'OK' : 'MISMATCH'}`)
+  if (!composerFrameOk) { failed = true; continue }
+  const composerNotice = composerFrame.liveness
   await page.screenshot({ path: `${OUT}/spawn-approval-composer-liveness-fail-${theme}.png` })
   await page.getByTestId('subagent-liveness-error').waitFor({ timeout: 40000 })
   const chip = {

@@ -855,6 +855,18 @@ function ChatInput({
           />
         </div>
       )}
+      {spawnApprovals.spawnLivenessError && (
+        <div className="px-4 mb-1">
+          {/* No hand-off: the composer draft below is unsaved. Beside the
+              refusal, never over it: a failed liveness read after a gone
+              verdict is a second fact, not a replacement for the first. */}
+          <ErrorNotice
+            testId="spawn-liveness-error"
+            message={spawnApprovals.spawnLivenessError}
+            onDismiss={spawnApprovals.dismissSpawnLivenessError}
+          />
+        </div>
+      )}
       {approvalNotice && approvalNoticeKind === 'status' && (
         <div
           role="status"

@@ -192,11 +192,13 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   }, [a.approval_id, a.id, slot, dispatch, checkLiveness])
 
   // A refusal found through the composer banner lands here via the store, so
-  // this card withdraws the same approval and says why. The terminal verdict
-  // outranks an older transient failure from a press here, which it supersedes.
+  // this card withdraws the same approval. The refused request reports itself
+  // once, on the surface that sent it: the composer already said why, so this
+  // card adds only its neutral status. A transient failure from an older press
+  // here is superseded by that verdict, and its retry advice is now false.
   const retired = isSpawnApprovalRetired(a)
   const storeGone = isSpawnApprovalGone(a) || retired
-  const shownError = storeGone ? i18nT('components.approvalCard.approval_no_longer_pending') : actionError
+  const shownError = storeGone && goneFor !== a.approval_id ? null : actionError
   // SubagentProgressBar owns the periodic re-read of a gone approval's
   // liveness, but it is unmounted while this tab is open. This card keeps that
   // retry going on the same cadence until the inventory settles the card.
@@ -265,9 +267,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // narrow rail it was the part that survived truncation while the actual
   // status got clipped. Show the status; keep the full phrase as the tooltip.
   // A gone approval's card says what is still open: whether it started. A card
-  // the inventory retired says what the inventory found: it never launched.
+  // the inventory retired says only what the inventory found, no record: an
+  // absent row can also be a run the gateway no longer retains.
   const statusLabel = storeGone
-    ? i18nT(retired ? 'pages.chat.activityViewer.never_started' : 'pages.chat.subagentProgressBar.checking_whether_it_started')
+    ? i18nT(retired ? 'pages.chat.activityViewer.no_record' : 'pages.chat.subagentProgressBar.checking_whether_it_started')
     : isPending ? i18nT('pages.chat.activityViewer.pending_approval')
     : a.status === 'tool' ? i18nT('pages.chat.activityViewer.running_tool')
       : a.status === 'running' ? (a.streaming ? i18nT('pages.chat.activityViewer.running') : i18nT('pages.chat.activityViewer.starting'))

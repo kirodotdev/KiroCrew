@@ -10482,7 +10482,7 @@
         "reject": "अस्वीकार करें",
         "rejected": "अस्वीकृत",
         "resolved": "हल हो गया",
-        "never_started": "कभी शुरू नहीं हुआ",
+        "no_record": "कोई रिकॉर्ड नहीं",
         "resolving": "हल किया जा रहा है…",
         "resolving_2": "हल किया जा रहा है...",
         "resource_type_issue": "इश्यू",

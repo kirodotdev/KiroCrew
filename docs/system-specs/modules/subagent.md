@@ -2212,12 +2212,20 @@ run's `parent` is not its tab key): a non-terminal record promotes the card to
 running/tool once `awaiting_approval` is false, a terminal record adopts its `outcome`,
 and an absent record retires the card as stopped. A row
 still marked `awaiting_approval` is the manager's cleanup race, not proof of execution,
-so it remains unresolved for the next poll. The reducer compares the slot, subagent id,
+so it remains unresolved for the next poll. The progress bar's 30-second sweep that
+ends phantom cards (a live card with no live inventory row) matches live rows by run id
+too, never by `parent`: a parent filter would mark a launched nested or cron-born run
+failed on the poll after it was settled, and "Dismiss done" would then DELETE, which
+cancels the still-running task. The reducer compares the slot, subagent id,
 and refused approval id before applying the response, so a live spawn frame or a fresh
 approval id that arrives during the request cannot be overwritten. A failed inventory
 read leaves liveness unresolved and the existing progress-bar poll retries it; the
 failure is reported as an error notice in the composer and on the progress bar, never
-swallowed, and the progress bar clears it on the next successful read. Concurrent
+swallowed. The composer's is a notice of its own beside the refusal, never in its
+place: the read fails just after the refusal is shown, and one shared notice would
+leave no surface reporting the refusal. The composer drops it after the 8s its
+other notices last, or sooner once that card settles; the progress bar clears its own on the next successful
+read, or once no gone approval is left, however it settled. Concurrent
 reads for several gone cards (a batch refusal, a reconnect, the Subagents tab opening)
 share the one `GET /api/spawn` in flight. Pending
 approval counts remain cleared while composer busy state, running counts, tip
@@ -2226,11 +2234,17 @@ The gone verdict belongs to the pending phase only: a real `subagent_spawn` or t
 frame moves the card to running/tool without clearing the marker, so neither it nor
 the retired verdict (terminal `stopped` only) may classify a live card; a tool frame
 also clears the retired marker, so a launched run that later ends `stopped` reads as
-stopped, never as retired. The progress
-bar reports the failed approval request once as an error notice and each unresolved
-row as a neutral liveness check. The activity card of an unresolved gone approval reads "Checking whether it started…";
-a retired card reads "Never started". A retired card was never launched: it is not tallied
-as stopped, shows no run usage, and "Dismiss done" clears it locally without a DELETE.
+stopped, never as retired. The failed
+approval request is reported once, as an error notice on the surface that sent it: the
+composer, or the activity card whose button was pressed. Every other surface shows only
+neutral status: the progress bar states each unresolved row as a liveness check, and a
+gone approval found on reconnect was never pressed, so no surface reports an error for
+it. The activity card of an unresolved gone approval reads "Checking whether it
+started…"; a retired card reads "No record". An absent inventory row proves only that
+the gateway holds no record of the id: the run never launched, or it is no longer
+retained (`evict_completed_agents` past `MAX_RETAINED_AGENTS` finished runs, a panel
+dismissal, a gateway restart). A retired card is not tallied as stopped, shows no run
+usage, and "Dismiss done" clears it locally without a DELETE.
 
 
 ### Model Provenance (#3582)
