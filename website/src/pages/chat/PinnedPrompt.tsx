@@ -729,9 +729,12 @@ export default function PinnedPrompt({
                   full-size image, and the taller card only moves the hand-off line
                   DOWN (see PINNED_RESTING_LINES). */}
               {!expanded && shown.map(src => (
-                // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
+                // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph); the click is a pointer shortcut for the chevron, which always renders when there are images and is the keyboard path
                 <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
                   onError={() => markFailed(src)}
+                  // A thumbnail asks to see the image, so it expands the card in
+                  // place instead of reaching the body button's jump.
+                  onClick={e => { if (folding) return; e.stopPropagation(); onToggleExpanded() }}
                   className={`inline-block align-middle mr-1.5 rounded-sm object-cover p-px ${THUMB_FRAME} ${
                     text ? 'h-[1.4em] w-[1.4em]' : 'h-[2.8em] w-[3.6em]'}`} />
               ))}
