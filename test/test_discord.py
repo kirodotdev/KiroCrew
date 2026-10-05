@@ -20,6 +20,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from crew_log_drain import assert_drained, settle, unsync_appends
 from off_loop_helpers import off_loop
 
 import kiro_crew.discord.transport_dispatch as td_mod
@@ -3575,6 +3576,13 @@ class TestDispatcher:
         assert not os.path.exists(lines[1])
         assert cleanup_threads and loop_thread not in cleanup_threads
 
+    #: How long a wait for a step this test's own coroutine reaches may take before the run is
+    #: written off. A lost-run guard, not a race to tune: a turn that never gets there fails
+    #: by name here instead of reaching the suite's ``--timeout=120``. MEASURED: the attachment
+    #: turn reaches its download after several executor hops, and a 1 s budget lost that race
+    #: on every run once each executor job started 0.2 s late.
+    _LOST_RUN_CEILING_SECS = 30.0
+
     @pytest.mark.asyncio
     async def test_attachment_turn_acquires_before_download_yields(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3627,7 +3635,10 @@ class TestDispatcher:
                 )
             )
         )
-        await asyncio.wait_for(download_started.wait(), timeout=1)
+        try:
+            await asyncio.wait_for(download_started.wait(), timeout=self._LOST_RUN_CEILING_SECS)
+        except TimeoutError:
+            pytest.fail(f"the download never started within {self._LOST_RUN_CEILING_SECS:.0f}s")
 
         assert sess._busy, "session must be acquired before attachment download"
         await d.handle_message(self._msg("second"))
@@ -4041,6 +4052,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-owner-dm-turn", raising=False)
         monkeypatch.setattr(FakeProvider, "served_model", "model-x", raising=False)
@@ -4092,9 +4104,8 @@ class TestDispatcher:
             assert "parent" not in opened[0].data
             assert [e.type for e in entries].count("work/recorded") == 1
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
             ledger_routes._BOARD_LOCKS.clear()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_a_tab_on_the_conversation_and_the_channel_state_one_class(
@@ -4120,6 +4131,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-tabbed-dm", raising=False)
         emit.reset_caches()
@@ -4142,7 +4154,7 @@ class TestDispatcher:
                 workspace="default",
             )
             await d.handle_message(self._msg("hello again"))
-            assert emit.flush()
+            await asyncio.to_thread(assert_drained)
             entries = off_loop(_read_session_log, "acp-tabbed-dm")
             assert [e.type for e in entries if e.type == "session/class"] == []
             opened = [e for e in entries if e.type == "session/opened"]
@@ -4153,8 +4165,7 @@ class TestDispatcher:
                 "workspace": "default",
             }
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_a_resumed_dashboard_session_is_not_opened_by_the_channel(
@@ -4223,6 +4234,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-1", raising=False)
         emit.reset_caches()
@@ -4230,7 +4242,7 @@ class TestDispatcher:
             d, _cli, sess = _dispatcher({"u1"})
             d.ctx_builder.live_memory_mode_for_session = lambda key: "persistent"
             await d.handle_message(self._msg("hello"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The recycle: the mapping keeps answering the dropped id from its stash
             # (``SessionMap.mapped_sid`` reads ``discarded_sid``) while the next
@@ -4238,7 +4250,7 @@ class TestDispatcher:
             sess.mapped_sid = lambda key: "acp-gen-1"
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
             await d.handle_message(self._msg("and again"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             entries = off_loop(_read_session_log, "acp-gen-2")
             opened = [e for e in entries if e.type == "session/opened"]
@@ -4248,12 +4260,11 @@ class TestDispatcher:
             # no edge and no second announcement.
             sess.mapped_sid = lambda key: "acp-gen-2"
             await d.handle_message(self._msg("still here"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
             entries = off_loop(_read_session_log, "acp-gen-2")
             assert [e.type for e in entries].count("session/opened") == 1
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_the_predecessor_is_captured_inside_the_allocation_not_around_it(
@@ -4276,6 +4287,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         emit.reset_caches()
         try:
@@ -4288,7 +4300,7 @@ class TestDispatcher:
                 monkeypatch.setattr(FakeProvider, "session_id", sid, raising=False)
                 await d.handle_message(self._msg("hello"))
                 mapping["sid"] = sid
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The loser's view when it reaches the allocation: the older store.
             mapping["sid"] = "acp-gen-0"
@@ -4304,7 +4316,7 @@ class TestDispatcher:
             sess.get_or_create = _wait_for_the_permit_then_allocate
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
             await d.handle_message(self._msg("and again"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             opened = [
                 e for e in off_loop(_read_session_log, "acp-gen-2") if e.type == "session/opened"
@@ -4312,8 +4324,7 @@ class TestDispatcher:
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-1"}
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_the_log_is_opened_at_the_allocation_even_when_the_turn_then_fails(
@@ -4333,13 +4344,14 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         emit.reset_caches()
         try:
             d, _cli, sess = _dispatcher({"u1"})
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-0", raising=False)
             await d.handle_message(self._msg("hello"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The recycle stashed acp-gen-0; the next allocation cold-starts acp-gen-1
             # and the turn then dies in the attachment fetch.
@@ -4360,12 +4372,12 @@ class TestDispatcher:
                         attachments=[{"filename": "a.png", "content_type": "image/png"}],
                     )
                 )
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The successor is live now: the next turn is a warm reuse.
             sess.mapped_sid = lambda key: "acp-gen-1"
             await d.handle_message(self._msg("and again"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             opened = [
                 e for e in off_loop(_read_session_log, "acp-gen-1") if e.type == "session/opened"
@@ -4373,8 +4385,7 @@ class TestDispatcher:
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-0"}
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_a_thread_route_is_still_bound_under_a_unified_scope(self) -> None:

@@ -10,91 +10,50 @@ Four areas, matching the task spec:
 2. Many sessions -- no cross-contamination, each file well-formed.
 3. Interleaved sessions -- one session's write in flight cannot lose another's.
 4. flush(timeout=...) under concurrent producers returns only when empty.
+
+The drain barrier every test here waits on (``crew_log_drain``) is pinned last: its
+two ways out, so a writer that stops is reported by name rather than waited on.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
-import time
 
+import crew_log_drain
 import pytest
+from crew_log_drain import assert_drained, settle, unsync_appends
 
 from kiro_crew.crew_log import CrewLog, crew_log_path, emit
 
 SESSION = "conc-edge-sess-0001"
 
-#: How long a drain barrier waits for the writer to land something NEW before it
-#: reports the writer stuck. Not a total budget for the drain: every test below
-#: hands the single writer thread 30 to 160 appends and each one costs an ``fsync``,
-#: which measures 0.4 ms on a warm Linux host and over 100 ms on a contended Windows
-#: CI runner -- so a fixed ceiling across a whole batch asserts a WRITE RATE the host
-#: owns rather than anything the emitter does. A writer that stopped still fails
-#: inside this window, which is the failure these barriers exist to catch.
-_NO_PROGRESS_SECONDS = 10.0
-
-#: Total ceiling for one barrier, half of the suite's ``--timeout=120`` in setup.cfg.
-#: A writer that trickles forever must fail as a readable assertion here rather than
-#: reach that mark, because pytest-timeout kills the xdist worker and costs the whole
-#: RUN instead of one test.
-_DRAIN_CEILING_SECONDS = 60.0
-
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    """Each test gets its own data home, zero-backoff, and a clean emitter."""
+    """Each test gets its own data home, zero-backoff, and a clean emitter.
+
+    The writer is waited out BEFORE the home pin lifts (:func:`crew_log_drain.settle`):
+    a batch it still holds would otherwise write into the next test's home.
+    """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
     monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
     emit.reset_caches()
     yield
-    emit.drain_for_shutdown(timeout=2.0)
-    emit.reset_caches()
+    settle()
 
 
-def _drained(*sids: str) -> bool:
-    """Wait for the writer to go quiet. False once it stops landing entries.
-
-    What every test below needs is the barrier "the writer finished", and what it
-    must NOT depend on is "the writer finished inside one fixed number of seconds":
-    the work is a batch of fsync-priced appends the test itself queues, so a fixed
-    ceiling over it is a rate assertion the slow host loses while the emitter is
-    working perfectly. So the give-up condition is a writer that landed nothing for a
-    whole :data:`_NO_PROGRESS_SECONDS` window, and the first window is measured from
-    BEFORE the first wait -- a writer that is wedged rather than slow is reported one
-    window in, exactly as promptly as a fixed ceiling of the same size reported it.
-
-    Progress is read as the BYTES on disk under the named sessions, which only grow
-    and need no parse: a size read cannot trip over a line the writer is in the
-    middle of appending, and the buffer count cannot serve here because the writer
-    takes a batch OUT of the buffer before it writes it, so an empty buffer says
-    nothing about how far a claimed batch has got.
-    """
-    watched = sids or (SESSION,)
-    give_up_at = time.monotonic() + _DRAIN_CEILING_SECONDS
-    landed = _bytes_on_disk(watched)
-    while not emit.flush(timeout=_NO_PROGRESS_SECONDS):
-        written = _bytes_on_disk(watched)
-        if written <= landed or time.monotonic() >= give_up_at:
-            return False
-        landed = written
-    return True
-
-
-def _bytes_on_disk(sids: tuple[str, ...]) -> int:
-    """How many bytes the named sessions' logs hold together."""
-    total = 0
-    for sid in sids:
-        try:
-            total += crew_log_path("session", sid).stat().st_size
-        except OSError:
-            pass
-    return total
+@pytest.fixture
+def _unsynced_appends(monkeypatch):
+    """These tests pin ordering and no-loss, not durability; see ``unsync_appends``."""
+    unsync_appends(monkeypatch)
 
 
 def _open(sid: str = SESSION) -> None:
     emit.on_session_opened(sid, agent="kirocrew", slot="test", model="m", owner="default")
-    assert _drained(sid)
+    assert_drained()
 
 
 def _entries(sid: str = SESSION) -> list[dict]:
@@ -114,12 +73,13 @@ def _body(sid: str = SESSION) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_many_producers_one_session_all_entries_land():
     """N threads calling on_tool_called for the same session. Every entry must
     land, seq must be contiguous (no gaps, no duplicates)."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    assert _drained()
+    assert_drained()
 
     n_threads = 8
     calls_per_thread = 20
@@ -147,7 +107,7 @@ def test_many_producers_one_session_all_entries_land():
         t.join()
 
     assert not errors, f"producer threads raised: {errors}"
-    assert _drained(), "the writer stopped draining"
+    assert_drained()
 
     body = _body()
     # Filter to tool/called entries (skip session/opened, turn/started)
@@ -161,6 +121,7 @@ def test_many_producers_one_session_all_entries_land():
     ), f"seq not contiguous: gaps at {_find_gaps(all_seqs)}"
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_many_producers_one_session_per_session_order_preserved():
     """Each thread's entries must appear in the order that thread emitted them.
     The emitter buffers per session and the single writer drains in order, so
@@ -168,7 +129,7 @@ def test_many_producers_one_session_per_session_order_preserved():
     hold for entries from the SAME producer thread."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    assert _drained()
+    assert_drained()
 
     n_threads = 6
     calls_per_thread = 15
@@ -191,7 +152,7 @@ def test_many_producers_one_session_per_session_order_preserved():
         t.start()
     for t in threads:
         t.join()
-    assert _drained()
+    assert_drained()
 
     tool_entries = [e for e in _body() if e["type"] == "tool/called"]
 
@@ -210,13 +171,65 @@ def test_many_producers_one_session_per_session_order_preserved():
         ), f"thread {thread_idx}: entries out of causal order: {indices}"
 
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_unsynced_appends")
+async def test_entries_queued_behind_the_writer_keep_each_producers_order(monkeypatch):
+    """The same causal order, through the WRITER thread rather than inline appends.
+
+    Off an event loop a producer writes inline whenever its session owes nothing, so at
+    native speed the test above lands every entry on its own thread and never puts one
+    in a batch the writer claims. Here the writer is parked first, inside an append
+    queued from the loop: the session then owes, every producer below buffers behind
+    it, and the batches the writer claims once it is released decide the order on disk.
+    """
+    await asyncio.to_thread(_open)
+    n_threads = 6
+    calls_per_thread = 15
+    release = _park_appends(monkeypatch)
+    try:
+        emit.on_turn_started(SESSION, turn=1)
+        barrier = threading.Barrier(n_threads, timeout=crew_log_drain.DRAIN_CEILING_SECONDS)
+
+        def _produce(thread_idx: int) -> None:
+            barrier.wait()
+            for i in range(calls_per_thread):
+                emit.on_tool_called(
+                    SESSION,
+                    turn=1,
+                    name=f"tool_t{thread_idx}",
+                    call_id=f"call-{thread_idx}-{i:04d}",
+                    server="test-server",
+                )
+
+        threads = [threading.Thread(target=_produce, args=(t,)) for t in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=crew_log_drain.DRAIN_CEILING_SECONDS)
+        assert not any(t.is_alive() for t in threads), "a producer never returned"
+    finally:
+        release.set()
+    await asyncio.to_thread(assert_drained)
+
+    tool_entries = [e for e in _body() if e["type"] == "tool/called"]
+    for thread_idx in range(n_threads):
+        thread_entries = [
+            e for e in tool_entries if e["data"]["call_id"].startswith(f"call-{thread_idx}-")
+        ]
+        indices = [int(e["data"]["call_id"].split("-")[-1]) for e in thread_entries]
+        assert indices == list(
+            range(calls_per_thread)
+        ), f"thread {thread_idx}: entries out of causal order: {indices}"
+
+
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_call_index_contiguous_under_concurrent_producers():
     """call_index is minted under _lock per turn. With N threads calling
     on_tool_called concurrently the resulting call_index values must form a
     contiguous 1..N*M range with no duplicates."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    assert _drained()
+    assert_drained()
 
     n_threads = 8
     calls_per_thread = 10
@@ -238,7 +251,7 @@ def test_call_index_contiguous_under_concurrent_producers():
         t.start()
     for t in threads:
         t.join()
-    assert _drained()
+    assert_drained()
 
     tool_entries = [e for e in _body() if e["type"] == "tool/called"]
     call_indices = sorted(e["data"]["call_index"] for e in tool_entries)
@@ -254,6 +267,7 @@ def test_call_index_contiguous_under_concurrent_producers():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_many_sessions_no_cross_contamination():
     """M sessions emitting concurrently. No session's file holds another's
     entries, and each is independently readable by the production reader."""
@@ -264,7 +278,7 @@ def test_many_sessions_no_cross_contamination():
     for sid in sids:
         _open(sid)
         emit.on_turn_started(sid, turn=1)
-    assert _drained(*sids)
+    assert_drained()
 
     barrier = threading.Barrier(n_sessions)
 
@@ -284,7 +298,7 @@ def test_many_sessions_no_cross_contamination():
         t.start()
     for t in threads:
         t.join()
-    assert _drained(*sids)
+    assert_drained()
 
     for sid in sids:
         body = _body(sid)
@@ -313,6 +327,7 @@ def test_many_sessions_no_cross_contamination():
         ), f"{sid}: production reader sees non-contiguous seqs"
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_many_sessions_each_file_well_formed():
     """Each session's file must parse as valid JSON lines and the header must
     be present and correct."""
@@ -322,7 +337,7 @@ def test_many_sessions_each_file_well_formed():
     for sid in sids:
         _open(sid)
         emit.on_turn_started(sid, turn=1)
-    assert _drained(*sids)
+    assert_drained()
 
     barrier = threading.Barrier(n_sessions)
 
@@ -338,7 +353,7 @@ def test_many_sessions_each_file_well_formed():
         t.start()
     for t in threads:
         t.join()
-    assert _drained(*sids)
+    assert_drained()
 
     for sid in sids:
         entries = _entries(sid)
@@ -359,6 +374,7 @@ def test_many_sessions_each_file_well_formed():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_interleaved_sessions_no_entry_lost():
     """Session A and session B emit concurrently. The invariant: bucketing buys
     order and content, NOT latency isolation. No entry from either session is
@@ -369,7 +385,7 @@ def test_interleaved_sessions_no_entry_lost():
     _open(sid_b)
     emit.on_turn_started(sid_a, turn=1)
     emit.on_turn_started(sid_b, turn=1)
-    assert _drained(sid_a, sid_b)
+    assert_drained()
 
     n_entries = 30
     barrier = threading.Barrier(2)
@@ -390,7 +406,7 @@ def test_interleaved_sessions_no_entry_lost():
     tb.start()
     ta.join()
     tb.join()
-    assert _drained(sid_a, sid_b)
+    assert_drained()
 
     body_a = [e for e in _body(sid_a) if e["type"] == "tool/called"]
     body_b = [e for e in _body(sid_b) if e["type"] == "tool/called"]
@@ -408,6 +424,7 @@ def test_interleaved_sessions_no_entry_lost():
         assert seqs == list(range(1, len(body) + 1)), f"session {label}: non-contiguous seqs"
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_burst_across_sessions_all_entries_land():
     """A harder variant: many sessions each emitting a burst simultaneously,
     testing that the single writer thread and per-session bucketing lose
@@ -419,7 +436,7 @@ def test_burst_across_sessions_all_entries_land():
     for sid in sids:
         _open(sid)
         emit.on_turn_started(sid, turn=1)
-    assert _drained(*sids)
+    assert_drained()
 
     barrier = threading.Barrier(n_sessions)
 
@@ -433,7 +450,7 @@ def test_burst_across_sessions_all_entries_land():
         t.start()
     for t in threads:
         t.join()
-    assert _drained(*sids)
+    assert_drained()
 
     total_tool_entries = 0
     for sid in sids:
@@ -450,12 +467,13 @@ def test_burst_across_sessions_all_entries_land():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_flush_returns_only_when_buffer_empty():
     """flush() must return True only when the buffer is truly empty, even when
     producers are still active at the moment flush is called."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    assert _drained()
+    assert_drained()
 
     n_entries = 50
     produced = threading.Event()
@@ -471,8 +489,7 @@ def test_flush_returns_only_when_buffer_empty():
     t.join()
 
     # Now flush -- it must wait until the writer has drained everything
-    result = _drained()
-    assert result, "flush returned False (the writer stopped draining)"
+    assert_drained()
     assert (
         emit.buffered_writes() == 0
     ), f"flush returned True but {emit.buffered_writes()} writes still buffered"
@@ -481,6 +498,7 @@ def test_flush_returns_only_when_buffer_empty():
     assert len(tool_entries) == n_entries
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_flush_under_ongoing_production():
     """flush called while producers are STILL emitting. flush must return True
     only after the entries that existed at the time of the call have been
@@ -488,13 +506,13 @@ def test_flush_under_ongoing_production():
     responsibility, but anything queued before must land.)"""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    assert _drained()
+    assert_drained()
 
     n_pre_flush = 20
     n_post_flush = 10
     pre_flush_done = threading.Event()
     flush_started = threading.Event()
-    flush_result: list[bool] = []
+    flush_result: list[AssertionError | None] = []
 
     def _produce() -> None:
         for i in range(n_pre_flush):
@@ -507,7 +525,12 @@ def test_flush_under_ongoing_production():
     def _flusher() -> None:
         pre_flush_done.wait()
         flush_started.set()
-        flush_result.append(_drained())
+        try:
+            assert_drained()
+        except AssertionError as exc:  # raised on this thread, reported on the test's
+            flush_result.append(exc)
+        else:
+            flush_result.append(None)
 
     tp = threading.Thread(target=_produce)
     tf = threading.Thread(target=_flusher)
@@ -516,10 +539,10 @@ def test_flush_under_ongoing_production():
     tp.join()
     tf.join()
 
-    assert flush_result[0], "flush returned False"
+    assert flush_result == [None], f"the flush barrier failed: {flush_result}"
 
     # A second flush to ensure everything including post-flush entries has landed
-    assert _drained()
+    assert_drained()
 
     tool_entries = [e for e in _body() if e["type"] == "tool/called"]
     # At minimum, the pre-flush entries must be there; post-flush may or may not
@@ -542,7 +565,7 @@ def test_flush_timeout_zero_does_not_hang():
     # flush(0) returns immediately -- we just check it returns at all
     emit.flush(timeout=0.0)
     # Now drain properly
-    assert emit.flush(timeout=5.0)
+    assert_drained()
 
 
 # ---------------------------------------------------------------------------
@@ -550,13 +573,14 @@ def test_flush_timeout_zero_does_not_hang():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_unsynced_appends")
 def test_mixed_entry_points_concurrent():
     """Different on_* functions called concurrently for one session. Tests that
     the emitter's internal state (_live, _tool_started, _pinned) stays
     consistent under contention."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    assert _drained()
+    assert_drained()
 
     barrier = threading.Barrier(4)
     errors: list[Exception] = []
@@ -611,7 +635,7 @@ def test_mixed_entry_points_concurrent():
         t.join()
 
     assert not errors, f"threads raised: {errors}"
-    assert _drained()
+    assert_drained()
 
     body = _body()
     seqs = [e["seq"] for e in body]
@@ -624,6 +648,63 @@ def test_mixed_entry_points_concurrent():
         f"tool call/completion mismatch: called={called_ids - completed_ids}, "
         f"unclosed={completed_ids - called_ids}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The drain barrier itself: a writer that stops is reported, never waited on
+# ---------------------------------------------------------------------------
+
+
+def _park_appends(monkeypatch) -> threading.Event:
+    """Park every later append on the writer until the returned event is set.
+
+    The wait is bounded too, so a test that forgets to release cannot hold the one
+    process-wide writer thread for the rest of the run.
+    """
+    release = threading.Event()
+    real_append = CrewLog.append
+
+    def _parked(self, *args, **kwargs):
+        release.wait(timeout=crew_log_drain.DRAIN_CEILING_SECONDS)
+        return real_append(self, *args, **kwargs)
+
+    monkeypatch.setattr(CrewLog, "append", _parked)
+    return release
+
+
+@pytest.mark.asyncio
+async def test_the_barrier_names_a_writer_that_lands_nothing(monkeypatch):
+    """A writer that lands nothing for a whole window fails the barrier, by name.
+
+    The entry is emitted ON the loop so it is queued for the writer thread: off a loop
+    the emitter writes inline, on the caller's own thread, which is not what this pins.
+    """
+    await asyncio.to_thread(_open)
+    release = _park_appends(monkeypatch)
+    try:
+        emit.on_turn_started(SESSION, turn=1)
+        # Scoped to this one barrier: teardown's settle() must wait with the real window
+        # for the parked append to land once it is released.
+        with pytest.MonkeyPatch.context() as tight:
+            tight.setattr(crew_log_drain, "NO_PROGRESS_SECONDS", 0.2)
+            with pytest.raises(AssertionError, match=r"landed nothing for 0\.2s") as stuck:
+                await asyncio.to_thread(assert_drained)
+        assert SESSION in str(stuck.value), "the failure does not name the log it waited on"
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_the_barrier_gives_up_at_its_ceiling(monkeypatch):
+    """The ceiling bounds the wait even when the window has not elapsed yet."""
+    await asyncio.to_thread(_open)
+    release = _park_appends(monkeypatch)
+    try:
+        emit.on_turn_started(SESSION, turn=1)
+        with pytest.raises(AssertionError, match=r"was still writing at 0\.3s"):
+            await asyncio.to_thread(assert_drained, ceiling=0.3)
+    finally:
+        release.set()
 
 
 # ---------------------------------------------------------------------------

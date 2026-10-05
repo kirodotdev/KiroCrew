@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from crew_log_drain import assert_drained, settle, unsync_appends
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import (
@@ -33,12 +34,30 @@ SESSION = "acp-throttle-0001"
 
 @pytest.fixture(autouse=True)
 def _log_home(tmp_path, monkeypatch):
-    """Own data home, emitter on, no state carried between tests."""
+    """Own data home, emitter on, no state carried between tests.
+
+    These tests pin which model and turn an entry names, not that it is durable, so
+    the fsync comes out of each append (:func:`crew_log_drain.unsync_appends`). The
+    writer is waited out BEFORE the home pin lifts (:func:`crew_log_drain.settle`): a
+    batch it still holds would otherwise write into the next test's home, and hold the
+    single writer thread while that test's own barrier waits.
+    """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+    unsync_appends(monkeypatch)
     emit.reset_caches()
     yield
-    emit.reset_caches()
+    settle()
+
+
+def _turn_drained() -> None:
+    """The drain barrier after ``_run_chat``, taken ON the event loop on purpose.
+
+    A throttled turn requeues its retry as a task of its own. Holding the loop for the
+    barrier keeps that retry from running and writing into the record this test
+    asserts on; :func:`crew_log_drain.assert_drained` itself needs no loop.
+    """
+    assert_drained()
 
 
 def _entries() -> list[dict]:
@@ -170,7 +189,7 @@ async def test_same_model_retry_success_no_fallback_logged(tmp_path, monkeypatch
     state, slot, client = _state_and_slot(tmp_path, _stream, served_model="claude-sonnet-4")
 
     await _run_chat(state, slot, "say something")
-    assert emit.flush(timeout=20.0)
+    _turn_drained()
 
     entries = _entries()
     fallback_picks = [
@@ -227,7 +246,7 @@ async def test_fallback_swap_records_model_selected(tmp_path, monkeypatch):
     _set_fallback_attrs(slot, monkeypatch)
 
     await _run_chat(state, slot, "say something")
-    assert emit.flush(timeout=20.0)
+    _turn_drained()
 
     entries = _entries()
     fb_selected = [
@@ -266,7 +285,7 @@ async def test_empty_fallback_chain_fails_with_no_cost(tmp_path, monkeypatch):
     state, slot, client = _state_and_slot(tmp_path, _stream, served_model="some-model")
 
     await _run_chat(state, slot, "say something")
-    assert emit.flush(timeout=20.0)
+    _turn_drained()
 
     entries = _entries()
     closers = _entries_of("turn/completed")
@@ -368,7 +387,7 @@ async def test_repeated_fallback_swaps_produce_multiple_model_selected(tmp_path,
 
     # Second call: counter at TRANSIENT_RETRIES → fallback-B selected.
     await _run_chat(state, slot, "say something again")
-    assert emit.flush(timeout=20.0)
+    _turn_drained()
 
     entries = _entries()
     fb_selected = [
@@ -400,7 +419,7 @@ async def test_on_model_selected_shape(tmp_path):
     """on_model_selected writes model/selected with expected fields."""
     emit.on_session_opened(SESSION, agent="test", slot="s", model="m")
     emit.on_model_selected(SESSION, "claude-fallback", "fallback", turn=3)
-    assert emit.flush(timeout=10.0)
+    await asyncio.to_thread(assert_drained)
 
     selected = _entries_of("model/selected")
     assert len(selected) == 1
@@ -415,7 +434,7 @@ async def test_on_model_selected_omits_turn_when_zero(tmp_path):
     """A model pick outside a turn records no turn ordinal."""
     emit.on_session_opened(SESSION, agent="test", slot="s", model="m")
     emit.on_model_selected(SESSION, "some-model", "user_pick")
-    assert emit.flush(timeout=10.0)
+    await asyncio.to_thread(assert_drained)
 
     selected = _entries_of("model/selected")
     assert len(selected) == 1
@@ -428,7 +447,7 @@ async def test_turn_failed_has_no_tokens_or_credits(tmp_path):
     emit.on_session_opened(SESSION, agent="test", slot="s", model="m")
     emit.on_turn_started(SESSION, 1)
     emit.on_turn_failed(SESSION, 1, error="AcpError", duration_ms=42, model="m")
-    assert emit.flush(timeout=10.0)
+    await asyncio.to_thread(assert_drained)
 
     closers = _entries_of("turn/completed")
     assert len(closers) == 1
@@ -455,7 +474,7 @@ async def test_turn_completed_carries_tokens_and_model(tmp_path):
         stop_reason="end_turn",
         model="claude-sonnet-4",
     )
-    assert emit.flush(timeout=10.0)
+    await asyncio.to_thread(assert_drained)
 
     closers = _entries_of("turn/completed")
     assert len(closers) == 1
