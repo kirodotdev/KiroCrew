@@ -1002,6 +1002,120 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert state._slots["a1"]._app == APP
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("clears", [True, False], ids=["transient-clears", "persistent-locks"])
+    async def test_a_sharing_violation_on_the_final_reread_retries_then_decides(
+        self, state, monkeypatch, clears
+    ) -> None:
+        """The identity re-reads survive a transient file lock on the resume's own line.
+
+        A just-rewritten session file is briefly unopenable while an indexer or AV
+        scanner holds it on Windows (ERROR_SHARING_VIOLATION). The off-loop read's
+        bounded retries ride over a lock that clears within the budget, so the
+        resume publishes; a lock that outlasts every attempt refuses and publishes
+        nothing. Count-based rather than clock-based so it is deterministic on a
+        loaded runner.
+        """
+        import builtins
+        import threading
+
+        from kiro_crew.history import _METADATA_READ_ATTEMPTS
+
+        await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
+        log = state.conversation_log
+        target = str(log._path("dashboard:a1"))
+        loop_thread = threading.get_ident()
+        real_open = builtins.open
+        real_clear = log.clear_closed
+        real_status = log.get_metadata_status
+        armed = {"on": False}
+        reread_threads: list[int] = []
+        # A clearing lock faults every attempt but the last within one read's
+        # budget; a persistent lock faults every attempt of every read.
+        fail_budget = {"n": (_METADATA_READ_ATTEMPTS - 1) if clears else 10_000_000}
+
+        def clear_closed(key, **kw):
+            out = real_clear(key, **kw)
+            # Model the just-rewritten file being briefly unopenable: arm only
+            # for the re-reads after the reopen write.
+            armed["on"] = True
+            return out
+
+        def status(key):
+            if armed["on"]:
+                reread_threads.append(threading.get_ident())
+            return real_status(key)
+
+        def flaky_open(file, *args, **kwargs):
+            if armed["on"] and str(file) == target and fail_budget["n"] > 0:
+                fail_budget["n"] -= 1
+                raise PermissionError("ERROR_SHARING_VIOLATION (simulated)")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(log, "clear_closed", clear_closed)
+        monkeypatch.setattr(log, "get_metadata_status", status)
+        monkeypatch.setattr(builtins, "open", flaky_open)
+        async with _client(state, APP) as client:
+            resp = await client.post("/api/chat/slots/a1/resume", json={"key": "dashboard:a1"})
+            body = await resp.text()
+        if clears:
+            assert resp.status == 200, body
+            assert state._slots["a1"]._app == APP
+            # An identity re-read runs off the loop, so its paused retries outlast
+            # the hold the on-loop reads cannot.
+            assert any(t != loop_thread for t in reread_threads)
+        else:
+            assert resp.status != 200, body
+            assert "a1" not in state._slots
+            assert "a1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
+    async def test_a_delete_finishing_inside_the_final_offloop_read_refuses(
+        self, state, monkeypatch
+    ) -> None:
+        """A delete that begins and ends during the off-loop final read is caught.
+
+        The final identity re-read is off the loop, so a whole process-local
+        delete can run and release inside it: its in-flight marker clears before
+        ``_identity_refusal`` reads it. The invalidation generation outlives the
+        marker — every delete bumps it — so the synchronous generation re-check
+        before the publish refuses, and no slot is published over the deleted
+        session.
+        """
+        await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
+        log = state.conversation_log
+        real_status = log.get_metadata_status
+        real_clear = log.clear_closed
+        fired = {"on": False}
+        state_box = {"after_reopen": False, "rereads": 0}
+
+        def arm(key, **kw):
+            state_box["after_reopen"] = True
+            return real_clear(key, **kw)
+
+        def status(key):
+            # The final re-read is the second re-read after the reopen write
+            # (the clear's own verification read is the first). The generation is
+            # snapshotted just before that final read, so model the delete
+            # landing THERE: it bumps the generation and clears its in-flight
+            # marker inside the off-loop window.
+            if state_box["after_reopen"]:
+                state_box["rereads"] += 1
+                if state_box["rereads"] == 2 and not fired["on"]:
+                    fired["on"] = True
+                    log._invalidate_cache("dashboard:a1")
+            return real_status(key)
+
+        monkeypatch.setattr(log, "clear_closed", arm)
+        monkeypatch.setattr(log, "get_metadata_status", status)
+        async with _client(state, APP) as client:
+            resp = await client.post("/api/chat/slots/a1/resume", json={"key": "dashboard:a1"})
+            payload = await resp.json()
+        assert fired["on"], "the modelled delete did not land in the read window"
+        assert (resp.status, payload["code"]) == (409, "resume_conflict")
+        assert "a1" not in state._slots
+        assert "a1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
     async def test_a_late_refusal_leaves_the_closed_marker_untouched(
         self, state, monkeypatch
     ) -> None:

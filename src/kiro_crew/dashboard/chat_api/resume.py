@@ -1743,33 +1743,54 @@ async def resume_slot_from_history(
                             409,
                         )
                     )
-            # The identity re-read and the deferred reopen write above were awaits
-            # taken AFTER the hook answered, and the hook is where the store-backed
-            # boundaries (channel link, Slack binding, outbound mirror) are read --
-            # ``final_check`` below may not touch the store. A binding recorded in the
-            # store during those awaits would otherwise publish. So the hook runs
-            # once more here, as the LAST awaiting act: after it only the synchronous
-            # ``final_check`` and the publish remain. The hook is a read-only
-            # predicate, so the second pass has no side effect of its own.
-            if containment is not None:
-                refusal = await containment(slot)
-                if refusal is not None:
-                    return ResumeOutcome(refusal=(await _discard()) or refusal)
-            # The second hook pass was itself an await, so the transcript identity is
-            # read one final time SYNCHRONOUSLY here, where nothing can run between
-            # the read and the publish. A plain file read, not a session-store getter
-            # (those share a lock with an off-loop writer and stay in the hook);
-            # ``get_metadata_status`` sleeps between retries only when off the loop,
-            # so on the loop it answers at once; an unreadable answer refuses
-            # (``resume_conflict``) rather than publishing on a read that could not
-            # be made, and the caller retries.
+            # The transcript identity is read one final time here. The read runs
+            # off the loop so its bounded retries pause between attempts: a
+            # just-written session file is transiently unopenable for a few
+            # milliseconds on Windows (a sharing violation while an indexer or AV
+            # scanner holds it), and an on-loop read exhausts every attempt within
+            # microseconds and reports it as unreadable, so it refuses a resume no
+            # delete touched.
+            #
+            # The off-loop hop is an await, so a whole process-local delete can
+            # begin AND end inside it: its in-flight marker opens and closes, and
+            # ``_identity_refusal`` then reads the marker as clear, ``post`` as the
+            # file the read saw before the unlink, and ``created_at`` unchanged --
+            # a tab published over a deleted session, whose later saves ``delete_won``
+            # drops. The invalidation generation is the witness that survives the
+            # marker: every delete bumps it (``delete_session`` -> ``_invalidate_cache``)
+            # under the file lock, a transient file lock does not, and reading it
+            # is pure in-memory string math. Snapshot it BEFORE the hop and
+            # re-read it SYNCHRONOUSLY below the last await, as the last act
+            # before the publish.
+            #
+            # This read runs BEFORE the second containment pass, not after: the
+            # store-backed boundaries (channel link, Slack binding, outbound
+            # mirror) are read in the hook, so the hook must stay the LAST awaiting
+            # act or a binding recorded during this read would publish. The
+            # generation re-check below the hook still covers a delete landing in
+            # EITHER await.
+            last_cache_gen = log._cache_gen(history_key)
             try:
-                _last, _last_readable = log.get_metadata_status(history_key)
+                _last, _last_readable = await asyncio.to_thread(
+                    log.get_metadata_status, history_key
+                )
             except Exception:
                 _last, _last_readable = {}, False
             refusal = _identity_refusal(_last, _last_readable)
             if refusal is not None:
                 return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The deferred reopen write, the ``_after`` read and the off-loop
+            # identity read above were awaits taken AFTER the hook answered, and
+            # the hook is where the store-backed boundaries are read -- ``final_check``
+            # below may not touch the store. A binding recorded in the store during
+            # those awaits would otherwise publish. So the hook runs once more here,
+            # as the LAST awaiting act: after it only the synchronous ``final_check``,
+            # the generation re-check and the publish remain. The hook is a
+            # read-only predicate, so the second pass has no side effect of its own.
+            if containment is not None:
+                refusal = await containment(slot)
+                if refusal is not None:
+                    return ResumeOutcome(refusal=(await _discard()) or refusal)
             if final_check is not None:
                 # The last word, SYNCHRONOUS, after the last await above: the hook's
                 # answers that need no store read are re-asserted on the built slot
@@ -1777,6 +1798,31 @@ async def resume_slot_from_history(
                 refusal = final_check(slot)
                 if refusal is not None:
                     return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The delete-and-recreate signature after the last await, SYNCHRONOUS
+            # and lock-free, where nothing can run between it and the publish. A
+            # file read here would reopen the Windows transient this change moved
+            # off the loop (a just-rewritten file is briefly unopenable), so two
+            # in-memory witnesses stand in for it. A COMPLETED delete bumps the
+            # invalidation generation under the file lock (``delete_session`` ->
+            # ``_invalidate_cache`` after the unlink), while a transient file lock
+            # does not. A delete still IN FLIGHT -- opened during the containment
+            # await, past its unlink or not -- has not bumped the generation yet,
+            # so the in-flight marker catches it; ``_identity_refusal``'s own
+            # marker check now runs before that await, so this is the only place
+            # left to see a delete that opens during it. Either witness refuses
+            # through ``_discard`` so no slot is published over the session; the
+            # caller retries.
+            if log._cache_gen(history_key) != last_cache_gen or (
+                session_existed and log.delete_in_flight(history_key)
+            ):
+                return ResumeOutcome(
+                    refusal=(await _discard())
+                    or ResumeRefusal(
+                        "this session changed while resuming; open it again",
+                        "resume_conflict",
+                        409,
+                    )
+                )
             state._slots[slot.key] = slot
         except BaseException:
             await asyncio.shield(_discard())
