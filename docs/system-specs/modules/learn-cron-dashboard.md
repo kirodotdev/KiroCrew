@@ -1252,6 +1252,11 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - `slot_queue_repository.py` — queued-turn mutation plus the subagent delivery
   ledger, including stable delivery identities, replay recovery, and bounded
   orphan bookkeeping.
+- `recovery_replays.py` — the slot's recovery-replay ledger (`_ChatSlot.replays`):
+  each self-queued replay's queue entry, Stop counts and session binding, the
+  drained-alone claim, the entry-gone sweep, the pure revocation rule, and the
+  per-family policy table. `chat_turn/recovery.py` applies it at the queue drain
+  and the turn's consume seam (see "Chat runner composition").
 - `slot_projection.py` — read-only source-link indexing/cache and the exact public
   slot-summary projection consumed by REST and WebSocket clients. The source-link
   derivation filters every scanned `SourceRef` against the slot's dismissed
@@ -1277,8 +1282,10 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   which `json.dumps` cannot serialize.
 
 `_ChatSlot` and `DashboardState` are the stable compatibility facades and the
-canonical owners of their mutable containers. This is the intended end state,
-not a migration waypoint. The composed components retain no aliases to replaceable
+canonical owners of their mutable containers, with one exception: `_ChatSlot.replays`
+is a `RecoveryReplays` that owns its records, and the runner arms, claims and
+re-checks replays through that interface rather than through slot fields. This is
+the intended end state, not a migration waypoint. The composed components retain no aliases to replaceable
 containers and read the current facade state on every operation, because replay,
 rollback, cleanup, tests, and integrations replace or inspect those fields and
 methods directly. Moving ownership behind a component would require a separately
@@ -1581,7 +1588,7 @@ names:
 | `turn_stats` | the per-turn stats footer, its first-token clock and the context meter payload |
 | `recipient` | the recipient principal ladder, admission refusal audit, channel target and the cross-surface fence |
 | `steer_queue` | steer settlement and requeue, queue entry actors, the drain's admission sweep |
-| `recovery` | empty-turn config, terminal error metadata, retry delays and stop gates, the drain-seam and consume-seam replay revalidation, auth and busy requeues |
+| `recovery` | empty-turn config, terminal error metadata, retry delays and stop gates, the drain and consume seams of the recovery-replay ledger, auth and busy requeues. The ledger itself is the plain module `dashboard/recovery_replays.py` (`slot.replays`: the records, the drained-alone claim, the sweep, the revocation rule and each family's policy). A new replay family is a `ReplayFamily` member and a `POLICIES` row there (the row's position is the drain's re-check order; its `consume_phase` puts the consume-seam check before or after the turn-start allowance refresh), plus the arm site that queues it |
 | `acp_recovery` | the post-token transient re-prompt |
 | `turn_marker` | the in-flight turn marker's write, retire and clear |
 | `directives` | not-applied directive wording and the unclaimed-directive backstop |

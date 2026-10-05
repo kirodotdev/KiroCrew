@@ -55,6 +55,7 @@ from kiro_crew.dashboard.interaction_coordinator import (
     QuestionCoordinator,
 )
 from kiro_crew.dashboard.notification_coordinator import NotificationCoordinator
+from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.remote_mirror import mirror_frame as _mirror_relay_frame
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.side_state import SideState
@@ -2778,22 +2779,11 @@ class _ChatSlot:
         "_refusal_fallback_primary",
         "_refusal_fallback_candidate",
         "_refusal_fallback_session_key",
-        "_refusal_retry_text",
         "_refusal_fallback_attempted",
         "_refusal_pick_gen",
         "_refusal_client_pick_epoch",
-        "_refusal_replay_queue_id",
-        "_refusal_replay_stop_gen",
-        "_refusal_replay_session_stop_gen",
+        "replays",
         "_model_access_fallback_used",
-        "_model_access_recovery_stop_gen",
-        "_model_access_recovery_session_stop_gen",
-        "_model_access_recovery_session_key",
-        "_model_access_recovery_queue_id",
-        "_image_recovery_queue_id",
-        "_image_recovery_stop_gen",
-        "_image_recovery_session_stop_gen",
-        "_image_recovery_session_key",
         "_posttoken_retry_used",
         "_last_turn_structural_terminal",
         "_last_turn_structural_terminal_loop_id",
@@ -2801,17 +2791,10 @@ class _ChatSlot:
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
         "_session_not_found_retry_used",
-        "_session_not_found_queue_id",
-        "_session_not_found_stop_gen",
-        "_session_not_found_session_stop_gen",
-        "_session_not_found_session_key",
         "_empty_response_retries",
         "_empty_episode_productive",
         "_carried_ttft_clock",
         "_promise_only_retries",
-        "_promise_only_stop_gen",
-        "_promise_only_session_stop_gen",
-        "_promise_only_session_key",
         "_compaction_continue_retries",
         "_batch_rejected",
         "_batch_rejected_cause",
@@ -3573,21 +3556,17 @@ class _ChatSlot:
         # to restore/verify at the start of the NEXT genuine turn after a
         # refusal retry swapped the live session (single-message semantics —
         # unlike the throttle fallback above, this swap never sticks).
-        # _refusal_retry_text is the replayed message queued by the swap; the
-        # runner matches it at dispatch to tell the retry turn apart from a
-        # genuine new message (and to drop a record whose replay a Stop
-        # purged). _refusal_fallback_attempted is the one-attempt-per-user-
-        # message guard: a refusal from the fallback too is terminal.
+        # _refusal_fallback_attempted is the one-attempt-per-user-message
+        # guard: a refusal from the fallback too is terminal.
         self._refusal_fallback_primary: str = ""
         self._refusal_fallback_candidate: str = ""
         # The session binding the refusal swap ran under, captured ONCE at
         # swap time. The restore locks on THIS key (not a re-derived one) so
-        # both seams always share one lock domain, and the drain purges the
-        # replay when the live binding differs — a cron result binding an
-        # unbound slot mid-turn must not route the replay onto the newly
-        # bound session.
+        # both seams always share one lock domain, and the retry replay is
+        # recorded under it, so the drain purges the replay when the live
+        # binding differs — a cron result binding an unbound slot mid-turn must
+        # not route the replay onto the newly bound session.
         self._refusal_fallback_session_key: str = ""
-        self._refusal_retry_text: str = ""
         self._refusal_fallback_attempted: bool = False
         # _model_pick_gen snapshot taken at refusal-swap time: a gen that moved
         # means an explicit user pick landed after the swap, and the restore
@@ -3598,15 +3577,13 @@ class _ChatSlot:
         # time: a pick through a session alias moves the client epoch without
         # touching this slot's generation, and the restore must see it.
         self._refusal_client_pick_epoch: int = 0
-        # The refusal replay's queue entry id plus stop-generation snapshots
-        # (slot + session) taken at ENQUEUE. The drain compares the live
-        # counters against these: any increment means a Stop landed while the
-        # replay waited, and a pending steer / user-queued follow-up means the
-        # replay was superseded — either way the drain purges the entry instead
-        # of dispatching superseded work ahead of the user's correction.
-        self._refusal_replay_queue_id: str = ""
-        self._refusal_replay_stop_gen: int = 0
-        self._refusal_replay_session_stop_gen: int = 0
+        #: The recovery replays this slot queued for itself -- the model-access
+        #: swap, the lost-session reconnect, the image-history recovery, the
+        #: content-filter retry and the auto-continuations -- each with the queue
+        #: entry it is, the Stop counts and the session binding it was queued
+        #: under. The drain and the turn's consume seam re-check them; see
+        #: ``dashboard/recovery_replays.py``.
+        self.replays: RecoveryReplays = RecoveryReplays()
         # One-shot guard for the reactive model-access-denial fallback: a new
         # conversation whose configured model (commonly the "auto" sentinel) is
         # refused for entitlement, not throttled, is re-prompted at most ONCE on
@@ -3614,60 +3591,10 @@ class _ChatSlot:
         # the first reply. One attempt only, so an account entitled to nothing
         # falls through to the terminal entitlement error naming what was tried
         # instead of looping. Refreshed at the start of a genuine user turn but
-        # NOT when the incoming turn is the swap's own replay (the drain names it
-        # by the queue id below, as ``_run_chat(..., _model_access_replay=True)``),
-        # so a still-unentitled candidate cannot trigger a second swap.
+        # NOT when the incoming turn is the swap's own replay (the drain claims
+        # it by its queue id in ``replays``), so a still-unentitled candidate
+        # cannot trigger a second swap.
         self._model_access_fallback_used: bool = False
-        # _stop_generation snapshotted when that recovery is enqueued. A soft Stop
-        # (first press) does NOT clear the queue and the drain's continuation
-        # purge does not cover a message replay, so the drain compares this
-        # snapshot against the live counter at dequeue: any increment (or a
-        # pending steer / user follow-up) means the user cancelled or superseded
-        # the turn while the recovery waited, and the replay is dropped instead of
-        # dispatched.
-        self._model_access_recovery_stop_gen: int = 0
-        # Session-scoped counterpart of the snapshot above. A Stop issued on a
-        # linked channel surface advances only the session-scoped counter, not
-        # the slot one, so the dequeue drain compares this too — without it a
-        # linked-channel Stop with nothing queued would leave the cancelled
-        # replay in the queue head to dispatch.
-        self._model_access_recovery_session_stop_gen: int = 0
-        #: The session binding the model-access recovery replay's swap ran under,
-        #: captured at enqueue. The drain and consume seam compare the live key
-        #: against it and drop the replay when they differ, so a cron result
-        #: binding an unbound slot mid-episode cannot replay the original prompt
-        #: into the newly bound session.
-        self._model_access_recovery_session_key: str = ""
-        #: The queue id of the model-access recovery replay, recorded at enqueue.
-        #: It is the replay's identity: non-empty is the family's "pending"
-        #: signal, the drain matches it to name the replay turn, and the drain
-        #: abort removes only THIS entry. SYNTHETIC_RECOVERY_KIND is shared
-        #: across recovery paths, so a blanket removal by kind would destroy
-        #: co-queued unrelated recoveries.
-        self._model_access_recovery_queue_id: str = ""
-        #: The queue id of the unsupported-history-image recovery turn, recorded
-        #: at enqueue so the drain abort removes only THIS entry. Non-empty is
-        #: the family's "pending" signal, the same shape the refusal replay uses;
-        #: SYNTHETIC_RECOVERY_KIND is shared across recovery paths, so a blanket
-        #: removal by kind would destroy co-queued unrelated recoveries.
-        self._image_recovery_queue_id: str = ""
-        #: ``_stop_generation`` snapshotted when that recovery is enqueued. The
-        #: enqueue is followed by real awaits (the conversation discard and the
-        #: pending-reset consume) before the drain dispatches, and a soft Stop
-        #: landing in that window does NOT clear the queue, so the drain compares
-        #: this snapshot against the live counter and drops the recovery rather
-        #: than running a cancelled turn's tools on the fresh conversation.
-        self._image_recovery_stop_gen: int = 0
-        #: Session-scoped counterpart of the snapshot above. A Stop issued on a
-        #: linked channel surface advances only the session-scoped counter, so
-        #: without this a linked-channel Stop would leave the cancelled recovery
-        #: in the queue head to dispatch.
-        self._image_recovery_session_stop_gen: int = 0
-        #: The session binding the image recovery was enqueued under. A live key
-        #: that differs means the slot was rebound mid-episode (a cron result
-        #: binding an unbound slot), so the recovery belongs to the OLD session
-        #: and must not dispatch onto the newly bound one.
-        self._image_recovery_session_key: str = ""
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
@@ -3711,14 +3638,6 @@ class _ChatSlot:
         # mapped id and one retry of the turn. Re-armed only by a LANDED turn,
         # so a backend that keeps losing the session ends on a clear error.
         self._session_not_found_retry_used: bool = False
-        # The queued replay of that recovery, and the Stop counters and session
-        # binding it was enqueued under. The reset between enqueue and dispatch
-        # is awaited, so a soft Stop can land there with the queue preserved;
-        # the drain and the consume seam compare these to veto the replay.
-        self._session_not_found_queue_id: str = ""
-        self._session_not_found_stop_gen: int = 0
-        self._session_not_found_session_stop_gen: int = 0
-        self._session_not_found_session_key: str = ""
         self._empty_response_retries: int = 0
         # True once any turn of the CURRENT empty-turn episode was productive.
         self._empty_episode_productive: bool = False
@@ -3729,19 +3648,6 @@ class _ChatSlot:
         # final message (announced an immediate action, then yielded with no tool
         # call). Reset like the other per-turn retry budgets on a landed turn.
         self._promise_only_retries: int = 0
-        # Monotonic _stop_generation snapshot taken when a promise-only continuation
-        # is enqueued; the dispatch-point purge compares against it to catch a Stop
-        # that pressed AND resolved to idle while the continuation waited.
-        self._promise_only_stop_gen: int = 0
-        # Its session-scoped twin: the session manager's stop count for the
-        # slot's session key at enqueue, so the same purge also sees a stop
-        # issued on a linked channel surface while the continuation waited.
-        self._promise_only_session_stop_gen: int = 0
-        # The effective session binding at enqueue. A cron injection can rebind
-        # an idle slot while the queued continuation waits; the dispatch-point
-        # purge compares against this snapshot and drops the replay rather than
-        # draining it into the new session's context. Empty = never enqueued.
-        self._promise_only_session_key: str = ""
         # One bounded synthetic continuation when the BACKEND compacted the
         # conversation mid-turn and then ended the turn without finishing the
         # work (see COMPACTION_RECOVERY_PREFIX). Bounded separately from the

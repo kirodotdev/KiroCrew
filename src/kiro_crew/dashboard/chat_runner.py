@@ -227,26 +227,22 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _answer_text_only,
     _current_turn_carries_image_ref,
     _drop_queued_replay,
-    _drop_superseded_image_recovery,
-    _drop_superseded_model_access_replay,
-    _drop_superseded_refusal_replay,
+    _drop_revoked_replays,
     _empty_auto_continue_enabled,
     _empty_max_auto_continues,
-    _image_recovery_vetoed_at_consume,
-    _model_access_replay_vetoed_at_consume,
+    _forget_swept_replays,
     _model_unentitled_meta,
     _note_cycle_failure,
     _note_cycle_start_failure,
     _purge_superseded_continuations,
+    _rearm_allowances,
     _rearm_turn_episode,
     _recovery_delay,
     _refresh_genuine_turn_allowances,
-    _refusal_replay_vetoed_at_consume,
-    _replay_revocation,
-    _ReplayRevocation,
+    _replay_live,
+    _replay_vetoed_at_consume,
     _requeue_after_prompt_busy,
     _requeue_auth_retry,
-    _retry_cancel_reason,
     _session_stop_generation_for,
     _shared_dependency_delay,
     _should_suppress_requeue,
@@ -356,6 +352,13 @@ from kiro_crew.dashboard.handlers.usage import (
     read_context_tokens,
     read_effective_agent,
     read_turn_model,
+)
+from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
+from kiro_crew.dashboard.recovery_replays import (
+    ReplayFamily,
+    ReplayRevocation,
+    cancel_notice,
+    replays_of,
 )
 from kiro_crew.dashboard.session_directive_apply import (
     QUESTION_CARD_SHOWN_PREFIX,
@@ -6290,37 +6293,6 @@ def _arm_queued_delivery_settlement(
 TURN_ACTOR_META_KEY = _TURN_ACTOR_META_KEY
 
 
-def _session_not_found_replay_revoked(state: Any, slot: Any) -> tuple[bool, bool, bool]:
-    """Whether the queued lost-session replay was revoked since it was enqueued.
-
-    Returns ``(stopped, superseded, rebound)``: a Stop on the slot or its session
-    counted since the enqueue, a user follow-up or steer queued behind it, or the
-    slot bound to a different session than the one the replay belongs to.
-    """
-    bound_key = getattr(slot, "_session_not_found_session_key", "")
-    live_key = effective_session_key(slot)
-    rebound = bool(bound_key) and live_key != bound_key
-    cur_stop_gen = getattr(slot, "_stop_generation", 0)
-    cur_session_stop_gen = _session_stop_generation_for(
-        getattr(state, "sessions", None), bound_key or live_key
-    )
-    stopped = cur_stop_gen != getattr(
-        slot, "_session_not_found_stop_gen", cur_stop_gen
-    ) or cur_session_stop_gen != getattr(
-        slot, "_session_not_found_session_stop_gen", cur_session_stop_gen
-    )
-    superseded = bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
-    return stopped, superseded, rebound
-
-
-def _clear_session_not_found_replay(slot: Any) -> None:
-    """Forget the queued lost-session replay's identity and binding."""
-    slot._session_not_found_queue_id = ""
-    slot._session_not_found_session_key = ""
-
-
-SESSION_NOT_FOUND_CANCELLED_TEXT = "ℹ️ Session reconnect cancelled — nothing was run."
-
 MEMORY_PREPARATION_PARKED_TEXT = (
     "ℹ️ Memory is still being prepared after the gateway restart. "
     "Queued messages will run when it is ready."
@@ -6526,25 +6498,11 @@ async def _start_next_queued_turn(
         _mark_turn_end(slot)
         turn_ended = True
 
-    # The admission sweep above (and any other queue removal) can drop the
-    # model-access recovery replay's entry WITHOUT touching slot state: a
-    # containment change is not a stop, a rebind, or user input, so none of the
-    # trigger-based drops further down fire, and the empty-queue early return
-    # below would skip them entirely. Mirror the sibling refusal replay's
-    # entry-gone guard: when the recorded replay qid is absent from the queue,
-    # drop the record and refund the one-shot here, before the queue is read for
-    # dispatch, so a later entry cannot inherit them.
-    _ma_recorded_qid = getattr(slot, "_model_access_recovery_queue_id", "")
-    if _ma_recorded_qid and not any(q.get("id") == _ma_recorded_qid for q in slot._queue):
-        slot._model_access_fallback_used = False
-        slot._model_access_recovery_session_key = ""
-        slot._model_access_recovery_queue_id = ""
-        logger.info(
-            "Cleared model-access recovery record for slot %s: the replay "
-            "entry (qid=%s) was swept from the queue before dispatch",
-            slot.key,
-            _ma_recorded_qid,
-        )
+    # The admission sweep above (and any other queue removal) can drop a
+    # replay's entry WITHOUT touching the ledger, and the empty-queue early return
+    # below would skip the re-checks entirely: forget such a record here, before
+    # the queue is read for dispatch, so a later entry cannot inherit it.
+    _forget_swept_replays(slot)
 
     # Above the dequeue, so a held note's visible line lands before this turn's
     # user row: its context half drains inside _run_chat via drain_pending_context.
@@ -6591,89 +6549,26 @@ async def _start_next_queued_turn(
     # A Stop pressed AND resolved back to idle in the post-turn awaits (between the
     # continuation's enqueue and this drain) is invisible to `_should_suppress_requeue`
     # / `_stopping` (both snap back to idle), so compare the monotonic stop counter
-    # against its value AT ENQUEUE (`_promise_only_stop_gen`): any increment means a
-    # Stop happened while the continuation waited, and the announced action must not
-    # be dispatched.
+    # against its value AT ENQUEUE (the continuation record in `slot.replays`): any
+    # increment means a Stop happened while the continuation waited, and the
+    # announced action must not be dispatched.
     # Same comparison for the session-scoped count: a stop issued on a linked
     # channel surface moves only that one.
     if await _purge_superseded_continuations(state, slot):
         return False
 
-    # The model-access recovery replay carries hazards this drain must catch
-    # BEFORE dispatch, and one of them -- a mid-episode session rebind -- is not
-    # among the stop/user-input signals the promise-only guard above gates on, so
-    # this runs at the top level of the drain rather than nested under them. The
-    # replay is the user's ORIGINAL message re-queued after the swap; drop it when
-    # a Stop moved either counter since enqueue, when user input queued behind it,
-    # or when the live binding differs from the one recorded at enqueue (a cron
-    # result binding an unbound slot mid-episode -- the replay belongs to the OLD
-    # session and must not dispatch onto the newly bound one, the guard the
-    # sibling refusal replay carries).
-    if await _drop_superseded_model_access_replay(state, slot):
-        return False
-
-    # The lost-session replay is enqueued at index 0 under the shared
-    # SYNTHETIC_RECOVERY_KIND, and the session reset that follows its enqueue is
-    # awaited: a soft Stop landing there preserves the queue and leaves
-    # `_stopping` back at idle. Identified by queue id, purged on any revocation.
-    _snf_qid = getattr(slot, "_session_not_found_queue_id", "")
-    if _snf_qid:
-        if not any(q.get("id") == _snf_qid for q in slot._queue):
-            _clear_session_not_found_replay(slot)
-        else:
-            _snf_stopped, _snf_superseded, _snf_rebound = _session_not_found_replay_revoked(
-                state, slot
-            )
-            if (
-                _should_suppress_requeue(slot)
-                or slot._stopping
-                or _snf_stopped
-                or _snf_superseded
-                or _snf_rebound
-            ):
-                slot.queue_remove_by_id(_snf_qid)
-                if _remove_queued_by_id(slot.messages, _snf_qid):
-                    state.broadcast_ws(
-                        "queue_pop",
-                        {"slot": slot.key, "content": "", "queue_id": _snf_qid},
-                    )
-                _clear_session_not_found_replay(slot)
-                # Aborted before dispatch: refund the one-shot so the user's own
-                # next turn keeps its reconnect.
-                slot._session_not_found_retry_used = False
-                slot.append("notice", SESSION_NOT_FOUND_CANCELLED_TEXT, "msg msg-info")
-                logger.info(
-                    "Dropped lost-session replay before dispatch for slot %s "
-                    "(stop_since_enqueue=%s superseded=%s rebound=%s)",
-                    slot.key,
-                    _snf_stopped,
-                    _snf_superseded,
-                    _snf_rebound,
-                )
-                if not slot._queue:
-                    return False
-
-    # The unsupported-history-image recovery carries the identical hazard, and it
-    # is NOT covered by either guard above: it is enqueued at index 0 under the
-    # shared SYNTHETIC_RECOVERY_KIND, carries neither continuation constant nor
-    # the model-access latch, and the awaits that follow its enqueue (the
-    # conversation discard, then the pending-reset consume) are exactly the window
-    # a soft Stop lands in — one that preserves the queue and leaves `_stopping`
-    # back at idle. Dispatching it there would re-run a cancelled turn's remaining
-    # destructive step on the fresh conversation. Identified by queue id (the
-    # replay is the user's own words, so there is no fixed text to match).
-    if await _drop_superseded_image_recovery(state, slot):
-        return False
-
-    # The refusal replay carries the same hazard on its own snapshots: it was
-    # enqueued at index 0 BEFORE any Stop or correction that landed while it
-    # waited, so dispatching it now would run superseded work ahead of the
-    # user's later intent. Identified by queue id (its content is the user's
-    # own words, so no fixed synthetic text to match), purged when a Stop
-    # moved either counter since enqueue or user input queued behind it. The
-    # standing model swap is NOT unwound here — the next genuine turn's
-    # restore probe owns that, exactly as it does after a consumed retry.
-    if await _drop_superseded_refusal_replay(state, slot):
+    # The self-queued replays (the model-access swap, the lost-session reconnect,
+    # the image-history recovery and the content-filter retry) carry the same
+    # hazard on their own records: each was queued at index 0 BEFORE any Stop or
+    # correction that landed while it waited, and the awaits that follow some of
+    # their enqueues (a session reset, a conversation discard) are exactly the
+    # window a soft Stop lands in, one that preserves the queue and leaves
+    # `_stopping` back at idle. A mid-episode session rebind is not among the
+    # stop/user-input signals the continuation guard above gates on, so this
+    # runs at the top level of the drain. Each is identified by its queue id --
+    # the content is the user's own words or a recovery prompt, never a fixed
+    # text -- and dropped when the ledger revokes it.
+    if await _drop_revoked_replays(state, slot):
         return False
 
     try:
@@ -7106,22 +7001,9 @@ async def _start_next_queued_turn(
     # Replay identity rides as a parameter, matched by queue-entry id at the one
     # site that still has the entry. The replay must have drained ALONE: a merge
     # folding user input into the same dispatch is a correction, not the retry.
-    _replay_dispatch_qid = getattr(slot, "_refusal_replay_queue_id", "")
-    if (
-        _replay_dispatch_qid
-        and len(consumed) == 1
-        and consumed[0].get("id") == _replay_dispatch_qid
-    ):
-        _run_kwargs["_refusal_replay"] = True
-    _snf_dispatch_qid = getattr(slot, "_session_not_found_queue_id", "")
-    if _snf_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _snf_dispatch_qid:
-        _run_kwargs["_session_not_found_recovery"] = True
-    _image_dispatch_qid = getattr(slot, "_image_recovery_queue_id", "")
-    if _image_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _image_dispatch_qid:
-        _run_kwargs["_image_recovery"] = True
-    _ma_dispatch_qid = getattr(slot, "_model_access_recovery_queue_id", "")
-    if _ma_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _ma_dispatch_qid:
-        _run_kwargs["_model_access_replay"] = True
+    _claimed_replays = replays_of(slot).claim(consumed)
+    if _claimed_replays:
+        _run_kwargs["_replay"] = _claimed_replays
     if is_recovery:
         _run_kwargs["_synthetic_recovery_turn"] = True
         if len(consumed) == 1 and consumed[0].get(_REPLAYS_COMPLETION_KEY) is True:
@@ -7954,26 +7836,15 @@ async def _run_chat(
     # list. Optional so the many existing callers and test doubles stay valid.
     _attachment_meta: "dict[str, list[str]] | None" = None,
     _synthetic_payload: bool = False,
-    # This dispatch IS the queued refusal replay (agent.refusal_fallback_model):
-    # the drain matched the drained entry's queue id against the slot's recorded
-    # replay id. Identity travels as a parameter because the message TEXT cannot
-    # carry it -- the drain redacts credentials/exfil URLs after the swap records
-    # the raw text, so text equality breaks for exactly the content most likely
-    # to draw a refusal, and a mutable slot flag could be re-read after a
-    # correction landed. Only the queue drain sets this.
-    _refusal_replay: bool = False,
-    # The drained entry is the unsupported-history-image recovery whose queue id
-    # matched the slot's recorded recovery id. Identity travels structurally from
-    # the drain so a Stop or correction in the spawn-to-consume window can veto
-    # the destructive continuation before the provider sees it.
-    _image_recovery: bool = False,
-    # The drained entry is the lost-session replay whose queue id matched the
-    # slot's recorded one; the consume seam re-checks its Stop snapshots.
-    _session_not_found_recovery: bool = False,
-    # The drained entry is the model-access recovery replay whose queue id
-    # matched the slot's recorded replay id. Same structural identity as the two
-    # flags above; only the queue drain sets it.
-    _model_access_replay: bool = False,
+    # The recovery replays this dispatch IS: the families whose recorded queue id
+    # the drained entry carries (``RecoveryReplays.claim``). Identity travels as a
+    # parameter because the message TEXT cannot carry it -- the drain redacts
+    # credentials/exfil URLs after a swap records the raw text, so text equality
+    # breaks for exactly the content most likely to draw a refusal, and a mutable
+    # slot flag could be re-read after a correction landed. The consume seam
+    # re-checks each claimed family before the provider sees the turn. Only the
+    # queue drain sets this.
+    _replay: frozenset[ReplayFamily] = frozenset(),
     # The drained entry carried the synthetic-recovery ``kind`` tag (a runner
     # requeue after a pre-output failure, including a re-queue of the USER'S OWN
     # words on a poisoned-conversation discard). Structural, from the entry --
@@ -8851,12 +8722,17 @@ async def _run_chat(
             # refusal-specific validation (stop generations, rebind,
             # supersession) and the consume-seam re-check, and the re-run
             # stays the episode's one retry (allowance spent) instead of
-            # presenting as a genuine turn.
-            slot._refusal_replay_queue_id = _recovery_qid
-            slot._refusal_replay_stop_gen = getattr(slot, "_stop_generation", 0)
-            slot._refusal_replay_session_stop_gen = _session_stop_generation_for(
-                getattr(state, "sessions", None),
-                getattr(slot, "_refusal_fallback_session_key", "") or session_key,
+            # presenting as a genuine turn. It keeps the binding the swap ran
+            # under (``_refusal_fallback_session_key``).
+            _refusal_key = getattr(slot, "_refusal_fallback_session_key", "")
+            replays_of(slot).arm(
+                ReplayFamily.CONTENT_FILTER,
+                entry_id=_recovery_qid,
+                session_key=_refusal_key,
+                stop_gen=getattr(slot, "_stop_generation", 0),
+                session_stop_gen=_session_stop_generation_for(
+                    getattr(state, "sessions", None), _refusal_key or session_key
+                ),
             )
         return _recovery_qid
 
@@ -8894,39 +8770,13 @@ async def _run_chat(
             ),
         )
 
-    if _session_not_found_recovery:
-        # Task scheduling after the drain's check is another revocation window.
-        _snf_stopped_c, _snf_superseded_c, _snf_rebound_c = _session_not_found_replay_revoked(
-            state, slot
-        )
-        _clear_session_not_found_replay(slot)
-        if (
-            _snf_stopped_c
-            or _snf_superseded_c
-            or _snf_rebound_c
-            or slot._stopping
-            or _should_suppress_requeue(slot)
-        ):
-            slot._session_not_found_retry_used = False
-            slot.append("notice", SESSION_NOT_FOUND_CANCELLED_TEXT, "msg msg-info")
-            logger.info(
-                "Lost-session replay aborted at consume for slot %s "
-                "(stopped=%s superseded=%s rebound=%s)",
-                slot.key,
-                _snf_stopped_c,
-                _snf_superseded_c,
-                _snf_rebound_c,
-            )
-            # Above the main try: the exit guard runs this turn's tail.
-            return
-
-    if _image_recovery:
-        # The drain validated this replay before spawning the guarded task, but
-        # task scheduling creates another revocation window. Recheck the same
-        # immutable snapshots at the consume seam so a Stop, correction, steer,
-        # or session rebind cannot run a cancelled destructive continuation.
-        if await _image_recovery_vetoed_at_consume(state, slot):
-            return
+    # The drain validated a claimed replay before spawning the guarded task, but
+    # task scheduling creates another revocation window. Re-check the same records
+    # at the consume seam so a Stop, correction, steer, or session rebind cannot
+    # run a cancelled destructive continuation. Above the main try: the exit
+    # guard runs this turn's tail.
+    if await _replay_vetoed_at_consume(state, slot, _replay, "before_allowances"):
+        return
 
     # Model-activity marker for the poisoned-conversation streak ONLY:
     # flipped True on thinking chunks. Deliberately separate from
@@ -8944,36 +8794,21 @@ async def _run_chat(
     # refresh the allowance and inherits the True flag set when recovery was
     # enqueued. Suppressed/nested recoveries never set the flag, so
     # this reset is a no-op for them and a later real turn can still recover.
-    _is_model_access_replay_turn = await _refresh_genuine_turn_allowances(
-        slot, message, _model_access_replay=_model_access_replay
+    await _refresh_genuine_turn_allowances(
+        slot, message, _model_access_replay=ReplayFamily.MODEL_ACCESS in _replay
     )
-    if _is_model_access_replay_turn:
-        # Re-validate at the consume seam. The drain's checks ran before this
-        # task was spawned; a cron result binding an unbound slot, a Stop, a
-        # steer, or a user follow-up landing in the spawn-to-consume window would
-        # otherwise replay the user's original prompt into a superseding or newly
-        # bound session. Mirror of the sibling refusal replay's consume-seam
-        # guard: recheck the SAME signals it does, not the rebind alone.
-        if await _model_access_replay_vetoed_at_consume(state, slot):
-            return
-    # A queued refusal retry (agent.refusal_fallback_model) replays the user's
-    # OWN words, so it can never be recognized by membership in the fixed
-    # synthetic-recovery texts above -- and not by TEXT at all: the drain
-    # redacts credentials/exfil URLs after the swap records the raw message,
-    # so string equality breaks for exactly the content most likely to draw a
-    # refusal. Identity is the drained entry's queue id, matched by the drain
-    # and passed as ``_refusal_replay``. A user typing the identical text
-    # after a Stop purged the replay is a GENUINE turn (fresh episode, fresh
-    # allowance) -- identity, unlike text, cannot mistake it for the retry.
-    _is_refusal_retry_turn = _refusal_replay
-    if _is_refusal_retry_turn:
-        # Re-validate at the consume seam. The drain's checks ran before this
-        # task was spawned; a Stop, a correction, a steer, or a session rebind
-        # landing in the spawn-to-consume window would otherwise replay stale
-        # content into the superseding session. Same checks, same recorded
-        # snapshots as the drain purge.
-        if await _refusal_replay_vetoed_at_consume(state, slot):
-            return
+    # The model-access swap's replay and a queued refusal retry
+    # (agent.refusal_fallback_model) replay the user's OWN words, so neither can be
+    # recognized by membership in the fixed synthetic-recovery texts above -- and
+    # not by TEXT at all. Identity is the drained entry's queue id, claimed by the
+    # drain. A user typing the identical text after a Stop purged the replay is a
+    # GENUINE turn (fresh episode, fresh allowance) -- identity, unlike text, cannot
+    # mistake it for the retry. A cron result binding an unbound slot, a Stop, a
+    # steer or a user follow-up landing in the spawn-to-consume window would
+    # otherwise replay the user's prompt into a superseding or newly bound session.
+    if await _replay_vetoed_at_consume(state, slot, _replay, "after_allowances"):
+        return
+    _is_refusal_retry_turn = ReplayFamily.CONTENT_FILTER in _replay
     await _rearm_turn_episode(
         slot,
         message,
@@ -11266,7 +11101,6 @@ async def _run_chat(
                     _replay_extra = {"files": list(_attachments)}
                 else:
                     _replay_extra = None
-            slot._refusal_retry_text = _replay_body
             _replay_qid = _queue_recovery(
                 0,
                 _replay_body,
@@ -11277,11 +11111,16 @@ async def _run_chat(
             # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
             # purges the replay when either counter moved (a Stop landed while
             # it waited) or user input queued behind it (superseded) — the
-            # index-0 replay must never outrun the user's later intent.
-            slot._refusal_replay_queue_id = _replay_qid
-            slot._refusal_replay_stop_gen = getattr(slot, "_stop_generation", 0)
-            slot._refusal_replay_session_stop_gen = _session_stop_generation_for(
-                getattr(state, "sessions", None), session_key
+            # index-0 replay must never outrun the user's later intent. Its
+            # binding is the one the swap just recorded.
+            replays_of(slot).arm(
+                ReplayFamily.CONTENT_FILTER,
+                entry_id=_replay_qid,
+                session_key=getattr(slot, "_refusal_fallback_session_key", ""),
+                stop_gen=getattr(slot, "_stop_generation", 0),
+                session_stop_gen=_session_stop_generation_for(
+                    getattr(state, "sessions", None), session_key
+                ),
             )
             _cat = (_turn_refusal.category or "").lower() if _turn_refusal else ""
             # Model ids reach this surface from config (LLM-reachable via the
@@ -11452,13 +11291,10 @@ async def _run_chat(
         if _is_refusal_retry_turn and (
             bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
         ):
-            slot._refusal_retry_text = ""
-            slot._refusal_replay_queue_id = ""
+            replays_of(slot).disarm(ReplayFamily.CONTENT_FILTER)
             slot.append(
                 "notice",
-                _ReplayRevocation(rebound=False, stopped=False, superseded=True).notice(
-                    "Content-filter"
-                ),
+                cancel_notice(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
                 "msg msg-info",
             )
             logger.info(
@@ -15826,9 +15662,13 @@ async def _run_chat(
             # Snapshot for the dispatch-point purge, same as the promise-only arm:
             # catches a Stop that pressed AND resolved back to idle while the
             # continuation sat in the queue.
-            slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
-            slot._promise_only_session_stop_gen = _session_stop_generation()
-            slot._promise_only_session_key = effective_session_key(slot)
+            replays_of(slot).arm(
+                ReplayFamily.CONTINUATION,
+                entry_id="",
+                session_key=effective_session_key(slot),
+                stop_gen=getattr(slot, "_stop_generation", 0),
+                session_stop_gen=_session_stop_generation(),
+            )
             _recovering_compaction = True
         elif (
             _stop_reason != STOP_REASON_CANCELLED
@@ -16384,12 +16224,16 @@ async def _run_chat(
                 )
                 # Snapshot BOTH stop counters, same as the sibling recovery arms:
                 # the dispatch-point purge compares each against its value at
-                # enqueue, and a never-set session snapshot defaults to "current",
-                # blinding the purge to a session-scoped Stop that pressed and
-                # resolved while this replay waited in the queue.
-                slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
-                slot._promise_only_session_stop_gen = _session_stop_generation()
-                slot._promise_only_session_key = effective_session_key(slot)
+                # enqueue, and a record without the session count would blind the
+                # purge to a session-scoped Stop that pressed and resolved while
+                # this replay waited in the queue.
+                replays_of(slot).arm(
+                    ReplayFamily.CONTINUATION,
+                    entry_id="",
+                    session_key=effective_session_key(slot),
+                    stop_gen=getattr(slot, "_stop_generation", 0),
+                    session_stop_gen=_session_stop_generation(),
+                )
                 _recovering_promise = True
             else:
                 slot._promise_only_retries += 1
@@ -16416,9 +16260,13 @@ async def _run_chat(
                 # detect a Stop that pressed AND resolved to idle while the continuation
                 # waited in the queue (invisible to _should_suppress_requeue) — see the
                 # purge block in `_start_next_queued_turn`.
-                slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
-                slot._promise_only_session_stop_gen = _session_stop_generation()
-                slot._promise_only_session_key = effective_session_key(slot)
+                replays_of(slot).arm(
+                    ReplayFamily.CONTINUATION,
+                    entry_id="",
+                    session_key=effective_session_key(slot),
+                    stop_gen=getattr(slot, "_stop_generation", 0),
+                    session_stop_gen=_session_stop_generation(),
+                )
                 _recovering_promise = True
         elif (
             _prompt_depth == 0
@@ -17364,17 +17212,20 @@ async def _run_chat(
                 )
                 # Snapshot BEFORE the enqueue: the reset in this turn's finally is
                 # awaited, and a Stop landing there must veto the replay.
-                slot._session_not_found_stop_gen = getattr(slot, "_stop_generation", 0)
-                slot._session_not_found_session_stop_gen = _session_stop_generation()
-                slot._session_not_found_session_key = session_key
-                slot._session_not_found_queue_id = (
-                    _queue_recovery(
-                        0,
-                        _requeue_text,
-                        kind=SYNTHETIC_RECOVERY_KIND,
-                        payload=_requeue_payload,
-                    )
-                    or ""
+                _snf_stop_gen = getattr(slot, "_stop_generation", 0)
+                _snf_session_stop_gen = _session_stop_generation()
+                _snf_qid = _queue_recovery(
+                    0,
+                    _requeue_text,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=_requeue_payload,
+                )
+                replays_of(slot).arm(
+                    ReplayFamily.SESSION_NOT_FOUND,
+                    entry_id=_snf_qid or "",
+                    session_key=session_key,
+                    stop_gen=_snf_stop_gen,
+                    session_stop_gen=_snf_session_stop_gen,
                 )
             else:
                 slot.append("error", SESSION_NOT_FOUND_GIVE_UP_TEXT, "msg msg-err")
@@ -17449,17 +17300,20 @@ async def _run_chat(
                 # dispatch a cancelled turn and re-run a remaining destructive
                 # step. Same guard, same words, as the sibling
                 # poisoned-conversation canary recovery.
-                slot._image_recovery_stop_gen = getattr(slot, "_stop_generation", 0)
-                slot._image_recovery_session_stop_gen = _session_stop_generation()
-                slot._image_recovery_session_key = session_key
-                slot._image_recovery_queue_id = (
-                    _queue_recovery(
-                        0,
-                        _image_recovery_text,
-                        kind=SYNTHETIC_RECOVERY_KIND,
-                        payload=_image_recovery_payload,
-                    )
-                    or ""
+                _image_stop_gen = getattr(slot, "_stop_generation", 0)
+                _image_session_stop_gen = _session_stop_generation()
+                _image_qid = _queue_recovery(
+                    0,
+                    _image_recovery_text,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=_image_recovery_payload,
+                )
+                replays_of(slot).arm(
+                    ReplayFamily.IMAGE_HISTORY,
+                    entry_id=_image_qid or "",
+                    session_key=session_key,
+                    stop_gen=_image_stop_gen,
+                    session_stop_gen=_image_session_stop_gen,
                 )
         elif (
             not _turn_emitted
@@ -18039,26 +17893,10 @@ async def _run_chat(
                                 # this replay at dequeue if a soft Stop or user
                                 # follow-up lands while it waits (the pre-enqueue
                                 # guard above closes only the pre-enqueue window).
-                                slot._model_access_recovery_stop_gen = getattr(
-                                    slot, "_stop_generation", 0
-                                )
-                                # Snapshot the session-scoped stop counter too: a Stop
-                                # issued on a linked channel surface moves ONLY that one
-                                # (the slot counter stays put), so the dequeue drain must
-                                # compare both to see such a Stop and drop the replay —
-                                # same rule as the sibling promise-only continuation.
-                                slot._model_access_recovery_session_stop_gen = (
-                                    _session_stop_generation()
-                                )
-                                # Capture the binding this replay's swap ran under.
-                                # A cron result binding an unbound slot during the
-                                # awaited set_model rebinds the session mid-episode;
-                                # the replay belongs to the OLD session and must not
-                                # dispatch onto the newly bound one. The drain and the
-                                # consume seam compare the live key against this
-                                # recorded one and drop the replay when they differ --
-                                # the same guard the sibling refusal replay carries.
-                                slot._model_access_recovery_session_key = session_key
+                                # And the session-scoped one: a Stop issued on a
+                                # linked channel surface moves ONLY that one.
+                                _ma_stop_gen = getattr(slot, "_stop_generation", 0)
+                                _ma_session_stop_gen = _session_stop_generation()
                                 # Forward the turn's attachment metadata into the
                                 # replay, the same way the sibling refusal replay does:
                                 # the replay is the SAME turn again, so a folder
@@ -18084,14 +17922,23 @@ async def _run_chat(
                                     extra_meta=_ma_replay_extra,
                                 )
                                 # Record THIS replay's queue id: it is the replay's
-                                # identity. The drain matches it to pass
-                                # ``_model_access_replay`` (the turn-start reset then
-                                # preserves the one-shot for this replay alone), and
-                                # its abort removes only this entry --
-                                # SYNTHETIC_RECOVERY_KIND is shared by many recovery
-                                # paths, so a removal by kind would destroy co-queued
-                                # unrelated recoveries.
-                                slot._model_access_recovery_queue_id = _ma_replay_qid or ""
+                                # identity. The drain claims it for the replay turn
+                                # (the turn-start reset then preserves the one-shot
+                                # for this replay alone), and its abort removes only
+                                # this entry -- SYNTHETIC_RECOVERY_KIND is shared by
+                                # many recovery paths, so a removal by kind would
+                                # destroy co-queued unrelated recoveries. The binding
+                                # is the one this replay's swap ran under: a cron
+                                # result binding an unbound slot during the awaited
+                                # set_model rebinds the session mid-episode, and the
+                                # replay belongs to the OLD session.
+                                replays_of(slot).arm(
+                                    ReplayFamily.MODEL_ACCESS,
+                                    entry_id=_ma_replay_qid or "",
+                                    session_key=session_key,
+                                    stop_gen=_ma_stop_gen,
+                                    session_stop_gen=_ma_session_stop_gen,
+                                )
         else:
             await _persist_partial_reply("error: terminal")
             # ── Poisoned-conversation escalation ────────────────────────────

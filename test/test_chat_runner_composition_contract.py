@@ -157,7 +157,7 @@ _BASE_NAMES = frozenset("""
         _begin_local_turn_marker _broadcast_auto_tool _broadcast_compaction_result
         _broadcast_expired_oauth_banners _cap_armed_prefetches _cap_redacted
         _clear_eager_spawn_failures _clear_fallback_sticky_state
-        _clear_local_turn_marker _clear_session_not_found_replay
+        _clear_local_turn_marker
         _clip_card_error _configured_refusal_fallback _connections_managed_mcp_names
         _consume_pending_reset _context_usage_payload _credential_tool_hint_for _crew_log_class
         _crew_log_lineage _crew_log_model _crew_log_workspace _current_turn_carries_image_ref
@@ -202,11 +202,11 @@ _BASE_NAMES = frozenset("""
         _resolve_channel_target _resolve_folder_steering_dirs _resolve_mirror_target
         _resolve_prompt_mention _resolve_refusal_fallback_target _restore_refusal_fallback
         _retain_terminal_native _retire_local_turn_marker _retire_sessions_on_identity_change
-        _retry_cancel_reason _route_history_source _route_model_for_turn _run_chat
+        _route_history_source _route_model_for_turn _run_chat
         _run_pending_synthesis _safe_native_crew_debug_title _safe_read_snapshot
         _schedule_prefetch_ttl _schedule_widget_registration _segment_row_meta
         _session_auto_approves _session_mcp_report
-        _session_not_found_replay_revoked _session_principal
+        _session_principal
         _session_stop_generation_for _settle_consumed_steers _shared_dependency_delay
         _should_suppress_requeue _slot_binding _slot_is_trusted _slot_predecessor_store
         _slot_prompt_project _snapshot_write_target _spawn_admitted_prefetch
@@ -452,11 +452,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(slot_key: 'str', exc: 'BaseException', *, self_wake: 'bool') -> 'None'",
         ),
         ("_recovery_delay", "async function", "(secs: 'float') -> 'None'"),
-        (
-            "_retry_cancel_reason",
-            "function",
-            "(rebound: 'bool', superseded: 'bool', stopped: 'bool') -> 'str'",
-        ),
         (
             "_session_stop_generation_for",
             "function",
@@ -744,12 +739,8 @@ _AWAIT_FREE_PHASES = (
     "_rearm_turn_episode",
     "_checklist_resync",
     "_purge_superseded_continuations",
-    "_drop_superseded_model_access_replay",
-    "_drop_superseded_image_recovery",
-    "_drop_superseded_refusal_replay",
-    "_image_recovery_vetoed_at_consume",
-    "_model_access_replay_vetoed_at_consume",
-    "_refusal_replay_vetoed_at_consume",
+    "_drop_revoked_replays",
+    "_replay_vetoed_at_consume",
     "_requeue_auth_retry",
     "_requeue_after_prompt_busy",
     "_report_unclaimed_directives",
@@ -795,10 +786,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_attachments",
         "_attachment_meta",
         "_synthetic_payload",
-        "_refusal_replay",
-        "_image_recovery",
-        "_session_not_found_recovery",
-        "_model_access_replay",
+        "_replay",
         "_synthetic_recovery_turn",
         "_replays_completion",
         "_steer_possibly_delivered",

@@ -747,6 +747,7 @@ async def test_session_rebind_after_enqueue_purges_false_blocker_replay(tmp_path
         RecoveryPayload,
         effective_session_key,
     )
+    from kiro_crew.dashboard.recovery_replays import LiveSlot, ReplayFamily
 
     state = _make_state(tmp_path)
     state.broadcast_ws = MagicMock()
@@ -762,10 +763,14 @@ async def test_session_rebind_after_enqueue_purges_false_blocker_replay(tmp_path
         directive_user_origin=True,
     )
     slot._promise_only_retries = 1
-    slot._promise_only_stop_gen = slot._stop_generation
-    slot._promise_only_session_stop_gen = 0
-    slot._promise_only_session_key = effective_session_key(slot)
-    assert slot._promise_only_session_key == "slack:session-a"
+    slot.replays.arm(
+        ReplayFamily.CONTINUATION,
+        entry_id="",
+        session_key=effective_session_key(slot),
+        stop_gen=slot._stop_generation,
+        session_stop_gen=0,
+    )
+    assert effective_session_key(slot) == "slack:session-a"
 
     slot.linked_session_key = "slack:session-b"
     cfg = MagicMock()
@@ -787,7 +792,20 @@ async def test_session_rebind_after_enqueue_purges_false_blocker_replay(tmp_path
     assert started is False
     assert all(item.get("kind") != FALSE_TOOL_BLOCKER_REPLAY_KIND for item in slot._queue)
     assert slot._promise_only_retries == 0
-    assert slot._promise_only_session_key == "slack:session-b"
+
+    # The purge re-armed the record at the live binding, so the next drain does
+    # not read the same rebind again, while the old binding now reads as a move.
+    def _view(session_key: str) -> LiveSlot:
+        return LiveSlot(
+            session_key=session_key,
+            stop_generation=slot._stop_generation,
+            stopping=False,
+            user_input=False,
+            session_stop_generation=lambda _key: 0,
+        )
+
+    assert not slot.replays.revalidate(ReplayFamily.CONTINUATION, _view("slack:session-b")).revoked
+    assert slot.replays.revalidate(ReplayFamily.CONTINUATION, _view("slack:session-a")).rebound
     assert any(
         msg.get("role") == "notice"
         and "moved to another session" in msg.get("content", "")

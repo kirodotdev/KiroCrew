@@ -23,7 +23,10 @@ from kiro_crew.dashboard.chat_runner import (
     SESSION_NOT_FOUND_GIVE_UP_TEXT,
     SESSION_NOT_FOUND_RETRY_TEXT,
 )
+from kiro_crew.dashboard.recovery_replays import ReplayFamily
 from kiro_crew.llm_helpers import acp_error_is_session_not_found
+
+_SNF = ReplayFamily.SESSION_NOT_FOUND
 
 # The shape the adapter's JSON-RPC answer takes once formatted for the turn.
 _NOT_FOUND = (
@@ -203,7 +206,7 @@ async def test_stop_during_the_reset_purges_the_replay_before_dispatch(
     assert any(m.get("content") == SESSION_NOT_FOUND_CANCELLED_TEXT for m in slot.messages)
     # The aborted episode refunds the one-shot.
     assert slot._session_not_found_retry_used is False
-    assert slot._session_not_found_queue_id == ""
+    assert not slot.replays.armed(_SNF)
     # Purged at the drain, before any replay turn was spawned.
     assert "Dropped lost-session replay before dispatch" in caplog.text
 
@@ -229,22 +232,25 @@ async def test_stop_after_dispatch_aborts_the_replay_before_the_provider(tmp_pat
     slot._titled = True
     state.sessions.stop_generation = lambda key: 4
     slot._session_not_found_retry_used = True
-    slot._session_not_found_queue_id = "snf-qid"
-    slot._session_not_found_session_key = effective_session_key(slot)
-    slot._session_not_found_stop_gen = 7
-    slot._session_not_found_session_stop_gen = 4
+    slot.replays.arm(
+        _SNF,
+        entry_id="snf-qid",
+        session_key=effective_session_key(slot),
+        stop_gen=7,
+        session_stop_gen=4,
+    )
     slot._stop_generation = 8
 
     await _run_chat(
         state,
         slot,
         "delete the old branches",
-        _session_not_found_recovery=True,
+        _replay=frozenset({_SNF}),
         _synthetic_recovery_turn=True,
     )
 
     assert provider_calls == 0
-    assert slot._session_not_found_queue_id == ""
+    assert not slot.replays.armed(_SNF)
     assert slot._session_not_found_retry_used is False
     assert any(m.get("content") == SESSION_NOT_FOUND_CANCELLED_TEXT for m in slot.messages)
 
@@ -279,5 +285,5 @@ async def test_stop_resolved_before_the_error_never_queues_a_replay(tmp_path, mo
     assert calls == ["delete the old branches"]
     assert slot._queue == []
     assert SESSION_NOT_FOUND_RETRY_TEXT not in _errors(slot)
-    assert slot._session_not_found_queue_id == ""
+    assert not slot.replays.armed(_SNF)
     assert slot._session_not_found_retry_used is False

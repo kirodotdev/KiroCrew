@@ -204,12 +204,14 @@ families — a different model routinely accepts what another's filter declined
   the `try` and leaves the tail to the turn's `finally`. The model-access
   and image-history replays carry the same consume-seam check and the same
   exit, and all three families revoke by one rule
-  (`chat_runner._replay_revocation`: a rebind away from the recorded
+  (`RecoveryReplays.revalidate` in `dashboard/recovery_replays.py`: a
+  rebind away from the recorded
   session, a Stop past the enqueue snapshots or in flight, or user input
   queued behind the replay), at the drain and again at the consume seam,
   each posting its family's cancellation notice. The model-access replay is
   identified only by the queue id its swap recorded: the drain matches the
-  drained entry against it and passes `_model_access_replay`, which keeps
+  drained entry against it and claims it for the turn (`_run_chat`'s
+  `_replay`), which keeps
   the spent one-shot for that replay alone, so a record whose entry left the
   queue another way (a hard kill's clear, the admission sweep) can never
   make a later turn read as the replay. A sub-agent completion the model

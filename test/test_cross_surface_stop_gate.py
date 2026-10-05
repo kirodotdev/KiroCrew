@@ -20,6 +20,7 @@ from chat_test_helpers import _make_ready_kiro_prerequisite
 from kiro_crew.agent_sdk import TURN_STOP_REASON_CANCELLED
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.chat import _run_chat
+from kiro_crew.dashboard.recovery_replays import ReplayFamily
 from kiro_crew.dashboard.state import REFUSAL_RECOVERY_PREFIX, DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import ToolHookResult
@@ -541,8 +542,13 @@ class TestChannelStopPurgesAQueuedContinuationAtDrain:
             meta=containment_meta(state, slot),
         )
         # Snapshots taken at enqueue: no stop on either counter yet.
-        slot._promise_only_stop_gen = slot._stop_generation
-        slot._promise_only_session_stop_gen = 0
+        slot.replays.arm(
+            ReplayFamily.CONTINUATION,
+            entry_id="",
+            session_key="",
+            stop_gen=slot._stop_generation,
+            session_stop_gen=0,
+        )
         return state, slot
 
     @pytest.mark.asyncio
