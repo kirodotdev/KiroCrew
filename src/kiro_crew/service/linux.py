@@ -389,6 +389,11 @@ def render_unit(*, user_scope: bool = False) -> str:
                 ("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus"),
             )
         )
+    # System unit only: a user unit already runs in its login's context. Without
+    # it the gateway runs as system_u and labels every cache it writes under the
+    # user's home system_u (see selinux.installer_context).
+    selinux_context = None if user_scope else selinux.installer_context(bin_path)
+    selinux_line = f"SELinuxContext={selinux_context}\n" if selinux_context else ""
     return (
         "[Unit]\n"
         "Description=Kiro Crew gateway (dashboard + Slack + cron)\n"
@@ -406,7 +411,9 @@ def render_unit(*, user_scope: bool = False) -> str:
         # Omitted for the user scope: the per-user manager already runs as this
         # account, and it REJECTS User=/Group= outright ("Unknown key name"),
         # which would make the whole unit unloadable rather than merely noisy.
-        + ("" if user_scope else f"User={user}\nGroup={group}\n") + f"WorkingDirectory={home}\n"
+        + ("" if user_scope else f"User={user}\nGroup={group}\n")
+        + selinux_line
+        + f"WorkingDirectory={home}\n"
         f"ExecStart={exec_start}\n"
         # `always`, not `on-failure`: the gateway deliberately exits on its own
         # to be relaunched — the stale-asset watchdog shuts down cleanly when a
