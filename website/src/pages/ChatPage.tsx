@@ -3336,9 +3336,45 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+  // Board-vs-list for the clamp's reserve. Lifted from ChatSidebar's own
+  // `boardLaneActive` (see onBoardActiveChange on the sidebar below), so there
+  // is ONE authoritative source rather than a second derivation here.
+  const [boardActive, setBoardActive] = useState(false)
   // Stored width is validated against SIDEBAR_MIN..SIDEBAR_MAX only, never the
   // window; clamp for render but leave the preference for the wide viewport.
-  const effectiveSidebarWidth = clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
+  // The reserve beside the rail depends on WHAT sits to the sidebar's right:
+  //  - list / chat view: reserve CHAT_PANE_MIN_W so a width saved on a wider
+  //    window cannot overhang this one -- without it a stored width up to
+  //    SIDEBAR_MAX pushes the chat pane below its minimum and strands the resize
+  //    handle at or past the window edge (#16094).
+  //  - board view: reserve 0. The board is a horizontal column strip meant to
+  //    occupy the width, and boardSidebarWidth already reserved the chat pane
+  //    (BOARD_CHAT_RESERVE) when it chose the width -- reserving again here would
+  //    double-count it and cap a legitimately wide board sidebar (the regression
+  //    commit 9406a36e7 reverted, pinned by the board-column e2e specs).
+  //
+  // The board signal is ChatSidebar's own `boardLaneActive`
+  // (`orderedColumns.length > 0` -- the client flag AND the server column list,
+  // exactly as the ChatSettings DEFAULTS note documents board-vs-list), lifted
+  // up through `onBoardActiveChange` so this clamp and the sidebar's rendered
+  // lane can never disagree. Defaulting false list-reserves a board user for
+  // the first frame -- correct, the board lane has not rendered yet -- then
+  // flips to reserve 0 on the SAME commit the lane and its columns appear,
+  // matching when boardSidebarWidth widens. Keying on `tagColumnsEnabled` alone
+  // was wrong: feature ON with ZERO columns renders the LIST lane, so a
+  // hand-dragged wide width still needs CHAT_PANE_MIN_W reserved beside it or
+  // it overhangs again (#16094).
+  //
+  // One effective width for the whole chrome: the OverlayDrawer, the flyout,
+  // panelReserve/panelFillWidth, AND the sidebar's own painted width (passed to
+  // ChatSidebar as `paintWidth` below). Computing it once here and feeding it
+  // down is what keeps the drawer and the inner sidebar edge-aligned -- the
+  // inner used to paint the RAW stored width and overflow the clamped drawer,
+  // stranding the resize handle past the window edge (#16094 review finding c).
+  const effectiveSidebarWidth = clampSidebarWidth({
+    stored: sidebarWidth, winW, railW: railWidth,
+    chatReserve: boardActive ? 0 : CHAT_PANE_MIN_W,
+  })
   const toggleAct = useCallback(() => {
     // Opening with no tabs shows the empty-state launcher grid (no seeded
     // default view) -- the user picks what to open.
@@ -5423,8 +5459,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           defaultAgent={defaultAgent}
           installedAgents={installedAgents}
           mode={mode}
+          // The clamped width the OverlayDrawer is sized to, so the inner
+          // sidebar paints to the SAME edge instead of overflowing it with the
+          // raw stored width (#16094). Omitted on mobile, where the drawer is
+          // full-width and the pane keeps its existing width behavior.
+          paintWidth={isMobile ? undefined : effectiveSidebarWidth}
           onWidthChange={setSidebarWidth}
           onDragChange={setSidebarDragging}
+          // Lift ChatSidebar's authoritative board-lane state up so the clamp's
+          // reserve (board 0 / list CHAT_PANE_MIN_W) tracks the lane actually
+          // rendered -- no second board derivation here (#16094).
+          onBoardActiveChange={setBoardActive}
           collapsible={!isMobile}
           staticRows={isMobile}
           onSelectSlot={clearSplitOnSelect}
