@@ -45,12 +45,20 @@ from kiro_crew.stats import Stats
 
 logger = logging.getLogger(__name__)
 
-# Absolute paths for macOS system commands — shutil.which may fail when PATH
-# is minimal (e.g. launched as a background service), so fall back to known
-# locations.
-_SYSCTL = shutil.which("sysctl") or "/usr/sbin/sysctl"
-_VM_STAT = shutil.which("vm_stat") or "/usr/bin/vm_stat"
-_NETSTAT = shutil.which("netstat") or "/usr/sbin/netstat"
+
+def _resolve_tool(name: str, fallback: str) -> str:
+    """The absolute path to run the system command *name* with.
+
+    ``shutil.which`` may fail when PATH is minimal (e.g. launched as a background
+    service), so the command's known location stands in when it finds nothing.
+    """
+    return shutil.which(name) or fallback
+
+
+# Absolute paths for macOS system commands, resolved once at import.
+_SYSCTL = _resolve_tool("sysctl", "/usr/sbin/sysctl")
+_VM_STAT = _resolve_tool("vm_stat", "/usr/bin/vm_stat")
+_NETSTAT = _resolve_tool("netstat", "/usr/sbin/netstat")
 
 # Server-side network speed tracking (survives page refresh)
 _prev_net: dict[str, float] = {"rx": 0.0, "tx": 0.0, "ts": 0.0}

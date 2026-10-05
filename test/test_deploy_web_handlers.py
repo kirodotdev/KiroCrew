@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from skill_script_helpers import load_skill_script
 
 from kiro_crew.deploy import engine, handlers
 from kiro_crew.deploy import profiles as profiles_mod
@@ -1026,6 +1027,22 @@ def test_deploy_manifest_includes_engine_arch_fields(monkeypatch, tmp_path):
 
 # --- F1: reaper engine-arch happy path + retry path --------------------------
 
+_REAPER_LAMBDA_INDEX = (
+    Path(__file__).resolve().parent.parent
+    / "src/kiro_crew/deploy/skills/artifact-deploy/scripts/reaper_lambda/index.py"
+)
+
+
+def _load_reaper(module_name):
+    """A private copy of the reaper Lambda, built against the boto3 stubs in place now.
+
+    Never imported as the top-level name ``index``: registering it there leaves a
+    module bound to this test's boto3 MagicMock for whatever imports ``index`` next in
+    the worker, and evicting the name first drops whichever ``index`` was there.
+    """
+    return load_skill_script(module_name, _REAPER_LAMBDA_INDEX)
+
+
 def test_reaper_engine_arch_happy_path(monkeypatch):
     """F1: reaper reaps engine-arch deploy (distribution disabled → deleted → bucket emptied)."""
     import sys
@@ -1042,14 +1059,7 @@ def test_reaper_engine_arch_happy_path(monkeypatch):
     monkeypatch.setenv("BUCKET", "shared-bucket")
     monkeypatch.setenv("DIST_ID", "ESHARED")
 
-    reaper_path = str(Path(__file__).resolve().parent.parent /
-                      "src/kiro_crew/deploy/skills/artifact-deploy/scripts/reaper_lambda")
-    monkeypatch.syspath_prepend(reaper_path)
-
-    # Force reimport
-    if "index" in sys.modules:
-        del sys.modules["index"]
-    import index as reaper_mod
+    reaper_mod = _load_reaper("reaper_lambda_index_happy_path")
 
     mock_s3 = MagicMock()
     mock_cf = MagicMock()
@@ -1122,13 +1132,7 @@ def test_reaper_engine_arch_distribution_not_disabled_retries(monkeypatch):
     monkeypatch.setenv("BUCKET", "shared-bucket")
     monkeypatch.setenv("DIST_ID", "ESHARED")
 
-    reaper_path = str(Path(__file__).resolve().parent.parent /
-                      "src/kiro_crew/deploy/skills/artifact-deploy/scripts/reaper_lambda")
-    monkeypatch.syspath_prepend(reaper_path)
-
-    if "index" in sys.modules:
-        del sys.modules["index"]
-    import index as reaper_mod
+    reaper_mod = _load_reaper("reaper_lambda_index_not_disabled")
 
     mock_s3 = MagicMock()
     mock_cf = MagicMock()
