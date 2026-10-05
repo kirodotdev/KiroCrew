@@ -438,11 +438,11 @@ const HINT_KEY = 'kirocrew:comment-hint-dismissed'
 /** How often a visible tab whose file is gone asks the disk whether it is
  *  back: `api_file_watch`'s own poll cadence (1 s), so a recreated file lands
  *  as fast as a change would through the stream the tab cannot hold meanwhile. */
-const MISSING_FILE_RETRY_MS = 1_000
+export const MISSING_FILE_RETRY_MS = 1_000
 /** The ceiling the retry backs off to: each attempt doubles the wait, so a
  *  file that stays gone costs one GET (and one SEL `not_found` record) every
  *  30 s, not every second, until the tab is hidden or the file is back. */
-const MISSING_FILE_RETRY_MAX_MS = 30_000
+export const MISSING_FILE_RETRY_MAX_MS = 30_000
 
 /** Report a failure to the panel, which renders it through the shared
  *  ErrorNotice (replacing the blocking `alert()` these paths used to raise). */

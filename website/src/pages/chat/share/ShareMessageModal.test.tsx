@@ -9,13 +9,27 @@ const toBlobMock = vi.fn(async () => new Blob(['png-bytes'], { type: 'image/png'
 vi.mock('html-to-image', () => ({ toBlob: (...args: unknown[]) => toBlobMock(...args) }))
 
 describe('ShareMessageModal', () => {
+  // happy-dom serves navigator.clipboard from a prototype getter, so a stub is an
+  // own property that shadows it for every later test until it is removed.
+  const origClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  const stubClipboard = (value: unknown) =>
+    Object.defineProperty(navigator, 'clipboard', { value, configurable: true })
+
   beforeEach(() => {
-    toBlobMock.mockClear()
+    // Reset, not clear: a clear keeps a once-implementation that a test queued
+    // but stopped before consuming, and the next test's export receives it.
+    toBlobMock.mockReset()
     // jsdom lacks object URLs; downloadBlob needs both halves.
     URL.createObjectURL = vi.fn(() => 'blob:mock')
     URL.revokeObjectURL = vi.fn()
   })
-  afterEach(() => { vi.restoreAllMocks() })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    // The ClipboardItem stubs, and the clipboard itself: neither is a spy.
+    vi.unstubAllGlobals()
+    if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
+    else delete (navigator as unknown as Record<string, unknown>).clipboard
+  })
 
   const renderModal = (over: Partial<Parameters<typeof ShareMessageModal>[0]> = {}) =>
     render(
@@ -85,7 +99,7 @@ describe('ShareMessageModal', () => {
     const tab = { opener: {} as unknown, location: { href: '' } }
     vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
-    Object.defineProperty(navigator, 'clipboard', { value: { write: vi.fn().mockResolvedValue(undefined) }, configurable: true })
+    stubClipboard({ write: vi.fn().mockResolvedValue(undefined) })
     renderModal({ copy: { caption: 'Feature videos: a clip per feature https://docs.example/x' } })
     const caption = screen.getByRole('textbox', { name: 'Post text' }) as HTMLTextAreaElement
     expect(caption.value).toBe('Feature videos: a clip per feature https://docs.example/x')
@@ -129,7 +143,7 @@ describe('ShareMessageModal', () => {
   it('pre-opens the composer tab synchronously, copies the card, then navigates it', async () => {
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
     const write = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { value: { write }, configurable: true })
+    stubClipboard({ write })
     // The tab is opened blank inside the click's own call stack (what popup
     // blockers judge), with its opener severed, and pointed at the composer
     // only after the export has settled.
@@ -148,7 +162,7 @@ describe('ShareMessageModal', () => {
 
   it('falls back to a direct open when the blocker refused the pre-opened tab', async () => {
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
-    Object.defineProperty(navigator, 'clipboard', { value: { write: vi.fn().mockResolvedValue(undefined) }, configurable: true })
+    stubClipboard({ write: vi.fn().mockResolvedValue(undefined) })
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     renderModal()
     fireEvent.change(screen.getByRole('textbox', { name: 'Post text' }), { target: { value: 'wow' } })
@@ -230,7 +244,7 @@ describe('ShareMessageModal', () => {
   it('reports success when the clipboard write goes through', async () => {
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
     const write = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { value: { write }, configurable: true })
+    stubClipboard({ write })
     renderModal()
     fireEvent.click(screen.getByTestId('share-copy'))
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/paste the image/i))
@@ -243,12 +257,14 @@ describe('ShareMessageModal', () => {
     // image must still reach the user as a file, never a dead button.
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
     const write = vi.fn().mockRejectedValue(new Error('NotAllowedError'))
-    Object.defineProperty(navigator, 'clipboard', { value: { write }, configurable: true })
+    stubClipboard({ write })
     renderModal()
     fireEvent.click(screen.getByTestId('share-copy'))
-    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled())
+    // The download runs BEFORE setFeedback, whose render is a separate React
+    // task: wait for the status it renders, not for the download.
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/downloaded/i))
+    expect(URL.createObjectURL).toHaveBeenCalled()
     expect(write).toHaveBeenCalledTimes(2) // multi-type item, then image-only retry
-    expect(screen.getByRole('status')).toHaveTextContent(/downloaded/i)
   })
 
   it('keeps the compose and its edits when policy withdraws sharing mid-dialog, and says why', async () => {
@@ -284,7 +300,7 @@ describe('ShareMessageModal', () => {
     // could have edited (no image, no third-party site), so Close never means
     // silent loss.
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    stubClipboard({ writeText })
     fireEvent.click(screen.getByTestId('share-copy-text'))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('my carefully edited caption\n\nmy edited card excerpt'))
     // The user still decides when to leave.
@@ -300,16 +316,20 @@ describe('ShareMessageModal', () => {
     const caption = screen.getByRole('textbox', { name: 'Post text' }) as HTMLTextAreaElement
     fireEvent.change(caption, { target: { value: 'keep this' } })
     // No async Clipboard API, and the legacy fallback reports failure.
-    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    stubClipboard(undefined)
     const execBefore = Object.getOwnPropertyDescriptor(document, 'execCommand')
     const execCommand = vi.fn(() => false)
     Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
     const select = vi.spyOn(caption, 'select')
     try {
       fireEvent.click(screen.getByTestId('share-copy-text'))
-      await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+      // execCommand runs synchronously inside the click; the "failed" outcome
+      // renders from setTextCopy after the awaited copy, in a separate React
+      // task. Wait for what only that render produces.
+      const unavailable = await screen.findByTestId('share-copy-text-unavailable')
+      expect(execCommand).toHaveBeenCalledWith('copy')
       expect(screen.getByTestId('share-copy-text')).toHaveTextContent(/failed/i)
-      expect(screen.getByTestId('share-copy-text-unavailable')).toHaveTextContent(/clipboard is blocked.*Ctrl\+C/i)
+      expect(unavailable).toHaveTextContent(/clipboard is blocked.*Ctrl\+C/i)
       expect(select).toHaveBeenCalled()
       expect(caption.value).toBe('keep this')
     } finally {
@@ -323,7 +343,7 @@ describe('ShareMessageModal', () => {
     // permission flips during that await, the navigation that carries the
     // caption off the machine must not happen, and the blank tab is closed.
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
-    Object.defineProperty(navigator, 'clipboard', { value: { write: vi.fn().mockResolvedValue(undefined) }, configurable: true })
+    stubClipboard({ write: vi.fn().mockResolvedValue(undefined) })
     let releaseExport!: (b: Blob) => void
     toBlobMock.mockImplementationOnce(() => new Promise<Blob>(res => { releaseExport = res }))
     const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() }

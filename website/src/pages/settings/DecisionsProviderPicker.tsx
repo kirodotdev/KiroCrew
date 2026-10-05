@@ -22,7 +22,7 @@ export const PRESET_JEV = 'jev'
 // machine reads about 23.5; the nominal threshold is met within this slack.
 const RAM_REPORT_SLACK_GB = 1.5
 /** How often the card re-reads the runtime while a model is being prepared. */
-const RUNTIME_POLL_MS = 2000
+export const RUNTIME_POLL_MS = 2000
 /** States in which the runtime is still working toward `running`. */
 const RUNTIME_BUSY = new Set(['downloading', 'installing', 'starting'])
 

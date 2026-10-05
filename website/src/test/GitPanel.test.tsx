@@ -25,7 +25,11 @@ import GitPanel from '../components/GitPanel'
 const PROJECT = '/workspace/project'
 
 function mount() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // GitPanel's reads set `retry: 1` themselves, which outranks the `retry` here,
+  // so a rejected route is asked twice before it surfaces. `retryDelay: 0` (they
+  // set none) makes that second ask immediate instead of React Query's real
+  // one-second default, so a refusal renders without a wall-clock wait.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <GitPanel projectDir={PROJECT} onClose={vi.fn()} />
@@ -79,9 +83,8 @@ describe('GitPanel repository state', () => {
     mount()
 
     // GitPanel retries a failed status read once before React Query exposes
-    // statusError, so wait for that bounded request chain rather than the
-    // default one-second query timeout.
-    expect(await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })).toBeInTheDocument()
+    // statusError; mount()'s `retryDelay: 0` makes that second read immediate.
+    expect(await screen.findByTestId('git-panel-status-error')).toBeInTheDocument()
     expect(screen.queryByText('loading...')).toBeNull()
     expect(screen.queryByText('clean')).toBeNull()
     expect(screen.queryByText('Not a Git repository')).toBeNull()
@@ -110,7 +113,7 @@ describe('GitPanel repository state', () => {
     expect(screen.getByText(/↑2\s*↓1/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
 
-    const notice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-status-error')
     const localizedStatus = 'Couldn’t read the repository status. Commit history may be out of date.'
     expect(notice).toHaveTextContent(localizedStatus)
     expect(notice).not.toHaveTextContent(serverMessage)
@@ -139,7 +142,7 @@ describe('GitPanel repository state', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-status-error')
     expect(notice).toHaveTextContent('无法读取仓库状态。提交历史可能已过时。')
     expect(notice).not.toHaveTextContent(serverMessage)
     // The status notice's hand-off names the half it carries, so that a second
@@ -168,7 +171,7 @@ describe('GitPanel repository state', () => {
     expect(await screen.findByText('Not a Git repository')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
 
-    expect(await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByTestId('git-panel-status-error')).toBeInTheDocument()
     expect(screen.queryByText('Not a Git repository')).toBeNull()
     expect(screen.queryByText(/This project folder is not a Git repository/)).toBeNull()
     expect(screen.queryByText('clean')).toBeNull()
@@ -190,7 +193,7 @@ describe('GitPanel repository state', () => {
     expect(screen.getByTitle('src/a.ts')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
 
-    expect(await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByTestId('git-panel-status-error')).toBeInTheDocument()
     expect(screen.queryByText('Changes')).toBeNull()
     expect(screen.queryByTitle('src/a.ts')).toBeNull()
   })
@@ -274,7 +277,7 @@ describe('GitPanel capped listing', () => {
 
     mount()
 
-    expect(await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByTestId('git-panel-status-error')).toBeInTheDocument()
     expect(screen.queryByTestId('git-panel-truncated')).toBeNull()
     expect(screen.queryByText('clean')).toBeNull()
   })
@@ -298,10 +301,31 @@ describe('GitPanel filter-driver refusal', () => {
     )
   })
 
+  // The two routes fail on SEPARATE retry timers and notify React Query
+  // separately, so a notice one route produced says nothing about the other:
+  // the coalesced notice CAN render on one refusal alone (titled for that half
+  // only, Refresh still live) before the other route fails. These wait for the
+  // commit in which BOTH routes have failed.
+  //
+  // The scope-'both' title (gitFilterRefusalScope) is the one thing only that
+  // commit renders, and the inert Refresh renders in the same commit.
+  const findBothRefused = (titleKey = 'components.gitPanel.filter_refused_title') =>
+    waitFor(() => {
+      const notice = screen.getByTestId('git-panel-filter-refused')
+      expect(notice).toHaveTextContent(i18next.t(titleKey))
+      return notice
+    })
+  // The divergent branch: one notice per route, each from its own commit.
+  const findBothNotices = () =>
+    waitFor(() => ({
+      statusNotice: screen.getByTestId('git-panel-status-error'),
+      logNotice: screen.getByTestId('git-panel-log-error'),
+    }))
+
   it('names the cause once instead of two generic failures', async () => {
     mount()
 
-    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    const notice = await findBothRefused()
     expect(notice).toHaveTextContent(i18next.t('components.gitPanel.filter_refused'))
     // A title, because a refusal and an outage both render through ErrorNotice:
     // without it the two conditions are the same box and a reader cannot tell a
@@ -331,7 +355,7 @@ describe('GitPanel filter-driver refusal', () => {
       refused('git_log_filter_refused', 'LOG-SIDE-REFUSAL'),
     )
     mount()
-    await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    await findBothRefused()
     const inert = screen.getByRole('button', {
       name: i18next.t('components.gitPanel.refresh_unavailable'),
     })
@@ -358,7 +382,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-filter-refused')
     expect(notice).toHaveTextContent(
       i18next.t('components.gitPanel.filter_refused_unreadable'),
     )
@@ -382,9 +406,14 @@ describe('GitPanel filter-driver refusal', () => {
     mount()
 
     // Both facts together, so neither the pre-failure render nor an in-flight
-    // window can satisfy this on its own.
+    // window can satisfy this on its own -- and on the both-refused commit (the
+    // scope-'both' title), because after the first refusal alone Refresh is
+    // live whatever the cause.
     await waitFor(() => {
       const notice = screen.getByTestId('git-panel-filter-refused')
+      expect(notice).toHaveTextContent(
+        i18next.t('components.gitPanel.filter_refused_title_unreadable'),
+      )
       expect(notice).toHaveTextContent(
         i18next.t('components.gitPanel.filter_refused_unreadable'),
       )
@@ -392,7 +421,7 @@ describe('GitPanel filter-driver refusal', () => {
         name: i18next.t('components.gitPanel.refresh'),
       })
       expect(live).toBeEnabled()
-    }, { timeout: 5000 })
+    })
   })
 
   it('keeps refresh live once one route has recovered', async () => {
@@ -423,7 +452,7 @@ describe('GitPanel filter-driver refusal', () => {
       })
       expect(live).toBeEnabled()
       expect(live.querySelector('.lucide-refresh-cw')).not.toBeNull()
-    }, { timeout: 5000 })
+    })
   })
 
   it('refetches the log when the status route stops refusing', async () => {
@@ -440,26 +469,31 @@ describe('GitPanel filter-driver refusal', () => {
     H.api.projectGitLog
       .mockRejectedValueOnce(refused('git_log_filter_refused', 'LOG-SIDE-REFUSAL'))
       .mockRejectedValueOnce(refused('git_log_filter_refused', 'LOG-SIDE-REFUSAL'))
-      .mockResolvedValue({ repo: true, commits: [] })
+      .mockResolvedValue({
+        repo: true,
+        commits: [{
+          sha: 'abc1234def', message: 'recovered', author: 'a',
+          date: '2026-01-01T00:00:00Z', isHead: true,
+        }],
+      })
 
     mount()
 
-    await waitFor(
-      () => expect(H.api.projectGitLog.mock.calls.length).toBeGreaterThanOrEqual(3),
-      { timeout: 5000 },
-    )
+    await waitFor(() => expect(H.api.projectGitLog.mock.calls.length).toBeGreaterThanOrEqual(3))
     // And the refusal is gone, so the panel is not left claiming history can't
-    // be shown while the changes list renders beneath it.
-    await waitFor(
-      () => expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull(),
-      { timeout: 5000 },
-    )
+    // be shown while the changes list renders beneath it. On the recovered
+    // history, not merely without the notice: the refetch resets the log query's
+    // error while it is in flight, so the in-flight frame has no notice either.
+    await waitFor(() => {
+      expect(screen.getByText('recovered')).toBeInTheDocument()
+      expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull()
+    })
   })
 
   it('still refuses to claim the tree is clean', async () => {
     mount()
 
-    await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    await screen.findByTestId('git-panel-filter-refused')
     // The whole point of the change: a refused read is never a clean pill.
     expect(screen.queryByText('clean')).toBeNull()
     expect(screen.queryByText(/uncommitted/)).toBeNull()
@@ -474,7 +508,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    expect(await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByTestId('git-panel-status-error')).toBeInTheDocument()
     expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull()
     // Refresh stays LIVE here. "Which a retry can clear" is the name of this
     // test, so the control that performs the retry has to still work.
@@ -500,8 +534,7 @@ describe('GitPanel filter-driver refusal', () => {
     mount()
 
     // Each failure gets its own notice, and the coalesced one is NOT used.
-    const statusNotice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
-    const logNotice = screen.getByTestId('git-panel-log-error')
+    const { statusNotice, logNotice } = await findBothNotices()
     expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull()
     // The refusal is titled and the outage is NOT, so the permanent and the
     // transient condition differ structurally. Two similar titles put the
@@ -560,7 +593,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const statusNotice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
+    const statusNotice = await screen.findByTestId('git-panel-status-error')
     expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull()
     // Mirror of the scope rule: here the refusal is the STATUS side, so it names
     // the changes half and leaves history to the log notice beside it.
@@ -592,8 +625,8 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const statusNotice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
-    expect(screen.getByTestId('git-panel-log-error')).toBeInTheDocument()
+    const { statusNotice, logNotice } = await findBothNotices()
+    expect(logNotice).toBeInTheDocument()
     expect(statusNotice).toHaveTextContent(
       i18next.t('components.gitPanel.status_failed_no_history'),
     )
@@ -621,7 +654,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const statusNotice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
+    const statusNotice = await screen.findByTestId('git-panel-status-error')
     expect(statusNotice).toHaveTextContent(i18next.t('components.gitPanel.status_failed'))
   })
 
@@ -636,7 +669,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-filter-refused')
     expect(notice).toHaveTextContent(
       i18next.t('components.gitPanel.filter_refused_title_changes'),
     )
@@ -658,7 +691,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    const notice = await findBothRefused('components.gitPanel.filter_refused_title_unreadable')
     expect(notice).toHaveTextContent(
       i18next.t('components.gitPanel.filter_refused_title_unreadable'),
     )
@@ -683,7 +716,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    await findBothRefused()
     const inert = screen.getByRole('button', {
       name: i18next.t('components.gitPanel.refresh_unavailable'),
     })
@@ -709,7 +742,7 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-filter-refused')
     await userEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
     const handoff = consumeChatHandoff()
     expect(handoff).toContain('git_status_filter_refused')
@@ -733,7 +766,7 @@ describe('GitPanel log route outage', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-log-error', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-log-error')
     const localizedLog = i18next.t('components.gitPanel.log_failed')
     // Untitled, like the status outage: titled-vs-untitled is what separates a
     // transient outage from a permanent refusal at a glance.
@@ -763,7 +796,7 @@ describe('GitPanel log route outage', () => {
 
     mount()
 
-    const notice = await screen.findByTestId('git-panel-log-error', {}, { timeout: 5000 })
+    const notice = await screen.findByTestId('git-panel-log-error')
     expect(notice.querySelector('strong')).toHaveTextContent(
       i18next.t('components.gitPanel.log_failed'),
     )

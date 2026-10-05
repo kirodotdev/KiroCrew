@@ -79,13 +79,25 @@ function panelResponse(body: unknown) {
   return Promise.resolve(body);
 }
 
+/** When the fixture record was published. Zone-less, so it parses as local
+ *  time, the same way the component's own formatter reads it. */
+const PUBLISHED_AT = "2026-09-04T05:16:00";
+const DAY_MS = 86_400_000;
+/** The wall clock every relative age in this file is read against, frozen per
+ *  test: 45 days after PUBLISHED_AT, so the fixture reads a month-scale age far
+ *  from any unit boundary. The component and the test then format the same
+ *  instants against the same "now", whenever the suite runs and however long a
+ *  loaded worker takes between the component's render and the test's own
+ *  formatting. */
+const FROZEN_NOW = Date.parse(PUBLISHED_AT) + 45 * DAY_MS;
+
 function panelBody(data: Record<string, unknown> = PANEL_DATA) {
   return {
     panel: {
       template: "default",
       title: "fleet",
       crew: "fleet-crew",
-      published_at: "2026-09-04T05:16:00",
+      published_at: PUBLISHED_AT,
       data,
     },
     html: PANEL_HTML,
@@ -115,6 +127,8 @@ describe("crew webview containment", () => {
   }
 
   beforeEach(() => {
+    // Date only: faking setTimeout too would stall waitFor and React Query.
+    vi.useFakeTimers({ toFake: ["Date"], now: FROZEN_NOW });
     mintSpy.mockReset();
     mintSpy.mockResolvedValue({ url: DOC_URL });
     panelSpy.mockReset();
@@ -126,6 +140,7 @@ describe("crew webview containment", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.URL.createObjectURL = originalCreate;
     globalThis.fetch = originalFetch;
   });
@@ -141,18 +156,25 @@ describe("crew webview containment", () => {
     return card as unknown as HTMLElement;
   }
 
-  /** Open the document and wait for the frame. */
-  async function renderFrame(): Promise<HTMLIFrameElement> {
-    await renderDocked();
-    fireEvent.click(
-      document.querySelector('[data-testid="crew-webview-expand"]') as Element,
-    );
+  /** Wait for the expanded frame. It exists only once the mint resolves:
+   *  useSandboxDoc sets the URL in the mint's `.then`, an async hop after the
+   *  commit that expanded the card, so an expanded card is not yet a frame. */
+  async function waitFrame(): Promise<HTMLIFrameElement> {
     let frame: HTMLIFrameElement | null = null;
     await waitFor(() => {
       frame = document.querySelector("iframe");
       expect(frame).not.toBeNull();
     });
     return frame as unknown as HTMLIFrameElement;
+  }
+
+  /** Open the document and wait for the frame. */
+  async function renderFrame(): Promise<HTMLIFrameElement> {
+    await renderDocked();
+    fireEvent.click(
+      document.querySelector('[data-testid="crew-webview-expand"]') as Element,
+    );
+    return waitFrame();
   }
 
   // ------------------------------------------------------- the docked summary
@@ -433,7 +455,7 @@ describe("crew webview containment", () => {
      * for it failed. So a stamp any metadata change can reach dates the document
      * on screen by the one record the reader cannot see, and the band then
      * claims the stale page is the fresh one -- the exact confusion the stamp was
-     * added to remove. Here the record is republished a minute ago while the
+     * added to remove. Here the record is republished days later while the
      * document on screen stays the fixture's much older one. */
     mintSpy.mockResolvedValueOnce({ url: DOC_URL });
     const client = new QueryClient({
@@ -459,10 +481,10 @@ describe("crew webview containment", () => {
     // The mint for the NEW record fails, so `url` keeps pointing at the document
     // minted above while `published_at` advances underneath it.
     //
-    // Day-scale rather than seconds-scale on purpose: the assertions below compare
-    // the component's rendering against one this test computes a moment later, and
-    // a minute-scale age can tick between the two. Three days does not.
-    const republished = new Date(Date.now() - 3 * 86400_000).toISOString();
+    // Taken from the frozen clock, not the host's calendar: the republish is
+    // newer than the fixture by construction, and half a day off the 3-day unit
+    // boundary rather than on it.
+    const republished = new Date(FROZEN_NOW - 3.5 * DAY_MS).toISOString();
     const body = panelBody();
     mintSpy.mockRejectedValue(new Error("mint_500"));
     client.setQueryData(["member-panel", SLUG, CREW], {
@@ -481,11 +503,12 @@ describe("crew webview containment", () => {
 
     /* Non-vacuity first: the two instants must actually RENDER differently, or
      * "does not show the new age" would hold for the wrong reason and the pin
-     * would survive the defect. They cannot collide whenever this is run -- the
-     * fixture's instant is a fixed date and so only ever gets older, while the
-     * republish is pinned three days out from the clock. */
-    const shownWhen = fmtRelative("2026-09-04T05:16:00");
-    const newWhen = fmtRelative(republished);
+     * would survive the defect. Both are formatted against FROZEN_NOW, the clock
+     * the component rendered against, so they read a month-scale and a
+     * day-scale age whenever this is run -- never against a later "now" than
+     * the render's. */
+    const shownWhen = fmtRelative(PUBLISHED_AT, { now: FROZEN_NOW });
+    const newWhen = fmtRelative(republished, { now: FROZEN_NOW });
     expect(newWhen).not.toBe(shownWhen);
 
     /* Assert on the WHOLE interpolated sentence, never on the bare stamp. A
@@ -676,7 +699,8 @@ describe("crew webview containment", () => {
       document.querySelector('[data-testid="crew-webview-expand"]') as Element,
     );
     await waitExpanded("true");
-    const first = document.querySelector("iframe");
+    // Expanded is the click's own commit; the frame follows the mint.
+    const first = await waitFrame();
     expect(mintSpy).toHaveBeenCalledTimes(1);
 
     fireEvent.click(
