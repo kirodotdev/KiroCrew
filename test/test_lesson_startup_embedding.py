@@ -6,14 +6,16 @@ embed cache) for every render of the lessons block. These cases pin that the
 vector reaches the ranking, that a render repeated to fit the protected ceiling
 does not embed again, that every row is scored on one weighted scale once there
 is a vector, that every row takes the same keyword half (the rarity-weighted
-overlap, on a scale fixed by the number of rows ranked) with its cosine clamped
-at 0 as the vector term, so a row the vector
+overlap, on a scale fixed by the number of rows ranked and their median length)
+with its cosine clamped at 0 as the vector term, so a row the vector
 says nothing about (no comparable stored vector, or a cosine at or below 0)
 is not measured against the best row in the set, a positive cosine only raises
 a row within one ranking, the rows a vector cannot rank keep the order they
 have with no vector, explicit recall on a fully embedded store separates rows
-the overlap count ties, the keyword half is scaled so one rare word in a longer
-row is a fraction of it at any store size, the keyword half stays bounded so a
+the overlap count ties, one rare word in a row of the store's median length
+is worth the same share of the keyword half in a store of short rules as in a
+store of long ones, so one shared function word in a short rule cannot outrank
+a rule the vector favours, the keyword half stays bounded so a
 row saturating it cannot outrank a row the vector favours more, rows tied ON
 that bound are ordered by word rarity rather than recency, and a store in which
 no row has a positive cosine ranks exactly as
@@ -101,6 +103,20 @@ def _pin_write_order(memory: VectorMemoryStore, texts) -> None:
 def _stamp_one_tick(memory: VectorMemoryStore, texts) -> None:
     """Give every lesson holding *texts* one shared ``updated_at``, as one clock tick would."""
     _stamp_lessons(memory, dict.fromkeys(texts, "2026-01-01T00:00:00+00:00"))
+
+
+def _distinct_rows(count: int, words: int, tag: str) -> tuple[str, ...]:
+    """*count* rules of exactly *words* distinct words that share none but ``Stack``.
+
+    Every other word carries the row's *tag* and index, so no request word reaches
+    these rows and the writer's dedup keeps each of them. The row length is what a
+    fixture sets with them: the keyword half is scaled against the median length
+    of the rows ranked.
+    """
+    return tuple(
+        "Stack " + " ".join(f"{tag}{index}w{word}" for word in range(words - 1))
+        for index in range(count)
+    )
 
 
 def _open_lineage_store(tmp_path: Path, lineage: str) -> VectorMemoryStore:
@@ -326,15 +342,15 @@ class TestOneScaleWithAVector:
     def test_a_dissimilar_row_does_not_keep_its_unweighted_keyword_score(self, tmp_path) -> None:
         """With a query vector, a row at cosine <= 0 scores 0.4 x keyword, not 1.0 x keyword.
 
-        Otherwise it outranks a row the vector favours. The request's rare
-        word names one row, whose vector points away from it (cosine clamped
+        Otherwise it outranks a row the vector favours. The request's four rare
+        words name one row, whose vector points away from it (cosine clamped
         to 0); ten rows carry the request's two common words, one of them at
-        cosine 0.5. On the 0.6/0.4 scale the rare row takes keyword 0.408 and
-        scores 0.163, below the favoured row's 0.6 x 0.5 + 0.4 x 0.057 =
-        0.323. Keeping its keyword unweighted the rare row would score 0.408
+        cosine 0.5. On the 0.6/0.4 scale the rare row takes keyword 0.365 and
+        scores 0.146, below the favoured row's 0.6 x 0.5 + 0.4 x 0.013 =
+        0.305. Keeping its keyword unweighted the rare row would score 0.365
         and lead.
         """
-        query = "calibrate quartz cat dog"
+        query = "calibrate rotate quartz every quarter cat dog"
         dissimilar = "Rotate the quartz bearings every quarter"
         favoured = "Keep cat dog crates stacked"
         fillers = (
@@ -436,10 +452,10 @@ class TestUnembeddedRowsDoNotFallBackToRecency:
         written while no embedder was bound, so each has no stored vector and
         scores 0.4 x its keyword half. Every unembedded row shares the same
         ten common words with the query; the query's one rare word names the
-        oldest of them, which lifts its keyword half to 0.886 against the two
-        newer rows' 0.646, so it scores 0.354 against their 0.259. The
+        oldest of them, which lifts its keyword half to 0.401 against the two
+        newer rows' 0.293, so it scores 0.160 against their 0.117. The
         embedded row shares no word with the query and scores 0.6 x 0.5 = 0.3,
-        between the oldest row and the two newer ones.
+        above all three.
 
         This case passes under the capped overlap count too, which saturates
         on these rows and leaves the tie-break to separate them, so it pins
@@ -571,12 +587,12 @@ class TestAVectorlessRowIsNotScaledAgainstTheBestRow:
         is the best lexical row in the store. The embedded row shares no word
         with the query and its vector sits at cosine 0.5, scoring
         0.6 x 0.5 = 0.3. The vectorless row's rarity half is its lexical score
-        over the weight of a word only one of the five rows carries,
-        0.620 / 1.386 = 0.447, so it scores 0.4 x 0.447 = 0.179 and the
-        embedded row leads. Fails if a vectorless row's keyword half is
-        normalised against the best row among those ranked: this row would
-        take 1.0 as its keyword half, score 0.4 and displace the on-topic
-        embedded row.
+        times the store's keyword scale (0.1 x sqrt 7 over the weight of a word
+        only one of the five rows carries), 0.620 x 0.191 = 0.118, so it scores
+        0.4 x 0.118 = 0.047 and the embedded row leads. Fails if a vectorless
+        row's keyword half is normalised against the best row among those
+        ranked: this row would take 1.0 as its keyword half, score 0.4 and
+        displace the on-topic embedded row.
         """
         embedded = "Page payments oncall when cart purchases fail"
         codename = "Rotate quartz bearings every quarter"
@@ -628,17 +644,17 @@ class TestGainingAVectorNeverLowersARow:
     ) -> None:
         """Every row takes the same keyword half, so a positive cosine can only add to its score.
 
-        Twenty rows are ranked. Two three-word rows each share the request's
-        one rare word, ``quartz``: one has no stored vector, the other is
-        embedded at cosine 0.05. A longer row sharing that word sits at
-        cosine 0.30. The two three-word rows take the same keyword half,
-        (ln 6 / sqrt 3) / ln 14 = 0.392, so the no-vector row scores 0.157,
-        its embedded twin 0.6 x 0.05 + 0.157 = 0.187, and the longer
-        cosine-0.30 row, whose extra words dilute the same shared weight to
-        0.240, scores 0.276. Fails if a row the vector says nothing about
+        Twenty rows are ranked, seventeen of them 25-word fillers, so the median
+        row is 25 words long. Two three-word rows each share the request's one
+        rare word, ``quartz``: one has no stored vector, the other is embedded
+        at cosine 0.05. A longer row sharing that word sits at cosine 0.30. The
+        two three-word rows take the same keyword half, 0.196, so the no-vector
+        row scores 0.078, its embedded twin 0.6 x 0.05 + 0.078 = 0.108, and the
+        longer cosine-0.30 row, whose extra words dilute the same shared weight
+        to 0.120, scores 0.228. Fails if a row the vector says nothing about
         takes a DIFFERENT keyword half from its embedded siblings: scoring
         vectorless rows by rarity while embedded rows keep the capped overlap
-        count puts the no-vector row at 0.157 and its embedded twin at 0.07,
+        count puts the no-vector row at 0.078 and its embedded twin at 0.070,
         so raising a row's cosine from 0 to 0.05 lowers it.
         """
         no_vector = "Rotate quartz bearings"
@@ -646,25 +662,9 @@ class TestGainingAVectorNeverLowersARow:
         # out of three would let the writer's topic-overlap dedup merge them.
         embedded_twin = "Grease quartz gears"
         favoured = "Log every quartz reading in the depot ledger"
-        fillers = (
-            "Stack oak elm ash planks",
-            "Store iron zinc tin copper",
-            "Keep plum pear kiwi crates",
-            "Tune harp flute drum tuba",
-            "Sign harbour ferry manifests early",
-            "Count sedan coupe wagon keys",
-            "Paint violet amber crimson walls",
-            "Mend wool linen silk hems",
-            "Check basalt granite marble slabs",
-            "Weigh barley oats millet sacks",
-            "Label falcon heron sparrow cages",
-            "Fold maple birch cedar maps",
-            "Rinse cobalt nickel pewter bowls",
-            "Sort ruby topaz garnet trays",
-            "Dust piano organ banjo cases",
-            "Wind clock pendulum spring coils",
-            "Bind velvet cotton denim rolls",
-        )
+        # Long fillers keep the median row long, so a three-word row's one rare
+        # word takes a larger share of the keyword half than the count's 0.1.
+        fillers = _distinct_rows(17, 25, "g")
 
         def embed(text: str) -> list[float]:
             if "gears" in text and "quartz" in text:
@@ -753,8 +753,8 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
 
         Only one filler carries a vector, and none of the three compared rows
         does, so each of them keeps a vector term of 0 and the keyword half
-        alone separates them. The rare row's half is 0.408 against the common
-        rows' 0.057, so it scores 0.163 against their 0.023. The same store is
+        alone separates them. The rare row's half is 0.091 against the common
+        rows' 0.013, so it scores 0.037 against their 0.005. The same store is
         rendered twice, once with no query vector and once with one, and the
         three rows keep their order. The two common rows tie on every score, so
         recency alone puts the newer ``COMMON_B`` first, which is why the writes
@@ -855,8 +855,8 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
         Every row sits at cosine 0.5 to the request and is mutually dissimilar
         (each carries its own dimension), so the vector term is equal for all
         of them and only the keyword half orders the set. The rare row scores
-        0.3 + 0.4 x 0.408 = 0.463 against the common rows' 0.3 + 0.4 x 0.057 =
-        0.323. This is the path ``memory_recall`` takes on a store whose
+        0.3 + 0.4 x 0.091 = 0.337 against the common rows' 0.3 + 0.4 x 0.013 =
+        0.305. This is the path ``memory_recall`` takes on a store whose
         backfill has finished.
 
         Fails if the keyword half is the capped overlap count: the rare row
@@ -892,24 +892,19 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
 
 
 class TestTheKeywordHalfStaysBounded:
-    """The three lines the scaled keyword half rests on, each pinned by a mutation.
+    """Three lines the scaled keyword half rests on, each pinned by a mutation.
 
-    The rarity-weighted overlap is divided by the weight of a one-row token so
-    its scale does not grow with the store, and that division makes the half
-    reachable, so the divisor, the cap that bounds the half and the tie-break
-    that orders rows sitting ON the cap are all load-bearing. None is covered
-    by a case that merely ranks unsaturated rows on a small store: those pass
-    with any of the three deleted.
+    The rarity-weighted overlap is scaled so one maximally rare word in a row of
+    the store's median length is worth 0.1 of the keyword half, and a row
+    shorter than the median that shares several rare words can still fill it:
+    the cap that bounds the half, the tie-break that orders rows sitting ON the
+    cap and the rarity divisor in the scale are all load-bearing. None is
+    covered by a case that merely ranks unsaturated rows on a small store: those
+    pass with any of the three deleted. The fillers are 25 words long, so the
+    median row is long enough for a short row's rare words to reach the cap.
     """
 
-    FILLERS = (
-        "Stack oak elm planks",
-        "Store iron zinc copper",
-        "Keep plum pear crates",
-        "Tune harp flute drums",
-        "Weigh barley oats sacks",
-        "Label falcon heron cages",
-    )
+    FILLERS = _distinct_rows(6, 25, "k")
 
     def render(self, memory: VectorMemoryStore, query: str, recall_query) -> str:
         return memory.get_lessons_context(
@@ -924,21 +919,21 @@ class TestTheKeywordHalfStaysBounded:
     def test_a_saturating_row_does_not_outrank_a_row_at_a_higher_cosine(self, tmp_path) -> None:
         """A row whose raw keyword half exceeds 1.0 is capped, so the vector still wins.
 
-        ``saturating`` is three words long and the request carries all three,
-        each held by no other row, so its raw half is 3 x w1 / sqrt(3) / w1 =
-        1.732 -- above the cap. Capped at 1.0 it scores 0.4 x 1.0 = 0.400 with
-        no vector of its own, and ``favoured``, which shares no word with the
-        request, scores 0.6 x 0.8 = 0.480 on its cosine alone, so the vector's
-        row leads.
+        ``saturating`` is nine words long and the request carries all nine,
+        each held by no other row, so its raw half is 0.1 x sqrt 25 x 9 /
+        sqrt 9 = 1.5 -- above the cap. Capped at 1.0 it scores 0.4 x 1.0 =
+        0.400 with no vector of its own, and ``favoured``, which shares no word
+        with the request, scores 0.6 x 0.8 = 0.480 on its cosine alone, so the
+        vector's row leads.
 
         Fails if ``min(1.0, ...)`` is dropped from the keyword half: the
-        saturating row then scores 0.4 x 1.732 = 0.693 and overtakes the row at
+        saturating row then scores 0.4 x 1.5 = 0.600 and overtakes the row at
         cosine 0.8 that shares no word with the request, which is the whole
         point of keeping the half on [0, 1].
         """
-        saturating = "quartz bearings calibrate"
+        saturating = "quartz bearings calibrate gauge piston valve rotor spindle flange"
         favoured = "Sign the harbour ferry manifest"
-        query = "quartz bearings calibrate every sensor"
+        query = "quartz bearings calibrate gauge piston valve rotor spindle flange every sensor"
 
         memory = VectorMemoryStore(db_path=tmp_path / "cap.db")
         memory.init()
@@ -969,9 +964,10 @@ class TestTheKeywordHalfStaysBounded:
     def test_two_rows_at_the_cap_are_ordered_by_rarity_not_recency(self, tmp_path) -> None:
         """Rows tied ON the cap at one cosine are separated by the score behind it.
 
-        ``richer`` is four words and ``shorter`` three; the request carries
-        every word of both, each held by no other row, so their raw halves are
-        2.000 and 1.732 -- both above the cap, so both are capped to 1.0.
+        ``richer`` is six words and ``shorter`` five; the request carries every
+        word of both, each held by no other row, so their raw halves are
+        0.1 x sqrt 25 x sqrt 6 = 1.225 and 0.1 x sqrt 25 x sqrt 5 = 1.118 --
+        both above the cap, so both are capped to 1.0.
         Neither has a stored vector, so both score exactly 0.4 and the primary
         score cannot order them. ``richer`` is written FIRST, and the writes
         take distinct stamps, so the caller's newest-first order puts
@@ -982,10 +978,10 @@ class TestTheKeywordHalfStaysBounded:
         sort then returns the tied pair newest-first and ``shorter`` leads,
         which is the recency fallback the tie-break exists to prevent.
         """
-        richer = "quartz bearings calibrate depot"
-        shorter = "harbour ferry manifest"
+        richer = "quartz bearings calibrate depot gauge piston"
+        shorter = "harbour ferry manifest dock pier"
         embedded = "Stack cobalt nickel pewter bowls"
-        query = "quartz bearings calibrate depot harbour ferry manifest"
+        query = "quartz bearings calibrate depot gauge piston harbour ferry manifest dock pier"
 
         memory = VectorMemoryStore(db_path=tmp_path / "tie.db")
         memory.init()
@@ -1038,10 +1034,10 @@ class TestTheKeywordHalfStaysBounded:
         then returns the tied rows in scan (insertion) order, which is not key
         order for this fixture.
         """
-        richer = "quartz bearings calibrate depot"
-        shorter = "harbour ferry manifest"
+        richer = "quartz bearings calibrate depot gauge piston"
+        shorter = "harbour ferry manifest dock pier"
         embedded = "Stack cobalt nickel pewter bowls"
-        query = "quartz bearings calibrate depot harbour ferry manifest"
+        query = "quartz bearings calibrate depot gauge piston harbour ferry manifest dock pier"
 
         memory = _open_lineage_store(tmp_path, lineage)
         try:
@@ -1077,33 +1073,28 @@ class TestTheKeywordHalfStaysBounded:
             memory.close()
 
     @pytest.mark.parametrize("row_count", [20, 80])
-    def test_one_rare_word_is_half_the_keyword_score_of_a_four_word_row(
+    def test_one_rare_word_takes_the_same_keyword_half_at_any_store_size(
         self, tmp_path, row_count: int
     ) -> None:
-        """The divisor keeps one rare word from filling a longer row's keyword half.
+        """The rarity divisor keeps one rare word's share of the keyword half fixed as the store grows.
 
         With N rows ranked, a word one row carries weighs w1 = ln((N + 1) /
-        1.5). ``single`` is four words long and shares only ``quartz`` with
-        the request, carried by no other row, so its keyword half is
-        (w1 / sqrt 4) / w1 = 0.5 at every store size and it scores
-        0.4 x 0.5 = 0.2 with no vector of its own. ``favoured`` shares no word
-        with the request and scores 0.6 x 0.5 = 0.3 on its cosine alone, so it
-        leads at both sizes.
+        1.5), and the keyword scale divides by it. ``single`` is four words
+        long in a store whose median row has 49, and shares only ``quartz``
+        with the request, carried by no other row, so its keyword half is
+        0.1 x sqrt 49 x (w1 / sqrt 4) / w1 = 0.35 at every store size and it
+        scores 0.4 x 0.35 = 0.14 with no vector of its own. ``favoured``
+        shares no word with the request and scores 0.6 x 0.5 = 0.3 on its
+        cosine alone, so it leads at both sizes.
 
-        Fails if the overlap is not divided by w1 (``single_row_weight =
-        1.0``): its unscaled value is w1 / 2, which is 1.32 at 20 rows and 1.99
-        at 80, so the cap turns it into a full half, the one-word match scores
-        0.4 and overtakes the row at cosine 0.5. At 80 rows it also fails for
-        a fixed divisor tuned to a small store: 2.0 puts the half at 0.997.
+        Fails if the scale does not divide by w1: the half becomes 0.35 x w1,
+        0.924 at 20 rows and capped to 1.0 at 80, so the one-word match scores
+        0.370 or 0.400 and overtakes the row at cosine 0.5.
         """
         single = "Rotate quartz bearings weekly"
         favoured = "Sign the harbour ferry manifest"
         query = "calibrate quartz sensor"
-        # Four distinct words each, none shared with the request or with
-        # another filler, so the writer's topic dedup keeps every row.
-        fillers = tuple(
-            f"Stack bin{index} crate{index} lid{index}" for index in range(row_count - 2)
-        )
+        fillers = _distinct_rows(row_count - 2, 49, "d")
 
         memory = VectorMemoryStore(db_path=tmp_path / "divisor.db")
         memory.init()
@@ -1127,5 +1118,139 @@ class TestTheKeywordHalfStaysBounded:
             block = self.render(memory, query, recall_query)
 
             assert block.index(favoured) < block.index(single)
+        finally:
+            memory.close()
+
+
+class TestTheKeywordHalfIsScaledToTheMedianRow:
+    """One rare word is worth the same share of the keyword half in any store.
+
+    The overlap divides a row's rarity weight by the square root of its length.
+    Scaled by the heaviest weight alone, one rare word would fill
+    ``1 / sqrt(size)`` of a row's keyword half, so it would weigh more in a store
+    of short rules than in one of long rules, and a function word only one or
+    two short rules carry would weigh as a rare word. Length is measured
+    against the median row ranked instead: one maximally rare word in a
+    median-length row is worth 0.1 of the half.
+    """
+
+    def render(self, memory: VectorMemoryStore, query: str, recall_query) -> str:
+        return memory.get_lessons_context(
+            query,
+            background=True,
+            hard_cap=99_000,
+            directive_budget=7_000,
+            experience_budget=1_500,
+            recall_query=recall_query,
+        )
+
+    def test_one_shared_function_word_does_not_outrank_a_closer_rule(self, tmp_path) -> None:
+        """In a store of short rules, ``use`` in a wrong rule does not beat the right rule's cosine.
+
+        Twelve rules of ten to thirteen words; the median has twelve. The
+        request shares no word with ``right``, which sits at cosine 0.57 and
+        scores 0.342. ``wrong`` sits at cosine 0.48 and shares only ``use``
+        with the request, a word no other rule here carries, so it weighs as a
+        rare word: its keyword half is 0.1 x sqrt(12 / 13) = 0.096 and it
+        scores 0.288 + 0.038 = 0.326, below ``right``.
+
+        Fails if row length is measured absolutely: ``wrong``'s half becomes
+        1 / sqrt 13 = 0.277, it scores 0.399, and one shared function word
+        outranks the rule the vector favours.
+        """
+        right = "Show every time to the user in Pacific Time, never in UTC."
+        wrong = "Use no em dashes in prose written for people; use a full stop instead."
+        query = "what clock should I use when I report something that happened"
+        fillers = _distinct_rows(10, 12, "s")
+
+        def embed(text: str) -> list[float]:
+            if "Pacific" in text:
+                return [0.57, (1 - 0.57**2) ** 0.5, 0.0]
+            if "dashes" in text:
+                return [0.48, 0.0, (1 - 0.48**2) ** 0.5]
+            return [1.0, 0.0, 0.0]
+
+        memory = VectorMemoryStore(db_path=tmp_path / "short-rules.db")
+        memory.init()
+        try:
+            # Written first, while an embedder is bound: a later write with an
+            # embedder bound would lazily backfill the rows that must stay
+            # unembedded.
+            memory.embed_fn = embed
+            assert memory.write_lesson(right)
+            assert memory.write_lesson(wrong)
+            memory.embed_fn = None
+            for text in fillers:
+                assert memory.write_lesson(text)
+            rows = memory.get_lessons()
+            assert len(rows) == 12, "dedup merged fixture rows"
+            assert sum(row["embedding"] is not None for row in rows) == 2
+
+            memory.embed_fn = embed
+            recall_query = memory.startup_lesson_query(query)
+            assert recall_query.vector == [1.0, 0.0, 0.0]
+
+            block = self.render(memory, query, recall_query)
+
+            assert block.index(right) < block.index(wrong)
+        finally:
+            memory.close()
+
+    @pytest.mark.parametrize("median_words", [8, 50])
+    def test_one_rare_word_in_a_median_length_row_is_worth_the_same_in_any_store(
+        self, tmp_path, median_words: int
+    ) -> None:
+        """A median-length row sharing one rare word takes 0.1 of the keyword half, short rules or long.
+
+        Twenty rows: ``probe`` and fifteen others are ``median_words`` long and
+        four are three times that, which leaves the median at ``median_words``
+        and lifts the mean to 1.4 times it. ``probe`` shares one word,
+        ``quartz``, with the request and no other row carries it, so its keyword
+        half is 0.1 and it scores 0.4 x 0.1 = 0.040 with no vector. Two
+        embedded rows that share no word bracket it: ``above`` at cosine 0.07
+        scores 0.042 and ``below`` at cosine 0.06 scores 0.036.
+
+        Fails if the share moves: measuring length absolutely gives ``probe``
+        a half of 1 / sqrt(median_words), 0.354 or 0.141; the mean in place of
+        the median gives 0.118, and a scale without the rarity divisor 0.264.
+        Each lifts ``probe`` above ``above``, as does a constant of 0.105 or
+        more; one under 0.09 sinks it below ``below``.
+        """
+        above = _distinct_rows(1, median_words, "h")[0]
+        below = _distinct_rows(1, median_words, "l")[0]
+        probe = "Stack quartz " + " ".join(f"p0w{word}" for word in range(median_words - 2))
+        fillers = _distinct_rows(13, median_words, "f") + _distinct_rows(4, 3 * median_words, "x")
+        query = "calibrate quartz"
+
+        def embed(text: str) -> list[float]:
+            if text.startswith("Stack h0w"):
+                return [0.07, (1 - 0.07**2) ** 0.5, 0.0]
+            if text.startswith("Stack l0w"):
+                return [0.06, 0.0, (1 - 0.06**2) ** 0.5]
+            return [1.0, 0.0, 0.0]
+
+        memory = VectorMemoryStore(db_path=tmp_path / "median.db")
+        memory.init()
+        try:
+            # Written first, while an embedder is bound: a later write with an
+            # embedder bound would lazily backfill the rows that must stay
+            # unembedded.
+            memory.embed_fn = embed
+            assert memory.write_lesson(above)
+            assert memory.write_lesson(below)
+            memory.embed_fn = None
+            for text in (probe, *fillers):
+                assert memory.write_lesson(text)
+            rows = memory.get_lessons()
+            assert len(rows) == 20, "dedup merged fixture rows"
+            assert sum(row["embedding"] is not None for row in rows) == 2
+
+            memory.embed_fn = embed
+            recall_query = memory.startup_lesson_query(query)
+            assert recall_query.vector == [1.0, 0.0, 0.0]
+
+            block = self.render(memory, query, recall_query)
+
+            assert block.index(above) < block.index(probe) < block.index(below)
         finally:
             memory.close()

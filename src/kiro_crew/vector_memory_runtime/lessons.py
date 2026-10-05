@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import re
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -1342,8 +1343,8 @@ def rank_lessons(
     whose first message was not embedded, and any recall whose embed is
     unavailable -- is ordered by that score alone.
 
-    With a query vector, every row takes that same score, divided by the
-    weight of a token only one row carries and capped at 1.0, as its keyword
+    With a query vector, every row takes that same score, scaled by
+    :func:`_keyword_half_scale` and capped at 1.0, as its keyword
     half, and its vector term is the cosine clamped at 0: a row with no stored
     vector comparable with the query's, or at a cosine at or below 0, has a
     vector term of 0. Two consequences follow from one measure. Within one
@@ -1377,7 +1378,7 @@ def rank_lessons(
     # that fits the cache can hit it.
     row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
     lexical_query_words = {_stem_one(word) for word in request_words}
-    lexical = _lexical_lesson_scores(entries, lexical_query_words, row_tokens)
+    lexical, row_words = _lexical_lesson_scores(entries, lexical_query_words, row_tokens)
     # The scorer answers 0.0 for a row with no stored vector or one of another
     # width, and a negative cosine is no signal, so the clamp leaves every row
     # the vector cannot rank at 0.0.
@@ -1392,24 +1393,21 @@ def rank_lessons(
         order = sorted(range(len(entries)), key=lambda index: -lexical[index])
         return [entries[index] for index in order]
     # One keyword measure for every row, with a vector or without one: the
-    # rarity-weighted overlap above, divided by the weight of a token only one
-    # row carries. That overlap is already divided by the square root of the
-    # row's distinct words, so a row of ``size`` of them reaches a full keyword
-    # half at about ``sqrt(size)`` such tokens -- one for a one-word row, three
-    # for a nine-word one -- and the cap below is reachable rather than
-    # ornamental. The capped overlap count cannot serve here: it saturates at
-    # ten shared tokens, which a long first message clears against most rows
-    # (measured on an 897-rule store with each rule's own text as the request:
-    # the median row with any overlap sat AT the cap and 64% of them did; a
-    # six-word request put none there), leaving the keyword half a
-    # near-constant 0.4 offset rather than a measure. Only the rendered text is
-    # matched: a lesson key is ``lesson.<md5hash>``, which carries no words, so
-    # there is no key term to weight here the way get_semantic_context()
-    # weights its own.
-    single_row_weight = _rarity_weight(len(entries), 1)
+    # rarity-weighted overlap above, scaled by _keyword_half_scale so one
+    # maximally rare shared word in a row of the store's median length adds 0.1
+    # to the keyword half, and capped at 1.0. The capped overlap count cannot
+    # serve here: it saturates at ten shared tokens, which a long first message
+    # clears against most rows (measured on an 897-rule store with each rule's
+    # own text as the request: the median row with any overlap sat AT the cap
+    # and 64% of them did; a six-word request put none there), leaving the
+    # keyword half a near-constant 0.4 offset rather than a measure. Only the
+    # rendered text is matched: a lesson key is ``lesson.<md5hash>``, which
+    # carries no words, so there is no key term to weight here the way
+    # get_semantic_context() weights its own.
+    keyword_scale = _keyword_half_scale(len(entries), row_words)
     scored = [
         _text_scoring._hybrid_score(
-            min(1.0, lexical[index] / single_row_weight),
+            min(1.0, lexical[index] * keyword_scale),
             vectors[index],
             query_has_vector=True,
         )
@@ -1426,12 +1424,13 @@ def _lexical_lesson_scores(
     entries: list[tuple[dict, str]],
     query_words: set[str],
     row_tokens: Callable[[str], frozenset[str]],
-) -> list[float]:
-    """Score each entry's words against the request's, one float per entry.
+) -> tuple[list[float], list[int]]:
+    """Score each entry's words against the request's: one float per entry, and its length.
 
     Each shared token is weighted by how rare it is among *entries*
     (``log((N + 1) / (df + 0.5))``), and the sum is divided by the square root
-    of the row's number of distinct words.
+    of the row's number of distinct words. That number is returned beside the
+    scores, one per entry, for :func:`_keyword_half_scale`.
 
     The capped overlap count the semantic scan uses as its keyword half,
     ``_keyword_score``, is not used here: it saturates at ten shared tokens, which
@@ -1447,7 +1446,8 @@ def _lexical_lesson_scores(
     admission test (``any_lesson_overlap``) still agrees with this ranking.
     """
     masses, sizes = _lexical_lesson_weights(entries, query_words, row_tokens)
-    return [mass / math.sqrt(size) if mass else 0.0 for mass, size in zip(masses, sizes)]
+    scores = [mass / math.sqrt(size) if mass else 0.0 for mass, size in zip(masses, sizes)]
+    return scores, sizes
 
 
 def _lexical_lesson_weights(
@@ -1494,14 +1494,40 @@ def _rarity_weight(rows: int, count: int) -> float:
     """``log((rows + 1) / (count + 0.5))``: one token's weight at document frequency *count*.
 
     ``count=1`` is the heaviest a token can weigh -- carried by one of *rows*
-    rows -- which is the reference ``rank_lessons`` divides by to bound its
-    keyword half. The bound is not reached by one such token on every row: the
-    overlap it scales is already divided by the square root of the row's
-    distinct words, so a one-word row carrying it reaches 1.0 while a row of
-    ``size`` distinct words reaches ``1 / sqrt(size)``, and the cap is for the
-    row that carries several.
+    rows -- which is the reference :func:`_keyword_half_scale` divides by, so the
+    keyword half's scale does not grow with the number of rows ranked.
     """
     return math.log((rows + 1) / (count + 0.5))
+
+
+#: What one maximally rare shared word adds to the keyword half of a row of the
+#: store's median length: the 0.1 one shared token adds under the capped count.
+_RARE_WORD_KEYWORD_HALF = 0.1
+
+
+def _keyword_half_scale(rows: int, row_words: list[int]) -> float:
+    """The factor that turns a row's rarity-weighted overlap into its keyword half.
+
+    The overlap divides a row's summed weight by the square root of its number
+    of distinct words, so one shared word counts for more in a short row than in
+    a long one. Scaled by the heaviest weight alone, it would count for more in a
+    store of short rules than in a store of long ones too: one maximally rare
+    word would fill ``1 / sqrt(size)`` of the half, 0.28 of it in a 13-word row
+    and 0.12 in a 65-word one. In a small store of short rules a function word
+    such as ``use`` is carried by one or two rows and weighs as a rare word, so
+    that share would let one incidental match outrank a rule with a clearly
+    closer cosine (measured on a real store's rules cut to their first sentence,
+    40 rows at a time: for requests sharing no word with the right rule, it ranks
+    first 17.8% of the time scaled that way and 29.4% with this scale).
+
+    Measuring length against the store's median row makes one maximally rare
+    word in a median-length row worth ``_RARE_WORD_KEYWORD_HALF`` in any store; a
+    longer row still takes less per word and a shorter one more. The factor is
+    the same for every row of one ranking, so it never reorders the rows the
+    vector cannot rank.
+    """
+    median_words = statistics.median(row_words)
+    return _RARE_WORD_KEYWORD_HALF * math.sqrt(median_words) / _rarity_weight(rows, 1)
 
 
 def _rarity_weights(rows: int, document_frequency: dict[str, int]) -> dict[str, float]:
