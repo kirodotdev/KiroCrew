@@ -1066,7 +1066,9 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
         assert key not in sl._parked_queue
     finally:
         mgr.release(key)
-    # And a fresh registration adopts too: no session under the key at all.
+    # And a fresh registration adopts too: no session under the key at all. The
+    # adopted entry is dropped first, or the reset would park it and respawn.
+    mgr._sessions[key].queue.clear()
     await mgr.reset(KEY)
     await _settle()
     assert key not in mgr._sessions
@@ -1076,6 +1078,100 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
         assert [e[0] for e in mgr._sessions[key].queue] == ["ts-b"]
     finally:
         mgr.release(key)
+    await mgr.close_all()
+
+
+async def _until_registered(mgr, key, old) -> object:
+    for _ in range(200):
+        current = mgr._sessions.get(key)
+        if current is not None and current is not old:
+            return current
+        await asyncio.sleep(0.01)
+    raise AssertionError("no successor registered under the key")
+
+
+@pytest.mark.asyncio
+async def test_a_failure_path_reset_carries_queued_follow_ups_to_a_successor(tmp_path):
+    """A turn fails (``AcpPromptBusy``) while follow-ups wait on its queue; the
+    handler's plain ``reset`` pops the session. The follow-ups and their staged
+    files must reach a successor started for them, ahead of nothing, in order;
+    an entry a mid-turn cancel marked is still dropped and its file unlinked."""
+    from kiro_crew import session_lifecycle as sl
+
+    mgr, key, compact, order, notices = await _setup()
+    files = {name: tmp_path / f"{name}.png" for name in ("m2", "gone", "m3")}
+    for path in files.values():
+        path.write_bytes(b"x")
+    for ts, name in (("ts-2", "m2"), ("ts-gone", "gone"), ("ts-3", "m3")):
+        assert mgr.enqueue(key, ts, name, force=True, image_temp_paths=[str(files[name])])
+    old = mgr._sessions[key]
+    old.cancelled.add("ts-gone")
+
+    assert await mgr.reset(KEY) is True
+
+    new = await _until_registered(mgr, key, old)
+    assert [e[0] for e in new.queue] == ["ts-2", "ts-3"], "the follow-ups reached the successor"
+    assert files["m2"].exists() and files["m3"].exists(), "their staged files were kept"
+    assert not files["gone"].exists(), "the cancelled entry's file was unlinked"
+    assert key not in sl._parked_queue
+    await _settle()
+    assert not new.semaphore.locked(), "the respawn released its lease for the drain"
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_the_reset_successor_keeps_the_popped_sessions_identity():
+    """A later claim takes a live session as-is, so a successor the reset started
+    under default arguments would answer the follow-ups -- and every message after
+    them -- as the default agent. It must start as the session it replaces."""
+    order: list[str] = []
+    calls: list[dict] = []
+    inner = _factory(_Compact(), order)
+
+    def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+        calls.append({"agent": agent, "channel_id": channel_id, **kwargs})
+        return inner(session_key=session_key, agent=agent, channel_id=channel_id, **kwargs)
+
+    mgr = SessionManager(KiroCrewConfig(), provider_factory=factory)
+    await mgr.get_or_create(KEY, agent="research-agent", approval_policy="auto")
+    key = mgr._fold_key(KEY)
+    mgr.release(key)
+    await mgr.set_channel(key, "C-team")
+    assert mgr.enqueue(key, "ts-2", "m2", force=True)
+    old = mgr._sessions[key]
+
+    assert await mgr.reset(KEY) is True
+
+    new = await _until_registered(mgr, key, old)
+    assert new.agent == "research-agent"
+    assert new.approval_policy == "auto"
+    assert calls[-1]["agent"] == "research-agent"
+    assert calls[-1]["channel_id"] == "C-team"
+    assert [e[0] for e in new.queue] == ["ts-2"]
+    await _settle()
+    # The first queued turn, not the respawn, owns the first-turn observation:
+    # without it a failed native resume would answer the follow-up with no history.
+    _provider, is_new, resumed = await mgr.get_or_create(KEY)
+    mgr.release(key)
+    assert (is_new, resumed) == (True, False), "the queued turn sees a fresh start"
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_ending_reset_still_drops_the_queue(tmp_path):
+    from kiro_crew import session_lifecycle as sl
+
+    mgr, key, compact, order, notices = await _setup()
+    staged = tmp_path / "m2.png"
+    staged.write_bytes(b"x")
+    assert mgr.enqueue(key, "ts-2", "m2", force=True, image_temp_paths=[str(staged)])
+
+    assert await mgr.reset(KEY, ends_conversation=True) is True
+    await _settle()
+
+    assert key not in mgr._sessions, "an ending reset starts no successor"
+    assert key not in sl._parked_queue
+    assert not staged.exists()
     await mgr.close_all()
 
 

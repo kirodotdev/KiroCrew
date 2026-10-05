@@ -1331,6 +1331,8 @@ class SessionManager:
                 drain_active_turns_timeout_secs=_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS,
                 unbind_reason_session_destroyed=UNBIND_REASON_SESSION_DESTROYED,
                 first_turn_nothing_armed=FirstTurnState.NOTHING_ARMED,
+                first_turn_fresh=FirstTurnState.FRESH,
+                first_turn_resumed=FirstTurnState.RESUMED,
                 provider_label_claude=PROVIDER_LABEL_CLAUDE,
             ),
             get_unlink_session_queue=lambda: _unlink_session_queue,
