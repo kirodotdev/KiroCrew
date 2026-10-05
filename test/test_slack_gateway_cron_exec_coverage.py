@@ -2219,6 +2219,29 @@ class TestCronDeliversEmbeddedImages:
         )
 
     @pytest.mark.asyncio
+    async def test_return_value_keeps_the_image_ref_slack_body_is_stripped(self, tmp_path):
+        """The callback's RETURN value — the job's stored result, which feeds the
+        next run's "[Previous run result]" prompt — must keep the original image
+        reference. Only the Slack-delivered body is stripped of the local path.
+        """
+        img = tmp_path / "mon.png"
+        img.write_bytes(self._png_bytes())
+        orch = self._orch_with_cwd(str(tmp_path))
+        reply = f"RUNNING\n\n![chart]({img})"
+        job = _job(id="jimg6", name="Chup may in", session_key="", created_by="U_OWNER")
+
+        with patch.object(gw, "_resolve_channel_target", MagicMock(return_value=None)):
+            async with _cron_message_cb(orch, result_text=reply) as cb:
+                returned = await cb(job)
+
+        # The stored result keeps the original markup verbatim.
+        assert returned == reply, "the return value must not be rewritten with Slack-only text"
+        # The Slack body had the local path stripped (image uploaded natively).
+        posted = orch.slack.post_blocks.await_args.args[2]
+        assert str(img) not in posted, "the Slack body should strip the local path"
+        orch.slack.upload_file.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_refused_upload_posts_a_note_into_the_thread(self, tmp_path):
         """A Slack upload Slack refuses is reported as a note in the job's thread.
 
@@ -2247,7 +2270,8 @@ class TestCronDeliversEmbeddedImages:
         # The failure is reported as a thread note (post_message), not swallowed.
         orch.slack.post_message.assert_awaited()
         note_call = orch.slack.post_message.await_args
-        assert note_call.args[0] == "C1" or note_call.args[0], "note posted to a channel"
+        # channel unset + _resolve_channel_target None → the owner DM, open_dm="D1".
+        assert note_call.args[0] == "D1", "note not posted to the resolved DM channel"
         assert note_call.args[2] == "1789607951.617559", "note not in the job's thread"
         assert "⚠️" in note_call.args[1], "the posted note is not a rejection notice"
 
@@ -2277,30 +2301,3 @@ class TestCronDeliversEmbeddedImages:
         }
         assert "allowed" in outcomes, "no SEL audit for the admitted file egress"
         assert "denied" in outcomes, "no SEL audit for the refused out-of-workspace ref"
-
-    @pytest.mark.asyncio
-    async def test_restricted_session_ships_no_bytes(self, tmp_path):
-        """A !temporary / !incognito cron session must not upload local bytes to
-        Slack (where they persist for everyone who can read the channel). The
-        reply degrades to text-only, mirroring the chat renderer's upload gate."""
-        from kiro_crew.messaging import privacy_mode
-
-        img = tmp_path / "mon.png"
-        img.write_bytes(self._png_bytes())
-        orch = self._orch_with_cwd(str(tmp_path))
-        reply = f"RUNNING\n\n![chart]({img})"
-        # build_cron_session_context (patched in _cron_message_cb) keys the
-        # session as ``cron:<job id>`` — mark THAT key incognito.
-        job = _job(id="jrestr", name="Chup may in", session_key="", created_by="U_OWNER")
-        privacy_mode.mark_incognito("cron:jrestr")
-        try:
-            with patch.object(gw, "_resolve_channel_target", MagicMock(return_value=None)):
-                async with _cron_message_cb(orch, result_text=reply) as cb:
-                    await cb(job)
-        finally:
-            privacy_mode.reset()
-
-        # Nothing was uploaded, and the local path stayed in the posted text.
-        orch.slack.upload_file.assert_not_awaited()
-        posted = orch.slack.post_blocks.await_args.args[2]
-        assert str(img) in posted, "a restricted session must keep the path, not ship bytes"

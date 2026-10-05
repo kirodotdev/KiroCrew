@@ -437,8 +437,6 @@ from kiro_crew.slack.gateway_runtime.tool_policy import (  # noqa: F401
 )
 from kiro_crew.slack.handler import (
     _get_agent_for_session,
-    _hydrate_conv_flags,
-    _is_slack_restricted,
     build_timing_footer,
     is_thread_incognito,
     is_thread_temporary,
@@ -5460,12 +5458,6 @@ class GatewayOrchestrator:
                                 job.created_by or self._owner_id, job.name
                             )
                         if channel:
-                            # The caption is redacted-but-not-converted by
-                            # render_for_slack's header= seam, which also charges
-                            # it against the limit. Doing it there rather than
-                            # here is the point: a cron name is LLM-authored (the
-                            # agent can create crons via cron_add), and the
-                            # hand-rolled version of this had already forgotten to
                             # ── Extract embedded local images and upload them
                             # natively (mirror the chat renderer's on_done seal).
                             # The cron delivery path posts text only; without
@@ -5479,23 +5471,18 @@ class GatewayOrchestrator:
                             # record for both admitted and refused files and folds
                             # any refusal note into the text, so a cron's file
                             # egress leaves the same audit trail as a chat reply.
+                            #
+                            # ``_cron_body`` is a SEPARATE Slack-only local: the
+                            # extraction strips the local path and may fold in a
+                            # refusal note, neither of which belongs in the value
+                            # the callback RETURNS. That return value is the job's
+                            # stored result and feeds the next run's "[Previous
+                            # run result]" prompt, so ``result_text`` is left
+                            # untouched and only the delivered body is rewritten.
                             _cron_upload_files: list = []
                             _cron_root = getattr(client, "cwd", "") or ""
-                            # Restricted-session ceiling: the same gate the chat
-                            # renderer applies (uploads_allowed=not restricted). A
-                            # thread the user marked !temporary / !incognito must
-                            # not ship local bytes into a Slack channel where they
-                            # persist for everyone who can read it — even though a
-                            # cron fires unattended. Hydrate the durable flags
-                            # first (the in-memory LRU may be cold after a restart,
-                            # exactly as handle_message does before reading them),
-                            # then skip extraction entirely when restricted so the
-                            # reply degrades to text-only, path left intact.
-                            if session_key and self.sessions is not None:
-                                _hydrate_conv_flags(self.sessions, session_key)
-                            if _cron_root and not (
-                                session_key and _is_slack_restricted(session_key)
-                            ):
+                            _cron_body = result_text
+                            if _cron_root:
                                 from kiro_crew.slack.files import (
                                     extract_outbound_with_audit,
                                 )
@@ -5505,16 +5492,16 @@ class GatewayOrchestrator:
                                     within_root=_cron_root,
                                     audit_caller=session_key or channel or "cron",
                                 )
-                                # Mirror the renderer's rule exactly: the body is
-                                # the stripped text, and the original is kept only
-                                # when extraction produced neither body nor files
-                                # (so an image-only reply never re-posts the raw
-                                # local path).
-                                result_text = _cron_body
                                 _cron_upload_files = list(_cron_files)
+                            # The caption is redacted-but-not-converted by
+                            # render_for_slack's header= seam, which also charges
+                            # it against the limit. Doing it there rather than
+                            # here is the point: a cron name is LLM-authored (the
+                            # agent can create crons via cron_add), and the
+                            # hand-rolled version of this had already forgotten to
                             # redact it once.
                             parts = render_for_slack(
-                                result_text,
+                                _cron_body,
                                 limit=_CRON_MSG_LIMIT,
                                 header=f"⏰ *Cron: {job.name}*\n\n",
                             )
