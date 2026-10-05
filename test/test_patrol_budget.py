@@ -93,19 +93,20 @@ class TestCheck:
         assert code == 0 and result["ok"]
 
     def test_long_interval_few_cycles_is_refused_with_a_fix(self, pb):
-        # The reported failure: 30 minutes x 24 cycles ends after 12 h of a 24 h budget.
+        # The reported failure: 30 minutes x 24 cycles ends after 12 h of a 24 h
+        # budget, and 30 minutes is past the conductor's 900 s ceiling as well.
         result, code = pb.check(1800, 24, 86400)
         assert code == 20
         s = result["suggest"]
-        assert s["interval_secs"] == 1800 and s["max_cycles"] == 48
+        assert s["interval_secs"] == 900 and s["max_cycles"] == 96
         assert s["interval_secs"] * s["max_cycles"] >= s["max_runtime_secs"] == 86400
         assert pb.check(s["interval_secs"], s["max_cycles"], s["max_runtime_secs"])[1] == 0
 
     @pytest.mark.parametrize(
-        "interval,cycles,runtime", [(600, 1, 600), (900, 1, 300), (1800, 2, 3600), (20, 10, 100)]
+        "interval,cycles,runtime", [(900, 2, 3600), (900, 4, 3000), (600, 10, 5000)]
     )
     def test_interval_must_fit_the_renewal_window(self, pb, interval, cycles, runtime):
-        # 1800 s x 2 cycles for 3600 s: the one cycle shows 50% left, the next
+        # 900 s x 2 cycles for 3600 s: the one cycle shows 75% left, the next
         # tick is past the deadline, so the loop never sees `10% or less left`.
         result, code = pb.check(interval, cycles, runtime)
         assert code == 20
@@ -121,19 +122,64 @@ class TestCheck:
         budget = {"cycle": 1, "max_cycles": huge, "runtime_left": huge, "max_runtime_secs": huge}
         assert pb.renew(budget, 240, 86400, open_items=1)[1] in (10, 30)
 
-    def test_interval_is_clamped_to_the_server_range(self, pb):
-        assert pb.check(3600, 24, 86400)[1] == 0
-        result, code = pb.check(5, 100, 400)
-        assert code == 20 and result["suggest"]["interval_secs"] == 15
+    @pytest.mark.parametrize(
+        "interval,clamped", [(15, 300), (299, 300), (901, 900), (1800, 900), (86400, 900)]
+    )
+    def test_interval_outside_the_policy_band_is_refused_and_clamped(self, pb, interval, clamped):
+        # 300..900 s, even where the server would accept the value.
+        result, code = pb.check(interval, 1000, 86400)
+        assert code == 20
+        assert any("300..900" in p for p in result["problems"])
+        s = result["suggest"]
+        assert s["interval_secs"] == clamped
+        assert pb.check(s["interval_secs"], s["max_cycles"], s["max_runtime_secs"])[1] == 0
+
+    @pytest.mark.parametrize("interval", [300, 600, 900])
+    def test_interval_inside_the_policy_band_passes(self, pb, interval):
+        assert pb.check(interval, 1000, 86400)[1] == 0
+
+    @pytest.mark.parametrize("runtime", [3000, 3600, 4000, 8999])
+    def test_a_short_runtime_keeps_its_value_and_shortens_the_interval(self, pb, runtime):
+        # The runtime is the user's time budget: only the interval moves.
+        result, code = pb.check(900, 1000, runtime)
+        assert code == 20
+        s = result["suggest"]
+        assert s["max_runtime_secs"] == runtime
+        assert pb.POLICY_MIN_INTERVAL_SECS <= s["interval_secs"] == runtime // 10
+        assert pb.check(s["interval_secs"], s["max_cycles"], s["max_runtime_secs"])[1] == 0
+
+    @pytest.mark.parametrize(
+        "interval,cycles,runtime", [(300, 10, 1000), (600, 1, 600), (900, 1, 300), (20, 10, 2999)]
+    )
+    def test_a_runtime_too_short_for_the_floor_is_refused_not_stretched(
+        self, pb, interval, cycles, runtime
+    ):
+        # 10% of anything under 3000 s is under the 300 s floor, so no interval
+        # fits. The user's runtime is never raised: refuse and let them choose.
+        result, code = pb.check(interval, cycles, runtime)
+        assert code == 21 and not result["ok"]
+        assert result["suggest"] is None
+        assert any("ask the user for a longer runtime" in p for p in result["problems"])
+
+    def test_a_too_short_runtime_exits_21_from_the_command_line(self, pb, capsys):
+        code = pb.main(
+            ["check", "--interval-secs", "300", "--max-cycles", "10", "--max-runtime-secs", "1000"]
+        )
+        assert code == 21
+        assert json.loads(capsys.readouterr().out)["suggest"] is None
+
+    def test_policy_band_sits_inside_the_server_range(self, pb):
+        assert pb.SERVER_MIN_INTERVAL_SECS <= pb.POLICY_MIN_INTERVAL_SECS == 300
+        assert pb.POLICY_MAX_INTERVAL_SECS == 900 <= pb.SERVER_MAX_INTERVAL_SECS
 
     def test_runtime_beyond_the_cycle_ceiling_is_shortened(self, pb):
-        # 90 s x 1000 cycles covers only 90000 s, so a 3-day ask is cut to that.
-        result, code = pb.check(90, 960, 259200)
+        # 300 s x 1000 cycles covers only 300000 s, so a 7-day ask is cut to that.
+        result, code = pb.check(300, 960, 604800)
         assert code == 20
         assert result["suggest"] == {
-            "interval_secs": 90,
+            "interval_secs": 300,
             "max_cycles": 1000,
-            "max_runtime_secs": 90000,
+            "max_runtime_secs": 300000,
         }
 
     @pytest.mark.parametrize(
@@ -200,7 +246,7 @@ class TestRenew:
         assert code == 30 and result["action"] == "ask_user"
 
     def test_check_suggestion_at_the_cycle_ceiling_is_not_renewed(self, pb):
-        # check's own answer for a 3-day ask at 90 s is already at 1000 cycles.
+        # check caps a long ask at a short interval at exactly 1000 cycles.
         budget = {"cycle": 950, "max_cycles": 1000, "runtime_left": 5000, "max_runtime_secs": 90000}
         assert pb.renew(budget, 1000, 90000, open_items=1)[1] == 30
 

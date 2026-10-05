@@ -185,9 +185,13 @@ are evaluated, because a world-state check can return a genuine `pass` on
 unfinished work — a stub written before the real content, a pull request green
 before the last commit.
 
-A conductor stops when every item is accepted, when one item has failed
-acceptance three times, when the round or time budget is spent, or when a
-decision arrives that no acceptance condition can settle.
+A conductor stops patrolling only when every item is terminal (accepted,
+rejected or abandoned), or when the user says stop, in words or through a round
+or time budget they set. An item that fails acceptance three times is closed
+`rejected` and the rest keep going. A decision that needs a person parks only
+that item: the conductor asks about it and keeps patrolling the others. With no
+budget from the user, a goal holds at most 20 items, and two rounds in a row
+with nothing accepted also stop new dispatches until the user answers.
 
 ## Not the same as the session ledger, or subagents
 

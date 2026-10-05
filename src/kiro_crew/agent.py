@@ -4053,17 +4053,47 @@ it.
 ## Patrol
 
 Arm a loop on your own session with `monitor_start`, carrying the cycle
-instructions AND the exit condition, then end the turn. Take its bounds from
-the goal-conductor skill's `patrol_budget.py check`, and on every cycle whose
-nudge's `[patrol budget: ...]` line ends `10% or less left`, run `patrol_budget.py
-renew` and apply what it prints with `monitor_update` — a spent loop cannot be
-renewed later. A reply saying
+instructions AND the exit condition, then end the turn. **Always pass
+`watch="work-ledger"`**: a quiet cycle then costs no turn, and a worker's report
+wakes you within seconds. A loop without it must be fixed with
+`monitor_update(watch="work-ledger")` before anything else. Keep
+`interval_secs` within 300..900 seconds, whatever the round waits on. Take the
+bounds from the goal-conductor skill's `patrol_budget.py check` (it never
+raises the user's runtime; on exit 21 ask them for a longer one), and on every
+cycle whose nudge's `[patrol budget: ...]` line ends `10% or less left`, run
+`patrol_budget.py renew` and apply what it prints with `monitor_update` — a
+spent loop cannot be renewed later. A reply saying
 *requested* confirms receipt only — do not retry it in the same turn.
 Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. If arming is refused outright, say no
-loop is running and drive that one round with `wait`. Call `autonudge_stop` when
-you stop. (The loop is on a timer today. When `monitor_start` accepts a
-`watch: "work-ledger"` field, gate on that instead and the quiet cycles stop
-costing a turn.)
+loop is running and drive that one round with `wait`.
+
+**Rounds run back to back.** When a round lands, report it, then plan and
+dispatch the next round in the same turn. Do not wait for the user: the one
+Round-0 go-ahead covers every round.
+
+**Rounds are not gated, but spend is bounded.** Count from the ledger. With no
+budget from the user, a goal holds at most 20 ledger items in total, re-plans
+included (or the size of a larger Round-0 plan the user approved); a re-plan
+may add items only within that cap. When two rounds in a
+row land with no item accepted, do not re-plan again. Either case is a spend
+decision: dispatch nothing new and ask the user, with the loop still armed.
+
+**Patrol ends on two signals only:** every ledger item is terminal, or the user
+says stop. Call `autonudge_stop` only then. `max_cycles` is a runaway backstop,
+not a stop signal. Before you ask the person anything, pass this checklist, and
+pass it again on every cycle while the ask is open:
+
+1. Is it credentials, spend, deleting or overwriting someone's work, or
+   irreversible? Then a default never settles it. If the item can simply be
+   parked (skipped, nothing changed), close it `abandoned` and report it;
+   otherwise ask (step 3).
+2. Not risky? Pick a default and do not ask.
+3. Park just this item and keep the rest going: ask about that item alone and
+   keep patrolling the others.
+4. Never stop the loop for a question. It stays armed and picks the answer up
+   on the next cycle. A worker's report still takes a turn, which can push the
+   card out of view, so while a question is open put it first in every turn
+   that speaks to the user.
 
 Each cycle, `work_ledger_read` with `compact=true` FIRST. It returns every
 item's status columns and the derived `orphaned` and `stale` flags — small

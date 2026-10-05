@@ -392,11 +392,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "clean_over_customized": {
         "events": "e4016eba77605642de911e1089127f33fdb4c60579b4fd040df307c601101128",
         "files": {
-            "kirocrew-conductor.json": "6745a4b08dc9735c8818963b7f441675e2556157fd4945e9f2f0559a2f8a7bca",
+            "kirocrew-conductor.json": "e62e54b485d0dd0c80be4fc56fda9b79d07abb9010f78cc4f20344bb094ae96b",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "dde61d9074d56d1916f251eb09660c5854ac5817a1dc66f5de248453654ef2f2",
+            "kirocrew-ledger-conductor.json": "6690e8b11d31fa37f473427d77a756a66910f6bdadd921dca6095e9f88e40e25",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "e7b8464533db3bdfb3f54f722e8cbafe2af0748854c7bbfefc1d1102521bd358",
             "kirocrew-research.json": "c781dcdfec5610e95921c72f86a6fd8e82e93a7e9bfcc67011e126d579445a02",
@@ -411,11 +411,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "customized": {
         "events": "ff8139f99f8e5e4b35687ef3b53b613e4af6b12f27c340c749ff2f5ea483ecc5",
         "files": {
-            "kirocrew-conductor.json": "6745a4b08dc9735c8818963b7f441675e2556157fd4945e9f2f0559a2f8a7bca",
+            "kirocrew-conductor.json": "e62e54b485d0dd0c80be4fc56fda9b79d07abb9010f78cc4f20344bb094ae96b",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "dde61d9074d56d1916f251eb09660c5854ac5817a1dc66f5de248453654ef2f2",
+            "kirocrew-ledger-conductor.json": "6690e8b11d31fa37f473427d77a756a66910f6bdadd921dca6095e9f88e40e25",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "e7b8464533db3bdfb3f54f722e8cbafe2af0748854c7bbfefc1d1102521bd358",
             "kirocrew-research.json": "c781dcdfec5610e95921c72f86a6fd8e82e93a7e9bfcc67011e126d579445a02",
@@ -430,11 +430,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "forks": {
         "events": "10a993d77232f33f21f31d7aa0f7ae9297d826438f2355be401270358b26178e",
         "files": {
-            "kirocrew-conductor.json": "96f7570b3a408d11b8692c5aae35ab36fdca58250821de673e694c025fe61753",
+            "kirocrew-conductor.json": "a4920a6cce6eb75d3e456ede145d56f30a14a9438552e12fc78a642a90ff32a0",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "1238c4d7d65e84dec8feb3d8c601b63c1260b2552e7d813aee321d58bb27f4d7",
+            "kirocrew-ledger-conductor.json": "0f5594fc0ffa1a75937dadd6f69cf75cb179e5a0297a2e9286f2c16fd1482be4",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "83df0d741b96f4e4ac8b37b2108411957af3d78d91737dc838060bdd742f3850",
             "kirocrew-research.json": "71650a51e436a8bea81e1afc66421d70d98ba7072c97f4f3447961578da84dd5",
@@ -451,11 +451,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "fresh": {
         "events": "b2435da9299aec1e692da8225eb50db021d586c221eaa8e54b980598c7ae89c9",
         "files": {
-            "kirocrew-conductor.json": "96f7570b3a408d11b8692c5aae35ab36fdca58250821de673e694c025fe61753",
+            "kirocrew-conductor.json": "a4920a6cce6eb75d3e456ede145d56f30a14a9438552e12fc78a642a90ff32a0",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "1238c4d7d65e84dec8feb3d8c601b63c1260b2552e7d813aee321d58bb27f4d7",
+            "kirocrew-ledger-conductor.json": "0f5594fc0ffa1a75937dadd6f69cf75cb179e5a0297a2e9286f2c16fd1482be4",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "83df0d741b96f4e4ac8b37b2108411957af3d78d91737dc838060bdd742f3850",
             "kirocrew-research.json": "8c4618a99d16f0341bdd2a1f6fe425439ad0c264307b79c1f3c771ac8dba392a",
@@ -470,11 +470,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "governed": {
         "events": "1d7b1bc070305b97dd0158857e18eeaa38fd69f4c397e13e99a55f539f2bff9c",
         "files": {
-            "kirocrew-conductor.json": "36c5fdd13765c6c8519e7115c3f653e963a5c1f1b3cc9f1c6eeb1a1cd71bb65f",
+            "kirocrew-conductor.json": "6e4178625e0a9cfcb26f9fcf534b5ece27f6e4107cb4888b1de30096011b4144",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "c56ee41d5b73f5376161b3ed89df29c72c4b6400fa503d73319d4b97eac3d282",
+            "kirocrew-ledger-conductor.json": "c6ff00ba89e498efa8657d49e31f80c927b951ed67316cf8b38a5990e1db6c13",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "e7b8464533db3bdfb3f54f722e8cbafe2af0748854c7bbfefc1d1102521bd358",
             "kirocrew-research.json": "868abadef31cc73281591c81d863818483bd3c010f5e53595980df0741e7a2f7",
@@ -489,11 +489,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "object_hooks": {
         "events": "bdf18bf5093e7d69be03fba107e46b553e77a706c421f1471ecbd6f9f475c956",
         "files": {
-            "kirocrew-conductor.json": "2833507c5dc6164428a1e1ad9fce5777b57ac763103266fea0779f90c4eacea3",
+            "kirocrew-conductor.json": "98c298897fe7787a73d87a0784f32f244d446bc87e38df00e7cb7ed911650be3",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "0c17465a070baa2ad7c45fee6444a0f1f6bc020c931eb9f95bec4a0c6a79ce7e",
+            "kirocrew-ledger-conductor.json": "d5c206fad817f7d600b9d7acff8fdec9062594a011ea44984671ef2de2ed08f3",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "824d65e322e65a0b1b1023093e15cef29427bfea9ed59c4e119bd61aa653dabb",
             "kirocrew-research.json": "d03d68acf6c38bede3cce369ea89bfc6d4fdd8c25017a0128cd4cbb659e169b5",
@@ -508,11 +508,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "registry_mode": {
         "events": "b2435da9299aec1e692da8225eb50db021d586c221eaa8e54b980598c7ae89c9",
         "files": {
-            "kirocrew-conductor.json": "3ec6f4930e439c9ef36901e87d86293fcb10ee6e9accf119a0a5abcd117867f9",
+            "kirocrew-conductor.json": "5fb43b6667f116c5f594d18eee6619b193af792b8c6a8cf954846927e6a6f4bf",
             "kirocrew-guest.json": "2423a7b447fbcedec2a64ab54a89d181cb2357456c8ddcfc189dc2afe3525780",
             "kirocrew-heartbeat.json": "6dbd5042238c4b0565f250dd4e235f0f77b01f7d7e6091a127a29ec25e183cc3",
             "kirocrew-knowledge.json": "5275c0f70b6b42581c9c9841a572c16673b3a5ede1317936f4d4d870e2a883a0",
-            "kirocrew-ledger-conductor.json": "11d80be0320a3d98fb88335a2795b34206461f7b55c1c05b93abc16ce31ef421",
+            "kirocrew-ledger-conductor.json": "efa1fe86750606a97b742b4803da930a20325c2a0ab5c28e9e67dd0cae808966",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "6d887a38bf7a907005ed2d04be5e35a66e3caae982769eef378b640340f489bd",
             "kirocrew-research.json": "76f3e18d27af2265cfd299f0130641f6e8afbaf2eb548371a297d25ceb7d7a35",
@@ -527,11 +527,11 @@ GOLDEN: dict[str, dict[str, Any]] = {
     "user_hooks": {
         "events": "16eedef4f21d31a0c93ab48f5c6a1ad3757c21474e2e282084c791e565a2f871",
         "files": {
-            "kirocrew-conductor.json": "8aaec096e2c4321549ec3ecdc2557e03cb30a23a0ca2842053f16ad6a1d0c522",
+            "kirocrew-conductor.json": "60263e4dd5979ddc9bebaa9978fe142db8d7376a3c6604ab30a5e41b1d08363e",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
             "kirocrew-knowledge.json": "efcde26b5961417a7c9ed665ee20038461b5283b74099423cb8ee474400335f5",
-            "kirocrew-ledger-conductor.json": "421520f515e463fe12edd167b1a12ebc9caf29c413ee10759fab9a99a6ee2607",
+            "kirocrew-ledger-conductor.json": "c6efa94371d60dad5004d0a4a950f955f60f3982b3308ff85dd0940bcd138ddb",
             "kirocrew-lite.json": "0fda63413108908840a34020f9b11d1418f283a1dca92d14a748f8e25fe3ebee",
             "kirocrew-pipeline-conductor.json": "b409adbdf10da3eb7160fbeef3ba48ac8c8967d7f607ffe1370778ab36595fd8",
             "kirocrew-research.json": "21034594ecb069270e769451c739c90b9907a6ed67bb938f6efb9a5bd802d7ff",

@@ -17,11 +17,17 @@ Usage:
 Each mode prints one JSON object on stdout. Stdlib only.
 
 ``check`` - run BEFORE ``monitor_start`` / ``monitor_update``.
-    Rule: ``interval x max_cycles >= max_runtime_secs``, so the time budget - not the
-    cycle count - is what ends the loop, and ``interval <= 10% of max_runtime_secs``,
-    so a cycle always lands in the renewal window. On failure ``suggest`` carries bounds
-    that pass.
-    Exit: 0 ok, 20 refused (use ``suggest``), 2 bad arguments.
+    Rule: ``interval_secs`` is 300..900 (conductor patrol policy: a worker's
+    report wakes a ``watch="work-ledger"`` loop early, so a longer interval only
+    delays the re-check of a silent fleet), ``interval x max_cycles >=
+    max_runtime_secs``, so the time budget - not the cycle count - is what ends
+    the loop, and ``interval <= 10% of max_runtime_secs``, so a cycle always lands
+    in the renewal window. On failure ``suggest`` carries bounds that pass.
+    The user's runtime is never raised: a too-long interval is shortened, down
+    to the 300 s floor. A runtime under 3000 s cannot hold even a 300 s
+    interval in its last 10%, so it is refused with ``suggest`` null (exit 21).
+    Exit: 0 ok, 20 refused (use ``suggest``), 21 runtime too short for any
+    passing interval (ask the user for a longer one), 2 bad arguments.
 
 ``renew`` - run only on a cycle whose budget line ends ``10% or less left``.
     Reads what is left from the header the gateway already prints, so the
@@ -54,6 +60,12 @@ from fractions import Fraction
 SERVER_MAX_CYCLES = 1000
 SERVER_MIN_INTERVAL_SECS = 15
 SERVER_MAX_INTERVAL_SECS = 86400
+
+#: Conductor patrol interval band, inside the server range. Below 300 s a
+#: silent fleet costs a turn too often; above 900 s a missed wake leaves live
+#: work unread for too long.
+POLICY_MIN_INTERVAL_SECS = 300
+POLICY_MAX_INTERVAL_SECS = 900
 
 #: Longest total runtime a conductor may give itself, renewals included: 7 days.
 #: Tighter than the server's own ceiling on purpose; past it the user decides.
@@ -88,10 +100,11 @@ def _emit(obj: dict, code: int) -> int:
 def check(interval: int, cycles: int, runtime: int) -> tuple[dict, int]:
     """Validate one set of loop bounds; suggest a passing set when refused."""
     problems: list[str] = []
-    good_interval = min(max(interval, SERVER_MIN_INTERVAL_SECS), SERVER_MAX_INTERVAL_SECS)
+    good_interval = min(max(interval, POLICY_MIN_INTERVAL_SECS), POLICY_MAX_INTERVAL_SECS)
     if interval != good_interval:
         problems.append(
-            f"interval_secs must be {SERVER_MIN_INTERVAL_SECS}..{SERVER_MAX_INTERVAL_SECS}"
+            f"interval_secs must be {POLICY_MIN_INTERVAL_SECS}..{POLICY_MAX_INTERVAL_SECS}"
+            " for conductor patrol"
         )
     if not 1 <= runtime <= POLICY_MAX_RUNTIME_SECS:
         problems.append(f"max_runtime_secs must be 1..{POLICY_MAX_RUNTIME_SECS}")
@@ -109,10 +122,20 @@ def check(interval: int, cycles: int, runtime: int) -> tuple[dict, int]:
             "cycle lands in the renewal window"
         )
     clamped_cycles = min(max(cycles, 1), SERVER_MAX_CYCLES)
+    if not _within_share(POLICY_MIN_INTERVAL_SECS, good_runtime):
+        # Even the floor interval does not fit this runtime's last 10%. The
+        # runtime is the user's time budget, so it is never raised here: refuse
+        # with no suggestion and let the user choose a longer one.
+        problems.append(
+            f"max_runtime_secs below {math.ceil(POLICY_MIN_INTERVAL_SECS / RENEW_THRESHOLD)}"
+            f" cannot hold a {POLICY_MIN_INTERVAL_SECS} s interval in its renewal"
+            " window; ask the user for a longer runtime (it is never raised for them)"
+        )
+        return {"ok": False, "problems": problems, "suggest": None}, 21
     if not _within_share(good_interval, good_runtime):
-        # Keep the operator's runtime; shorten the interval to fit the window.
-        good_interval = max(SERVER_MIN_INTERVAL_SECS, int(RENEW_THRESHOLD * good_runtime))
-        good_runtime = max(good_runtime, math.ceil(good_interval / RENEW_THRESHOLD))
+        # Keep the user's runtime; shorten the interval to fit the window. The
+        # floor fits (checked above), so this never drops below it.
+        good_interval = max(POLICY_MIN_INTERVAL_SECS, int(RENEW_THRESHOLD * good_runtime))
     good_cycles = max(clamped_cycles, math.ceil(good_runtime / good_interval))
     if good_cycles > SERVER_MAX_CYCLES:
         # Even the server's cycle ceiling cannot cover this runtime at this
