@@ -1253,9 +1253,10 @@ class ScriptContext:
         """Call an MCP tool, starting the server subprocess on the first call to it.
 
         The server lives for the run, not for one call: :class:`KeptMcpServers`
-        keeps a server whose call succeeded for this run's next call to it, so a
-        server that signs in to a service when it starts signs in once per run
-        rather than once per call. :meth:`close` stops the kept servers.
+        keeps a server that answered the call (with a result or a tool error)
+        for this run's next call to it, so a server that signs in to a service
+        when it starts signs in once per run rather than once per call.
+        :meth:`close` stops the kept servers.
 
         Args are scanned for credential/URL leakage before passing to the
         sandboxed MCP server subprocess.
@@ -1352,6 +1353,10 @@ class ScriptContext:
 
 
 # ── MCP Tool Bridge ──
+
+
+class McpToolError(RuntimeError):
+    """A tool call the MCP server answered with an error; the server is still usable."""
 
 
 class McpToolClient:
@@ -1535,12 +1540,12 @@ class McpToolClient:
     def call_tool(self, name: str, arguments: dict) -> str:
         r = self._rpc("tools/call", {"name": name, "arguments": arguments})
         if "error" in r:
-            raise RuntimeError(f"MCP tool error: {r['error']}")
+            raise McpToolError(f"MCP tool error: {r['error']}")
         result = r.get("result", {})
         if result.get("isError"):
             content = result.get("content", [])
             err_text = content[0].get("text", "unknown error") if content else "unknown error"
-            raise RuntimeError(f"MCP tool error: {err_text}")
+            raise McpToolError(f"MCP tool error: {err_text}")
         content = result.get("content", [])
         return content[0].get("text", "") if content else ""
 
@@ -1572,13 +1577,15 @@ class McpToolClient:
 class KeptMcpServers:
     """One MCP server per name, kept across the calls of a run.
 
-    A server whose call succeeds is kept for the run's next call to the same
-    server name, so a server that signs in to a service when it starts signs in
-    once per run rather than once per call. A failed call stops its server and
-    the next call starts a fresh one; a kept server whose process has exited is
-    replaced; a call made while another call to the same server still holds the
-    kept server starts a server of its own, and once both finish only one is
-    kept. :meth:`close` stops every kept server and keeps none afterwards.
+    A server is kept after a call it answered, with a result or with a tool
+    error, for the run's next call to the same server name. So a server that
+    signs in to a service when it starts signs in once per run rather than once
+    per call. A call that fails any other way (the server exited, stopped
+    answering, or wrote no answer) stops its server, and the next call starts a
+    fresh one. A kept server whose process has exited is replaced. A call made
+    while another call to the same server still holds the kept server starts a
+    server of its own, and once both finish only one is kept. :meth:`close`
+    stops every kept server and keeps none afterwards.
     """
 
     def __init__(self, session_key: str = ""):
@@ -1593,7 +1600,11 @@ class KeptMcpServers:
         try:
             if client is None:
                 client = McpToolClient(server, session_key=self._session_key)
-            result = client.call_tool(tool, args)
+            try:
+                result = client.call_tool(tool, args)
+            except McpToolError:
+                kept = self._keep_client(server, client)
+                raise
             kept = self._keep_client(server, client)
             return result
         finally:
