@@ -378,9 +378,10 @@ route, `POST /api/chat/slots/{slot}/fork`) is a thin wrapper — slot lookup, sl
 cap, App Kit ownership, body parsing — around two shared coroutines:
 `resolve_fork_source`, which freezes the parent's memory identity and refuses a
 parent whose persisted mode is unrecognised, and `fork_slot`, which does
-everything from the transcript snapshot (the pending-rewrite flush, the
-consistent read under `_fork_lock`, the rotated-archive rebuild) through the
-child's mint, message copy, save and the deleted-source rollback. The
+everything from the transcript snapshot (taken under `_fork_lock` through
+`transcript_snapshot.read_consistent_transcript` with the `FORK` rules, the
+pending-rewrite flush being the fork's own save; then the rotated-archive rebuild)
+through the child's mint, message copy, save and the deleted-source rollback. The
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
 folder, tags, `forked_from` — is by construction what a person's fork copies

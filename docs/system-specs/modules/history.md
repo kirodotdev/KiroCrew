@@ -577,6 +577,29 @@ no longer destroy older turns.
   empty child. Any published assignment remains attached to that unique key,
   including after a later save failure, so partial history cannot lose its
   recorded owner. This can leave an unused session identity record.
+- **Consistent transcript snapshot** (`dashboard/transcript_snapshot.py`): the fork,
+  the transfer bundle (send and file export) and the bounded slot-detail page read
+  the durable rows off the event loop and pair them with the window rows not yet on
+  disk through one call, `read_consistent_transcript(state, slot, purpose, read, *,
+  persist=, rewrite=, discard=)`. It observes the slot on the loop, awaits the
+  caller's `read`, observes again, and keeps the attempt only when the purpose's
+  witness fields held still; otherwise the attempt is spent. All three share one
+  budget, `SNAPSHOT_ATTEMPTS` (the save's own `_FLUSH_SNAPSHOT_RETRIES`, 4), and
+  spending it raises `SnapshotUnstable` (re-exported by `session_transfer`). The
+  differences between the readers are one table, kept as each reader behaved:
+
+  | Purpose | Witness | Pending rewrite | Boundary ahead of the window | Dirty slot | Deleted session |
+  |---|---|---|---|---|---|
+  | `FORK` | boundary, `_dirty_gen`, length, `_disk_older_count`, `_dirty` | saved through the fork's `rewrite`, then retried | capped restore merges from `_resumed_count`; otherwise `persist` and retry | read as is; the tail carries it | the fork checks after the snapshot |
+  | `TRANSFER` | `_dirty_gen`, boundary, length | refused before and after the read | refused | `persist` before every read | refused before and after the read |
+  | `PAGE` | `_dirty_gen`, `_disk_older_count`, durable older count | read through | read through | read through | not checked |
+
+  The read and the saves stay with each reader -- the fork's plain chained read and
+  its guarded truncating rewrite, the transfer's derivation-seam read and assembly,
+  the page's bounded reader -- and a reader answers a refusal in its own terms: the
+  fork 503 `fork_snapshot_unstable` / 409 `fork_source_deleted`, the transfer
+  `SnapshotUnstable`, the page by falling back to the full reader. A new consistent
+  reader of a slot's transcript adds a purpose row there.
 - **Concurrency**: `_flush_dirty_slots` runs the save in an executor thread while
   `_run_chat` mutates `slot.messages` on the event loop. `slot._lock` is an
   asyncio lock (unusable from the thread), so the save instead takes a

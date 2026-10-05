@@ -437,9 +437,10 @@ async def test_a_pending_rewrite_does_not_fork_discarded_turns(tmp_path, monkeyp
     post-await re-check PASSES because nothing moved during the read: it measures
     stability, not correctness.
 
-    ``session_transfer._guard_snapshot`` refuses on exactly this flag for exactly
-    this reason; ``chat_fork`` had no equivalent. The fork lock does not help --
-    ``chat_fork.py:147`` is its only acquirer, so no rewind path takes it.
+    The transfer's snapshot rules (``transcript_snapshot.TRANSFER``) refuse on
+    exactly this flag for exactly this reason; the fork's save it instead. The fork
+    lock does not help -- ``fork_slot`` is its only acquirer, so no rewind path
+    takes it.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)

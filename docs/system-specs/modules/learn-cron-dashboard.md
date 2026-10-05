@@ -1292,7 +1292,9 @@ specified compatibility change.
   these endpoint families, one each:
   - `source_links` — the source-link list and the field-scoped unlink;
   - `slot_detail` — the slot list and the slot detail read: the bounded transcript
-    page, its durable-prefix and live-window merge, and the context meter fields;
+    page, its durable-prefix and live-window merge, and the context meter fields.
+    The page's attempts run through `transcript_snapshot.read_consistent_transcript`
+    under its `PAGE` rules (see `history.md`, Consistent transcript snapshot);
   - `resume` — resume from History (the request-free core
     `resume_slot_from_history`, materialisation, hydration, window reconciliation);
   - `slot_lifecycle` — the shared close path (`close_slot`) and delete, the idle

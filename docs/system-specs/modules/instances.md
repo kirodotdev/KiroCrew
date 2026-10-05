@@ -1597,6 +1597,8 @@ Copies one dashboard session from this instance to a connected peer. The user
 picks it from any session menu: **Send a copy to ▸ `<instance>`**.
 
 Code: `src/kiro_crew/dashboard/session_transfer.py` (bundle + importer),
+`src/kiro_crew/dashboard/transcript_snapshot.py` (the bundle's consistent
+transcript read, under its `TRANSFER` rules),
 `SshTunnelManager.send_session_bundle` (delivery),
 `handlers_instances.api_instances_send_session` (control plane), and the frontend
 `SendToInstanceSubmenu` mounted inside the shared `SessionActionsMenu`.

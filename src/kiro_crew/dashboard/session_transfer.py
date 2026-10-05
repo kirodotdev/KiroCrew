@@ -127,6 +127,12 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState, _ChatSlot
 from kiro_crew.dashboard.token_auth import effective_request_app
+from kiro_crew.dashboard.transcript_snapshot import (
+    TRANSFER,
+    SlotView,
+    SnapshotUnstable,
+    read_consistent_transcript,
+)
 from kiro_crew.history import (  # noqa: F401 - re-exported to the bundle's callers
     TranscriptBusy,
     TranscriptWithheld,
@@ -275,13 +281,6 @@ _CHUNK_BYTES = 256 * 1024
 #: server-to-server caller sends ``application/json``. Sniffing the bytes keeps
 #: all three working without asking any caller to relabel what it already sends.
 _GZIP_MAGIC = b"\x1f\x8b"
-
-#: How many times to re-take the transcript snapshot when the periodic flush
-#: lands inside the off-loop read. Small on purpose: the flush is 5s-periodic, so
-#: even one interleave is rare and a second is vanishingly unlikely. Exhausting
-#: these falls back to a guaranteed-consistent inline read rather than shipping a
-#: transcript that might be missing turns.
-_SNAPSHOT_ATTEMPTS = 4
 
 #: When this process loaded the module. A staging file older than this cannot
 #: belong to a transfer this process is running, so it was orphaned by a crash
@@ -477,20 +476,6 @@ def write_bundle_file(bundle: dict[str, Any], *, compress: bool) -> Path:
         _rm_import_temps(path)
         raise
     return path
-
-
-class SnapshotUnstable(RuntimeError):
-    """No consistent view of the source transcript could be taken.
-
-    Two causes: the periodic flush kept landing inside the off-loop read, or a
-    rewind/regenerate rewrite is still owed so the on-disk transcript is stale.
-
-    Raised instead of bundling anyway or falling back to a blocking inline read.
-    A transfer is a copy, so failing it is cheap and the caller can retry, whereas
-    shipping the bundle would send the wrong conversation and a synchronous read
-    of a large transcript on the event loop can starve the liveness heartbeat
-    until the watchdog exits the gateway.
-    """
 
 
 #: Roles that make up a visible conversation. Tool/system frames are not carried:
@@ -1093,7 +1078,9 @@ async def build_transfer_bundle_async(
     boundary) as it writes, an unchanged value across the await is positive proof
     that no flush landed: ``history`` then corresponds exactly to
     ``messages[:_disk_window_len]``, so the tail merge is consistent. On a change
-    we retry against the new state. Messages arriving during the await are
+    the snapshot retries against the new state (the attempts, and the rules this
+    builder takes them under, are ``transcript_snapshot.TRANSFER``'s). Messages
+    arriving during the await are
     harmless — they extend the tail we are about to copy, they do not move the
     boundary.
 
@@ -1118,126 +1105,66 @@ async def build_transfer_bundle_async(
     # the loop (pure getattr) and hand it to the thread, so Layer B is read from
     # exactly where the resume path will later look for it.
     sm_key = effective_session_key(slot)
-    # Resolve the Layer B sid HERE, on the loop: the lookup self-prunes the
-    # session map, so it cannot go into the worker thread below (see
-    # _resolve_layer_b_sid). The thread receives only an immutable string.
-    #
-    # SKIP Layer B entirely while a turn is in flight. Layer A records the user's
-    # prompt as soon as it is submitted, but kiro-cli only writes Layer B when the
-    # turn persists -- so a mid-turn bundle pairs a transcript that SHOWS the
-    # prompt with a context that does not contain it, and the peer's
-    # ``session/load`` would resume the model behind its own visible transcript.
-    # That skew is specific to carrying Layer B; Layer A alone has no such
-    # coupling. Degrading to transcript-only is the honest outcome and is already
-    # plumbed end to end -- the import reports ``resume_mode: prefix`` and the
-    # sender's row reads "Sent (transcript only)" -- so the user is told, rather
-    # than being handed a silently divergent copy or a hard failure on a
-    # legitimate action.
-    #
-    # Computed INSIDE the retry loop below, never once up front: a retry happens
-    # precisely because the slot changed, and a prompt starting during a threaded
-    # read is one such change -- so a pre-loop value would let the retry pick up
-    # the new prompt in Layer A while still shipping the pre-turn Layer B, which
-    # is exactly the skew this check exists to prevent.
-    _guard_snapshot(slot)
-    # Persist a dirty slot BEFORE snapshotting. The tail slice only sees messages
-    # at or past the boundary, so an edit made IN PLACE below it — a variant
-    # switch replacing an already-persisted assistant turn — is invisible to it.
-    # If that edit's own save failed, disk still holds the previous response and
-    # the copy would ship it.
-    #
-    # Flushing here is safe because the save advances ``_disk_window_len`` itself,
-    # so afterwards the tail slice is empty and the bundle comes wholly from disk.
-    # Slicing on ``_resumed_count`` instead would duplicate the tail: the save
-    # does NOT touch that counter.
-    #
-    # best_effort=False: a swallowed failure would put us right back to bundling
-    # a stale transcript, so an unpersistable source fails the transfer instead.
-    # The source is otherwise untouched — a flush persists what is already in
-    # memory, it does not change the conversation.
-    for _attempt in range(_SNAPSHOT_ATTEMPTS):
-        # Flush on EVERY attempt, not once before the loop. A retry happens
-        # precisely BECAUSE the slot changed, and that change is unpersisted, so
-        # re-reading disk without flushing first would serialize the superseded
-        # content — the exact staleness this flush exists to prevent.
-        if slot._dirty:
-            # The flush is itself an await, so an edit can land inside it: the
-            # save writes the snapshot it captured on entry, leaving disk on the
-            # EARLIER content while the slot is already newer. Pin the generation
-            # across this await and spend an attempt rather than trusting it.
-            gen_before_save = slot._dirty_gen
-            try:
-                saved = await save_slot_off_loop(state, slot, best_effort=False)
-            except Exception as exc:
-                logger.warning(
-                    "session_transfer: could not persist slot=%s before bundling",
-                    slot.key,
-                    exc_info=True,
-                )
-                raise SnapshotUnstable("the session could not be persisted before copying") from exc
-            if not saved:
-                # Delete-won: the session was permanently deleted while the
-                # flush awaited the lock. Bundling would ship the destroyed
-                # conversation to the peer (or an empty shell of it), so the
-                # transfer fails instead of answering success.
-                logger.warning(
-                    "session_transfer: slot=%s was permanently deleted during "
-                    "the pre-bundle flush; refusing the transfer",
-                    slot.key,
-                )
-                raise SnapshotUnstable("the session was permanently deleted")
-            if slot._dirty_gen != gen_before_save:
-                continue
-            _guard_snapshot(slot)
-        boundary_before = slot._disk_window_len
-        # ``_dirty_gen`` is the primary marker: a monotonic counter the ``_dirty``
-        # setter bumps centrally, so ANY mutation that marks the slot dirty moves
-        # it — including an edit made IN PLACE, like a variant switch replacing an
-        # already-persisted turn. Neither the boundary nor the message count moves
-        # for that, so without this the copy could carry a superseded response.
-        gen_before = slot._dirty_gen
-        # The boundary catches the one mutation gen does NOT: a completed flush
-        # advances ``_disk_window_len`` without marking the slot dirty.
+
+    async def _flush() -> None:
+        # Persist a dirty slot BEFORE every read. The tail slice only sees messages
+        # at or past the boundary, so an edit made IN PLACE below it — a variant
+        # switch replacing an already-persisted assistant turn — is invisible to
+        # it, and if that edit's own save failed, disk still holds the previous
+        # response. Flushing is safe because the save advances ``_disk_window_len``
+        # itself, so afterwards the tail slice is empty and the bundle comes wholly
+        # from disk; slicing on ``_resumed_count`` instead would duplicate the tail,
+        # because the save does NOT touch that counter.
         #
-        # The count is a backstop for any path that mutates ``slot.messages``
-        # without marking dirty. Strictly redundant against a correct dirty-mark,
-        # kept because this snapshot has already been wrong twice by assuming a
-        # single field told the whole story.
-        count_before = len(slot.messages)
-        # Direct delete check, independent of the flush arm above: if the
-        # periodic 5s flush hit the delete-won guard first, it cleared
-        # ``_dirty``, the flush arm here never ran, and the disk read below
-        # would assemble a bundle from a permanently deleted session (its
-        # in-memory tail plus an empty transcript). The ``saved``-check above
-        # only covers a delete observed by THIS builder's own flush.
-        if session_was_deleted(state, slot):
+        # best_effort=False: a swallowed failure would put us right back to bundling
+        # a stale transcript, so an unpersistable source fails the transfer instead.
+        # The source is otherwise untouched — a flush persists what is already in
+        # memory, it does not change the conversation.
+        try:
+            saved = await save_slot_off_loop(state, slot, best_effort=False)
+        except Exception as exc:
             logger.warning(
-                "session_transfer: slot=%s belongs to a permanently deleted "
-                "session; refusing the transfer",
+                "session_transfer: could not persist slot=%s before bundling",
+                slot.key,
+                exc_info=True,
+            )
+            raise SnapshotUnstable("the session could not be persisted before copying") from exc
+        if not saved:
+            # Delete-won: the session was permanently deleted while the flush
+            # awaited the lock. Bundling would ship the destroyed conversation to
+            # the peer (or an empty shell of it), so the transfer fails instead of
+            # answering success.
+            logger.warning(
+                "session_transfer: slot=%s was permanently deleted during "
+                "the pre-bundle flush; refusing the transfer",
                 slot.key,
             )
             raise SnapshotUnstable("the session was permanently deleted")
-        # Snapshot the unpersisted tail (and the slot fields the bundle needs) ON
-        # THE LOOP, so the thread below never touches the slot while the loop
-        # could be appending to it. Everything past this point is plain data.
-        tail = list(slot.messages[boundary_before:])
+
+    async def _read(view: SlotView) -> TransferBundle:
+        # Everything the bundle takes from the slot is captured HERE, on the loop,
+        # in the same breath as the tail the view holds, so the thread below never
+        # touches the slot while the loop could be appending to it. A retry happens
+        # because the slot CHANGED, so a record taken once up front could describe
+        # a model or a policy the shipped transcript never ran under.
         title = slot.title if slot._titled else ""
         agent = slot.agent
-        # Snapshotted per attempt alongside the tail, for the same reason: a
-        # retry happens because the slot CHANGED, so a record taken before the
-        # loop could describe a model or a policy the shipped transcript never
-        # ran under.
-        #
         # The SESSION key is the exception and is passed in pinned. The transcript
         # key was fixed before the flush, so the session the shipped turns ran on
         # is already decided; re-resolving it here would let a rebind landing in
         # the flush await pair this transcript with another session's approval
         # policy.
         source = _snapshot_source_record(state, slot, sm_key) if with_source else None
-        # Layer B eligibility is decided HERE, per attempt, on the loop and in the
-        # same breath as the tail snapshot -- so the transcript and the context we
-        # ship always come from one consistent view of the slot. See the note
-        # above for why a pre-loop value goes stale across a retry.
+        # Layer B eligibility is decided per attempt too. Layer A records the user's
+        # prompt as soon as it is submitted, but kiro-cli only writes Layer B when
+        # the turn persists -- so a mid-turn bundle pairs a transcript that SHOWS
+        # the prompt with a context that does not contain it, and the peer's
+        # ``session/load`` would resume the model behind its own visible
+        # transcript. Degrading to transcript-only is the honest outcome and is
+        # plumbed end to end -- the import reports ``resume_mode: prefix`` and the
+        # sender's row reads "Sent (transcript only)". A value computed before the
+        # first attempt would let a retry pick up a prompt that started during the
+        # read in Layer A while still shipping the pre-turn Layer B.
         mid_turn = bool(getattr(slot, "running", False))
         if not include_layer_b:
             # Withheld because this caller's policy gate resolved false -- the
@@ -1268,17 +1195,21 @@ async def build_transfer_bundle_async(
                 slot.key,
             )
         else:
+            # Resolved on the loop: the lookup self-prunes the session map, so it
+            # cannot go into the worker thread (see _resolve_layer_b_sid). The
+            # thread receives only an immutable string.
             layer_b_sid = _resolve_layer_b_sid(getattr(state, "sessions", None), sm_key)
             layer_b_withheld = False
         # Read AND assemble off the loop. Assembly redacts every assistant turn,
         # and the transcript can run to the bundle cap, so those regex scans are
         # far too much CPU to hold the loop with — the same starvation that
         # exits the gateway via LoopStallWatchdog.
-        bundle = await asyncio.to_thread(
+        return await asyncio.to_thread(
             _read_and_assemble,
             state,
             key,
-            tail,
+            # Never None here: TRANSFER refuses a boundary ahead of the window.
+            view.tail or [],
             title,
             agent,
             origin,
@@ -1286,69 +1217,13 @@ async def build_transfer_bundle_async(
             layer_b_withheld,
             source,
         )
-        # Re-check the guards AFTER the await, not only before it. A rewind or a
-        # mid-stream flush can land during the threaded read, and the boundary
-        # alone does not reveal a rewind: ``_pending_rewrite`` can flip to True
-        # while ``_disk_window_len`` stays put, which would otherwise read as
-        # "stable" and copy turns the user just discarded.
-        #
-        # A bundle this builder does not return carries a Layer B snapshot
-        # nothing else will remove, so every refusal and retry releases it.
-        try:
-            _guard_snapshot(slot)
-            # The deletion check too: the assembly read above is the longest
-            # await in this builder (redaction regexes over the whole
-            # transcript), so a permanent delete can complete inside it — after
-            # the pre-read probe passed — and the bundle in hand is the destroyed
-            # conversation. A delete is permanent, so this is a refusal, not a
-            # retry.
-            if session_was_deleted(state, slot):
-                logger.warning(
-                    "session_transfer: slot=%s was permanently deleted during "
-                    "bundle assembly; refusing the transfer",
-                    slot.key,
-                )
-                raise SnapshotUnstable("the session was permanently deleted")
-        except BaseException:
-            release_bundle_files(bundle)
-            raise
-        if (
-            slot._dirty_gen == gen_before
-            and slot._disk_window_len == boundary_before
-            and len(slot.messages) == count_before
-        ):
-            return bundle
-        release_bundle_files(bundle)
-        logger.debug(
-            "session_transfer: slot %s flushed during the transcript read; retrying",
-            slot.key,
-        )
-    raise SnapshotUnstable(f"transcript snapshot did not settle in {_SNAPSHOT_ATTEMPTS} attempts")
 
-
-def _guard_snapshot(slot: _ChatSlot) -> None:
-    """Refuse to bundle from a slot whose disk view cannot be trusted.
-
-    Called both before and after every awaited read — see the call sites.
-    """
-    # A rewind/regenerate marks the slot ``_pending_rewrite`` and only clears it
-    # once the TRUNCATING rewrite has been written. While it is set, disk still
-    # holds the PRE-EDIT transcript and is longer than the resident window, so the
-    # boundary slice appends nothing and the bundle would carry turns the user
-    # explicitly rewound away.
-    if slot._pending_rewrite:
-        raise SnapshotUnstable("a pending rewrite means the on-disk transcript is stale")
-    # The boundary can also run AHEAD of the resident window, and then the tail
-    # slice silently yields nothing. ``_save_slot_to_history`` sets
-    # ``_disk_window_len = len(window)`` over the RAW window, streaming ``chunk``
-    # rows included; ``_flush_segment`` then reassigns ``slot.messages`` to drop
-    # that trailing chunk run and append the finalized assistant message, without
-    # adjusting the boundary. (Memory trimming keeps the two in step; this does
-    # not.)
-    if slot._disk_window_len > len(slot.messages):
-        raise SnapshotUnstable(
-            "the persisted boundary is ahead of the resident window " "(a flush landed mid-stream)"
-        )
+    # A bundle the snapshot does not return carries a Layer B snapshot nothing else
+    # will remove, so every refusal and retry after the read releases it.
+    snapshot = await read_consistent_transcript(
+        state, slot, TRANSFER, _read, persist=_flush, discard=release_bundle_files
+    )
+    return snapshot.result
 
 
 def _read_and_assemble(
@@ -3196,12 +3071,12 @@ async def _install_arrived_bundle(
     # The cost is one extra ``stat`` per import, which a request already bounded
     # by the live-slot cap can carry.
     #
-    # ``session_was_deleted`` is the module's own witness -- already used twice on
-    # the EXPORT path here, and its docstring names this caller class: one that
-    # republishes a slot's content and so cannot rely on observing the guard's
-    # ``False``, because the periodic flush can reach the guard first and clear
-    # ``_dirty``. Off the loop because it stats and reads metadata; the export
-    # sites call it bare only because the whole builder already runs in a thread.
+    # ``session_was_deleted`` is the save's own witness -- the export path's
+    # snapshot (``transcript_snapshot.TRANSFER``) asks it twice, and its docstring
+    # names this caller class: one that republishes a slot's content and so cannot
+    # rely on observing the guard's ``False``, because the periodic flush can reach
+    # the guard first and clear ``_dirty``. Off the loop because it stats and reads
+    # metadata.
     if await asyncio.to_thread(session_was_deleted, state, slot):
         return await _refuse_as_deleted("the delete witness fired after the finalization tail")
 
