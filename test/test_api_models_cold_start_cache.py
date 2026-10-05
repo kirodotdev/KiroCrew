@@ -167,7 +167,7 @@ def test_concurrent_polls_share_one_spawn(tmp_path):
     spawns = 0
     proc: _GatedProc | None = None
 
-    def _count_spawn(*a, **k):
+    async def _count_spawn(*a, **k):
         nonlocal spawns
         spawns += 1
         return proc
@@ -188,6 +188,9 @@ def test_concurrent_polls_share_one_spawn(tmp_path):
                     agents.api_models(_kiro_request(tmp_path)),
                 )
             assert {a.status, b.status, c2.status} == {503}
+            # Each poll gave up at the request bound. A spawn that raises answers
+            # "model list unavailable" through the generic handler instead.
+            assert [_body(r) for r in (a, b, c2)] == [{"error": "model list timed out"}] * 3
             gate.set()
             if agents._catalog_cache.task is not None:
                 await agents._catalog_cache.task
