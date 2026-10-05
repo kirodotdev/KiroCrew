@@ -117,6 +117,54 @@ def _payload(response: web.Response) -> dict[str, Any]:
     return json.loads(response.body.decode())
 
 
+@pytest.mark.asyncio
+async def test_non_git_source_install_discovers_checkout_before_pod_op(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Agent routes must run the executor-backed discovery tiers before the op."""
+    from kiro_crew.apps.builtins.dev_fleet import repository, runtime
+
+    installed_source = tmp_path / "installed-source"
+    (installed_source / "src" / "kiro_crew").mkdir(parents=True)
+    (installed_source / "pyproject.toml").write_text("[project]\nname = 'kiro-crew'\n")
+    assert not (installed_source / ".git").exists()
+
+    checkout = tmp_path / "home" / "workplace" / "kirocrew"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "src" / "kiro_crew").mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'kiro-crew'\n")
+
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(repository, "_own_source_checkout", lambda: str(installed_source))
+    monkeypatch.setattr(repository, "_candidate_checkouts", lambda: [str(checkout)])
+    monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", True))
+    monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda path: path)
+    monkeypatch.setattr(repository, "_repo_source_hint", lambda: "unused")
+    monkeypatch.setattr(repository, "_DISCOVERY_DONE", False)
+    monkeypatch.setattr(repository, "_DISCOVERY_LOCK", None)
+    monkeypatch.setattr(repository, "MAIN_REPO", "")
+    monkeypatch.setattr(repository, "MAIN_REPO_INFERRED", False)
+    monkeypatch.setattr(repository, "_REPO_INVALID_MSG", None)
+    monkeypatch.setattr(repository, "_LATCHED_CONFIGURED", "")
+    monkeypatch.setattr(runtime, "_GIT_TRUSTED_HELPERS", {})
+
+    async def _noop() -> None:
+        return None
+
+    async def _origin() -> str:
+        return "origin"
+
+    monkeypatch.setattr(repository, "_resolve_base_branch", _noop)
+    monkeypatch.setattr(repository, "_load_fallback_repos", _noop)
+    monkeypatch.setattr(repository, "_upstream_remote", _origin)
+
+    async def _op() -> dict[str, Any]:
+        return {"ok": True, "repo": repository._repo()}
+
+    assert await agent_pod_api._run_op(_op) == {"ok": True, "repo": str(checkout)}
+
+
 @pytest.fixture()
 def granted(monkeypatch: pytest.MonkeyPatch) -> None:
     """The default posture for the tests below: the Dev Fleet app is enabled."""
