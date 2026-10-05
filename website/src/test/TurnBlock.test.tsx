@@ -539,6 +539,60 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
 })
 
 /**
+ * A tool-refusal recovery is queued after the turn's dispatch ends, so it can land
+ * after an answer the user already read, and the reply to it continues the same
+ * turn. Both the answer and the card must survive collapseAll.
+ */
+describe('TurnBlock — answer before a tool-refusal recovery', () => {
+  const renderItem = (it: TurnItem, i: number) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+  const isFolded = (container: HTMLElement, i: number) =>
+    container.querySelector(`[data-testid="item-${i}"]`)?.closest('[style*="overflow"]') != null
+
+  it('keeps the answer and the refusal card visible when a reply follows the card', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Here is the full answer to your question, with every detail the user asked for.', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'inject', content: '[Tool refusal — automatic recovery]\nOne or more tool calls were blocked.', ts: '3', meta: { injectKind: 'recovery' } }, idx: 2 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '4' }, idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'A note on the blocked command: it was an over-block and changes nothing above.', ts: '5' }, idx: 4 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 1)).toBe(false)
+    expect(isFolded(container, 2)).toBe(false)
+    expect(isFolded(container, 4)).toBe(false)
+    expect(isFolded(container, 0)).toBe(true)
+    expect(isFolded(container, 3)).toBe(true)
+    expect(screen.getByRole('button', { name: /Worked through 2 steps/ })).toBeInTheDocument()
+  })
+
+  it('still folds narration that a blocked tool call followed', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: 'Let me check the deployment logs to see why the canary failed.', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'inject', content: '[Tool blocked — reason sent to the agent]\nBlocked by security policy.', ts: '3', meta: {} }, idx: 2 },
+      { kind: 'single', msg: { role: 'inject', content: '[Tool refusal — automatic recovery]\nOne or more tool calls were blocked.', ts: '4', meta: { injectKind: 'recovery' } }, idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Read the logs through an allowed command instead; the error is a stale signing key.', ts: '5' }, idx: 4 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 0)).toBe(true)
+    expect(isFolded(container, 3)).toBe(true)
+    expect(isFolded(container, 4)).toBe(false)
+  })
+
+  it('does not apply to other recovery kinds', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: 'Working through the migration now, starting with the schema and then the data.', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'inject', content: '[Stalled turn — automatic recovery]\nContinue from where you stopped.', ts: '3', meta: { injectKind: 'recovery' } }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Finished the migration: schema and data are both moved and verified.', ts: '4' }, idx: 3 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 0)).toBe(true)
+    expect(isFolded(container, 2)).toBe(true)
+  })
+})
+
+/**
  * chatSlice opens one `thinking` message per reasoning burst (one above each
  * tool step it explains, #4178). A long agentic turn therefore settles into a
  * WALL of collapsed "Thought process" rows once the interleaved tool calls
