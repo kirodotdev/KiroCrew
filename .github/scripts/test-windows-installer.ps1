@@ -42,17 +42,49 @@ public static class KiroInstallerCapture {
     public int Bottom;
   }
 
-  [DllImport("user32.dll")]
+  [DllImport("user32.dll", SetLastError = true)]
   public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
+
+  [DllImport("user32.dll")]
+  public static extern bool IsWindow(IntPtr handle);
+
+  [DllImport("user32.dll")]
+  public static extern bool IsWindowVisible(IntPtr handle);
+
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetDlgItem(IntPtr dialog, int id);
 }
 "@
+
+# The NSIS wizard's Cancel button (IDCANCEL), a direct child of the wizard
+# window; installer.nsh reaches the same control as `GetDlgItem $HWNDPARENT 2`.
+$NsisWizardCancelId = 2
+
+# Whether a handle is the NSIS wizard rather than the short-lived window NSIS
+# shows before it. When the CRC pass over the exe takes longer than a second,
+# NSIS shows an unowned "Verifying installer: N%" dialog (IDD_VERIFY, a single
+# static text control) and destroys it once the pass ends. Process.MainWindowHandle
+# reports that dialog as the main window while it exists, so a capture that takes
+# the first non-zero handle can be handed a window that is already gone.
+function Test-InstallerWizardWindow {
+  param([IntPtr]$Handle)
+
+  if ($Handle -eq [IntPtr]::Zero) {
+    return $false
+  }
+  if (-not [KiroInstallerCapture]::IsWindowVisible($Handle)) {
+    return $false
+  }
+  return [KiroInstallerCapture]::GetDlgItem($Handle, $NsisWizardCancelId) -ne [IntPtr]::Zero
+}
 
 function Save-InstallerWindow {
   param([IntPtr]$Handle, [string]$Path)
 
   $rect = New-Object KiroInstallerCapture+Rect
   if (-not [KiroInstallerCapture]::GetWindowRect($Handle, [ref]$rect)) {
-    throw "Could not read the native installer bounds."
+    $win32Error = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "Could not read the native installer bounds (Win32 error $win32Error)."
   }
   $width = $rect.Right - $rect.Left
   $height = $rect.Bottom - $rect.Top
@@ -184,15 +216,25 @@ function Assert-PreExistingTreeIntact {
 # is closed before installation and is outside the performance measurement.
 $preview = Start-Process -FilePath $installer.FullName -PassThru
 $previewDeadline = [DateTime]::UtcNow.AddSeconds(30)
+$wizardHandle = [IntPtr]::Zero
 do {
   Start-Sleep -Milliseconds 250
   $preview.Refresh()
-} while (-not $preview.HasExited -and $preview.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $previewDeadline)
-if ($preview.HasExited -or $preview.MainWindowHandle -eq 0) {
+  if (-not $preview.HasExited -and (Test-InstallerWizardWindow $preview.MainWindowHandle)) {
+    $wizardHandle = $preview.MainWindowHandle
+  }
+} while (-not $preview.HasExited -and $wizardHandle -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $previewDeadline)
+if ($preview.HasExited -or $wizardHandle -eq [IntPtr]::Zero) {
   throw "The native installer did not show its install-mode page."
 }
+# Let the page's fade-in finish, then confirm the wizard is still the window
+# being captured: it is created once and lives until the installer exits, so a
+# handle that no longer names a window here is a real failure, not a race.
 Start-Sleep -Milliseconds 750
-Save-InstallerWindow $preview.MainWindowHandle (Join-Path $evidence "native-install-mode.png")
+if (-not [KiroInstallerCapture]::IsWindow($wizardHandle)) {
+  throw "The native installer closed its install-mode page before it could be captured."
+}
+Save-InstallerWindow $wizardHandle (Join-Path $evidence "native-install-mode.png")
 Stop-Process -Id $preview.Id -Force
 $preview.WaitForExit()
 
