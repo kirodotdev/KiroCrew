@@ -144,6 +144,11 @@ def register(app: web.Application) -> None:
     # Note — visible transcript line + silent next-turn context, no LLM turn
     app.router.add_post("/api/chat/slots/{slot}/note", chat.api_chat_slot_note)
     app.router.add_post("/api/chat/slots/{slot}/fork", chat.api_chat_slot_fork)
+    # Merge a fork back into its parent: draft a summary, then write it there.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/merge-back/draft", chat.api_chat_slot_merge_back_draft
+    )
+    app.router.add_post("/api/chat/slots/{slot}/merge-back", chat.api_chat_slot_merge_back)
     # Reply threads on a crewmate chat message. The literal ``/threads`` summary
     # is registered before the ``{mid}`` pattern that would otherwise capture
     # "threads" as an id, per this module's ordering rule.

@@ -79,6 +79,7 @@ _POPULATED: dict = {
     "_auto_tagged": True,
     "_human_seen": True,
     "forked_from": "parent-slot",
+    "forked_from_created_at": "2026-01-01T00:00:00",
     "linked_session_key": "slack:C1:1.2",
     "channel_origin": True,
     "_tab_id": "tab-src",
@@ -145,6 +146,7 @@ _BASE_LINE_ORDER = (
     "deferred_notes",
     "queued_prompts",
     "forked_from",
+    "forked_from_created_at",
     "linked_session_key",
     "channel_origin",
     "tab_id",
@@ -180,6 +182,7 @@ _BASE_MERGE_ORDER = (
     "linked_session_key",
     "channel_origin",
     "forked_from",
+    "forked_from_created_at",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "executor",
@@ -335,7 +338,6 @@ def test_the_table_declares_every_asymmetry_the_readers_had():
         "theme_consent": ["resume"],
         "theme_consent_sha": ["resume"],
         "human_seen": ["recent", "restore"],
-        "deferred_notes": ["recent", "restore"],
         "queued_prompts": ["recent", "restore"],
         "linked_session_key": ["recent", "restore"],
         "channel_origin": ["restore"],
@@ -627,14 +629,93 @@ def test_settle_drops_the_held_notes_the_window_already_delivered(tmp_path, monk
     state = _state(tmp_path, monkeypatch)
     meta = {"deferred_notes": copy.deepcopy(_NOTES)}
     persisted = [{"role": "note", "content": "delivered", "ts": "t", "meta": {"noteId": "n-2"}}]
-    for purpose in (codec.RESTORE, codec.RECENT):
+    for purpose in (codec.RESTORE, codec.RECENT, codec.RESUME):
         slot, applied, _ = _read_back(state, copy.deepcopy(meta), purpose, name=purpose)
         applied.settle(persisted)
         assert [n["id"] for n in slot._deferred_notes] == ["n-1"]
         assert slot._dropped_note_ids == {"n-2"}
-    resume, applied, _ = _read_back(state, copy.deepcopy(meta), codec.RESUME)
-    applied.settle(persisted)
-    assert resume._deferred_notes == [] and resume._dropped_note_ids == set()
+
+
+def _saved_merge_card(index: int) -> dict:
+    note_id = f"card-{index:06d}"
+    return {
+        "id": note_id,
+        "content": f"summary-{index}",
+        "cls": "reconcile-note",
+        "context": {
+            "content": f"context-{index}",
+            "source": "merge-back",
+            "ephemeral": True,
+            "injectedAt": 0,
+        },
+        "session": "dashboard:parent",
+        "merged_from": {
+            "session": f"dashboard:fork-{index}",
+            "slot": f"fork-{index}",
+            "title": f"Fork {index}",
+            "createdAt": "2026-01-01T00:00:00+00:00",
+            "after": "",
+            "through": f"message-{index}",
+            "digest": f"{index:064x}",
+            "messages": 1,
+        },
+    }
+
+
+def _committed_note_rows(notes: list[dict]) -> list[dict]:
+    return [
+        {"role": "inject", "content": note["content"], "meta": {"noteId": note["id"]}}
+        for note in notes
+    ]
+
+
+def test_settle_restores_every_committed_merge_card_at_the_durable_hold_ceiling(
+    tmp_path, monkeypatch
+):
+    state = _state(tmp_path, monkeypatch)
+    notes = [_saved_merge_card(index) for index in range(30)]
+    meta = {"deferred_notes": serialize_deferred_notes(notes)}
+    slot, applied, _ = _read_back(state, meta, codec.RESTORE)
+
+    applied.settle(_committed_note_rows(notes))
+
+    assert slot._deferred_notes == []
+    assert [context["noteId"] for context in slot._pending_context] == [
+        note["id"] for note in notes
+    ]
+    assert slot._dropped_note_ids == set()
+
+
+def test_settle_keeps_uncommitted_notes_while_restoring_a_few_committed_cards(
+    tmp_path, monkeypatch
+):
+    state = _state(tmp_path, monkeypatch)
+    cards = [_saved_merge_card(index) for index in range(3)]
+    held_plain = {
+        "id": "plain-held",
+        "content": "not delivered",
+        "cls": "reconcile-note",
+        "context": None,
+        "session": "dashboard:parent",
+    }
+    delivered_plain = {
+        "id": "plain-done",
+        "content": "already delivered",
+        "cls": "reconcile-note",
+        "context": None,
+        "session": "dashboard:parent",
+    }
+    notes = [*cards, held_plain, delivered_plain]
+    meta = {"deferred_notes": serialize_deferred_notes(notes)}
+    slot, applied, _ = _read_back(state, meta, codec.RESTORE, name="ordinary")
+
+    applied.settle(_committed_note_rows([*cards, delivered_plain]))
+
+    assert [note["id"] for note in slot._deferred_notes] == ["plain-held"]
+    assert [context["noteId"] for context in slot._pending_context] == [
+        note["id"] for note in cards
+    ]
+    assert slot._dropped_note_ids == {"plain-done"}
 
 
 def test_settle_turns_a_turn_marker_into_the_interruption_row(tmp_path, monkeypatch):

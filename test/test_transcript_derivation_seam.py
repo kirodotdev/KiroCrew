@@ -402,7 +402,14 @@ class TestThePublicationFence:
             "_try_embed",
         }
         offenders: list[tuple[str, int, str]] = []
-        for rel in sorted(_PUBLISH_MODULES | {"kiro_crew/history.py"}):
+        # Merge-back commits its draft under the fork's hold, and the note
+        # delivery holds a source transcript through its durable write.
+        holders = {
+            "kiro_crew/history.py",
+            "kiro_crew/dashboard/chat_merge_back.py",
+            "kiro_crew/dashboard/chat_handlers.py",
+        }
+        for rel in sorted(_PUBLISH_MODULES | holders):
             tree = ast.parse((SRC / rel).read_text(encoding="utf-8"), filename=rel)
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.With, ast.AsyncWith)):
@@ -538,6 +545,9 @@ class TestTheSeam:
         assert log.derive_messages(KEY) == log.read_messages(KEY)
         plain_chained = log.read_messages_chained(KEY)
         assert log.derive_messages_chained(KEY) is plain_chained
+        full_rows, full_keys = log.derive_messages_chained_full_with_keys(KEY)
+        assert full_rows == log.read_messages_chained_full(KEY)
+        assert full_keys == (KEY,)
         assert log.derive_recent(KEY, 1) == log.recent(KEY, 1)
         assert [m["content"] for m in log.derive_recent(KEY, 5, roles={"user"})] == ["PRIVATE-1"]
 
@@ -555,6 +565,7 @@ class TestTheSeam:
         for read in (
             lambda: log.derive_messages(KEY),
             lambda: log.derive_messages_chained(KEY),
+            lambda: log.derive_messages_chained_full_with_keys(KEY),
             lambda: log.derive_recent(KEY, 5),
             lambda: log.snapshot_for_consolidation(KEY, withhold_restricted=True),
         ):
@@ -638,6 +649,9 @@ class TestTheSeamCoversTheWholeChain:
         rows = log.derive_messages_chained("dashboard:chat-1")
         assert [m["content"] for m in rows] == ["OLDER-PRIVATE", "NEWER-PUBLIC"]
         assert rows == log.read_messages_chained("dashboard:chat-1")
+        full_rows, full_keys = log.derive_messages_chained_full_with_keys("dashboard:chat-1")
+        assert full_rows == log.read_messages_chained_full("dashboard:chat-1")
+        assert full_keys == ("dashboard:chat-0", "dashboard:chat-1")
 
     @pytest.mark.parametrize("mode", ["incognito", "temporary", "Temporary"])
     def test_a_restricted_sibling_withholds_the_whole_chain(self, tmp_path, mode):
@@ -649,6 +663,8 @@ class TestTheSeamCoversTheWholeChain:
         # ...and the seam still refuses, because the sibling's line governs its rows.
         with pytest.raises(TranscriptWithheld):
             log.derive_messages_chained("dashboard:chat-1")
+        with pytest.raises(TranscriptWithheld):
+            log.derive_messages_chained_full_with_keys("dashboard:chat-1")
         with pytest.raises(TranscriptWithheld):
             with log.publication_hold("dashboard:chat-1"):
                 raise AssertionError("the publication body ran")
@@ -667,6 +683,8 @@ class TestTheSeamCoversTheWholeChain:
         monkeypatch.setattr(type(log), "_read_metadata_status", _status)
         with pytest.raises(TranscriptWithheld):
             log.derive_messages_chained("dashboard:chat-1")
+        with pytest.raises(TranscriptWithheld):
+            log.derive_messages_chained_full_with_keys("dashboard:chat-1")
 
     def test_a_chain_that_grows_while_being_locked_is_refused_as_busy(self, tmp_path, monkeypatch):
         """A file joining the chain between the resolve and the hold is unlocked and
@@ -690,6 +708,9 @@ class TestTheSeamCoversTheWholeChain:
         calls["n"] = 0
         with pytest.raises(TranscriptBusy):
             log.derive_messages_chained_with_keys("dashboard:chat-1")
+        calls["n"] = 0
+        with pytest.raises(TranscriptBusy):
+            log.derive_messages_chained_full_with_keys("dashboard:chat-1")
 
     def test_a_member_joining_after_validation_is_not_read(self, tmp_path, monkeypatch):
         """The settled, validated keys are the complete read set.
@@ -716,6 +737,28 @@ class TestTheSeamCoversTheWholeChain:
 
         assert calls["n"] == 2, "the derivation read resolved its validated chain again"
         assert [row["content"] for row in rows] == ["OLDER-PRIVATE", "NEWER-PUBLIC"]
+
+    def test_a_member_joining_after_full_validation_is_not_read(self, tmp_path, monkeypatch):
+        log = self._chain(tmp_path)
+        late = "dashboard:chat-late"
+        with history_mod.allow_on_loop_persist():
+            log.append(late, "user", "LATE-PRIVATE", tab_id="tab-legacy")
+            log.update_metadata(late, {"memory_mode": "temporary"})
+        projection = log._read_projection
+        settled = ["dashboard:chat-0", "dashboard:chat-1"]
+        calls = {"n": 0}
+
+        def _join_on_third_resolve(self, key):
+            calls["n"] += 1
+            assert key == "dashboard:chat-1"
+            return settled + ([late] if calls["n"] >= 3 else [])
+
+        monkeypatch.setattr(type(projection), "chained_keys", _join_on_third_resolve)
+        rows, keys = log.derive_messages_chained_full_with_keys("dashboard:chat-1")
+
+        assert calls["n"] == 2, "the full derivation read resolved its validated chain again"
+        assert [row["content"] for row in rows] == ["OLDER-PRIVATE", "NEWER-PUBLIC"]
+        assert keys == tuple(settled)
 
 
 class TestABusyTranscriptIsARefusalNotAnError:
@@ -749,6 +792,7 @@ class TestABusyTranscriptIsARefusalNotAnError:
         for read in (
             lambda: log.derive_messages(KEY),
             lambda: log.derive_messages_chained(KEY),
+            lambda: log.derive_messages_chained_full_with_keys(KEY),
             lambda: log.derive_recent(KEY, 5),
             lambda: log.snapshot_for_consolidation(KEY, withhold_restricted=True),
             _publish,
