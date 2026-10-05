@@ -2018,6 +2018,10 @@ cap is a readability contract, not a correctness one. The Design and UX punchlin
 follow the same problem-first rule as First Principles: for `CONCERNS`/`BLOCK` the
 sentence opens with the problem, never `<what is sound>, but <problem>`; for `PASS`
 it names the one thing a human should still verify, or `Nothing to check.`
+kirocrew-prepare-pr's `pr_findings.py` and `pr_status.py` print that sentence under
+each lane stamped for the head and skip `Nothing to check.` (`lane_punchline` in
+`_review_contract.py`). No item section carries it, and on a `PASS` it is usually
+the lane's only ask.
 
 **Where it overlaps Design Review, this lane owns the question.** Design Review's own
 rubric asks whether a change fixes a root cause and whether a simpler alternative

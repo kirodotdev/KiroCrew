@@ -13,6 +13,60 @@ import re
 import time
 from datetime import datetime
 
+# Credential redaction (best-effort; applied to all printed untrusted text).
+_SECRET_RE = re.compile(
+    r"(?i)(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    # The dashboard link token is TWO segments (`base64url(payload).base64url(
+    # hmac_sig)`), so the three-segment alternative above never matched it and a
+    # bare token in prose printed verbatim. It needs its OWN alternative.
+    #
+    # Byte-identical to the one in `security.py`, which carries the full
+    # derivation of both bounds and is the single source for it; this script is
+    # documented as stdlib-only and portable, so it cannot import it, and
+    # `test/test_redaction_mirror_parity.py` fails if this copy drifts. Locally the
+    # points that matter: the signature width is PINNED (`{43}`, a property of the
+    # HMAC-SHA256 digest), the payload bound is a generator-derived floor rather
+    # than a guess (a guessed floor is beatable by a verbose identifier), and the
+    # left boundary (incl. `.`, so attribute access is excluded) keeps ordinary
+    # dotted code intact.
+    #
+    # Placing it after the three-segment alternative is defensive, not
+    # load-bearing for real tokens: a conventional JWS header is only 33 chars
+    # past `eyJ`, far below this alternative's first-segment floor, so it cannot
+    # match a real JWS's `header.payload`. It matters only for a JWS whose header
+    # clears that floor AND whose payload is exactly 43 chars, since the right
+    # boundary is satisfied by a `.` and would leave `.signature` in the printed
+    # log. That shape is covered by a test.
+    r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"
+    r"|-----BEGIN[A-Z ]*PRIVATE KEY-----)"
+)
+_KV_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|"
+    r"ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)[A-Za-z0-9_]*)\s*[:=]\s*\S+"
+)
+_AUTH_RE = re.compile(r"(?i)\b(authorization|proxy-authorization)\b\s*:\s*.+")
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+# scheme://user:pass@host -> redact the credentials, keep the scheme/host shape.
+_URLCRED_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)[^\s/:@]+:[^\s/@]+@")
+# Whole PEM private-key block (header + base64 body + footer), across lines.
+_PEM_BLOCK_RE = re.compile(
+    r"-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----", re.DOTALL
+)
+
+
+def redact(text):
+    text = _PEM_BLOCK_RE.sub("[REDACTED PRIVATE KEY]", text)
+    text = _SECRET_RE.sub("[REDACTED]", text)
+    text = _AUTH_RE.sub(lambda m: m.group(1) + ": [REDACTED]", text)
+    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    text = _URLCRED_RE.sub(lambda m: m.group(1) + "[REDACTED]@", text)
+    text = _KV_RE.sub(lambda m: m.group(1) + "=[REDACTED]", text)
+    return text
+
+
 REVIEWED_STAMP_RE = re.compile(r"\[([A-Z][A-Z0-9_-]*)-REVIEWED\]\s+([0-9a-f]{7,40})\b")
 BLOCK_MERGE_RE = re.compile(r"\[BLOCK-MERGE\]\s+([0-9a-f]{7,40})\b")
 # The SANCTIONED downgrade, read from the one part of the comment a model cannot
@@ -1009,6 +1063,57 @@ def design_lane_verdicts(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES)
         name: verdict
         for name, _body, verdict in _fresh_design_bodies(comments, head_sha, bindings, lanes)
     }
+
+
+# The bold sentence a whole-design lane writes right under its verdict line. The
+# lane prompts make it the core problem on CONCERNS or BLOCK and, on a PASS, the
+# one thing a human should still verify before merge, or exactly
+# NOTHING_TO_CHECK. It sits outside every item section, so design_section_items
+# never yields it, and on a PASS it is usually the lane's only ask.
+NOTHING_TO_CHECK = "Nothing to check."
+_ENCLOSING_BOLD_RE = re.compile(r"\A\*\*(.+)\*\*\Z")
+
+
+def lane_punchline(body):
+    """The punchline under a whole-design body's verdict line, without its bold.
+
+    Read the way the lane workflows' own CONCERNS digest reads it, as the first
+    text after the verdict line. The whole paragraph is taken, so a punchline
+    wrapped over two lines survives. A heading or one of the body's own trailers
+    in that place means the lane wrote no punchline.
+    """
+    verdict = VERDICT_LINE_RE.search(body or "")
+    if not verdict:
+        return ""
+    lines: list = []
+    for raw in body[verdict.end() :].splitlines()[1:]:
+        stripped = raw.strip()
+        if not stripped:
+            if lines:
+                break
+            continue
+        if _HEADING_RE.match(raw) or REVIEWED_STAMP_RE.search(raw) or BLOCK_MERGE_RE.search(raw):
+            break
+        lines.append(stripped)
+    text = _collapse(lines)
+    bold = _ENCLOSING_BOLD_RE.match(text)
+    if bold and "**" not in bold.group(1):
+        return bold.group(1).strip()
+    return text
+
+
+def design_lane_punchlines(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES):
+    """``{lane: punchline}`` for whole-design lanes stamped for ``head_sha``.
+
+    A lane that wrote no punchline, or exactly NOTHING_TO_CHECK, is left out, so
+    every entry is something the lane asks a human to check or answer.
+    """
+    punchlines = {}
+    for name, body, _verdict in _fresh_design_bodies(comments, head_sha, bindings, lanes):
+        punchline = lane_punchline(body)
+        if punchline and punchline != NOTHING_TO_CHECK:
+            punchlines[name] = punchline
+    return punchlines
 
 
 def extract_design_items(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES):
