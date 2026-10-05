@@ -2642,6 +2642,40 @@ Examples:
         "-n", "--lines", type=int, default=100, help="Number of lines to show (default: 100)"
     )
 
+    # mobile — per-device OpenSSH enrollment and the forced-command stdio bridge.
+    mobile_parser = cli_help.add_command(sub, "mobile")
+    mobile_sub = mobile_parser.add_subparsers(dest="mobile_action")
+    mobile_ssh = mobile_sub.add_parser("ssh", help="Manage mobile SSH device access")
+    mobile_ssh_sub = mobile_ssh.add_subparsers(dest="mobile_ssh_action")
+    mobile_enroll = mobile_ssh_sub.add_parser(
+        "enroll", help="Enroll one device public key and print an authorized_keys line"
+    )
+    mobile_enroll.add_argument("device_id", help="Stable device id (lowercase letters/digits/-)")
+    mobile_enroll.add_argument("--label", default="", help="Optional non-secret device label")
+    mobile_enroll.add_argument(
+        "--public-key-file",
+        default="-",
+        help="File containing one ssh-ed25519 public key, or - for stdin (default)",
+    )
+    mobile_enroll.add_argument(
+        "--port", type=int, default=None, help="Local gateway port (default: the running gateway)"
+    )
+    mobile_list = mobile_ssh_sub.add_parser("list", help="List non-secret enrollment metadata")
+    mobile_list.add_argument(
+        "--port", type=int, default=None, help="Local gateway port (default: the running gateway)"
+    )
+    mobile_revoke = mobile_ssh_sub.add_parser("revoke", help="Revoke one device enrollment")
+    mobile_revoke.add_argument("device_id", help="Device id to revoke")
+    mobile_revoke.add_argument(
+        "--port", type=int, default=None, help="Local gateway port (default: the running gateway)"
+    )
+    mobile_bridge = mobile_ssh_sub.add_parser(
+        "bridge", help="OpenSSH forced-command stdio bridge (not for interactive use)"
+    )
+    mobile_bridge.add_argument("--device-id", required=True, help=argparse.SUPPRESS)
+    mobile_bridge.add_argument("--port", type=int, required=True, help=argparse.SUPPRESS)
+    mobile_bridge.add_argument("--home", required=True, help=argparse.SUPPRESS)
+
     # token
     token_parser = cli_help.add_command(sub, "token")
 
@@ -3217,6 +3251,14 @@ env var overrides it.
 
     args = parser.parse_args()
 
+    # sshd runs the forced command with a clean environment; its --home must win
+    # before anything below resolves or creates the default data home.
+    if args.command == "mobile":
+        from kiro_crew.mobile_ssh_cli import pin_enrolled_home
+
+        if pin_enrolled_home(args):
+            raise SystemExit(1)
+
     # MCP servers and CLI commands hold their managed-venv tree for the process
     # lifetime, so another process's update cannot prune it underneath them.
     # The gateway takes the same hold off-loop AFTER readiness, before updates;
@@ -3616,6 +3658,15 @@ env var overrides it.
         from kiro_crew.cli_server import _logs_cmd
 
         _logs_cmd(args)
+    elif args.command == "mobile":
+        from kiro_crew.mobile_ssh_cli import run_mobile_ssh
+
+        if getattr(args, "mobile_action", "") != "ssh":
+            print("Usage: kirocrew mobile ssh {enroll|list|revoke}", file=sys.stderr)
+            raise SystemExit(2)
+        rc = run_mobile_ssh(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "token":
         from kiro_crew.cli_server import _token
 

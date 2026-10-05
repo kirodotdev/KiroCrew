@@ -229,6 +229,10 @@ choice blob makes the usage line unreadable.
 | `kirocrew learn add/list/remove` | Manage learned corrections |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
+| `kirocrew mobile ssh enroll DEVICE [--public-key-file FILE]` | Enroll one Ed25519 device public key and emit one JSON document with the exact `restrict,command=` `authorized_keys` line, the account username and the pinned host-key fingerprint. Reads the key from stdin when `FILE` is `-`; never edits SSH configuration. Linux/macOS only. |
+| `kirocrew mobile ssh list` | Emit one JSON document with non-secret enrollment metadata. |
+| `kirocrew mobile ssh revoke DEVICE` | Revoke one enrollment: its bridge and its mint refuse from the next request. Delete the `authorized_keys` line to end SSH login. |
+| `kirocrew mobile ssh bridge` | Forced-command-only stdio bridge run by sshd for an enrolled key. Requires `SSH_ORIGINAL_COMMAND=kirocrew-mobile-bridge`, an sshd `SSH_CONNECTION` and no PTY, and dials only `127.0.0.1` on the enrolled gateway port. A refusal writes one JSON error to stderr and nothing to stdout. |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits) |

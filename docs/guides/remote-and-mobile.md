@@ -292,6 +292,48 @@ with `KIROCREW_ALLOWED_LOOPBACK_PORTS` on the gateway host; the CSRF check
 deliberately does not blanket-trust every loopback port, because a malicious
 local page on an arbitrary port would otherwise pass it.
 
+### Native mobile client over a paired SSH key
+
+A native mobile client can reach the gateway over SSH without holding the gateway
+local secret or a long-lived dashboard credential. The host side is standard OpenSSH
+and does not depend on a cloud provider: any host the phone can reach on TCP 22 works.
+
+Run enrollment as the same non-root account that runs Kiro Crew, passing only the
+phone's Ed25519 **public** key:
+
+```bash
+kirocrew mobile ssh enroll my-phone --public-key-file phone-key.pub
+```
+
+The command prints one JSON object with the device record, the account username,
+the SHA-256 fingerprint of the root-owned host key
+`/etc/ssh/ssh_host_ed25519_key.pub` for the phone to pin, and an exact
+`authorized_keys_line`. Kiro Crew does not edit `~/.ssh/authorized_keys`; adding the
+line is a host-owner action. Windows hosts return `platform_unsupported`.
+
+The line is `restrict,command="<kirocrew> mobile ssh bridge ..."`. `restrict` turns
+off every kind of forwarding, the PTY, agent and X11 forwarding and `~/.ssh/rc`, so
+the key can do exactly one thing: run the bridge. The phone opens an SSH exec channel
+with the command `kirocrew-mobile-bridge`, and the bridge connects that channel's
+stdin and stdout to the gateway's loopback port, the way `ssh -W` or `nc` would. It
+refuses to start unless the device is enrolled and active, the port matches the one
+recorded at enrollment, and that port is served by this account's gateway. It never
+dials any other address.
+
+The phone then speaks plain HTTP over the channel. To get a credential it asks
+`POST /api/mobile/ssh/challenge` for a single-use nonce and signs it with the same
+Ed25519 key, and `POST /api/mobile/ssh/token` returns a 15-minute device credential.
+Refresh means repeating the challenge.
+
+```bash
+kirocrew mobile ssh list
+kirocrew mobile ssh revoke my-phone
+```
+
+Revocation is per device. The bridge refuses new channels for a revoked device and the
+gateway refuses its mint. Deleting the `authorized_keys` line removes SSH login
+entirely. The registry stores public keys and non-secret metadata only; private keys
+stay on the phone.
 ### Named HTTPS tunnel (phone)
 
 A phone cannot open an SSH port-forward, so put a tunnel provider in front of

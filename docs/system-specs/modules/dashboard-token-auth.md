@@ -10,6 +10,45 @@ The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, Http
 
 An existing dashboard session can recover another browser with `POST /api/auth/mobile-link`. The endpoint requires the normal access-cookie session and an allowed same-origin request; it refuses unauthenticated and app-scoped callers. It returns a normal signed URL token plus `Cache-Control: no-store`; the browser uses that token through the ordinary link-to-cookie exchange, which establishes a separate access cookie and a refresh chain. The dashboard presents this as **Settings → Security → Sign in on mobile**, so a mobile browser whose storage was cleared can be restored without exposing a raw token prompt. The returned link has the normal five-minute click window, is built only from the configured external dashboard origin, and must be transferred only to the intended device.
 
+A separate host-side contract serves native mobile clients over an enrolled OpenSSH
+key (`mobile_ssh.py`, `mobile_ssh_cli.py`, `handlers/mobile_ssh.py`). `kirocrew mobile
+ssh enroll` accepts one Ed25519 public key and returns JSON with the current non-root
+username, the SHA-256 fingerprint of the root-owned, non-writable host key
+`/etc/ssh/ssh_host_ed25519_key.pub`, and an exact `authorized_keys` line. It never
+edits `authorized_keys`. Windows enrollment returns `platform_unsupported`.
+
+The line is `restrict,command="<launcher> mobile ssh bridge --device-id ID --port PORT
+--home DIR"`. Plain `restrict` leaves no forwarding of any kind (TCP or Unix socket,
+local or remote), no PTY, agent, X11 or user rc. The forced command is a stdio bridge:
+it requires `SSH_ORIGINAL_COMMAND=kirocrew-mobile-bridge`, a well-formed
+`SSH_CONNECTION` and no `SSH_TTY`; reads the device record from the pinned data home;
+and refuses unless the device is active, `PORT` equals the port recorded at
+enrollment, and `port_is_gateway_owned(PORT)` proves the listener is this account's
+gateway. It then connects to `127.0.0.1:PORT` and copies bytes both ways. No other
+address is reachable through it. A refusal writes one JSON error to stderr and nothing
+to stdout, which carries the HTTP stream.
+
+Over the bridge the client speaks HTTP. `POST /api/mobile/ssh/challenge` issues a
+single-use 32-byte nonce bound to the device id, valid for 60 seconds, with at most
+256 outstanding. `POST /api/mobile/ssh/token` consumes the nonce before any other
+check, then verifies an Ed25519 signature over
+`kirocrew-mobile-ssh-token\n<device_id>\n<nonce>` against the enrolled public key
+and returns a 15-minute credential whose signed claims are `kind=mobile_ssh`,
+`aud=kirocrew-mobile-gateway`, `scope=gateway:mobile`, `device_id`, the public-key
+digest, the enrollment id and `no_refresh=1`. Both routes require a loopback peer that
+`local_owner_bootstrap_allowed` resolves to a host-owned process (the bridge), so a
+sandboxed agent is refused, and both consult the `capabilities.mobile_connect` seam
+under the method id `ssh_device`. Neither takes the local secret: the key signature
+is the proof. `validate_token` refuses every `kind=mobile_ssh` credential; no route
+accepts one yet.
+
+Enroll, list and revoke are loopback-only and require `X-Local-Secret` plus the same
+host-process check, and enroll consults the same seam. The registry is
+`<KIROCREW_HOME>/mobile-ssh/devices.json`: public keys, digests and non-secret
+metadata under an owner-only directory, with a file lock and atomic, fsynced
+owner-only replacement. Memory changes only after a write succeeds. A malformed
+registry fails closed as `store_unavailable`. The directory is on the sensitive-path
+floor and bind-masked from every agent sandbox.
 The refresh scheduler is mounted by `DashboardBootstrap` outside the first-run
 Kiro CLI prerequisite gate. A cold browser with a stale access cookie can
 therefore rotate its refresh cookie even while the main dashboard tree is not

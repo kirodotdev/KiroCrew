@@ -704,6 +704,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # runtime-constructed shell write.
     "file-delivery-consent-pending",
     "token_signing.key",
+    # Whole directory, so the lock and atomic-write staging files are fenced too.
+    "mobile-ssh",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as
     # individual FILES in the data-home root, and a mask covers a PATH, so a temp staged

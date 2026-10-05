@@ -552,6 +552,12 @@ _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    # Each mobile SSH handler authenticates its caller itself (handlers/mobile_ssh.py).
+    "/api/mobile/ssh/enroll": frozenset({"POST"}),
+    "/api/mobile/ssh/devices": frozenset({"GET"}),
+    "/api/mobile/ssh/revoke": frozenset({"POST"}),
+    "/api/mobile/ssh/challenge": frozenset({"POST"}),
+    "/api/mobile/ssh/token": frozenset({"POST"}),
 }
 
 # Exact-path exemptions from the CSRF **Origin** check, path -> allowed methods.
@@ -999,6 +1005,9 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
     token_boot = str(data.get("boot", ""))
     if token_boot and token_boot != current_boot_id():
         return False, "", "session ended at gateway restart"
+    # Claim-gated and fail-closed: no route accepts a mobile SSH credential yet.
+    if data.get("kind") == "mobile_ssh":
+        return False, "", "mobile credential not accepted"
     # Nonce is a single-use guard for the one-time LINK click only. For an
     # established session cookie (use_session_exp=True), a valid HMAC signature
     # plus an unexpired session_exp is sufficient — requiring the in-memory

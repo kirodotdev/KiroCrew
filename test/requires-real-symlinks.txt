@@ -88,6 +88,7 @@ test/test_meetings_providers.py::TestLocalIcsRead::test_a_symlink_to_a_sensitive
 test/test_meetings_routes.py::TestMeetingLifecycleRoutes::test_a_symlinked_meeting_dir_is_403_not_400
 test/test_messaging_commands.py::TestTaskSpecPathIsGated::test_a_symlink_into_a_sensitive_root_is_refused_through_the_link
 test/test_messaging_commands.py::TestTaskSpecPathIsGated::test_the_runner_receives_the_canonical_path_not_the_raw_argument
+test/test_mobile_ssh.py::test_launcher_prefers_unresolved_path_shim
 test/test_node_modules_txn.py::TestTransactionPolicy::test_a_dangling_tree_link_does_not_crash_the_transaction
 test/test_node_modules_txn.py::TestTransactionPolicy::test_a_symlinked_tree_is_still_protected
 # This fixture plants a FILE symlink out of the session store, and a file link has
