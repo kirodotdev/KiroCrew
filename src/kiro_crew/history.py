@@ -84,6 +84,7 @@ from kiro_crew.history_projection import (  # noqa: F401 - facade re-exports
     SessionMetadataProjection,
     TranscriptPage,
     TranscriptReadProjection,
+    drop_persisted_tail_prefix,
 )
 from kiro_crew.history_rewrite import HistoryRewriteCoordinator
 from kiro_crew.history_search import (  # noqa: F401 - facade re-exports
@@ -256,6 +257,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "color_theme",
         "tags",
         "forked_from",
+        "forked_from_created_at",
         "linked_session_key",
         "tab_id",
     }
@@ -2992,24 +2994,39 @@ class ConversationLog:
         rows, _keys = self.derive_messages_chained_with_keys(key)
         return rows
 
-    def derive_messages_chained_with_keys(self, key: str) -> tuple[list[dict], tuple[str, ...]]:
-        """Return guarded chained rows and the exact chain validated with them.
+    def derive_messages_chained_full_with_keys(
+        self, key: str
+    ) -> tuple[list[dict], tuple[str, ...]]:
+        """Return guarded full chained rows and the exact chain validated with them.
 
-        A chained read concatenates EVERY transcript sharing the tab id -- a legacy
-        tab's earlier files as well as the requested key -- so the contract that
-        governs the result is the strictest line among them, not the requested
-        key's alone: a sibling tightened to ``temporary`` would otherwise ride out
-        under a persistent sibling's line. Every chained transcript is locked (one
-        deterministic lock set, no partial holds) and validated before a single
-        row is read. The chain is resolved once more inside the hold, and only that
-        validated settled set is read; a member joining afterwards is never pulled
-        in by a third resolution outside the lock set. The returned keys let an
-        egress publication compare its pending bundle with this same settled set.
-        A member that joined between the resolve and the hold is unlocked and
-        unvalidated, so the read is refused -- as :class:`TranscriptBusy`, the
-        same answer :meth:`publication_hold` gives a changed chain: nothing about
-        the session's privacy was measured, so a person-facing caller says retry
-        rather than private.
+        The full corpus includes each chain member's rotated archive head. The
+        chain is resolved, locked and validated exactly as it is for
+        :meth:`derive_messages_chained_with_keys`, then only that settled set is
+        read. Returning the settled keys lets a publication revalidate the same
+        chain after work derived from these rows is ready to commit.
+        """
+        return self._derive_settled_chain_rows(key, self._read_messages_with_rotated_head)
+
+    def _read_messages_with_rotated_head(self, key: str) -> list[dict]:
+        """One chain member's rotated archive head followed by its live rows.
+
+        The live rows drop the prefix the archive already holds (a rotation
+        that has moved rows aside but not yet rewritten the live file), so a
+        row is never served twice. Always a fresh list.
+        """
+        live = self._read_messages(key)
+        rotated = self._read_projection.read_rotated_messages(key)
+        return rotated + drop_persisted_tail_prefix(rotated, live)
+
+    def _derive_settled_chain_rows(
+        self, key: str, read_member_rows: Callable[[str], list[dict]]
+    ) -> tuple[list[dict], tuple[str, ...]]:
+        """Resolve, lock, revalidate and withhold *key*'s chain, then read it.
+
+        The one fence behind :meth:`derive_messages_chained_with_keys` and
+        :meth:`derive_messages_chained_full_with_keys`: the two differ only in
+        *read_member_rows*, called once per settled member, in chain order, after
+        every member's line has been validated inside the hold.
         """
         keys = self.chained_keys(key) or [key]
         stems = {stem for chained in keys for stem in transcript_lock_stems(chained)}
@@ -3030,11 +3047,32 @@ class ConversationLog:
             if not settled_chain:
                 # Preserve read_messages_chained's shared-cache identity when the
                 # index knows no chain for this key.
-                return self._read_messages(key), validated_keys
+                return read_member_rows(key), validated_keys
             rows: list[dict] = []
             for chained in settled:
-                rows.extend(self._read_messages(chained))
-            return rows or self._read_messages(key), validated_keys
+                rows.extend(read_member_rows(chained))
+            return rows or read_member_rows(key), validated_keys
+
+    def derive_messages_chained_with_keys(self, key: str) -> tuple[list[dict], tuple[str, ...]]:
+        """Return guarded chained rows and the exact chain validated with them.
+
+        A chained read concatenates EVERY transcript sharing the tab id -- a legacy
+        tab's earlier files as well as the requested key -- so the contract that
+        governs the result is the strictest line among them, not the requested
+        key's alone: a sibling tightened to ``temporary`` would otherwise ride out
+        under a persistent sibling's line. Every chained transcript is locked (one
+        deterministic lock set, no partial holds) and validated before a single
+        row is read. The chain is resolved once more inside the hold, and only that
+        validated settled set is read; a member joining afterwards is never pulled
+        in by a third resolution outside the lock set. The returned keys let an
+        egress publication compare its pending bundle with this same settled set.
+        A member that joined between the resolve and the hold is unlocked and
+        unvalidated, so the read is refused -- as :class:`TranscriptBusy`, the
+        same answer :meth:`publication_hold` gives a changed chain: nothing about
+        the session's privacy was measured, so a person-facing caller says retry
+        rather than private.
+        """
+        return self._derive_settled_chain_rows(key, self._read_messages)
 
     def derive_recent(
         self,

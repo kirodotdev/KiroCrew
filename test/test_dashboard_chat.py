@@ -35,6 +35,10 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import KiroCrewConfig, ResolvedBindings
 from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
 from kiro_crew.dashboard.recovery_replays import LiveSlot, ReplayFamily
+from kiro_crew.dashboard.slot_buffers import (
+    MAX_FORK_PARENT_KEY_CHARS,
+    MERGED_FROM_MAX_CREATED_AT_CHARS,
+)
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
     _MAX_SOURCE_LINKS_PER_SLOT,
@@ -43,6 +47,8 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
 )
 from kiro_crew.history import ConversationLog
+
+_OVER_LONG_FORK_PARENT = "s" * (MAX_FORK_PARENT_KEY_CHARS + 1)
 
 
 def _provider_mock() -> AsyncMock:
@@ -3178,6 +3184,7 @@ class TestSaveDoesNotResurrectDeletedSession:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("reborn")
+        slot.created_at = "2026-10-01T12:00:00+00:00"
         slot.append("user", "the deleted conversation", "msg msg-u")
         slot.drain()
         assert _save_slot_to_history(state, slot, force=True) is True
@@ -3186,6 +3193,10 @@ class TestSaveDoesNotResurrectDeletedSession:
         log = state.conversation_log
         assert log.delete_session("dashboard:reborn") is True
         # A foreign writer recreates the session file with a fresh identity.
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso",
+            lambda: "2026-10-01T12:00:01+00:00",
+        )
         log.append("dashboard:reborn", "assistant", "foreign row in the new file")
         path = log._path("dashboard:reborn")
         assert path.exists()
@@ -3216,6 +3227,9 @@ class TestSaveDoesNotResurrectDeletedSession:
         state = _make_state(tmp_path)
         log = state.conversation_log
         key = "slack:thread-77"
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:00+00:00"
+        )
         log.append(key, "user", "channel turn")
         meta = log.get_metadata(key)
         assert meta.get("created_at"), "fixture transcript must carry an identity"
@@ -3235,6 +3249,9 @@ class TestSaveDoesNotResurrectDeletedSession:
         # Delete, then a foreign append recreates the file with a new identity:
         # the surviving slot's pending save must skip, not merge.
         assert log.delete_session(key) is True
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:01+00:00"
+        )
         log.append(key, "assistant", "new incarnation row")
         assert _save_slot_to_history(state, slot, force=True) is False
         content = log._path(key).read_text(encoding="utf-8")
@@ -3550,6 +3567,117 @@ class TestSaveDoesNotResurrectDeletedSession:
         assert (
             session_was_deleted(state, slot) is False
         ), "legacy metadata with no created_at must still fail open while the file exists"
+
+    @staticmethod
+    def _observed_slot(tmp_path, monkeypatch, name: str, *, created_at: str | None = None):
+        """A slot that has seen its own transcript on disk, and its log."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(name)
+        if created_at is not None:
+            slot.created_at = created_at
+        slot.append("user", "hello", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_created_at, "save must record the disk identity"
+        return state, slot, state.conversation_log
+
+    def test_witness_answers_present_for_a_live_transcript(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, _log = self._observed_slot(tmp_path, monkeypatch, "alive")
+        assert session_delete_witness(state, slot) is DeleteWitness.PRESENT
+
+    def test_witness_answers_deleted_for_a_gone_transcript(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "gone")
+        assert log.delete_session("dashboard:gone") is True
+        assert session_delete_witness(state, slot) is DeleteWitness.DELETED
+
+    def test_witness_answers_deleted_for_a_new_incarnation(self, tmp_path, monkeypatch):
+        """A file recreated by another writer after the delete is not this session."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(
+            tmp_path,
+            monkeypatch,
+            "reincarnated",
+            created_at="2026-10-01T12:00:00+00:00",
+        )
+        assert log.delete_session("dashboard:reincarnated") is True
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:01+00:00"
+        )
+        log.append("dashboard:reincarnated", "assistant", "foreign row in the new file")
+        assert log._path("dashboard:reincarnated").exists()
+        assert session_delete_witness(state, slot) is DeleteWitness.DELETED
+
+    def test_witness_answers_deleted_when_the_file_vanishes_mid_probe(self, tmp_path, monkeypatch):
+        """A delete landing between the stat and the metadata read is a delete,
+        not the unverifiable empty it reads back as."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "midway")
+        real_status = log.get_metadata_status
+
+        def _delete_then_read(key):
+            log.delete_session("dashboard:midway")
+            return real_status(key)
+
+        monkeypatch.setattr(log, "get_metadata_status", _delete_then_read)
+        assert session_delete_witness(state, slot) is DeleteWitness.DELETED
+
+    def test_witness_answers_unverifiable_on_a_stat_error(self, tmp_path, monkeypatch):
+        """A stat failure other than a missing file proves nothing either way."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "unstatable")
+        real_path = log._path
+
+        class _UnstatablePath(type(real_path("dashboard:unstatable"))):
+            def stat(self, *args, **kwargs):
+                raise PermissionError("stat refused")
+
+        monkeypatch.setattr(log, "_path", lambda key: _UnstatablePath(real_path(key)))
+        assert session_delete_witness(state, slot) is DeleteWitness.UNVERIFIABLE
+
+    def test_witness_answers_unverifiable_on_unreadable_metadata(self, tmp_path, monkeypatch):
+        """The file is there; its identity cannot be read. Not a delete."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "murkier")
+        monkeypatch.setattr(log, "get_metadata_status", lambda key: ({}, False))
+        assert session_delete_witness(state, slot) is DeleteWitness.UNVERIFIABLE
+
+    def test_witness_answers_unverifiable_when_the_metadata_read_raises(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "raising")
+
+        def _raise(key):
+            raise OSError("metadata read failed")
+
+        monkeypatch.setattr(log, "get_metadata_status", _raise)
+        assert session_delete_witness(state, slot) is DeleteWitness.UNVERIFIABLE
+
+    def test_republishers_refuse_on_deleted_and_on_unverifiable_alike(self, tmp_path, monkeypatch):
+        """``session_was_deleted`` is the witness with the two refusing answers
+        collapsed, so fork and transfer keep failing closed on both."""
+        from kiro_crew.dashboard.chat_persistence import session_was_deleted
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "collapsed")
+        real_status = log.get_metadata_status
+        assert session_was_deleted(state, slot) is False
+        monkeypatch.setattr(log, "get_metadata_status", lambda key: ({}, False))
+        assert session_was_deleted(state, slot) is True
+        monkeypatch.setattr(log, "get_metadata_status", real_status)
+        assert log.delete_session("dashboard:collapsed") is True
+        assert session_was_deleted(state, slot) is True
 
 
 # ── Slot lifecycle ──
@@ -4369,6 +4497,537 @@ class TestHistorySaveOnClose:
         meta = state.conversation_log._read_metadata("dashboard:t1")
         assert meta.get("trust") is None
         assert meta.get("trust_reads") is None
+
+
+class TestResumeExpectedIdentity:
+    @pytest.mark.asyncio
+    async def test_metadata_status_read_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:guarded", "user", "hello")
+        created_at = log.get_metadata("dashboard:guarded")["created_at"]
+        loop_thread = threading.get_ident()
+        read_threads = []
+        get_metadata_status = log.get_metadata_status
+
+        def record_metadata_status_thread(key):
+            read_threads.append(threading.get_ident())
+            return get_metadata_status(key)
+
+        monkeypatch.setattr(log, "get_metadata_status", record_metadata_status_thread)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={"key": "dashboard:guarded", "expected_created_at": created_at},
+            )
+            body = await response.json()
+
+        assert response.status == 200, body
+        assert read_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_metadata_read_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:legacy", "user", "hello")
+        loop_thread = threading.get_ident()
+        read_threads = []
+        get_metadata = log.get_metadata
+
+        def record_metadata_thread(key):
+            read_threads.append(threading.get_ident())
+            return get_metadata(key)
+
+        monkeypatch.setattr(log, "get_metadata", record_metadata_thread)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/legacy/resume", json={"key": "dashboard:legacy"}
+            )
+            body = await response.json()
+
+        assert response.status == 200, body
+        assert read_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_a_mismatched_identity_is_refused_before_a_slot_is_created(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={
+                    "key": "dashboard:guarded",
+                    "expected_created_at": "2026-10-02T19:00:00+00:00",
+                },
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    async def test_an_already_live_replacement_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:guarded", "user", "original")
+        expected_created_at = log.get_metadata("dashboard:guarded")["created_at"]
+        replacement = state.get_or_create_slot("guarded")
+        replacement._disk_meta_created_at = "2026-10-02T19:00:00+00:00"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={
+                    "key": "dashboard:guarded",
+                    "expected_created_at": expected_created_at,
+                },
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert state._slots == {"guarded": replacement}
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_that_appears_during_resume_is_refused(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_handlers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:guarded", "user", "original")
+        expected_created_at = log.get_metadata("dashboard:guarded")["created_at"]
+        replacement = state.get_or_create_slot("guarded")
+        replacement._disk_meta_created_at = "2026-10-02T19:00:00+00:00"
+        monkeypatch.setattr(
+            chat_handlers,
+            "_live_slot_for_resume",
+            AsyncMock(
+                side_effect=[
+                    None,
+                    chat_handlers.ResumeOutcome(slot=replacement, already_live=True, total=0),
+                ]
+            ),
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={
+                    "key": "dashboard:guarded",
+                    "expected_created_at": expected_created_at,
+                },
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+
+    @pytest.mark.asyncio
+    async def test_a_matching_identity_resumes_the_transcript(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:guarded", "user", "hello")
+        created_at = log.get_metadata("dashboard:guarded")["created_at"]
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={"key": "dashboard:guarded", "expected_created_at": created_at},
+            )
+            body = await response.json()
+
+        assert response.status == 200, body
+        assert state._slots["guarded"].created_at == created_at
+
+    @pytest.mark.asyncio
+    async def test_a_resume_without_an_expected_identity_is_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:legacy", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/legacy/resume", json={"key": "dashboard:legacy"}
+            )
+            body = await response.json()
+
+        assert response.status == 200, body
+        assert state._slots["legacy"].messages[-1]["content"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_transcript_identity_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+        monkeypatch.setattr(
+            state.conversation_log,
+            "get_metadata_status",
+            lambda _key: ({}, False),
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={
+                    "key": "dashboard:guarded",
+                    "expected_created_at": "2026-10-02T19:00:00+00:00",
+                },
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_transcript_cannot_satisfy_an_expected_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/missing/resume",
+                json={
+                    "key": "dashboard:missing",
+                    "expected_created_at": "2026-10-02T19:00:00+00:00",
+                },
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    async def test_an_empty_expected_identity_is_refused_before_a_slot_is_created(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={"key": "dashboard:guarded", "expected_created_at": ""},
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (400, "invalid_expected_created_at")
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    async def test_an_app_gets_the_same_answer_for_a_foreign_open_session_with_or_without_a_pin(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("guarded", app="app-B")
+
+        @web.middleware
+        async def as_app_a(request, handler):
+            request["app"] = "app-A"
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, as_app_a)
+        answers = []
+        async with TestClient(TestServer(app)) as client:
+            for body in (
+                {"key": "dashboard:guarded"},
+                {"key": "dashboard:guarded", "expected_created_at": "2026-10-02T19:00:00+00:00"},
+            ):
+                response = await client.post("/api/chat/slots/guarded/resume", json=body)
+                answers.append((response.status, await response.json()))
+
+        assert answers[0] == answers[1] == (404, {"error": "not found", "code": "slot_not_found"})
+
+    @staticmethod
+    def _app_client(state, app_name):
+        @web.middleware
+        async def as_app(request, handler):
+            request["app"] = app_name
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, as_app)
+        return TestClient(TestServer(app))
+
+    @pytest.mark.asyncio
+    async def test_an_app_pin_answers_a_missing_key_and_a_foreign_transcript_identically(
+        self, tmp_path, monkeypatch
+    ):
+        """The pin is judged only on a transcript the app owns.
+
+        A missing key reads as ``{}`` and can never match a pin; answering its
+        mismatch 409 while a foreign transcript gets the isolation 404 would tell
+        an app which keys exist across the isolation boundary.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:theirs", "user", "hello")
+        log.update_metadata("dashboard:theirs", {"app": "app-B"})
+        theirs_created_at = log.get_metadata("dashboard:theirs")["created_at"]
+        answers = []
+        async with self._app_client(state, "app-A") as client:
+            for slot_name, pin in (
+                ("missing", "2026-10-02T19:00:00+00:00"),
+                ("theirs", "2026-10-02T19:00:00+00:00"),
+                ("theirs", theirs_created_at),
+            ):
+                response = await client.post(
+                    f"/api/chat/slots/{slot_name}/resume",
+                    json={"key": f"dashboard:{slot_name}", "expected_created_at": pin},
+                )
+                answers.append((response.status, await response.json()))
+
+        assert answers == [(404, {"error": "not found", "code": "slot_not_found"})] * 3
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    async def test_an_app_resuming_its_own_transcript_is_judged_by_the_pin(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:mine", "user", "hello")
+        log.update_metadata("dashboard:mine", {"app": "app-A"})
+        created_at = log.get_metadata("dashboard:mine")["created_at"]
+
+        async with self._app_client(state, "app-A") as client:
+            wrong = await client.post(
+                "/api/chat/slots/mine/resume",
+                json={"key": "dashboard:mine", "expected_created_at": "2026-10-02T19:00:00+00:00"},
+            )
+            wrong_body = await wrong.json()
+            assert (wrong.status, wrong_body["code"]) == (409, "resume_identity_mismatch")
+            assert state._slots == {}
+            right = await client.post(
+                "/api/chat/slots/mine/resume",
+                json={"key": "dashboard:mine", "expected_created_at": created_at},
+            )
+            right_body = await right.json()
+
+        assert right.status == 200, right_body
+        assert state._slots["mine"].created_at == created_at
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_found_after_the_transcript_read_is_answered_as_it_is(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_handlers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:guarded", "user", "original")
+        expected_created_at = log.get_metadata("dashboard:guarded")["created_at"]
+        refusal = chat_handlers.ResumeRefusal(
+            "this thread's crew name cannot be dispatched", "member_pin_mismatch", 409
+        )
+        monkeypatch.setattr(
+            chat_handlers,
+            "_live_slot_for_resume",
+            AsyncMock(side_effect=[None, chat_handlers.ResumeOutcome(refusal=refusal)]),
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={"key": "dashboard:guarded", "expected_created_at": expected_created_at},
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "member_pin_mismatch")
+        assert state._slots == {}
+
+    def test_no_live_slot_answer_in_resume_skips_the_pin(self):
+        """Every live-slot probe's answer is returned through the pin, wherever it sits."""
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.chat_api import resume
+
+        function = next(
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(resume)))
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "resume_slot_from_history"
+        )
+        probe_answers = {
+            target.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Await)
+            and isinstance(node.value.value, ast.Call)
+            and isinstance(node.value.value.func, ast.Name)
+            and node.value.value.func.id == "_live_slot_for_resume"
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        unpinned_returns = [
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in probe_answers
+        ]
+
+        assert probe_answers, "resume_slot_from_history no longer probes for a live slot"
+        assert unpinned_returns == []
+
+
+class TestPinnedResumeOfALiveSlotBoundToAnOlderTranscript:
+    """A live slot's identity is the transcript it holds, not its construction stamp.
+
+    ``slot.created_at`` is the constructor's clock reading; a save carries the
+    disk line's own ``created_at`` forward and records it as
+    ``_disk_meta_created_at``. A ``workflow-<run_id>`` slot bound to a closed
+    chat's session, or a chat minted by name over an existing transcript, holds
+    that transcript under a construction stamp that never matches it.
+    """
+
+    CONSTRUCTION_STAMP = "2026-10-02T19:00:00+00:00"
+    REPLACEMENT_IDENTITY = "1999-01-01T00:00:00+00:00"
+
+    @staticmethod
+    def _state_with_transcript(tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "original")
+        transcript_created_at = state.conversation_log.get_metadata("dashboard:guarded")[
+            "created_at"
+        ]
+        return state, transcript_created_at
+
+    @staticmethod
+    async def _pinned_resume(state, pin):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume",
+                json={"key": "dashboard:guarded", "expected_created_at": pin},
+            )
+            return response.status, await response.json()
+
+    @pytest.mark.asyncio
+    async def test_a_saved_workflow_slot_bound_to_the_transcript_answers_the_pin(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        state, transcript_created_at = self._state_with_transcript(tmp_path, monkeypatch)
+        workflow_slot = state.get_or_create_slot(
+            "workflow-run1", linked_session_key="dashboard:guarded"
+        )
+        workflow_slot.created_at = self.CONSTRUCTION_STAMP
+        workflow_slot.append("assistant", "workflow result")
+        workflow_slot.drain()
+        assert _save_slot_to_history(state, workflow_slot)
+        assert workflow_slot._disk_meta_created_at == transcript_created_at
+        assert workflow_slot.created_at == self.CONSTRUCTION_STAMP
+
+        status, body = await self._pinned_resume(state, transcript_created_at)
+
+        assert (status, body.get("key")) == (200, "workflow-run1"), body
+        assert state._slots == {"workflow-run1": workflow_slot}
+
+    @pytest.mark.asyncio
+    async def test_an_unsaved_slot_over_the_transcript_is_judged_by_the_disk_identity(
+        self, tmp_path, monkeypatch
+    ):
+        state, transcript_created_at = self._state_with_transcript(tmp_path, monkeypatch)
+        minted = state.get_or_create_slot("guarded")
+        minted.created_at = self.CONSTRUCTION_STAMP
+        assert minted._disk_meta_created_at == ""
+        loop_thread = threading.get_ident()
+        read_threads = []
+        get_metadata_status = state.conversation_log.get_metadata_status
+
+        def record_metadata_status_thread(key):
+            read_threads.append((threading.get_ident(), key))
+            return get_metadata_status(key)
+
+        monkeypatch.setattr(
+            state.conversation_log, "get_metadata_status", record_metadata_status_thread
+        )
+
+        status, body = await self._pinned_resume(state, transcript_created_at)
+
+        assert (status, body.get("key")) == (200, "guarded"), body
+        assert state._slots == {"guarded": minted}
+        assert read_threads == [(read_threads[0][0], "dashboard:guarded")]
+        assert read_threads[0][0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_a_slot_that_observed_another_incarnation_is_refused(self, tmp_path, monkeypatch):
+        state, transcript_created_at = self._state_with_transcript(tmp_path, monkeypatch)
+        replacement = state.get_or_create_slot("guarded")
+        replacement.created_at = transcript_created_at
+        replacement._disk_meta_created_at = self.REPLACEMENT_IDENTITY
+
+        status, body = await self._pinned_resume(state, transcript_created_at)
+
+        assert (status, body.get("code")) == (409, "resume_identity_mismatch"), body
+        assert state._slots == {"guarded": replacement}
+
+    @pytest.mark.asyncio
+    async def test_an_unsaved_slot_whose_transcript_was_replaced_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:00+00:00"
+        )
+        state, transcript_created_at = self._state_with_transcript(tmp_path, monkeypatch)
+        minted = state.get_or_create_slot("guarded")
+        minted.created_at = transcript_created_at
+        state.conversation_log.delete_session("dashboard:guarded")
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:01+00:00"
+        )
+        state.conversation_log.append("dashboard:guarded", "user", "a later conversation")
+        assert state.conversation_log.get_metadata("dashboard:guarded")["created_at"] != (
+            transcript_created_at
+        )
+
+        status, body = await self._pinned_resume(state, transcript_created_at)
+
+        assert (status, body.get("code")) == (409, "resume_identity_mismatch"), body
+        assert state._slots == {"guarded": minted}
+
+    @pytest.mark.asyncio
+    async def test_an_unsaved_slot_with_no_transcript_on_disk_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        state, transcript_created_at = self._state_with_transcript(tmp_path, monkeypatch)
+        minted = state.get_or_create_slot("guarded")
+        minted.created_at = transcript_created_at
+        state.conversation_log.delete_session("dashboard:guarded")
+
+        status, body = await self._pinned_resume(state, transcript_created_at)
+
+        assert (status, body.get("code")) == (409, "resume_identity_mismatch"), body
+        assert state._slots == {"guarded": minted}
+
+    @pytest.mark.asyncio
+    async def test_a_slot_that_never_writes_a_transcript_is_refused(self, tmp_path, monkeypatch):
+        state, transcript_created_at = self._state_with_transcript(tmp_path, monkeypatch)
+        incognito = state.get_or_create_slot("guarded", memory_mode="incognito")
+        incognito.created_at = transcript_created_at
+
+        status, body = await self._pinned_resume(state, transcript_created_at)
+
+        assert (status, body.get("code")) == (409, "resume_identity_mismatch"), body
+        assert state._slots == {"guarded": incognito}
 
 
 # ── Resume deduplication ──
@@ -17249,6 +17908,209 @@ class TestForkSlot:
         disk_msgs = state.conversation_log.read_messages(hk)
         assert meta.get("forked_from") == "dashboard:src", f"forked_from not persisted; meta={meta}"
         assert len(disk_msgs) == 2, f"forked messages not persisted (got {len(disk_msgs)})"
+
+    @pytest.mark.asyncio
+    async def test_fork_records_the_parent_transcript_it_was_copied_from(self, tmp_path):
+        """The fork keeps the parent transcript's ``created_at``, on disk as well, so a
+        merge back can tell that transcript from a chat later made on the same key."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.append("assistant", "hello", "msg msg-a")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            new_key = (await resp.json())["key"]
+
+        from kiro_crew.dashboard.chat import _history_key_for
+
+        identity = state.conversation_log.get_metadata(_history_key_for("src")).get("created_at")
+        assert identity, "the fork saves its parent first, so the parent has a created_at"
+        assert state._slots[new_key].forked_from_created_at == identity
+        meta = state.conversation_log.get_metadata(_history_key_for(new_key))
+        assert meta.get("forked_from_created_at") == identity
+
+    @pytest.mark.asyncio
+    async def test_fork_discards_an_oversized_parent_transcript_identity(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+        state.flush_slot_now(slot)
+        long_identity = "t" * (MERGED_FROM_MAX_CREATED_AT_CHARS + 1)
+        state.conversation_log.update_metadata("dashboard:src", {"created_at": long_identity})
+        state._slots.pop("src")
+
+        from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+
+        restored = _rehydrate_slot_from_history(state, "src")
+        assert restored is not None
+        assert restored._disk_meta_created_at == long_identity
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            new_key = (await resp.json())["key"]
+
+        assert state._slots[new_key].forked_from_created_at == ""
+
+    @pytest.mark.asyncio
+    async def test_fork_discards_an_oversized_effective_parent_key(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+        state.flush_slot_now(slot)
+        slot.linked_session_key = _OVER_LONG_FORK_PARENT
+
+        with (
+            patch("kiro_crew.dashboard.chat_fork.slot_history_key", return_value="dashboard:src"),
+            patch("kiro_crew.dashboard.chat_fork.session_was_deleted", return_value=False),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/src/fork", json={})
+                assert resp.status == 200
+                data = await resp.json()
+
+        new_slot = state._slots[data["key"]]
+        assert new_slot.forked_from is None
+        assert new_slot.forked_from_created_at == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", ["resume", "recent", "open_slots"])
+    async def test_every_restore_path_brings_back_the_forks_parent_identity(
+        self, tmp_path, monkeypatch, restore
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:leaf", "user", "hello")
+        identity = "2026-10-01T09:00:00+00:00"
+        log.update_metadata(
+            "dashboard:leaf", {"forked_from": "dashboard:src", "forked_from_created_at": identity}
+        )
+
+        if restore == "resume":
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/leaf/resume", json={"key": "dashboard:leaf"}
+                )
+                assert resp.status == 200
+        elif restore == "recent":
+            from kiro_crew.dashboard.chat import restore_recent_sessions
+
+            restore_recent_sessions(state, window_minutes=9999)
+        else:
+            from kiro_crew.dashboard.chat_persistence import restore_open_slots
+
+            (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["leaf"], "ts": 0.0}))
+            assert restore_open_slots(state) == 1
+
+        slot = state._slots["leaf"]
+        assert (slot.forked_from, slot.forked_from_created_at) == ("dashboard:src", identity)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", ["resume", "recent", "open_slots"])
+    @pytest.mark.parametrize(
+        ("forked_from", "logged"),
+        [
+            (7, "7"),
+            ([], "[]"),
+            ({}, "{}"),
+            ("", "''"),
+            (True, "True"),
+            (_OVER_LONG_FORK_PARENT, f"{len(_OVER_LONG_FORK_PARENT)} characters"),
+        ],
+    )
+    async def test_every_restore_path_discards_invalid_fork_lineage(
+        self, tmp_path, monkeypatch, caplog, restore, forked_from, logged
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:leaf", "user", "hello")
+        log.update_metadata(
+            "dashboard:leaf",
+            {
+                "forked_from": forked_from,
+                "forked_from_created_at": "2026-10-01T09:00:00+00:00",
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence"):
+            if restore == "resume":
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    resp = await client.post(
+                        "/api/chat/slots/leaf/resume", json={"key": "dashboard:leaf"}
+                    )
+                    assert resp.status == 200
+            elif restore == "recent":
+                from kiro_crew.dashboard.chat import restore_recent_sessions
+
+                restore_recent_sessions(state, window_minutes=9999)
+            else:
+                from kiro_crew.dashboard.chat_persistence import restore_open_slots
+
+                (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["leaf"], "ts": 0.0}))
+                assert restore_open_slots(state) == 1
+
+        slot = state._slots["leaf"]
+        assert slot.forked_from is None
+        assert slot.forked_from_created_at == ""
+        warnings = [
+            record
+            for record in caplog.records
+            if "Discarding invalid persisted forked_from" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert logged in warnings[0].getMessage()
+        assert _OVER_LONG_FORK_PARENT not in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", ["resume", "recent", "open_slots"])
+    @pytest.mark.parametrize(
+        "forked_from_created_at",
+        [5, {}, "t" * (MERGED_FROM_MAX_CREATED_AT_CHARS + 1)],
+    )
+    async def test_every_restore_path_discards_invalid_fork_parent_identity(
+        self, tmp_path, monkeypatch, restore, forked_from_created_at
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:leaf", "user", "hello")
+        log.update_metadata(
+            "dashboard:leaf",
+            {
+                "forked_from": "dashboard:src",
+                "forked_from_created_at": forked_from_created_at,
+            },
+        )
+
+        if restore == "resume":
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/leaf/resume", json={"key": "dashboard:leaf"}
+                )
+                assert resp.status == 200
+        elif restore == "recent":
+            from kiro_crew.dashboard.chat import restore_recent_sessions
+
+            restore_recent_sessions(state, window_minutes=9999)
+        else:
+            from kiro_crew.dashboard.chat_persistence import restore_open_slots
+
+            (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["leaf"], "ts": 0.0}))
+            assert restore_open_slots(state) == 1
+
+        slot = state._slots["leaf"]
+        assert slot.forked_from == "dashboard:src"
+        assert slot.forked_from_created_at == ""
 
     @pytest.mark.asyncio
     async def test_fork_rejects_oversized_prompt(self, tmp_path):

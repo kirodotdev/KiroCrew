@@ -4046,6 +4046,48 @@
       "turn_4_assistant": "Added under **Unreleased**:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nWant it in the PR too?",
       "turn_4_user": "Yes. Then summarize what changed.",
       "turn_5_assistant": "Pushed. In short: one retry around the token refresh, a regression test for the sign-out path, and the CHANGELOG line. PR #12 has all three and is linked to #7."
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "Merge into parent…",
+      "running": "turn running",
+      "incognito": "incognito chat",
+      "temporary": "temporary chat",
+      "parent_not_dashboard": "parent runs outside the dashboard",
+      "parent_channel": "parent runs in {{channel}}",
+      "parent_direct_message": "parent is a direct message",
+      "parent_scheduled_job": "parent is a scheduled job"
+    },
+    "mergeBackDialog": {
+      "title": "Merge into the parent chat",
+      "title_named": "Merge into “{{parent}}”",
+      "description": "Sends this summary to the parent chat's agent. This fork stays open.",
+      "drafting": "Writing a summary of the new messages…",
+      "covers_one": "Summarizes {{count}} message not merged yet",
+      "covers_other": "Summarizes {{count}} messages not merged yet",
+      "covers_partial_one": "Summarizes the first {{covered}} of {{count}} message not merged yet",
+      "covers_partial_other": "Summarizes the first {{covered}} of {{count}} messages not merged yet",
+      "remaining_one": "{{count}} more message did not fit in this draft. Merge again after this one to send it.",
+      "remaining_other": "{{count}} more messages did not fit in this draft. Merge again after this one to send them.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "What should the parent chat know from this fork?",
+      "edit_hint": "The parent gets exactly this text, last sentence included. Edit or delete any of it before merging.",
+      "gap_sentence": "Messages sent here after the fork was made were not seen by the fork.",
+      "merge": "Merge",
+      "merging": "Merging…",
+      "cancel": "Cancel",
+      "close": "Close",
+      "draft_again": "Draft again",
+      "redraft_confirm": "Replace your edited text with a new draft?",
+      "redraft_replace": "Replace with new draft",
+      "redraft_keep": "Keep my text",
+      "redraft_outdated_confirm": "The chats changed since this draft was written, so Merge needs a new draft. Keep your text as it is, or replace it with the new draft?",
+      "redraft_outdated_keep": "Draft again, keep my text",
+      "close_confirm": "Close and lose your edited text?",
+      "close_discard": "Discard and close",
+      "cut": "The summary was cut to fit the limit. It ends with “…” just above the last sentence. Check that line before you merge.",
+      "open_parent": "Open the parent chat",
+      "parent_not_reopened": "The parent chat could not be opened. Open it from History, then try again.",
+      "held": "Merged. The parent chat is in the middle of a turn, so the summary appears there when that turn ends."
     }
   },
   "hooks": {
@@ -5237,6 +5279,12 @@
         "retry": "Retry",
         "running_on_header": "On {{name}}",
         "approval_elsewhere": "The agent on {{name}} is waiting for an approval this window cannot answer. Answer it on the crew's own dashboard."
+      },
+      "mergedFromLabel": {
+        "merged_from": "Merged from <fork>{{title}}</fork>",
+        "untitled_fork": "a fork",
+        "messages_one": "{{count}} message",
+        "messages_other": "{{count}} messages"
       }
     },
     "chatPage": {
@@ -8609,6 +8657,26 @@
       "search_in": "Search '{{query}}' in {{path}}",
       "search_web": "Search web for '{{query}}'",
       "view_image": "View image {{path}}"
+    },
+    "mergeBackError": {
+      "parent_not_open": "The parent chat is closed.",
+      "parent_deleted": "The parent chat was deleted. This fork cannot be merged into the chat that replaced it.",
+      "parent_unconfirmed": "The parent chat can't be confirmed as the one this fork was made from, so the fork can't be merged into it.",
+      "parent_not_dashboard": "A merge can only go into a chat that runs in the dashboard. This chat's parent runs outside it.",
+      "parent_channel": "A merge can only go into a chat that runs in the dashboard. This chat's parent is a {{channel}} chat.",
+      "parent_direct_message": "A merge can only go into a chat that runs in the dashboard. This chat's parent is a direct-message chat.",
+      "parent_scheduled_job": "A merge can only go into a chat that runs in the dashboard. This chat's parent is a scheduled job.",
+      "nothing_to_merge": "The parent chat already has everything in this fork.",
+      "fork_running": "This fork is still running a turn. Merge when it finishes.",
+      "restricted": "An incognito or temporary chat cannot be merged, because nothing is derived from it.",
+      "draft_in_flight": "A summary for this fork is already being written.",
+      "summary_failed": "The summary could not be written. Try again.",
+      "merge_point_missing": "This fork changed since the summary was written. Draft it again.",
+      "already_merged": "The parent chat already has these messages from another merge.",
+      "queue_full": "The parent chat has merges its agent has not read yet. Send it a message first.",
+      "parent_holds_too_many": "The parent chat is holding too many notes during its current turn. Try again when the turn ends.",
+      "summary_too_long": "The summary is over the length limit. Shorten it.",
+      "failed": "The merge did not go through. Try again."
     }
   },
   "store": {

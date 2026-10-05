@@ -327,9 +327,11 @@ class TestRunnerBranch:
         # normally and were kept, so they MUST settle. A pre-output 5xx (no
         # terminal), a cancelled Stop (discarded) and an empty-response re-queue
         # all keep the debt armed; a STARTED-but-not-completed compaction is not
-        # yet durable and also stays armed.
-        delivered = src.index("_first_turn_history_delivered = (")
-        dwin = src[delivered : delivered + 700]
+        # yet durable and also stays armed. The rule is defined once, as the
+        # turn-scoped helper the settle and the merge-card retirement both read.
+        delivered = src.index("def _kiro_cli_kept_the_prompt() -> bool:")
+        dwin = src[delivered : delivered + 1100]
+        assert "_first_turn_history_delivered = _kiro_cli_kept_the_prompt()" in src
         # The fix: the predicate must NOT gate on _turn_landed (that excluded the
         # promise-only / leaked-tool / infra-recovery terminals the reviewer named).
         assert "_turn_landed" not in dwin

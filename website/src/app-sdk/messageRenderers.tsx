@@ -36,6 +36,8 @@ import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { resolveTransientNotice } from '../pages/chat/transientNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
+import MergedFromLabel from '../pages/chat/MergedFromLabel'
+import { mergedFromOf } from '../types/mergeBack'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { REASONING_ROLES, stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -614,6 +616,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     render: (m, ctx) => {
       const cronLabel = (m.meta?.cronLabel as string) || ''
       const appLabel = (m.meta?.appLabel as string) || ''
+      const mergedFrom = mergedFromOf(m.meta)
       const stripped = cronLabel
         ? m.content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
         : appLabel
@@ -626,6 +629,9 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         <>
           {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock size={11} className="inline mr-0.5" />{cronLabel}</span>}
           {!cronLabel && appLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 cursor-help" title={i18nT('components.mcpApp.from_app_tooltip')}><AppWindow size={11} className="inline mr-0.5" />{i18nT('components.mcpApp.from_app', { app: appLabel.split('/')[0] })}</span>}
+          {/* No opener here: this registry also draws transcripts that have no
+              session navigation, so the fork's title is plain text. */}
+          {!cronLabel && !appLabel && mergedFrom && <MergedFromLabel block={mergedFrom} />}
           <div className="mc-message-font-scope msg-content px-4 py-3 leading-relaxed rounded-lg bg-warn-subtle text-text ring-1 ring-inset forced-colors:border ring-warn/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
             <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} softBreaks /></MessageErrorBoundary>
           </div>

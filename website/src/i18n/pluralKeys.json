@@ -257,5 +257,9 @@
   "pages.chat.toolCallLine.ask_answered",
   "components.questionCard.chars_left",
   "components.questionCard.answer_at_limit",
-  "apps.commandBar.attention_more"
+  "apps.commandBar.attention_more",
+  "components.mergeBackDialog.covers",
+  "components.mergeBackDialog.covers_partial",
+  "components.mergeBackDialog.remaining",
+  "pages.chat.mergedFromLabel.messages"
 ]

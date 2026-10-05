@@ -159,8 +159,10 @@ export const createSlot = createAsyncThunk<
 
 export const resumeFromHistory = createAsyncThunk(
   'chat/resumeFromHistory',
-  async ({ key, title }: { key: string; title: string }, { dispatch }) => {
-    const d = await api.resumeChatSlot(key, title)
+  async ({ key, title, expectedCreatedAt }: { key: string; title: string; expectedCreatedAt?: string }, { dispatch }) => {
+    const d = await (expectedCreatedAt === undefined
+      ? api.resumeChatSlot(key, title)
+      : api.resumeChatSlot(key, title, expectedCreatedAt))
     if (d.ok) {
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))

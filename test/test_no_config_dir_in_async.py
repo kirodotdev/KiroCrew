@@ -39,6 +39,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_turn/prompt_assembly.py",
     "dashboard/chat_turn/recovery.py",
     "dashboard/chat_turn/tool_approval.py",
+    "dashboard/chat_turn/turn_context.py",
     "dashboard/chat_turn/turn_marker.py",
     "dashboard/handlers/knowledge.py",
     "dashboard/handlers/messaging.py",

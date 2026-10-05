@@ -31,6 +31,10 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_buffers import (
+    MAX_FORK_PARENT_KEY_CHARS,
+    bounded_transcript_created_at,
+)
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
@@ -1002,7 +1006,10 @@ async def fork_slot(
             if isinstance(exc, (OSError, ValueError)):
                 return _store_unavailable_response(inherited_store, exc)
             raise
-    new_slot.forked_from = effective_session_key(slot)
+    forked_from = effective_session_key(slot)
+    if len(forked_from) <= MAX_FORK_PARENT_KEY_CHARS:
+        new_slot.forked_from = forked_from
+        new_slot.forked_from_created_at = bounded_transcript_created_at(slot._disk_meta_created_at)
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
