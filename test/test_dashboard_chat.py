@@ -25,6 +25,7 @@ from chat_test_helpers import (
     _make_state,
     await_successor,
     chat_done_frames,
+    close_before_resume,
     run_as_slot_task,
 )
 from dashboard_owner_helpers import as_owner
@@ -4491,14 +4492,19 @@ class TestResumeDedupe:
 
         async with TestClient(TestServer(_make_app(state))) as client:
             # Resume and add a message
-            await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            assert resp.status == 200, await resp.text()
             state._slots["s1"].append("user", "new question")
             state._slots["s1"].append("assistant", "new answer")
             state._slots["s1"].drain()
             await client.delete("/api/chat/slots/s1")
+            # Closed BEFORE the second resume begins, whatever the clock's resolution;
+            # a refused resume would leave this second cycle with nothing to test.
+            close_before_resume(log, "dashboard:s1")
 
             # Resume again and close without changes
-            await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            assert resp.status == 200, await resp.text()
             await client.delete("/api/chat/slots/s1")
 
         # Should have 4 messages (original 2 + new 2), not duplicated
@@ -14918,6 +14924,8 @@ class TestFolderCRUD:
         slot.append("user", "old msg")
         slot.drain()
         _save_slot_to_history(state, slot, closed=True)
+        # Closed BEFORE the resume begins, whatever the clock's resolution.
+        close_before_resume(state.conversation_log, "dashboard:revive1")
         state._slots.pop("revive1", None)
         assert state._folders[0]["hidden"] is True  # still hidden before revive
 

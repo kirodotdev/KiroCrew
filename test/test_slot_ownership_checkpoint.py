@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_app, _make_state
+from chat_test_helpers import _make_app, _make_state, close_before_resume
 
 from kiro_crew.dashboard import slot_ownership
 from kiro_crew.dashboard.slot_ownership import (
@@ -794,6 +794,8 @@ async def _persist_and_close(state, slot: _ChatSlot) -> None:
     await _persist(state, slot)
     await close_slot(state, slot, slot.key)
     assert slot.key not in state._slots
+    # Closed BEFORE any resume the test then runs, whatever the clock's resolution.
+    close_before_resume(state.conversation_log, f"dashboard:{slot.key}")
 
 
 @pytest.fixture
