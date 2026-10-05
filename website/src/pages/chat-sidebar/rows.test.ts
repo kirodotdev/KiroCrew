@@ -58,7 +58,7 @@ function inputs(rows: Slot[], over: InputOverrides = {}): SidebarRowInputs {
       tags: { resolved: new Set(), raw: new Set(), ...f.tags },
       search: { text: '', folderMatches: null, ...f.search },
       status: { active: new Set(), hidden: new Set(), paused: false, recentWindowMs: 60 * MINUTE, ...f.status },
-      folders: { hiddenSubtree: new Set(), active: false, ...f.folders },
+      folders: { hiddenSubtree: new Set(), pinnedSubtree: new Set(), active: false, ...f.folders },
       models: { passes: () => true, active: false, ...f.models },
     },
     clears: over.clears ?? clears(),

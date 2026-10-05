@@ -78,8 +78,11 @@ export interface SidebarRowFilters {
    *  the chips whose eye button is on: their matches are dropped, paused or not. */
   status: { active: ReadonlySet<SessionFilterKey>; hidden: ReadonlySet<SessionFilterKey>; paused: boolean; recentWindowMs: number }
   /** The filter menu's folder hides. `active` is false while the search box holds
-   *  text, so a hidden folder never becomes a search dead end. */
-  folders: { hiddenSubtree: ReadonlySet<string>; active: boolean }
+   *  text, so a hidden folder never becomes a search dead end. `pinnedSubtree` is
+   *  the folders a folder pin covers (the pinned folders and everything under
+   *  them): a row filed there is exempt from the tag and status chips the way a
+   *  pinned session is, and `hiddenSubtree` never names one of them. */
+  folders: { hiddenSubtree: ReadonlySet<string>; pinnedSubtree: ReadonlySet<string>; active: boolean }
   /** The model filter. `passes` is the include-or-exclude predicate the model
    *  vocabulary owns (`useSidebarModels`), already answering true for every row
    *  while nothing is selected; `active` is whether a selection narrows. */
@@ -590,7 +593,18 @@ function makeDimensions(
   // which means "hide all of this". Same predicate as the Pinned chip, so a peer row
   // (never pinned) is never exempt. `narrows` is untouched: the list IS narrowed; the
   // pinned rows are exempt from it.
-  const pinnedBypass = matches.pinned
+  //
+  // A folder pin extends the same exemption to every row filed in the pinned
+  // folder or under it: the folder pin is the person's standing answer to "do I
+  // want to see these", and a chip is the narrower, momentary one. The rows are
+  // not pinned themselves (no band, no row glyph), so the exemption is the only
+  // thing the two pins share. `folderOf` refuses a peer row, so a colliding peer
+  // key cannot ride a local folder's pin into the list.
+  const inPinnedFolder = (slot: Slot): boolean => {
+    const folderId = folderOf(slot)
+    return !!folderId && folderFilter.pinnedSubtree.has(folderId)
+  }
+  const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -852,7 +866,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const dimensions = reuse(prev?.dimensions, [
     status.active, status.paused, status.hidden, tags.resolved, tags.raw, filters.models.passes, filters.models.active,
     search.text, search.folderMatches, searchRanks,
-    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, slotFolders,
+    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
     clears.tags, clears.models, clears.search, clears.status, clears.folder, clears.hides,
   ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
 
