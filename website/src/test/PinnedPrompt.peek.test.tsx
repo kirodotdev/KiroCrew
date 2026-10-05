@@ -27,9 +27,16 @@ function renderCard(over: Partial<Parameters<typeof PinnedPrompt>[0]> = {}) {
     />,
   )
   const card = screen.getByTestId('pinned-prompt')
+  const clip = card.parentElement as HTMLElement
+  const band = clip.parentElement as HTMLElement
+  // The opaque mask layer is the band's absolute z-0 child (fill + lower fade);
+  // the clip wrapper is the in-flow sibling that holds the card.
+  const mask = band.querySelector(':scope > .z-0') as HTMLElement
+  const fill = mask?.querySelector('.bg-bg') as HTMLElement
+  const fade = mask?.querySelector('.bg-gradient-to-b.from-bg.to-transparent') as HTMLElement
   const box = card.firstElementChild as HTMLElement
   const p = box.querySelector('p') as HTMLElement
-  return { ...utils, card, box, p }
+  return { ...utils, card, clip, band, mask, fill, fade, box, p }
 }
 
 /** The card listens natively (`pointerenter` / `pointerleave` do not bubble, so
@@ -75,23 +82,45 @@ describe('PinnedPrompt peek', () => {
   })
 
   it('masks transcript text behind the card and fades the band into the reply', () => {
-    const { card } = renderCard()
-    const band = card.parentElement as HTMLElement
-    expect(band.className).toContain('bg-bg')
-    const fade = band.querySelector('.bg-gradient-to-b.from-bg.to-transparent')
+    const { card, clip, band, mask, fill, fade } = renderCard()
+    // The opaque mask layer sits behind the card as the band's absolute z-0 child,
+    // carrying the fill and the lower fade. The push shrink lives here, not on the
+    // band, so the band can size to its in-flow card.
+    expect(mask).not.toBeNull()
+    expect(mask.className).toContain('absolute')
+    expect(mask.className).toContain('z-0')
+    expect(fill).not.toBeNull()
+    expect(fill.className).toContain('inset-0')
+    // The lower fade is a child of the MASK layer (overflow-visible), hung at
+    // top-full off its bottom, so it is never clipped and tracks the shrink.
     expect(fade).not.toBeNull()
-    expect(fade?.className).toContain('top-full')
+    expect(fade.className).toContain('top-full')
+    expect(mask.style.overflow).not.toBe('hidden')
+    // The card is in flow (so the band sizes to it) and paints above the mask.
+    expect(card.parentElement).toBe(clip)
+    expect(card.className).toContain('z-[1]')
+    // The band itself never translates (its top is the fold) so it cannot rise
+    // over the chat header.
+    expect(band.style.transform).toBe('')
+    expect(band.style.height).toBe('')
   })
 
   it('keeps the backdrop under the resting, peeked, and expanded card heights', () => {
-    const { card, box, rerender } = renderCard()
-    const band = card.parentElement as HTMLElement
-    expect(band.style.height).toBe('48px')
+    const { box, band, mask, rerender } = renderCard()
+    // The band has NO explicit height — it tracks its in-flow card so an expanded
+    // or peeked card is never clipped to a sliver. The opaque mask layer behind
+    // the card carries the height (card box + ROW_PAD_Y*2; bannerH 40 is the
+    // collapsed fallback before a real measure), minus the push.
+    expect(band.style.height).toBe('')
+    expect(mask.style.height).toBe('48px')
 
     hoverAndRest(box)
+    // A peek stays at the same fallback height here (happy-dom measures the card
+    // box as 0), and the band still has no explicit height.
     expect(band.style.height).toBe('')
+    expect(mask.style.height).toBe('48px')
     act(() => { pointer(box, 'pointerleave', 'mouse') })
-    expect(band.style.height).toBe('48px')
+    expect(mask.style.height).toBe('48px')
 
     const expandedProps = {
       text: 'expanded prompt',
@@ -106,12 +135,105 @@ describe('PinnedPrompt peek', () => {
     }
     rerender(<PinnedPrompt {...expandedProps} pushUp={0} />)
     expect(band.style.height).toBe('')
+    expect(mask.style.height).toBe('48px')
 
-    // Expansion remains overflow-visible while the next prompt pushes it. The
-    // opaque band must therefore keep the card's natural height during the push,
-    // or transcript text can leak around its lower lines.
+    // Expansion stays overflow-visible while the next prompt pushes it; the mask
+    // shrinks from the bottom by pushUp so the fill and fade follow the card and
+    // no transcript text leaks around its lower lines.
     rerender(<PinnedPrompt {...expandedProps} pushUp={12} />)
     expect(band.style.height).toBe('')
+    expect(mask.style.height).toBe('36px')
+  })
+
+  it('carries the push on the card while expanded and never translates the band, so it cannot paint over the header', () => {
+    // Regression fix for the self-review: an earlier revision translated the whole
+    // band up by `pushUp` while expanded, which slid the band's opaque fill up over
+    // the chat header's title row and divider in the same overlay. The band now
+    // NEVER translates — its top is pinned at the fold — and the push rides the
+    // card (and the fill, which lives in the card's clip wrapper and shrinks with
+    // the band height), so the backdrop still follows the card out of view but
+    // nothing ever rises over the header.
+    const expandedProps = {
+      text: 'expanded prompt',
+      fullText: 'expanded prompt\nwith more content',
+      images: [] as string[],
+      bodyBeyondPreview: true,
+      bannerH: 40,
+      expanded: true,
+      onToggleExpanded: () => {},
+      onJump: () => {},
+      onCollapsedHeight: () => {},
+    }
+    const { card, band, rerender } = renderCard(expandedProps)
+
+    // At rest neither the band nor the card is translated.
+    expect(band.style.transform).toBe('')
+    expect(card.style.transform).toBe('translateY(0px)')
+
+    // Pushed: the card carries the translate, the band stays put at the fold.
+    rerender(<PinnedPrompt {...expandedProps} pushUp={12} />)
+    expect(band.style.transform).toBe('')
+    expect(card.style.transform).toBe('translateY(-12px)')
+  })
+
+  it('while folding, ends the mask at the card bottom and drops the lower fade so the action strip stays visible', () => {
+    // During a fold the hidden row's action strip is forced visible just below the
+    // card (index.css `[data-pinned-standin="folding"]`). The opaque mask fill must
+    // not carry its extra bottom ROW_PAD_Y over that strip, and the 24px top-full
+    // lower fade must not render over it either — both would hide clickable controls.
+    const props = {
+      text: 'a prompt long enough that one line cannot hold it, and neither can three',
+      fullText: 'a prompt long enough that one line cannot hold it, and neither can three\nsecond paragraph',
+      images: [] as string[], bodyBeyondPreview: true, bannerH: 40, expanded: false,
+      onToggleExpanded: () => {}, onJump: () => {}, onCollapsedHeight: () => {},
+    }
+    // At rest (not folding) the lower fade is present over the mask.
+    const { mask, rerender } = renderCard(props)
+    expect(mask.querySelector('.bg-gradient-to-b.from-bg.to-transparent')).not.toBeNull()
+
+    // Folding (liveH set): the lower fade is dropped — a 24px top-full gradient
+    // starting fully opaque would otherwise paint over the hidden row's action
+    // strip, which is forced visible just below the card during a fold. (The mask
+    // fill likewise ends at the card's bottom while folding; see `maskBottomPad`.)
+    rerender(<PinnedPrompt {...props} liveH={120} />)
+    const cardFolding = screen.getByTestId('pinned-prompt')
+    const maskFolding = cardFolding.parentElement!.parentElement!.querySelector(':scope > .z-0') as HTMLElement
+    expect(maskFolding.querySelector('.bg-gradient-to-b.from-bg.to-transparent')).toBeNull()
+  })
+
+  it('keeps the push on the card for a collapsed banner, and the lower fade is never clipped', () => {
+    // The card is clipped by its in-flow wrapper ONLY while pushing (an inline
+    // overflow, not a class), so the part risen above the fold is hidden and never
+    // paints over the header. The lower fade lives on the absolute mask layer,
+    // outside that clip wrapper, so `overflow: hidden` during the push can never
+    // clip it — the regression the self-review flagged. The card carries its own
+    // translate; the band never moves and keeps no explicit height.
+    const props = {
+      text: 'a prompt long enough that one line cannot hold it, and neither can three',
+      fullText: 'a prompt long enough that one line cannot hold it, and neither can three\nsecond paragraph\nthird paragraph',
+      images: [] as string[], bodyBeyondPreview: true, bannerH: 40, expanded: false,
+      onToggleExpanded: () => {}, onJump: () => {}, onCollapsedHeight: () => {},
+    }
+    const { card, band, clip, mask, rerender } = renderCard(props)
+    // At rest the clip wrapper is overflow-visible and the fade is mounted on the
+    // mask layer, outside it.
+    expect(clip.style.overflow).toBe('visible')
+    expect(mask.querySelector('.bg-gradient-to-b.from-bg.to-transparent')).not.toBeNull()
+
+    rerender(<PinnedPrompt {...props} pushUp={12} />)
+    expect(card.style.transform).toBe('translateY(-12px)')
+    expect(band.style.transform).toBe('')
+    expect(band.style.height).toBe('')
+    // The clip wrapper engages overflow:hidden during the push (clips the card at
+    // the fold); the mask shrinks from the bottom (48 - 12) so the fill and fade
+    // rise with the card and nothing is left behind over the transcript.
+    expect(clip.style.overflow).toBe('hidden')
+    expect(mask.style.height).toBe('36px')
+    // The fade is still a mask child during the push — not swallowed by the clip.
+    const fadePushed = mask.querySelector('.bg-gradient-to-b.from-bg.to-transparent')
+    expect(fadePushed).not.toBeNull()
+    expect(fadePushed?.className).toContain('top-full')
+    expect(mask.style.overflow).not.toBe('hidden')
   })
 
   it('opens to the preview line count once a mouse has rested on it, and closes on leave', () => {
