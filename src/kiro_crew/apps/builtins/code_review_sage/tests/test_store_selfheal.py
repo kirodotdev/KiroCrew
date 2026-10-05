@@ -452,6 +452,56 @@ class TestLayoutSeedingIsSerialized(unittest.TestCase):
                          f"the seed was published more than once: {published}")
 
 
+class TestCreateSurvivesTheDarwinRace(unittest.TestCase):
+    """Two processes creating one absent name must not lose to ``ENOENT``.
+
+    On Darwin, ``openat(dir_fd, name, O_CREAT)`` racing a sibling's create of the
+    same absent name can return ``ENOENT``: six concurrent ``stage_learning``
+    entrants on a fresh root measured 52 failed children in 200 rounds, and
+    ``test_concurrent_processes_both_land`` failed a nightly on it. The race is
+    modelled here as a kernel that answers every NONEXCLUSIVE create of an absent
+    name with ``ENOENT``, so the old open fails every time and an exclusive create
+    -- the shape that fixes it -- succeeds.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.data = store.data_dir(self.root)
+        self.data.mkdir(parents=True, exist_ok=True)
+
+    @contextlib.contextmanager
+    def _darwin_create_race(self):
+        real_open = os.open
+
+        def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+            if flags & os.O_CREAT and not flags & os.O_EXCL:
+                try:
+                    os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    raise FileNotFoundError(
+                        errno.ENOENT, "simulated Darwin O_CREAT race", path) from None
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(os, "open", racing_open):
+            yield
+
+    def test_the_layout_lock_is_taken_on_a_fresh_root(self):
+        with self._darwin_create_race():
+            with store.layout_lock(self.root):
+                pass
+        self.assertTrue((self.data / store._LAYOUT_LOCK_NAME).is_file())
+
+    def test_an_append_creates_its_log_on_a_fresh_root(self):
+        target = self.data / "consolidations.jsonl"
+        with self._darwin_create_race():
+            fd = store.open_append_nolink(target)
+        # No newline: a Windows os.open fd is text mode and would write \r\n.
+        os.write(fd, b"x")
+        os.close(fd)
+        self.assertEqual(target.read_bytes(), b"x")
+
+
 class TestLayoutLockFileIsGuarded(unittest.TestCase):
     """The lock file is opened, so it is also an attack surface.
 
