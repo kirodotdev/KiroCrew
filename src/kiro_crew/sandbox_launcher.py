@@ -1,53 +1,29 @@
-"""The Linux namespace launcher: the program a sandboxed agent spawn runs first.
+"""Render the Linux namespace launcher a sandboxed agent spawn runs first.
 
-:func:`_build_launcher_script` renders that program as Python source text.
-``kiro_crew.sandbox`` decides when a spawn needs it, materializes the mask targets
-it names, writes the text to ``<config_dir>/run`` and invokes it
-(``namespace_argv``). The program forks, unshares the user and mount namespaces,
-stages the private windows, seals the READONLY dirs, bind-masks the SENSITIVE dirs,
-applies the write carve-outs, scrubs the environment and execs the agent command.
+:func:`render_namespace_launcher` turns a :class:`~kiro_crew.sandbox_plan.ConfinementPlan`
+into the launcher program as Python source text: the plan's data is spelled as the
+program's constants, and the program around them is fixed. ``kiro_crew.sandbox`` plans
+the spawn, writes the text to ``<config_dir>/run`` and invokes it (``namespace_argv``).
+The program forks, unshares the user and mount namespaces, stages the private windows,
+seals the READONLY dirs, bind-masks the SENSITIVE dirs, applies the write carve-outs,
+scrubs the environment and execs the agent command.
 
-``kiro_crew.sandbox`` re-exports the builder under its old name, and a patch of
-``kiro_crew.sandbox._build_launcher_script`` lands here.
+Every decision about WHAT to mask is the plan's; this module only spells it.
 """
 
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.sandbox_plan import namespace_payload
+
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-# The builder reads the plan it renders -- the tier lists, the crew-home leaf tables,
-# the relocated and pod targets, the voice-runtime paths, the carve-out validator and
-# the ssh probe -- from ``kiro_crew.sandbox``, imported inside the function: a test
-# that rebinds one of those there reaches the builder at call time, and this module
-# holds no second copy of the plan. Circular import: ``kiro_crew.sandbox`` imports this
-# module while it loads, so the builder cannot import it at the top of this file.
+    from kiro_crew.sandbox_plan import ConfinementPlan
 
 
-def _build_launcher_script(
-    sandbox_level: str = "strict",
-    *,
-    strip_python_env: bool = False,
-    forward_ssh_auth_sock: bool = False,
-    extra_hidden_dirs: tuple[str, ...] = (),
-    extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
-    extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
-    extra_visible_dirs: tuple[str, ...] = (),
-    extra_private_dirs: tuple[str, ...] = (),
-    extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
-    extra_writable_dirs: tuple[str, ...] = (),
-    extra_expose_files: tuple[str, ...] = (),
-    fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
-    required_mask_targets: tuple[str, ...] = (),
-    mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
-    crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
-) -> str:
-    """Build a Python launcher script for the Linux namespace sandbox.
+def render_namespace_launcher(plan: ConfinementPlan) -> str:
+    """The launcher program for *plan*, as Python source text.
 
     The launcher is executed as a subprocess.  It:
 
@@ -61,329 +37,29 @@ def _build_launcher_script(
 
     The child retains the real UID/GID — no UID 0, no UID 65534.
     """
-    from kiro_crew.sandbox import (
-        _AGENT_DENIED_ENV_KEYS,
-        _CC_EXPOSE_FILES,
-        _CC_FILES,
-        _CREW_HIDDEN_LEAVES,
-        _CREW_READONLY_LEAVES,
-        _CREW_READONLY_TARGETS,
-        _CREW_UNREADABLE_MASK_LEAVES,
-        _PYTHON_ENV_PREFIXES,
-        _SENSITIVE_ENV_PREFIXES,
-        _STANDARD_DIRS,
-        _agent_scrub_prefixes,
-        _fold_crew_home_alias,
-        _hidden_path_contains_visible_path,
-        _is_policy_cache_dir,
-        _md_notebook_degraded_mask_dirs,
-        _pod_os_home_targets,
-        _private_window_spellings,
-        _relocated_crew_targets,
-        _relocated_policy_cache_dirs,
-        _resolved_kiro_agents_targets,
-        _sandbox_policy,
-        _ssh_supports_accept_new,
-        _voice_runtime_parent_paths,
-        _voice_runtime_sandbox_paths,
-        _writable_carveout_spellings,
-    )
-
-    home = str(Path.home())
-    uid = os.getuid()
-    gid = os.getgid()
-    # Source the sensitive-dir lists from the active PlatformContext so the
-    # an internal companion can extend them with its own paths.  The Default adapter
-    # returns ``list(_STRICT_DIRS)`` / ``list(_CC_DIRS)``, so standalone is
-    # unchanged.  ``_STANDARD_DIRS`` is not an extension point (no interface
-    # method) and stays on the module global.
-    if sandbox_level == "standard":
-        dirs = _STANDARD_DIRS
-    elif sandbox_level == "cc":
-        dirs = _sandbox_policy().cc_dirs()
-    else:
-        dirs = _sandbox_policy().strict_dirs()
-    files = _CC_FILES if sandbox_level in ("cc", "strict") else []
-    expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
-    env_prefixes = list(_SENSITIVE_ENV_PREFIXES)
-    if sandbox_level in ("cc", "strict"):
-        # Block agent subprocesses from reading credentials via os.environ
-        # (the file-level bind-mount of ~/.kiro/crew/.env hides them on disk;
-        # config/loader.py seeds them into os.environ for trusted children
-        # only — sandboxed agents must not see them either way).
-        env_prefixes = env_prefixes + list(_AGENT_DENIED_ENV_KEYS)
-    if strip_python_env:
-        # Foreign Python subprocess (kiro-cli's MCP servers) — do not let
-        # Kiro Crew's PYTHONPATH/PYTHONHOME leak in and shadow their own deps.
-        env_prefixes = env_prefixes + list(_PYTHON_ENV_PREFIXES)
-    # Keep SSH_AUTH_SOCK when the operator opted in AND this is an
-    # agent spawn (forward_ssh_auth_sock is threaded from the agent path only, so
-    # a generic app/openCommand launcher defaults it False and still scrubs the
-    # socket). Applied last so the whole assembled set is filtered. The
-    # strict-tier ~/.ssh hide below is unaffected (the agent socket lives in
-    # $TMPDIR/tmp, outside ~/.ssh), so key material stays unreadable while the
-    # socket becomes usable.
-    env_prefixes = _agent_scrub_prefixes(env_prefixes, forward_ssh_auth_sock)
-    hide_ssh = sandbox_level == "strict"
-    hidden_dirs = [os.path.join(home, d) for d in dirs]
-    # Re-anchor the SAME tier list under a pod child's remapped home. Must run here
-    # rather than at the ACP call sites: both transports freeze the sandbox before
-    # applying the remap, so a mask computed only against `home` left the pod's
-    # seeded SSO token readable at the path the child's own $HOME resolves to.
-    hidden_dirs.extend(_pod_os_home_targets(tuple(dirs)))
-    hidden_dirs.extend(_relocated_policy_cache_dirs())
-    hidden_dirs.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
-    # Placed BEFORE the extra_visible_dirs filter on purpose: the predicate that adds
-    # these is the same one that withholds the backend's carve-out, so in practice they
-    # never collide — and if a future change did hand the backend its state paths while
-    # the chain is linked, cancelling this mask is the correct, visible consequence of
-    # that decision rather than a silently retained one.
-    hidden_dirs.extend(_md_notebook_degraded_mask_dirs())
-    hidden_dirs.extend(_voice_runtime_sandbox_paths())
-    hidden_dirs.extend(os.path.abspath(path) for path in extra_hidden_dirs)
-    # One name per directory. ``crew_home_aliases`` names each ``$HOME``-joined crew
-    # root that is the data home itself reached through a link; every path under such
-    # a root is respelled under the resolved root, which is how the pre-spawn passes
-    # already spell the leaves they record. Pure string work: the identity decision
-    # was made once per root by the caller, so this builder still makes no
-    # filesystem call. The carve-out and window spellings go through the same fold,
-    # so a caller naming the alias spelling still lifts or re-opens what it asked for.
-    hidden_dirs = [_fold_crew_home_alias(path, crew_home_aliases) for path in hidden_dirs]
-    extra_visible_dirs = tuple(
-        _fold_crew_home_alias(os.path.abspath(path), crew_home_aliases)
-        for path in extra_visible_dirs
-    )
-    extra_private_dirs = tuple(
-        _fold_crew_home_alias(path, crew_home_aliases) for path in extra_private_dirs
-    )
-    extra_private_dir_ids = tuple(
-        (_fold_crew_home_alias(p, crew_home_aliases), dev, ino)
-        for p, dev, ino in extra_private_dir_ids
-    )
-    extra_hidden_dir_ids = tuple(
-        (_fold_crew_home_alias(p, crew_home_aliases), dev, ino)
-        for p, dev, ino in extra_hidden_dir_ids
-    )
-    extra_writable_dirs = tuple(
-        _fold_crew_home_alias(path, crew_home_aliases) for path in extra_writable_dirs
-    )
-    required_mask_targets = tuple(
-        _fold_crew_home_alias(path, crew_home_aliases) for path in required_mask_targets
-    )
-    unhidden = [
-        path for path in hidden_dirs if _hidden_path_contains_visible_path(path, extra_visible_dirs)
-    ]
-    hidden_dirs = [path for path in hidden_dirs if path not in unhidden]
-    # The governance cache is READ-ONLY whenever it is exposed at all, and that is a
-    # property of the directory rather than of the caller's request: `extra_visible_dirs`
-    # otherwise cancels a target's whole rule set, so the one caller that legitimately
-    # needs to READ the ceiling (`apps/backend.py`, which boots in cache-only mode and
-    # resolves the fleet ceiling from this file) would get WRITE with it. That is the
-    # dangerous direction — the metadata records the source the next boot trusts, so a
-    # same-UID process that can rewrite the pair picks the ceiling for every later boot,
-    # and an app backend is arbitrary third-party code. Deciding it here means a future
-    # caller cannot re-open the hole by passing this path.
-    readonly_dirs = [path for path in unhidden if _is_policy_cache_dir(path)]
-    # ``run`` must stay readable because it holds this launcher, but making both
-    # its lexical and canonical spellings read-only prevents an agent from
-    # renaming the hidden voice-runtime mount out from under the path-based rule.
-    readonly_dirs.extend(_voice_runtime_parent_paths())
-    # The crew data home's ceilings. Read-only rather than hidden because in-sandbox
-    # code resolves them (a script cron's ``boot_platform()``, the config loader) and an
-    # absent ceiling reads as the permissive standalone default — masking one would
-    # REMOVE it. A caller's ``extra_visible_dirs`` cannot re-open the write side, for the
-    # reason spelled out for the governance cache above.
-    readonly_dirs.extend(
-        _fold_crew_home_alias(os.path.join(home, target), crew_home_aliases)
-        for target in _CREW_READONLY_TARGETS
-        if _fold_crew_home_alias(os.path.join(home, target), crew_home_aliases) not in hidden_dirs
-    )
-    # A relocated data home escapes every ``$HOME``-relative rule above, which would
-    # leave the ceiling writable on exactly the managed fleets that set it.
-    readonly_dirs.extend(
-        path for path in _relocated_crew_targets(_CREW_READONLY_LEAVES) if path not in hidden_dirs
-    )
-    # Same relocation hole for the kiro agents tree (fork governance's specs).
-    readonly_dirs.extend(
-        path for path in _resolved_kiro_agents_targets() if path not in hidden_dirs
-    )
-    # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
-    # each kind differently: a directory gets an empty dir bind-mounted over it, a file
-    # gets an empty temp file. The dir loop is guarded by `if os.path.isdir(target)`, so
-    # a file entry matched neither it nor the file loop and was SILENTLY SKIPPED — the
-    # caller asked for it to be hidden, got no error, and it stayed readable.
-    #
-    # That is not hypothetical: `security.sensitive_home_dirs()` is not all directories
-    # (`sel_hmac.key`, `token_signing.key`, `.kiro/crew/.env` are files), and Papyrus
-    # passes that whole list as `extra_hidden_dirs` so a `.tex` cannot `\input` the
-    # gateway's own secrets into a rendered PDF.
-    #
-    # Every path goes in BOTH lists, and the CHILD classifies it. The child already
-    # re-checks with its own `isdir`/`isfile` per loop, so whichever branch matches does
-    # the work and the other skips — no double-mount, no wrong-kind mount. Classifying
-    # here instead would mean an `os.path.isfile()` per entry (52 of them) inside
-    # `_build_launcher_script`, which runs on the event loop for every async spawn: on a
-    # stalled NFS home those stats block the gateway and the liveness heartbeat. Letting
-    # the child decide keeps the syscalls in the child, where they are already happening
-    # and where blocking costs nothing but that one spawn.
-    #
-    # macOS is unaffected either way: for these entries the profile emits BOTH a
-    # `(subpath …)` and a `(literal …)` deny, so a plain-file leaf is covered
-    # without relying on how subpath treats a non-directory.
-    dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
-    readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
-    private_json = json.dumps(
-        _private_window_spellings(extra_private_dirs, hidden_dirs, remasks_contained_targets=True)
-    )
-    # Identities the PRODUCER took when it approved each window, serialized and never
-    # re-derived: this function runs on the gateway's event loop, where
-    # ``test_the_builder_does_not_stat_the_hidden_paths`` forbids any filesystem probe,
-    # because one stat per path per async spawn blocks every session on a stalled network
-    # home. A window with no entry here is one whose producer supplied none, and the child
-    # treats it exactly as before -- so the callers that pass only paths are unchanged, and
-    # only a producer that vouches for an inode gets the stricter check.
-    private_ids_json = json.dumps({path: [dev, ino] for path, dev, ino in extra_private_dir_ids})
-    # Identities for MASK ROOTS, taken by the producer in the act that chose the name and
-    # serialized the same way and for the same reason. A mask root is carried by name, and
-    # the child masks whatever answers to that name: a real directory renamed onto it is
-    # masked in the original's place while the original stays readable at its new name,
-    # which the name alone cannot detect. An entry here binds the mask to one directory
-    # identity, and the child refuses the spawn when it cannot mask that identity --
-    # skipping is not available to a mask the way it is to a window, because a skipped
-    # mask leaves the tree exposed. A root with no entry keeps the plain name behaviour,
-    # so every caller that passes only names is unchanged.
-    hidden_ids_json = json.dumps({path: [dev, ino] for path, dev, ino in extra_hidden_dir_ids})
-    # INODES, not roots: the per-app credentials that already carry a second hard link, as
-    # the parent read them. The child's own scan builds its set from ``SENSITIVE_DIRS`` at
-    # DEPTH 1 -- a measured choice, because deepening it walks every masked tree on every
-    # spawn -- so ``apps/<app>/.app_secret``, one level below a mask root, never enters it
-    # and an alias to it outside every mask goes unnoticed. The child cannot read those
-    # paths itself: it masks that tree in this same process, binding an empty directory over
-    # it, so a stat there reports ENOENT and the walk arms on nothing. Pairs computed before
-    # any mask existed are the only form that survives the crossing. Empty for every caller
-    # that passes nothing, so their scan is byte-identical and costs nothing.
-    alias_credential_ids_json = json.dumps(
-        [list(pair) for pair in dict.fromkeys(extra_alias_credential_ids)]
-    )
-    # Write carve-outs: validated against the same seals this script
-    # embeds. The launcher re-binds each approved directory over itself AFTER
-    # the READONLY seal and remounts that bind read-write, so the carve-out
-    # overrides only the runtime parent's seal — the validator refuses any
-    # candidate that would re-open a hidden tree, a ceiling, or the voice
-    # runtime. ``hidden_dirs`` was already filtered down to the entries that
-    # stay hidden, so ``hidden_dirs + unhidden`` reconstitutes the FULL
-    # pre-``extra_visible_dirs`` candidate set: the ``+ unhidden`` term is
-    # load-bearing, not redundant — dropping it would let a tree a caller
-    # re-exposed read-only grow a writable window through this parameter
-    # (pinned by test_launcher_refuses_carveout_inside_unhidden_tree).
-    runtime_parents = list(_voice_runtime_parent_paths())
-    writable_json = json.dumps(
-        _writable_carveout_spellings(
-            extra_writable_dirs,
-            subtree_guards=hidden_dirs
-            + unhidden
-            + [path for path in readonly_dirs if path not in set(runtime_parents)]
-            + ([os.path.join(home, ".ssh")] if hide_ssh else []),
-            literal_guards=[
-                _fold_crew_home_alias(os.path.join(home, f), crew_home_aliases) for f in files
-            ],
-            carveable_parents=runtime_parents,
-        )
-    )
-    files_json = json.dumps(
-        list(
-            dict.fromkeys(
-                [_fold_crew_home_alias(os.path.join(home, f), crew_home_aliases) for f in files]
-                + hidden_dirs
-            )
-        )
-    )
-    # The subset of SENSITIVE_FILES whose ABSENCE at mask time is a fault rather than "nothing
-    # to hide". Every other entry is skipped when absent on purpose -- an unused store is left
-    # absent rather than scaffolded -- but these were DISCOVERED to exist moments ago, as the
-    # second name of a credential leaf, so a path that is gone now means it was renamed between
-    # the discovery and this mount and the bytes are readable under whatever it is called
-    # instead. The link count is required too: a legitimate alias has more than one name by
-    # construction, so a single-linked file at the same path is something else that appeared
-    # there, and masking it would report a hole closed while the credential moved.
-    fail_closed_json = json.dumps(
-        [
-            [_fold_crew_home_alias(path, crew_home_aliases), dev, ino]
-            for path, dev, ino in dict.fromkeys(fail_closed_file_masks)
-        ]
-    )
-    expose_pairs = [
-        (_fold_crew_home_alias(os.path.join(home, f), crew_home_aliases), f.split("/")[-1])
-        for f in expose_files
-    ]
-    # Caller-supplied read-only re-exposures (absolute paths), same primitive
-    # the cc tier uses for ``.aws/config``: pre-read the content, hide the
-    # parent, restore a 0444 copy inside the empty mount. A COPY, never the
-    # inode -- strictly weaker than ``extra_visible_dirs``, which un-hides the
-    # real tree. The enforced-adapter mask uses this to keep a Bedrock
-    # ``credential_process`` resolvable while the rest of ``~/.aws`` stays
-    # hidden (``acp_tool_gate.adapter_expose_files``).
-    expose_pairs += [(os.path.abspath(p), os.path.basename(p)) for p in extra_expose_files]
-    # Dedupe by source path. cc mode already lists ``.aws/config`` and the
-    # enforced adapter hands the same file through ``extra_expose_files``; the
-    # restore loop opens each entry's destination for WRITE after the first
-    # pass chmod'ed it 0444, so a repeated entry raises PermissionError inside
-    # the launcher and kills the spawn (found in review).
-    expose_pairs = list(dict.fromkeys(expose_pairs))
-    # Which absences are races. The set arrives as DATA from the pre-spawn passes, which
-    # saw each target while they were already statting and creating off the event loop;
-    # this function probes nothing, because ``test_the_builder_does_not_stat_the_hidden_paths``
-    # pins that it must not -- on a stalled home one probe here blocks the single loop
-    # every session, cron and heartbeat shares.
-    #
-    # Then the one judgement that IS this function's to make, and it is purely lexical: a
-    # target nested under a directory the launcher masks EARLIER is legitimately absent by
-    # the time it is pinned, because its own parent's empty mask now covers it. Requiring
-    # it would refuse every spawn on an ordinary host. "Absent because my parent's mask
-    # covers me" and "absent because the name moved" are different facts, and only the
-    # second is a race -- so the nesting is subtracted here, by string, never by asking
-    # the filesystem which would both re-break the ratchet and give the same wrong answer.
-    _masked_ancestors = [d.rstrip("/") + "/" for d in dict.fromkeys(hidden_dirs)]
-    required_json = json.dumps(
-        sorted(
-            {
-                target
-                for target in dict.fromkeys(required_mask_targets)
-                if not any(target.startswith(parent) for parent in _masked_ancestors)
-            }
-        )
-    )
-    # Serialisation ONLY -- the identities were observed by the pre-spawn passes and
-    # handed in as data. Nothing here touches the filesystem, which is the property
-    # ``test_the_builder_does_not_stat_the_hidden_paths`` pins for this function.
-    #
-    # The link flag is written as an INT, not a bool. This JSON is embedded in the
-    # script as PYTHON SOURCE, and ``json.dumps`` spells a bool ``true``/``false``,
-    # which Python does not define -- the child then dies with ``NameError`` before it
-    # mounts anything, on every spawn, for every caller. An int survives both
-    # spellings, and ``_carried_occupant`` casts it back. The fourth element -- what
-    # KIND the name reached when the pass looked -- and the fifth and sixth -- the
-    # referent's own device and inode -- travel as recorded; an identity recorded
-    # without them is emitted at three, and the child reads that as no kind.
-    occupants_json = json.dumps(
-        {
-            name: [ident[0], ident[1], int(bool(ident[2]))] + [int(k) for k in ident[3:6]]
-            for name, ident in sorted(
-                (_fold_crew_home_alias(n, crew_home_aliases), i)
-                for n, i in (mask_occupants or {}).items()
-            )
-        }
-    )
-    expose_json = json.dumps(expose_pairs)
-    unreadable_masks_json = json.dumps(sorted(_CREW_UNREADABLE_MASK_LEAVES))
-    aliases_json = json.dumps([list(entry) for entry in crew_home_aliases])
-    env_prefixes_json = json.dumps(env_prefixes)
-    ssh_dir = json.dumps(os.path.join(home, ".ssh"))
-    ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
-    sandbox_level_json = json.dumps(sandbox_level)
-    strict_host_key_opt = (
-        " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
-    )
+    payload = namespace_payload(plan)
+    uid = payload["real_uid"]
+    gid = payload["real_gid"]
+    dirs_json = json.dumps(payload["sensitive_dirs"])
+    hidden_ids_json = json.dumps(payload["sensitive_dir_ids"])
+    private_json = json.dumps(payload["private_dirs"])
+    private_ids_json = json.dumps(payload["private_dir_ids"])
+    readonly_json = json.dumps(payload["readonly_dirs"])
+    writable_json = json.dumps(payload["writable_dirs"])
+    files_json = json.dumps(payload["sensitive_files"])
+    fail_closed_json = json.dumps(payload["fail_closed_file_masks"])
+    alias_credential_ids_json = json.dumps(payload["alias_credential_ids"])
+    required_json = json.dumps(payload["required_mask_targets"])
+    occupants_json = json.dumps(payload["mask_occupants"])
+    aliases_json = json.dumps(payload["crew_home_aliases"])
+    expose_json = json.dumps(payload["expose_files"])
+    env_prefixes_json = json.dumps(payload["env_prefixes"])
+    ssh_dir = json.dumps(payload["ssh_dir"])
+    ssh_known_hosts = json.dumps(payload["ssh_known_hosts"])
+    hide_ssh = bool(payload["hide_ssh"])
+    sandbox_level_json = json.dumps(payload["sandbox_level"])
+    unreadable_masks_json = json.dumps(payload["unreadable_masks"])
+    strict_host_key_opt = payload["strict_host_key_opt"]
 
     return f'''#!/usr/bin/env python3
 """Namespace sandbox launcher — spawned by Kiro Crew."""

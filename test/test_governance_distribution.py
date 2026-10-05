@@ -4239,12 +4239,14 @@ class TestAnExposedCacheIsStillReadOnly:
         from kiro_crew import sandbox
 
         cache = self._cache_path()
-        script = sandbox._build_launcher_script("standard", extra_visible_dirs=(cache,))
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
-        hidden = json.loads(script.split("SENSITIVE_DIRS = ", 1)[1].split("\n", 1)[0])
+        plan = sandbox._spawn_plan("namespace", "standard", extra_visible_dirs=(cache,))
 
-        assert cache in readonly, "an exposed cache must be bound read-only, not merely unhidden"
-        assert cache not in hidden, "it also has to be READABLE — that is why it was exposed"
+        assert (
+            cache in plan.readonly
+        ), "an exposed cache must be bound read-only, not merely unhidden"
+        assert (
+            cache not in plan.sensitive_dirs
+        ), "it also has to be READABLE — that is why it was exposed"
 
     def test_the_seal_is_a_remount_because_ms_rdonly_is_ignored_on_a_bind(self):
         """Both mount calls are load-bearing: the bind alone grants write."""
@@ -4262,8 +4264,7 @@ class TestAnExposedCacheIsStillReadOnly:
         """The ordinary spawn hides it; only the protected runtime parent is read-only."""
         from kiro_crew import sandbox
 
-        script = sandbox._build_launcher_script("standard")
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
+        readonly = sandbox._spawn_plan("namespace", "standard").readonly
         assert set(readonly) >= set(sandbox._voice_runtime_parent_paths())
         assert self._cache_path() not in readonly
 
@@ -4288,8 +4289,7 @@ class TestAnExposedCacheIsStillReadOnly:
         profile = sandbox._build_seatbelt_profile("strict", extra_visible_dirs=(aws,))
         assert f'(deny file-write* (subpath "{aws}"))' not in profile
 
-        script = sandbox._build_launcher_script("strict", extra_visible_dirs=(aws,))
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
+        readonly = sandbox._spawn_plan("namespace", "strict", extra_visible_dirs=(aws,)).readonly
         assert set(readonly) >= set(sandbox._voice_runtime_parent_paths())
         assert aws not in readonly
 

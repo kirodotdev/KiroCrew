@@ -611,10 +611,10 @@ Wired sites:
   `test_gateway_first_run_setup_routes_through_the_seam`). Best-effort: the
   gateway's surrounding `except` keeps a failure non-fatal to startup, and
   `PlatformCompositionError` still propagates fail-closed.
-- `sandbox_launcher.py` / `sandbox_seatbelt.py` — `_build_launcher_script` /
-  `_build_seatbelt_profile` source the sensitive-dir lists from
-  `current_context().sandbox` through `sandbox._sandbox_policy` (the
-  `.aws`-exclusion at the cc branch is preserved). `sandbox.py`'s
+- `sandbox.py` — `_live_plan_host`, the plan host `_build_launcher_script` /
+  `_build_seatbelt_profile` both plan with, sources the sensitive-dir lists from
+  `current_context().sandbox` through `sandbox._sandbox_policy` (Seatbelt's
+  `.aws`-exclusion at the cc tier is preserved, as that renderer's declared capability). `sandbox.py`'s
   `namespace_argv` / `sandbox_exec_argv` resolve argv[0] through
   `current_context().agent_executable` before applying the core sandbox. The
   public Default is identity; a companion may return the direct

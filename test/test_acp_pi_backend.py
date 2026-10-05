@@ -1643,21 +1643,21 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         return os.path.normpath(str(config_dir() / "pi-gate"))
 
     def _launcher_lists(self, monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
-        # ``_build_launcher_script`` asks the host's ``ssh -V`` (once per process, cached)
-        # for the accept-new flag. Which flag lands in the script is not what these lists
-        # are about, so the probe is pinned rather than run: no host binary, no
-        # cache-order dependence on which test in the worker got there first.
+        """The masked and the read-only lists the Linux launcher is handed for pi."""
+        # A namespace plan asks the host's ``ssh -V`` (once per process, cached) for the
+        # accept-new flag. Which flag the launcher carries is not what these lists are
+        # about, so the probe is pinned rather than run: no host binary, no cache-order
+        # dependence on which test in the worker got there first.
         monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
         hidden = self._hidden()
-        script = sandbox._build_launcher_script(
+        plan = sandbox._spawn_plan(
+            "namespace",
             "standard",
             strip_python_env=True,
             extra_hidden_dirs=hidden,
             extra_expose_files=acp_tool_gate.adapter_expose_files(ACP_BACKEND_PI, hidden),
         )
-        masked = json.loads(re.search(r"^SENSITIVE_DIRS = (\[.*\])$", script, re.M).group(1))
-        readonly = json.loads(re.search(r"^READONLY_DIRS = (\[.*\])$", script, re.M).group(1))
-        return masked, readonly
+        return list(plan.sensitive_dirs), list(plan.readonly)
 
     def _is_masked(self, path: str, targets: tuple[str, ...] | list[str]) -> bool:
         normalized = os.path.normpath(path)
@@ -1765,7 +1765,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
 
     @pytest.mark.skipif(
         not acp_client.platform_compat.IS_POSIX,
-        reason="_build_launcher_script requires os.getuid",
+        reason="the namespace plan requires os.getuid",
     )
     def test_linux_launcher_masks_run_and_voice_but_exposes_and_seals_gate_artifacts(
         self, monkeypatch: pytest.MonkeyPatch

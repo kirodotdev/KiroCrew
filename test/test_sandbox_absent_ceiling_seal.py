@@ -40,6 +40,7 @@ from unittest import mock
 import pytest
 
 from kiro_crew import sandbox
+from kiro_crew.sandbox_plan import BACKEND_NAMESPACE, ConfinementPlan
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher only")
 
@@ -173,6 +174,11 @@ def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
     return calls
 
 
+def _namespace_plan(tier: str, **kwargs: object) -> ConfinementPlan:
+    """The confinement plan a namespace spawn at *tier* hands its launcher, on this host."""
+    return sandbox._spawn_plan(BACKEND_NAMESPACE, tier, **kwargs)
+
+
 @_POSIX_ONLY
 @pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings"))
 def test_run_authority_root_is_sealed_before_its_first_record(crew_home, leaf):
@@ -192,9 +198,7 @@ def test_member_memory_is_not_an_os_hidden_root(crew_home):
     target = crew_home / "memory_stores"
     assert not target.exists()
     sandbox.namespace_argv(["/bin/true"])
-    script = sandbox._build_launcher_script("standard")
-    match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-    assert match and str(target) not in json.loads(match.group(1))
+    assert str(target) not in _namespace_plan("standard").sensitive_dirs
 
 
 @_POSIX_ONLY
@@ -275,25 +279,20 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         Reconciled PER DISPOSITION rather than against one list, because two kinds
         of path are materialised for opposite reasons and each has its own loop:
 
-        * a read-only ceiling is created so the SEAL can apply -> ``READONLY_DIRS``;
-        * a hidden leaf is created so the MASK can -> ``SENSITIVE_DIRS``.
+        * a read-only ceiling is created so the SEAL can apply -> the plan's ``readonly``;
+        * a hidden leaf is created so the MASK can -> the plan's ``sensitive_dirs``.
 
-        Asserting every created path against ``READONLY_DIRS`` alone would demand
+        Asserting every created path against the read-only list alone would demand
         that a directory meant to be invisible in the sandbox be exposed read-only
         instead -- the exact inversion of its purpose. Derived from the
         precreate tuples, so a leaf added to either disposition must appear in the
         matching launcher list rather than in whichever list this test happened to name.
         """
         created = set(sandbox._materialize_sealable_ceilings())
-        script = sandbox._build_launcher_script("strict")
+        plan = _namespace_plan("strict")
 
-        def _launcher_list(name: str) -> set[str]:
-            match = re.search(rf"{name} = (\[.*?\])\n", script, re.S)
-            assert match, f"{name} is not emitted by the launcher script"
-            return set(json.loads(match.group(1)))
-
-        readonly = _launcher_list("READONLY_DIRS")
-        masked = _launcher_list("SENSITIVE_DIRS")
+        readonly = set(plan.readonly)
+        masked = set(plan.sensitive_dirs)
 
         # Every created path is handed to exactly the loop its disposition needs.
         readonly_leaves = (
@@ -306,7 +305,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
                 continue  # covered by test_every_sealable_leaf_is_created
             assert (
                 path in readonly
-            ), f"{leaf} is created to be read-only but is not in READONLY_DIRS"
+            ), f"{leaf} is created to be read-only but is not sealed read-only"
             assert path not in masked, (
                 f"{leaf} is masked instead of exposed READ-ONLY; masking a governance "
                 "ceiling removes it and restores the permissive default"
@@ -316,7 +315,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
             path = str(crew_home / leaf)
             if path not in created:
                 continue  # covered by test_the_hidden_records_dir_is_materialised
-            assert path in masked, f"{leaf} is created to be masked but is not in SENSITIVE_DIRS"
+            assert path in masked, f"{leaf} is created to be masked but is not masked"
             assert path not in readonly, (
                 f"{leaf} is exposed READ-ONLY as well as masked; a hidden leaf that "
                 "is also readable is not hidden"
@@ -392,14 +391,12 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         parent = str(crew_home / "nested-parent")
         child = f"{parent}/credential.json"
 
-        script = sandbox._build_launcher_script(
+        plan = _namespace_plan(
             "strict",
             extra_hidden_dirs=(parent,),
             required_mask_targets=(parent, child),
         )
-        match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
-        assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
-        required = set(json.loads(match.group(1)))
+        required = set(plan.identities.required_mask_targets)
 
         assert child not in required, (
             "a target under a masked ancestor was required, so the launcher will refuse "
@@ -2796,20 +2793,14 @@ class TestMaskableDirsAreMaterializedBeforeTheSpawn:
         assert str(root) in created
         assert root.is_dir()
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
-        script = sandbox._build_launcher_script(mode)
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        assert str(root) in set(json.loads(match.group(1)))
+        assert str(root) in set(_namespace_plan(mode).sensitive_dirs)
 
     @_POSIX_ONLY
     @pytest.mark.parametrize("mode", ["standard", "cc", "strict"])
     def test_created_dirs_are_in_the_launcher_hidden_list(self, crew_home, mode):
         """Creating a path is only useful if the mask loop is handed it."""
         created = sandbox._materialize_maskable_dirs()
-        script = sandbox._build_launcher_script(mode)
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        hidden = set(json.loads(match.group(1)))
+        hidden = set(_namespace_plan(mode).sensitive_dirs)
 
         assert created
         assert set(created) <= hidden

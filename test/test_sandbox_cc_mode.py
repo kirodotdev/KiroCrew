@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import runpy
 import textwrap
@@ -26,6 +25,7 @@ from kiro_crew.sandbox import (
     scrub_env,
     wrap_argv,
 )
+from kiro_crew.sandbox_plan import BACKEND_NAMESPACE, ConfinementPlan
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +42,16 @@ def _neutralize_sandbox_env(monkeypatch):
     # a real ssh spawned from the test process is a host dependency the launcher
     # text must not vary with -- pin the answer so no binary runs.
     monkeypatch.setattr(_sb_mod, "_ssh_supports_accept_new", lambda: True)
+
+
+def _home(rel: str) -> str:
+    """*rel* under ``$HOME``, spelled as the plan spells a tier entry."""
+    return os.path.join(str(Path.home()), rel)
+
+
+def _plan(tier: str, **kwargs: object) -> ConfinementPlan:
+    """The Linux namespace plan for one spawn at *tier* on this host."""
+    return _sb_mod._spawn_plan(BACKEND_NAMESPACE, tier, **kwargs)
 
 
 class TestCcDirsList:
@@ -94,78 +104,66 @@ class TestCcFilesList:
 
 class TestBuildLauncherScriptCcMode:
     def test_extra_hidden_directory_is_bound_over(self):
-        script = _build_launcher_script(
-            "strict",
-            extra_hidden_dirs=("/private/kiro/crew",),
-        )
+        plan = _plan("strict", extra_hidden_dirs=("/private/kiro/crew",))
 
-        assert "/private/kiro/crew" in script
+        assert "/private/kiro/crew" in plan.sensitive_dirs
 
     def test_cc_mode_uses_cc_dirs(self):
-        script = _build_launcher_script("cc")
+        masked = _plan("cc").sensitive_dirs
         for d in _CC_DIRS:
-            assert d in script, f"{d} should be in cc launcher script"
+            assert _home(d) in masked, f"{d} should be masked by the cc launcher"
 
     def test_cc_mode_includes_expose_files(self):
-        script = _build_launcher_script("cc")
-        assert "EXPOSE_FILES" in script
-        assert ".aws/config" in script
+        assert (_home(".aws/config"), "config") in _plan("cc").expose
 
     def test_cc_mode_includes_sensitive_files(self):
-        script = _build_launcher_script("cc")
-        assert "SENSITIVE_FILES" in script
+        files = _plan("cc").sensitive_files
         for f in _CC_FILES:
-            assert f in script, f"{f} should be in cc launcher script"
+            assert _home(f) in files, f"{f} should be masked by the cc launcher's file loop"
 
     def test_cc_mode_does_not_hide_ssh(self):
-        script = _build_launcher_script("cc")
-        assert "HIDE_SSH = False" in script
+        assert _plan("cc").hide_ssh is False
 
     def test_strict_mode_hides_ssh(self):
-        script = _build_launcher_script("strict")
-        assert "HIDE_SSH = True" in script
+        assert _plan("strict").hide_ssh is True
 
     def test_standard_mode_does_not_hide_ssh(self):
-        script = _build_launcher_script("standard")
-        assert "HIDE_SSH = False" in script
+        assert _plan("standard").hide_ssh is False
 
     def test_standard_mode_uses_standard_dirs(self):
-        script = _build_launcher_script("standard")
+        masked = _plan("standard").sensitive_dirs
         for d in _STANDARD_DIRS:
-            assert d in script
+            assert _home(d) in masked
 
     def test_standard_mode_no_expose_files(self):
-        script = _build_launcher_script("standard")
-        assert "EXPOSE_FILES = []" in script
+        assert _plan("standard").expose == ()
 
     def test_extra_expose_files_are_embedded_with_their_basename(self):
         """The enforced-adapter mask's Linux half rides the cc expose primitive.
 
         ``acp_tool_gate.adapter_expose_files`` hands absolute paths here; each
-        must land in EXPOSE_FILES as a ``(source, basename)`` pair so the
-        launcher restores a read-only copy inside the hidden parent. Standard
+        must land in the plan's exposed files as a ``(source, basename)`` pair so
+        the launcher restores a read-only copy inside the hidden parent. Standard
         tier, because that is the tier the codex adapter actually runs under.
         """
-        script = _build_launcher_script("standard", extra_expose_files=("/h/u/.aws/config",))
-        assert '["/h/u/.aws/config", "config"]' in script
+        plan = _plan("standard", extra_expose_files=("/h/u/.aws/config",))
+        assert ("/h/u/.aws/config", "config") in plan.expose
 
     def test_cc_expose_files_survive_extra_entries(self):
-        script = _build_launcher_script("cc", extra_expose_files=("/h/u/.aws/config",))
-        assert ".aws/config" in script
-        assert '["/h/u/.aws/config", "config"]' in script
+        plan = _plan("cc", extra_expose_files=("/h/u/.aws/config",))
+        assert (_home(".aws/config"), "config") in plan.expose
+        assert ("/h/u/.aws/config", "config") in plan.expose
 
     def test_an_extra_expose_file_already_in_the_tier_list_appears_once(self):
-        """cc + codex both name ``~/.aws/config``; EXPOSE_FILES must carry it once.
+        """cc + codex both name ``~/.aws/config``; the plan must carry it once.
 
         The restore loop writes each entry's destination then chmods it 0444, so
         a duplicate entry's second open-for-write raises PermissionError inside
-        the launcher and the spawn dies. Revert-verified: without the dedupe the
-        pair appears twice.
+        the launcher and the spawn dies. Without the dedupe the pair appears twice.
         """
         cfg = os.path.join(str(Path.home()), ".aws", "config")
-        script = _build_launcher_script("cc", extra_expose_files=(cfg,))
-        pair = json.dumps([cfg, "config"])
-        assert script.count(pair) == 1, script.count(pair)
+        expose = _plan("cc", extra_expose_files=(cfg,)).expose
+        assert expose.count((cfg, "config")) == 1, expose
 
 
 class TestBuildSeatbeltProfileCcMode:
@@ -806,7 +804,7 @@ class TestKnownHostsPreReadFailsClosed:
         This must fail closed because the
         launcher injects ``StrictHostKeyChecking=accept-new`` into
         ``GIT_SSH_COMMAND`` (built and applied by the program
-        ``sandbox_launcher._build_launcher_script`` renders) gated only on that
+        ``sandbox._build_launcher_script`` renders) gated only on that
         variable being unset -- NOT on
         whether known_hosts was restored. So degrading to an empty ``kh_data``
         leaves the sandbox pointing ``UserKnownHostsFile`` at an absent file

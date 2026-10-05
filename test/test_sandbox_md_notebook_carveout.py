@@ -133,16 +133,23 @@ class TestALinkedChainMasksTheWholeStateDirectory:
             "PAT bytes in it stay readable inside the sandbox"
         )
 
-    def test_both_launch_paths_carry_the_degraded_mask(self) -> None:
-        """Linux and macOS build their hidden sets separately, so a fix applied to one
-        leaves the other exposed. Pinned by source because the mask list is computed from
-        the live host, which is healthy in CI."""
-        import inspect
+    def test_both_launch_paths_carry_the_degraded_mask(self, monkeypatch, tmp_path) -> None:
+        """Linux and macOS each render their own launch artifact, so a fix that reached
+        one would leave the other exposed. The live host is healthy in CI, so the degraded
+        set is supplied at the host seam both plans read, and both must mask it in every
+        mode: the namespace plan the launcher renders, and the Seatbelt profile itself."""
+        state_dir = str(tmp_path / ".kiro" / "crew" / "workspace" / "md-notebook")
+        monkeypatch.setattr(sb, "_md_notebook_degraded_mask_dirs", lambda: [state_dir])
 
-        for builder in (sb._build_launcher_script, sb._build_seatbelt_profile):
-            assert "_md_notebook_degraded_mask_dirs()" in inspect.getsource(
-                builder
-            ), f"{builder.__name__} does not carry the degraded state-directory mask"
+        for mode in _MODES:
+            plan = sb._spawn_plan("namespace", mode)
+            assert (
+                state_dir in plan.sensitive_dirs
+            ), f"the {mode} Linux launcher does not carry the degraded state-directory mask"
+            profile = sb._build_seatbelt_profile(mode)
+            assert (
+                f"(deny file-read* (subpath {json.dumps(state_dir)}))" in profile
+            ), f"the {mode} Seatbelt profile does not carry the degraded state-directory mask"
 
 
 class TestTheStagingDirectoryIsMaskedAndCarvedBack:

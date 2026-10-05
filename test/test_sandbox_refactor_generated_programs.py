@@ -103,9 +103,9 @@ _PINNED_TABLES: dict[str, object] = {
 class _Host:
     """The pinned host a case renders against."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, home: str = "home") -> None:
         self.root = root
-        self.home = root / "home"
+        self.home = root / home
         self.crew = root / "crew"
         self.home.mkdir()
         self.crew.mkdir()
@@ -118,9 +118,9 @@ class _Host:
         return (str(crew), str(root), (str(root),), (str(run),), (str(run), str(crew)))
 
 
-def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
+def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch, home: str = "home") -> _Host:
     """Pin every host input either builder reads under ``root``."""
-    pinned = _Host(root.resolve())
+    pinned = _Host(root.resolve(), home)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: pinned.home))
     monkeypatch.setenv("HOME", str(pinned.home))
     for name in ("KIROCREW_POD", "KIROCREW_OS_HOME", "KIRO_HOME"):
@@ -398,6 +398,214 @@ def test_the_seatbelt_profile_is_the_pre_split_bytes(
     assert actual == _PROFILE_DIGESTS[case], f"{case}: actual {actual}"
 
 
+@pytest.fixture
+def golden_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
+    """The pinned host the golden below renders against: its home is not named ``home``."""
+    return _pinned_host(tmp_path, monkeypatch, home="op")
+
+
+#: The Seatbelt profile for one cc spawn with private windows, folded to ``<ROOT>``.
+_PROFILE_GOLDEN = """\
+(version 1)
+(allow default)
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew-auth-staging"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew-auth-staging"))
+(deny file-read* (subpath "<ROOT>/op/.gnupg"))
+(deny file-link (subpath "<ROOT>/op/.gnupg"))
+(deny file-read* (subpath "<ROOT>/op/.config/gcloud"))
+(deny file-link (subpath "<ROOT>/op/.config/gcloud"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/.vault"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/.vault"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/policy_cache"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/policy_cache"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/policy_cache"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/.vault"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/.vault"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/policy_cache"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/policy_cache"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/policy_cache"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/run/voice-runtime"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/run/voice-runtime"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/run/voice-runtime"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/run/voice-runtime"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/run/voice-runtime"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/run/voice-runtime"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/.env"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/.env"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/.env"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/.env"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/diag"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/diag"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/diag"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/diag"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/apps/aws-control/data"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/apps/aws-control/data"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/apps/aws-control/data"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/apps/aws-control/data"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/workspace/md-notebook/pat"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/workspace/md-notebook/pat"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/workspace/md-notebook/pat"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/workspace/md-notebook/pat"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/workspace/md-notebook/vaults.json"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/workspace/md-notebook/vaults.json"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/workspace/md-notebook/vaults.json"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/workspace/md-notebook/vaults.json"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/live_target.json"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/live_target.json"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/live_target.json"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/live_target.json"))
+(deny file-read* (subpath "<ROOT>/op/.kiro/crew/crew-panels"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/crew-panels"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/crew-panels"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/crew-panels"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/.env"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/.env"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/.env"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/.env"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/diag"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/diag"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/diag"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/diag"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/apps/aws-control/data"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/apps/aws-control/data"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/apps/aws-control/data"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/apps/aws-control/data"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/workspace/md-notebook/pat"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/workspace/md-notebook/pat"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/workspace/md-notebook/pat"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/workspace/md-notebook/pat"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/workspace/md-notebook/vaults.json"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/workspace/md-notebook/vaults.json"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/workspace/md-notebook/vaults.json"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/workspace/md-notebook/vaults.json"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/live_target.json"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/live_target.json"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/live_target.json"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/live_target.json"))
+(deny file-read* (subpath "<ROOT>/op/.kirocrew/crew-panels"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/crew-panels"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/crew-panels"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/crew-panels"))
+(deny file-read* (subpath "<ROOT>/op/.kube"))
+(deny file-link (subpath "<ROOT>/op/.kube"))
+(deny file-read* (subpath "<ROOT>/crew/policy_cache"))
+(deny file-write* (subpath "<ROOT>/crew/policy_cache"))
+(deny file-link (subpath "<ROOT>/crew/policy_cache"))
+(deny file-read* (subpath "<ROOT>/crew/.env"))
+(deny file-write* (subpath "<ROOT>/crew/.env"))
+(deny file-write* (literal "<ROOT>/crew/.env"))
+(deny file-link (subpath "<ROOT>/crew/.env"))
+(deny file-read* (subpath "<ROOT>/crew/diag"))
+(deny file-write* (subpath "<ROOT>/crew/diag"))
+(deny file-write* (literal "<ROOT>/crew/diag"))
+(deny file-link (subpath "<ROOT>/crew/diag"))
+(deny file-read* (subpath "<ROOT>/crew/apps/aws-control/data"))
+(deny file-write* (subpath "<ROOT>/crew/apps/aws-control/data"))
+(deny file-write* (literal "<ROOT>/crew/apps/aws-control/data"))
+(deny file-link (subpath "<ROOT>/crew/apps/aws-control/data"))
+(deny file-read* (subpath "<ROOT>/crew/workspace/md-notebook/pat"))
+(deny file-write* (subpath "<ROOT>/crew/workspace/md-notebook/pat"))
+(deny file-write* (literal "<ROOT>/crew/workspace/md-notebook/pat"))
+(deny file-link (subpath "<ROOT>/crew/workspace/md-notebook/pat"))
+(deny file-read* (subpath "<ROOT>/crew/workspace/md-notebook/vaults.json"))
+(deny file-write* (subpath "<ROOT>/crew/workspace/md-notebook/vaults.json"))
+(deny file-write* (literal "<ROOT>/crew/workspace/md-notebook/vaults.json"))
+(deny file-link (subpath "<ROOT>/crew/workspace/md-notebook/vaults.json"))
+(deny file-read* (subpath "<ROOT>/crew/live_target.json"))
+(deny file-write* (subpath "<ROOT>/crew/live_target.json"))
+(deny file-write* (literal "<ROOT>/crew/live_target.json"))
+(deny file-link (subpath "<ROOT>/crew/live_target.json"))
+(deny file-read* (subpath "<ROOT>/crew/crew-panels"))
+(deny file-write* (subpath "<ROOT>/crew/crew-panels"))
+(deny file-write* (literal "<ROOT>/crew/crew-panels"))
+(deny file-link (subpath "<ROOT>/crew/crew-panels"))
+(deny file-read* (subpath "<ROOT>/crew/run/voice-runtime"))
+(deny file-write* (subpath "<ROOT>/crew/run/voice-runtime"))
+(deny file-link (subpath "<ROOT>/crew/run/voice-runtime"))
+(deny file-write* (literal "<ROOT>/crew/run"))
+(deny file-write* (subpath "<ROOT>/crew/run"))
+(deny file-link (subpath "<ROOT>/crew/run"))
+(deny file-write* (literal "<ROOT>/crew/run"))
+(deny file-write* (literal "<ROOT>/crew"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/subagents"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/subagents"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/subagents"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/security_policy.json"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/security_policy.json"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/security_policy.json"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/profiles"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/profiles"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/profiles"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/apps/.dev-grants.json"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/apps/.dev-grants.json"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/apps/.dev-grants.json"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/mcp-launch-approvals"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/mcp-launch-approvals"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/mcp-launch-approvals"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/mcp/resolved"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/crew/mcp/resolved"))
+(deny file-link (subpath "<ROOT>/op/.kiro/crew/mcp/resolved"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/subagents"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/subagents"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/subagents"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/security_policy.json"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/security_policy.json"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/security_policy.json"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/profiles"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/profiles"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/profiles"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/apps/.dev-grants.json"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/apps/.dev-grants.json"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/apps/.dev-grants.json"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/mcp-launch-approvals"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/mcp-launch-approvals"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/mcp-launch-approvals"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/mcp/resolved"))
+(deny file-write* (subpath "<ROOT>/op/.kirocrew/mcp/resolved"))
+(deny file-link (subpath "<ROOT>/op/.kirocrew/mcp/resolved"))
+(deny file-write* (literal "<ROOT>/crew/subagents"))
+(deny file-write* (subpath "<ROOT>/crew/subagents"))
+(deny file-link (subpath "<ROOT>/crew/subagents"))
+(deny file-write* (literal "<ROOT>/crew/security_policy.json"))
+(deny file-write* (subpath "<ROOT>/crew/security_policy.json"))
+(deny file-link (subpath "<ROOT>/crew/security_policy.json"))
+(deny file-write* (literal "<ROOT>/crew/profiles"))
+(deny file-write* (subpath "<ROOT>/crew/profiles"))
+(deny file-link (subpath "<ROOT>/crew/profiles"))
+(deny file-write* (literal "<ROOT>/crew/apps/.dev-grants.json"))
+(deny file-write* (subpath "<ROOT>/crew/apps/.dev-grants.json"))
+(deny file-link (subpath "<ROOT>/crew/apps/.dev-grants.json"))
+(deny file-write* (literal "<ROOT>/crew/mcp-launch-approvals"))
+(deny file-write* (subpath "<ROOT>/crew/mcp-launch-approvals"))
+(deny file-link (subpath "<ROOT>/crew/mcp-launch-approvals"))
+(deny file-write* (literal "<ROOT>/crew/mcp/resolved"))
+(deny file-write* (subpath "<ROOT>/crew/mcp/resolved"))
+(deny file-link (subpath "<ROOT>/crew/mcp/resolved"))
+(deny file-write* (literal "<ROOT>/op/.kiro/agents"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/agents"))
+(deny file-link (subpath "<ROOT>/op/.kiro/agents"))
+(deny file-read* (literal "<ROOT>/op/.npmrc"))
+(deny file-link (literal "<ROOT>/op/.npmrc"))
+(deny file-read* (literal "<ROOT>/op/.netrc"))
+(deny file-link (literal "<ROOT>/op/.netrc"))
+(deny file-read* (literal "<ROOT>/op/.kiro/crew/.env"))
+(deny file-link (literal "<ROOT>/op/.kiro/crew/.env"))
+(deny file-read* (literal "<ROOT>/op/.kirocrew/.env"))
+(deny file-link (literal "<ROOT>/op/.kirocrew/.env"))
+(deny file-read* (require-all (subpath "<ROOT>/crew/apps") (require-not (subpath "<ROOT>/crew/apps/alpha/data"))))
+(deny file-write* (require-all (subpath "<ROOT>/crew/apps") (require-not (subpath "<ROOT>/crew/apps/alpha/data"))))
+(deny file-link (require-all (subpath "<ROOT>/crew/apps") (require-not (subpath "<ROOT>/crew/apps/alpha/data"))))
+(allow file-read-metadata (literal "<ROOT>/crew/apps/alpha"))
+(allow file-read-metadata (literal "<ROOT>/crew/apps"))
+"""
+
+
+def test_the_seatbelt_profile_is_the_golden(golden_host: _Host) -> None:
+    kwargs = {k: v for k, v in _private_windows(golden_host).items() if not k.endswith("_ids")}
+    profile = sandbox._build_seatbelt_profile("cc", **kwargs)
+    assert profile.replace(str(golden_host.root), "<ROOT>") == _PROFILE_GOLDEN
+
+
 def test_the_digests_cover_every_case() -> None:
     assert set(_LAUNCHER_DIGESTS) == set(_LAUNCHER_CASES)
     assert set(_PROFILE_DIGESTS) == set(_PROFILE_CASES)
@@ -461,20 +669,11 @@ def _raiser(label: str) -> Callable[..., object]:
     return _stub
 
 
-def _visible_policy_cache(host: _Host) -> dict[str, Any]:
-    cache = host.crew / "policy_cache"
-    return {"extra_hidden_dirs": (str(cache),), "extra_visible_dirs": (str(cache),)}
-
-
-#: Helpers the launcher builder calls, with the arguments that make it reach each.
+#: Host readers the launcher builder calls through the plan host, with the arguments that
+#: make it reach each: a patch of one on ``kiro_crew.sandbox`` still moves the launcher.
+#: The masking rules themselves are ``kiro_crew.sandbox_plan``'s, tested there.
 _LAUNCHER_CALLS: dict[str, Callable[[_Host], dict[str, Any]] | None] = {
-    "_agent_scrub_prefixes": None,
-    "_fold_crew_home_alias": None,
-    "_hidden_path_contains_visible_path": None,
-    "_is_policy_cache_dir": _visible_policy_cache,
     "_md_notebook_degraded_mask_dirs": None,
-    "_pod_os_home_targets": None,
-    "_private_window_spellings": None,
     "_relocated_crew_targets": None,
     "_relocated_policy_cache_dirs": None,
     "_resolved_kiro_agents_targets": None,
@@ -482,18 +681,11 @@ _LAUNCHER_CALLS: dict[str, Callable[[_Host], dict[str, Any]] | None] = {
     "_ssh_supports_accept_new": None,
     "_voice_runtime_parent_paths": None,
     "_voice_runtime_sandbox_paths": None,
-    "_writable_carveout_spellings": None,
 }
 
-#: Helpers the Seatbelt builder calls.
+#: Host readers the Seatbelt builder calls through the plan host.
 _PROFILE_CALLS: dict[str, Callable[[_Host], dict[str, Any]] | None] = {
-    "_crew_hidden_sandbox_targets": None,
-    "_hidden_path_contains_visible_path": None,
-    "_is_policy_cache_dir": None,
-    "_is_voice_runtime_dir": None,
     "_md_notebook_degraded_mask_dirs": None,
-    "_pod_os_home_targets": None,
-    "_private_window_spellings": None,
     "_relocated_crew_targets": None,
     "_relocated_policy_cache_dirs": None,
     "_resolved_kiro_agents_targets": None,
@@ -501,7 +693,6 @@ _PROFILE_CALLS: dict[str, Callable[[_Host], dict[str, Any]] | None] = {
     "_voice_runtime_ancestor_guards": None,
     "_voice_runtime_parent_paths": None,
     "_voice_runtime_sandbox_paths": None,
-    "_writable_carveout_spellings": None,
 }
 
 

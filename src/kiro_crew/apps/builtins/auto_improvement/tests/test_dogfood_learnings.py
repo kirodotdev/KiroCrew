@@ -7752,17 +7752,28 @@ class TestWatcherSandboxConfinesCredentialsButNotEgress:
     def test_ssh_keys_are_hidden_while_known_hosts_is_exposed(self) -> None:
         """The one deliberate exception, asserted so a future edit cannot widen it to the
         whole directory (which would expose `id_rsa`)."""
-        import inspect
-
-        from kiro_crew import sandbox, sandbox_launcher, sandbox_seatbelt
-
-        src = (
-            inspect.getsource(sandbox)
-            + inspect.getsource(sandbox_launcher)
-            + inspect.getsource(sandbox_seatbelt)
+        from kiro_crew.sandbox_plan import (
+            BACKEND_SEATBELT,
+            PlanHost,
+            SandboxRequest,
+            plan_confinement,
         )
-        assert "known_hosts" in src, "the narrow known_hosts exposure disappeared"
-        assert '".ssh"' in src, "the .ssh handling disappeared"
+        from kiro_crew.sandbox_seatbelt import render_seatbelt_profile
+
+        home = os.path.abspath("/srv/u")
+        ssh = os.path.join(home, ".ssh")
+        known_hosts = os.path.join(ssh, "known_hosts")
+        linux = plan_confinement(SandboxRequest(tier="strict"), PlanHost(home=home))
+        assert linux.hide_ssh, "the strict tier no longer hides ~/.ssh"
+        assert (linux.ssh_dir, linux.ssh_known_hosts) == (ssh, known_hosts)
+        macos = plan_confinement(
+            SandboxRequest(tier="strict", backend=BACKEND_SEATBELT), PlanHost(home=home)
+        )
+        rule = (
+            f'(deny file-read* (require-all (subpath "{ssh}")'
+            f' (require-not (literal "{known_hosts}"))))'
+        )
+        assert rule in render_seatbelt_profile(macos), "the narrow known_hosts exposure changed"
 
     def test_the_network_binaries_are_still_denied(self) -> None:
         """Not sufficient (a nested interpreter bypasses it) but still the first barrier, so a

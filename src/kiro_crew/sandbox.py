@@ -60,7 +60,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
-from kiro_crew import platform_compat, sandbox_launcher, sandbox_mount_sweep, sandbox_seatbelt
+from kiro_crew import (
+    platform_compat,
+    sandbox_launcher,
+    sandbox_mount_sweep,
+    sandbox_plan,
+    sandbox_seatbelt,
+)
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.constants import (
@@ -1238,108 +1244,6 @@ def carveout_chain_has_planted_link(path: str) -> bool:
         logger.debug("could not check the carve-out chain for %s", path, exc_info=True)
         return True
     return False
-
-
-def _window_is_a_hidden_target(path: str, hidden_dirs: Iterable[str]) -> bool:
-    """Whether *path* as a private window IS one of the directories that stay hidden.
-
-    A mask lift written as a window. Refused on every backend and at every producer,
-    because nothing downstream can make it safe: the window is the masked tree.
-    """
-    probe = path.rstrip(os.sep)
-    return any(probe == hidden.rstrip(os.sep) for hidden in hidden_dirs)
-
-
-def _window_contains_a_hidden_target(path: str, hidden_dirs: Iterable[str]) -> bool:
-    """Whether *path* as a private window would hold a directory that stays hidden.
-
-    Unlike the EQUALS case this one is an ORDERING problem rather than a contradiction:
-    the window is re-bound read-write over the tree, so a nested mask applied BEFORE
-    that bind lands on the path the window then shadows, and the leaf comes back with
-    it. A backend that can re-apply the nested mask AFTER binding the window -- the
-    Linux launcher does, from a descriptor it already holds -- keeps the leaf hidden and
-    the rest of the window live. A backend that expresses masks as path rules with no
-    ordering it controls cannot, so there it stays refused.
-
-    This is why the question is asked of the whole mask set rather than of the one
-    parent a window matched: an entry can be a proper descendant of one hidden tree
-    while being an ancestor of another hidden leaf inside it -- ``apps/meetings/data``
-    under a masked ``apps`` tree holds the masked ``apps/meetings/data/edits`` -- and a
-    per-parent test accepts it on the strength of the first relationship.
-    """
-    probe = path.rstrip(os.sep)
-    return any(hidden.rstrip(os.sep).startswith(probe + os.sep) for hidden in hidden_dirs)
-
-
-def _private_window_spellings(
-    extra_private_dirs: tuple[str, ...],
-    hidden_dirs: list[str],
-    *,
-    remasks_contained_targets: bool = False,
-) -> list[str]:
-    """The ``extra_private_dirs`` entries that name a PROPER descendant of a
-    directory that stays hidden.
-
-    A private window is the one directory a spawn keeps inside a masked tree
-    -- its own scratch under the masked scratch root. Unlike
-    ``extra_visible_dirs`` it never lifts the parent's mask: siblings stay
-    hidden, only the window is re-exposed (read-write, it is the process's
-    own). An entry that is not inside a hidden tree needs no window and is
-    dropped. Lexical, like every other path rule here.
-
-    An entry that EQUALS a hidden target is always refused: the window IS the masked
-    tree, and nothing downstream can make that safe. An entry that CONTAINS one is
-    refused UNLESS the caller states it re-applies the nested mask after binding the
-    window (``remasks_contained_targets``) -- the Linux launcher does, so the leaf stays
-    hidden and the app keeps its data view; the Seatbelt profile cannot order its rules
-    that way, so there the refusal stands. This is the single gate every caller's windows
-    pass through, so both decisions belong here and not in each producer, and refusing is
-    the fail-closed direction: the window is withheld and the parent's mask keeps
-    covering the path.
-    """
-    windows: list[str] = []
-    for raw in extra_private_dirs:
-        path = os.path.abspath(raw)
-        refused = _window_is_a_hidden_target(path, hidden_dirs) or (
-            not remasks_contained_targets and _window_contains_a_hidden_target(path, hidden_dirs)
-        )
-        if refused:
-            # NEITHER path is logged. The mask set's own entries name credential and
-            # authorization stores, so writing them into a log records the layout of
-            # exactly what the set exists to hide. The refusal is deterministic and
-            # reproducible from the caller's own arguments, and the one producer that
-            # can hit it in ordinary operation names the app itself at debug level,
-            # so the path adds nothing a reader cannot already get.
-            logger.warning(
-                "SECURITY: not opening a private window that is or contains a masked "
-                "directory -- a window is re-bound read-write over the mask, so that "
-                "path stays masked for this spawn. Every other window and the spawn "
-                "itself are unaffected."
-            )
-            continue
-        for parent in hidden_dirs:
-            if path.startswith(parent.rstrip(os.sep) + os.sep):
-                windows.append(path)
-                break
-    return list(dict.fromkeys(windows))
-
-
-def _window_ancestors(target: str, windows: list[str]) -> list[str]:
-    """Every directory from masked *target* down to each window's parent.
-
-    These are the path components ``realpath`` must ``lstat`` to reach a
-    window, all of them inside the mask. Lexical, like
-    :func:`_private_window_spellings`.
-    """
-    root = target.rstrip("/")
-    ancestors: list[str] = []
-    for window in windows:
-        parent = os.path.dirname(window.rstrip("/"))
-        while parent.startswith(root + "/"):
-            ancestors.append(parent)
-            parent = os.path.dirname(parent)
-        ancestors.append(root)
-    return list(dict.fromkeys(ancestors))
 
 
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
@@ -2547,9 +2451,9 @@ def _note_established(established: list[str] | None, target: str) -> None:
     is asserted as such by callers that check an existing ceiling was left alone. The
     launcher needs a different set: every protected target this pass has just SEEN,
     created or already there. It is collected HERE, where the pass is already
-    statting and creating off the event loop, and never in the launcher builder --
-    ``test_the_builder_does_not_stat_the_hidden_paths`` pins that the builder probes
-    no paths at all, because on a stalled home each probe would block the one loop
+    statting and creating off the event loop, and never in the plan --
+    ``test_the_planner_reads_nothing_but_its_arguments`` pins that the planner reads
+    no path at all, because on a stalled home each probe would block the one loop
     every session, cron and heartbeat shares.
     """
     if established is not None:
@@ -4758,16 +4662,6 @@ def _crew_home_alias_roots() -> tuple[tuple[str, str, int, int], ...]:
     return tuple(pairs)
 
 
-def _fold_crew_home_alias(path: str, aliases: tuple[tuple[str, str, int, int], ...]) -> str:
-    """*path* respelled under the canonical root when it sits under an alias root."""
-    for alias, canonical, _dev, _ino in aliases:
-        if path == alias:
-            return canonical
-        if path.startswith(alias.rstrip("/") + "/"):
-            return canonical.rstrip("/") + path[len(alias.rstrip("/")) :]
-    return path
-
-
 def _relocated_crew_targets(leaves: tuple[str, ...]) -> list[str]:
     """The RESOLVED crew-home paths for *leaves*, when the data home is not under ``$HOME``.
 
@@ -4780,7 +4674,7 @@ def _relocated_crew_targets(leaves: tuple[str, ...]) -> list[str]:
     Returns only the paths that DIFFER from the ``$HOME``-relative spelling the lists
     already carry, so the default layout gains no duplicate rule. Under a symlinked
     home the resolved spelling differs as a STRING from the ``$HOME`` one while
-    naming the same directory; ``_build_launcher_script`` folds the ``$HOME``
+    naming the same directory; the namespace plan folds the ``$HOME``
     spellings onto the resolved one (see ``_crew_home_alias_roots``) so the launcher
     is handed one name per directory.
 
@@ -4918,6 +4812,9 @@ def _pod_os_home_targets(dirs: tuple[str, ...]) -> list[str]:
     there. What bounds a shell is this mask and nothing else, which is
     exactly why the carve-outs above are the interesting part of this function.
 
+    The re-anchoring rule itself is :func:`kiro_crew.sandbox_plan.pod_home_targets`,
+    which the plan applies to every spawn; this reads the pod environment for it.
+
     Pinned in both directions by
     ``test_pod_runtime_auth_store.py::TestTheStagedStoresResidualIsPinned``; closing
     the staged store's shell leg needs a pod-scoped sign-in that never places a host
@@ -4938,25 +4835,13 @@ def _pod_os_home_targets(dirs: tuple[str, ...]) -> list[str]:
     except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
         logger.debug("could not resolve the home root for pod os-home masking", exc_info=True)
         return []
-    out: list[str] = []
-    # Only tiers that actually mask the grant-store leaf get the carve-out, and
-    # therefore the compensating sub-leaves. ``_STANDARD_DIRS`` deliberately omits
-    # ``.aws`` (standard leaves it visible so ``credential_process`` can reach
-    # Bedrock auth), so for that tier this function's output is unchanged --
-    # re-anchoring only ever mirrors what the selected tier already masks.
-    carved = _POD_OS_HOME_GRANT_STORE_LEAVES.intersection(dirs)
-    leaves = (*dirs, *(_POD_OS_HOME_MASKED_SUBLEAVES if carved else ()))
-    for leaf in leaves:
-        if leaf in carved:
-            continue
-        try:
-            relocated = os.path.normpath(os.path.join(os_home, leaf))
-            default = os.path.normpath(os.path.join(home_root, leaf))
-        except Exception:  # pragma: no cover - defensive
-            continue
-        if relocated != default:
-            out.append(relocated)
-    return out
+    return sandbox_plan.pod_home_targets(
+        dirs,
+        home_root,
+        os_home,
+        _POD_OS_HOME_GRANT_STORE_LEAVES,
+        _POD_OS_HOME_MASKED_SUBLEAVES,
+    )
 
 
 def _relocated_policy_cache_dirs() -> list[str]:
@@ -4974,7 +4859,7 @@ def _relocated_policy_cache_dirs() -> list[str]:
     already cover, so the default layout gains no duplicate rule.
 
     **Compared with ``normpath``, not ``realpath``, and that is deliberate.** This runs
-    inside ``_build_launcher_script`` / the seatbelt builder, which run on the event loop
+    inside ``_live_plan_host``, which both builders call on the spawn path
     for every async spawn — the same reason the launcher pushes its ``isdir`` checks into
     the child (see the note there): on a stalled NFS home a link-resolving syscall here
     freezes the gateway and its liveness heartbeat. ``normpath`` is pure string work.
@@ -5836,38 +5721,7 @@ async def resolve_bound_session_workspace(
     return resolved
 
 
-def _is_policy_cache_dir(path: str) -> bool:
-    """Whether *path* is a governance-cache directory, by leaf name.
-
-    Matched on the leaf rather than against a resolved path so it holds for every
-    spelling the dir lists carry — the ``$HOME``-relative default, the legacy
-    ``~/.kirocrew`` entry that the deny lists must keep covering, and the relocated
-    form from :func:`_relocated_policy_cache_dirs` — without a filesystem call on the
-    spawn path.
-    """
-    return os.path.basename(path.rstrip("/" + os.sep)) == _POLICY_CACHE_LEAF
-
-
-def _crew_hidden_sandbox_targets() -> set[str]:
-    """Absolute paths of the crew-home leaves the sandbox masks, both spellings.
-
-    The seatbelt profile needs to tell these apart from the other hidden entries: they
-    take a write deny as well as a read deny, while ``.aws`` must not (a tool refreshing
-    a cached token rewrites it legitimately). On Linux the distinction does not arise --
-    a bind mount blocks both directions in one rule.
-    """
-    home = str(Path.home())
-    targets = {os.path.join(home, rel) for rel in _CREW_HIDDEN_DIRS}
-    targets.update(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
-    return targets
-
-
-def _is_voice_runtime_dir(path: str) -> bool:
-    """Whether *path* is the gateway-only voice runtime subtree."""
-    normalized = os.path.normpath(path)
-    return normalized.endswith(os.sep + _VOICE_RUNTIME_LEAF) or normalized.endswith(
-        "/" + _VOICE_RUNTIME_LEAF.replace(os.sep, "/")
-    )
+_is_policy_cache_dir = sandbox_plan.is_policy_cache_dir
 
 
 # CC mode: files to expose read-only inside otherwise-hidden dirs.
@@ -5891,21 +5745,7 @@ _CC_FILES: list[str] = [
 ]
 
 
-def _hidden_path_contains_visible_path(
-    hidden_path: str,
-    visible_paths: tuple[str, ...],
-) -> bool:
-    """Return whether hiding *hidden_path* would also hide a required path."""
-
-    hidden = os.path.abspath(hidden_path)
-    for item in visible_paths:
-        visible = os.path.abspath(item)
-        try:
-            if os.path.commonpath((hidden, visible)) == hidden:
-                return True
-        except ValueError:
-            continue
-    return False
+_hidden_path_contains_visible_path = sandbox_plan.hidden_path_contains_visible_path
 
 
 # Sensitive env var prefixes to scrub from the child environment.
@@ -7465,6 +7305,250 @@ def _launcher_script_of(launcher_argv: list[str]) -> str:
     return launcher_argv[1 + len(_LAUNCHER_INTERPRETER_FLAGS)]
 
 
+def _log_refusals(refusals: tuple[sandbox_plan.Refusal, ...] | list[sandbox_plan.Refusal]) -> None:
+    """Log each refusal a plan made, in the order the plan made them."""
+    for refusal in refusals:
+        logger.warning(refusal.message, *refusal.args)
+
+
+def _carveout_probes(candidates: tuple[str, ...]) -> dict[str, sandbox_plan.CarveoutProbe]:
+    """What this host says about each absolute write carve-out candidate.
+
+    ``realpath`` and ``isdir`` are the only filesystem calls a carve-out decision needs;
+    taking them here keeps :func:`kiro_crew.sandbox_plan.plan_confinement` pure. Safe on
+    the spawn path: every async caller reaches the builders through
+    ``shielded_prepare_off_loop``'s worker thread.
+    """
+    probes: dict[str, sandbox_plan.CarveoutProbe] = {}
+    for raw in candidates:
+        if not raw or not os.path.isabs(raw) or raw in probes:
+            continue
+        lexical = os.path.normpath(os.path.abspath(raw))
+        canonical = os.path.realpath(lexical)
+        probes[raw] = sandbox_plan.CarveoutProbe(
+            raw=raw, lexical=lexical, canonical=canonical, is_dir=os.path.isdir(canonical)
+        )
+    return probes
+
+
+def _plan_cwd(request: sandbox_plan.SandboxRequest, host_paths: list[str]) -> str:
+    """The working directory a relative path in the plan resolves against.
+
+    Read only when a path the planner joins or compares is relative -- one the request
+    names, or one the host supplies (``$HOME``, the pod's home, the relocated data-home
+    spellings) -- as ``os.path.abspath`` would: a process whose working directory was
+    deleted keeps planning an all-absolute layout.
+    """
+    paths = (
+        *request.extra_hidden_dirs,
+        *request.extra_visible_dirs,
+        *request.extra_private_dirs,
+        *request.extra_expose_files,
+        *host_paths,
+    )
+    return os.getcwd() if any(not os.path.isabs(path) for path in paths) else os.sep
+
+
+def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHost:
+    """The production :class:`~kiro_crew.sandbox_plan.PlanHost`: this host, read now.
+
+    Every fact is read from this module at call time -- the tier tables, the platform
+    policy, the relocated data-home spellings, the voice-runtime cache, the pod
+    environment -- so a test that rebinds one of them here reaches the plan. Only the
+    facts the request's backend renders are read, in the order the builders always read
+    them: the namespace backend alone asks the process for its uid and gid and the host
+    ssh for ``accept-new`` support.
+    """
+    namespace = request.backend == sandbox_plan.BACKEND_NAMESPACE
+    home = str(Path.home())
+    uid = os.getuid() if namespace else 0
+    gid = os.getgid() if namespace else 0
+    # The tier lists come from the active PlatformContext, so an internal companion can
+    # extend them; the Default adapter returns ``_STRICT_DIRS`` / ``_CC_DIRS``.
+    # ``_STANDARD_DIRS`` is not an extension point and stays on the module global.
+    if request.tier == "standard":
+        tier_dirs = tuple(_STANDARD_DIRS)
+    elif request.tier == "cc":
+        tier_dirs = tuple(_sandbox_policy().cc_dirs())
+    else:
+        tier_dirs = tuple(_sandbox_policy().strict_dirs())
+    relocated_crew_hidden = tuple(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
+    # The pod's remapped home, gated on ``KIROCREW_POD == "1"`` exactly as
+    # ``config.paths`` gates the resolver, so a non-pod session's mask is unchanged.
+    pod_os_home = (
+        os.environ.get("KIROCREW_OS_HOME") if os.environ.get("KIROCREW_POD") == "1" else None
+    )
+    relocated_policy_cache_dirs = tuple(_relocated_policy_cache_dirs())
+    md_notebook_degraded_dirs = tuple(_md_notebook_degraded_mask_dirs())
+    voice_runtime_roots = tuple(_voice_runtime_sandbox_paths())
+    voice_runtime_parents = tuple(_voice_runtime_parent_paths())
+    voice_runtime_ancestor_guards = () if namespace else tuple(_voice_runtime_ancestor_guards())
+    relocated_crew_readonly = tuple(_relocated_crew_targets(_CREW_READONLY_LEAVES))
+    kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
+    carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
+    host_paths = [
+        home,
+        *([pod_os_home] if pod_os_home else []),
+        *relocated_policy_cache_dirs,
+        *relocated_crew_hidden,
+        *relocated_crew_readonly,
+        *md_notebook_degraded_dirs,
+        *voice_runtime_roots,
+        *voice_runtime_parents,
+        *voice_runtime_ancestor_guards,
+        *kiro_agents_targets,
+    ]
+    return sandbox_plan.PlanHost(
+        home=home,
+        cwd=_plan_cwd(request, host_paths),
+        tier_dirs=tier_dirs,
+        cc_files=tuple(_CC_FILES),
+        cc_expose_files=tuple(_CC_EXPOSE_FILES),
+        crew_readonly_targets=tuple(_CREW_READONLY_TARGETS),
+        crew_hidden_dirs=tuple(_CREW_HIDDEN_DIRS),
+        unreadable_mask_leaves=tuple(_CREW_UNREADABLE_MASK_LEAVES),
+        sensitive_env_prefixes=tuple(_SENSITIVE_ENV_PREFIXES),
+        agent_denied_env_keys=tuple(_AGENT_DENIED_ENV_KEYS),
+        python_env_prefixes=tuple(_PYTHON_ENV_PREFIXES),
+        pod_os_home=pod_os_home,
+        pod_grant_store_leaves=frozenset(_POD_OS_HOME_GRANT_STORE_LEAVES),
+        pod_masked_subleaves=tuple(_POD_OS_HOME_MASKED_SUBLEAVES),
+        relocated_policy_cache_dirs=relocated_policy_cache_dirs,
+        relocated_crew_hidden=relocated_crew_hidden,
+        relocated_crew_readonly=relocated_crew_readonly,
+        md_notebook_degraded_dirs=md_notebook_degraded_dirs,
+        voice_runtime_roots=voice_runtime_roots,
+        voice_runtime_parents=voice_runtime_parents,
+        voice_runtime_ancestor_guards=voice_runtime_ancestor_guards,
+        kiro_agents_targets=kiro_agents_targets,
+        carveout_probes=carveout_probes,
+        uid=uid,
+        gid=gid,
+        ssh_accept_new=_ssh_supports_accept_new() if namespace else False,
+    )
+
+
+def _spawn_plan(
+    backend: str,
+    sandbox_level: str = "strict",
+    *,
+    strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
+    extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
+    fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
+    required_mask_targets: tuple[str, ...] = (),
+    mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
+    crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
+) -> sandbox_plan.ConfinementPlan:
+    """Plan one spawn for *backend* against this host, logging what the plan refused.
+
+    The keyword arguments are the ones the builders below and their callers already
+    take, gathered into one :class:`~kiro_crew.sandbox_plan.SandboxRequest`.
+    """
+    request = sandbox_plan.SandboxRequest(
+        tier=sandbox_level,
+        backend=backend,
+        strip_python_env=strip_python_env,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
+        extra_hidden_dirs=tuple(extra_hidden_dirs),
+        extra_hidden_dir_ids=tuple(extra_hidden_dir_ids),
+        extra_alias_credential_ids=tuple(extra_alias_credential_ids),
+        extra_visible_dirs=tuple(extra_visible_dirs),
+        extra_private_dirs=tuple(extra_private_dirs),
+        extra_private_dir_ids=tuple(extra_private_dir_ids),
+        extra_writable_dirs=tuple(extra_writable_dirs),
+        extra_expose_files=tuple(extra_expose_files),
+        fail_closed_file_masks=tuple(fail_closed_file_masks),
+        required_mask_targets=tuple(required_mask_targets),
+        mask_occupants=tuple((mask_occupants or {}).items()),
+        crew_home_aliases=tuple(crew_home_aliases),
+    )
+    plan = sandbox_plan.plan_confinement(request, _live_plan_host(request))
+    _log_refusals(plan.refusals)
+    return plan
+
+
+def _build_launcher_script(
+    sandbox_level: str = "strict",
+    *,
+    strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
+    extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
+    fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
+    required_mask_targets: tuple[str, ...] = (),
+    mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
+    crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
+) -> str:
+    """The Linux namespace launcher program for one spawn, as Python source text.
+
+    Plans the spawn (:func:`_spawn_plan`) and renders the plan with
+    :func:`kiro_crew.sandbox_launcher.render_namespace_launcher`. No filesystem probe of a
+    masked path happens here: every identity the launcher checks was observed by the
+    pre-spawn passes in :func:`namespace_argv` and arrives as data.
+    """
+    return sandbox_launcher.render_namespace_launcher(
+        _spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE,
+            sandbox_level,
+            strip_python_env=strip_python_env,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
+            extra_hidden_dirs=extra_hidden_dirs,
+            extra_hidden_dir_ids=extra_hidden_dir_ids,
+            extra_alias_credential_ids=extra_alias_credential_ids,
+            extra_visible_dirs=extra_visible_dirs,
+            extra_private_dirs=extra_private_dirs,
+            extra_private_dir_ids=extra_private_dir_ids,
+            extra_writable_dirs=extra_writable_dirs,
+            extra_expose_files=extra_expose_files,
+            fail_closed_file_masks=fail_closed_file_masks,
+            required_mask_targets=required_mask_targets,
+            mask_occupants=mask_occupants,
+            crew_home_aliases=crew_home_aliases,
+        )
+    )
+
+
+def _build_seatbelt_profile(
+    sandbox_level: str = "strict",
+    *,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
+    extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
+) -> str:
+    """The macOS Seatbelt profile for one spawn, as ``sandbox-exec`` profile text.
+
+    Plans the spawn (:func:`_spawn_plan`) and renders the plan with
+    :func:`kiro_crew.sandbox_seatbelt.render_seatbelt_profile`.
+    """
+    return sandbox_seatbelt.render_seatbelt_profile(
+        _spawn_plan(
+            sandbox_plan.BACKEND_SEATBELT,
+            sandbox_level,
+            extra_hidden_dirs=extra_hidden_dirs,
+            extra_visible_dirs=extra_visible_dirs,
+            extra_private_dirs=extra_private_dirs,
+            extra_writable_dirs=extra_writable_dirs,
+            extra_expose_files=extra_expose_files,
+        )
+    )
+
+
 def namespace_argv(
     argv: list[str],
     sandbox_level: str = "strict",
@@ -7603,7 +7687,7 @@ def namespace_argv(
     for _am in alias_masks:
         _mask_occupants.setdefault(_am.path, (_am.dev, _am.ino, 0, 2, _am.dev, _am.ino))
 
-    script = sandbox_launcher._build_launcher_script(
+    script = _build_launcher_script(
         sandbox_level,
         strip_python_env=strip_python_env,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
@@ -7646,106 +7730,7 @@ def namespace_argv(
     return [sys.executable, *_LAUNCHER_INTERPRETER_FLAGS, path, *resolved_argv]
 
 
-def _path_within(path: str, parent: str) -> bool:
-    """Whether *path* equals *parent* or lies inside it (lexical, normalized)."""
-    parent_normalized = os.path.normpath(parent)
-    if path == parent_normalized:
-        return True
-    prefix = parent_normalized.rstrip(os.sep) + os.sep
-    return path.startswith(prefix)
-
-
-def _writable_carveout_spellings(
-    extra_writable_dirs: tuple[str, ...],
-    *,
-    subtree_guards: list[str],
-    literal_guards: list[str],
-    carveable_parents: list[str],
-) -> list[str]:
-    """Validate write carve-outs against the sandbox's own seals.
-
-    ``extra_writable_dirs`` exists for exactly one purpose: a caller that hands
-    a child its private scratch directory INSIDE the sealed runtime parent
-    (``<data home>/run``, kept read-only via :func:`_voice_runtime_parent_paths`)
-    needs that one directory writable — the MCP probe's ``TMPDIR`` lives at
-    ``run/mcp-tmp/<probe>`` and a Bun-packaged server must extract its native
-    module there before it can answer the handshake. Everything else stays
-    sealed.
-
-    Both sandbox backends apply the carve-out with override semantics (Seatbelt
-    is last-match-wins; the Linux launcher remounts a fresh bind read-write), so
-    an unvalidated path here would re-open whatever it covers. Each candidate is
-    therefore checked, in BOTH its lexical and canonical spelling (the data home
-    may be a supported symlink, and path-based rules see each spelling
-    independently), against every seal the profile emits:
-
-    * it must lie inside a ``carveable_parents`` entry — the runtime parent's
-      write-only seal is the ONLY seal this parameter may punch through;
-    * no guard (``subtree_guards`` — read-hidden trees, read-only ceilings,
-      the voice runtime — or ``literal_guards`` — sealed single files, rename
-      guards) may equal the carve-out or live inside it, since the override
-      would re-open that guard;
-    * it may not sit inside a non-carveable subtree guard, so a read-hidden
-      tree can never grow a writable window.
-
-    A candidate that fails any check is SKIPPED with a security warning rather
-    than raising: the callers treat temp containment as fail-open hygiene, and
-    a refused carve-out degrades to today's sealed behavior instead of blocking
-    the spawn. Returns the deduplicated approved spellings.
-
-    Two scope notes. Comparisons are LEXICAL and case-sensitive: on a
-    case-insensitive filesystem (default APFS) a differently-cased spelling of
-    a guard would not match, so this validator is a backstop for the
-    self-derived paths its callers pass — paths whose case matches the emitted
-    rules by construction — not a boundary for hostile input, which must never
-    reach this parameter. And the ``realpath``/``isdir`` calls here are safe
-    despite the no-filesystem-IO-on-the-event-loop rule the profile builders
-    cite: every async caller reaches those builders through
-    ``shielded_prepare_off_loop``'s worker thread.
-    """
-    carveable = [os.path.normpath(path) for path in carveable_parents]
-    subtree = [os.path.normpath(path) for path in subtree_guards]
-    literals = [os.path.normpath(path) for path in literal_guards]
-    carveable_set = set(carveable)
-    approved: list[str] = []
-    for raw in extra_writable_dirs:
-        if not raw or not os.path.isabs(raw):
-            logger.warning(
-                "SECURITY: refusing sandbox write carve-out %r: not an absolute path",
-                raw,
-            )
-            continue
-        lexical = os.path.normpath(os.path.abspath(raw))
-        canonical = os.path.realpath(lexical)
-        spellings = list(dict.fromkeys((lexical, canonical)))
-        if not os.path.isdir(canonical):
-            logger.warning(
-                "SECURITY: refusing sandbox write carve-out %r: not an existing " "real directory",
-                raw,
-            )
-            continue
-        refusal: str | None = None
-        for spelling in spellings:
-            if not any(_path_within(spelling, parent) for parent in carveable):
-                refusal = f"{spelling!r} is outside every carveable runtime parent"
-                break
-            for guard in subtree + literals:
-                if _path_within(guard, spelling):
-                    refusal = f"sealed path {guard!r} would be re-opened by it"
-                    break
-            if refusal:
-                break
-            for guard in subtree:
-                if guard not in carveable_set and _path_within(spelling, guard):
-                    refusal = f"it lies inside sealed subtree {guard!r}"
-                    break
-            if refusal:
-                break
-        if refusal:
-            logger.warning("SECURITY: refusing sandbox write carve-out %r: %s", raw, refusal)
-            continue
-        approved.extend(spellings)
-    return list(dict.fromkeys(approved))
+_path_within = sandbox_plan.path_within
 
 
 # ── Backend: macOS sandbox-exec ──
@@ -8332,7 +8317,7 @@ def sandbox_exec_argv(
                 "would cover a substitute while the original stays readable under its new "
                 "one. Refusing the spawn."
             )
-    profile = sandbox_seatbelt._build_seatbelt_profile(
+    profile = _build_seatbelt_profile(
         sandbox_level,
         # These entries become path RULES, not binds over an inode. That is weaker than it
         # first appears: the rule keeps naming a path, and nothing here denies a write to the
@@ -8364,7 +8349,7 @@ def sandbox_exec_argv(
     unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
     # Mark the sandboxed tree, exactly as the Linux namespace launcher does after
     # its own env scrub (see the export beside ``KIROCREW_HOST_PID`` in the program
-    # ``sandbox_launcher._build_launcher_script`` renders). Without
+    # ``_build_launcher_script`` renders). Without
     # this, an in-sandbox ``wrap_argv`` call cannot tell that KiroCrew's own
     # sandbox already confines it, tries to nest, and gets EPERM — which then
     # fail-closes every app-backend and MCP spawn on the host. Set as an ``env``
@@ -8757,31 +8742,7 @@ def unsandboxed_exec_permitted_by() -> str:
     return _unsandboxed_grant_source(_allow_unsandboxed_exec())
 
 
-def _agent_scrub_prefixes(base: list[str], forward_ssh_auth_sock: bool) -> list[str]:
-    """Filter the ``SSH_AUTH_SOCK`` prefix out of *base* when *forward_ssh_auth_sock*
-    is set, else return *base* unchanged.
-
-    The forward decision is passed in as an already-resolved boolean, NOT read
-    from config here: config resolution (:func:`_forward_ssh_auth_sock`) is done
-    ONCE on the agent spawn path in the off-loop environment-prep hop, then
-    threaded down to the launcher builders as an explicit parameter -- exactly as
-    ``strip_python_env`` is. This keeps the synchronous config read off the
-    asyncio event loop (anchor: no-blocking-call-on-event-loop) AND scopes the
-    forward to agent spawns: the generic launcher builders default the flag to
-    False, so a non-agent caller (a third-party app ``openCommand`` going through
-    the same generic ``wrap_argv`` launcher, a ``sandboxed_spawn_argv`` spawn)
-    never re-admits the socket.
-
-    It filters the exact literal ``"SSH_AUTH_SOCK"`` prefix only; every other
-    credential prefix is untouched, so the opt-in can never widen into a general
-    env passthrough. The shared module constant ``_SENSITIVE_ENV_PREFIXES`` is
-    NEVER mutated here - mcp_gateway.manager imports it to refuse credential keys
-    in MCP declared-env forwarding, and that refusal must keep covering
-    SSH_AUTH_SOCK regardless of this flag.
-    """
-    if not forward_ssh_auth_sock:
-        return base
-    return [p for p in base if p != "SSH_AUTH_SOCK"]
+_agent_scrub_prefixes = sandbox_plan.scrub_prefixes
 
 
 # Fallback tier for configured_sandbox_mode() when the config cannot be read.
@@ -8839,7 +8800,7 @@ def configured_sandbox_mode() -> str:
 # KiroCrew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at
 # exactly one site — the namespace launcher main() that
-# ``sandbox_launcher._build_launcher_script`` renders (see the export beside
+# ``_build_launcher_script`` renders (see the export beside
 # ``KIROCREW_HOST_PID``). We deliberately do NOT key on ``KIROCREW_HOST_PID``:
 # it is dual-purpose session-identity plumbing, and gating a security-relevant
 # passthrough on a variable set for other reasons is a latent bypass. Since the
@@ -10018,8 +9979,9 @@ def wrap_argv(
         extra_writable_dirs: Self-derived scratch directories INSIDE the sealed
             runtime parent (``<data home>/run``) that the child must be able to
             write — e.g. the MCP probe's private ``TMPDIR``. Validated
-            by :func:`_writable_carveout_spellings`; a candidate that would
-            re-open any other seal is refused with a security warning. Inert on
+            inside the plan by :func:`kiro_crew.sandbox_plan.writable_carveouts`;
+            a candidate that would re-open any other seal is refused with a
+            security warning. Inert on
             backends with no path seal to carve (Windows, the no-backend
             fail-open path): there the directory is already writable.
         is_kiro_cli: Explicit executable classification for descriptor-backed
@@ -13568,30 +13530,30 @@ def popen_limited(
 
 
 # --------------------------------------------------------------------------- #
-# Compatibility facade. The two programs the sandbox writes out -- the Linux
-# namespace launcher and the macOS Seatbelt profile -- are generated by
-# ``kiro_crew.sandbox_launcher`` and ``kiro_crew.sandbox_seatbelt``, and the
-# reclaim of the launcher's stale bind-mount sources lives in
-# ``kiro_crew.sandbox_mount_sweep``. Every name that moved stays readable as
+# Compatibility facade. What a spawn masks is decided once by
+# ``kiro_crew.sandbox_plan``; the Linux namespace launcher and the macOS Seatbelt
+# profile are rendered from that plan by ``kiro_crew.sandbox_launcher`` and
+# ``kiro_crew.sandbox_seatbelt``, and the reclaim of the launcher's stale bind-mount
+# sources lives in ``kiro_crew.sandbox_mount_sweep``. This module gathers the host
+# facts a plan needs (``_live_plan_host``) and keeps the builders and argv functions
+# its callers import. Every name that moved to ``sandbox_seatbelt`` or
+# ``sandbox_mount_sweep`` (``_EXPORTS_BY_OWNER``) stays readable as
 # ``kiro_crew.sandbox.<name>``, and every one of them is FORWARDED: ``__getattr__``
 # reads it from its owner, and ``_ReExportModule`` sends a write or delete there, so a
 # patch of ``kiro_crew.sandbox.<name>`` reaches the owner's own callers however the
 # test spells it. A forwarded name is absent from this module's namespace on purpose --
 # a binding here would shadow the owner for every later read -- and this module's code
-# reads it as ``<owner>.<name>``.
+# reads it as ``<owner>.<name>``. The path rules that moved to ``sandbox_plan`` are not
+# forwarded: the few this module still binds under their old names are compatibility
+# aliases of the plan's functions, and patching an alias reaches nothing the planner
+# reads -- patch ``sandbox_plan.<rule>``, or build a ``PlanHost``.
 #
-# The builders read the plan they render from this module when they run, through a
-# function-local import, so a test that rebinds a tier list or a target helper here
-# reaches them as it did before the move.
-#
-# ``test/test_sandbox_refactor_facade.py`` pins both halves: every moved name is
-# forwarded and none is bound here, and each owner reads this module only through its
-# listed function-local imports.
+# No owner imports this module: the renderers read only the plan they are handed.
+# ``test/test_sandbox_refactor_facade.py`` pins the forwarding and that direction.
 # --------------------------------------------------------------------------- #
 #: Owner module -> every name this module forwards to it.
 _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
-    "kiro_crew.sandbox_launcher": ("_build_launcher_script",),
-    "kiro_crew.sandbox_seatbelt": ("_SEATBELT_PROFILE", "_build_seatbelt_profile"),
+    "kiro_crew.sandbox_seatbelt": ("_SEATBELT_PROFILE",),
     "kiro_crew.sandbox_mount_sweep": (
         "_MOUNT_SOURCE_PREFIX",
         "_MOUNT_SOURCE_MAX_AGE_SECONDS",
@@ -13672,9 +13634,9 @@ class _ReExportModule(ModuleType):
     module does not hold by deleting it and setting it back. With ``create=True`` it
     skips the set, which would leave the owner without the name, so
     ``test/test_sandbox_refactor_create_guard.py`` fails on any such patch. Every other
-    name is an ordinary attribute write: tests rebind the plan, the target helpers and
-    this module's imports on purpose, for the code that stays here and for the builders,
-    which read them from this module at call time.
+    name is an ordinary attribute write: tests rebind the tier tables, the host-fact
+    helpers and this module's imports on purpose, for the code that stays here, which
+    includes the live plan host the builders read at call time.
     """
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -13701,7 +13663,14 @@ sys.modules[__name__].__class__ = _ReExportModule
 # bindings only the forwarding needs stay out of it, so a star import binds what it
 # bound before the owners existed.
 _NOT_EXPORTED = frozenset(
-    {"ModuleType", "importlib", "sandbox_launcher", "sandbox_mount_sweep", "sandbox_seatbelt"}
+    {
+        "ModuleType",
+        "importlib",
+        "sandbox_launcher",
+        "sandbox_mount_sweep",
+        "sandbox_plan",
+        "sandbox_seatbelt",
+    }
 )
 __all__ = sorted(
     name
@@ -13710,7 +13679,6 @@ __all__ = sorted(
 )
 
 if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
-    from kiro_crew.sandbox_launcher import _build_launcher_script  # noqa: F401
     from kiro_crew.sandbox_mount_sweep import (  # noqa: F401
         _LEGACY_MOUNT_SOURCE_RE,
         _LEGACY_PILE_THRESHOLD,
@@ -13735,7 +13703,4 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _PinScanCoverage,
         _task_uid,
     )
-    from kiro_crew.sandbox_seatbelt import (  # noqa: F401
-        _SEATBELT_PROFILE,
-        _build_seatbelt_profile,
-    )
+    from kiro_crew.sandbox_seatbelt import _SEATBELT_PROFILE  # noqa: F401

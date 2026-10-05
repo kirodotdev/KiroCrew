@@ -140,6 +140,7 @@ jobs:
               - "test/test_gateway_lock_diagnosis.py"
               # The Seatbelt profile the private-memory boundary compiles.
               - "src/kiro_crew/sandbox.py"
+              - "src/kiro_crew/sandbox_plan.py"
               - "src/kiro_crew/sandbox_seatbelt.py"
               - "src/kiro_crew/sandbox_mount_sweep.py"
               # launchd is the macOS pod backend.

@@ -8,7 +8,7 @@ covered because the mask is over the whole tree rather than per leaf.
 The primitive is honoured for TIER-masked trees and for a CALLER-masked tree
 (``extra_hidden_dirs``) on both backends, and each builder reaches that the same
 way: ``_build_launcher_script`` extends ``hidden_dirs`` with
-``extra_hidden_dirs`` before it computes ``_private_window_spellings``, and
+``extra_hidden_dirs`` before it computes ``sandbox_plan.private_windows``, and
 ``_build_seatbelt_profile`` computes its windows against the caller's targets as
 well as the tier list before it emits blanket denies over them. A builder that
 omitted the caller's targets would swallow the window: the child loses read AND
@@ -236,7 +236,7 @@ class TestTwoWindowsInTheScratchMask:
     masked scratch root -- its own directory and the tree's
     (``agent_scratch``): both are re-exposed read-write, every other tree stays
     hidden, and the two builders agree. The primitive is N-ary by construction
-    (``_private_window_spellings`` iterates); this pins that the second entry is
+    (``sandbox_plan.private_windows`` iterates); this pins that the second entry is
     honoured exactly like the first rather than assuming it."""
 
     _KWARGS = {"extra_private_dirs": (_OWN_SCRATCH, _TREE_SCRATCH)}

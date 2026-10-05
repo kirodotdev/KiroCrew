@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew import sandbox
+from kiro_crew import sandbox, sandbox_plan
 from kiro_crew.sandbox import SandboxCeilingUnsealable
 
 _POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits / bind-mount mask")
@@ -320,15 +320,14 @@ class TestAWindowAtOrAboveAHiddenLeaf:
         apps = os.path.join(home, ".kirocrew", "apps")
         window = os.path.join(apps, "meetings", "data")
 
-        script = sandbox._build_launcher_script(
-            "cc", extra_hidden_dirs=(apps,), extra_private_dirs=(window,)
+        plan = sandbox._spawn_plan(
+            "namespace", "cc", extra_hidden_dirs=(apps,), extra_private_dirs=(window,)
         )
-        carried = json.loads(re.search(r"PRIVATE_DIRS = (\[.*?\])\n", script, re.S).group(1))
-        profile_windows = sandbox._private_window_spellings(
+        profile_windows, _refusals = sandbox_plan.private_windows(
             (window,), [apps, os.path.join(window, "edits")]
         )
 
-        assert window in carried
+        assert window in plan.windows
         assert profile_windows == []
 
     @_POSIX_ONLY
@@ -352,16 +351,14 @@ class TestAWindowAtOrAboveAHiddenLeaf:
         home = os.path.expanduser("~")
         leaf = os.path.join(home, ".kirocrew", "apps", "aws-control", "data")
 
-        assert sandbox._window_is_a_hidden_target(leaf, [leaf])
+        assert sandbox_plan.window_is_a_hidden_target(leaf, [leaf])
         for remasks in (False, True):
-            assert (
-                sandbox._private_window_spellings(
-                    (leaf,),
-                    [os.path.join(home, ".kirocrew", "apps"), leaf],
-                    remasks_contained_targets=remasks,
-                )
-                == []
+            windows, _refusals = sandbox_plan.private_windows(
+                (leaf,),
+                [os.path.join(home, ".kirocrew", "apps"), leaf],
+                remasks_contained_targets=remasks,
             )
+            assert windows == []
 
     @_POSIX_ONLY
     def test_the_launcher_keeps_the_leaf_denied_and_opens_no_window_for_it(self):
@@ -375,15 +372,13 @@ class TestAWindowAtOrAboveAHiddenLeaf:
         apps = os.path.join(home, ".kirocrew", "apps")
         leaf = os.path.join(apps, "aws-control", "data")
         ordinary = os.path.join(apps, "alpha", "data")
-        script = sandbox._build_launcher_script(
-            "cc", extra_hidden_dirs=(apps,), extra_private_dirs=(leaf, ordinary)
+        plan = sandbox._spawn_plan(
+            "namespace", "cc", extra_hidden_dirs=(apps,), extra_private_dirs=(leaf, ordinary)
         )
-        masked = json.loads(re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S).group(1))
-        windows = json.loads(re.search(r"PRIVATE_DIRS = (\[.*?\])\n", script, re.S).group(1))
 
-        assert leaf not in windows
-        assert leaf in masked
-        assert ordinary in windows
+        assert leaf not in plan.windows
+        assert leaf in plan.sensitive_dirs
+        assert ordinary in plan.windows
 
 
 class TestTheLauncherPinsAWindowAgainstASwappedAncestor:
@@ -532,7 +527,7 @@ class TestTheMaskBindsOntoTheApprovedDirectoryNotItsName:
 
 
 class TestThePrivateWindowGate:
-    """``_private_window_spellings`` admits a window only where one is safe.
+    """``sandbox_plan.private_windows`` admits a window only where one is safe.
 
     Both directions are pinned: a window that re-exposes a hidden target is refused, and
     an ordinary window inside the same masked tree is still admitted. Without the second
@@ -554,23 +549,23 @@ class TestThePrivateWindowGate:
 
     def test_a_window_equal_to_a_hidden_target_is_refused(self, tmp_path):
         apps, leaf, _contains, _ordinary = self._paths(tmp_path)
-        assert sandbox._private_window_spellings((leaf,), [apps, leaf]) == []
+        assert sandbox_plan.private_windows((leaf,), [apps, leaf])[0] == []
 
     def test_a_window_containing_a_hidden_target_is_refused(self, tmp_path):
         apps, _leaf, contains, _ordinary = self._paths(tmp_path)
         nested = os.path.join(contains, "edits")
-        assert sandbox._private_window_spellings((contains,), [apps, nested]) == []
+        assert sandbox_plan.private_windows((contains,), [apps, nested])[0] == []
 
     def test_an_ordinary_window_inside_the_masked_tree_is_admitted(self, tmp_path):
         apps, leaf, _contains, ordinary = self._paths(tmp_path)
-        assert sandbox._private_window_spellings((ordinary,), [apps, leaf]) == [ordinary]
+        assert sandbox_plan.private_windows((ordinary,), [apps, leaf])[0] == [ordinary]
 
     def test_a_window_outside_every_masked_tree_is_dropped(self, tmp_path):
         apps, _leaf, _contains, _ordinary = self._paths(tmp_path)
         outside = str(tmp_path / "elsewhere")
-        assert sandbox._private_window_spellings((outside,), [apps]) == []
+        assert sandbox_plan.private_windows((outside,), [apps])[0] == []
 
     def test_a_trailing_separator_does_not_defeat_the_refusal(self, tmp_path):
         """The spellings differ by a separator the comparison has to normalise."""
         apps, leaf, _contains, _ordinary = self._paths(tmp_path)
-        assert sandbox._private_window_spellings((leaf,), [apps, leaf + os.sep]) == []
+        assert sandbox_plan.private_windows((leaf,), [apps, leaf + os.sep])[0] == []
