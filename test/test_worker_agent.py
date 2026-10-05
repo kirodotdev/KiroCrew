@@ -1722,6 +1722,64 @@ def test_the_fingerprint_covers_the_mirrored_keys_and_nothing_else(tmp_path, mon
     assert agent.default_spec_fingerprint() == agent.default_spec_fingerprint()
 
 
+def _spec_with_creds_agent_nonce(nonce: str) -> dict[str, Any]:
+    spec = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
+    spec["mcpServers"]["creds-agent"] = {
+        "command": "creds-launcher",
+        "args": ["mcp", "start-server", "creds-agent"],
+        "env": {
+            "CREDS_AGENT_URL": "${CREDS_AGENT_URL}",
+            "AIM_CREDS_AGENT_INJECTION": nonce,
+        },
+    }
+    return spec
+
+
+def test_a_per_launch_env_nonce_does_not_move_the_fingerprint(tmp_path, monkeypatch):
+    """A launcher re-stamps ``AIM_CREDS_AGENT_INJECTION`` into every agent spec it manages
+    on every session launch. That value is a nonce, not a grant — ``skill_projection``
+    already leaves it out of identity digests — so the fingerprint must not move with
+    it, or every concurrent launch reads as a trust change and ends the worker whose
+    load straddled it. Every other env value is still a grant and still counts."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    default = tmp_path / AGENT_FILENAME
+    default.write_text(json.dumps(_spec_with_creds_agent_nonce("1fbf21ab")), encoding="utf-8")
+    before = agent.default_spec_fingerprint()
+
+    default.write_text(json.dumps(_spec_with_creds_agent_nonce("c45a9953")), encoding="utf-8")
+    assert agent.default_spec_fingerprint() == before
+
+    rotated = _spec_with_creds_agent_nonce("c45a9953")
+    rotated["mcpServers"]["creds-agent"]["env"]["CREDS_AGENT_URL"] = "https://other"
+    default.write_text(json.dumps(rotated), encoding="utf-8")
+    assert agent.default_spec_fingerprint() != before
+
+    # Only the VALUE is volatile. A default that drops the key is a changed spec:
+    # otherwise the mirror would keep an env entry absent from the default.
+    dropped = _spec_with_creds_agent_nonce("c45a9953")
+    del dropped["mcpServers"]["creds-agent"]["env"]["AIM_CREDS_AGENT_INJECTION"]
+    default.write_text(json.dumps(dropped), encoding="utf-8")
+    assert agent.default_spec_fingerprint() != before
+
+
+def test_a_nonce_restamp_during_the_load_does_not_end_the_session(tmp_path, monkeypatch):
+    """The production shape of the failure: the gate captures the spec, another session
+    launching re-stamps the nonce before kiro-cli's ``initialize`` answers, and the
+    post-load bracket re-checks. Identity differs (a new file), so the verdict falls to
+    the fingerprint — which must agree, because nothing the worker inherits changed."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    default = tmp_path / AGENT_FILENAME
+    default.write_text(json.dumps(_spec_with_creds_agent_nonce("1fbf21ab")), encoding="utf-8")
+    agent._install_worker_agent()
+    snap = agent.require_fresh_derived_spec("kirocrew-worker", None)
+    assert snap is not None
+
+    default.write_text(json.dumps(_spec_with_creds_agent_nonce("c45a9953")), encoding="utf-8")
+    assert agent.default_spec_identity() != snap.identity
+
+    agent.require_unchanged_derived_spec(snap)
+
+
 def test_a_missing_default_spec_refuses_the_spawn(tmp_path, monkeypatch):
     """With no default spec there is neither a way to VERIFY the mirror nor a way to
     rebuild it, so passing would be a pass on an unverifiable spec. A path that

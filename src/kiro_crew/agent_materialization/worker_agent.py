@@ -30,6 +30,7 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp
 from kiro_crew.agent_spec_format import parse_markdown_spec
+from kiro_crew.agent_spec_format import volatile_env_keys
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
 #: superset claim holds against the agent the user actually runs rather than
@@ -913,8 +914,50 @@ def _spec_fingerprint(spec: dict[str, Any] | None) -> str | None:
     if spec is None:
         return None
     mirrored = {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
+    mirrored = _without_volatile_mcp_env(mirrored)
     payload = json.dumps(mirrored, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _without_volatile_mcp_env(mirrored: dict[str, Any]) -> dict[str, Any]:
+    """*mirrored* with per-launch MCP env nonce VALUES replaced, so they cannot move the hash.
+
+    A launcher may re-stamp a nonce into an ``mcpServers`` entry's ``env`` on every
+    session launch (``AIM_CREDS_AGENT_INJECTION`` is written into every agent spec the
+    launcher manages). A nonce is not a grant: the ACP skill views already leave those keys out
+    of their identity digests through :func:`kiro_crew.agent_spec_format.volatile_env_keys`,
+    and this hash follows the same list. Hashing them made every concurrent session
+    launch read as a trust change, so ``require_unchanged_derived_spec`` ended any
+    worker whose load straddled one.
+
+    Only the VALUE is normalized; the key stays in the hash. A default that drops the
+    key altogether is a changed spec -- otherwise the mirror would keep an env entry
+    absent from the default -- so it must still fingerprint differently. Every other
+    env value still counts: a rotated credential is a different grant.
+    """
+    servers = mirrored.get("mcpServers")
+    if not isinstance(servers, dict):
+        return mirrored
+    volatile = volatile_env_keys()
+    stripped: dict[str, Any] = {}
+    for name, entry in servers.items():
+        env = entry.get("env") if isinstance(entry, dict) else None
+        if not isinstance(env, dict) or not any(str(key) in volatile for key in env):
+            stripped[name] = entry
+            continue
+        stripped[name] = {
+            **entry,
+            "env": {
+                key: (_VOLATILE_VALUE_SENTINEL if str(key) in volatile else value)
+                for key, value in env.items()
+            },
+        }
+    return {**mirrored, "mcpServers": stripped}
+
+
+#: What a volatile env value hashes as. A fixed marker rather than omission, so the
+#: key's presence is still part of the fingerprint while its per-launch value is not.
+_VOLATILE_VALUE_SENTINEL = "<volatile>"
 
 
 def default_spec_identity() -> str | None:
