@@ -113,6 +113,37 @@ def test_abandoned_ws_slot_retains_nothing_after_a_normal_turn(tmp_path):
     assert _slot_still_refers(slot, rows) is False
 
 
+def test_deferred_cut_leaves_no_stranded_pre_tool_chunk_rows(tmp_path):
+    """A deferred-cut segment with an interleaved tool row has NO chunk residue.
+
+    While a construct stays open (``open_construct_at_end``) the segment cut is
+    deferred, so an interleaved background-agent tool call lands BETWEEN this
+    segment's chunk rows. The flush must remove the pre-tool chunk rows too, not
+    just the trailing run -- otherwise they strand in the window and a reload
+    renders them as a duplicate ``streaming`` bubble. The tool row survives in
+    place and the finalized reply lands after it.
+    """
+    state = _make_state(tmp_path)
+    slot = _ChatSlot(key="dashboard:chat-1")
+    state._slots[slot.key] = slot
+    # Segment opens an options marker, a tool call interleaves, then the marker
+    # closes -- the exact shape the deferral protects.
+    _stream(slot, ["Pick one: [OPTIONS: Yes | N"])
+    slot.append("tool", "🔧 did_a_thing", "msg msg-tool", broadcast=False)
+    rows = _stream(slot, ["o]"])  # returns ALL chunk rows now on the slot
+    assert len(rows) == 2
+
+    _flush_segment(state, slot, "Pick one: [OPTIONS: Yes | No]", broadcast=False)
+
+    # The tool row is kept, in order, before the finalized assistant reply.
+    assert [m["role"] for m in slot.messages] == ["tool", "assistant"]
+    assert slot.messages[-1]["content"] == "Pick one: [OPTIONS: Yes | No]"
+    # No chunk row stranded anywhere -- neither before nor after the tool row.
+    assert [m for m in slot.messages if m.get("role") == "chunk"] == []
+    assert [m for m in slot._pending if m.get("role") == "chunk"] == []
+    assert _slot_still_refers(slot, rows) is False
+
+
 def test_release_is_idempotent_and_leaves_other_rows_alone(tmp_path):
     """Only ``chunk`` rows go; a queued wire frame or assistant row stays."""
     _make_state(tmp_path)

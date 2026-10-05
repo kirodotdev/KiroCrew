@@ -595,10 +595,13 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
 
     The window admits the leaked-tool-call scan that sits ahead of the reset (a
     leak streamed before the boundary is invisible to the turn-end gates once
-    the accumulator is cleared, so the scan has to read it here). Only that
-    named statement and comments are allowed through: an arbitrary statement
-    between the guard and the reset still fails, which is what keeps this from
-    degrading into "the two lines appear somewhere in the file".
+    the accumulator is cleared, so the scan has to read it here) and the named
+    deferred-text flush that persists the accumulated segment before the reset
+    (a deferred cut can leave it unflushed, and clearing it unflushed is the
+    text loss this invariant also rules out). Only those named statements and
+    comments are allowed through: an arbitrary statement between the guard and
+    the reset still fails, which is what keeps this from degrading into "the two
+    lines appear somewhere in the file".
     """
     src = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -607,9 +610,13 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
         / "dashboard"
         / "chat_runner.py"
     ).read_text(encoding="utf-8")
-    # A comment line, or a line of the boundary scan (its call is wrapped across
-    # three lines by the formatter, so each shape is named).
-    filler = r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|assistant_text|\))\n)*"
+    # A comment line, a line of the boundary leak scan (its call is wrapped
+    # across three lines by the formatter, so each shape is named), or the
+    # guarded deferred-text flush that persists the segment before the reset.
+    filler = (
+        r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|assistant_text|\)"
+        r"|if assistant_text:|_flush_segment\(state, slot, assistant_text, broadcast=False\))\n)*"
+    )
     assert re.search(
         r"if not event\.synthesized:[ \t]*\n" + filler + r'[ \t]*assistant_text = ""[ \t]*\n'
         r"[ \t]*_wsred\.reset\(\)",

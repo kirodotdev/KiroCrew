@@ -66,6 +66,8 @@ from kiro_crew.history import (
 from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS, safe_read_file
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
+from kiro_crew.messaging.renderer import split_options_trailer
+from kiro_crew.messaging.split import FENCE_CLOSE, FENCE_OPEN, iter_fence_lines
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
@@ -97,6 +99,7 @@ from kiro_crew.validation import (
     THEME_CONSENT_SHA_RE,
     sanitize_string,
 )
+from kiro_crew.widget_parse import parse_widgets
 
 logger = logging.getLogger(__name__)
 
@@ -2939,6 +2942,74 @@ _LEAKED_INVOKE_OPEN_RE = re.compile(
 # so a lone stray open tag in prose (a truncated quote, a typo'd example) does
 # not read as a full leaked invocation.
 _LEAKED_INVOKE_BODY_RE = re.compile(r"<(?:[A-Za-z][\w.-]*:)?(?:parameter\b|/invoke\s*>)")
+
+
+def open_construct_at_end(text: str) -> str:
+    """Name the construct left OPEN at the end of *text*, or ``""`` when
+    finalizing a segment here is safe.
+
+    A segment cut is a PERSISTENCE boundary: the accumulated text becomes its
+    own assistant row and the buffer resets. Cutting inside a construct that
+    renders only when WHOLE therefore destroys it, because the halves persist
+    as two rows and nothing rejoins them.
+
+    A tool call cuts the segment, so while background agents run their tool
+    calls interleave with the parent's token stream and cut it wherever they
+    land. One reply then persists as many assistant rows split mid-word, and an
+    options marker whose closing ``]`` falls in the next row matches no render
+    grammar: the chips are lost and the tail reaches the user as literal prose.
+    The alternation repeats for as long as the wave runs.
+
+    Provenance cannot decide this. A child tool call arrives on this path with
+    no ``sub_session_id`` and no agent marker, indistinguishable from the
+    parent's own call, so the cut is made safe by asking WHERE it lands rather
+    than who owns it.
+
+    Deferral is bounded by construction: the turn-end flush does not consult
+    this predicate, so an unterminated construct still persists when the turn
+    closes. The cost of deferring is transcript ORDERING (the text lands after
+    the tools it preceded) and never text loss.
+
+    The name is returned rather than a bool so a deferred cut can log WHY.
+    """
+    if not text:
+        return ""
+    # An options marker is open when a trailing ``[OPTIONS:`` fragment is still
+    # in flight. split_options_trailer owns that rule: at hide_partial=True it
+    # trims an in-flight partial marker, at hide_partial=False it keeps it, so
+    # the two bodies differ exactly when one is open. Reusing it (rather than a
+    # local ``[OPTIONS:`` + ASCII ``]`` test) keeps the MARKER_CLOSERS set and
+    # the grammar viability check in one place -- an ASCII-only copy misses a
+    # marker whose only closers are lookalikes (e.g. ``】``).
+    held, _choices = split_options_trailer(text, hide_partial=True)
+    kept, _choices2 = split_options_trailer(text, hide_partial=False)
+    if held != kept:
+        return "options-line"
+    # A fence is open at the end exactly when the text ends INSIDE a fenced
+    # block. iter_fence_lines classifies each line as opener/closer/body/
+    # outside; walking those roles leaves `inside` true iff the last opener was
+    # never matched by a closer. Reusing this machine avoids a second spelling
+    # of the fence rule (its docstring forbids one) and inherits the real
+    # CommonMark logic -- line-start openers, matched run lengths -- so an
+    # inline triple-backtick in prose does not read as an open fence, and a
+    # closed fence whose closer line ends exactly at the text end is not
+    # mistaken for an open one.
+    inside_fence = False
+    for _line, role in iter_fence_lines(text):
+        if role == FENCE_OPEN:
+            inside_fence = True
+        elif role == FENCE_CLOSE:
+            inside_fence = False
+    if inside_fence:
+        return "code-fence"
+    # A widget is open when the last widget span parse_widgets finds is
+    # unterminated. Reusing its ``truncated`` flag (rather than counting
+    # ``<mcwidget`` vs ``</mcwidget>``) honours the code-span and fence rules
+    # that module applies, which a naive tag count ignores.
+    widgets = parse_widgets(text)
+    if widgets and widgets[-1].truncated:
+        return "mcwidget"
+    return ""
 
 
 def has_leaked_tool_call(text: str) -> bool:
