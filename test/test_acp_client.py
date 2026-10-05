@@ -1362,11 +1362,14 @@ class TestAcpClientBackendSelection:
 
     @pytest.fixture(autouse=True)
     def _reset_claude_cache(self):
-        import kiro_crew.acp.client as _mod
+        # Through the gateway's own reset seam rather than by writing the cache: the
+        # resolver is injected per test, so each must resolve afresh, and none may
+        # leave its answer for the next.
+        from kiro_crew.agent_sdk.drivers.acp import forget_cached_resolution
 
-        _mod._claude_acp_argv_cache = _mod._UNRESOLVED
+        forget_cached_resolution(ACP_BACKEND_CLAUDE)
         yield
-        _mod._claude_acp_argv_cache = _mod._UNRESOLVED
+        forget_cached_resolution(ACP_BACKEND_CLAUDE)
 
     @pytest.fixture(autouse=True)
     def _no_cgroup_scope(self):

@@ -1440,8 +1440,8 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
 # Backends ``AcpClient._spawn`` can construct a session for directly: kiro (the
-# resolve-and-exec branch every other backend's dedicated arm falls through to
-# when none matches) plus the five with an explicit ``elif self._is_<x>`` arm.
+# resolve-and-exec branch a backend with no process adapter falls through to)
+# plus the five with an entry in ``kiro_crew.acp.harness._PROCESS_ADAPTERS``.
 # A POSITIVE allowlist, not "every backend except kas/codex": a future backend
 # added to ``BASELINE_SELECTABLE_BACKENDS`` with no arm here must fail closed
 # (report not-spawnable) rather than silently fall to the kiro-cli branch under

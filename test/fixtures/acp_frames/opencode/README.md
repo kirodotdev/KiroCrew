@@ -23,7 +23,7 @@ model emitted around the tool call are omitted for length, and the fixture's own
 The permission frame is the one the enforcement story rests on. Kiro Crew's tool
 gate runs only when a harness sends `session/request_permission` for a tool call,
 and OpenCode sends it only while its own `permission` setting says to ask. The
-session's read-back (`AcpClient._verify_opencode_routing`) proves that setting is in
+session's read-back (`acp.harness.opencode._verify_opencode_routing`) proves that setting is in
 force; it cannot prove the harness then asks. `permission-request-live.jsonl` is that
 second half, observed: with `permission: ask` resolved, OpenCode emitted
 `session/request_permission` before running `bash`, waited for the client's

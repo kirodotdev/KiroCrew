@@ -18,14 +18,16 @@ message wording at the call site.
 
 from __future__ import annotations
 
-import ast
+import asyncio
 import inspect
 import json
-import textwrap
+import threading
 
 import pytest
 
+from kiro_crew import acp_tool_gate
 from kiro_crew.acp import client as acp_client
+from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.client import (
     OPENCODE_BIN,
     OPENCODE_INSTALL_COMMAND,
@@ -34,8 +36,9 @@ from kiro_crew.acp.client import (
     _opencode_agent_permissions,
     _opencode_uniform_permission,
     _resolve_self_served_bin,
-    _scrub_observed,
 )
+from kiro_crew.acp.harness import opencode as opencode_mod
+from kiro_crew.acp.harness.base import SpawnContext
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE, Routing, routing_for
 from kiro_crew.acp_tool_gate import seeded_setting_issue
 
@@ -171,14 +174,15 @@ def test_the_handshake_is_the_spec_dialect():
 class TestRoutingSeed:
     """The setting travels in the environment, and it never eats operator config."""
 
-    def _client(self, tmp_path):
-        return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    @staticmethod
+    def _seed() -> str:
+        return opencode_mod._opencode_routing_config(ACP_BACKEND_OPENCODE)
 
-    def test_the_seed_carries_the_declared_setting(self, tmp_path):
-        seed = json.loads(self._client(tmp_path)._opencode_routing_config())
+    def test_the_seed_carries_the_declared_setting(self):
+        seed = json.loads(self._seed())
         assert seed == {"permission": "ask"}
 
-    def test_an_operators_other_keys_survive(self, monkeypatch, tmp_path):
+    def test_an_operators_other_keys_survive(self, monkeypatch):
         """Merged over the ambient value, not substituted for it.
 
         An operator who set this variable did so to configure the harness; dropping
@@ -188,27 +192,30 @@ class TestRoutingSeed:
         monkeypatch.setenv(
             _ENV_CONFIG, json.dumps({"model": "ollama/qwen3:8b", "permission": "allow"})
         )
-        seed = json.loads(self._client(tmp_path)._opencode_routing_config())
+        seed = json.loads(self._seed())
         assert seed["model"] == "ollama/qwen3:8b"
         assert seed["permission"] == "ask", "Crew's permission setting must win the merge"
 
     @pytest.mark.parametrize("ambient", ["not json at all", '"a string"', "[1, 2]"])
-    def test_an_unusable_ambient_value_still_yields_the_seed(self, monkeypatch, tmp_path, ambient):
+    def test_an_unusable_ambient_value_still_yields_the_seed(self, monkeypatch, ambient):
         """A value that is not a JSON object cannot be merged, so the seed stands alone.
 
         Failing closed the other way -- refusing to seed -- would let a malformed
         environment variable disable the host gate.
         """
         monkeypatch.setenv(_ENV_CONFIG, ambient)
-        seed = json.loads(self._client(tmp_path)._opencode_routing_config())
+        seed = json.loads(self._seed())
         assert seed == {"permission": "ask"}
 
-    def test_nothing_is_written_into_the_work_dir(self, tmp_path):
+    def test_nothing_is_written_into_the_work_dir(self, monkeypatch, tmp_path):
         """The whole reason the seed is an env value: a session leaves no trace in a
         checked-out repository, so there is no ownership to arbitrate and no file to
-        restore on teardown."""
+        restore on teardown. Run from inside the directory, so a relative write would
+        land where it is looked for."""
+        (tmp_path / "repo-file.txt").write_text("x", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
         before = sorted(p.name for p in tmp_path.iterdir())
-        self._client(tmp_path)._opencode_routing_config()
+        self._seed()
         assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
@@ -264,9 +271,17 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
     def _client(self, tmp_path):
         return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
 
+    @staticmethod
+    def _verify(client, argv, config_content):
+        return opencode_mod._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, argv, config_content
+        )
+
     def test_a_missing_binary_is_an_issue(self, tmp_path):
-        issue, remedy = self._client(tmp_path)._verify_opencode_routing(
-            [str(tmp_path / "not-there"), "debug", "config"], '{"permission": "ask"}'
+        issue, remedy = self._verify(
+            self._client(tmp_path),
+            [str(tmp_path / "not-there"), "debug", "config"],
+            '{"permission": "ask"}',
         )
         assert issue
         assert "debug config" in remedy, "an exec failure gets the harness remedy"
@@ -277,8 +292,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stdout = ""
             stderr = ""
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert "exit 3" in issue
         assert "debug config" in remedy
 
@@ -293,10 +308,12 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             )
             stderr = ""
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = self._client(tmp_path)
         assert client._opencode_config_mcp_servers == ()
-        issue, _remedy = client._verify_opencode_routing(_ARGV, "{}")
+        issue, _remedy = opencode_mod._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
+        )
         assert issue == ""
         assert client._opencode_config_mcp_servers == ("docs.server",)
 
@@ -330,12 +347,19 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             return _Completed()
 
         client = self._client(tmp_path)
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _completed(plain))
-        assert client._verify_opencode_routing(_ARGV, "{}") == ("", "")
         monkeypatch.setattr(
-            acp_client.subprocess_mod, "run", lambda *_a, **_kw: _completed(servers)
+            opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _completed(plain)
         )
-        issue, remedy = client._verify_opencode_routing(_ARGV, "{}")
+        assert opencode_mod._verify_opencode_routing(client, ACP_BACKEND_OPENCODE, _ARGV, "{}") == (
+            "",
+            "",
+        )
+        monkeypatch.setattr(
+            opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _completed(servers)
+        )
+        issue, remedy = opencode_mod._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
+        )
         assert "MCP server" in issue and "opencode's own config" in remedy
 
     def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
@@ -346,8 +370,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stdout = ""
             stderr = "Error: cannot parse config at line 3\n"
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert "exit 1" in issue
         assert "its configuration could not be parsed" in issue
         # The fault, not the child's sentence: the line number is the harness's to
@@ -364,8 +388,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stdout = ""
             stderr = f"auth failed for key={secret}\n"
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert secret not in issue
         assert issue.endswith("recognises)"), issue
 
@@ -374,8 +398,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             returncode = 0
             stdout = "no json here"
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert "parsed" in issue
         assert "debug config" in remedy
 
@@ -386,8 +410,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             returncode = 0
             stdout = 'opencode 1.18.30\n{"permission": {"*": "ask"}}\n'
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        assert self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}") == ("", "")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        assert self._verify(self._client(tmp_path), _ARGV, "{}") == ("", "")
 
     def test_a_permissive_resolved_value_is_refused(self, tmp_path, monkeypatch):
         """The case the whole mechanism exists for: the harness's own default asks
@@ -398,8 +422,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             returncode = 0
             stdout = '{"permission": {"*": "allow"}}'
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert "allow" in issue
         # A CONFIG problem gets the gate's remedy, which names the override that
         # outranks the seed -- not the reinstall advice an exec failure gets. The
@@ -423,8 +447,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
                 '"build": {"permission": {"*": "allow"}, "options": {}}}}'
             )
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert "'build'" in issue and "allow" in issue
         assert "plan" not in issue, "an agent that asks is not what the refusal names"
         assert "higher-precedence" in remedy
@@ -440,8 +464,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
                 '"agent": {"plan": {"permission": {"bash": "allow"}, "options": {}}}}'
             )
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._verify(self._client(tmp_path), _ARGV, "{}")
         assert "'plan'" in issue and "allow" in issue
 
     def test_agents_that_ask_or_inherit_are_in_force(self, tmp_path, monkeypatch):
@@ -456,8 +480,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
                 '"build": {"options": {}}}}'
             )
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        assert self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}") == ("", "")
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        assert self._verify(self._client(tmp_path), _ARGV, "{}") == ("", "")
 
     def test_the_child_environment_is_scrubbed_like_the_spawns(self, tmp_path, monkeypatch):
         """The read-back child is a FOREIGN harness binary, so it gets the same scrub.
@@ -479,11 +503,11 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             seen["env"] = kwargs["env"]
             return _Completed()
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", _fake_run)
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _fake_run)
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-should-not-travel")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-not-travel")
         monkeypatch.setenv("KIRO_API_KEY", "should-not-travel")
-        self._client(tmp_path)._verify_opencode_routing(_ARGV, '{"permission": "ask"}')
+        self._verify(self._client(tmp_path), _ARGV, '{"permission": "ask"}')
 
         env = seen["env"]
         for leaked in ("SLACK_BOT_TOKEN", "AWS_SECRET_ACCESS_KEY", "KIRO_API_KEY"):
@@ -512,7 +536,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             seen["env"] = kwargs["env"]
             return _Completed()
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", _fake_run)
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _fake_run)
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         client = AcpClient(
             work_dir=tmp_path,
@@ -522,7 +546,9 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
                 "SLACK_BOT_TOKEN": "xoxb-overlay-must-not-bypass-the-scrub",
             },
         )
-        client._verify_opencode_routing(_ARGV, '{"permission": "ask"}')
+        opencode_mod._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, _ARGV, '{"permission": "ask"}'
+        )
 
         env = seen["env"]
         assert env["XDG_CONFIG_HOME"] == str(tmp_path / "elsewhere")
@@ -546,8 +572,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             seen["kwargs"] = kwargs
             return _Completed()
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", _fake_run)
-        self._client(tmp_path)._verify_opencode_routing(_ARGV, '{"permission": "ask"}')
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _fake_run)
+        self._verify(self._client(tmp_path), _ARGV, '{"permission": "ask"}')
         # Used VERBATIM: the caller hands over an argv that has already been through
         # the sandbox wrapper, so anything rebuilt here would run unwrapped.
         assert seen["argv"] == _ARGV
@@ -587,83 +613,182 @@ class TestAgentLevelPermissionWalk:
         assert _opencode_agent_permissions({"agent": agents}, "permission") == []
 
 
-def test_the_routing_read_back_runs_off_the_event_loop() -> None:
+class _OpencodeLaunchRig:
+    """``OpencodeLaunch.resolve_spawn`` driven against fakes at the adapter's own seams.
+
+    The resolution, the session's MCP warm, the sandbox preflight, the sandbox wrap,
+    the read-back child and its cleanup each answer a fixed value and record, in
+    order, that they ran, on which thread and with what. What a test asserts is what
+    the launch DID with them.
+    """
+
+    BIN = "/opt/bin/opencode"
+    HIDDEN = ("/opt/creds/.aws",)
+    SANDBOX = ["/opt/run/kirocrew_sandbox_launcher"]
+    CLEANUP = "/opt/run/kirocrew_sandbox_readback"
+    MODE = "standard"
+
+    def __init__(self, monkeypatch, tmp_path, *, routing=("", "")):
+        self.events: list[tuple] = []
+        self.loop_thread: int | None = None
+        self.plan = None
+        self.client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        self.adapter = opencode_mod.OpencodeLaunch()
+        self._tmp_path = tmp_path
+
+        def _record(name, *args):
+            self.events.append((name, threading.get_ident(), args))
+
+        async def _launch(backend):
+            _record("resolve", backend)
+            return self.BIN, [self.BIN, "acp"], "opencode acp", "opencode"
+
+        async def _prepare_session_mcp():
+            _record("session_mcp")
+
+        async def _preflight(preflight, backend, mode):
+            _record("preflight", preflight, backend, mode)
+            return self.HIDDEN
+
+        async def _wrap(argv, **kwargs):
+            _record("wrap", list(argv), kwargs)
+            return [*self.SANDBOX, *argv], self.CLEANUP
+
+        def _verify(session, backend, argv, config_content):
+            _record("verify", list(argv), config_content, session, backend)
+            return routing
+
+        def _unlink(path):
+            _record("unlink", path)
+
+        monkeypatch.setattr(launch_mod, "resolve_self_served_launch", _launch)
+        monkeypatch.setattr(self.client, "_prepare_session_mcp", _prepare_session_mcp)
+        monkeypatch.setattr(launch_mod, "_run_preflight_bounded", _preflight)
+        monkeypatch.setattr(opencode_mod, "wrap_argv_async", _wrap)
+        monkeypatch.setattr(opencode_mod, "_verify_opencode_routing", _verify)
+        monkeypatch.setattr(launch_mod, "_unlink_readback_launcher", _unlink)
+
+    def run(self):
+        """Resolve the plan on a fresh loop, noting the thread the loop runs on."""
+
+        async def _go():
+            self.loop_thread = threading.get_ident()
+            return await self.adapter.resolve_spawn(
+                SpawnContext(
+                    agent="kirocrew",
+                    work_dir=self._tmp_path,
+                    model=None,
+                    environ={},
+                    home=self._tmp_path,
+                    sandbox_mode=self.MODE,
+                    session=self.client,
+                )
+            )
+
+        self.plan = asyncio.run(_go())
+        return self.plan
+
+    def names(self) -> list[str]:
+        return [name for name, _thread, _args in self.events]
+
+    def _event(self, name: str) -> tuple:
+        hits = [event for event in self.events if event[0] == name]
+        assert len(hits) == 1, f"{name} ran {len(hits)} times: {self.names()}"
+        return hits[0]
+
+    def args_of(self, name: str) -> tuple:
+        return self._event(name)[2]
+
+    def ran_off_the_loop(self, name: str) -> bool:
+        assert self.loop_thread is not None
+        return self._event(name)[1] != self.loop_thread
+
+
+def test_the_routing_read_back_runs_off_the_event_loop(monkeypatch, tmp_path) -> None:
     """The read-back spawns a child, so calling it inline would stall the gateway.
 
     Measured at ~2.3s on a loaded desktop: on the loop that is every dashboard tab
-    frozen for the duration of a session start. Pinned structurally rather than by
-    timing, because a timing test would pass on a fast host.
+    frozen for the duration of a session start. Observed by the thread the read-back
+    ran on, not by timing, because a timing test would pass on a fast host.
     """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(AcpClient._spawn)))
-    offloaded = False
-    bare_calls = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "to_thread":
-            for arg in node.args:
-                if isinstance(arg, ast.Attribute) and arg.attr == "_verify_opencode_routing":
-                    offloaded = True
-        elif isinstance(func, ast.Attribute) and func.attr == "_verify_opencode_routing":
-            bare_calls += 1
-    assert offloaded, "the routing read-back must be handed to asyncio.to_thread"
-    assert bare_calls == 0, "the routing read-back must not be called inline on the loop"
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
+    rig.run()
+    assert rig.ran_off_the_loop("verify"), "the routing read-back ran on the event loop"
 
 
-def test_the_sandbox_floor_is_checked_before_any_child_is_started() -> None:
+def test_the_sandbox_floor_is_checked_before_any_child_is_started(monkeypatch, tmp_path) -> None:
     """The preflight runs BEFORE the read-back, not after.
 
     On a host where the credential mask cannot be applied the session is refused
     anyway, so ordering decides whether a foreign binary starts first and is then
-    told the session is off. Checked by position in the arm, because both calls
-    succeed in isolation and only their order carries the property.
+    told the session is off. Both calls succeed in isolation and only their order
+    carries the property, so the recorded order is what is asserted.
     """
-    body = inspect.getsource(AcpClient._spawn).split("elif self._is_opencode:", 1)[1]
-    body = body.split("        else:", 1)[0]
-    preflight_at = body.find("_sandbox_preflight")
-    readback_at = body.find("_verify_opencode_routing")
-    assert preflight_at != -1 and readback_at != -1
-    assert preflight_at < readback_at, (
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
+    rig.run()
+    names = rig.names()
+    assert names.index("preflight") < names.index("wrap") < names.index("verify"), (
         "the sandbox-floor preflight must precede the read-back, or a refused "
         "session still spawns a harness child first"
     )
+    preflight, backend, mode = rig.args_of("preflight")
+    assert preflight is launch_mod._sandbox_preflight
+    assert (backend, mode) == (ACP_BACKEND_OPENCODE, rig.MODE)
 
 
-def test_the_read_back_child_is_sandbox_wrapped_with_the_adapter_mask() -> None:
+def test_the_read_back_child_is_sandbox_wrapped_with_the_adapter_mask(
+    monkeypatch, tmp_path
+) -> None:
     """The read-back runs the harness's OWN binary, so it gets the session's sandbox.
 
     This harness resolves its configuration by reading the work dir, and that
     resolution can load a project's plugins -- so an unwrapped read-back would run
     third-party code with the credential homes the mask exists to deny it, moments
-    before the masked session spawn. The mask is resolved by the preflight above,
-    which is what makes wrapping possible at this point at all.
+    before the masked session spawn.
     """
-    body = inspect.getsource(AcpClient._spawn).split("elif self._is_opencode:", 1)[1]
-    body = body.split("        else:", 1)[0]
-    wrap_at = body.find("wrap_argv_async")
-    readback_at = body.find("_verify_opencode_routing")
-    assert wrap_at != -1, "the read-back argv must go through the sandbox wrapper"
-    assert wrap_at < readback_at, "the wrap must happen before the child is spawned"
-    assert (
-        "extra_hidden_dirs=adapter_hidden_dirs" in body
-    ), "the read-back must carry the same credential mask as the session spawn"
-    assert (
-        "readback_cleanup" in body
-    ), "the wrapper's launcher artifact must be removed once the child has exited"
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
+    plan = rig.run()
+    wrapped, kwargs = rig.args_of("wrap")
+    expose = acp_tool_gate.adapter_expose_files(ACP_BACKEND_OPENCODE, rig.HIDDEN)
+    assert wrapped == [rig.BIN, *acp_client._OPENCODE_CONFIG_READBACK_ARGS]
+    assert kwargs["mode"] == rig.MODE
+    assert kwargs["extra_hidden_dirs"] == rig.HIDDEN, "the read-back lost the session's mask"
+    assert kwargs["extra_expose_files"] == expose
+    assert kwargs["strip_python_env"] is True
+    assert rig.args_of("verify")[0] == [*rig.SANDBOX, *wrapped], "the read-back ran unwrapped"
+    names = rig.names()
+    assert rig.args_of("unlink") == (rig.CLEANUP,), "the wrapper's launcher artifact leaked"
+    assert names.index("verify") < names.index("unlink")
+    assert plan.extra_hidden_dirs == rig.HIDDEN
+    assert plan.extra_expose_files == expose
 
 
-def test_a_routing_refusal_is_translated_to_the_acp_layer_type() -> None:
+def test_the_read_back_vouches_for_the_seed_the_session_carries(monkeypatch, tmp_path) -> None:
+    """The seed the read-back verified is exactly the one the child is started with."""
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
+    rig.run()
+    seed = rig.args_of("verify")[1]
+    assert json.loads(seed) == {"permission": "ask"}
+    env: dict[str, str] = {}
+    rig.adapter.apply_spawn_env(env)
+    assert env == {_ENV_CONFIG: seed}
+    # And the session's MCP array is warmed before any child of this harness starts.
+    assert rig.names().index("session_mcp") < rig.names().index("wrap")
+
+
+def test_a_routing_refusal_is_translated_to_the_acp_layer_type(monkeypatch, tmp_path) -> None:
     """``ensure_ready`` catches ``AcpToolGateUnroutable``, so the raw type escapes it.
 
     An untranslated refusal matches neither of that method's handlers: the failure
     surfaces untyped AND ``_cleanup_failed_live_spawn`` never runs, leaving the
-    spawn it just refused unreaped. The three sibling call sites all translate.
+    spawn it just refused unreaped.
     """
-    body = inspect.getsource(AcpClient._spawn).split("elif self._is_opencode:", 1)[1]
-    body = body.split("        else:", 1)[0]
-    assert "except acp_tool_gate.ToolGateUnroutable" in body
-    assert "raise AcpToolGateUnroutable" in body
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, routing=("permissive", "fix it"))
+    with pytest.raises(acp_client.AcpToolGateUnroutable) as excinfo:
+        rig.run()
+    assert type(excinfo.value) is acp_client.AcpToolGateUnroutable
+    assert excinfo.value.__suppress_context__, "the gate module's exception leaks as context"
+    assert "unlink" in rig.names(), "the read-back's launcher must be reclaimed on refusal too"
 
 
 def test_a_successful_load_is_adopted_without_a_modes_block() -> None:
@@ -717,49 +842,144 @@ def test_a_resumed_session_is_not_gated_on_a_kiro_transcript() -> None:
     )
 
 
-def test_the_read_back_environment_is_built_from_the_spawns_sources() -> None:
-    """The read-back vouches for the session's environment, so it is built from the
-    same overlay and passed through the same resolver and scrub as the spawn's.
-    A pin on the source, because the two live thousands of lines apart and a
-    future edit to one would otherwise leave the other vouching for a different
-    process.
+def test_the_read_back_environment_is_built_from_the_spawns_sources(tmp_path, monkeypatch) -> None:
+    """The read-back vouches for the session's environment, so it is built the same way.
+
+    Overlay first, then the session's own credential repair, then the scrub: a
+    resolver that reintroduces a denied variable must still be scrubbed, and the
+    repair must see the overlay the session runs under.
     """
-    body = inspect.getsource(AcpClient._verify_opencode_routing)
-    assert "{**os.environ, **self._extra_env}" in body
-    assert "_resolve_spawn_env(" in body
-    assert "scrub_agent_subprocess_env(" in body
+    seen: dict = {}
+
+    def _resolve(env, *, kiro_api_key):
+        seen["resolved_from"] = dict(env)
+        seen["kiro_api_key"] = kiro_api_key
+        return {**env, "SLACK_BOT_TOKEN": "xoxb-a-resolver-reintroduced-this"}
+
+    class _Completed:
+        returncode = 0
+        stdout = '{"permission": "ask"}'
+
+    def _fake_run(argv, **kwargs):
+        seen["env"] = kwargs["env"]
+        return _Completed()
+
+    monkeypatch.setattr(acp_client, "_resolve_spawn_env", _resolve)
+    monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _fake_run)
+    # The gateway's own environment is the base the overlay lands on: an ambient config
+    # location the session inherits must reach the read-back too.
+    monkeypatch.setenv("OPENCODE_CONFIG", str(tmp_path / "ambient.json"))
+    client = AcpClient(
+        work_dir=tmp_path,
+        acp_backend=ACP_BACKEND_OPENCODE,
+        extra_env={"XDG_CONFIG_HOME": str(tmp_path / "overlay")},
+    )
+    opencode_mod._verify_opencode_routing(client, ACP_BACKEND_OPENCODE, _ARGV, "{}")
+    assert seen["resolved_from"]["XDG_CONFIG_HOME"] == str(tmp_path / "overlay")
+    assert seen["resolved_from"]["OPENCODE_CONFIG"] == str(tmp_path / "ambient.json")
+    assert seen["kiro_api_key"] is False, "the read-back child must never carry KIRO_API_KEY"
+    assert "SLACK_BOT_TOKEN" not in seen["env"], "the scrub ran before the resolver"
 
 
-def test_the_observed_value_is_redacted_before_it_reaches_a_refusal() -> None:
+_GITHUB_TOKEN_SHAPE = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+_EXFIL_URL = "https://evil.example.com/collect?data=aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldA=="
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"permission": f"allow {_GITHUB_TOKEN_SHAPE} {_EXFIL_URL}"},
+        {
+            "permission": {"*": "ask"},
+            "agent": {"build": {"permission": f"allow {_GITHUB_TOKEN_SHAPE} {_EXFIL_URL}"}},
+        },
+        {
+            "permission": {"*": "ask"},
+            "agent": {f"x {_GITHUB_TOKEN_SHAPE} {_EXFIL_URL}": {"permission": "allow"}},
+        },
+    ],
+    ids=["top-level-value", "agent-value", "agent-name"],
+)
+def test_the_observed_value_is_redacted_before_it_reaches_a_refusal(
+    tmp_path, monkeypatch, document
+) -> None:
     """The refusal text carries a value out of the operator's own config.
 
-    It reaches the dashboard and the chat card, so it goes through the same two
-    scrubs every other backend-sourced string in this module does.
+    It reaches the dashboard and the chat card, so a credential or an exfiltration URL
+    spelled anywhere the refusal quotes -- the top-level value, an agent's value, an
+    agent's NAME -- goes through both scrubs before it is published.
     """
-    scrub = inspect.getsource(_scrub_observed)
-    assert "redact_exfiltration_urls" in scrub
-    assert "redact_credentials" in scrub
-    body = inspect.getsource(AcpClient._verify_opencode_routing)
-    # Both the top-level value and every agent-level one (value AND agent name, which
-    # is operator-spelled too) go through it before they reach the refusal text.
-    assert body.count("_scrub_observed(") >= 3
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps(document)
+
+    monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    issue, _remedy = opencode_mod._verify_opencode_routing(
+        client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
+    )
+    assert issue, "a permissive document must be refused"
+    assert _GITHUB_TOKEN_SHAPE not in issue
+    assert "evil.example.com/collect" not in issue
+    assert "[REDACTED" in issue
 
 
-def test_the_spawn_arm_refuses_before_the_first_prompt() -> None:
-    """The refusal has to be reached from the spawn arm itself.
+def test_the_read_back_quotes_through_the_scrub_its_session_hands_it(tmp_path) -> None:
+    """The scrub is the session's, accepted rather than looked up: whatever the session
+    applies to a harness-reported value is what every quoted value in a refusal went
+    through -- the top-level value, an agent's value and an agent's name alike."""
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps(
+            {"permission": {"*": "ask"}, "agent": {"build": {"permission": "allow"}}}
+        )
+
+    seen: list[object] = []
+
+    class _Session:
+        _spawn_work_dir = str(tmp_path)
+        _extra_env: dict[str, str] = {}
+        _opencode_config_mcp_servers: tuple[str, ...] = ()
+
+        @staticmethod
+        def _scrub_observed(value):
+            seen.append(value)
+            return "<scrubbed>" if value == "build" else value
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = opencode_mod._verify_opencode_routing(
+            _Session(), ACP_BACKEND_OPENCODE, _ARGV, "{}"
+        )
+
+    assert seen == ["ask", "allow", "build"], seen
+    assert "'<scrubbed>' overrides it" in issue
+    assert "build" not in issue
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        ("the resolved configuration could not be parsed", "rerun it"),
+        ("the session's permission resolves to 'allow'", "remove the override"),
+    ],
+)
+def test_the_spawn_arm_refuses_before_the_first_prompt(monkeypatch, tmp_path, routing) -> None:
+    """The refusal has to be reached from the launch itself.
 
     ``enforce_runtime_routing`` is what turns the read-back's issue into a refused
     session. A read-back whose answer nothing acted on would report the harness
     routed while it ran its own default -- the one silent-bypass shape this
-    mechanism exists to close.
+    mechanism exists to close. And an enforced harness reaches the preflight first.
     """
-    source = inspect.getsource(AcpClient._spawn)
-    arm = source.split("elif self._is_opencode:", 1)
-    assert len(arm) == 2, "the opencode spawn arm is gone"
-    body = arm[1].split("        else:", 1)[0]
-    assert "_verify_opencode_routing" in body
-    assert "enforce_runtime_routing" in body
-    assert "_sandbox_preflight" in body, "an enforced harness must reach the preflight"
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, routing=routing)
+    with pytest.raises(acp_client.AcpToolGateUnroutable) as excinfo:
+        rig.run()
+    assert routing[1] in str(excinfo.value)
+    assert rig.plan is None
+    assert "preflight" in rig.names(), "an enforced harness must reach the preflight"
 
 
 def test_the_backend_declares_the_verified_mechanism() -> None:
@@ -817,9 +1037,11 @@ class TestATrailingAskRuleOutranksTheRulesBeforeIt:
             returncode = 0
             stdout = '{"permission": {"bash": "allow", "edit": "allow", "*": "ask"}}'
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
-        assert client._verify_opencode_routing(_ARGV, '{"permission": "ask"}') == ("", "")
+        assert opencode_mod._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, _ARGV, '{"permission": "ask"}'
+        ) == ("", "")
 
     def test_an_agent_map_follows_the_same_rule(self, tmp_path, monkeypatch):
         """The agent-level check shares the reducer, so the order rule holds there."""
@@ -831,7 +1053,9 @@ class TestATrailingAskRuleOutranksTheRulesBeforeIt:
                 '"build": {"permission": {"*": "ask", "bash": "allow"}, "options": {}}}}'
             )
 
-        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
-        issue, _remedy = client._verify_opencode_routing(_ARGV, "{}")
+        issue, _remedy = opencode_mod._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
+        )
         assert "'build'" in issue

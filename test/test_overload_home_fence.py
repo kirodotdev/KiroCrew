@@ -143,14 +143,39 @@ class TestScratchConfidentiality:
         allows = [line for line in rules if line.startswith("(allow")]
         assert allows == [f'(allow file-read-metadata (literal "{root}"))'], allows
 
-    def test_the_spawn_sites_hand_their_scratch_back_as_a_private_window(self) -> None:
-        import inspect
+    def test_the_spawn_sites_hand_their_scratch_back_as_a_private_window(self, tmp_path) -> None:
+        """Both drivers hand the scratch they allocated to the sandbox as a PRIVATE window.
+
+        The scratch root is masked for every sandboxed process, so a directory the
+        wrap is not told about stays hidden from the very child it was allocated
+        for, and that child falls back to the shared system temp.
+        """
+        from unittest.mock import patch
+
+        import acp_launch_capture as capture_mod
 
         from kiro_crew.acp import client, runtime
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
-        for module in (client, runtime):
-            src = inspect.getsource(module)
-            assert "extra_private_dirs=scratch_window" in src, module.__name__
+        for module, backend in ((client, ACP_BACKEND_KIRO), (runtime, ACP_BACKEND_CODEX)):
+            window = tmp_path / module.__name__ / "scratch-window"
+            window.mkdir(parents=True)
+            windows: list[tuple[str, ...]] = []
+
+            async def _wrap(argv, _windows=windows, **kwargs):
+                _windows.append(kwargs["extra_private_dirs"])
+                return list(argv), None
+
+            capture_mod.capture(
+                backend,
+                tmp_path / module.__name__ / "capture",
+                extra_patches=(
+                    patch.object(module.agent_scratch, "allocate_scratch", return_value=window),
+                    patch.object(module, "wrap_argv_async", side_effect=_wrap),
+                ),
+            )
+
+            assert windows == [(str(window),)], module.__name__
 
 
 class TestPrivateWindowDoesNotCostDelegation:

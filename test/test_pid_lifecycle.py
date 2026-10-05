@@ -4685,19 +4685,28 @@ class TestSpawnedMarkerInjection:
 
         assert env.get(KIROCREW_SPAWNED_ENV) == KIROCREW_SPAWNED_VALUE
 
-    def test_spawn_site_source_registry(self) -> None:
+    def test_spawn_site_source_registry(self, tmp_path) -> None:
         """Drift guard: the marker constant must appear at every known
         provider/MCP spawn-env build site. A new spawn site that replaces the
         inherited environment must add itself here AND inject the marker.
 
+        Both ACP drivers build their child's environment in the one launch tail
+        (``acp/launch.py``), so that file is the ACP site here, and each driver's
+        child is ALSO checked to actually carry the marker: a driver that stopped
+        launching through the tail would keep the file green and spawn unmarked.
+
         The fork is KiroACP-only, so upstream's ``providers/claude_code.py``
         spawn site is intentionally absent from this list (the module is
         deleted in the public fork)."""
+        import acp_launch_capture as capture_mod
+
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+        from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+
         src_root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
         spawn_sites = [
             "sandbox.py",
-            "acp/runtime.py",
-            "acp/client.py",
+            "acp/launch.py",
             "mcp_gateway/backend.py",
         ]
         for rel in spawn_sites:
@@ -4705,6 +4714,13 @@ class TestSpawnedMarkerInjection:
             assert "KIROCREW_SPAWNED_ENV" in content, (
                 f"{rel} no longer injects the KIROCREW_SPAWNED marker — "
                 "escaped MCP trees from this site become unsweepable"
+            )
+        # The client's launch and the shared runtime's.
+        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_CODEX):
+            added = capture_mod.capture(backend, tmp_path / (backend or "kiro"))["env_added"]
+            assert added.get(KIROCREW_SPAWNED_ENV) == KIROCREW_SPAWNED_VALUE, (
+                f"the {backend or 'kiro'} driver's child no longer carries the "
+                "KIROCREW_SPAWNED marker — escaped MCP trees from it become unsweepable"
             )
 
 

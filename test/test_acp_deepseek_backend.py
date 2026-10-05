@@ -14,6 +14,7 @@ what this file pins is ordinary onboarding vocabulary. Three things are not:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import io
 import json
@@ -27,7 +28,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from conftest import make_dir_link
-from kiro_crew.acp.client import AcpClient
+from kiro_crew import acp_tool_gate
+from kiro_crew.acp import launch as launch_mod
+from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
+from kiro_crew.acp.harness import deepseek as deepseek_mod
+from kiro_crew.acp.harness import pi as pi_mod
+from kiro_crew.acp.harness.base import SpawnContext
 from kiro_crew.acp.session_handle import models_from_config_options
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
@@ -293,8 +299,6 @@ def _deepseek_gate_verifier(tmp_path, monkeypatch, marker_writer, *, names: tupl
     The third element is the fake process the probe drove, carrying the ``Popen``
     keyword arguments (``kwargs``) and the environment the harness was booted with.
     """
-    from kiro_crew.acp import client as client_module
-
     marker_path = tmp_path / "gate-marker.json"
     extension_path = _gate_extension_path(tmp_path)
     extension_path.write_text("// stand-in for the shipped gate plugin\n", encoding="utf-8")
@@ -303,14 +307,16 @@ def _deepseek_gate_verifier(tmp_path, monkeypatch, marker_writer, *, names: tupl
     def fake_popen(argv, **kwargs):
         return _FakeProbeProcess(argv, marker_writer, marker_path, **kwargs)
 
-    monkeypatch.setattr(client_module.subprocess_mod, "Popen", fake_popen)
+    monkeypatch.setattr(deepseek_mod.subprocess_mod, "Popen", fake_popen)
     # The probe waits for the marker up to the read-back budget; a fake that never
     # writes one must fail in test time rather than in a minute.
-    monkeypatch.setattr(client_module, "_DSH_GATE_READBACK_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(deepseek_mod, "_DSH_GATE_READBACK_TIMEOUT_S", 0.5)
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK)
 
     def verify():
-        return client._verify_deepseek_gate(
+        return deepseek_mod._verify_deepseek_gate(
+            client,
+            ACP_BACKEND_DEEPSEEK,
             ["/fake/dsh", "--profile", "acp"],
             str(extension_path),
             str(marker_path),
@@ -697,7 +703,7 @@ def test_the_shipped_plugin_snapshots_the_tools_mode_and_proves_the_child_scrub(
     assert "error:" in source
 
 
-def test_the_session_writes_no_forensic_marker_of_its_own() -> None:
+def test_the_session_writes_no_forensic_marker_of_its_own(monkeypatch, tmp_path) -> None:
     """The only load marker is the probe's, which is the verification.
 
     An earlier revision also had the SESSION write a marker into its own private
@@ -708,27 +714,43 @@ def test_the_session_writes_no_forensic_marker_of_its_own() -> None:
     session sets none, and a session without a private window is treated the way
     every other backend treats it, as hygiene the shared site already tolerates.
     """
-    import inspect
-
     from kiro_crew.acp import client as client_module
 
-    body = inspect.getsource(client_module.AcpClient._spawn)
-    arm_start = "if self._is_deepseek:\n            # Pinned rather than left to the ambient value"
-    assert body.count(arm_start) == 1, "the session-env deepseek block anchor is no longer unique"
-    end = "self._apply_session_identity_env(env)"
-    block = body[body.index(arm_start) : body.index(end, body.index(arm_start))]
-    for token in ("_ENV_DSH_GATE_MARKER", "_deepseek_gate_marker", "no private scratch directory"):
-        assert token not in block, f"{token!r} is back in the session's env block"
-    # The probe still names the marker path, because the probe's marker is the one
-    # that is read.
-    probe = inspect.getsource(client_module.AcpClient._verify_deepseek_gate)
-    assert "_ENV_DSH_GATE_MARKER" in probe
-    client = AcpClient(work_dir=pathlib.Path("."), acp_backend=ACP_BACKEND_DEEPSEEK)
-    assert not hasattr(client, "_deepseek_gate_marker")
+    rig = _DeepseekLaunchRig(monkeypatch, tmp_path)
+    rig.run()
+    env: dict[str, str] = {}
+    rig.adapter.apply_spawn_env(env)
+    assert set(env) == {
+        client_module._ENV_DEEPSEEK_PERMISSION_MODE,
+        client_module._ENV_DSH_GATE_SESSION,
+    }, "the session's child names a marker (or the probe's canary list) after all"
+    assert not hasattr(rig.client, "_deepseek_gate_marker")
+    # The probe's marker is the one that is read: it lives in the probe's OWN window
+    # and carries this launch's nonce in its name.
+    _argv, _extension, marker_path, nonce, _kwargs = rig.args_of("verify")
+    assert pathlib.Path(marker_path).parent == rig.probe_dir
+    assert nonce and nonce in pathlib.Path(marker_path).name
+    assert nonce == rig.client._deepseek_gate_nonce
     # The plugin tolerates the variable being absent, which is what the session
     # relies on: no marker path means no write, not a crash before the gate arms.
     source = pathlib.Path(client_module.deepseek_gate_extension_path()).read_text()
     assert "if (!marker) return;" in source
+
+
+def test_the_probe_names_the_marker_it_reads(tmp_path, monkeypatch) -> None:
+    """The probe boots the harness with the marker path and the nonce it then judges."""
+
+    def write_marker(path):
+        marker = _good_gate_marker(_gate_extension_path(tmp_path).as_uri())
+        path.write_text(json.dumps(marker), encoding="utf-8")
+
+    verify, marker_path, probe_process = _deepseek_gate_verifier(
+        tmp_path, monkeypatch, write_marker
+    )
+    assert verify() == ("", "")
+    env = probe_process().kwargs["env"]
+    assert env[deepseek_mod._ENV_DSH_GATE_MARKER] == str(marker_path)
+    assert env[deepseek_mod._ENV_DSH_GATE_SESSION] == "n1"
 
 
 def test_the_shipped_gate_plugin_matches_the_pinned_digest() -> None:
@@ -750,39 +772,107 @@ def test_the_shipped_gate_plugin_matches_the_pinned_digest() -> None:
     ), "the shipped gate plugin changed without its pinned digest"
 
 
-def test_the_gate_writers_share_one_seal_and_one_publish_block() -> None:
-    """Three writers, one seal-write block -- so the two cannot drift again.
+def test_the_gate_writers_share_one_seal_and_one_publish_block(monkeypatch, tmp_path) -> None:
+    """Three writers, one seal and one publish -- so the two cannot drift again.
 
     The pi seal, the DeepSeek seal and the DeepSeek patch writer once each carried
     their own read -> LF-normalize -> digest -> write-if-changed -> stage/chmod/replace
     body, and had already diverged: pi's guarded ``chmod`` for Windows, the two new
-    copies did not. Both seals now call ``_seal_gate_extension`` and all three land
-    through ``_publish_gate_artifact``, which is the only place that stages a file;
-    each writer still resolves the artifact directory itself, through the strict
-    resolver, which is what the pi suite's text pins check per writer.
+    copies did not. Each writer is observed going through the one seal and the one
+    publish, each resolving the artifact directory through the strict resolver, and
+    each artifact lands there read-only.
     """
-    import inspect
+    artifact_dir = tmp_path / "pi-gate"
+    artifact_dir.mkdir()
+    resolved: list[str] = []
+    sealed_sources: list[str] = []
+    published: list[str] = []
+    real_seal = pi_mod._seal_gate_extension
+    real_publish = pi_mod._publish_gate_artifact
 
-    from kiro_crew.acp import client as client_module
+    def _strict() -> str:
+        resolved.append("asked")
+        return str(artifact_dir)
 
-    for writer in (
-        client_module._seal_pi_gate_extension,
-        client_module._seal_deepseek_gate_extension,
-    ):
-        source = inspect.getsource(writer)
-        assert "_seal_gate_extension(" in source, writer.__name__
-        assert "artifact_dir=_pi_gate_artifact_dir()" in source, writer.__name__
-        for token in ("mkstemp", "os.replace", "hashlib", "chmod"):
-            assert token not in source, f"{writer.__name__} carries its own {token}"
-    patch_writer = inspect.getsource(client_module._write_deepseek_gate_patch)
-    assert "_publish_gate_artifact(" in patch_writer
-    for token in ("mkstemp", "os.replace", "chmod"):
-        assert token not in patch_writer, f"the patch writer carries its own {token}"
-    publish = inspect.getsource(client_module._publish_gate_artifact)
-    assert "mkstemp" in publish and "os.replace" in publish
-    # The one Windows guard, where the mode is inert and the DACL is the seal.
-    assert "if not platform_compat.IS_WINDOWS:" in publish
-    assert "os.chmod(tmp, 0o400)" in publish
+    def _seal(source, digest, **kwargs):
+        sealed_sources.append(source)
+        return real_seal(source, digest, **kwargs)
+
+    def _publish(directory, name, payload, **kwargs):
+        published.append(name)
+        return real_publish(directory, name, payload, **kwargs)
+
+    monkeypatch.setattr(pi_mod, "_pi_gate_artifact_dir", _strict)
+    monkeypatch.setattr(pi_mod, "_seal_gate_extension", _seal)
+    monkeypatch.setattr(pi_mod, "_publish_gate_artifact", _publish)
+
+    artifacts = [pi_mod._seal_pi_gate_extension(), deepseek_mod._seal_deepseek_gate_extension()]
+    artifacts.append(deepseek_mod._write_deepseek_gate_patch(artifacts[1]))
+
+    assert sealed_sources == [
+        pi_mod.pi_gate_extension_path(),
+        deepseek_mod.deepseek_gate_extension_path(),
+    ], "a seal stopped going through the one shared seal"
+    assert sorted(published) == sorted(
+        pathlib.Path(path).name for path in artifacts
+    ), "a writer stopped landing its artifact through the one publish block"
+    assert (
+        len(resolved) == 3
+    ), "a writer stopped resolving its directory through the strict resolver"
+    for path in artifacts:
+        assert pathlib.Path(path).parent == artifact_dir
+        if os.name != "nt":
+            assert (pathlib.Path(path).stat().st_mode & 0o777) == 0o400, path
+
+
+def test_the_one_publish_block_stages_beside_the_target_and_renames_it_in(
+    monkeypatch, tmp_path
+) -> None:
+    """A gate artifact appears whole or not at all: staged in its own directory, then
+    renamed over the target, so a spawn that reads it mid-write never loads half a
+    plugin. An in-place write of the target would pass every other test here."""
+    renames: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        renames.append((str(src), str(dst)))
+        assert not pathlib.Path(dst).exists(), "the target existed before the rename"
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pi_mod.os, "replace", _replace)
+    target = pi_mod._publish_gate_artifact(
+        str(tmp_path), "gate.mjs", b"export {};\n", stage_prefix=".gate-stage-"
+    )
+
+    assert pathlib.Path(target).read_bytes() == b"export {};\n"
+    assert len(renames) == 1
+    staged, landed = renames[0]
+    assert landed == target and pathlib.Path(staged).parent == tmp_path
+    assert pathlib.Path(staged).name.startswith(".gate-stage-")
+    # Unchanged bytes are not rewritten.
+    assert (
+        pi_mod._publish_gate_artifact(
+            str(tmp_path), "gate.mjs", b"export {};\n", stage_prefix=".gate-stage-"
+        )
+        == target
+    )
+    assert len(renames) == 1
+
+
+def test_the_one_publish_block_leaves_the_mode_to_the_dacl_on_windows(
+    monkeypatch, tmp_path
+) -> None:
+    """The one Windows guard: ``chmod`` is inert there, and the directory DACL is the seal."""
+    from kiro_crew import platform_compat
+
+    chmods: list[tuple] = []
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(pi_mod.os, "chmod", lambda *args, **_kw: chmods.append(args))
+    target = pi_mod._publish_gate_artifact(
+        str(tmp_path), "kirocrew_dsh_gate_1.mjs", b"// gate\n", stage_prefix="kirocrew_dsh_gate_1_"
+    )
+    assert pathlib.Path(target).read_bytes() == b"// gate\n"
+    assert chmods == [], "the publish block chmods a file where the mode means nothing"
 
 
 def test_the_marker_waits_until_every_profile_entry_has_settled() -> None:
@@ -928,16 +1018,16 @@ def _deepseek_readback_spawn(tmp_path, monkeypatch, *, readback):
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK)
     argv = ["/fake/dsh", "--profile", "acp"]
     monkeypatch.setattr(
-        client,
-        "_resolve_self_served_launch",
+        launch_mod,
+        "resolve_self_served_launch",
         AsyncMock(return_value=("/fake/dsh", list(argv), "dsh", "dsh")),
     )
-    monkeypatch.setattr(client_module, "_run_preflight_bounded", AsyncMock(return_value=()))
+    monkeypatch.setattr(launch_mod, "_run_preflight_bounded", AsyncMock(return_value=()))
     monkeypatch.setattr(
-        client_module, "_seal_deepseek_gate_extension", lambda: str(tmp_path / "sealed.mjs")
+        deepseek_mod, "_seal_deepseek_gate_extension", lambda: str(tmp_path / "sealed.mjs")
     )
     monkeypatch.setattr(
-        client_module, "_write_deepseek_gate_patch", lambda _ext: str(tmp_path / "patch.json")
+        deepseek_mod, "_write_deepseek_gate_patch", lambda _ext: str(tmp_path / "patch.json")
     )
 
     # The probe's wrap answers; the real child's wrap is where this spawn stops.
@@ -950,8 +1040,11 @@ def _deepseek_readback_spawn(tmp_path, monkeypatch, *, readback):
             raise _SpawnStopped("the real child's wrap is not exercised by this test")
         return list(call_argv), None
 
+    # The probe's wrap is the adapter's; the real child's is the launch tail's, which
+    # the client hands its own binding.
+    monkeypatch.setattr(deepseek_mod, "wrap_argv_async", fake_wrap)
     monkeypatch.setattr(client_module, "wrap_argv_async", fake_wrap)
-    monkeypatch.setattr(client, "_verify_deepseek_gate", lambda *a, **k: readback)
+    monkeypatch.setattr(deepseek_mod, "_verify_deepseek_gate", lambda *a, **k: readback)
 
     return client, root, before, wrapped, asyncio
 
@@ -962,6 +1055,118 @@ class _SpawnStopped(Exception):
 
 def _probe_dirs(root) -> list[str]:
     return sorted(p.name for p in root.iterdir() if "dsh-probe" in p.name)
+
+
+class _DeepseekLaunchRig:
+    """``DeepseekLaunch.resolve_spawn`` driven against fakes at the adapter's own seams.
+
+    The resolution, the preflight, the seal and patch writers, the provider-key name
+    read, the probe's scratch window, the sandbox wrap, the probe itself and the
+    launcher cleanup each answer a fixed value and record, in order, that they ran
+    and with what. The provider KEY resolver and the vault are booby-trapped: the
+    launch's probe half must never reach either.
+    """
+
+    ARGV = ["/opt/bin/dsh", "--profile", "acp"]
+    SEALED = "/opt/run/kirocrew_dsh_gate_1.mjs"
+    PATCH = "/opt/run/kirocrew_dsh_gate_1.patch.yml"
+    HIDDEN = ("/opt/creds/.aws",)
+    SANDBOX = ["/opt/run/kirocrew_sandbox_launcher"]
+    CLEANUP = "/opt/run/kirocrew_sandbox_readback"
+    MODE = "standard"
+
+    def __init__(self, monkeypatch, tmp_path, *, routing=("", ""), names=()):
+        from kiro_crew import agent_scratch
+
+        self.events: list[tuple] = []
+        self.loop_thread: int | None = None
+        self.plan = None
+        self.client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK)
+        self.adapter = deepseek_mod.DeepseekLaunch()
+        self.probe_dir = tmp_path / "probe-window"
+        self._tmp_path = tmp_path
+
+        def _record(name, *args):
+            self.events.append((name, threading.get_ident(), args))
+
+        async def _launch(backend):
+            _record("resolve", backend)
+            return self.ARGV[0], list(self.ARGV), "dsh --profile acp", "dsh"
+
+        async def _preflight(preflight, backend, mode):
+            _record("preflight", preflight, backend, mode)
+            return self.HIDDEN
+
+        def _seal():
+            _record("seal")
+            return self.SEALED
+
+        def _patch(extension_path):
+            _record("patch", extension_path)
+            return self.PATCH
+
+        def _names():
+            _record("names")
+            return tuple(names)
+
+        def _allocate(label):
+            _record("allocate", label)
+            self.probe_dir.mkdir()
+            return self.probe_dir
+
+        async def _wrap(argv, **kwargs):
+            _record("wrap", list(argv), kwargs)
+            return [*self.SANDBOX, *argv], self.CLEANUP
+
+        def _verify(session, backend, argv, extension_path, marker_path, nonce, **kwargs):
+            _record("verify", list(argv), extension_path, marker_path, nonce, kwargs)
+            return routing
+
+        def _unlink(path):
+            _record("unlink", path)
+
+        def _no_key(*_a, **_kw):
+            raise AssertionError("the launch reached the provider key; the probe needs none")
+
+        monkeypatch.setattr(launch_mod, "resolve_self_served_launch", _launch)
+        monkeypatch.setattr(launch_mod, "_run_preflight_bounded", _preflight)
+        monkeypatch.setattr(deepseek_mod, "_seal_deepseek_gate_extension", _seal)
+        monkeypatch.setattr(deepseek_mod, "_write_deepseek_gate_patch", _patch)
+        monkeypatch.setattr(deepseek_mod, "_deepseek_vault_env_names", _names)
+        monkeypatch.setattr(agent_scratch, "allocate_scratch", _allocate)
+        monkeypatch.setattr(deepseek_mod, "wrap_argv_async", _wrap)
+        monkeypatch.setattr(deepseek_mod, "_verify_deepseek_gate", _verify)
+        monkeypatch.setattr(launch_mod, "_unlink_readback_launcher", _unlink)
+        monkeypatch.setattr(deepseek_mod, "_deepseek_vault_env", _no_key)
+        monkeypatch.setattr(deepseek_mod, "resolve_secret_uris", _no_key)
+
+    def run(self):
+        """Resolve the plan on a fresh loop, noting the thread the loop runs on."""
+
+        async def _go():
+            self.loop_thread = threading.get_ident()
+            return await self.adapter.resolve_spawn(
+                SpawnContext(
+                    agent="kirocrew",
+                    work_dir=self._tmp_path,
+                    model=None,
+                    environ={},
+                    home=self._tmp_path,
+                    sandbox_mode=self.MODE,
+                    session=self.client,
+                )
+            )
+
+        self.plan = asyncio.run(_go())
+        return self.plan
+
+    def names(self) -> list[str]:
+        return [name for name, _thread, _args in self.events]
+
+    def args_of(self, name: str) -> tuple:
+        hits = [event for event in self.events if event[0] == name]
+        assert len(hits) == 1, f"{name} ran {len(hits)} times: {self.names()}"
+        return hits[0][2]
 
 
 def test_a_successful_read_back_removes_its_own_probe_window(tmp_path, monkeypatch) -> None:
@@ -1044,6 +1249,7 @@ def test_a_session_with_no_private_window_is_started_not_refused(tmp_path, monke
         calls.append(tuple(kwargs.get("extra_private_dirs", ())))
         return list(call_argv), None
 
+    monkeypatch.setattr(deepseek_mod, "wrap_argv_async", wrap_ok)
     monkeypatch.setattr(client_module, "wrap_argv_async", wrap_ok)
     real_allocate = agent_scratch.allocate_scratch
 
@@ -1079,54 +1285,41 @@ def test_a_session_with_no_private_window_is_started_not_refused(tmp_path, monke
     assert sorted(p.name for p in root.iterdir() if p.name not in before) == []
 
 
-def test_the_shared_construction_tail_carries_nothing_from_this_adapter() -> None:
-    """harness-parity H13: the Kiro construction path gains no conditional of ours.
+def test_the_shared_construction_tail_carries_nothing_from_this_adapter(
+    monkeypatch, tmp_path
+) -> None:
+    """harness-parity H13: no work of this adapter's runs on the Kiro construction path.
 
-    The shared tail between ``apply_pod_bundle_spawn`` and the real child's sandbox
-    wrap is the site EVERY backend passes through, the kiro one included, so an
-    adapter-specific branch there is evaluated on every Kiro session start. This
-    harness's read-back therefore lives in its own arm, and this asserts the tail is
-    free of it by TEXT rather than by review: a branch moved back would be caught
-    here before it reached the protected path again.
-
-    The start anchor is the call's own argument list rather than the bare function
-    name: the arm's justification comment names ``apply_pod_bundle_spawn`` too, and
-    an anchor that matched the comment would slice from the wrong place and read the
-    arm itself as the shared tail.
+    The launch tail and the post-spawn path are shared by EVERY backend, the kiro one
+    included, so anything of this adapter's placed there runs on every Kiro session
+    start. Every entry point of the adapter -- its launch, its env steps, its probe,
+    its vault and key-name reads, its seal and patch writers -- is booby-trapped here,
+    and the full Kiro launch is then driven through ``_spawn`` (and its post-spawn
+    bookkeeping) to the same launch facts the committed golden records.
     """
-    body = inspect.getsource(AcpClient._spawn)
-    start = "apply_pod_bundle_spawn, argv, backend=self.backend"
-    end = "argv, self._sandbox_cleanup = await wrap_argv_async("
-    assert body.count(start) == 1, "the shared-tail start anchor is no longer unique"
-    assert body.count(end) == 1, "the shared-tail end anchor is no longer unique"
-    tail = body[body.index(start) : body.index(end)]
-    for token in ("_is_deepseek", "_deepseek_"):
-        assert token not in tail, (
-            f"{token!r} is back on the shared construction path; every Kiro session "
-            "start would evaluate it (harness-parity H13)"
-        )
+    import acp_launch_capture as capture_mod
 
-    # And the read-back itself is inside the arm, which is the other half of the
-    # same claim: removed from the tail AND present where it belongs.
-    arm = body[body.index("elif self._is_deepseek:") :]
-    arm = arm[: arm.index("\n        else:")]
-    assert "_verify_deepseek_gate" in arm
-    assert "agent_scratch.allocate_scratch" in arm
+    def _trap(name):
+        def _raise(*_a, **_kw):
+            raise AssertionError(f"{name} ran on the Kiro construction path (harness-parity H13)")
 
-    # The path AFTER the child exists is shared too, and it is the one every Kiro
-    # session start runs unconditionally: pid capture, resume, PID-file appends, the
-    # descendant scan. Nothing of this adapter's may sit there either -- not a branch
-    # on its identity and not a branch on state only its arm ever sets, which is the
-    # same conditional wearing a neutral name (the post-exec clear of the vault-fed
-    # key once lived here as ``if self._vault_secret_env_keys:``).
-    pid_anchor = "self._pid = self._process.pid"
-    assert body.count(pid_anchor) == 1, "the post-spawn anchor is no longer unique"
-    after_spawn = body[body.index(pid_anchor) :]
-    for token in ("_is_deepseek", "_deepseek_", "_vault_secret", "deepseek"):
-        assert token not in after_spawn, (
-            f"{token!r} is on the shared post-spawn path; every Kiro session start "
-            "would evaluate it (harness-parity H13)"
-        )
+        return _raise
+
+    for name in ("resolve_spawn", "apply_spawn_env", "prepare_spawn_env"):
+        monkeypatch.setattr(deepseek_mod.DeepseekLaunch, name, _trap(f"DeepseekLaunch.{name}"))
+    for name in (
+        "_verify_deepseek_gate",
+        "_deepseek_vault_env",
+        "_deepseek_vault_env_names",
+        "_seal_deepseek_gate_extension",
+        "_write_deepseek_gate_patch",
+        "_validate_deepseek_env_mapping",
+        "_read_deepseek_gate_marker",
+    ):
+        monkeypatch.setattr(deepseek_mod, name, _trap(name))
+
+    answer = capture_mod.capture(ACP_BACKEND_KIRO, tmp_path)
+    assert answer == capture_mod.read_golden()[capture_mod.golden_key(ACP_BACKEND_KIRO)]
 
 
 def test_a_denial_the_harness_reports_does_not_trip_the_ungated_call_guard() -> None:
@@ -1243,7 +1436,7 @@ def test_every_file_the_gate_writers_leave_in_the_leaf_is_swept(monkeypatch, tmp
 
     artifact_dir = tmp_path / "pi-gate"
     artifact_dir.mkdir()
-    monkeypatch.setattr(client_module, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
+    monkeypatch.setattr(pi_mod, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
     sealed = client_module._seal_deepseek_gate_extension()
     client_module._write_deepseek_gate_patch(sealed)
     families = sandbox_module._PI_GATE_DIR_ARTIFACTS
@@ -1907,8 +2100,8 @@ def test_the_argv_is_the_host_binary_plus_the_shipped_profile() -> None:
     """The ACP package is a plugin with no executable; the host binary boots it."""
     from kiro_crew.agent_sdk.backends import launch_for
 
-    # The RECORD is what is pinned, not a line of source: the spawn arm reads
-    # ``_resolve_self_served_launch``, which is shared with the sibling harnesses, so
+    # The RECORD is what is pinned, not a line of source: the adapter reads
+    # ``acp.launch.resolve_self_served_launch``, which is shared with the sibling harnesses, so
     # a source-text assertion there would pin their spelling as well as this one's.
     record = launch_for(ACP_BACKEND_DEEPSEEK)
     assert record.binary == "dsh"
@@ -1973,40 +2166,64 @@ def test_the_sandbox_posture_is_pinned_in_the_child_environment() -> None:
     assert _ENV_DEEPSEEK_PERMISSION_MODE == "DSH_PERMISSION_MODE"
     assert DEEPSEEK_PERMISSION_MODE == "workspace-write"
 
-    body = inspect.getsource(AcpClient._spawn)
-    assert "env[_ENV_DEEPSEEK_PERMISSION_MODE] = DEEPSEEK_PERMISSION_MODE" in body
+    env = {_ENV_DEEPSEEK_PERMISSION_MODE: "danger-full-access"}
+    deepseek_mod.DeepseekLaunch().apply_spawn_env(env)
+    assert env[_ENV_DEEPSEEK_PERMISSION_MODE] == DEEPSEEK_PERMISSION_MODE
+
+    async def _no_vault_key(fn):
+        return {}, ()
+
+    env = {_ENV_DEEPSEEK_PERMISSION_MODE: "danger-full-access"}
+    asyncio.run(deepseek_mod.DeepseekLaunch().prepare_spawn_env(env, to_thread=_no_vault_key))
+    assert env[_ENV_DEEPSEEK_PERMISSION_MODE] == DEEPSEEK_PERMISSION_MODE
 
 
-def test_the_arm_runs_the_credential_mask_preflight_before_its_read_back() -> None:
+def test_the_arm_runs_the_credential_mask_preflight_before_its_read_back(
+    monkeypatch, tmp_path
+) -> None:
     """An ENFORCED harness takes a preflight call site, and takes it FIRST.
 
-    ``test_acp_tool_gate.test_every_enforced_harness_reaches_the_spawn_preflight``
-    counts one ``_sandbox_preflight`` call per ENFORCED harness, so the call is
-    required rather than optional now. ORDER is the part worth pinning here: the
-    read-back below boots a child of this harness, and a child that ran before the
-    mask was resolved would read the operator's credentials with the gate's own
-    blessing.
+    ORDER is the part worth pinning: the read-back boots a child of this harness, and
+    a child that ran before the mask was resolved would read the operator's
+    credentials with the gate's own blessing. And the gate is composed through the
+    harness's own per-launch patch flag, naming the sealed copy, never by editing a
+    profile Crew does not own.
     """
-    body = inspect.getsource(AcpClient._spawn)
-    arm = body[body.index("elif self._is_deepseek:") :]
-    arm = arm[: arm.index("\n        else:")]
-    assert "_sandbox_preflight" in arm
-    assert "adapter_expose_files" in arm
-    assert arm.index("_sandbox_preflight") < arm.index("_verify_deepseek_gate")
-    # And the gate is composed through the harness's own per-launch patch flag,
-    # never by editing a profile Crew does not own.
-    assert "_DSH_PATCH_FLAG" in arm
-    assert "_seal_deepseek_gate_extension" in arm
+    rig = _DeepseekLaunchRig(monkeypatch, tmp_path)
+    plan = rig.run()
+    names = rig.names()
+    assert names.index("preflight") < names.index("wrap") < names.index("verify")
+    preflight, backend, mode = rig.args_of("preflight")
+    assert preflight is launch_mod._sandbox_preflight
+    assert (backend, mode) == (ACP_BACKEND_DEEPSEEK, rig.MODE)
+    assert names.index("seal") < names.index("patch")
+    assert rig.args_of("patch") == (rig.SEALED,)
+    assert plan.argv == [*rig.ARGV, deepseek_mod._DSH_PATCH_FLAG, rig.PATCH]
+    wrapped, kwargs = rig.args_of("wrap")
+    expose = acp_tool_gate.adapter_expose_files(ACP_BACKEND_DEEPSEEK, rig.HIDDEN)
+    assert wrapped == plan.argv, "the probe did not boot the composition the session runs"
+    assert kwargs["extra_hidden_dirs"] == rig.HIDDEN
+    assert kwargs["extra_expose_files"] == expose
+    assert kwargs["extra_private_dirs"] == (str(rig.probe_dir),)
+    assert rig.args_of("verify")[:2] == ([*rig.SANDBOX, *wrapped], rig.SEALED)
+    assert (plan.extra_hidden_dirs, plan.extra_expose_files) == (rig.HIDDEN, expose)
 
 
-def test_a_deepseek_readback_issue_becomes_an_acp_routing_refusal() -> None:
-    """The DeepSeek-only read-back converts every issue through the enforced gate."""
-    body = inspect.getsource(AcpClient._spawn)
-    readback = body[body.index("routing_issue, routing_remedy =") :]
-    readback = readback[: readback.index("# Resolve the SSH_AUTH_SOCK")]
-    assert "if routing_issue:" in readback
-    assert "acp_tool_gate.enforce_runtime_routing" in readback
-    assert "raise AcpToolGateUnroutable(str(exc)) from None" in readback
+def test_a_deepseek_readback_issue_becomes_an_acp_routing_refusal(monkeypatch, tmp_path) -> None:
+    """The DeepSeek-only read-back converts every issue through the enforced gate.
+
+    And the refusal is reached only after the probe's launcher and its window have
+    been reclaimed, so a refused session leaves nothing behind.
+    """
+    rig = _DeepseekLaunchRig(monkeypatch, tmp_path, routing=("not loaded", "reinstall it"))
+    with pytest.raises(AcpToolGateUnroutable) as excinfo:
+        rig.run()
+    assert type(excinfo.value) is AcpToolGateUnroutable
+    assert excinfo.value.__suppress_context__, "the gate module's exception leaks as context"
+    assert "reinstall it" in str(excinfo.value)
+    assert rig.args_of("unlink") == (rig.CLEANUP,)
+    assert not rig.probe_dir.exists(), "the probe's window survived the refusal"
+    assert rig.plan is None
 
 
 # ── The effort option id, read rather than spelled ───────────────────────────
@@ -2383,6 +2600,9 @@ def test_every_scrub_class_name_crew_writes_on_the_child_is_reserved() -> None:
 
     composers = (
         AcpClient._spawn,
+        launch_mod.launch,
+        deepseek_mod.DeepseekLaunch.apply_spawn_env,
+        deepseek_mod.DeepseekLaunch.prepare_spawn_env,
         AcpClient._apply_session_identity_env,
         client_module._resolve_spawn_env,
         sandbox.scrub_agent_subprocess_env,
@@ -2734,23 +2954,25 @@ def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
 
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK)
     monkeypatch.setattr(
-        client,
-        "_resolve_self_served_launch",
+        launch_mod,
+        "resolve_self_served_launch",
         AsyncMock(return_value=("/fake/dsh", ["/fake/dsh", "--profile", "acp"], "dsh", "dsh")),
     )
-    monkeypatch.setattr(client_module, "_run_preflight_bounded", AsyncMock(return_value=()))
+    monkeypatch.setattr(launch_mod, "_run_preflight_bounded", AsyncMock(return_value=()))
     monkeypatch.setattr(
-        client_module, "_seal_deepseek_gate_extension", lambda: str(tmp_path / "sealed.mjs")
+        deepseek_mod, "_seal_deepseek_gate_extension", lambda: str(tmp_path / "sealed.mjs")
     )
     monkeypatch.setattr(
-        client_module, "_write_deepseek_gate_patch", lambda _ext: str(tmp_path / "patch.yml")
+        deepseek_mod, "_write_deepseek_gate_patch", lambda _ext: str(tmp_path / "patch.yml")
     )
-    monkeypatch.setattr(client, "_verify_deepseek_gate", lambda *a, **k: ("", ""))
-    monkeypatch.setattr(client_module, "_unlink_readback_launcher", lambda _p: None)
+    monkeypatch.setattr(deepseek_mod, "_verify_deepseek_gate", lambda *a, **k: ("", ""))
+    monkeypatch.setattr(launch_mod, "_unlink_readback_launcher", lambda _p: None)
 
     async def wrap_ok(call_argv, **kwargs):
         return list(call_argv), None
 
+    # The probe's wrap at the adapter, the real child's at the client's launch tools.
+    monkeypatch.setattr(deepseek_mod, "wrap_argv_async", wrap_ok)
     monkeypatch.setattr(client_module, "wrap_argv_async", wrap_ok)
 
     spawned: dict = {}
@@ -2807,8 +3029,6 @@ def test_the_vault_key_reaches_the_child_and_leaves_the_parent(tmp_path, monkeyp
     child's own env dict is a local of ``_spawn`` and dies with the frame, so there
     is no later site for a clear to run at.
     """
-    from kiro_crew.acp import client as client_module
-
     client, spawned, asyncio_mod = _dsh_vault_spawn(
         tmp_path,
         monkeypatch,
@@ -2818,14 +3038,14 @@ def test_the_vault_key_reaches_the_child_and_leaves_the_parent(tmp_path, monkeyp
     # The resolver's OWN returned dict, captured by identity so the clear can be
     # observed on the object the contract names rather than on a copy.
     resolved_dicts: list[dict] = []
-    real_resolver = client_module._deepseek_vault_env
+    real_resolver = deepseek_mod._deepseek_vault_env
 
     def capturing_resolver():
         resolved, keys = real_resolver()
         resolved_dicts.append(resolved)
         return resolved, keys
 
-    monkeypatch.setattr(client_module, "_deepseek_vault_env", capturing_resolver)
+    monkeypatch.setattr(deepseek_mod, "_deepseek_vault_env", capturing_resolver)
 
     asyncio_mod.run(client._spawn())
 
@@ -2859,7 +3079,7 @@ def test_a_refused_mapping_stops_the_session_before_any_child_starts(tmp_path, m
     monkeypatch.setattr(client, "_discard_sandbox_cleanup", lambda: discarded.append(True))
     probed: list[bool] = []
     monkeypatch.setattr(
-        client, "_verify_deepseek_gate", lambda *a, **k: probed.append(True) or ("", "")
+        deepseek_mod, "_verify_deepseek_gate", lambda *a, **k: probed.append(True) or ("", "")
     )
 
     with pytest.raises(AcpToolGateUnroutable) as refused:
@@ -2882,12 +3102,10 @@ def test_an_empty_mapping_costs_the_spawn_no_vault_read(tmp_path, monkeypatch) -
     read is filesystem work on every DeepSeek session start and because a vault that
     cannot be loaded must not refuse a session that referenced nothing in it.
     """
-    from kiro_crew.acp import client as client_module
-
     client, spawned, asyncio_mod = _dsh_vault_spawn(tmp_path, monkeypatch, mapping={})
     reads: list[object] = []
     monkeypatch.setattr(
-        client_module,
+        deepseek_mod,
         "resolve_secret_uris",
         lambda *a, **k: reads.append(a) or ({}, set()),
     )
@@ -2898,32 +3116,52 @@ def test_an_empty_mapping_costs_the_spawn_no_vault_read(tmp_path, monkeypatch) -
     assert "DEEPSEEK_API_KEY" not in spawned["seen"]
 
 
-def test_the_injection_is_inside_the_arm_and_the_probe_is_never_handed_a_key() -> None:
-    """Placement, pinned by TEXT: the deepseek env block, and nowhere else.
+def test_the_probe_is_never_handed_a_key(monkeypatch, tmp_path) -> None:
+    """The read-back PROBE, which boots the plugin and exits, is handed NAMES, never a key.
 
-    Two claims. The injection sits inside ``if self._is_deepseek:`` -- so the Kiro
-    construction path gains nothing (harness-parity H13) and the key lands BEFORE
-    ``scrub_agent_subprocess_env``, which is the whole reason the validator refuses a
-    name that scrub would strip. And the read-back PROBE, which boots the plugin and
-    exits, is never handed one: it needs no provider key, and a probe carrying a live
-    key would widen the secret's exposure to a second process for no gain.
+    It needs no key, and a probe carrying a live one would widen the secret's exposure
+    to a second process for no gain. So its launch reads the mapping's names and
+    hands those to the plugin, and never reaches the key resolver or the vault --
+    both are booby-trapped in the rig.
     """
-    body = inspect.getsource(AcpClient._spawn)
-    assert body.count("_deepseek_vault_env)") == 1
-    block = body[body.index("if self._is_deepseek:") :]
-    block = block[: block.index("self._apply_session_identity_env(env)")]
-    assert "_deepseek_vault_env)" in block
-    assert "env.update(deepseek_env)" in block
-    # ... and before the shared tail's two env passes.
-    assert body.index("_deepseek_vault_env)") < body.index("scrub_agent_subprocess_env(")
+    rig = _DeepseekLaunchRig(monkeypatch, tmp_path, names=("DEEPSEEK_API_KEY",))
+    rig.run()
+    assert rig.args_of("verify")[4] == {"child_scrub_names": ("DEEPSEEK_API_KEY",)}
+    assert rig.names().index("names") < rig.names().index("verify")
 
-    # The probe's own env build is the arm's, and it names no vault resolution: the
-    # arm derives the NAMES only, which the probe hands the plugin under canaries.
-    arm = body[body.index("elif self._is_deepseek:") :]
-    arm = arm[: arm.index("\n        else:")]
-    assert "_deepseek_vault_env)" not in arm
-    assert "_deepseek_vault_env_names" in arm
-    assert "resolve_secret_uris" not in arm
+
+def test_the_injection_is_inside_the_arm_and_the_probe_is_never_handed_a_key(
+    tmp_path, monkeypatch
+) -> None:
+    """The session's key is placed on its env BEFORE the shared scrub judges it.
+
+    That ordering is the whole reason the validator refuses a name the scrub would
+    strip: a key injected after the scrub would never be judged by it, and one
+    removed by it would leave a harness that cannot reach its model. The probe half
+    of this claim is ``test_the_probe_is_never_handed_a_key``.
+    """
+    from kiro_crew.acp import client as client_module
+
+    client, spawned, asyncio_mod = _dsh_vault_spawn(
+        tmp_path,
+        monkeypatch,
+        mapping=_vault_env_mapping(),
+        secret=("dsh-proof", "dummy-vault-fed-key"),
+    )
+    real_scrub = client_module.scrub_agent_subprocess_env
+    scrubbed_from: list[dict] = []
+
+    def _scrub(env, **kwargs):
+        scrubbed_from.append(dict(env))
+        return real_scrub(env, **kwargs)
+
+    monkeypatch.setattr(client_module, "scrub_agent_subprocess_env", _scrub)
+    asyncio_mod.run(client._spawn())
+    assert scrubbed_from, "the launch never scrubbed the session's environment"
+    assert (
+        scrubbed_from[0].get("DEEPSEEK_API_KEY") == "dummy-vault-fed-key"
+    ), "the provider key was placed after the scrub, so the scrub never judged it"
+    assert spawned["seen"]["DEEPSEEK_API_KEY"] == "dummy-vault-fed-key"
 
 
 # ── A harness with no provider key: the declared message, not the raw frame ──

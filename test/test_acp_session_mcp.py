@@ -1501,17 +1501,60 @@ class TestClientSeam:
             await client._initialize_session()
         assert killed == [True]
 
-    def test_the_spawn_arm_reads_the_version_before_the_seed_and_the_warm(self):
-        """Floor first, then the writer, then the warm: the array is never rebuilt."""
-        import inspect
+    def test_the_spawn_arm_reads_the_version_before_the_seed_and_the_warm(
+        self, tmp_path, monkeypatch
+    ):
+        """Floor first, then the writer, then the warm: the array is never rebuilt.
 
-        source = inspect.getsource(client_mod.AcpClient._spawn)
-        read = source.index("_claude_adapter_installed_version")
-        seed = source.index("await asyncio.to_thread(self._write_claude_local_settings)")
-        warm = source.index(
-            "self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)"
+        Driven through the claude adapter's own launch: the writer must already see
+        the installed adapter version (it applies the ``settingSources`` floor with
+        it), and the session's MCP array is resolved once, after the writer decided
+        whether Crew authored the settings file.
+        """
+        from kiro_crew.acp.harness import SpawnContext
+        from kiro_crew.acp.harness import claude as claude_mod
+        from kiro_crew.acp.harness import process_adapter_for
+        from kiro_crew.agent_sdk.drivers.acp import forget_cached_resolution
+
+        steps: list[tuple[str, str]] = []
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+
+        def _version(argv):
+            steps.append(("read", ""))
+            return "0.84.0"
+
+        def _write(self):
+            steps.append(("seed", self._claude_adapter_disk_version))
+
+        def _resolve(self):
+            steps.append(("warm", ""))
+            return []
+
+        forget_cached_resolution(ACP_BACKEND_CLAUDE)
+        monkeypatch.setattr(
+            claude_mod, "_resolve_claude_acp_bin", lambda: (["/opt/bin/claude-agent-acp"], "")
         )
-        assert read < seed < warm
+        monkeypatch.setattr(claude_mod, "_claude_adapter_installed_version", _version)
+        monkeypatch.setattr(AcpClient, "_write_claude_local_settings", _write)
+        monkeypatch.setattr(AcpClient, "_resolve_session_mcp_servers", _resolve)
+        try:
+            asyncio.run(
+                process_adapter_for(ACP_BACKEND_CLAUDE).resolve_spawn(
+                    SpawnContext(
+                        agent="kirocrew",
+                        work_dir=tmp_path,
+                        model=None,
+                        environ={},
+                        home=tmp_path,
+                        session=client,
+                    )
+                )
+            )
+        finally:
+            forget_cached_resolution(ACP_BACKEND_CLAUDE)
+
+        assert steps == [("read", ""), ("seed", "0.84.0"), ("warm", "")]
+        assert client._session_mcp_cache == []
 
     def test_the_installed_version_is_read_from_the_adapters_own_manifest(self, tmp_path):
         pkg = tmp_path / "node_modules" / "@agentclientprotocol" / "claude-agent-acp"

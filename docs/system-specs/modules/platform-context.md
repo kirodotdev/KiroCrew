@@ -1331,8 +1331,8 @@ representative rather than exhaustive.
   kiro agent spec (`acp/session_mcp.py`) and feeds both `session/new` +
   `session/load` `mcpServers` — gated on membership in
   `ACP_BACKENDS_SESSION_MCP_ARRAY`, not on `_is_claude`, since reading no agent
-  file is a property of the transport rather than of Anthropic; `_spawn` calls
-  `_write_claude_local_settings()` (still identity-gated — it writes a literal
+  file is a property of the transport rather than of Anthropic; the claude adapter's
+  launch (`ClaudeLaunch.resolve_spawn`) calls `_write_claude_local_settings()` (still identity-gated — it writes a literal
   `.claude/` path) on the PRIMARY
   spawn path (permission mode, `availableModels`, resolved model — snapshotted and
   restored by `_reset_state`); `AcpClient`/`AcpProvider` take a `permission_mode`

@@ -327,24 +327,48 @@ def test_a_blank_operator_session_is_not_treated_as_a_choice() -> None:
     assert override[mod.SESSION_ENV].startswith("kc-")
 
 
-def test_both_agent_spawn_paths_name_their_browser_session() -> None:
+def test_both_agent_spawn_paths_name_their_browser_session(tmp_path) -> None:
     """Wiring assertion: an unwired helper isolates nothing.
 
-    Kiro Crew spawns an agent through two independent paths -- ``AcpClient``
-    for a session and ``AcpRuntime`` for a subagent -- each building its own
-    child environment, so a fix applied to one leaves the other sharing.
+    Kiro Crew spawns an agent through two independent drivers -- ``AcpClient``
+    for a session and ``AcpRuntime`` for a subagent -- and a fix applied to one
+    leaves the other sharing. Both hand their child to the one launch tail, which
+    calls the driver's OWN ``browser_session_env`` binding, so the name minted
+    there must reach that driver's child, with the socket environment resolved
+    for that name from the gateway's environment.
     """
-    import inspect
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
 
     from kiro_crew.acp import client, runtime
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
-    for module in (client, runtime):
-        source = inspect.getsource(module)
-        assert "browser_env = browser_session_env(env)" in source
-        assert "env.update(browser_env)" in source
-        assert "if browser_env:" in source
-        assert "lifecycle_env = {**os.environ, **browser_env}" in source
-        assert "browser_socket_env" in source
+    for module, backend in ((client, ACP_BACKEND_KIRO), (runtime, ACP_BACKEND_CODEX)):
+        socket_lookups: list[dict] = []
+
+        def _socket_env(env, _lookups=socket_lookups):
+            _lookups.append(dict(env))
+            return {"KIROCREW_TEST_BROWSER_SOCKET": "resolved"}
+
+        answer = capture_mod.capture(
+            backend,
+            tmp_path / module.__name__,
+            extra_patches=(
+                patch.object(
+                    module, "browser_session_env", return_value={mod.SESSION_ENV: "kc-wired"}
+                ),
+                patch.object(module, "browser_socket_env", side_effect=_socket_env),
+            ),
+        )
+
+        added = answer["env_added"]
+        assert added[mod.SESSION_ENV] == "kc-wired", module.__name__
+        assert added["KIROCREW_TEST_BROWSER_SOCKET"] == "resolved", module.__name__
+        assert [lookup[mod.SESSION_ENV] for lookup in socket_lookups] == ["kc-wired"]
+        # Resolved from the GATEWAY's environment, not the child's: nothing the launch
+        # wrote on the child (its orphan-sweep marker) reaches the lookup.
+        assert "KIROCREW_SPAWNED" not in socket_lookups[0], module.__name__
 
 
 def test_the_session_name_does_not_travel_as_extra_env() -> None:

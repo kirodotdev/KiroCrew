@@ -342,26 +342,55 @@ def test_steer_capability_declares_its_stamp() -> None:
     assert len(checked) >= 2, f"expected at least 2 steer-capable providers, saw {checked}"
 
 
-def test_is_kiro_cli_is_positive() -> None:
+def test_is_kiro_cli_is_positive(tmp_path) -> None:
     """H7: the sandbox-delegation flag is membership at every spawn site.
 
     This is the one identity test that fails OPEN. ``wrap_argv`` treats it as
     "this harness carries its own internal sandbox, which cannot nest inside
     ours, so skip ours" — granted to a harness without one, it leaves the agent
     process unconfined. A negative form grants it to every future harness.
+
+    Asked of the launch itself rather than of its spelling: every known host is
+    launched through the driver that serves it -- each per-session host on
+    ``AcpClient``, and every host the shared runtime serves on ``AcpRuntime`` --
+    with the pod-bundle step that decides the flag left real, and the flag the
+    sandbox wrap receives must be exactly membership.
     """
-    for spawn in (acp_runtime.AcpRuntime.spawn, acp_client.AcpClient.ensure_ready):
-        source = inspect.getsource(spawn)
-        for line in source.splitlines():
-            if "is_kiro_cli=" not in line:
-                continue
-            value = line.split("is_kiro_cli=", 1)[1]
-            assert (
-                "not " not in value and "!=" not in value
-            ), f"{spawn.__qualname__} derives is_kiro_cli from a negation: {line.strip()}"
-            assert "ACP_BACKENDS_INTERNAL_SANDBOX" in value or value.strip().startswith(
-                ("True", "False")
-            ), f"{spawn.__qualname__} must use membership or a literal: {line.strip()}"
+    from unittest.mock import AsyncMock, patch
+
+    import acp_launch_capture as capture_mod
+
+    from kiro_crew.acp_backends import ACP_BACKENDS_ACP_RUNTIME, ACP_BACKENDS_KNOWN
+
+    client_hosts = ACP_BACKENDS_KNOWN - capture_mod.RUNTIME_ONLY_BACKENDS
+    launches = [(acp_client, backend) for backend in sorted(client_hosts)]
+    launches += [(acp_runtime, backend) for backend in sorted(ACP_BACKENDS_ACP_RUNTIME)]
+    for driver, backend in launches:
+        flags: list[object] = []
+
+        async def _wrap(argv, _flags=flags, **kwargs):
+            _flags.append(kwargs["is_kiro_cli"])
+            return list(argv), None
+
+        patches = (
+            patch.object(driver, "apply_pod_bundle_spawn", new=acp_client.apply_pod_bundle_spawn),
+            patch.object(driver, "wrap_argv_async", side_effect=_wrap),
+            patch.object(
+                acp_client,
+                "_resolve_kiro_bin_for_spawn",
+                new=AsyncMock(return_value=capture_mod._KIRO_BIN),
+            ),
+        )
+        where = tmp_path / driver.__name__ / (backend or "kiro")
+        if driver is acp_runtime:
+            capture_mod._capture_runtime_served(
+                backend, where, capture_mod.fixed_parent_env(), patches
+            )
+        else:
+            capture_mod.capture(backend, where, extra_patches=patches)
+        assert flags == [
+            backend in ACP_BACKENDS_INTERNAL_SANDBOX
+        ], f"{driver.__name__} launched {backend or 'kiro'!r} with is_kiro_cli={flags}"
 
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO}), (
         "only kiro-cli ships an internal OS sandbox; adding a member here waives "

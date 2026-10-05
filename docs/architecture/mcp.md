@@ -1124,9 +1124,10 @@ The three MCP server command resolvers share it, next to the `mcp_search_path`
 they already share: the agent-config resolver (`agent._resolve_command`), the
 dashboard probe (`mcp_discovery`) and the rewriter. Resolvers of Kiro Crew's own
 binaries stay outside it: the `kirocrew` lookup in
-`agent._resolve_kirocrew_bin`, and the kiro-cli launch path in
-`acp/client.py`, which keeps its own
-`_normalize_exe_casing`. The agent-config resolver is the one that
+`agent._resolve_kirocrew_bin`, and the kiro-cli resolver, whose discovery
+in `kiro_cli.py` does its own Windows `realpath`. So do the ACP adapter
+ladders in `acp/launch.py` and `acp/harness/{claude,pi}.py`, which call
+`acp/launch.py`'s `_normalize_exe_casing`. The agent-config resolver is the one that
 matters most: its result is written as the spec's absolute `command`, and an
 absolute command is accepted verbatim on every later pass, so an uppercase
 spelling persisted once would look operator-authored to the rewriter forever.

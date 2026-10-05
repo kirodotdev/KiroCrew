@@ -4167,8 +4167,9 @@ forgotten. A harness added later is one row in `ACP_BACKEND_PROCESS_NAMES`, and 
 ratchet in `test_pid_lifecycle` fails when a registered backend has no row. The three
 self-served harnesses read their own `ACP_BACKEND_LAUNCH` row so the two cannot
 disagree, and the three bespoke adapters' own `*_ACP_BIN` constants (plus
-`KIRO_CLI_BIN`) INDEX the table rather than repeating it — `acp.client` may read
-`agent_sdk.backends`, a stdlib-only leaf, even though `session_pid` may not read the
+`KIRO_CLI_BIN`) INDEX the table rather than repeating it — `acp.client` and the
+host adapters under `acp/harness/` may read `agent_sdk.backends`, a stdlib-only
+leaf, even though `session_pid` may not read the
 ACP layer, so the one-way dependency removes the duplicate spelling instead of only
 policing it. A test asserts the equality, so a literal reintroduced in either place is
 caught there rather than by a sweep failing to recognise the process the adapter spawns.

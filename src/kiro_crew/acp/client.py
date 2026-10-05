@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess as subprocess_mod
@@ -45,18 +44,14 @@ from typing import (
     Awaitable,
     Callable,
     Collection,
-    Iterator,
     Mapping,
-    Sequence,
     TypeVar,
 )
-from urllib.request import url2pathname
 
 from kiro_crew import (
     __version__,
     acp_tool_gate,
     agent_scratch,
-    agent_sdk,
     model_registry,
     model_scope,
     permission_floor,
@@ -64,6 +59,7 @@ from kiro_crew import (
     platform_compat,
 )
 from kiro_crew import sel as sel_module
+from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import runtime_models, runtime_process_tree, seed_provenance, transport_framing
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
@@ -100,11 +96,11 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
-from kiro_crew.acp.harness_tool_names import (
-    MAX_HARNESS_CONFIG_MCP_SERVERS,
-    MAX_HARNESS_TOOL_NAME_LEN,
-    opencode_rewrites_name,
-)
+from kiro_crew.acp.harness import claude as claude_mod
+from kiro_crew.acp.harness import pi as pi_mod
+from kiro_crew.acp.harness import process_adapter_for
+from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
+from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.liveness import (
     EVIDENCE_SAMPLING,
     VERDICT_WORKING,
@@ -133,7 +129,6 @@ from kiro_crew.acp.transport_errors import (
     AcpSandboxInitFailed,
     AcpTimeoutError,
     AcpToolGateUnroutable,
-    PiGateExtensionTampered,
     _raise_acp_error,
     compaction_failure_detail,
     compaction_failure_is_transient,
@@ -143,7 +138,6 @@ from kiro_crew.acp.transport_errors import (
     sandbox_init_failure,
 )
 from kiro_crew.acp.transport_framing import (
-    _STDOUT_BUFFER_LIMIT,
     RequestWriteResult,
     _stall_window_phrase,
     response_write_window_secs,
@@ -260,16 +254,11 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
-from kiro_crew.constants import (
-    COMPACT_WAIT_TIMEOUT_SECS,
-    KIROCREW_SPAWNED_ENV,
-    KIROCREW_SPAWNED_VALUE,
-)
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.env import (
     augmented_path,
     describe_search_path,
-    mise_data_dir,
     resolve_krb5_ccname,
 )
 from kiro_crew.executors import subprocess_executor
@@ -287,7 +276,6 @@ from kiro_crew.mcp_gateway.claim import (
     mint_stub_session_token,
     schedule_claim,
 )
-from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_uris
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -300,10 +288,8 @@ from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
 from kiro_crew.recovery.ladder import LADDER as _LADDER
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
-    RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
     _forward_ssh_auth_sock,
-    agent_env_scrub_prefixes,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
@@ -381,8 +367,8 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
 
-# Every adapter/harness executable name below is READ from the backend registry
-# rather than spelled here. The registry is also what the reclaim sweep projects its
+# Every adapter/harness executable name is READ from the backend registry rather than
+# spelled here or in the host adapters under ``acp/harness``. The registry is also what the reclaim sweep projects its
 # marker set from (``session_pid._MANAGED_AGENT_MARKERS``), and a name written in both
 # places is a name that can drift -- a rename here that missed the table would leave
 # the sweep unable to recognise the process this module spawns, which spares an orphan
@@ -394,54 +380,19 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
 # index raises at import, so a registry that stopped carrying this key would stop the
 # whole module importing -- and this is the DEFAULT backend, so that failure takes the
 # path a user reaches with no configuration at all, for a name that has never varied. The
-# three bespoke adapters below are indexed because their construction is already
+# bespoke Node adapters are indexed because their construction is already
 # registry-driven; kiro's is not, and coupling it here would buy one fewer literal at the
 # cost of a new import-time failure mode. Equality with the table is asserted by
 # ``test_pid_lifecycle``, so the two cannot drift silently.
 KIRO_CLI_BIN = "kiro-cli"
 KIRO_CLI_SUBCMD = "acp"
 
-CLAUDE_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 # A self-updating ACP adapter can briefly disappear or remain locked while its
 # executable is replaced. Delay the one permitted startup retry past that window.
 # The delay is the L3 (ACP runtime) rung's base on the shared recovery ladder --
 # one schedule for every layer that rebuilds a runtime (RFC overload-resilience
 # §7) -- read at import so the sleep site stays a plain constant.
 _ACP_RESPAWN_BACKOFF_S = _LADDER.layer(_L3_ACP_RUNTIME).base_secs
-# On-disk name of the Claude backend CLI.  The claude-agent-acp adapter
-# delegates the actual model turn to @anthropic-ai/claude-agent-sdk, which
-# needs a per-platform native binary (~250 MB each).  Those ship as npm
-# optionalDependencies that a plain ``npm i -g
-# @agentclientprotocol/claude-agent-acp`` may omit, so the SDK can fail
-# session/new with "Claude native binary not found for <platform>".  The SDK
-# does NOT auto-discover a `claude` on PATH — it only looks for that bundled
-# native package — so having it installed on the host is not enough; we point
-# the adapter at it explicitly via CLAUDE_CODE_EXECUTABLE (the env var the
-# adapter forwards to the SDK as pathToClaudeCodeExecutable).
-# ``augmented_path()`` includes the common Node install locations
-# (mise/nvm/fnm/volta shims, npm global bin), so this resolves with no user
-# action when the binary is on PATH; otherwise the adapter surfaces its own
-# native-binary error.
-CLAUDE_CODE_BIN = "claude"
-# npm package that provides the claude-agent-acp binary.  Install it publicly
-# with ``npm i -g @agentclientprotocol/claude-agent-acp`` (or add it as a
-# project dependency); resolution also accepts a copy under a project-local
-# ``node_modules`` so no global install is strictly required.
-CLAUDE_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]
-# Entry script relative to the installed package directory (its package.json
-# "bin" field).  Used to locate a copy under a project ``node_modules``.
-_CLAUDE_ACP_PKG_ENTRY = Path(CLAUDE_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
-# A direct runtime dependency of the adapter.  Its reachability is a cheap
-# completeness check: a copy that cannot import it would crash at import with
-# ``ERR_MODULE_NOT_FOUND: @agentclientprotocol/sdk`` -- after the spawn -- so
-# such a copy is rejected and the ladder moves to the next candidate.  "Reachable"
-# means what it means to Node: present in some ``node_modules`` on the walk UP
-# from the entry script's REAL path (``_vendored_adapter_entry``).  An ordinary
-# ``npm install`` hoists the dependency flat into the same root as the adapter; a
-# ``file:`` / ``npm link`` install is a symlink whose dependencies sit under the
-# link target's own ``node_modules`` and hoists nothing, so a check pinned to the
-# hoisted root alone would reject every linked adapter as incomplete.
-_CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 
 # ── codex-acp (ACP_BACKEND_CODEX) ──
 # A Node stdio server that boots the Codex app server and translates ACP onto its
@@ -451,10 +402,10 @@ _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 CODEX_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX]
 CODEX_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]
 _CODEX_ACP_PKG_ENTRY = Path(CODEX_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
-# Same hoisted-dependency completeness check as the claude adapter, and the same
-# dependency: codex-acp imports @agentclientprotocol/sdk, so a root carrying the
-# entry script without it dies at ESM import time -- after the child is spawned.
-_CODEX_ACP_DEP_MARKER = _CLAUDE_ACP_DEP_MARKER
+# The hoisted-dependency completeness check every Node adapter shares: codex-acp
+# imports @agentclientprotocol/sdk, so a root carrying the entry script without it
+# dies at ESM import time -- after the child is spawned.
+_CODEX_ACP_DEP_MARKER = launch_mod.ACP_SDK_DEP_MARKER
 # Explicit override, spelled the way the adapter's own documentation spells it.
 _ENV_CODEX_ACP_BIN = "CODEX_ACP_BIN"
 # No CODEX_PATH constant: the adapter ships a compatible Codex binary as an npm
@@ -463,154 +414,7 @@ _ENV_CODEX_ACP_BIN = "CODEX_ACP_BIN"
 # here would imply a wiring that does not exist (its claude counterpart,
 # CLAUDE_CODE_EXECUTABLE, IS explicitly forwarded — the asymmetry is deliberate).
 
-# ── opencode (ACP_BACKEND_OPENCODE) ──
-# OpenCode serves ACP from its OWN binary: ``opencode acp``. There is no npm
-# adapter to resolve and no Node floor to satisfy -- the published package ships an
-# executable -- so the resolution ladder here is the plain-binary one
-# (``_resolve_claude_code_executable``'s shape), not the Node-entry-script one the
-# two adapters above need.
-# The launch facts live in this harness's ``ACP_BACKEND_LAUNCH`` row, and every
-# shared path reads them from there: the resolver, the spawn arm, the install probe
-# and the driver seams. Only the two names a reader in THIS module still needs are
-# bound here, for ``_opencode_readback_remedy`` below -- the routing remedy names the
-# binary and its installer in prose. A harness added later needs neither.
-_OPENCODE_LAUNCH = launch_for(ACP_BACKEND_OPENCODE)
-OPENCODE_BIN = _OPENCODE_LAUNCH.binary
-# The channel Crew's permission routing travels down: inline config JSON in the
-# child's environment. It is what makes the routing seed session-scoped -- nothing
-# is written into a checked-out repository -- and it resolves ABOVE the project's
-# own config file, verified on this harness by resolving a project that declares
-# ``permission: "allow"`` and reading ``ask`` back out. The read-back is still what
-# establishes the guarantee; this is only how the value gets there.
-_ENV_OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
-OPENCODE_INSTALL_COMMAND = _OPENCODE_LAUNCH.install_command
-# The subcommand that prints the RESOLVED configuration -- every source merged, the
-# way the ACP server itself resolves it. Reading it back is what separates this
-# harness's routing from a declared-but-unverified seed.
-_OPENCODE_CONFIG_READBACK_ARGS = ("debug", "config")
-# Bounded so a wedged harness cannot hold the spawn open: the read-back is a
-# short-lived child, measured at ~2.3s on a loaded dev desktop.
-_OPENCODE_READBACK_TIMEOUT_S = 30.0
 
-# goose serves ACP from its own binary too, so the same plain-binary ladder applies
-# and there is no adapter package and no Node floor.
-# The channel Crew's permission routing travels down on this harness: goose resolves
-# its mode from a PLAIN ENVIRONMENT VARIABLE, above its own config file, so the seed
-# needs neither a file nor a JSON document. Verified on this harness by resolving a
-# config that declares ``GOOSE_MODE: auto`` and reading ``approve`` back off the
-# session.
-_ENV_GOOSE_MODE = "GOOSE_MODE"
-# The builtin extension Crew asks goose to load. goose REPLACES its configured
-# extensions with the client's ``mcpServers`` array, so a session handed Crew's
-# servers and nothing else carries no shell and no file tools at all. Naming it on
-# the command line restores those alongside Crew's own, and they route through the
-# same permission mode as everything else.
-_GOOSE_BUILTIN_ARG = "--with-builtin"
-_GOOSE_BUILTIN_DEVELOPER = "developer"
-# goose's auto-approving mode (``auto``) is never named here: the seed is the one
-# place a mode value enters the child and it carries the required mode, so the auto
-# mode has no path onto the wire by construction. ``session/set_mode`` would accept
-# it, which is why no constant for it exists to be passed.
-
-# Launchers that carry the adapter's entry script as their next argument.  A
-# label taken from argv[0] alone would read "node" for every adapter resolved
-# to a script rather than a native binary.
-_ADAPTER_INTERPRETERS = frozenset({"node", "node.exe"})
-
-
-def _is_adapter_package_entry(program: str, pkg_entry: Path) -> bool:
-    """Whether *program* is *pkg_entry* sitting under some node_modules root."""
-    parts = Path(program).parts
-    wanted = pkg_entry.parts
-    if len(parts) < len(wanted):
-        return False
-    return [p.casefold() for p in parts[-len(wanted) :]] == [p.casefold() for p in wanted]
-
-
-def _named_by_override(program: str, override_env: str | None) -> bool:
-    """Whether the operator's override is what supplied *program*.
-
-    The resolution ladder takes the override as its first candidate verbatim, so
-    an equality test against the resolved program is what separates a deliberate
-    override from the adapter's own installed entry.
-    """
-    if not override_env:
-        return False
-    override = os.environ.get(override_env, "").strip()
-    if not override:
-        return False
-    return os.path.normpath(os.path.expanduser(override)) == os.path.normpath(program)
-
-
-def _adapter_spawn_label(
-    argv: Sequence[str],
-    seam: str,
-    *,
-    pkg_entry: Path | None = None,
-    override_env: str | None = None,
-) -> str:
-    """Keep a stable seam label while identifying the resolved program.
-
-    Both ACP seams resolve their binary through a documented environment
-    override (``CLAUDE_AGENT_ACP_BIN``, ``CODEX_ACP_BIN``), and either may point
-    at a dispatch shim or a vendored build that is not the seam's own adapter.
-    The seam is useful to existing log parsers, while the resolved program proves
-    which adapter command that seam actually launched.
-    """
-    if not argv:
-        return seam
-    program = argv[0]
-    if Path(program).name.casefold() in _ADAPTER_INTERPRETERS:
-        # A bare interpreter identifies no adapter at all.
-        if len(argv) <= 1:
-            return seam
-        program = argv[1]
-        # An adapter installed as a Node package resolves to its own
-        # `dist/index.js`, whose basename names the packaging rather than the
-        # adapter, so the seam alone is the useful identity there. That shortcut
-        # is only honest for the package's OWN entry under its own scope: a
-        # script the operator's override supplied, or any other `index.js`, is
-        # the one record of which build actually launched, so its path stays.
-        if (
-            pkg_entry is not None
-            and not _named_by_override(program, override_env)
-            and _is_adapter_package_entry(program, pkg_entry)
-        ):
-            return seam
-    return f"{seam} via {program}" if program else seam
-
-
-# ── pi (ACP_BACKEND_PI) ──
-# TWO components, and the split is the whole shape of this harness: ``pi-acp`` is a
-# third-party Node stdio adapter that serves ACP and spawns the ``pi`` coding agent
-# as ``pi --mode rpc --no-themes``; ``pi`` itself has no ``acp`` subcommand. Either
-# can be absent on its own, so the resolver, the probe and the not-found message
-# each name both.
-PI_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_PI]
-PI_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_PI]
-_PI_ACP_PKG_ENTRY = Path(PI_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
-# The adapter imports @agentclientprotocol/sdk like the two above, so an entry
-# script without the hoisted dependency dies at ESM import -- after the spawn.
-_PI_ACP_DEP_MARKER = _CLAUDE_ACP_DEP_MARKER
-# Explicit adapter override, spelled the way the two sibling adapters spell theirs.
-_ENV_PI_ACP_BIN = "PI_ACP_BIN"
-PI_BIN = "pi"
-PI_NPM_PKG = "@earendil-works/pi-coding-agent"
-# The adapter's OWN override for the agent executable it spawns. Read here as the
-# operator's choice of ``pi`` binary, and then SET in the child's environment to
-# Crew's gate launcher, which execs that choice with the extension flag appended.
-_ENV_PI_ACP_PI_COMMAND = "PI_ACP_PI_COMMAND"
-PI_INSTALL_COMMAND = f"npm i -g {PI_ACP_NPM_PKG} {PI_NPM_PKG}"
-# What the adapter passes when it spawns the agent, verbatim from its source. The
-# read-back runs the gate launcher with exactly these so what it observes is the
-# process the session will be served by.
-_PI_RPC_ARGS = ("--mode", "rpc", "--no-themes")
-_PI_EXTENSION_FLAG = "--extension"
-# The RPC verb whose answer IS the read-back: pi lists every command each loaded
-# extension registered, with the file it came from.
-_PI_READBACK_REQUEST = {"type": "get_commands", "id": "kiro-crew-gate-readback"}
-# Bounded like the opencode read-back; measured at ~0.5s on a loaded dev desktop.
-_PI_READBACK_TIMEOUT_S = 30.0
 # The adapter release the gate contract was OBSERVED on: the frame corpus
 # (``test/fixtures/acp_frames/pi``) records pi-acp forwarding the extension's
 # confirm dialog as ``session/request_permission`` and honouring
@@ -623,20 +427,6 @@ PI_ACP_VERIFIED_VERSION = "0.0.33"
 # Versions already named this process, so a gateway on a newer adapter says so
 # once, not on every session.
 _pi_adapter_versions_noted: set[str] = set()
-# The oldest ``pi`` the adapter can drive. pi-acp sends RPC commands that older
-# releases do not have, and it does not check the version itself. Driven against
-# a local model: pi-acp 0.0.34 fails ``session/new`` on pi 0.80.x ("Unknown
-# command: get_available_thinking_levels") and waits forever on 0.73.1, and
-# pi-acp 0.0.33 never ends a turn on pi 0.80.3 or older. Both drive 0.81.0,
-# which is the floor pi-acp 0.0.34 documents. Without this check the chat just
-# spins, because nothing below names the version as the cause.
-PI_MIN_VERSION = (0, 81, 0)
-# Every npm name pi has shipped under. The old one stopped at 0.73.1, so an
-# install made under it is always below the floor; it is named so that install
-# is recognised and refused rather than read as "version unknown".
-_PI_NPM_PACKAGE_NAMES = frozenset({PI_NPM_PKG, "@mariozechner/pi-coding-agent"})
-# How far up from the resolved executable to look for pi's package.json.
-_PI_MANIFEST_SEARCH_DEPTH = 4
 # goose's VERIFIED RANGE (the note beside ``ACP_BACKEND_GOOSE`` in
 # ``agent_sdk/backends.py``) is 1.50.x. Of the three wire facts it names, the
 # ``current_mode_update`` emission the mid-session tripwire rests on is the one that
@@ -649,138 +439,6 @@ _PI_MANIFEST_SEARCH_DEPTH = 4
 GOOSE_VERIFIED_VERSION_PREFIX = "1.50."
 # Same once-per-process memo as the pi note above.
 _goose_versions_noted: set[str] = set()
-# The per-session nonce the gate extension reads and echoes in its dialogs, so
-# the dispatch parser accepts only envelopes this session's own extension wrote.
-_ENV_PI_GATE_SESSION = "KIROCREW_PI_GATE_SESSION"
-# The DeepSeek Harness half of the same routing member. Its composition takes a
-# per-launch patch file (``--patch``, ``packages/boot/cmdline``) whose ``insert``
-# row names a plugin by ABSOLUTE PATH, which is how Crew's gate is composed into a
-# profile it does not own; the plugin then answers the harness's own
-# ``tools/pre-execute`` waterfall. There is no command registry to read back, so
-# the plugin reports its load through a marker file at a path named here.
-_DSH_PATCH_FLAG = "--patch"
-_ENV_DSH_GATE_SESSION = "KIROCREW_DSH_GATE_SESSION"
-_ENV_DSH_GATE_MARKER = "KIROCREW_DSH_GATE_MARKER"
-# The provider-key NAMES the probe asks the plugin to prove withheld from a harness
-# child, ``:``-joined (each is a POSIX identifier, so the separator cannot occur
-# inside one). The probe sets each such name to a canary -- this prefix plus the
-# probe's nonce -- never to the key: the property "this name does not reach the
-# harness's shells" can only be observed for a name that is SET, and the probe boots
-# a plugin host that needs no provider key.
-_ENV_DSH_GATE_SCRUB_NAMES = "KIROCREW_DSH_GATE_SCRUB_NAMES"
-_DSH_GATE_SCRUB_CANARY_PREFIX = "kirocrew-dsh-gate-scrub-canary-"
-# One harness boot, bounded like the pi and opencode read-backs; measured at ~3s
-# for this harness, which boots a plugin host rather than a single binary, plus the
-# plugin's own child spawn for the scrub proof (one ``node -e``, well under a second).
-_DSH_GATE_READBACK_TIMEOUT_S = 60.0
-# How often the probe looks for the marker while the harness is still up.
-_DSH_GATE_MARKER_POLL_S = 0.05
-# After the marker is published the harness is told to exit (stdin EOF) and given
-# this long to do so before it is killed; its own bounded shutdown is 5s.
-_DSH_GATE_PROBE_EXIT_S = 15.0
-# The plugin's real marker is a few hundred bytes. This cap bounds child-controlled
-# memory before JSON parsing while leaving ample room for the complete routing snapshot.
-_DSH_GATE_MARKER_MAX_BYTES = 64 * 1024
-# SHA-256 of the shipped gate extension. The file lives in the package tree,
-# which on a source or user install an agent's own file tools may be able to
-# write; a read-back that matched the probe by name and path alone would accept
-# a rewritten gate. So the packaged bytes are verified against this digest at
-# every spawn, copied into the owner-only sandbox run directory, and THAT copy is
-# what the harness loads and what the read-back must name. Pinned by
-# ``test_acp_pi_backend``, so editing the extension is a deliberate two-file edit.
-# The digest is over the LF form of the bytes (``_pi_gate_extension_bytes``): the
-# file is text, and a Windows checkout with ``core.autocrlf`` rewrites it CRLF, so a
-# digest over the raw bytes would read every Windows install as tampered and refuse
-# every pi session there. ``.gitattributes`` pins the checkout LF as well; the
-# normalization here is what keeps the property from resting on a repo-config line.
-PI_GATE_EXTENSION_SHA256 = "33caa696e70e3b0c0793a705b0c6e06c372c52478e3ac4abf75f0e8d67d1e600"
-# Same seal, same reason, for the DeepSeek Harness gate plugin. Pinned by
-# ``test_acp_deepseek_backend``, so editing the plugin is a deliberate two-file
-# edit.
-DEEPSEEK_GATE_EXTENSION_SHA256 = "d95796f59d8e30f840dbb12ad4253c18f09e5b3972435e5b5f307d6b7d994351"
-# ── deepseek (ACP_BACKEND_DEEPSEEK) ──
-# DeepSeek Harness is a plugin host, and ACP is one of the profiles it boots. So the
-# argv is the harness's own binary plus the profile selector -- the plain-binary
-# ladder again, with no adapter package and no Node entry script to resolve. The
-# profile is shipped: it is created on first use, and both of its bundles are inside
-# the installed package's own dependency closure, so a global install needs no
-# workspace checkout and no per-profile dependency step.
-# The one variable the shipped ACP profile composes its whole permission posture
-# from: it selects a sandbox mode AND an approval policy together. Pinned so the
-# posture never depends on an ambient value. A config layer can set the composed rows
-# directly and never read this variable, which weakens confinement -- and changes
-# nothing about whether Crew is consulted, because it never is.
-_ENV_DEEPSEEK_PERMISSION_MODE = "DSH_PERMISSION_MODE"
-# The posture Crew pins: confined to the workspace rather than unconfined. Defence
-# in depth and nothing more, because it does not make this harness's tool calls reach
-# Crew's gate.
-DEEPSEEK_PERMISSION_MODE = "workspace-write"
-# ── agent.deepseek_env: the provider key, fed from Crew's vault ──
-# This harness's own credential layering resolves a provider key from the INHERITED
-# PROCESS ENVIRONMENT first, above both of its credential files
-# (``@deepseek-ai/dsh-credentials-local``'s own header: inherited environment,
-# read-only and winning, then ``$DSH_HOME/.credentials.yaml``, then ``<cwd>/.env``,
-# then ``$DSH_HOME/.env``), and a credential reference in its configuration IS an
-# environment-variable name (``@deepseek-ai/dsh-credentials``'s ``credentialRef``).
-# So handing the key to the harness PROCESS is authoritative for whichever provider
-# names it, which is what lets ``host_auth`` declare no ``adapter_own_leaves`` for this
-# harness and leave both credential files masked for its whole process tree.
-#
-# The reason an env-fed key is SAFER here than a spared file, rather than merely
-# equivalent: the harness scrubs its own children. ``@deepseek-ai/dsh-subprocess``
-# defines ``SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i`` and its
-# ``scrubbedParentEnv()`` drops every inherited variable matching it (plus every
-# ``DSH_*`` name) before ANY child spawn -- on both spawn paths, the local bash tool's
-# ``spawnSpec`` and the terminal tool's ``childEnvironment``, which both reach the same
-# ``childEnv()``. So a key whose NAME is in that class is invisible to the shells the
-# model drives. A name OUTSIDE that class is forwarded to those children, which is why
-# Crew refuses one rather than injecting it.
-#
-# This regex is a MIRROR of the harness's, observed at dsh 0.1.5-rc.2, and it is the
-# validator's first filter only -- not what the promise rests on. A harness release
-# that narrowed or dropped its scrub would forward the key with no in-band signal, so
-# the property is PROVED at every spawn instead: the read-back probe sets each
-# configured name to a canary, and the gate plugin spawns one trivial child through
-# the harness's own subprocess service and records, per name, whether it reached
-# that child (``child_env`` in the load marker). The session is refused when any
-# did (``acp_tool_gate.gate_marker_issue``).
-_DEEPSEEK_ENV_CHILD_SCRUB_CLASS = re.compile("KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
-# The harness's own reference grammar: a POSIX shell identifier
-# (``@deepseek-ai/dsh-credentials``'s ``credentialRef``). Matched with ``fullmatch``
-# rather than a ``$``-anchored pattern, which in Python would also accept a trailing
-# newline -- and a name with one is not the variable the operator wrote.
-_DEEPSEEK_ENV_NAME_GRAMMAR = re.compile("[A-Za-z_][A-Za-z0-9_]*")
-# Namespaces on this child that a provider-key mapping may not enter: the harness's
-# own, which it scrubs from its children itself, and Crew's own, which carries this
-# session's IDENTITY -- ``KIROCREW_SESSION_KEY`` and the signed stub token
-# (``STUB_SESSION_TOKEN_ENV``) are written by ``_apply_session_identity_env`` AFTER
-# the provider key is placed, so a mapping onto either name would be overwritten
-# by a live Crew credential and the harness would present THAT to its provider.
-# Both names are in the harness's scrub class, so nothing else here would refuse
-# them. A prefix rather than a list, because Crew's namespace grows.
-_DEEPSEEK_ENV_RESERVED_PREFIXES = ("DSH_", "KIROCREW_")
-# Names outside those namespaces that Crew still sets on this harness's child, listed
-# rather than derived because each is set at a different site and a derivation would
-# have to reach all of them: the permission pin, the harness home from
-# ``_extra_env`` (both ``DSH_``-prefixed, so already refused; kept as documentation
-# of the sites) and kiro-cli's own model credential (actively stripped for a foreign
-# backend). An operator mapping one of these would either lose their key or break
-# the gate, depending on which write landed last, so the mapping is refused instead.
-# ``test_every_scrub_class_name_crew_writes_on_the_child_is_reserved`` derives the
-# scrub-class names the spawn pipeline writes and fails when one is missing here.
-_DEEPSEEK_ENV_CREW_OWNED_NAMES = frozenset(
-    {
-        _ENV_DSH_GATE_MARKER,
-        _ENV_DSH_GATE_SESSION,
-        _ENV_DSH_GATE_SCRUB_NAMES,
-        _ENV_DEEPSEEK_PERMISSION_MODE,
-        "DSH_HOME",
-        "KIRO_API_KEY",
-        "KIROCREW_RUNTIME_PYTHON",
-        "KIROCREW_SESSION_KEY",
-        STUB_SESSION_TOKEN_ENV,
-    }
-)
 
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
@@ -836,26 +494,6 @@ def _is_safe_oauth_url(url: str) -> bool:
         return False
     lower = url.lower()
     return lower.startswith("https://") or lower.startswith("http://")
-
-
-def _normalize_exe_casing(path: str | None) -> str | None:
-    """On Windows, return *path* with its TRUE on-disk casing (via realpath).
-
-    Some Windows multiplexer launchers derive which tool to run from their own
-    ``argv[0]`` basename, CASE-SENSITIVELY. But ``shutil.which`` builds the
-    resolved name's extension from ``PATHEXT``, which may list ``.EXE`` upper-
-    case — so it can return ``...\\kiro-cli.EXE`` even though the file on disk
-    is ``kiro-cli.exe``. Spawned under the wrong casing, such a launcher can fail
-    to dispatch and exit immediately, breaking the ACP pipe. ``os.path.realpath``
-    restores the true directory-entry casing. No-op on POSIX (case-sensitive FS;
-    realpath only follows symlinks). Returns None unchanged.
-    """
-    if path is None or not platform_compat.IS_WINDOWS:
-        return path
-    try:
-        return os.path.realpath(path)
-    except OSError:
-        return path
 
 
 def _resolve_kiro_bin(
@@ -921,6 +559,32 @@ async def _resolve_kiro_bin_for_spawn(
     return await asyncio.to_thread(_resolve_kiro_bin, environ=environ, home=home)
 
 
+def _mise_which(tool: str) -> str | None:
+    """Ask mise for the resolved path of *tool*.
+
+    Respects MISE_DATA_DIR, global config, and .mise.toml — works
+    regardless of how the user configured their mise installation.
+    Returns None if mise isn't installed or the tool isn't registered.
+    """
+    mise_bin = shutil.which("mise")
+    if not mise_bin:
+        return None
+    try:
+        result = subprocess_mod.run(
+            [mise_bin, "which", tool],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            path = result.stdout.strip()
+            if Path(path).is_file():
+                return path
+    except (subprocess_mod.TimeoutExpired, OSError):
+        pass
+    return None
+
+
 def kiro_cli_not_found_message(
     *,
     environ: Mapping[str, str],
@@ -970,1185 +634,6 @@ def kiro_cli_not_found_message(
     )
 
 
-def _mise_which(tool: str) -> str | None:
-    """Ask mise for the resolved path of *tool*.
-
-    Respects MISE_DATA_DIR, global config, and .mise.toml — works
-    regardless of how the user configured their mise installation.
-    Returns None if mise isn't installed or the tool isn't registered.
-    """
-    mise_bin = shutil.which("mise")
-    if not mise_bin:
-        return None
-    try:
-        result = subprocess_mod.run(
-            [mise_bin, "which", tool],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            path = result.stdout.strip()
-            if Path(path).is_file():
-                return path
-    except (subprocess_mod.TimeoutExpired, OSError):
-        pass
-    return None
-
-
-def _mise_node_installs_dir() -> Path:
-    """Canonical path to mise's Node installs directory.
-
-    The data root comes from :func:`kiro_crew.env.mise_data_dir` so that
-    ``MISE_DATA_DIR`` and ``XDG_DATA_HOME`` are honoured — the previous
-    hardcoded ``~/.local/share/mise`` silently missed installs on any host
-    with a relocated mise data dir, while the env helper already resolved the
-    same root correctly for the build toolchain.
-    """
-    return Path(mise_data_dir(str(Path.home()))) / "installs" / "node"
-
-
-def _resolve_node_for_script(script_path: str) -> str | None:
-    """Derive the correct node binary for a script installed under mise.
-
-    If *script_path* lives under mise's Node installs dir (see
-    :func:`_mise_node_installs_dir` — honours ``MISE_DATA_DIR`` /
-    ``XDG_DATA_HOME``), return the co-located ``bin/node``.  This avoids
-    reliance on shim resolution which requires mise global config and a
-    cooperative cwd.
-
-    Resolves both $HOME and the script path to real paths to handle
-    symlinked home directories (e.g. /home/user -> /local/home/user).
-    """
-    resolved = Path(script_path).resolve()
-    mise_installs = _mise_node_installs_dir().resolve()
-    try:
-        rel = resolved.relative_to(mise_installs)
-        version_dir = mise_installs / rel.parts[0]
-        node_bin = version_dir / "bin" / "node"
-        if platform_compat.is_executable_file(node_bin):
-            return str(node_bin)
-    except (ValueError, IndexError):
-        pass
-    return None
-
-
-_UNRESOLVED: object = object()  # sentinel for "not yet resolved"
-# Cache the PATH with the resolution result. A failed resolve is cached too, so
-# recomputing PATH at the error site could report directories that were never searched.
-_claude_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
-
-
-def _vendored_acp_roots(pkg_dir: Path | None = None) -> list[Path]:
-    """Directories that may contain a project-local ``node_modules`` copy of a
-    Node ACP adapter.
-
-    Harness-neutral: the roots are plain ``node_modules`` directories, and each
-    adapter resolver joins its own package path onto them, so this is shared by
-    the claude and codex resolvers rather than duplicated per harness.
-
-    A project-local install (``npm i @agentclientprotocol/<adapter>`` in the
-    repo, or a copy bundled next to the installed package) lets the gateway run
-    without a global npm install — useful in non-login launchd/systemd contexts
-    with a minimal PATH.  Resolution still falls back to global / PATH installs
-    in each ``_resolve_*_acp_bin``; these roots are just preferred.
-
-    *pkg_dir* (the installed ``kiro_crew`` package directory) defaults to this
-    module's location; it is a parameter so tests can inject a fake layout.
-    """
-    roots: list[Path] = []
-
-    # 1. Bundled alongside the installed package (optional vendored copy).
-    if pkg_dir is None:
-        pkg_dir = Path(__file__).resolve().parent.parent  # .../kiro_crew
-    roots.append(pkg_dir / "_vendor" / "node_modules")
-
-    # 2. Explicit project dir (KIROCREW_PROJECT_DIR points at the repo root):
-    #    its ``node_modules`` from a local ``npm install``.
-    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-    if proj:
-        roots.append(Path(proj) / "node_modules")
-
-    return roots
-
-
-def _resolve_vendored_claude_acp(pkg_dir: Path | None = None) -> str | None:
-    """Return the path to a vendored claude-agent-acp entry script, or None.
-
-    The claude spelling of the ONE shared check, :func:`_vendored_adapter_entry`:
-    ``<root>/@agentclientprotocol/claude-agent-acp/dist/index.js`` under each
-    candidate ``node_modules`` root, accepted only when Node could import the
-    adapter's dependency from the entry's real location.  *pkg_dir* is threaded
-    through so tests can inject a fake package layout.
-    """
-    return _vendored_adapter_entry(_CLAUDE_ACP_PKG_ENTRY, _CLAUDE_ACP_DEP_MARKER, pkg_dir=pkg_dir)
-
-
-def _resolve_node_adapter_argv(
-    *,
-    bin_name: str,
-    override_env: str,
-    vendored_entry: Callable[[], str | None],
-) -> tuple[list[str] | None, str]:
-    """Find a Node stdio adapter's entry and the PATH searched for it.
-
-    ONE ladder for every adapter published as an npm package -- claude-agent-acp,
-    codex-acp and pi-acp today -- so an operator debugging one is debugging all of
-    them, and a harness added later is one call with three arguments rather than a
-    fourth copy. The first item is argv suitable for subprocess use
-    (``["node", "script.js"]`` or ``["/path/to/binary"]``), or ``None`` when nothing
-    was found; the second is the PATH searched at the last rung. Node is resolved
-    explicitly rather than left to a ``#!/usr/bin/env node`` shebang, which fails
-    in non-interactive daemon contexts (mise shims need a cwd with ``.mise.toml``
-    or a working global config).
-
-    Resolution order:
-      1. *override_env* (explicit override; need not be executable -- a
-         non-executable script is auto-wrapped with node).
-      2. *vendored_entry*: a project-local ``node_modules`` copy (from ``npm
-         install`` in the repo, a ``file:`` / ``npm link`` install, or a copy
-         bundled next to the package), accepted only when Node could import the
-         adapter's dependency from the entry's real path -- no global install
-         required, and no ESM import crash after the spawn. A copy that is
-         skipped is logged, so the fall-through to a global copy is never silent.
-      3. ``mise which <bin_name>`` (respects all mise config).
-      4. Direct glob under mise installs (fallback if mise exec fails).
-      5. Augmented PATH (includes mise shims, nvm, fnm, volta, npm -g).
-    """
-    candidates: list[str] = []
-
-    override = os.environ.get(override_env)
-    if override and Path(override).is_file():
-        candidates.append(override)
-
-    # Project-local node_modules copy. Preferred over PATH-based resolution
-    # because it needs no global install and works in non-login gateway
-    # contexts (launchd/systemd) with a minimal PATH.
-    vendored = vendored_entry()
-    if vendored:
-        candidates.append(vendored)
-
-    # Preferred: ask mise directly -- respects MISE_DATA_DIR, global config,
-    # and .mise.toml regardless of the user's installation layout.
-    mise_resolved = _mise_which(bin_name)
-    if mise_resolved:
-        candidates.append(mise_resolved)
-
-    # Fallback: search mise installs directory directly (handles case where
-    # `mise which` fails due to missing global config in daemon context).
-    mise_installs = _mise_node_installs_dir()
-    if mise_installs.is_dir():
-        for bin_path in sorted(mise_installs.glob("*/bin/" + bin_name), reverse=True):
-            if bin_path.is_file():
-                candidates.append(str(bin_path))
-                break
-
-    # Also search augmented PATH (includes mise shims) as fallback.
-    # Covers nvm, fnm, volta, and plain `npm i -g` installations.
-    search_path = augmented_path(os.environ.get("PATH", ""))
-    on_path = shutil.which(bin_name, path=search_path)
-    if on_path:
-        candidates.append(on_path)
-
-    for script in candidates:
-        resolved = str(Path(script).resolve())
-        node = _resolve_node_for_script(resolved)
-        if node:
-            return [node, resolved], search_path
-        # Directly runnable (a real executable on POSIX; a .exe/.cmd/etc. on
-        # Windows)? Run it as-is. A bare .js is NOT directly runnable on Windows
-        # (is_executable_file excludes it), so it correctly falls through to be
-        # wrapped with node below -- matching the POSIX no-x-bit behavior.
-        # Casing-normalize (Windows): a `which`-resolved .EXE must reach a
-        # launcher-style shim with its true on-disk name (see _normalize_exe_casing).
-        if platform_compat.is_executable_file(script):
-            return [_normalize_exe_casing(script) or script], search_path
-        node_on_path = shutil.which("node", path=search_path)
-        if node_on_path:
-            return [node_on_path, resolved], search_path
-
-    return None, search_path
-
-
-def _node_module_search_dirs(start: Path) -> Iterator[Path]:
-    """The ``node_modules`` directories Node searches for a bare import from *start*.
-
-    Node's ``NODE_MODULES_PATHS``: every ancestor of *start* (itself included)
-    contributes ``<ancestor>/node_modules``, except an ancestor that IS a
-    ``node_modules`` directory, from the innermost outward to the filesystem root.
-    *start* must already be a REAL path: Node resolves a module's symlinks before
-    looking for that module's imports (``--preserve-symlinks`` is off by default),
-    which is why a ``file:`` / ``npm link`` install finds its dependencies beside
-    the link TARGET rather than at the hoisted root it is linked from.
-    """
-    for ancestor in (start, *start.parents):
-        if ancestor.name == "node_modules":
-            continue
-        yield ancestor / "node_modules"
-
-
-def _vendored_adapter_entry(
-    pkg_entry: Path, dep_marker: Path, pkg_dir: Path | None = None
-) -> str | None:
-    """The first project-local copy of a Node ACP adapter that Node itself could run.
-
-    ONE check for the three adapter resolvers (claude-agent-acp, codex-acp,
-    pi-acp): each joins its own package entry and dependency marker onto the
-    shared roots (:func:`_vendored_acp_roots`), so there is no per-harness copy of
-    the completeness rule to drift. The helper is harness-neutral and adds nothing
-    to the Kiro path (H13).
-
-    A copy is accepted when its dependency marker is reachable the way Node
-    resolves a bare import from the ENTRY'S REAL PATH -- some ``node_modules`` on
-    the walk up from where the entry script really lives holds it. An ordinary
-    ``npm install`` satisfies that at the hoisted root; a ``file:`` / ``npm link``
-    install is a symlink that hoists nothing and satisfies it under the link
-    target's own ``node_modules``, which a check pinned to the hoisted root alone
-    cannot see. An entry whose dependency is reachable nowhere would die at ESM
-    import -- after the spawn -- so it is refused, and the refusal is logged: a
-    silent fall-through to a global copy on PATH is how a locally patched adapter
-    runs as the unpatched global build with nothing to say so.
-    """
-    for root in _vendored_acp_roots(pkg_dir):
-        entry = root / pkg_entry
-        if not entry.is_file():
-            continue
-        real_entry = Path(os.path.realpath(entry))
-        for node_modules in _node_module_search_dirs(real_entry.parent):
-            if (node_modules / dep_marker).is_dir():
-                return str(entry)
-        logger.warning(
-            "Skipping project-local ACP adapter %s: %s is not importable from its real "
-            "location %s (no node_modules on the walk up from there holds it); the next "
-            "candidate on the ladder that resolves, if any, is used instead. For a file: "
-            "or npm link install, run npm install inside the linked checkout.",
-            entry,
-            dep_marker.as_posix(),
-            real_entry.parent,
-        )
-    return None
-
-
-def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
-    """Find the claude-agent-acp Node entry script and its searched PATH.
-
-    The shared ladder (:func:`_resolve_node_adapter_argv`) with this adapter's
-    three parameters; ``CLAUDE_AGENT_ACP_BIN`` is the override.
-    """
-    return _resolve_node_adapter_argv(
-        bin_name=CLAUDE_ACP_BIN,
-        override_env="CLAUDE_AGENT_ACP_BIN",
-        vendored_entry=_resolve_vendored_claude_acp,
-    )
-
-
-#: Resolved binary per self-served harness, keyed by backend id. ONE mapping rather
-#: than one module global each: the resolution is the same three rungs for every
-#: member, so a per-harness global would be three copies of one cache. Read and
-#: written only through :func:`_resolve_self_served_bin` and the driver's
-#: cached-negative seam, which is why an absent key means "not looked at yet" and a
-#: ``(None, path)`` value means "looked, and it is not here".
-_self_served_bin_caches: dict[str, tuple[str | None, str]] = {}
-
-#: Per-backend resolution generation, bumped by every deliberate cache clear.
-#:
-#: The caches above are all written AFTER an ``await``: a site checks the sentinel,
-#: offloads the resolve, and only then assigns. So a resolution that began before an
-#: operator installed a component can complete after a re-check cleared the cache, and
-#: its assignment would stamp that stale miss back over the cleared sentinel -- the
-#: panel having already reported the harness ready, and the next spawn failing on the
-#: revived miss.
-#:
-#: A resolution captures the generation before it awaits and publishes only if the
-#: generation is still current. Keyed by BACKEND rather than by cache name because a
-#: clear is per harness and pi keeps two caches under one id, so one bump has to fence
-#: both.
-_resolution_generation: dict[str, int] = {}
-
-
-def _resolution_epoch(backend: str) -> int:
-    """The generation a resolution should capture before it awaits."""
-    return _resolution_generation.get(backend, 0)
-
-
-def bump_resolution_generation(backend: str) -> None:
-    """Invalidate every resolution currently in flight for *backend*.
-
-    Called by ``agent_sdk.drivers.acp.forget_cached_resolution`` alongside the sentinel
-    reset. The sentinel is what makes the NEXT spawn resolve; this is what stops an
-    OLDER one from publishing over it.
-    """
-    _resolution_generation[backend] = _resolution_generation.get(backend, 0) + 1
-
-
-def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
-    """Find *backend*'s own executable and the PATH searched for it.
-
-    Three rungs, the plain-binary ladder: explicit override, then mise, then the
-    augmented PATH. No ``node_modules`` rung and no node resolution, because every
-    harness this serves is a binary that speaks ACP itself rather than a Node entry
-    script -- which is exactly what membership in ``ACP_BACKEND_LAUNCH`` asserts.
-
-    The binary name and the override variable come from that record, so a harness is
-    resolved by its row rather than by a function of its own.
-
-    Returns ``(None, search_path)`` when it is absent, so the caller reports what was
-    searched rather than raising from inside the resolver.
-    """
-    launch = launch_for(backend)
-    search_path = augmented_path(os.environ.get("PATH", ""))
-
-    override = os.environ.get(launch.bin_env_var)
-    if override and platform_compat.is_executable_file(override):
-        return _normalize_exe_casing(override) or override, search_path
-
-    mise_resolved = _mise_which(launch.binary)
-    if mise_resolved:
-        return mise_resolved, search_path
-
-    on_path = shutil.which(launch.binary, path=search_path)
-    if on_path:
-        return _normalize_exe_casing(on_path) or on_path, search_path
-
-    return None, search_path
-
-
-def _opencode_readback_remedy() -> str:
-    """What an operator does when the harness's config cannot be read back at all."""
-    return (
-        f"Run '{OPENCODE_BIN} {' '.join(_OPENCODE_CONFIG_READBACK_ARGS)}' in the "
-        "session's working directory to see what fails, and reinstall with "
-        f"'{OPENCODE_INSTALL_COMMAND}' if the command itself is broken."
-    )
-
-
-_pi_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
-_pi_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
-_pi_gate_launcher_cache: dict[tuple[str, str], str] = {}
-
-
-def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
-    """Find the pi-acp Node entry script and the PATH searched for it.
-
-    The shared ladder with this adapter's parameters; ``PI_ACP_BIN`` is the
-    override.
-    """
-    return _resolve_node_adapter_argv(
-        bin_name=PI_ACP_BIN,
-        override_env=_ENV_PI_ACP_BIN,
-        vendored_entry=lambda: _vendored_adapter_entry(_PI_ACP_PKG_ENTRY, _PI_ACP_DEP_MARKER),
-    )
-
-
-def _resolve_pi_bin() -> tuple[str | None, str]:
-    """Find the ``pi`` agent executable and the PATH searched for it.
-
-    The plain-binary ladder (``_resolve_self_served_bin``'s shape). The override rung
-    is the ADAPTER'S variable: an operator who told pi-acp which ``pi`` to run has
-    made the choice this resolver exists to honour, and the gate launcher execs
-    exactly that binary -- so setting the variable on the child to the launcher
-    does not lose the operator's choice, it wraps it.
-    """
-    search_path = augmented_path(os.environ.get("PATH", ""))
-
-    override = os.environ.get(_ENV_PI_ACP_PI_COMMAND)
-    if override:
-        if platform_compat.is_executable_file(override):
-            return _normalize_exe_casing(override) or override, search_path
-        on_path = shutil.which(override, path=search_path)
-        if on_path:
-            return _normalize_exe_casing(on_path) or on_path, search_path
-
-    mise_resolved = _mise_which(PI_BIN)
-    if mise_resolved:
-        return mise_resolved, search_path
-
-    on_path = shutil.which(PI_BIN, path=search_path)
-    if on_path:
-        return _normalize_exe_casing(on_path) or on_path, search_path
-
-    return None, search_path
-
-
-def _pi_installed_version(pi_bin: str) -> tuple[tuple[int, ...], str] | None:
-    """``(version, npm package name)`` of the pi install *pi_bin* runs, or ``None``.
-
-    Read from the npm package's own ``package.json`` rather than by running
-    ``pi --version``: a few small file reads instead of a second child
-    process on every spawn. On POSIX the npm bin link resolves into the package,
-    so the manifest is a few directories above it. On Windows the bin is a
-    ``pi.cmd`` shim: a global one sits in the npm prefix, with the package under
-    that directory's ``node_modules``, and a project-local one sits in
-    ``node_modules/.bin``, beside the package. Only a manifest carrying one of pi's own
-    package names counts. Anything else (a wrapper script, a standalone
-    build) answers ``None``, and the caller lets that through.
-
-    Blocking (reads files); callers run it off the loop.
-    """
-    try:
-        here = Path(os.path.realpath(pi_bin)).parent
-    except (OSError, ValueError):
-        return None
-    shim_roots = [here / "node_modules"]
-    if here.name == ".bin":
-        shim_roots.append(here.parent)
-    candidates = [
-        root / name / "package.json" for root in shim_roots for name in _PI_NPM_PACKAGE_NAMES
-    ]
-    for directory in [here, *here.parents][:_PI_MANIFEST_SEARCH_DEPTH]:
-        candidates.append(directory / "package.json")
-    for manifest in candidates:
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict) or data.get("name") not in _PI_NPM_PACKAGE_NAMES:
-            continue
-        match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(data.get("version") or ""))
-        if not match:
-            return None
-        return tuple(int(part) for part in match.groups()), str(data["name"])
-    return None
-
-
-def _pi_version_issue(pi_bin: str) -> str:
-    """Why *pi_bin* is too old for the adapter, or ``""`` when it is not known to be.
-
-    Blocking (see :func:`_pi_installed_version`); callers run it off the loop.
-    """
-    installed = _pi_installed_version(pi_bin)
-    if installed is None or installed[0] >= PI_MIN_VERSION:
-        return ""
-    version, package = installed
-    found = ".".join(str(part) for part in version)
-    floor = ".".join(str(part) for part in PI_MIN_VERSION)
-    # The two names both install a ``pi`` bin, so npm refuses the new one while
-    # the old one is still there ("File exists"). Removing it comes first.
-    remove = f"'npm rm -g {package}', then " if package != PI_NPM_PKG else ""
-    return (
-        f"{PI_BIN} {found} at {pi_bin} is too old for the {PI_ACP_BIN} adapter, which "
-        f"needs {PI_BIN} {floor} or newer: on older releases a chat fails or never answers. "
-        f"Update it: run {remove}'npm i -g {PI_NPM_PKG}', then start a new chat."
-    )
-
-
-def pi_gate_extension_path() -> str:
-    """The absolute path of the gate extension Kiro Crew ships for pi.
-
-    Package data beside :mod:`kiro_crew.agent_sdk`, resolved from that package's
-    own location so a wheel install and a source checkout name the same file the
-    same way. Returned as a string because it is handed to a shell launcher and
-    compared byte-for-byte against what the harness reports back.
-    """
-    return str(
-        Path(agent_sdk.__file__).resolve().parent
-        / "gate_extensions"
-        / "pi"
-        / "kiro_crew_tool_gate.ts"
-    )
-
-
-def _pi_gate_artifact_dir() -> str:
-    """Create the owner-only pi gate artifact directory, or refuse the session.
-
-    The launcher and sealed extension are the compensating control that makes this
-    harness enforced. They therefore live in a dedicated directory containing no
-    credentials, under a real owner-only leaf that cannot fall back to a shared
-    temporary directory. Symlinks and Windows junctions are refused because either
-    can redirect writes into an agent-chosen location. Blocking (creates and validates
-    the directory); callers run it off the loop.
-
-    This is where the leaf is materialized and where its no-follow check lives, rather
-    than on ``sandbox``'s shared sealable-ceiling lists, because that walk runs on every
-    Linux spawn whatever the backend is: an entry there would let this adapter's
-    directory refuse an unrelated session. Every pi spawn reaches this function before
-    the sandbox is built, so the read-only seal still finds a directory to bind.
-    """
-    lexical_home = os.path.abspath(os.path.normpath(str(config_dir())))
-    expected = os.path.join(lexical_home, "pi-gate")
-    canonical_expected = os.path.join(os.path.realpath(lexical_home), "pi-gate")
-    try:
-        os.makedirs(expected, mode=0o700, exist_ok=True)
-        info = os.lstat(expected)
-        if not stat.S_ISDIR(info.st_mode) or platform_compat.is_link_or_junction(expected):
-            raise OSError("path is not a real directory")
-        if not platform_compat.IS_WINDOWS:
-            os.chmod(expected, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
-            info = os.stat(expected)
-        resolved = os.path.realpath(expected)
-    except OSError as exc:
-        raise AcpToolGateUnroutable(
-            f"{acp_tool_gate.label_for(ACP_BACKEND_PI)} routes tool calls through a gate "
-            "extension Kiro Crew seals into its own artifact directory, but that "
-            f"directory could not be created or secured ({expected}: {exc}). Fix the "
-            "permissions or free space under the Kiro Crew config directory to select "
-            "this harness."
-        ) from exc
-    owner_only = platform_compat.IS_WINDOWS or stat.S_IMODE(info.st_mode) == 0o700
-    if resolved != canonical_expected or not owner_only:
-        raise AcpToolGateUnroutable(
-            f"{acp_tool_gate.label_for(ACP_BACKEND_PI)} routes tool calls through a gate "
-            "extension Kiro Crew seals into its own artifact directory, but that "
-            f"directory is not a real owner-only leaf ({expected}). Fix its permissions "
-            "to select this harness."
-        )
-    return expected
-
-
-def deepseek_gate_extension_path() -> str:
-    """The absolute path of the gate plugin Kiro Crew ships for the DeepSeek Harness.
-
-    Package data beside :mod:`kiro_crew.agent_sdk`, resolved the same way
-    :func:`pi_gate_extension_path` resolves its sibling. ``.mjs`` rather than the
-    ``.ts`` pi loads: this harness composes a plugin into a running Node process
-    from the published build, which resolves a module specifier and does not
-    transpile, so the shipped file is the file that runs.
-    """
-    return str(
-        Path(agent_sdk.__file__).resolve().parent
-        / "gate_extensions"
-        / "deepseek"
-        / "kiro_crew_tool_gate.mjs"
-    )
-
-
-def _seal_deepseek_gate_extension() -> str:
-    """Verify the shipped gate plugin and return the path of a sealed copy to load.
-
-    The :func:`_seal_pi_gate_extension` contract, for the other member of this
-    routing, through the same :func:`_seal_gate_extension`: refuse unless the
-    packaged bytes match :data:`DEEPSEEK_GATE_EXTENSION_SHA256`, write them into the
-    owner-only gate artifact directory, and hand back THAT path -- which is what the
-    patch file names and what the load marker must report. Blocking; callers run it
-    off the loop.
-    """
-    return _seal_gate_extension(
-        deepseek_gate_extension_path(),
-        DEEPSEEK_GATE_EXTENSION_SHA256,
-        artifact_dir=_pi_gate_artifact_dir(),
-        sealed_name=f"kirocrew_dsh_gate_{os.getpid()}.mjs",
-        stage_prefix=f"kirocrew_dsh_gate_{os.getpid()}_",
-        label="DeepSeek Harness gate plugin",
-    )
-
-
-def _write_deepseek_gate_patch(sealed_extension: str) -> str:
-    """Write the per-launch patch that composes *sealed_extension*, and return its path.
-
-    Four rows in the same owner-only gate artifact directory the sealed plugin lives
-    in. The first is one ``insert`` naming the plugin by absolute path, which is the
-    composition channel the harness's own launcher documents (its ``boot/cmdline``
-    package, and its own plugin-development guide). Emitted per process rather than
-    shipped as package data because it has to name the SEALED copy, whose path
-    carries this process's pid.
-
-    The second pins the harness's tool presentation to ``native``, and it is a
-    SECURITY row rather than a preference. Under ``ptc`` or ``both`` the harness
-    exposes a reserved ``run_code`` transport instead of native tool schemas, and a
-    program running inside it reaches Node's own APIs directly -- filesystem,
-    network, subprocess -- which are not tool calls and therefore never traverse
-    ``tools/pre-execute``. The gate would see one ``run_code`` call it cannot read
-    and could apply no command or path rule to the JavaScript inside it. ``native``
-    is the harness's own default, so this row changes nothing on a default install;
-    what it does is stop an operator layer from selecting a mode that would carry
-    side effects around the gate, and a ``--patch`` overlay is applied after the
-    profile's own layer, so the pin wins.
-
-    The remaining rows reassert the stock approval service with policy ``ask`` and
-    the stock ACP bridge as enabled with its startup dependency. dsh applies this
-    overlay after the operator layer, and ``applyEntryPatches`` replaces these fields,
-    so disabling either row, changing the approval policy or changing the ACP startup
-    dependency does not survive. Its ``name`` is a match guard rather than an
-    assignment: a layer that replaced either module is not overwritten, and the gate
-    marker's owner read-back then refuses the session.
-
-    The path is quoted with JSON, which is a strict subset of YAML's
-    double-quoted scalar, so a directory containing a quote or a backslash
-    cannot end the scalar early. Blocking; callers run it off the loop.
-    """
-    artifact_dir = _pi_gate_artifact_dir()
-    body = (
-        f"- insert:\n    - id: kiro-crew-tool-gate\n      name: {json.dumps(sealed_extension)}\n"
-        "- id: tools\n  config:\n    mode: native\n"
-        "- id: approval\n"
-        "  name: '@deepseek-ai/dsh-user-approval'\n"
-        "  disabled: false\n"
-        "  config:\n"
-        "    policy: ask\n"
-        "- id: acp\n"
-        "  name: '@deepseek-ai/dsh-acp'\n"
-        "  disabled: false\n"
-        "  inject:\n"
-        "    - acpAppStartup\n"
-    )
-    return _publish_gate_artifact(
-        artifact_dir,
-        f"kirocrew_dsh_gate_{os.getpid()}.patch.yml",
-        body.encode("utf-8"),
-        stage_prefix=f"kirocrew_dsh_patch_{os.getpid()}_",
-    )
-
-
-def _validate_deepseek_env_mapping(mapping: dict[str, str]) -> None:
-    """Refuse every ``agent.deepseek_env`` entry this harness would not honour.
-
-    Raises :exc:`ValueError` whose message is operator-readable and names ONLY the
-    env-var KEY -- never the secret's vault name and never its value. That is the
-    same rule :mod:`kiro_crew.mcp_gateway.secret_uri` states for its own refusals,
-    and it is what lets this message reach a log and a chat error card unsanitised:
-    the key is operator-declared config, and ``!r`` escapes any control character in
-    it, so a hostile name has no text to forge.
-
-    Each rule refuses a mapping that would FAIL SILENTLY rather than one that is
-    merely unusual, which is why they are refusals and not warnings:
-
-    * a plaintext value would put a live provider key in ``config.json``, which this
-      whole route exists to avoid -- the key belongs in the vault;
-    * a name outside the harness's POSIX-identifier reference grammar is not a
-      credential reference the harness can resolve at all;
-    * a name outside the harness's own child-scrub class
-      (:data:`_DEEPSEEK_ENV_CHILD_SCRUB_CLASS`) is FORWARDED by the harness into
-      every shell it spawns, which hands the model's own bash tool the key -- the
-      exact exposure feeding it through the environment exists to close;
-    * a ``DSH_``-prefixed name is the harness's reserved namespace, a
-      ``KIROCREW_``-prefixed one is Crew's -- it carries this session's identity
-      credentials, which are written onto the child AFTER the provider key and
-      would replace it, handing the harness's provider a live Crew credential --
-      and a name Crew otherwise writes on this child
-      (:data:`_DEEPSEEK_ENV_CREW_OWNED_NAMES`) would either lose the operator's
-      key or overwrite the gate's own variables, depending on which write landed
-      last;
-    * a name Crew's own agent environment scrub strips
-      (:func:`kiro_crew.sandbox.agent_env_scrub_prefixes`) would be removed on the
-      shared spawn tail AFTER this injection, so the harness would start with no key
-      and nothing would say why.
-    """
-    scrub_prefixes = agent_env_scrub_prefixes()
-    for key, value in mapping.items():
-        if not value.startswith(SECRET_URI_PREFIX):
-            raise ValueError(
-                f"agent.deepseek_env entry {key!r} holds a literal value. This "
-                f"mapping takes a '{SECRET_URI_PREFIX}<vault name>' reference only, "
-                "so a provider key is never stored in config.json. Save the key "
-                "under Settings > Secrets, then map it as "
-                f"'{SECRET_URI_PREFIX}<vault name>'."
-            )
-        if not _DEEPSEEK_ENV_NAME_GRAMMAR.fullmatch(key):
-            raise ValueError(
-                f"agent.deepseek_env entry {key!r} is not an environment-variable "
-                "name the harness can resolve: its credential references are POSIX "
-                "shell identifiers, matching [A-Za-z_][A-Za-z0-9_]*."
-            )
-        if key.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES) or key in _DEEPSEEK_ENV_CREW_OWNED_NAMES:
-            raise ValueError(
-                f"agent.deepseek_env entry {key!r} names a variable Kiro Crew or the "
-                "harness sets on this child itself (the DSH_ and KIROCREW_ namespaces, "
-                "and Kiro Crew's own session credentials), so the mapping would either "
-                "lose the key, overwrite the tool gate's own value, or hand the "
-                "harness's provider a Kiro Crew credential. Choose a provider "
-                "credential name instead, such as DEEPSEEK_API_KEY."
-            )
-        if not _DEEPSEEK_ENV_CHILD_SCRUB_CLASS.search(key):
-            raise ValueError(
-                f"agent.deepseek_env entry {key!r} is outside the name class the "
-                "harness withholds from its own shell children (it scrubs every "
-                "inherited name matching KEY, PASSWORD, SECRET or TOKEN, "
-                "case-insensitively), so the harness would forward this name to "
-                "every shell it runs and the model's bash tool could read the key. "
-                "Name the credential reference in the harness's provider "
-                "configuration with a name in that class, such as DEEPSEEK_API_KEY."
-            )
-        if any(key.startswith(prefix) for prefix in scrub_prefixes):
-            raise ValueError(
-                f"agent.deepseek_env entry {key!r} matches a name prefix Kiro Crew's "
-                "own agent environment scrub removes before the child starts, so the "
-                "injection would be undone and the harness would start with no key. "
-                "Choose a provider credential name outside that set."
-            )
-
-
-def _deepseek_vault_env_names() -> tuple[str, ...]:
-    """The env-var NAMES ``agent.deepseek_env`` maps, validated, in a stable order.
-
-    What the read-back probe needs and all it may have: it hands each name to the
-    gate plugin under a canary value so the plugin can prove the harness withholds
-    that name from its shell children, and it boots a third-party plugin host, so it
-    is never given the key itself. Same validator as :func:`_deepseek_vault_env`,
-    same :exc:`ValueError` on a mapping this harness would not honour; the vault is
-    not opened here. Blocking (reads the config file); callers run it off the loop.
-    """
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    mapping = dict(KiroCrewConfig.load().agent.deepseek_env)
-    if not mapping:
-        return ()
-    _validate_deepseek_env_mapping(mapping)
-    return tuple(sorted(mapping))
-
-
-def _deepseek_vault_env() -> tuple[dict[str, str], tuple[str, ...]]:
-    """``agent.deepseek_env`` validated and resolved into child env vars.
-
-    Returns ``(env, secret_keys)``: the variables to place on the harness's child,
-    and the keys now holding PLAINTEXT. The contract
-    :func:`kiro_crew.mcp_gateway.secret_uri.resolve_secret_uris` states -- clear
-    the plaintext from the returned dict as soon as nothing needs it from there
-    -- is honoured by the deepseek spawn arm, which empties the dict the
-    moment its entries are copied onto the child's env, inside the arm rather than
-    on the shared post-spawn path (harness-parity H13).
-
-    Every failure is a :exc:`ValueError`, from this module's validator or from the
-    resolver's own fail-closed refusals (a malformed reference, a secret absent from
-    the vault). One exception type, because the caller does the same thing with
-    both: refuse the session rather than start a harness that cannot reach a model.
-
-    Blocking: reads the config file and the vault, so it runs off the event loop.
-    Config is imported lazily for this module's usual reason -- ``config.loader``
-    reaches this module through ``acp.session_handle``.
-    """
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    mapping = dict(KiroCrewConfig.load().agent.deepseek_env)
-    if not mapping:
-        return {}, ()
-    _validate_deepseek_env_mapping(mapping)
-    resolved, secret_keys = resolve_secret_uris(
-        mapping, Path(config_dir()), subject="agent.deepseek_env"
-    )
-    return resolved, tuple(sorted(secret_keys))
-
-
-def _pi_gate_extension_bytes(payload: bytes) -> bytes:
-    """*payload* in the one form the digest is pinned over: LF line endings.
-
-    Read in binary and normalized here rather than trusted as it arrived, so the
-    verified bytes -- and the sealed copy the harness loads -- are the same on a
-    checkout that rewrote the file CRLF as on one that did not. Only ``\\r\\n``
-    is folded; any other byte difference is a real difference and fails the digest.
-    """
-    return payload.replace(b"\r\n", b"\n")
-
-
-def _seal_pi_gate_extension() -> str:
-    """Verify the shipped extension and return the path of a sealed copy to load.
-
-    Reads the packaged file, refuses unless its SHA-256 is
-    :data:`PI_GATE_EXTENSION_SHA256`, and writes the verified bytes to a read-only
-    file in the owner-only pi gate artifact directory -- the directory the agent's
-    file tools are fenced from and every sandbox tier exposes for exec. The copy is
-    rewritten whenever its bytes differ from the verified ones, so a copy touched
-    between spawns is replaced rather than loaded. Cached per process and inputs
-    like the launcher.
-
-    Blocking (reads and may write a file); callers run it off the loop.
-    """
-    return _seal_gate_extension(
-        pi_gate_extension_path(),
-        PI_GATE_EXTENSION_SHA256,
-        artifact_dir=_pi_gate_artifact_dir(),
-        sealed_name=f"kirocrew_pi_gate_{os.getpid()}.ts",
-        stage_prefix=f"kirocrew_pi_gate_{os.getpid()}_",
-        label="pi gate extension",
-    )
-
-
-def _seal_gate_extension(
-    source: str,
-    pinned_digest: str,
-    *,
-    artifact_dir: str,
-    sealed_name: str,
-    stage_prefix: str,
-    label: str,
-) -> str:
-    """Verify one shipped gate file against its pinned digest and publish a sealed copy.
-
-    The one seal for both gate-extension harnesses: read the packaged bytes, bring
-    them to the LF form the digest is pinned over (:func:`_pi_gate_extension_bytes`),
-    refuse on any mismatch, and publish them read-only into *artifact_dir* -- the
-    owner-only gate artifact directory each writer resolves through the strict
-    :func:`_pi_gate_artifact_dir` -- as *sealed_name* through
-    :func:`_publish_gate_artifact`. *label* names the file in the refusal, which is
-    the same refusal for a file that cannot be read as for one with the wrong bytes:
-    no gate this build shipped, no session. Blocking; callers run it off the loop.
-    """
-    try:
-        with open(source, "rb") as fh:
-            payload = _pi_gate_extension_bytes(fh.read())
-    except OSError as exc:
-        raise PiGateExtensionTampered(
-            f"the {label} at {source} cannot be read ({exc}); a session cannot "
-            "start on a gate whose code this build did not ship. Reinstall Kiro Crew."
-        ) from exc
-    digest = hashlib.sha256(payload).hexdigest()
-    if digest != pinned_digest:
-        raise PiGateExtensionTampered(
-            f"the {label} at {source} does not match the digest this build "
-            f"pinned ({digest[:12]}… vs {pinned_digest[:12]}…); a session "
-            "cannot start on a gate whose code this build did not ship. Reinstall Kiro Crew."
-        )
-    return _publish_gate_artifact(artifact_dir, sealed_name, payload, stage_prefix=stage_prefix)
-
-
-def _publish_gate_artifact(
-    artifact_dir: str, name: str, payload: bytes, *, stage_prefix: str
-) -> str:
-    """Land *payload* as the read-only file *name* in *artifact_dir*; return its path.
-
-    The write-if-changed tail every gate-artifact writer shares: a file already
-    holding exactly these bytes is returned as is (the artifacts are written once
-    per gateway process and reused by every later spawn), otherwise the bytes are
-    staged under *stage_prefix* in the same directory, made read-only where the
-    mode means something (``chmod`` is inert on Windows, where the directory's
-    owner-only DACL is the seal), and moved into place atomically. A failed stage is
-    removed rather than left for the sweep. *stage_prefix* is caller-named because
-    the leaf sweep (``sandbox._PI_GATE_DIR_ARTIFACTS``) reclaims by family, and each
-    writer's stage spelling is registered there.
-    """
-    target = os.path.join(artifact_dir, name)
-    try:
-        with open(target, "rb") as fh:
-            if fh.read() == payload:
-                return target
-    except OSError:
-        pass
-    fd, tmp = tempfile.mkstemp(dir=artifact_dir, prefix=stage_prefix, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
-        if not platform_compat.IS_WINDOWS:
-            os.chmod(tmp, 0o400)
-        os.replace(tmp, target)
-    except OSError:
-        with suppress(OSError):
-            os.remove(tmp)
-        raise
-    return target
-
-
-def _pi_gate_launcher_body(pi_bin: str, extension_path: str) -> str:
-    """The launcher pi-acp is told to run in place of ``pi``.
-
-    It forwards every argument the adapter passes and appends the extension flag,
-    so the harness process is the one the adapter meant to start plus Crew's gate.
-    A shell script on POSIX; a ``.cmd`` on Windows, where the adapter itself uses a
-    shell for exactly that extension.
-    """
-    if platform_compat.IS_WINDOWS:
-        return f'@echo off\r\n"{pi_bin}" %* {_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
-    return (
-        "#!/bin/sh\n"
-        f'exec {shlex.quote(pi_bin)} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
-    )
-
-
-def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
-    """Write (once per process and inputs) the launcher and return its path.
-
-    Lives in the owner-only pi gate artifact directory, which the sandbox exposes
-    read-only because the child has to exec this launcher and read the sealed gate
-    extension. Written under a unique ``mkstemp`` name
-    that is published to the cache only after the write and the mode change have
-    finished, so a concurrent spawn never reads a half-written file, and cached so
-    N sessions share one launcher rather than leaving N files behind.
-
-    Blocking (writes a file); callers run it off the loop.
-    """
-    key = (pi_bin, extension_path)
-    cached = _pi_gate_launcher_cache.get(key)
-    if cached and os.path.isfile(cached):
-        return cached
-    artifact_dir = _pi_gate_artifact_dir()
-    suffix = ".cmd" if platform_compat.IS_WINDOWS else ".sh"
-    fd, tmp = tempfile.mkstemp(
-        dir=artifact_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=suffix
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            fh.write(_pi_gate_launcher_body(pi_bin, extension_path))
-        if not platform_compat.IS_WINDOWS:
-            os.chmod(tmp, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
-    except OSError:
-        with suppress(OSError):
-            os.remove(tmp)
-        raise
-    _pi_gate_launcher_cache[key] = tmp
-    return tmp
-
-
-def _pi_readback_remedy() -> str:
-    """What an operator does when the harness's command registry cannot be read."""
-    return (
-        f"Run '{PI_BIN} {' '.join(_PI_RPC_ARGS)}' in the session's working directory "
-        'and send it {"type": "get_commands"} on stdin to see what fails, and '
-        f"reinstall with '{PI_INSTALL_COMMAND}' if the agent itself is broken."
-    )
-
-
-def _same_file_spelling(path: str) -> str:
-    """One spelling per file: symlinks resolved, case folded where the OS does."""
-    return os.path.normcase(os.path.realpath(path))
-
-
-def _same_file_spelling_all(commands: object) -> object:
-    """*commands* with every ``sourceInfo.path`` in :func:`_same_file_spelling`.
-
-    Shape-preserving: anything that is not a list of dicts with a string path is
-    returned as it came, so the decision module still sees -- and refuses -- an
-    unparseable registry as such.
-    """
-    if not isinstance(commands, list):
-        return commands
-    out: list = []
-    for entry in commands:
-        if isinstance(entry, dict):
-            info = entry.get("sourceInfo")
-            if isinstance(info, dict):
-                path = info.get("path")
-                if isinstance(path, str) and path:
-                    entry = {**entry, "sourceInfo": {**info, "path": _same_file_spelling(path)}}
-        out.append(entry)
-    return out
-
-
-def _pi_commands_from_readback(stdout: str) -> object:
-    """The ``commands`` list out of pi's ``get_commands`` response, or ``None``.
-
-    pi writes one JSON object per line and other extensions may write UI requests
-    before the response, so the lines are scanned for the one answering Crew's
-    request id rather than the first parsed.
-    """
-    want = _PI_READBACK_REQUEST["id"]
-    for line in stdout.splitlines():
-        frame = parse_json_object_line(line)
-        if frame is None or frame.get("id") != want:
-            continue
-        if frame.get("type") != "response" or frame.get("success") is not True:
-            return None
-        data = frame.get("data")
-        commands = data.get("commands") if isinstance(data, dict) else None
-        return commands if isinstance(commands, list) else None
-    return None
-
-
-def _unlink_readback_launcher(path: str) -> None:
-    """Remove a sandbox launcher artifact whose child has already exited."""
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-
-
-def _opencode_uniform_permission(raw: object) -> object:
-    """Collapse this harness's resolved permission to ONE value when it is uniform.
-
-    The harness normalizes a bare ``"ask"`` into a rule map (``{"*": "ask"}``), so
-    the read-back has to compare shapes rather than strings. A map whose every rule
-    carries the same value IS that value.
-
-    The harness also checks its rules in order and lets the LAST match win, and a
-    ``"*"`` key matches every tool and every pattern. So a map whose last entry is
-    ``"*": "ask"`` asks for every call, whatever the entries before it say. That is
-    the shape the seed produces over a lower source's per-tool rule: the sources are
-    merged key by key, so ``"bash": "allow"`` from the operator's global config keeps
-    its place and the seed's ``"*"`` is appended after it -- measured on opencode
-    1.18.30 and 1.18.32, where such a session asks before running ``bash``. It is
-    accepted ONLY when no entry before it denies anything: a ``deny`` the trailing
-    ``"*"`` outranks is a rule the operator wrote that would silently stop holding,
-    so that map stays refused.
-
-    Any other MIXED map is not reduced and not accepted: one tool left permissive is
-    one tool whose calls never reach the host gate, so it is returned as its own JSON
-    spelling for the refusal to name.
-
-    ``None`` for anything else, which the gate reads as "the setting is not there".
-    """
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, dict) and raw:
-        values = {value for value in raw.values() if isinstance(value, str)}
-        if len(values) == 1 and len(raw) == len(
-            [value for value in raw.values() if isinstance(value, str)]
-        ):
-            return values.pop()
-        last_key, last_value = list(raw.items())[-1]
-        if last_key == "*" and last_value == "ask" and not _opencode_rules_deny(raw):
-            return "ask"
-        return json.dumps(raw, sort_keys=True)
-    return None
-
-
-def _opencode_rules_deny(raw: dict) -> bool:
-    """True when any rule in *raw* -- top level or one tool's pattern map -- denies."""
-    for value in raw.values():
-        if value == "deny":
-            return True
-        if isinstance(value, dict) and "deny" in value.values():
-            return True
-    return False
-
-
-#: How much of a refused read-back child's stderr is examined at all.
-#: A harness is free to write a screenful of banner, or a hundred megabytes, and
-#: this only ever needs the tail, where a launcher puts its verdict. Bounding the
-#: scan bounds the matching work; nothing outside the window is read.
-_READBACK_STDERR_SCAN_CHARS = 3200
-
-#: How many recognised fault shapes one refusal reports, most specific first.
-#: A shebang fault spells two at once (``bad interpreter: No such file or
-#: directory``) and both halves are worth having; past that a refusal is being
-#: padded rather than explained.
-_READBACK_FAULT_MAX_SHAPES = 2
-
-#: The CLOSED vocabulary of exec-failure shapes a refused read-back can report.
-#:
-#: Each entry pairs a pattern matched against the child's stderr with the phrase
-#: THIS MODULE publishes when it matches, so published text is always a literal
-#: written here and never a byte the child wrote. That is the point rather than a
-#: side effect. The child is a foreign harness binary and its stderr can hold
-#: whatever the operator's environment put in front of it, a credential included;
-#: any scheme that ECHOES those bytes has to prove no credential survives, which
-#: means proving a negative about arbitrary bytes against redactor patterns that
-#: need contiguity and label anchors. One inserted byte -- a line wrap, an SGR
-#: colour code -- breaks the anchor while leaving every character of the secret
-#: sitting in the text. With an SGR colour code inside a ``glpat-`` token body, 530
-#: of 700 splices leave the whole token readable that way: rejoining the run
-#: destroys the ``-`` the pattern anchors on, and not rejoining leaves the ``[31m``
-#: residue inside it. Reporting a MATCH removes the question instead of answering
-#: it -- there is no path from a child byte to published text, so there is nothing
-#: left to prove about the bytes.
-#:
-#: Covers what BOTH read-backs hit, which is why it reaches past exec failures: the
-#: pi read-back's launcher refuses an exec, while the opencode read-back parses a
-#: config document and can reject the flags it was handed. A shape neither of them
-#: produces is not worth carrying.
-#:
-#: Ordered most specific first, because the shapes overlap: a shebang fault reads
-#: ``bad interpreter: No such file or directory``, where the interpreter is the
-#: cause and the missing file only its symptom.
-#:
-#: What this deliberately drops is the DETAIL inside a recognised message -- which
-#: line of the config failed to parse, which path the OS refused. A capture would
-#: put child bytes back in the output and reopen the whole question for the sake of
-#: a number the harness repeats the moment the operator runs it themselves.
-#:
-#: Case-insensitive, and matched as substrings rather than whole lines, because the
-#: launcher's wording differs by platform -- ``/bin/sh``, ``dyld``, ``cmd.exe`` and
-#: Node each frame these differently -- while the fault underneath does not.
-_READBACK_FAULT_SHAPES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(r"bad interpreter", re.IGNORECASE),
-        "its shebang interpreter could not be run",
-    ),
-    (
-        re.compile(
-            r"bad CPU type|Exec format error|ENOEXEC|cannot execute binary file",
-            re.IGNORECASE,
-        ),
-        "it is built for a different CPU or executable format",
-    ),
-    (
-        re.compile(r"code ?signature|Killed: ?9", re.IGNORECASE),
-        "the OS killed it over its code signature",
-    ),
-    (
-        re.compile(r"Library not loaded|image not found|shared object file", re.IGNORECASE),
-        "a shared library it needs is missing",
-    ),
-    (
-        re.compile(r"unknown (?:flag|option|argument)|unrecognized (?:option|argument)", re.I),
-        "the gateway passed it a flag this harness version does not accept",
-    ),
-    (
-        re.compile(
-            r"cannot parse|parse error|syntax ?error|unexpected token|unexpected end of"
-            r"|invalid JSON|JSONDecodeError|YAMLException",
-            re.IGNORECASE,
-        ),
-        "its configuration could not be parsed",
-    ),
-    (
-        re.compile(r"Operation not permitted|EPERM", re.IGNORECASE),
-        "the OS denied the operation, as a sandbox, quarantine or privacy policy does",
-    ),
-    (
-        re.compile(r"Permission denied|EACCES", re.IGNORECASE),
-        "the OS refused to execute it",
-    ),
-    (
-        re.compile(r"Text file busy", re.IGNORECASE),
-        "the file was still being written",
-    ),
-    (
-        re.compile(r"Is a directory", re.IGNORECASE),
-        "the path is a directory, not a program",
-    ),
-    (
-        re.compile(r"Too many levels of symbolic links", re.IGNORECASE),
-        "its path loops through symlinks",
-    ),
-    (
-        re.compile(r"No such file or directory|ENOENT|not found", re.IGNORECASE),
-        "the path does not exist",
-    ),
-)
-
-
-def _readback_stderr_diagnosis(stderr: object) -> str:
-    """What a refused read-back child's stderr says went wrong, in this module's words.
-
-    A gate read-back that fails reports its child's exit code, and that code alone
-    names a verdict without a cause: on the pi read-back the launcher is ``/bin/sh``
-    exec'ing the resolved harness binary, so ``exit 126`` is the shell refusing the
-    exec, and an exec the OS denied (``Permission denied``), a shebang it cannot
-    resolve (``bad interpreter``) and a binary built for another architecture
-    (``Bad CPU type in executable``) are three different faults with three different
-    fixes. Only the child knows which one happened, so the refusal that reaches the
-    operator carries it.
-
-    What the refusal does NOT carry is the child's own bytes. The stderr is matched
-    against :data:`_READBACK_FAULT_SHAPES` and the phrase written there for the
-    matching shape is what gets published, so the output is drawn from a closed
-    vocabulary defined in this module. Nothing has to be proved about the child's
-    bytes because none of them are published -- see that constant for the measured
-    reason echoing the bytes cannot offer the same guarantee.
-
-    An unrecognised stderr answers ``""``, and the caller then reports the bare exit
-    code with no diagnosis. The caller still separates that from a SILENT child, so
-    "said something we do not recognise" and "said nothing at all" stay different
-    answers to the operator.
-
-    Non-strings and blank stderr answer ``""``.
-    """
-    if not isinstance(stderr, str) or not stderr:
-        return ""
-    window = stderr[-_READBACK_STDERR_SCAN_CHARS:]
-    matched: list[str] = []
-    for pattern, phrase in _READBACK_FAULT_SHAPES:
-        if pattern.search(window) and phrase not in matched:
-            matched.append(phrase)
-            if len(matched) == _READBACK_FAULT_MAX_SHAPES:
-                break
-    return "; ".join(matched)
-
-
-def _readback_detail_with_diagnosis(detail: str, stderr: object) -> str:
-    """*detail* plus what the child said about its own failure, when that is known.
-
-    Three outcomes, and the operator needs them apart. A recognised fault appends
-    the vocabulary phrase. Stderr holding something unrecognised says so without
-    quoting it, because "the harness explained itself and we could not read the
-    explanation" points at this vocabulary needing a shape, while a SILENT child
-    points at the harness. Nothing on stderr leaves *detail* alone.
-    """
-    diagnosis = _readback_stderr_diagnosis(stderr)
-    if diagnosis:
-        return f"{detail}: {diagnosis}"
-    if isinstance(stderr, str) and stderr.strip():
-        return f"{detail}, and its stderr holds no message this gateway recognises"
-    return detail
-
-
 def _scrub_observed(value: object) -> object:
     """Scrub a string that came out of the operator's own harness config.
 
@@ -2165,76 +650,7 @@ def _scrub_observed(value: object) -> object:
     return value
 
 
-def _opencode_config_mcp_server_names(resolved: dict) -> tuple[tuple[str, ...], str]:
-    """The MCP server names the harness's resolved config mounts, and any issue.
-
-    opencode mounts these from its own user and project config, beside the
-    servers Crew places on the session, and names their tools only by a fused
-    ``<server>_<tool>`` title in which a character such as ``.`` became ``_``.
-    Knowing the exact names lets that title be split back to the spelling a
-    spec hook's ``mcp__server__tool`` matcher is written in. Only a name opencode
-    rewrites is kept: any other one the every-``_`` split already reproduces.
-
-    Bounded rather than truncated: a name over :data:`MAX_HARNESS_TOOL_NAME_LEN`,
-    or more than :data:`MAX_HARNESS_CONFIG_MCP_SERVERS` rewritten names, is an
-    issue the caller refuses the session on, because a name left out would let
-    a deny hook written with its exact spelling miss the call.
-    """
-    servers = resolved.get("mcp")
-    if not isinstance(servers, dict):
-        return (), ""
-    names = [name for name in servers if isinstance(name, str) and name]
-    if any(len(name) > MAX_HARNESS_TOOL_NAME_LEN for name in names):
-        return (), (
-            f"its config mounts an MCP server whose name is over "
-            f"{MAX_HARNESS_TOOL_NAME_LEN} characters"
-        )
-    rewritten = [name for name in names if opencode_rewrites_name(name)]
-    if len(rewritten) > MAX_HARNESS_CONFIG_MCP_SERVERS:
-        return (), (
-            f"its config mounts {len(rewritten)} MCP servers whose names it rewrites, "
-            f"more than the {MAX_HARNESS_CONFIG_MCP_SERVERS} Crew can match hooks against"
-        )
-    return tuple(rewritten), ""
-
-
-def _opencode_config_mcp_servers_remedy() -> str:
-    """What an operator does when opencode's config mounts too many MCP servers."""
-    return (
-        "Remove MCP servers from opencode's own config, or rename them to letters, "
-        "digits, '_' and '-' only, then start a new session."
-    )
-
-
-def _opencode_agent_permissions(resolved: dict, setting_key: str) -> list[tuple[str, object]]:
-    """Every per-agent permission the harness's resolved config carries, reduced.
-
-    This harness lets a config source set ``agent.<name>.<setting_key>``, and that
-    value applies to the named agent IN PLACE of the top-level one -- the seed does
-    not reach it, because the seed writes only the top-level key. A session whose
-    top-level value reads ``ask`` while ``agent.build`` reads ``allow`` therefore
-    passes the top-level check and runs its build tools past the host gate. So
-    every agent entry is walked, not just the top-level key. Legacy ``mode``
-    entries are folded into ``agent`` by the harness's own resolution before the
-    document is printed, so walking ``agent`` covers both spellings.
-
-    Each entry is returned as ``(agent_name, reduced_value)`` in the same shape
-    :func:`_opencode_uniform_permission` gives the top-level key, so the SAME gate
-    decides both. Agents that carry no permission of their own are skipped: they
-    inherit the top-level value, which the caller has already checked.
-    """
-    agents = resolved.get("agent")
-    if not isinstance(agents, dict):
-        return []
-    found: list[tuple[str, object]] = []
-    for name, entry in sorted(agents.items()):
-        if not isinstance(entry, dict) or setting_key not in entry:
-            continue
-        found.append((str(name), _opencode_uniform_permission(entry.get(setting_key))))
-    return found
-
-
-_codex_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
+_codex_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLVED
 
 
 def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
@@ -2243,10 +659,12 @@ def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
     The shared ladder with this adapter's parameters; ``CODEX_ACP_BIN`` is the
     override.
     """
-    return _resolve_node_adapter_argv(
+    return launch_mod._resolve_node_adapter_argv(
         bin_name=CODEX_ACP_BIN,
         override_env=_ENV_CODEX_ACP_BIN,
-        vendored_entry=lambda: _vendored_adapter_entry(_CODEX_ACP_PKG_ENTRY, _CODEX_ACP_DEP_MARKER),
+        vendored_entry=lambda: launch_mod._vendored_adapter_entry(
+            _CODEX_ACP_PKG_ENTRY, _CODEX_ACP_DEP_MARKER
+        ),
     )
 
 
@@ -2266,39 +684,6 @@ def codex_acp_not_found_message(search_path: str) -> str:
         f"dependency), or set {_ENV_CODEX_ACP_BIN} to its entry script. "
         f"The 'codex' CLI alone does not serve ACP."
     )
-
-
-def _resolve_claude_code_executable() -> str | None:
-    """Find the Claude backend CLI binary for CLAUDE_CODE_EXECUTABLE.
-
-    The claude-agent-acp adapter forwards this env var to
-    @anthropic-ai/claude-agent-sdk as ``pathToClaudeCodeExecutable``, letting
-    the SDK use an existing ``claude`` install instead of the per-platform
-    native binary package (~250 MB) that a plain npm install may omit.  The SDK
-    does not search PATH itself, so this resolution is required even when the
-    host has the ``claude`` binary installed.
-
-    Resolution order:
-      1. ``CLAUDE_CODE_EXECUTABLE`` env var (explicit override; honoured as-is).
-      2. ``mise which claude`` (respects MISE_DATA_DIR and all mise config).
-      3. Augmented PATH (``env.augmented_path`` — includes mise/nvm/fnm/volta
-         shims and the npm global bin), so a non-login launchd/systemd gateway
-         still finds an installed ``claude``.
-
-    Returns the resolved path, or ``None`` when no ``claude`` is found.
-    """
-    override = os.environ.get("CLAUDE_CODE_EXECUTABLE")
-    if override and Path(override).is_file():
-        return override
-
-    mise_resolved = _mise_which(CLAUDE_CODE_BIN)
-    if mise_resolved:
-        return mise_resolved
-
-    search_path = augmented_path(os.environ.get("PATH", ""))
-    # Casing-normalize (Windows): a `which`-resolved .EXE reaches the launcher shim
-    # with its true on-disk name (see _normalize_exe_casing).
-    return _normalize_exe_casing(shutil.which(CLAUDE_CODE_BIN, path=search_path))
 
 
 def _claude_settings_usable(path: Path) -> bool:
@@ -2386,42 +771,6 @@ def _claude_adapter_honours_setting_sources(agent_version: str) -> bool:
         return False
     found = tuple(int(part) for part in match.groups())
     return found >= CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION
-
-
-def _claude_adapter_installed_version(argv: list[str]) -> str:
-    """The ``version`` in the package.json of the claude-agent-acp *argv* runs, or ``""``.
-
-    Read before spawn so the settings writer can apply the ``settingSources``
-    floor before the session's MCP array is first resolved, rather than after
-    the handshake. Only a manifest named :data:`CLAUDE_ACP_NPM_PKG` counts; a
-    wrapper or an override that names something else answers ``""``, which the
-    floor reads as below it. Blocking (small file reads); callers run it off the
-    loop. The handshake's ``agentInfo.version`` is still checked before the first
-    prompt.
-    """
-    for element in argv:
-        try:
-            here = Path(os.path.realpath(element))
-        except (OSError, ValueError):
-            continue
-        if not here.is_file():
-            continue
-        shim_roots = [here.parent / "node_modules"]
-        if here.parent.name == ".bin":
-            shim_roots.append(here.parent.parent)
-        candidates = [root / CLAUDE_ACP_NPM_PKG / "package.json" for root in shim_roots]
-        candidates += [d / "package.json" for d in list(here.parents)[:4]]
-        for manifest in candidates:
-            try:
-                if manifest.stat().st_size > 1 << 20:
-                    continue
-                data = json.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, ValueError, RecursionError):
-                continue
-            if isinstance(data, dict) and data.get("name") == CLAUDE_ACP_NPM_PKG:
-                version = data.get("version")
-                return version.strip() if isinstance(version, str) else ""
-    return ""
 
 
 #: Project settings keys that RESTRICT a session but cannot be carried inline:
@@ -3051,13 +1400,6 @@ def parse_slash_command(command: str) -> tuple[str, dict]:
 
 # Timeouts for session initialization steps
 _INIT_TIMEOUT = 240.0  # 4 min — MCP servers can be slow to initialize
-# The enforced-adapter preflight (sandbox-backend probe + credential-mask
-# resolution) is blocking filesystem work run off the loop; this bounds the
-# wait for it. Sized for a cold sandbox probe (its own subprocess budget is
-# 20 s) plus canonical resolution of the home and override roots on a slow
-# disk, with headroom. On expiry the adapter is REFUSED, never started with
-# its mask missing.
-_SANDBOX_PREFLIGHT_TIMEOUT = 60.0
 # set_mode/set_model: fire-and-forget.  kiro-cli accepts these commands
 # but usually never sends a JSON-RPC response — MCP servers load
 # asynchronously.  Any late responses land in _buffer and are harmlessly
@@ -3501,67 +1843,42 @@ def _select_tool_title(
     return None
 
 
-def _sandbox_preflight(backend: str, mode: str) -> tuple[str, ...]:
-    """Refuse an unmasked enforced adapter, then resolve its credential mask.
+def _launch_tools() -> LaunchTools:
+    """The launch tail's collaborators, as THIS module binds them right now.
 
-    One function so the caller pays ONE ``asyncio.to_thread`` hop for both steps:
-    ``enforce_sandbox_floor`` probes for a sandbox backend and
-    ``adapter_hidden_credential_dirs`` resolves the home and every env-override root,
-    and both are blocking filesystem work that must not run on the event loop.
-
-    Raises :class:`AcpToolGateUnroutable` when this session would spawn the adapter
-    with its mask dropped; returns the mask otherwise (empty for a harness this core
-    does not enforce, so their spawn arguments stay byte-identical).
+    Read at each launch, so a test that rebinds one of these names on
+    ``kiro_crew.acp.client`` reaches the launch this client starts.
     """
-    try:
-        acp_tool_gate.enforce_sandbox_floor(backend, mode)
-        return acp_tool_gate.adapter_hidden_credential_dirs(backend)
-    except acp_tool_gate.ToolGateUnroutable as exc:
-        # Translate at the boundary, exactly as the session-routing path does.
-        # ``acp_tool_gate`` is a LEAF that cannot import this module, so its
-        # ToolGateUnroutable is a plain ``Exception``: it is neither an
-        # ``AcpError`` (so the transport ladder in ``ensure_ready`` cannot see
-        # it) nor the ``AcpToolGateUnroutable`` the dedicated non-retrying
-        # handler names (an unrelated class). Raised raw, a sandbox-floor
-        # refusal therefore escaped ``ensure_ready`` uncaught and skipped the
-        # cleanup every other refusal path runs. ``from None`` because the
-        # wrapper carries the whole actionable message already.
-        raise AcpToolGateUnroutable(str(exc)) from None
-
-
-async def _run_preflight_bounded(
-    preflight: Callable[[str, str], tuple[str, ...]], backend: str, mode: str
-) -> tuple[str, ...]:
-    """Run *preflight* off the loop and give up after ``_SANDBOX_PREFLIGHT_TIMEOUT``.
-
-    The mask half of the preflight canonicalizes the home and every override root
-    on disk, and on a stalled mount that wait has no natural end: nothing else on
-    the spawn path bounds it (``ensure_ready`` times the ACP handshake, which comes
-    AFTER the spawn), so without this the only backstop was the subagent startup
-    watchdog. Expiry raises :class:`AcpError`, the retryable kind: a stall is a
-    transient fact about the disk, not a configuration fact like
-    :class:`AcpToolGateUnroutable`, so the one retry ``ensure_ready`` grants is
-    the right shape. The adapter is never started without its mask.
-
-    Takes the preflight as a parameter so the deadline is testable without a
-    spawn; ``_spawn`` passes :func:`_sandbox_preflight`.
-    """
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(preflight, backend, mode), timeout=_SANDBOX_PREFLIGHT_TIMEOUT
-        )
-    except asyncio.TimeoutError:
-        raise AcpError(
-            f"Could not start the {backend} adapter: computing its sandbox credential "
-            "mask needs the home and credential roots resolved on disk, and that did "
-            f"not finish within {_SANDBOX_PREFLIGHT_TIMEOUT:.0f} s (a stalled or very "
-            "slow filesystem). The adapter is not started without its mask; retry "
-            "once the disk responds."
-        ) from None
+    return LaunchTools(
+        logger=logger,
+        platform_compat=platform_compat,
+        agent_scratch=agent_scratch,
+        apply_pod_bundle_spawn=apply_pod_bundle_spawn,
+        forward_ssh_auth_sock=_forward_ssh_auth_sock,
+        wrap_argv_async=wrap_argv_async,
+        wrap_argv=wrap_argv,
+        wrapped_by_crew_sandbox=wrapped_by_crew_sandbox,
+        cgroup_scope_argv=cgroup_scope_argv,
+        augmented_path=augmented_path,
+        scrub_agent_subprocess_env=scrub_agent_subprocess_env,
+        apply_pod_home_remap=_apply_pod_home_remap,
+        browser_session_env=browser_session_env,
+        browser_socket_env=browser_socket_env,
+        inject_xdist_auto_cap=inject_xdist_auto_cap,
+        bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
+        create_subprocess_limited=create_subprocess_limited,
+    )
 
 
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
+
+    # Written by the claude adapter at launch, read back by the settings writer
+    # through ``getattr`` with an empty default: never set on any other host.
+    _claude_adapter_disk_version: str
+    # The scrub this session applies to what a harness reports back, handed to the
+    # host adapters that quote such a value (``ProcessSession._scrub_observed``).
+    _scrub_observed = staticmethod(_scrub_observed)
 
     def __init__(
         self,
@@ -3582,10 +1899,6 @@ class AcpClient:
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
-            # config.paths is a stdlib-only leaf: importing it here can't
-            # re-enter the config.loader -> providers.acp -> acp.client cycle.
-            from kiro_crew.config.paths import config_dir
-
             self._work_dir = config_dir() / "workspace"
         # Once-per-instance guard for the ensure_ready work-dir check: True
         # after the first (off-loop) mkdir, so the per-prompt warm path pays
@@ -3704,24 +2017,16 @@ class AcpClient:
         # refuses EVERY permission request when it is set (``_handle_permission``).
         # Cleared on reset with the array.
         self._spec_zero_tools: bool = False
-        # The inline harness config this session's routing seed travels in, resolved
-        # in the opencode spawn arm and read back there before the first prompt. The
-        # env section applies it; holding it here is what keeps that section a plain
-        # in-memory read rather than a second place that knows the mechanism.
-        self._opencode_config_content = ""
-        # The MCP server names that read-back found in the harness's own resolved
-        # config, so a fused tool title from one of them splits back exactly.
+        # The MCP server names opencode's routing read-back found in the harness's
+        # own resolved config, so a fused tool title from one of them splits back
+        # exactly. Recorded by its launch (``acp.harness.opencode``).
         self._opencode_config_mcp_servers: tuple[str, ...] = ()
-        # The launcher pi-acp is told to run in place of ``pi``, resolved in the
-        # pi spawn arm and read back there before the first prompt; the env
-        # section applies it.
-        self._pi_gate_launcher = ""
-        # The per-session nonce the gate extension echoes in every dialog it
-        # raises; minted in the pi spawn arm, placed in the child's environment,
-        # and the only key under which a permission frame is read as an envelope.
+        # The per-session nonce a gate extension echoes in every dialog it raises;
+        # minted by the pi or DeepSeek Harness launch, placed in the child's
+        # environment there, and the only key under which a permission frame is read
+        # as an envelope.
         self._pi_gate_nonce = ""
         self._deepseek_gate_nonce = ""
-        self._deepseek_gate_patch = ""
         # toolCallIds the gate extension asked about in this session, read off the
         # envelopes; a completed tool call not in it is a call the gate never saw.
         self._pi_gate_asked_ids: set[str] = set()
@@ -5033,402 +3338,6 @@ class AcpClient:
             self._claude_local_settings_path(), getattr(self, "_seed_owner", "")
         )
 
-    def _opencode_routing_config(self) -> str:
-        """The inline harness config that makes this session ask, as one env value.
-
-        MERGED over an ambient value rather than replacing it: an operator who set
-        the variable themselves keeps every key they chose, and only the permission
-        setting the host gate depends on is Crew's. A value that is not a JSON
-        object is left out of the merge and said so in the log -- silently dropping
-        an operator's config would be worse, and honouring an unparseable one is not
-        possible.
-        """
-        setting_key, value = acp_tool_gate.permission_setting_for(self.backend)
-        merged: dict[str, Any] = {}
-        ambient = os.environ.get(_ENV_OPENCODE_CONFIG_CONTENT) or ""
-        if ambient:
-            try:
-                parsed = json.loads(ambient)
-            except ValueError:
-                logger.warning(
-                    "%s is not valid JSON, so this session's harness config carries only "
-                    "Crew's permission routing.",
-                    _ENV_OPENCODE_CONFIG_CONTENT,
-                )
-            else:
-                if isinstance(parsed, dict):
-                    merged.update(parsed)
-                else:
-                    logger.warning(
-                        "%s is not a JSON object, so this session's harness config carries "
-                        "only Crew's permission routing.",
-                        _ENV_OPENCODE_CONFIG_CONTENT,
-                    )
-        merged[setting_key] = value
-        return json.dumps(merged)
-
-    def _verify_opencode_routing(self, argv: list[str], config_content: str) -> tuple[str, str]:
-        """Read the harness's OWN resolved permission back, and report any issue.
-
-        This is the half that makes the routing VERIFIED rather than seeded. The
-        read-back runs the harness's own config resolution -- every source merged,
-        the way the ACP server itself merges them -- so what comes back is the value
-        the session will actually use, not the value Crew hoped it had written. A
-        precedence change in a future release therefore surfaces as a refusal here
-        instead of as a session that silently stops asking.
-
-        What it does NOT establish is that the harness HONOURS the setting per tool
-        call; that is the harness's own contract, and no client-side read can prove
-        it. The scope is the precondition, and the precondition is the part that was
-        missing.
-
-        Returns ``("", "")`` when the required value is in force, else the reason
-        and the remedy that can clear it. The two travel together because they are
-        decided together: a read-back that could not RUN or could not be PARSED is a
-        harness problem, and its remedy is to run the harness's own command and fix
-        the install; a value that resolved to something other than the required one
-        is a config problem, and its remedy is the gate's -- remove the source that
-        outranks the seed. Handing the config remedy to an exec failure would tell
-        the operator to edit something that cannot clear the refusal.
-
-        *argv* arrives ALREADY SANDBOX-WRAPPED, and that is a security property
-        rather than a convenience: this child is the same third-party binary the
-        session spawns, resolving config out of the session work dir, and config
-        resolution on this harness can load project plugins. An unwrapped child
-        would read the very credential homes the mask exists to deny it, moments
-        before the masked session spawn. The caller wraps because it is the async
-        side and has the resolved mask in hand.
-
-        Blocking (spawns a short-lived child); callers run it off the loop.
-        """
-        setting_key, _required = acp_tool_gate.permission_setting_for(self.backend)
-        # The SAME environment the spawn below builds, in both directions. The
-        # per-session overlay (``self._extra_env``, a cron job's ``env`` among its
-        # sources) is applied because this harness reads its config LOCATION from
-        # the environment -- ``XDG_CONFIG_HOME``, ``OPENCODE_CONFIG`` -- so a
-        # read-back without the overlay would resolve a different set of config
-        # files than the session it vouches for, and a permissive value in the
-        # session's set would pass unseen. And the SAME scrub, for the same reason:
-        # this is a foreign harness binary, and the gateway's own environment
-        # carries channel tokens, cloud secrets and an agent socket that no harness
-        # may see. The read-back runs BEFORE the spawn, so inheriting the
-        # environment verbatim would hand a child every one of them a few lines
-        # ahead of the code that strips them.
-        env = scrub_agent_subprocess_env(
-            _resolve_spawn_env({**os.environ, **self._extra_env}, kiro_api_key=False)
-        )
-        env["PATH"] = augmented_path(env.get("PATH", ""))
-        env[_ENV_OPENCODE_CONFIG_CONTENT] = config_content
-        try:
-            completed = subprocess_mod.run(
-                argv,
-                cwd=self._spawn_work_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=_OPENCODE_READBACK_TIMEOUT_S,
-            )
-        except (OSError, subprocess_mod.SubprocessError) as exc:
-            return (
-                f"the resolved configuration could not be read back ({exc})",
-                _opencode_readback_remedy(),
-            )
-        if completed.returncode != 0:
-            # The child's own fault, same as the pi read-back below: an operator
-            # reading this refusal learns both that the harness failed and which
-            # recognised fault it hit.
-            detail = f"exit {completed.returncode}"
-            detail = _readback_detail_with_diagnosis(detail, completed.stderr)
-            return (
-                f"the resolved configuration could not be read back ({detail})",
-                _opencode_readback_remedy(),
-            )
-        # The harness prints a banner before the document, so the object is found
-        # rather than assumed to start at byte zero.
-        start = completed.stdout.find("{")
-        resolved: object = None
-        if start >= 0:
-            try:
-                resolved = json.loads(completed.stdout[start:])
-            except ValueError:
-                resolved = None
-        if not isinstance(resolved, dict):
-            return (
-                "the resolved configuration could not be parsed",
-                _opencode_readback_remedy(),
-            )
-        config_servers, servers_issue = _opencode_config_mcp_server_names(resolved)
-        if servers_issue:
-            return servers_issue, _opencode_config_mcp_servers_remedy()
-        self._opencode_config_mcp_servers = config_servers
-        observed = _opencode_uniform_permission(resolved.get(setting_key))
-        issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
-        if issue:
-            return issue, acp_tool_gate.remediation_for(self.backend)
-        # The top-level value is in force; now the per-agent overrides, which the
-        # seed does not reach and which replace it for the agent they name. One
-        # permissive agent is one agent whose tool calls never reach the host gate,
-        # so the first such entry refuses the session and names the agent.
-        for agent_name, agent_observed in _opencode_agent_permissions(resolved, setting_key):
-            issue = acp_tool_gate.seeded_setting_issue(
-                self.backend, _scrub_observed(agent_observed)
-            )
-            if issue:
-                return (
-                    f"agent {_scrub_observed(agent_name)!r} overrides it: {issue}",
-                    acp_tool_gate.remediation_for(self.backend),
-                )
-        return "", ""
-
-    def _verify_pi_gate(self, argv: list[str], extension_path: str) -> tuple[str, str]:
-        """Ask the harness's own command registry whether Crew's gate extension loaded.
-
-        The half that makes this routing VERIFIED. *argv* is the gate launcher plus
-        the exact arguments the adapter passes, already sandbox-wrapped by the caller,
-        so the process asked is the process the session will be served by. It is
-        sent one ``get_commands`` request on stdin and its stdout is read for the
-        answer; the extension's probe command must be listed AND sourced from
-        *extension_path*, the file Crew shipped. pi exits when stdin closes, so the
-        child is short-lived by construction and the timeout is a backstop.
-
-        What this does NOT establish is that the extension's confirm dialog reaches
-        the client per call; that is the adapter's contract, and the frame corpus
-        carries the observation of it.
-
-        Returns ``("", "")`` when the gate is loaded, else the issue and the remedy
-        that can clear it -- a harness problem (could not run, could not parse) gets
-        the harness remedy, a registry that answers without the gate gets the
-        gate's.
-
-        Blocking (spawns a short-lived child); callers run it off the loop.
-        """
-        # The SAME environment the spawn below builds, scrubbed the same way and for
-        # the same reasons as the opencode read-back: the per-session overlay is
-        # applied because pi reads its agent directory from the environment
-        # (``PI_CODING_AGENT_DIR``), and the gateway's own secrets must not reach a
-        # foreign binary a few lines ahead of the code that strips them.
-        env = scrub_agent_subprocess_env(
-            _resolve_spawn_env({**os.environ, **self._extra_env}, kiro_api_key=False)
-        )
-        env["PATH"] = augmented_path(env.get("PATH", ""))
-        # Offline for the read-back only: pi's startup network work (update checks,
-        # package refresh) has no bearing on which extensions loaded, and a probe
-        # that waits on the network is a probe that can stall the spawn.
-        env["PI_OFFLINE"] = "1"
-        try:
-            completed = subprocess_mod.run(
-                argv,
-                cwd=self._spawn_work_dir,
-                env=env,
-                input=json.dumps(_PI_READBACK_REQUEST) + "\n",
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=_PI_READBACK_TIMEOUT_S,
-            )
-        except (OSError, subprocess_mod.SubprocessError) as exc:
-            return (
-                f"the harness's command registry could not be read back ({exc})",
-                _pi_readback_remedy(),
-            )
-        commands = _pi_commands_from_readback(completed.stdout)
-        if commands is None:
-            detail = f"exit {completed.returncode}" if completed.returncode != 0 else "no response"
-            # WHICH fault the child hit. The launcher is /bin/sh exec'ing the
-            # resolved harness binary, so its stderr is what separates an exec the
-            # OS refused from a shebang that cannot be resolved -- a distinction
-            # the exit code alone cannot carry.
-            detail = _readback_detail_with_diagnosis(detail, completed.stderr)
-            return (
-                f"the harness's command registry could not be read back ({detail})",
-                _pi_readback_remedy(),
-            )
-        # Same FILE, not same string. pi reports the path it loaded from in its own
-        # spelling -- Node's realpath through a symlinked install, a Windows drive
-        # letter or 8.3 short form in another case -- and the decision module compares
-        # strings without touching the filesystem (it may be called on the loop). So
-        # both sides are brought to one spelling here, off the loop, and the sealed
-        # copy is still the only file that passes.
-        issue = acp_tool_gate.gate_extension_issue(
-            self.backend, _same_file_spelling_all(commands), _same_file_spelling(extension_path)
-        )
-        if issue:
-            return issue, acp_tool_gate.remediation_for(self.backend)
-        return "", ""
-
-    @staticmethod
-    def _read_deepseek_gate_marker(marker_path: str) -> object:
-        """Read one child-written marker without following, blocking, or growing memory.
-
-        The final component is opened through the cross-platform no-reparse helper
-        with nonblocking mode, then accepted only as a regular file no larger than
-        :data:`_DSH_GATE_MARKER_MAX_BYTES`. The one bounded read asks for one byte
-        beyond the fstat size, so truncation or growth before that read is malformed
-        rather than a prefix parse. Every refusal returns ``None`` for the existing
-        routing-refusal path.
-        """
-        try:
-            fd = platform_compat.open_file_no_reparse(marker_path, nonblocking=True)
-        except OSError:
-            return None
-        try:
-            metadata = os.fstat(fd)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_size < 0
-                or metadata.st_size > _DSH_GATE_MARKER_MAX_BYTES
-            ):
-                return None
-            payload = os.read(fd, metadata.st_size + 1)
-            if len(payload) != metadata.st_size:
-                return None
-        except OSError:
-            return None
-        finally:
-            os.close(fd)
-        try:
-            return json.loads(payload)
-        except (ValueError, RecursionError):
-            return None
-
-    def _verify_deepseek_gate(
-        self,
-        argv: list[str],
-        extension_path: str,
-        marker_path: str,
-        nonce: str,
-        *,
-        child_scrub_names: tuple[str, ...] = (),
-    ) -> tuple[str, str]:
-        """Boot the harness once with the gate composed and read its load marker back.
-
-        The :meth:`_verify_pi_gate` contract for the
-        :data:`~kiro_crew.agent_sdk.backends.Readback.LOAD_MARKER` style. *argv* is
-        the session's own argv -- the harness binary, its profile selector and the
-        ``--patch`` that composes the gate -- so what is observed is the
-        composition the session will run. The child is given the marker path and
-        the nonce; it boots, and once Cordis settles the plugin snapshots the
-        routing, proves the child-env scrub on a child of its own, and PUBLISHES the
-        marker (written beside its path, renamed onto it).
-
-        stdin is held open until that marker exists and closed only then: stdin EOF
-        is this profile's own bounded shutdown (``packages/bundle/acp-app``), and
-        that shutdown disposes the subprocess service, which terminates every child
-        it still owns -- an EOF handed over at boot would end the proof's child under
-        it and refuse every clean session. A harness that publishes nothing within
-        :data:`_DSH_GATE_READBACK_TIMEOUT_S` is killed and refused.
-
-        *child_scrub_names* are the ``agent.deepseek_env`` names: each is set in the
-        probe's environment to a canary carrying the nonce -- never to the key, which
-        this plugin host does not need -- and listed for the plugin, so the marker
-        must report exactly that set proved absent from the harness's child.
-
-        Both output streams are discarded: they are plugin-controlled and carry no
-        read-back data. The marker is opened without following links or blocking on
-        special files, accepted only as a regular file up to 64 KiB, and read once
-        with a one-byte growth check before JSON parsing.
-
-        Returns ``("", "")`` only when the marker is the one this session's own
-        plugin wrote, its approval snapshot names the stock ACP bridge as the sole
-        answerer under the pinned policy, the composed tool presentation is
-        ``native``, and every configured name was withheld from the child. Blocking;
-        callers run it off the loop.
-        """
-        with suppress(OSError):
-            os.unlink(marker_path)
-        # Built exactly as the pi probe's is, and NOT from a raw ``os.environ``.
-        # Two reasons, both load-bearing. A plugin runs during this boot, so an
-        # unscrubbed environment hands a third-party bundle the gateway's own
-        # credentials before anything has been verified. And the probe is only
-        # evidence about the session if it boots in the session's environment:
-        # ``_extra_env`` carries this session's ``DSH_HOME``, so a probe reading the
-        # ambient one would compose a different profile from the child it speaks for.
-        env = scrub_agent_subprocess_env(
-            _resolve_spawn_env({**os.environ, **self._extra_env}, kiro_api_key=False)
-        )
-        env["PATH"] = augmented_path(env.get("PATH", ""))
-        env[_ENV_DSH_GATE_MARKER] = marker_path
-        env[_ENV_DSH_GATE_SESSION] = nonce
-        env[_ENV_DEEPSEEK_PERMISSION_MODE] = DEEPSEEK_PERMISSION_MODE
-        # The canaries, set AFTER the scrub above so nothing strips them: the
-        # validator already refused any name Crew's own scrub would take.
-        env[_ENV_DSH_GATE_SCRUB_NAMES] = ":".join(child_scrub_names)
-        for name in child_scrub_names:
-            env[name] = f"{_DSH_GATE_SCRUB_CANARY_PREFIX}{nonce}"
-        deadline = time.monotonic() + _DSH_GATE_READBACK_TIMEOUT_S
-        try:
-            process = subprocess_mod.Popen(
-                argv,
-                cwd=self._spawn_work_dir,
-                env=env,
-                stdin=subprocess_mod.PIPE,
-                stdout=subprocess_mod.DEVNULL,
-                stderr=subprocess_mod.DEVNULL,
-            )
-        except (OSError, subprocess_mod.SubprocessError) as exc:
-            # The boot itself failed, which is not the same finding as a boot that
-            # composed no gate -- but it lands in the same place, because a session
-            # cannot be started on a gate that was never observed.
-            return (
-                f"the gate's load marker could not be read back ({exc})",
-                acp_tool_gate.remediation_for(self.backend),
-            )
-        published = False
-        try:
-            while time.monotonic() < deadline:
-                if os.path.lexists(marker_path):
-                    published = True
-                    break
-                if process.poll() is not None:
-                    # The harness ended on its own before publishing: nothing more is
-                    # coming, and the read below judges whatever it left.
-                    break
-                time.sleep(_DSH_GATE_MARKER_POLL_S)
-            with suppress(OSError):
-                if process.stdin is not None:
-                    process.stdin.close()
-            try:
-                process.wait(timeout=_DSH_GATE_PROBE_EXIT_S if published else 0)
-            except subprocess_mod.TimeoutExpired:
-                process.kill()
-                with suppress(subprocess_mod.SubprocessError, OSError):
-                    process.wait(timeout=_DSH_GATE_PROBE_EXIT_S)
-        except (OSError, subprocess_mod.SubprocessError) as exc:
-            with suppress(OSError, subprocess_mod.SubprocessError):
-                process.kill()
-            return (
-                f"the gate's load marker could not be read back ({exc})",
-                acp_tool_gate.remediation_for(self.backend),
-            )
-        if not published and not os.path.lexists(marker_path):
-            return (
-                "the gate's load marker was not written within "
-                f"{_DSH_GATE_READBACK_TIMEOUT_S:.0f}s of booting the harness, so Kiro "
-                "Crew's gate plugin did not load and tools would run unasked",
-                acp_tool_gate.remediation_for(self.backend),
-            )
-        marker = self._read_deepseek_gate_marker(marker_path)
-        # Same FILE, not same string: the plugin reports its own module URL as Node
-        # resolved it, so both sides are brought to one spelling off the loop before
-        # the decision module compares them without touching the filesystem.
-        if isinstance(marker, dict):
-            module = marker.get("module")
-            if isinstance(module, str) and module.startswith("file://"):
-                marker = {**marker, "module": _same_file_spelling(url2pathname(module[7:]))}
-        issue = acp_tool_gate.gate_marker_issue(
-            self.backend,
-            marker,
-            _same_file_spelling(extension_path),
-            nonce,
-            child_scrub_names=child_scrub_names,
-        )
-        if issue:
-            return issue, acp_tool_gate.remediation_for(self.backend)
-        return "", ""
-
     @property
     def _permission_surface_governed(self) -> bool:
         """Whether Crew controls this session's native permission surface.
@@ -5816,7 +3725,7 @@ class AcpClient:
             local_settings,
             _scrub_observed(getattr(self, "_agent_version", "")),
             floor,
-            CLAUDE_ACP_NPM_PKG,
+            claude_mod.CLAUDE_ACP_NPM_PKG,
         )
 
     def _claude_session_meta(self) -> dict[str, Any]:
@@ -7854,47 +5763,27 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
 
-    async def _resolve_self_served_launch(self) -> tuple[str, list[str], str, str]:
-        """The binary, argv, spawn label and stderr label for a self-served harness.
+    async def _prepare_session_mcp(self) -> None:
+        """Warm this session's ``mcpServers`` array off the loop, for its host's launch.
 
-        ONE resolution for every member of ``ACP_BACKEND_LAUNCH``, because for those
-        harnesses all four answers are values their row already holds: the binary that
-        serves ACP, the args that follow it, and the two labels derived from the same
-        pair. A harness whose argv needs a decision is not a member and does not call
-        this.
-
-        Off-loop, like the per-harness resolutions it replaces: the ladder reads the
-        environment and stats candidate paths. Cached per backend for the gateway's
-        life, which is the contract the install probe's ``restart_required`` answer
-        reports on.
-
-        Kiro-cli does not reach here and neither do the three Node adapters, so this
-        adds no step and no conditional to their construction paths (harness-parity
-        H13).
+        A host whose array is the session's tool surface asks for this at its own
+        point in the launch (:mod:`kiro_crew.acp.harness`). Correctness does not depend
+        on it -- :meth:`_session_mcp_servers` resolves a cold cache itself -- the warm
+        is what keeps the disk read off the loop.
         """
-        launch = launch_for(self.backend)
-        if self.backend in _self_served_bin_caches:
-            binary, search_path = _self_served_bin_caches[self.backend]
-        else:
-            epoch = _resolution_epoch(self.backend)
-            resolved = await asyncio.to_thread(_resolve_self_served_bin, self.backend)
-            # Publish only under the generation this resolve started in. A clear that
-            # landed while it ran means the answer predates an install, so writing it
-            # would undo the clear -- see ``_resolution_generation``. This session still
-            # uses its own answer: it began before the install and that verdict is
-            # honest for itself. Reading the local rather than re-subscripting keeps a
-            # concurrent pop from raising ``KeyError`` here.
-            if _resolution_epoch(self.backend) == epoch:
-                _self_served_bin_caches[self.backend] = resolved
-            binary, search_path = resolved
-        if not binary:
-            raise AcpError(
-                f"{launch.binary} not found "
-                f"({describe_search_path(search_path)}). Install it with "
-                f"'{launch.install_command}', or set {launch.bin_env_var} to the "
-                f"executable. {launch.missing_hint}"
-            )
-        return binary, [binary, *launch.acp_args], launch.spawn_label, launch.binary
+        self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
+
+    async def _seed_session_settings(self) -> None:
+        """Seed this session's settings file before its launch, off the loop.
+
+        A seed that cannot be written costs model/permission fidelity, not the
+        session: the adapter falls back to its own settings sources, and tool calls
+        still route through the host gate.
+        """
+        try:
+            await asyncio.to_thread(self._write_claude_local_settings)
+        except (OSError, ValueError, TypeError):
+            logger.warning("initial seed of settings.local.json failed", exc_info=True)
 
     def _resolve_spawn_agent_argv(self) -> str:
         """The ``--agent`` value for the launch, converting a refusal to ``AcpError``.
@@ -7917,12 +5806,14 @@ class AcpClient:
             raise AcpError(str(exc)) from exc
 
     async def _spawn(self) -> None:
-        """Start the ACP backend subprocess with stdio pipes.
+        """Start the ACP backend subprocess with stdio pipes, suspended, then track it.
 
-        Two backends reach here, and the claude-agent-acp branch below is now a
-        live path on a public build: ``ACP_BACKEND_CLAUDE`` is in
-        ``BASELINE_SELECTABLE_BACKENDS``, so an operator who has the adapter can
-        select it and this branch spawns it.
+        A host this client starts one process per session for -- claude-agent-acp,
+        OpenCode, goose, pi, the DeepSeek Harness -- resolves its plan in its own
+        adapter (:func:`kiro_crew.acp.harness.process_adapter_for`); kiro-cli keeps its
+        own arm below. Either plan goes through the launch tail both drivers share
+        (:func:`kiro_crew.acp.launch.launch`). What happens once the process exists --
+        the resume, its identity, its pids, its stderr -- stays here.
         """
         # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
         # slow storage; the loop must never wait on the kernel here. The
@@ -7940,507 +5831,25 @@ class AcpClient:
         if self.backend in ACP_BACKENDS_INTERNAL_SANDBOX:
             await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
-        # Credential mask for an enforced adapter, resolved inside that adapter's
-        # own branch below. Declared here only because wrap_argv_async takes it as
-        # one argument for every harness; the kiro branch never assigns it, so the
-        # kiro construction path gains no conditional, no awaited step and no new
-        # failure point in service of an adapter (harness-parity H13).
-        adapter_hidden_dirs: tuple[str, ...] = ()
-        adapter_expose: tuple[str, ...] = ()
-
-        if self._is_claude:
-            # Fold the requested model onto the exact spelling claude-agent-acp
-            # advertised (from the persisted provider-model cache warmed by a
-            # prior session's _capture_available_models), so a model the static
-            # registry does not carry still resolves to the versioned [1m] id the
-            # backend serves rather than a bare form that collapses to the base
-            # window. Done here so the seed below carries the same id the wire
-            # will. No-op on a cold cache (first-ever session), which is why
-            # _apply_startup_model folds AGAIN after session/new has warmed the
-            # cache, and why the seed omits the model key entirely until then.
-            self._model = model_registry.resolve_wire_model_id(
-                self._model, self._model_registry_namespace
-            )
-            global _claude_acp_argv_cache  # noqa: PLW0603
-            cached_claude_resolution: tuple[list[str] | None, str] | object = _claude_acp_argv_cache
-            if cached_claude_resolution is _UNRESOLVED:
-                # Fenced on the resolution generation -- see ``_resolution_generation``.
-                epoch = _resolution_epoch(ACP_BACKEND_CLAUDE)
-                cached_claude_resolution = await asyncio.to_thread(_resolve_claude_acp_bin)
-                if _resolution_epoch(ACP_BACKEND_CLAUDE) == epoch:
-                    _claude_acp_argv_cache = cached_claude_resolution
-            claude_argv, acp_search_path = (
-                cached_claude_resolution
-                if isinstance(cached_claude_resolution, tuple)
-                else (None, "")
-            )
-            if not isinstance(claude_argv, list) or not claude_argv:
-                raise AcpError(
-                    f"{CLAUDE_ACP_BIN} not found "
-                    f"({describe_search_path(acp_search_path)}). Install it with "
-                    f"'npm i -g {CLAUDE_ACP_NPM_PKG}' (or add it as a project "
-                    f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
+        adapter = process_adapter_for(self.backend)
+        if adapter is not None:
+            # The host's own launch knowledge -- its binary, argv, labels, credential
+            # mask and gate -- in its own file. The context names this session, which
+            # the host may need to prepare before it starts (its MCP array, a seed)
+            # and which keeps the facts its turn-time code reads back. The
+            # environment and home fields are the shared context's; no per-process
+            # host reads them.
+            plan = await adapter.resolve_spawn(
+                SpawnContext(
+                    agent=self._agent,
+                    work_dir=self._work_dir,
+                    model=self._model,
+                    environ=dict(os.environ),
+                    home=Path(os.path.expanduser("~")),
+                    sandbox_mode=self._sandbox_mode,
+                    session=self,
                 )
-            argv: list[str] = claude_argv
-            # The installed adapter's own version, read BEFORE the seed: the writer
-            # applies the settingSources floor with it, so the exclusion is decided
-            # before the MCP array below is first resolved and nothing has to be
-            # re-resolved on the loop after the handshake. Off-loop: it reads files.
-            self._agent_version_read = False
-            self._claude_adapter_disk_version = await asyncio.to_thread(
-                _claude_adapter_installed_version, argv
             )
-            # Per-session settings seed (permissions.defaultMode + the
-            # availableModels allowlist that unlocks the 1M-token window). It MUST
-            # run on the PRIMARY spawn path — not only the rare model-substitution
-            # retry at _new_session_following_substitution — or a claude session
-            # collapses to the 200K default. Off-loop: it reads and writes a file.
-            try:
-                await asyncio.to_thread(self._write_claude_local_settings)
-            except (OSError, ValueError, TypeError):
-                # A seed that cannot be written costs model/permission fidelity,
-                # not the session: the adapter falls back to its own settings
-                # sources, and tool calls still route through the host gate.
-                logger.warning("initial seed of settings.local.json failed", exc_info=True)
-            # Translate the agent spec into the session MCP array HERE, and only
-            # AFTER the seed above: the array is withheld entirely unless Crew
-            # authored settings.local.json, so resolving it first would read the
-            # ownership flag before the writer had set it and withhold the tools of
-            # every session. Not at the session/new call site either: that site is
-            # shared with kiro-cli, and
-            # the translation reads disk. Resolving it in this adapter-only branch
-            # keeps the shared site a synchronous in-memory read, so the kiro
-            # construction path gains no executor hop and no new failure mode
-            # (harness-parity H13). Correctness does not depend on this warm —
-            # _session_mcp_servers resolves a cold cache itself, and the capability
-            # set (not this branch) is what decides whether the array is populated
-            # at all; the warm is what keeps the read off the loop.
-            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = _adapter_spawn_label(
-                argv,
-                CLAUDE_ACP_BIN,
-                pkg_entry=_CLAUDE_ACP_PKG_ENTRY,
-                override_env="CLAUDE_AGENT_ACP_BIN",
-            )
-            stderr_label = _adapter_spawn_label(
-                argv,
-                "claude-acp",
-                pkg_entry=_CLAUDE_ACP_PKG_ENTRY,
-                override_env="CLAUDE_AGENT_ACP_BIN",
-            )
-        elif self._is_opencode:
-            # This harness serves ACP from its own binary, so the argv is that binary
-            # plus its ``acp`` subcommand: no adapter entry script, no node, and no
-            # npm package to resolve. All four values come from its
-            # ``ACP_BACKEND_LAUNCH`` row.
-            opencode_bin, argv, spawn_label, stderr_label = await self._resolve_self_served_launch()
-            # Translate the agent spec into this session's MCP array HERE, on
-            # opencode's own arm, for exactly the reason the claude and codex arms
-            # do it on theirs: the translation reads disk, and doing it at the
-            # shared session/new call site would put an executor hop and a new
-            # failure mode on EVERY backend's construction path, kiro-cli included
-            # (harness-parity H13). No ordering constraint of claude's applies --
-            # this harness's array is not conditional on Crew owning a permission
-            # file, because its routing is seeded on OPENCODE_CONFIG_CONTENT and
-            # then read back out of the harness itself below, so a session that
-            # cannot establish the asking posture is refused rather than run.
-            # Correctness does not depend on this warm: _session_mcp_servers
-            # resolves a cold cache itself; the warm is what keeps the read off the
-            # loop.
-            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            # The same refuse-then-mask preflight the codex arm runs, keyed on the
-            # same routing question rather than on this harness's identity: it is
-            # ENFORCED, so the OS credential mask is the compensating control for the
-            # passive reads ACP v1 cannot make it ask about, and several wrap_argv
-            # paths return without applying it. test_acp_tool_gate pins one call site
-            # per enforced harness so a new arm cannot forget it.
-            #
-            # FIRST, before the read-back below: that read-back runs a child of this
-            # harness, and on a host where the mask cannot be applied the session is
-            # refused anyway -- so refusing here means no foreign binary starts at
-            # all, rather than one starting and then being told the session is off.
-            adapter_hidden_dirs = await _run_preflight_bounded(
-                _sandbox_preflight, self.backend, self._sandbox_mode
-            )
-            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
-            # The routing seed, and the READ-BACK that is what this harness's Routing
-            # member promises. OFF-LOOP: the read-back spawns a short-lived child, and
-            # a synchronous spawn on the gateway loop is the stall this path guards
-            # against everywhere else.
-            self._opencode_config_content = self._opencode_routing_config()
-            # Wrapped in the SAME sandbox, with the SAME credential mask, as the
-            # session spawn below. The read-back runs the harness's own binary, and
-            # this harness resolves its configuration by reading the work dir --
-            # which can load a project's plugins -- so an unwrapped read-back would
-            # hand a third-party binary the credential homes the mask denies it,
-            # moments before the masked spawn. The mask is already resolved above,
-            # which is what makes wrapping possible here at all.
-            readback_argv, readback_cleanup = await wrap_argv_async(
-                [opencode_bin, *_OPENCODE_CONFIG_READBACK_ARGS],
-                mode=self._sandbox_mode,
-                strip_python_env=True,
-                extra_hidden_dirs=adapter_hidden_dirs,
-                extra_expose_files=adapter_expose,
-                _prepare=wrap_argv,
-            )
-            try:
-                routing_issue, routing_remedy = await asyncio.to_thread(
-                    self._verify_opencode_routing,
-                    readback_argv,
-                    self._opencode_config_content,
-                )
-            finally:
-                # wrap_argv leaves a launcher/profile file the child consumes at
-                # exec. This child has exited by now, so the file is removed here
-                # rather than leaking one per session start for the gateway's life
-                # (the same contract ``_discard_sandbox_cleanup`` keeps for the
-                # spawn's own artifact, which this must not touch).
-                if readback_cleanup:
-                    await asyncio.to_thread(_unlink_readback_launcher, readback_cleanup)
-            if routing_issue:
-                # Refused before the first prompt: this harness asks per tool call
-                # only while the setting holds, so a session that cannot establish it
-                # is a session where none of Crew's tool controls execute.
-                #
-                # Translated to the ACP-layer type like the three sibling sites, and
-                # that is not cosmetic: ``ensure_ready`` catches
-                # ``AcpToolGateUnroutable``, so a bare gate exception would escape
-                # both of its handlers and skip ``_cleanup_failed_live_spawn`` --
-                # leaving the refusal untyped and the failed spawn unreaped.
-                try:
-                    acp_tool_gate.enforce_runtime_routing(
-                        self.backend,
-                        routing_issue,
-                        remedy=routing_remedy,
-                    )
-                except acp_tool_gate.ToolGateUnroutable as exc:
-                    raise AcpToolGateUnroutable(str(exc)) from None
-        elif self._is_goose:
-            # This harness serves ACP from its own binary, so the argv is that binary
-            # plus its ``acp`` subcommand: no adapter entry script, no node, and no
-            # npm package to resolve. All four values come from its
-            # ``ACP_BACKEND_LAUNCH`` row.
-            _goose_bin, argv, spawn_label, stderr_label = await self._resolve_self_served_launch()
-            # The builtin extension travels on the ARGV rather than in the session
-            # array, because it is not one of Crew's servers: it is the harness's own
-            # shell and file tools, which this harness drops when a client supplies
-            # ``mcpServers``. Restoring them here keeps a session that has Crew's
-            # tools from having nothing else. Appended AFTER the shared resolution, so
-            # the label above stays the harness plus its ACP subcommand and does not
-            # grow a builtin an operator did not name.
-            argv = [*argv, _GOOSE_BUILTIN_ARG, _GOOSE_BUILTIN_DEVELOPER]
-            # Translate the agent spec into this session's MCP array HERE, on goose's
-            # own arm, for the reason the claude, codex and opencode arms do it on
-            # theirs: the translation reads disk, and doing it at the shared
-            # session/new call site would put an executor hop and a new failure mode
-            # on EVERY backend's construction path, kiro-cli included (harness-parity
-            # H13). Correctness does not depend on this warm -- _session_mcp_servers
-            # resolves a cold cache itself -- the warm is what keeps the read off the
-            # loop.
-            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            # The same refuse-then-mask preflight the codex, opencode and pi arms run,
-            # keyed on the same routing question rather than on this harness's
-            # identity: it is ENFORCED, so the OS credential mask is the compensating
-            # control for the passive reads ACP v1 cannot make it ask about, and
-            # several wrap_argv paths return without applying it. test_acp_tool_gate
-            # pins one call site per enforced harness so a new arm cannot forget it.
-            adapter_hidden_dirs = await _run_preflight_bounded(
-                _sandbox_preflight, self.backend, self._sandbox_mode
-            )
-            # The routing seed. UNLIKE the opencode arm there is no read-back child
-            # here and no wrapped second spawn: this harness reports the mode it
-            # resolved in the ``modes`` block of the very response that opens or
-            # restores the session, so the read-back rides the session's own
-            # connection and is done in ``_verify_goose_routing`` off that response.
-            # What travels here is only the seed.
-            self._extra_env = {
-                **self._extra_env,
-                _ENV_GOOSE_MODE: acp_tool_gate.permission_setting_for(self.backend)[1],
-            }
-        elif self._is_pi:
-            # Two components, resolved separately because either can be absent on
-            # its own and the not-found message must name the one that is.
-            global _pi_acp_argv_cache, _pi_bin_cache  # noqa: PLW0603
-            cached_pi_acp: tuple[list[str] | None, str] | object = _pi_acp_argv_cache
-            if cached_pi_acp is _UNRESOLVED:
-                # Both halves are fenced on the SAME generation: a clear is per harness
-                # and pi keeps two caches under one id, so one bump has to cover both.
-                epoch = _resolution_epoch(ACP_BACKEND_PI)
-                cached_pi_acp = await asyncio.to_thread(_resolve_pi_acp_bin)
-                if _resolution_epoch(ACP_BACKEND_PI) == epoch:
-                    _pi_acp_argv_cache = cached_pi_acp
-            pi_acp_argv, pi_acp_search_path = (
-                cached_pi_acp if isinstance(cached_pi_acp, tuple) else (None, "")
-            )
-            if not isinstance(pi_acp_argv, list) or not pi_acp_argv:
-                raise AcpError(
-                    f"{PI_ACP_BIN} not found "
-                    f"({describe_search_path(pi_acp_search_path)}). Install both the "
-                    f"adapter and the agent with '{PI_INSTALL_COMMAND}', or set "
-                    f"{_ENV_PI_ACP_BIN} to the adapter's entry script. The '{PI_BIN}' "
-                    f"CLI alone does not serve ACP."
-                )
-            cached_pi: tuple[str | None, str] | object = _pi_bin_cache
-            if cached_pi is _UNRESOLVED:
-                epoch_pi_bin = _resolution_epoch(ACP_BACKEND_PI)
-                cached_pi = await asyncio.to_thread(_resolve_pi_bin)
-                if _resolution_epoch(ACP_BACKEND_PI) == epoch_pi_bin:
-                    _pi_bin_cache = cached_pi
-            pi_bin, pi_search_path = cached_pi if isinstance(cached_pi, tuple) else (None, "")
-            if not isinstance(pi_bin, str) or not pi_bin:
-                raise AcpError(
-                    f"{PI_BIN} not found ({describe_search_path(pi_search_path)}). The "
-                    f"{PI_ACP_BIN} adapter is installed but the agent it spawns is not: "
-                    f"install it with 'npm i -g {PI_NPM_PKG}', or set "
-                    f"{_ENV_PI_ACP_PI_COMMAND} to the executable."
-                )
-            # Refused here, before any child starts, because a too-old pi is not
-            # refused by anything later: the gate read-back passes on it, and then
-            # the adapter either fails session/new with a bare "Unknown command"
-            # or waits forever, so the chat spins with no cause named.
-            pi_version_issue = await asyncio.to_thread(_pi_version_issue, pi_bin)
-            if pi_version_issue:
-                raise AcpError(pi_version_issue)
-            argv = pi_acp_argv
-            spawn_label = _adapter_spawn_label(
-                argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
-            )
-            stderr_label = spawn_label
-            # Same refuse-then-mask preflight as the two enforced arms above, keyed
-            # on the routing rather than on this harness's identity, and FIRST for
-            # the same reason: the read-back below starts a child of this harness.
-            adapter_hidden_dirs = await _run_preflight_bounded(
-                _sandbox_preflight, self.backend, self._sandbox_mode
-            )
-            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
-            # The gate, and the READ-BACK that is what this harness's Routing member
-            # promises. pi runs no gate of its own, so Crew's extension is loaded
-            # into it through a launcher the adapter is told to run in place of
-            # ``pi``. Off-loop: the launcher is a file write.
-            # Verified against the pinned digest and copied into the run directory
-            # first: the launcher names the COPY, and the read-back requires the
-            # probe to be sourced from it, so a rewritten package file is refused
-            # here rather than loaded. Off-loop: a file read and possibly a write.
-            extension_path = await asyncio.to_thread(_seal_pi_gate_extension)
-            self._pi_gate_nonce = uuid.uuid4().hex
-            self._pi_gate_launcher = await asyncio.to_thread(
-                _ensure_pi_gate_launcher, pi_bin, extension_path
-            )
-            # Wrapped in the SAME sandbox with the SAME credential mask as the
-            # session spawn below, for the same reason the opencode read-back is:
-            # this child is the agent itself, loading extensions out of the
-            # operator's own directories, moments before the masked spawn.
-            readback_argv, readback_cleanup = await wrap_argv_async(
-                [self._pi_gate_launcher, *_PI_RPC_ARGS],
-                mode=self._sandbox_mode,
-                strip_python_env=True,
-                extra_hidden_dirs=adapter_hidden_dirs,
-                extra_expose_files=adapter_expose,
-                _prepare=wrap_argv,
-            )
-            try:
-                routing_issue, routing_remedy = await asyncio.to_thread(
-                    self._verify_pi_gate, readback_argv, extension_path
-                )
-            finally:
-                if readback_cleanup:
-                    await asyncio.to_thread(_unlink_readback_launcher, readback_cleanup)
-            if routing_issue:
-                # Refused before the first prompt: without the extension loaded this
-                # harness runs every tool call unasked, so a session that cannot
-                # establish it is a session where none of Crew's tool controls run.
-                try:
-                    acp_tool_gate.enforce_runtime_routing(
-                        self.backend,
-                        routing_issue,
-                        remedy=routing_remedy,
-                    )
-                except acp_tool_gate.ToolGateUnroutable as exc:
-                    raise AcpToolGateUnroutable(str(exc)) from None
-        elif self._is_deepseek:
-            # This harness is a plugin host and ACP is one of the profiles it boots,
-            # so the argv is its own binary plus the profile selector: no adapter
-            # entry script, no node, and no npm package to resolve at spawn time. All
-            # four values come from its ``ACP_BACKEND_LAUNCH`` row.
-            _deepseek_bin, argv, spawn_label, stderr_label = (
-                await self._resolve_self_served_launch()
-            )
-            # No spec translation is warmed here, and its absence is the declared
-            # state rather than an omission: this harness has no mirror, so
-            # ``_resolve_session_mcp_servers`` would answer with an empty list, and
-            # warming it would buy a disk read and a thread hop for that answer. What
-            # DOES reach the session is the shared broker append, which stays on the
-            # composition path for every mirror-less backend. See
-            # ``providers/mirrors/registry`` for the projection this harness declares.
-            #
-            # The refuse-then-mask preflight every ENFORCED harness takes, and FIRST
-            # for the reason the pi arm gives: the read-back below starts a child of
-            # this harness, and it must not run outside the mask the session runs
-            # under. The mask is gated on ``tool_gate.ENFORCED_ROUTINGS``, which this
-            # harness is inside, and NOTHING of its own is spared from it: both of its
-            # credential leaves stay masked for the whole process tree, because its
-            # provider key arrives as an environment variable from Crew's vault
-            # (``agent.deepseek_env``, below) rather than from a file the child can
-            # open -- ``agent_sdk/host_auth`` declares ``adapter_own_leaves=()`` for it.
-            adapter_hidden_dirs = await _run_preflight_bounded(
-                _sandbox_preflight, self.backend, self._sandbox_mode
-            )
-            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
-            #
-            # The gate, and the READ-BACK that is what this harness's Routing member
-            # promises. This harness runs no gate of its own that decides a tool
-            # call, so Crew's plugin is composed into it through a per-launch patch
-            # -- the composition channel its own launcher documents -- and the
-            # plugin answers its ``tools/pre-execute`` waterfall with ``ask``.
-            # Verified against the pinned digest and copied into the sealed
-            # gate-artifact leaf first (the owner-only directory pi's extension also
-            # lives in, read-only against every harness child): the patch names the
-            # COPY, and the read-back requires the marker to report it, so a rewritten
-            # package file is refused here rather than loaded. The marker itself is
-            # NOT written there -- the leaf is sealed against the child -- but into the
-            # probe's own throwaway private scratch window below. The probe's is the
-            # ONLY marker: the session it speaks for names no marker path, and the
-            # plugin skips the write when none is named. Off-loop: file reads and writes.
-            extension_path = await asyncio.to_thread(_seal_deepseek_gate_extension)
-            self._deepseek_gate_patch = await asyncio.to_thread(
-                _write_deepseek_gate_patch, extension_path
-            )
-            self._deepseek_gate_nonce = uuid.uuid4().hex
-            argv = [*argv, _DSH_PATCH_FLAG, self._deepseek_gate_patch]
-            spawn_label = " ".join(argv)
-            stderr_label = spawn_label
-            # The provider-key NAMES the probe proves withheld from a harness child --
-            # never the key, which the probe's plugin host does not need. Same
-            # validator the session's own injection below runs, so a mapping this
-            # harness would not honour is refused HERE, before a harness boots on it;
-            # the vault itself is opened only below, for the session. Off-loop: reads
-            # config.json.
-            try:
-                vault_env_names = await asyncio.to_thread(_deepseek_vault_env_names)
-            except ValueError as exc:
-                try:
-                    acp_tool_gate.enforce_runtime_routing(
-                        self.backend,
-                        str(exc),
-                        remedy=acp_tool_gate.remediation_for(self.backend),
-                    )
-                except acp_tool_gate.ToolGateUnroutable as gate_exc:
-                    raise AcpToolGateUnroutable(str(gate_exc)) from None
-                # Unreachable while this harness is ENFORCED; kept as the fail-closed
-                # floor for the same reason the sites below keep theirs.
-                raise AcpToolGateUnroutable(str(exc)) from None
-            # The READ-BACK runs HERE, in the arm, on the argv assembled directly
-            # above -- and that argv is the one the session runs: the only step
-            # between this point and the real child's wrap is
-            # ``apply_pod_bundle_spawn``, which rewrites argv only for a harness in
-            # ``ACP_BACKENDS_POD_HOME_REMAP``, and this one is not in that set. So
-            # verifying here costs no fidelity, and it is what leaves the shared
-            # construction site exactly as every other backend leaves it: no
-            # adapter-driven conditional on the Kiro path (harness-parity H13).
-            #
-            # The probe gets its OWN THROWAWAY window rather than borrowing the
-            # session's. It needs a writable one at all because the managed scratch
-            # ROOT is masked for every sandboxed child (``sandbox._CREW_HIDDEN_LEAVES``),
-            # and the marker cannot live beside the gate's own code: that leaf is
-            # sealed read-only against every harness child so none can plant what a
-            # later session loads, which makes it the one place the child cannot
-            # create a file. The nonce is in the NAME as well as the contents, so
-            # nothing in a reused directory can be mistaken for this probe's marker.
-            #
-            # ``allocate_scratch`` records the SPAWNING process -- the gateway -- as
-            # the window's provisional owner, and the sweep reclaims only
-            # owned-and-dead-and-idle directories. The gateway is long-lived, so an
-            # abandoned probe window is retained for its whole lifetime and one more
-            # per retry: this window is therefore removed EXPLICITLY, in the same
-            # ``finally`` as the launcher unlink, rather than left to the sweep.
-            try:
-                probe_dir = await asyncio.to_thread(
-                    agent_scratch.allocate_scratch,
-                    f"{self._session_key or 'session'}-dsh-probe",
-                )
-            except (OSError, agent_scratch.ScratchBoundaryError) as exc:
-                # No window means no marker, so the gate cannot be verified at all.
-                # Refused rather than run: without the gate composed this harness
-                # executes every in-policy side effect unasked.
-                try:
-                    acp_tool_gate.enforce_runtime_routing(
-                        self.backend,
-                        "the gate's load marker has nowhere to be written: this "
-                        "session got no private scratch directory",
-                        remedy=acp_tool_gate.remediation_for(self.backend),
-                    )
-                except acp_tool_gate.ToolGateUnroutable as gate_exc:
-                    raise AcpToolGateUnroutable(str(gate_exc)) from None
-                # Unreachable while this harness is ENFORCED, since the call above
-                # raises for every enforced routing. Kept as the fail-closed floor:
-                # a routing table that ever stops enforcing this harness must not
-                # silently turn an unverifiable gate into an unverified spawn.
-                raise AcpToolGateUnroutable(
-                    "the gate's load marker has nowhere to be written: this session "
-                    "got no private scratch directory"
-                ) from exc
-            probe_marker = os.path.join(
-                str(probe_dir),
-                f"kirocrew_dsh_gate_{self._deepseek_gate_nonce}.marker.json",
-            )
-            # Pre-bound so the ``finally`` below can tell "no launcher to unlink" from
-            # "the wrap never returned one". Deliberately unannotated: the opencode
-            # arm above already binds this name in the same function scope.
-            readback_cleanup = None
-            try:
-                readback_argv, readback_cleanup = await wrap_argv_async(
-                    argv,
-                    mode=self._sandbox_mode,
-                    strip_python_env=True,
-                    extra_hidden_dirs=adapter_hidden_dirs,
-                    # The probe's own window, re-exposed the way the session's own is
-                    # below. Without it the probe boots under the scratch ROOT mask,
-                    # its plugin cannot write the marker, and the read-back would
-                    # report an absent gate for a gate that loaded -- evidence about
-                    # a different process rather than about this composition.
-                    extra_private_dirs=(str(probe_dir),),
-                    # Only the adapter's own re-exposures, exactly as the pi arm
-                    # passes. The sealed plugin and the patch are deliberately NOT
-                    # here: they live in the gate-artifact leaf, which this routing
-                    # already excludes from the child mask, so the child reads them
-                    # without a re-exposure -- and asking for one is fatal, because
-                    # the launcher restores an exposed file by WRITING a copy of it
-                    # and that leaf is sealed read-only, so the spawn dies with
-                    # EROFS before the harness starts.
-                    extra_expose_files=adapter_expose,
-                    _prepare=wrap_argv,
-                )
-                routing_issue, routing_remedy = await asyncio.to_thread(
-                    functools.partial(
-                        self._verify_deepseek_gate,
-                        readback_argv,
-                        extension_path,
-                        probe_marker,
-                        self._deepseek_gate_nonce,
-                        child_scrub_names=vault_env_names,
-                    )
-                )
-            finally:
-                if readback_cleanup:
-                    await asyncio.to_thread(_unlink_readback_launcher, readback_cleanup)
-                # The same removal the sweep makes, run here because the sweep never
-                # will: the gateway is this window's provisional owner and is alive.
-                # Off-loop, and error-swallowing for the sweep's own reason -- losing
-                # a temp directory must not fail the spawn that created it.
-                await asyncio.to_thread(shutil.rmtree, probe_dir, ignore_errors=True)
-            if routing_issue:
-                # Refused before the first prompt, for the reason the pi arm gives:
-                # without the gate composed this harness runs every in-policy side
-                # effect unasked, so a session that cannot establish it is a session
-                # where none of Crew's tool controls run.
-                try:
-                    acp_tool_gate.enforce_runtime_routing(
-                        self.backend,
-                        routing_issue,
-                        remedy=routing_remedy,
-                    )
-                except acp_tool_gate.ToolGateUnroutable as exc:
-                    raise AcpToolGateUnroutable(str(exc)) from None
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -8549,332 +5958,64 @@ class AcpClient:
             ]
             spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
             stderr_label = KIRO_CLI_BIN
+            plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
 
-        # OS-level sandbox: wrap the command to hide sensitive paths.
-        # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
-        # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
-        # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
-        # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
-        # favour of the harness's own internal sandbox, so a harness without one
-        # must never be granted it by the absence of another harness.
-        #
-        # Inside a pod both answers come from apply_pod_bundle_spawn, which is
-        # where the ONE reason lives: the pod HOME remap breaks the toolbox shim's
-        # own sandbox, so the child runs the bundle binary and Crew's launcher
-        # wraps it. Off-loop because the resolution stats the candidate path.
-        argv, delegate_internal_sandbox = await asyncio.to_thread(
-            apply_pod_bundle_spawn, argv, backend=self.backend
-        )
-        # Per-process scratch containment -- see acp/runtime.py's twin block.
-        # Allocated BEFORE the sandbox is built: the scratch ROOT is masked for
-        # every sandboxed process (``sandbox._CREW_HIDDEN_LEAVES``), so this
-        # child's own directory is re-exposed as a PRIVATE window (siblings stay hidden).
-        # Fail-open; owner recorded after spawn; reclamation is
-        # liveness-keyed, never age-keyed.
-        if self._shared_scratch is None and self._scratch_dir is not None:
-            # A respawn of this client (``ensure_ready`` after the process
-            # exited): the directory the previous process exposed IS this
-            # session's tree -- the children it spawned mounted it, and the
-            # work it staged is there -- so the new process joins it instead
-            # of starting an empty one that hides that work until the old
-            # directory is reclaimed. Validated and adopted below like any
-            # inherited tree; dropped if it was swept meanwhile.
-            self._shared_scratch = self._scratch_dir
-        self._scratch_dir = None
-        try:
-            self._scratch_dir = await asyncio.to_thread(
-                agent_scratch.allocate_scratch, self._session_key or "session"
-            )
-        except (OSError, agent_scratch.ScratchBoundaryError):
-            # The boundary refusal joins OSError HERE and deliberately not at
-            # record_owner below: no child exists yet, so there is nothing to
-            # stop, and scratch is hygiene rather than a spawn prerequisite.
-            logger.warning(
-                "agent-scratch: could not allocate; spawning with inherited temp",
-                exc_info=True,
-            )
-        scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
-        # The tree's work directory as a second window into the masked root
-        # (twin of acp/runtime.py): re-validated now, since the allocation it
-        # names may have been swept, and dropped -- not re-created -- if so.
-        if self._shared_scratch is not None:
-            self._shared_scratch = await asyncio.to_thread(
-                agent_scratch.shared_scratch_window, self._shared_scratch
-            )
-        if self._shared_scratch is not None:
-            scratch_window = (*scratch_window, str(self._shared_scratch))
-        # Resolve the SSH_AUTH_SOCK forward opt-in OFF the event
-        # loop (KiroCrewConfig.load() may stat/read config) ONCE, then pass the
-        # resolved boolean into both the sandbox wrap below and the parent-side
-        # scrub further down, so neither reads config synchronously on the loop
-        # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
-        # generic launchers default the flag off and keep scrubbing the socket.
-        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
-        argv, self._sandbox_cleanup = await wrap_argv_async(
-            argv,
-            mode=self._sandbox_mode,
-            strip_python_env=True,
-            forward_ssh_auth_sock=forward_ssh_auth_sock,
-            # Credential homes the standard tier exposes for kiro-cli's sake and
-            # that an enforced adapter has no claim on. Empty for every harness
-            # this core does not enforce, so their spawn arguments are unchanged.
-            extra_hidden_dirs=adapter_hidden_dirs,
-            extra_private_dirs=scratch_window,
-            extra_expose_files=adapter_expose,
-            is_kiro_cli=delegate_internal_sandbox,
-            _prepare=wrap_argv,
-        )
-        # Which isolation layer this spawn actually got, recorded HERE from the
-        # argv the wrap returned -- the wrap's own record of the branch it took,
-        # which no later re-derivation from mode + platform + settings can match
-        # (see ``sandbox.wrapped_by_crew_sandbox``). Read back only when a
-        # sandbox-init refusal has to name the layer to turn off; the cgroup
-        # scope below prepends its own tokens, so the read happens before it.
-        self._sandbox_wrapped_by_crew = wrapped_by_crew_sandbox(argv)
-        self._sandbox_hidden_dirs = tuple(adapter_hidden_dirs)
-        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-        # No-op + loud warning where cgroup delegation is unavailable. --scope
-        # execs into the target, so self._pid below is still the real child.
-        # Off-loop: first call probes /proc + /sys and the config read touches
-        # the config dir (mkdir + file read) — blocking syscalls that must not
-        # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
-        # file, so a cancellation here must not orphan it.
-        argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
-
-        # Build the child environment (process-group isolation flags are set on
-        # the spawn kwargs below, per-platform).
-        env = {**os.environ}
-        if self._extra_env:
-            env.update(self._extra_env)
-        env["PATH"] = augmented_path(env.get("PATH", ""))
-        if self._is_claude and not env.get("CLAUDE_CODE_EXECUTABLE"):
-            # Dormant seam (see _spawn docstring): the adapter's SDK needs a
-            # native Claude binary we don't vendor and does NOT search PATH for
-            # `claude` itself, so point it at one explicitly when the seam is
-            # driven. Only set when unset so an operator override always wins.
-            claude_exe = _resolve_claude_code_executable()
-            if claude_exe:
-                env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
+        async def _env_before_scrub(
+            env: dict[str, str], spawned_binary: str | None
+        ) -> dict[str, str]:
+            # The host's own variables first, then this session's identity, so a
+            # host value can never stand in for the identity the session carries.
+            if adapter is not None:
+                await adapter.prepare_spawn_env(env, to_thread=self._to_thread_guarding_sandbox)
+            self._apply_session_identity_env(env)
+            if self._channel_id:
+                env["KIROCREW_CHANNEL_ID"] = self._channel_id
             else:
-                logger.warning(
-                    "%s not found on PATH; the claude-agent-acp adapter will "
-                    "fail with 'Claude native binary not found'. Set "
-                    "CLAUDE_CODE_EXECUTABLE.",
-                    CLAUDE_CODE_BIN,
-                )
-        if self._is_pi and self._pi_gate_launcher:
-            # The launcher the read-back above verified, applied unconditionally:
-            # an operator's own value for this variable was already honoured by
-            # ``_resolve_pi_bin`` and is what the launcher execs.
-            env[_ENV_PI_ACP_PI_COMMAND] = self._pi_gate_launcher
-            # Reaches the pi process through the adapter, which spawns it with its
-            # own environment; the extension echoes it in every dialog.
-            env[_ENV_PI_GATE_SESSION] = self._pi_gate_nonce
-        if self._is_opencode and self._opencode_config_content:
-            # The seed the read-back above verified, applied unconditionally: the
-            # merge in ``_opencode_routing_config`` already preserved every key the
-            # operator set, and this value is the one the host gate depends on.
-            env[_ENV_OPENCODE_CONFIG_CONTENT] = self._opencode_config_content
-        if self._is_deepseek:
-            # Pinned rather than left to the ambient value, so a variable inherited
-            # from the operator's shell cannot select the unconfined mode. Defence in
-            # depth: the gate plugin below is what routes a tool call to Crew's gate.
-            env[_ENV_DEEPSEEK_PERMISSION_MODE] = DEEPSEEK_PERMISSION_MODE
-            if self._deepseek_gate_nonce:
-                # The nonce the read-back issued, applied unconditionally: the
-                # permission-frame tripwire keys on it, so a session that carries no
-                # nonce is a session whose completed-unasked guard cannot arm. NO
-                # marker path: the one load marker is the probe's, written into the
-                # probe's own window and already judged above. The session's plugin
-                # runs the same gate without writing anything -- it skips the write
-                # when no path is named -- so whether this session got a private
-                # scratch window is the hygiene question it is for every other
-                # backend, settled at the shared site above, not a refusal here.
-                env[_ENV_DSH_GATE_SESSION] = self._deepseek_gate_nonce
-            # The provider key, from Crew's OWN vault rather than from a file inside
-            # the child's tree. This is what lets ``host_auth`` declare no
-            # ``adapter_own_leaves`` for this harness: both of its credential leaves
-            # stay masked for the whole process tree, and the key arrives as an
-            # environment variable the harness resolves ABOVE those files and
-            # withholds from every shell it spawns (see the constants above).
-            #
-            # HERE rather than on the shared tail, and that placement is load-bearing
-            # twice over. It keeps the Kiro construction path free of this adapter
-            # (harness-parity H13), and it runs BEFORE ``_resolve_spawn_env`` and
-            # ``scrub_agent_subprocess_env`` -- which is exactly why the validator
-            # refuses a name that scrub would strip: a key injected after this point
-            # and removed there would leave the operator with a harness that cannot
-            # reach a model and no error naming why.
-            #
-            # Off-loop: reads config.json and the vault. Guarded: the sandbox temp
-            # file is live, so a cancellation here must not orphan it.
-            try:
-                deepseek_env, _ = await self._to_thread_guarding_sandbox(_deepseek_vault_env)
-            except ValueError as exc:
-                # Fail CLOSED on a mapping this harness would not honour, or a vault
-                # secret that is not there. The message names only the operator's own
-                # env-var key -- never the vault name and never the value -- so it is
-                # safe on the log and in the chat error card. The launcher the wrap
-                # above wrote is already reclaimed: ``_to_thread_guarding_sandbox``
-                # discards it on ANY exception out of the hop, which is why this arm
-                # makes no ``_discard_sandbox_cleanup`` call of its own.
-                try:
-                    acp_tool_gate.enforce_runtime_routing(
-                        self.backend,
-                        str(exc),
-                        remedy=acp_tool_gate.remediation_for(self.backend),
-                    )
-                except acp_tool_gate.ToolGateUnroutable as gate_exc:
-                    raise AcpToolGateUnroutable(str(gate_exc)) from None
-                # Unreachable while this harness is ENFORCED; kept as the fail-closed
-                # floor for the same reason the arm above keeps its own.
-                raise AcpToolGateUnroutable(str(exc)) from None
-            env.update(deepseek_env)
-            # The resolver's contract -- clear the PLAINTEXT it returned as soon as
-            # nothing needs it from that dict -- is honoured HERE, inside the arm,
-            # rather than after the spawn on the shared tail, which would put a branch
-            # on this adapter's state onto every Kiro session start (harness-parity
-            # H13). Copying onto ``env`` is the last read of the resolver's dict, so it
-            # is emptied now; ``env`` itself is the dict ``exec`` copies into the child
-            # and is a local of this coroutine, never written to the gateway's
-            # ``os.environ`` and never stored on ``self``, so its plaintext lives
-            # exactly as long as this frame. The resolved key NAMES are not kept: the
-            # harness withholds the variable from its own shells by name CLASS, not
-            # by a list Crew hands it, and nothing on this side reads them later.
-            deepseek_env.clear()
-            # NOT given to the read-back probe, which boots the plugin and exits: it
-            # needs no provider key, so it is never handed one.
-        self._apply_session_identity_env(env)
-        if self._channel_id:
-            env["KIROCREW_CHANNEL_ID"] = self._channel_id
-        else:
-            env.pop("KIROCREW_CHANNEL_ID", None)
+                env.pop("KIROCREW_CHANNEL_ID", None)
+            # Resolve SSH_AUTH_SOCK dynamically — the gateway's env may be stale
+            # after an ssh-agent restart — and KRB5CCNAME to a FILE: ccache (the
+            # kernel keyring, the default on some Linux distros, is invisible to
+            # this child, so Kerberos-gated MCP servers fail without it). Covers
+            # the session agent and all ACP-provider subagents, which spawn through
+            # this same path. The same hop settles the CLI's own KIRO_API_KEY:
+            # re-injected from .env for the kiro-cli backend (post-scrub Docker),
+            # actively stripped for a foreign backend, which must never receive it
+            # (see config.loader.inject/strip_kiro_cli_api_key). All of this
+            # glob/stat/reads under /tmp and the data home, so it runs off-loop in
+            # ONE thread hop. Guarded: the sandbox temp file is live, so a
+            # cancellation here must not orphan it. The launch tail scrubs after
+            # it, and KIRO_API_KEY stays available only to the positively
+            # identified Kiro backend.
+            return await self._to_thread_guarding_sandbox(
+                functools.partial(_resolve_spawn_env, kiro_api_key=self._is_kiro), env
+            )
 
-        # Resolve SSH_AUTH_SOCK dynamically — the gateway's env may be stale
-        # after an ssh-agent restart — and KRB5CCNAME to a FILE: ccache (the
-        # kernel keyring, the default on some Linux distros, is invisible to
-        # this child, so Kerberos-gated MCP servers fail without it). Covers
-        # the session agent and all ACP-provider subagents, which spawn through
-        # this same path. The same hop settles the CLI's own KIRO_API_KEY:
-        # re-injected from .env for the kiro-cli backend (post-scrub Docker),
-        # actively stripped for a foreign backend, which must never receive it
-        # (see config.loader.inject/strip_kiro_cli_api_key). All of this
-        # glob/stat/reads under /tmp and the data home, so it runs off-loop in
-        # ONE thread hop. Guarded: the sandbox temp file is live, so a
-        # cancellation here must not orphan it.
-        env = await self._to_thread_guarding_sandbox(
-            functools.partial(_resolve_spawn_env, kiro_api_key=self._is_kiro), env
+        def _env_after_scrub(env: dict[str, str]) -> None:
+            # The auxiliary kiro-cli children never reach a harness's apply_spawn_env,
+            # so they are named here.
+            if self._is_kiro:
+                from kiro_crew.acp.harness._common import apply_client_application_env
+
+                apply_client_application_env(env)
+
+        launched = await launch(
+            self,
+            LaunchRequest(
+                argv=plan.argv,
+                backend=self.backend,
+                sandbox_mode=self._sandbox_mode,
+                extra_env=self._extra_env,
+                scratch_label=self._session_key or "session",
+                env_before_scrub=_env_before_scrub,
+                env_after_scrub=_env_after_scrub,
+                extra_hidden_dirs=plan.extra_hidden_dirs,
+                extra_expose_files=plan.extra_expose_files,
+                internal_sandbox=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+                pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP,
+            ),
+            _launch_tools(),
         )
-        # Match the OS launchers' sensitive + Python env scrub in the parent.
-        # Windows Kiro delegation has no POSIX `env -u` wrapper, so this is the
-        # enforcement point there. Keep it after _resolve_spawn_env so SSH repair
-        # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
-        # to the positively identified Kiro backend. forward_ssh_auth_sock is
-        # the opt-in resolved off-loop above and reused here.
-        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
-        # Bundled skill scripts must not depend on a system ``python`` name.
-        # The desktop bundles carry their interpreter outside the user's PATH,
-        # while this path is already running under the exact environment that
-        # can import ``kiro_crew``. Overwrite after the scrub and after
-        # ``extra_env`` so agent configuration cannot redirect the trusted read
-        # gate to a foreign interpreter.
-        env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
-        # The auxiliary kiro-cli children never reach a harness's apply_spawn_env,
-        # so they are named here.
-        if self._is_kiro:
-            from kiro_crew.acp.harness._common import apply_client_application_env
-
-            apply_client_application_env(env)
-        # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
-        # confined to the pod's tree instead of the real host's -- see
-        # _apply_pod_home_remap's docstring. No-op outside a pod
-        # (KIROCREW_POD is not exactly "1") and for every harness outside
-        # ACP_BACKENDS_POD_HOME_REMAP, which is deliberately its own set rather
-        # than the internal-sandbox one (H6). Kept AFTER
-        # scrub_agent_subprocess_env: neither HOME nor the AWS credential-file
-        # pointers are in that scrub's denied-prefix set, so ordering is not
-        # load-bearing here, but placing it beside every other
-        # identity-affecting mutation on this env keeps the sequence readable
-        # as one pass rather than two.
-        env = _apply_pod_home_remap(env, pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP)
-        # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
-        # server it spawns inherit this, so escaped launcher trees (``npx
-        # @playwright/mcp`` -> node) are identifiable as ours.
-        env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
-        # Own browser session per agent process: the CLI resolves a nameless
-        # command to one shared ``default`` browser, so without this two agents
-        # navigate and close each other's pages (see browser_session_env).
-        browser_env = browser_session_env(env)
-        env.update(browser_env)
-        if browser_env:
-            lifecycle_env = {**os.environ, **browser_env}
-            env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
-        # The scratch dir was allocated before the sandbox wrap (carved out of
-        # the masked root there); hand it to the child as its temp.
-        if self._scratch_dir is not None:
-            env.update(agent_scratch.scratch_env(self._scratch_dir, shared=self._shared_scratch))
-        elif self._shared_scratch is not None:
-            # Own allocation failed (inherited temp) but the tree's work
-            # directory is mounted: the prompt-visible name still points there.
-            env["KIROCREW_SCRATCH"] = str(self._shared_scratch)
-        # Memory-aware cap for pytest-xdist's ``-n auto``: xdist sizes auto to
-        # the CPU count, ignoring memory, so a full-suite run in an agent turn
-        # can spawn cpu_count workers x ~1 GB each and exhaust the host. xdist
-        # honors PYTEST_XDIST_AUTO_NUM_WORKERS when resolving auto, so seeding
-        # it here bounds ONLY auto resolution — explicit ``-n N``, non-xdist
-        # runs, and venvs without xdist are unaffected. Respects a value
-        # already present in the env; see resource_status.inject_xdist_auto_cap.
-        # Off-loop: resolving the cap reads the raw config, and that read
-        # enters config_dir() (mkdir + file IO + JSON parse) — blocking
-        # syscalls that must not run on the loop. Guarded: the sandbox temp
-        # file is live, so a cancellation here must not orphan it.
-        await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
-
-        # Process-group isolation for clean tree-kill. Pass both flags explicitly
-        # (NOT via **dict unpack — that breaks mypy's Popen overload resolution on
-        # the build fleet). POSIX: start_new_session=True calls setsid so
-        # _kill_process can killpg the whole group; creationflags resolves to 0
-        # (no-op). Windows: no setsid (start_new_session is silently ignored), so
-        # CREATE_NEW_PROCESS_GROUP makes the child tree taskkill /T-reapable and
-        # stops an inherited Ctrl-C propagating into the gateway. The flag comes
-        # from platform_compat (getattr) so referencing it doesn't fail mypy's
-        # [attr-defined] check on Linux where subprocess.* lacks it.
-        await self._discard_bound_workspace()
-        if self.backend in ACP_BACKENDS_INTERNAL_SANDBOX:
-            self._spawn_work_dir, self._bound_workspace_fd = (
-                await bind_voice_safe_agent_workspace_async(self._work_dir)
-            )
-        try:
-            self._process = await platform_compat.create_windows_cleanup_owned_process(
-                functools.partial(
-                    create_subprocess_limited,
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=self._spawn_work_dir,
-                    limit=_STDOUT_BUFFER_LIMIT,
-                    env=env,
-                    start_new_session=platform_compat.IS_POSIX,
-                    creationflags=(
-                        platform_compat.CREATE_NEW_PROCESS_GROUP
-                        | platform_compat._SUBPROCESS_NO_WINDOW
-                        | platform_compat.CREATE_SUSPENDED
-                    ),
-                    # None off macOS, where nothing binds. When set, the child enters
-                    # the workspace through this verified descriptor instead of
-                    # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                    # could aim elsewhere in between.
-                    chdir_fd=self._bound_workspace_fd,
-                    profile=RLIMIT_PROFILE_SESSION_HOST,
-                ),
-            )
-        except BaseException:
-            await self._discard_bound_workspace()
-            self._discard_sandbox_cleanup()
-            raise
+        self._process = launched.process
         self._pid = self._process.pid
         self._process_tree_confirmed_dead = False
         # Minted with the process it names, random rather than pid-derived: a
@@ -8882,7 +6023,7 @@ class AcpClient:
         # readable on every platform, so equality on a fresh random id is the
         # comparison that cannot false-match across spawns.
         self._process_instance = uuid.uuid4().hex[:16]
-        _spawn_label = spawn_label
+        _spawn_label = plan.spawn_label
         # Everything from here to the end of _spawn runs with a LIVE subprocess
         # that nothing has recorded yet, so every step must be guarded. Without
         # this, any exception in the window — finish_suspended_spawn, the
@@ -9014,7 +6155,7 @@ class AcpClient:
 
             if self._process.stderr:
                 self._stderr_task = asyncio.ensure_future(
-                    self._drain_stderr(self._process.stderr, label=stderr_label)
+                    self._drain_stderr(self._process.stderr, label=plan.stderr_label)
                 )
         except BaseException:
             logger.error(
@@ -12921,9 +10062,9 @@ class AcpClient:
             "pi adapter %s reports version %r; the gate extension contract (dialog "
             "forwarding, %s) was verified on %s. The in-band tripwire still guards every "
             "call; if it trips, this is the first place to look.",
-            PI_ACP_BIN,
+            pi_mod.PI_ACP_BIN,
             version or "unknown",
-            _ENV_PI_ACP_PI_COMMAND,
+            pi_mod._ENV_PI_ACP_PI_COMMAND,
             PI_ACP_VERIFIED_VERSION,
         )
 
@@ -14697,6 +11838,7 @@ class AcpClient:
 #: Owner module -> every name this module forwards to it.
 _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "kiro_crew.acp.transport_framing": (
+        "_STDOUT_BUFFER_LIMIT",
         "_OVERSIZE_DRAIN_MAX_BYTES",
         "OversizeLineUnrecoverable",
         "_drain_oversize_line",
@@ -14719,6 +11861,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "AcpPermissionNeeded",
         "AcpRegistrationRateLimited",
         "AcpPromptBusy",
+        "PiGateExtensionTampered",
         "_RE_MODEL_UNAVAILABLE",
         "_RE_MODEL_TEMP_UNAVAILABLE",
         "_RE_INVALID_MODEL_ID",
@@ -14793,6 +11936,139 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_capture_child_records",
         "_is_our_child",
         "_kill_escaped_children",
+    ),
+    "kiro_crew.acp.launch": (
+        "_ADAPTER_INTERPRETERS",
+        "_is_adapter_package_entry",
+        "_named_by_override",
+        "_adapter_spawn_label",
+        "_normalize_exe_casing",
+        "_mise_node_installs_dir",
+        "_resolve_node_for_script",
+        "_UNRESOLVED",
+        "_vendored_acp_roots",
+        "_resolve_node_adapter_argv",
+        "_node_module_search_dirs",
+        "_vendored_adapter_entry",
+        "_self_served_bin_caches",
+        "_resolution_generation",
+        "_resolution_epoch",
+        "bump_resolution_generation",
+        "_resolve_self_served_bin",
+        "_SANDBOX_PREFLIGHT_TIMEOUT",
+        "_sandbox_preflight",
+        "_run_preflight_bounded",
+        "_unlink_readback_launcher",
+        "_READBACK_STDERR_SCAN_CHARS",
+        "_READBACK_FAULT_MAX_SHAPES",
+        "_READBACK_FAULT_SHAPES",
+        "_readback_stderr_diagnosis",
+        "_readback_detail_with_diagnosis",
+        "mise_data_dir",
+        "RLIMIT_PROFILE_SESSION_HOST",
+        "KIROCREW_SPAWNED_ENV",
+        "KIROCREW_SPAWNED_VALUE",
+    ),
+    "kiro_crew.acp.harness.claude": (
+        "CLAUDE_ACP_BIN",
+        "CLAUDE_CODE_BIN",
+        "CLAUDE_ACP_NPM_PKG",
+        "_CLAUDE_ACP_PKG_ENTRY",
+        "_CLAUDE_ACP_DEP_MARKER",
+        "_claude_acp_argv_cache",
+        "_resolve_vendored_claude_acp",
+        "_resolve_claude_acp_bin",
+        "_resolve_claude_code_executable",
+        "_claude_adapter_installed_version",
+    ),
+    "kiro_crew.acp.harness.opencode": (
+        "_OPENCODE_LAUNCH",
+        "OPENCODE_BIN",
+        "_ENV_OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_INSTALL_COMMAND",
+        "_OPENCODE_CONFIG_READBACK_ARGS",
+        "_OPENCODE_READBACK_TIMEOUT_S",
+        "_opencode_readback_remedy",
+        "_opencode_uniform_permission",
+        "_opencode_rules_deny",
+        "_opencode_config_mcp_server_names",
+        "_opencode_config_mcp_servers_remedy",
+        "_opencode_agent_permissions",
+        "MAX_HARNESS_CONFIG_MCP_SERVERS",
+        "MAX_HARNESS_TOOL_NAME_LEN",
+        "opencode_rewrites_name",
+    ),
+    "kiro_crew.acp.harness.goose": (
+        "_ENV_GOOSE_MODE",
+        "_GOOSE_BUILTIN_ARG",
+        "_GOOSE_BUILTIN_DEVELOPER",
+    ),
+    "kiro_crew.acp.harness.pi": (
+        "PI_ACP_BIN",
+        "PI_ACP_NPM_PKG",
+        "_PI_ACP_PKG_ENTRY",
+        "_PI_ACP_DEP_MARKER",
+        "_ENV_PI_ACP_BIN",
+        "PI_BIN",
+        "PI_NPM_PKG",
+        "_ENV_PI_ACP_PI_COMMAND",
+        "PI_INSTALL_COMMAND",
+        "_PI_RPC_ARGS",
+        "_PI_EXTENSION_FLAG",
+        "_PI_READBACK_REQUEST",
+        "_PI_READBACK_TIMEOUT_S",
+        "PI_MIN_VERSION",
+        "_PI_NPM_PACKAGE_NAMES",
+        "_PI_MANIFEST_SEARCH_DEPTH",
+        "_ENV_PI_GATE_SESSION",
+        "PI_GATE_EXTENSION_SHA256",
+        "_pi_acp_argv_cache",
+        "_pi_bin_cache",
+        "_pi_gate_launcher_cache",
+        "_resolve_pi_acp_bin",
+        "_resolve_pi_bin",
+        "_pi_installed_version",
+        "_pi_version_issue",
+        "pi_gate_extension_path",
+        "_pi_gate_artifact_dir",
+        "_pi_gate_extension_bytes",
+        "_seal_pi_gate_extension",
+        "_seal_gate_extension",
+        "_publish_gate_artifact",
+        "_pi_gate_launcher_body",
+        "_ensure_pi_gate_launcher",
+        "_pi_readback_remedy",
+        "_same_file_spelling",
+        "_same_file_spelling_all",
+        "_pi_commands_from_readback",
+        "agent_sdk",
+    ),
+    "kiro_crew.acp.harness.deepseek": (
+        "_DSH_PATCH_FLAG",
+        "_ENV_DSH_GATE_SESSION",
+        "_ENV_DSH_GATE_MARKER",
+        "_ENV_DSH_GATE_SCRUB_NAMES",
+        "_DSH_GATE_SCRUB_CANARY_PREFIX",
+        "_DSH_GATE_READBACK_TIMEOUT_S",
+        "_DSH_GATE_MARKER_POLL_S",
+        "_DSH_GATE_PROBE_EXIT_S",
+        "_DSH_GATE_MARKER_MAX_BYTES",
+        "DEEPSEEK_GATE_EXTENSION_SHA256",
+        "_ENV_DEEPSEEK_PERMISSION_MODE",
+        "DEEPSEEK_PERMISSION_MODE",
+        "_DEEPSEEK_ENV_CHILD_SCRUB_CLASS",
+        "_DEEPSEEK_ENV_NAME_GRAMMAR",
+        "_DEEPSEEK_ENV_RESERVED_PREFIXES",
+        "_DEEPSEEK_ENV_CREW_OWNED_NAMES",
+        "deepseek_gate_extension_path",
+        "_seal_deepseek_gate_extension",
+        "_write_deepseek_gate_patch",
+        "_validate_deepseek_env_mapping",
+        "_deepseek_vault_env_names",
+        "_deepseek_vault_env",
+        "SECRET_URI_PREFIX",
+        "resolve_secret_uris",
+        "agent_env_scrub_prefixes",
     ),
 }
 
@@ -14874,6 +12150,139 @@ sys.modules[__name__].__class__ = _ReExportModule
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
 if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
+    from kiro_crew.acp.harness.claude import (  # noqa: F401
+        _CLAUDE_ACP_DEP_MARKER,
+        _CLAUDE_ACP_PKG_ENTRY,
+        CLAUDE_ACP_BIN,
+        CLAUDE_ACP_NPM_PKG,
+        CLAUDE_CODE_BIN,
+        _claude_acp_argv_cache,
+        _claude_adapter_installed_version,
+        _resolve_claude_acp_bin,
+        _resolve_claude_code_executable,
+        _resolve_vendored_claude_acp,
+    )
+    from kiro_crew.acp.harness.deepseek import (  # noqa: F401
+        _DEEPSEEK_ENV_CHILD_SCRUB_CLASS,
+        _DEEPSEEK_ENV_CREW_OWNED_NAMES,
+        _DEEPSEEK_ENV_NAME_GRAMMAR,
+        _DEEPSEEK_ENV_RESERVED_PREFIXES,
+        _DSH_GATE_MARKER_MAX_BYTES,
+        _DSH_GATE_MARKER_POLL_S,
+        _DSH_GATE_PROBE_EXIT_S,
+        _DSH_GATE_READBACK_TIMEOUT_S,
+        _DSH_GATE_SCRUB_CANARY_PREFIX,
+        _DSH_PATCH_FLAG,
+        _ENV_DEEPSEEK_PERMISSION_MODE,
+        _ENV_DSH_GATE_MARKER,
+        _ENV_DSH_GATE_SCRUB_NAMES,
+        _ENV_DSH_GATE_SESSION,
+        DEEPSEEK_GATE_EXTENSION_SHA256,
+        DEEPSEEK_PERMISSION_MODE,
+        SECRET_URI_PREFIX,
+        _deepseek_vault_env,
+        _deepseek_vault_env_names,
+        _seal_deepseek_gate_extension,
+        _validate_deepseek_env_mapping,
+        _write_deepseek_gate_patch,
+        agent_env_scrub_prefixes,
+        deepseek_gate_extension_path,
+        resolve_secret_uris,
+    )
+    from kiro_crew.acp.harness.goose import (  # noqa: F401
+        _ENV_GOOSE_MODE,
+        _GOOSE_BUILTIN_ARG,
+        _GOOSE_BUILTIN_DEVELOPER,
+    )
+    from kiro_crew.acp.harness.opencode import (  # noqa: F401
+        _ENV_OPENCODE_CONFIG_CONTENT,
+        _OPENCODE_CONFIG_READBACK_ARGS,
+        _OPENCODE_LAUNCH,
+        _OPENCODE_READBACK_TIMEOUT_S,
+        MAX_HARNESS_CONFIG_MCP_SERVERS,
+        MAX_HARNESS_TOOL_NAME_LEN,
+        OPENCODE_BIN,
+        OPENCODE_INSTALL_COMMAND,
+        _opencode_agent_permissions,
+        _opencode_config_mcp_server_names,
+        _opencode_config_mcp_servers_remedy,
+        _opencode_readback_remedy,
+        _opencode_rules_deny,
+        _opencode_uniform_permission,
+        opencode_rewrites_name,
+    )
+    from kiro_crew.acp.harness.pi import (  # noqa: F401
+        _ENV_PI_ACP_BIN,
+        _ENV_PI_ACP_PI_COMMAND,
+        _ENV_PI_GATE_SESSION,
+        _PI_ACP_DEP_MARKER,
+        _PI_ACP_PKG_ENTRY,
+        _PI_EXTENSION_FLAG,
+        _PI_MANIFEST_SEARCH_DEPTH,
+        _PI_NPM_PACKAGE_NAMES,
+        _PI_READBACK_REQUEST,
+        _PI_READBACK_TIMEOUT_S,
+        _PI_RPC_ARGS,
+        PI_ACP_BIN,
+        PI_ACP_NPM_PKG,
+        PI_BIN,
+        PI_GATE_EXTENSION_SHA256,
+        PI_INSTALL_COMMAND,
+        PI_MIN_VERSION,
+        PI_NPM_PKG,
+        _ensure_pi_gate_launcher,
+        _pi_acp_argv_cache,
+        _pi_bin_cache,
+        _pi_commands_from_readback,
+        _pi_gate_artifact_dir,
+        _pi_gate_extension_bytes,
+        _pi_gate_launcher_body,
+        _pi_gate_launcher_cache,
+        _pi_installed_version,
+        _pi_readback_remedy,
+        _pi_version_issue,
+        _publish_gate_artifact,
+        _resolve_pi_acp_bin,
+        _resolve_pi_bin,
+        _same_file_spelling,
+        _same_file_spelling_all,
+        _seal_gate_extension,
+        _seal_pi_gate_extension,
+        agent_sdk,
+        pi_gate_extension_path,
+    )
+    from kiro_crew.acp.launch import (  # noqa: F401
+        _ADAPTER_INTERPRETERS,
+        _READBACK_FAULT_MAX_SHAPES,
+        _READBACK_FAULT_SHAPES,
+        _READBACK_STDERR_SCAN_CHARS,
+        _SANDBOX_PREFLIGHT_TIMEOUT,
+        _UNRESOLVED,
+        KIROCREW_SPAWNED_ENV,
+        KIROCREW_SPAWNED_VALUE,
+        RLIMIT_PROFILE_SESSION_HOST,
+        _adapter_spawn_label,
+        _is_adapter_package_entry,
+        _mise_node_installs_dir,
+        _named_by_override,
+        _node_module_search_dirs,
+        _normalize_exe_casing,
+        _readback_detail_with_diagnosis,
+        _readback_stderr_diagnosis,
+        _resolution_epoch,
+        _resolution_generation,
+        _resolve_node_adapter_argv,
+        _resolve_node_for_script,
+        _resolve_self_served_bin,
+        _run_preflight_bounded,
+        _sandbox_preflight,
+        _self_served_bin_caches,
+        _unlink_readback_launcher,
+        _vendored_acp_roots,
+        _vendored_adapter_entry,
+        bump_resolution_generation,
+        mise_data_dir,
+    )
     from kiro_crew.acp.runtime_models import (  # noqa: F401
         _MODEL_SUBSTITUTE_RE,
         _MODEL_SUBSTITUTION_ADVISORY_RE,
@@ -14941,6 +12350,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         AcpPermissionNeeded,
         AcpPromptBusy,
         AcpRegistrationRateLimited,
+        PiGateExtensionTampered,
         ProviderErrorClass,
         _auto_remedy,
         _format_acp_error,
@@ -14964,6 +12374,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _RESPONSE_WRITE_BOUND_SECS,
         _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
         _RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS,
+        _STDOUT_BUFFER_LIMIT,
         OversizeLineUnrecoverable,
         _drain_oversize_line,
         _is_proactor_loop,

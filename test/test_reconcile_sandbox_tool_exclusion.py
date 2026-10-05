@@ -43,10 +43,11 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _SRC = Path(sandbox.__file__).resolve().parent
 
-#: The spawn paths that put a session-leader runtime on the host. Both thread their own
-#: ``is_kiro_cli`` delegation decision into ``wrap_argv`` directly, so a runtime this
+#: The spawn paths that put a session-leader runtime on the host: the two drivers, which
+#: hand their own ``wrap_argv`` to the launch tail they share, and that tail, which
+#: threads the ``is_kiro_cli`` delegation decision into it directly -- so a runtime this
 #: install starts as a leader carries no tool marker.
-_LEADER_SPAWN_SITES = ("acp/runtime.py", "acp/client.py")
+_LEADER_SPAWN_SITES = ("acp/runtime.py", "acp/client.py", "acp/launch.py")
 
 #: Sites that route a MANAGED-HARNESS argv through the tool chokepoint, which is why
 #: the exclusion cannot rest on the marker alone. The pod child probe spawns

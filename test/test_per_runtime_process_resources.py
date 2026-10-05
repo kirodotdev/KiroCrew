@@ -174,26 +174,73 @@ class TestScopeIsNamed:
 
 
 class TestRuntimeNamesItsScope:
-    def test_the_runtime_spawn_names_its_scope_after_its_spawn_instance(self):
+    @staticmethod
+    def _launch(tmp_path, *, wrapped: bool) -> tuple[list[str], str, list[str]]:
+        """The runtime's real launch: the argv its scope step produced, the instance its
+        child carries, and the scope the launch reports to the runtime.
+
+        Driven through the launch capture with the cgroup wrap either applied (this
+        file's ``_wrap``, the real helper with the backend forced available) or
+        handing the bare command back, as it does on every host without delegation.
+        The runtime's own two steps -- naming the scope and marking the child -- are
+        observed as the shared tail calls them; what the scope step returns is what
+        the tail reports back (``LaunchedProcess.scope_unit``).
+        """
+        import dataclasses
+
+        import acp_launch_capture as capture_mod
+
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
+        from kiro_crew.constants import KIROCREW_SPAWN_INSTANCE_ENV
+
+        named_argv: list[str] = []
+        instances: list[str] = []
+        reported: list[str] = []
+        real_launch = runtime_mod.launch
+
+        async def _observed_launch(host, request, tools):
+            def _scope(argv):
+                named, unit = request.scope_argv(argv)
+                named_argv[:] = named
+                reported.append(unit)
+                return named, unit
+
+            def _mark(env):
+                request.env_after_marker(env)
+                instances.append(env[KIROCREW_SPAWN_INSTANCE_ENV])
+
+            observed = dataclasses.replace(request, scope_argv=_scope, env_after_marker=_mark)
+            return await real_launch(host, observed, tools)
+
+        capture_mod.capture(
+            ACP_BACKEND_CODEX,
+            tmp_path,
+            extra_patches=(
+                patch.object(
+                    runtime_mod,
+                    "cgroup_scope_argv",
+                    side_effect=(lambda argv: _wrap(argv)) if wrapped else (lambda argv: argv),
+                ),
+                patch.object(runtime_mod, "launch", new=_observed_launch),
+            ),
+        )
+        assert len(instances) == 1
+        return named_argv, instances[0], reported
+
+    def test_the_runtime_spawn_names_its_scope_after_its_spawn_instance(self, tmp_path):
         """The scope name and the child's env marker are ONE token.
 
-        Read from the source rather than by driving a spawn: the wiring under
-        test is that the token is minted before the cgroup wrap and used by both,
-        and a spawn test would pass just as well with two independent tokens,
-        which is the defect this is against.
+        A spawn that minted two independent tokens -- one for the scope, one for the
+        child -- would pass any test that checks each separately, so the scope the
+        child is spawned under is compared with the instance marker in that same
+        child's environment.
         """
-        src = Path(sb.__file__).with_name("acp") / "runtime.py"
-        body = src.read_text(encoding="utf-8")
-        mint = body.index("spawn_instance = uuid.uuid4().hex[:16]")
-        wrap = body.index("name_scope_unit(argv, spawn_instance)")
-        env = body.index("env[KIROCREW_SPAWN_INSTANCE_ENV] = spawn_instance")
-        assert mint < wrap, "the token must exist before the scope is named"
-        assert wrap < env, "the same token must then travel in the child's env"
-        assert (
-            body.count("spawn_instance = uuid.uuid4().hex[:16]") == 1
-        ), "two mints would give the scope and the process different identities"
+        argv, instance, _reported = self._launch(tmp_path, wrapped=True)
+        assert "--unit" in argv, argv
+        assert argv[argv.index("--unit") + 1] == sb.scope_unit_name(instance), argv
 
-    def test_the_spawn_records_the_unit_only_when_the_wrap_happened(self):
+    def test_the_spawn_records_the_unit_only_when_the_wrap_happened(self, tmp_path):
         """The recorded unit is conditional, because the wrap is.
 
         ``cgroup_scope_argv`` hands back the bare command on macOS, on Windows, on
@@ -201,21 +248,18 @@ class TestRuntimeNamesItsScope:
         outside a trusted directory -- and the token is spellable on all of them.
         So the only thing that distinguishes "this runtime has a scope" from "this
         runtime has none" is whether the naming step changed the argv, and the
-        recording has to be gated on exactly that.
+        scope the launch reports to the runtime has to follow exactly that.
         """
-        src = Path(sb.__file__).with_name("acp") / "runtime.py"
-        body = src.read_text(encoding="utf-8")
-        record = [ln for ln in body.splitlines() if ln.strip().startswith("scope_unit = ")]
-        assert len(record) == 1, "exactly one place decides the recorded unit"
-        line = record[0]
-        assert "named_argv is not argv" in line, (
-            "the recorded unit must be gated on the argv actually changing, not on "
-            f"the token alone -- got: {line.strip()}"
-        )
-        assert body.count("self._scope_unit = scope_unit") == 1, (
-            "the decided value is what reaches the runtime, so the log cannot "
-            "re-derive a name the wrap never applied"
-        )
+        _argv, instance, reported = self._launch(tmp_path / "wrapped", wrapped=True)
+        assert reported == [sb.scope_unit_name(instance)]
+        argv, _instance, reported = self._launch(tmp_path / "bare", wrapped=False)
+        assert reported == [""], "a scope that was never created must not be named"
+        assert not any(arg.startswith("--unit") for arg in argv)
+        # The value the launch reports is the one the runtime keeps for its init log,
+        # after the process exists -- where the capture above stops. Kept as a source
+        # read with that reason.
+        body = (Path(sb.__file__).with_name("acp") / "runtime.py").read_text(encoding="utf-8")
+        assert body.count("self._scope_unit = launched.scope_unit") == 1
 
     def test_the_runtime_logs_its_scope_name_beside_its_pid(self):
         """The scope name reaches a durable record, not only the live process.

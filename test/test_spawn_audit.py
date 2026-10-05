@@ -294,7 +294,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # session work dir rather than anything the agent names in a turn. The only
         # variable input is the child's ``OPENCODE_CONFIG_CONTENT``, which this core
         # composes from its own permission-setting table (see
-        # ``AcpClient._opencode_routing_config``); the agent supplies nothing to it.
+        # ``acp/harness/opencode.py::_opencode_routing_config``); the agent supplies
+        # nothing to it.
         # Stdout is read and nothing else: the JSON document is parsed for one key,
         # the harness's resolved ``permission``, which decides whether the session
         # may start at all.
@@ -311,7 +312,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Called from a worker thread, never the event loop --
         # ``test_the_routing_read_back_runs_off_the_event_loop`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
-        "acp/client.py::_verify_opencode_routing",
+        "acp/harness/opencode.py::_verify_opencode_routing",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three
@@ -328,22 +329,22 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # is the agent itself loading extensions out of the operator's own
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend.py`` pins that.
-        "acp/client.py::_verify_pi_gate",
+        "acp/harness/pi.py::_verify_pi_gate",
         # The DeepSeek Harness gate read-back, the same shape as the pi one above:
         # the argv is the SESSION'S own argv already wrapped by ``wrap_argv_async``
-        # before it reaches this method, so the sandbox and credential mask are
+        # before it reaches this function, so the sandbox and credential mask are
         # applied by the caller rather than here. Nothing in it is agent-influenced
         # -- the harness binary comes from its ``ACP_BACKEND_LAUNCH`` row, the sealed
         # plugin and its patch from the owner-only gate-artifact directory, and the
-        # marker path from the probe's OWN private scratch window (allocated in the
-        # arm, passed as ``extra_private_dirs``, removed in its ``finally``) -- the
+        # marker path from the probe's OWN private scratch window (allocated by the
+        # adapter, passed as ``extra_private_dirs``, removed in its ``finally``) -- the
         # one argument the child writes, and it lands nowhere the child could plant
         # something a later session loads. stdin is a pipe that carries nothing and
         # is closed once the plugin publishes its marker (EOF is the profile's own
         # shutdown). The env adds only the operator's configured key NAMES under
         # canary values, never the key. Called from a worker thread, never the
         # event loop.
-        "acp/client.py::_verify_deepseek_gate",
+        "acp/harness/deepseek.py::_verify_deepseek_gate",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's

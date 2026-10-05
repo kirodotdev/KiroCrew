@@ -210,9 +210,9 @@ mechanisms — and it, like the security notes, is never hidden behind a disclos
 ## Stage 3 — the spawn path
 
 This is the irreducible new code, and on the harnesses measured so far it is the
-largest single piece: `acp/client.py` grew between +194 and +806 lines per
-harness. It is not reducible by refactoring, because it is the part that is
-genuinely different.
+largest single piece: each harness measured so far added between +194 and +806
+lines of its own launch. It is not reducible by refactoring, because it is the
+part that is genuinely different; it now lives in one adapter file per host.
 
 **Ask first whether your harness serves ACP from its own binary.** If it does,
 most of this stage is already written. `ACP_BACKEND_LAUNCH` in
@@ -220,9 +220,10 @@ most of this stage is already written. `ACP_BACKEND_LAUNCH` in
 binary, the ACP args, the override variable, the install command, the protocol
 version, and one prose hint for what an operator might otherwise try to install.
 Add a row and the shared paths resolve you from it: one resolver
-(`_resolve_self_served_bin`), one cache keyed by backend, the `_spawn` prologue
-(`_resolve_self_served_launch`, which answers binary, argv, spawn label and stderr
-label), the handshake dialect table, the install probe and the tool-gate label.
+(`_resolve_self_served_bin`), one cache keyed by backend, the shared launch
+resolution (`acp.launch.resolve_self_served_launch`, which answers binary, argv,
+spawn label and stderr label), the handshake dialect table, the install probe and
+the tool-gate label.
 
 Membership is `ACP_BACKENDS_SELF_SERVED_ACP`, derived from the table's own keys.
 There is nothing else to register.
@@ -240,7 +241,13 @@ the wrong thing rather than say so.
 Where that hand-written code lives follows the transport. A harness driven through
 `AcpRuntime` declares its spawn at Seam 1 of its own `acp/harness/<name>.py` —
 `CodexHarness.resolve_spawn` is the worked shape — while a per-session harness
-carries its arm in `acp/client.py`. The resolver ladder is shared either way:
+declares it in its own `ProcessAdapter`, also in `acp/harness/<name>.py` and
+registered in `acp.harness.process_adapter_for` (`PiLaunch.resolve_spawn` is the
+worked shape). Both hand their plan to the one launch tail, `acp.launch.launch`,
+so neither writes the session process's sandbox wrap, scratch window or spawn;
+an enforced host's routing read-back child is wrapped inside its adapter, with
+the session's mask. The
+resolver ladder is shared either way:
 `CODEX_ACP_BIN`, `CODEX_ACP_NPM_PKG`, `_resolve_codex_acp_bin` and
 `codex_acp_not_found_message` sit in `client.py` with callers in the harness and in
 the install probe, so one wording answers "the adapter is not installed" wherever
@@ -278,11 +285,11 @@ explicitly forwarded.
 call unasked and only an extension inside it can raise the dialog the adapter
 forwards — the routing is `VERIFIED_GATE_EXTENSION`, and the spawn path carries a
 fixed sequence that the next such harness repeats verbatim rather than rediscovers
-(the Pi worked example is the first instance; `acp/client.py` names each step):
+(the Pi worked example is the first instance; `acp/harness/pi.py` names each step):
 
 1. **Ship the extension as package data** (`agent_sdk/gate_extensions/<harness>/`,
    covered by the existing `setup.cfg` / `MANIFEST.in` globs) and **pin its digest**
-   in the driver (`<HARNESS>_GATE_EXTENSION_SHA256`). Hash and seal the **LF form** of
+   in the host's adapter (`<HARNESS>_GATE_EXTENSION_SHA256`). Hash and seal the **LF form** of
    the bytes (`_pi_gate_extension_bytes`): a Windows checkout rewrites the text file
    CRLF and a raw-bytes digest would refuse every session there. Pin the checkout LF
    in `.gitattributes` as well; the normalization is what keeps the property off a
@@ -613,7 +620,7 @@ to.** The harness's own credential layering resolves a provider key from the
 INHERITED PROCESS ENVIRONMENT above both of its files, and its subprocess layer
 scrubs every inherited name matching `/KEY|PASSWORD|SECRET|TOKEN/i` before spawning
 any child — so Crew feeds the key from its own secret vault
-(`agent.deepseek_env` → `acp/client.py`), declares `entitlement_source =
+(`agent.deepseek_env` → `acp/harness/deepseek.py`), declares `entitlement_source =
 host_vault`, and both leaves stay masked for the whole tree. That is what the third
 entitlement source is for, and it is the general lesson: **the rule is "name your
 own leaf OR be fed from the vault", and the second branch is the one to check
@@ -729,7 +736,7 @@ permission gate of its own costs — the case none of the routing members descri
 | 5 auth declaration | Done — `own_credential_file`, `~/.pi/agent/auth.json` on the floor with `PI_CODING_AGENT_DIR` re-anchored (it moves the whole agent directory, so the default final-segment spelling is right), that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state. Verified on disk: a key planted in that file under a scratch `PI_CODING_AGENT_DIR` is what `pi auth check --credentials` reports back. |
 | 6 install probe | Done — `_probe_pi` names whichever of `pi-acp` and `pi` is absent, with the one `npm i -g` that installs both, and reads `restart_required` from BOTH spawn-path caches. |
 | 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
-| routing | Done, by a NEW mechanism — `VERIFIED_GATE_EXTENSION`. pi runs every tool call unasked by design, and pi-acp sends `session/request_permission` only when an extension inside pi raises a confirm dialog. So Crew ships a pi extension (`agent_sdk/gate_extensions/pi/kiro_crew_tool_gate.ts`, package data) that intercepts every `tool_call` event and raises that dialog with the tool call written into the message as a JSON envelope; a launcher in the sandbox run directory execs the resolved `pi` with `--extension <that file>`, and the adapter is told to run the launcher in place of `pi` through its own `PI_ACP_PI_COMMAND`. The file the launcher names is a sealed copy: the packaged bytes are checked against a digest pinned in the driver at every spawn (over their LF form — a Windows checkout rewrites the text file CRLF, and a raw-bytes digest would refuse every session there; the checkout is pinned LF in `.gitattributes` as well) and written read-only into the sandbox run directory, so a package file rewritten on a source install is refused rather than loaded. Before the first prompt, that exact launcher is run with the adapter's own arguments, asked `get_commands`, and the probe command must be present AND sourced from that copy; the session is refused otherwise. On the client side the dispatch parser reads the envelope back out of the permission frame — only for a session running the extension, and only under the per-session nonce that session put in the pi process's environment for the extension to echo, because on every harness a permission frame's `rawInput` is the model's own tool arguments — so the gate judges the real tool name, kind and arguments rather than a dialog titled "confirm". Both artifacts must live under the real sandbox run directory: the sandbox's temp-dir fallback is a directory any process of the same user can write, so a spawn that would land there is refused rather than gated from a rewritable file. The read-back compares the probe's source path and the sealed copy as the same file (realpath, case-normalized), because pi reports the path in its own spelling. An oversize argument is bounded value by value so `path` always survives; a shell command and a document body (`write`'s `content`, `edit`'s two halves) are never bounded — the deny rules read the command's text verbatim, and the host skips body keys in its command-line scan only while the arguments are intact — so they are forwarded whole, and only an envelope too large to carry at all (200k chars) is refused, never cut. |
+| routing | Done, by a NEW mechanism — `VERIFIED_GATE_EXTENSION`. pi runs every tool call unasked by design, and pi-acp sends `session/request_permission` only when an extension inside pi raises a confirm dialog. So Crew ships a pi extension (`agent_sdk/gate_extensions/pi/kiro_crew_tool_gate.ts`, package data) that intercepts every `tool_call` event and raises that dialog with the tool call written into the message as a JSON envelope; a launcher in the sandbox run directory execs the resolved `pi` with `--extension <that file>`, and the adapter is told to run the launcher in place of `pi` through its own `PI_ACP_PI_COMMAND`. The file the launcher names is a sealed copy: the packaged bytes are checked against a digest pinned in the pi adapter at every spawn (over their LF form — a Windows checkout rewrites the text file CRLF, and a raw-bytes digest would refuse every session there; the checkout is pinned LF in `.gitattributes` as well) and written read-only into the sandbox run directory, so a package file rewritten on a source install is refused rather than loaded. Before the first prompt, that exact launcher is run with the adapter's own arguments, asked `get_commands`, and the probe command must be present AND sourced from that copy; the session is refused otherwise. On the client side the dispatch parser reads the envelope back out of the permission frame — only for a session running the extension, and only under the per-session nonce that session put in the pi process's environment for the extension to echo, because on every harness a permission frame's `rawInput` is the model's own tool arguments — so the gate judges the real tool name, kind and arguments rather than a dialog titled "confirm". Both artifacts must live under the real sandbox run directory: the sandbox's temp-dir fallback is a directory any process of the same user can write, so a spawn that would land there is refused rather than gated from a rewritable file. The read-back compares the probe's source path and the sealed copy as the same file (realpath, case-normalized), because pi reports the path in its own spelling. An oversize argument is bounded value by value so `path` always survives; a shell command and a document body (`write`'s `content`, `edit`'s two halves) are never bounded — the deny rules read the command's text verbatim, and the host skips body keys in its command-line scan only while the arguments are intact — so they are forwarded whole, and only an envelope too large to carry at all (200k chars) is refused, never cut. |
 | residual | The read-back establishes that the extension LOADED, not that the adapter forwards its dialog per call — the frame corpus carries that observation, on pi-acp 0.0.33 / pi 0.85.1, and a dispatch-side tripwire guards it in band: a `tool_call_update` that reaches `completed` for an id no envelope named kills the harness and fails the turn, and a `completed` update for a call the host DENIED kills it too, so the three links read off the adapter's and harness's source rather than the read-back (`PI_ACP_PI_COMMAND` honoured; dialogs forwarded; the extension's block honoured) each cost one call when they break, never a silent session. The adapter version is named against the one the contract was observed on, once per process. The extension is Crew's code running inside a third-party process with that process's permissions: a new trust boundary, stated in the `Routing` docstring rather than assumed. And an operator extension that BLOCKS a call before Crew's asks is honoured, not overridden — a denial there is theirs. |
 | 8 live spill | Reached for the frame corpus and the read-back chain (`test_acp_pi_backend.py` drives the real launcher against the real `pi` and requires the registry to name Crew's file, and refuses a copy of the same file elsewhere). A turn through the gateway itself was NOT reachable on the recording host, whose kernel refuses user namespaces: the sandbox floor refuses every enforced harness there, pi included, exactly as designed. |
 
@@ -840,6 +847,7 @@ checking is not yet mechanical.
 What remains is the irreducible part, and it is worth naming because it is what a
 fifth harness will pay too: one column in each of nine bucket tables, one frame
 corpus, one auth declaration, one install probe, one mirror class, and the three
-per-backend sites in `acp/client.py` that every harness has extended — the spawn arm,
-the spawn label and the stderr label. Those three are the only recurring edit points
-left that a membership set does not already absorb.
+per-backend facts every harness has supplied — its spawn plan, its spawn label and
+its stderr label — now one adapter file (`acp/harness/<name>.py`) and one registry
+row (`process_adapter_for`) rather than three sites in `acp/client.py`. Those are the
+only recurring edit points left that a membership set does not already absorb.

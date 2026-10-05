@@ -1,8 +1,10 @@
 """``kiro_crew.acp.client`` and ``kiro_crew.acp.runtime`` stay the ACP patch seams after the split.
 
-The module-level code moved out of the two transports lives in five owner modules
-(``transport_framing``, ``transport_errors``, ``runtime_models``, ``runtime_process_tree``,
-``runtime_start``). Each facade keeps every moved name readable under its old path. A
+The module-level code moved out of the two transports lives in its owner modules:
+``transport_framing``, ``transport_errors``, ``runtime_models``, ``runtime_process_tree``,
+``runtime_start``, the launch tail ``launch``, and the per-process host adapters under
+``harness`` (``claude``, ``opencode``, ``goose``, ``pi``, ``deepseek``). Each facade keeps
+every moved name readable under its old path. A
 name the facade's own code reads, and that nothing patches through it, is an ordinary
 import; every other moved name is FORWARDED, so a patch through the facade lands on
 the owner, where the owner's own callers read it. The modules the moved helpers probe
@@ -42,6 +44,9 @@ import test_acp_refactor_create_guard as create_guard
 import kiro_crew.acp as acp_package
 from kiro_crew import platform_compat, sandbox, subagent
 from kiro_crew.acp import client as acp_client
+from kiro_crew.acp import (
+    launch,
+)
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp import (
     runtime_models,
@@ -50,6 +55,11 @@ from kiro_crew.acp import (
     transport_errors,
     transport_framing,
 )
+from kiro_crew.acp.harness import claude as claude_harness
+from kiro_crew.acp.harness import deepseek as deepseek_harness
+from kiro_crew.acp.harness import goose as goose_harness
+from kiro_crew.acp.harness import opencode as opencode_harness
+from kiro_crew.acp.harness import pi as pi_harness
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.start_priority import StartPriority
 
@@ -65,6 +75,12 @@ _OWNERS: dict[str, ModuleType] = {
         runtime_models,
         runtime_process_tree,
         runtime_start,
+        launch,
+        claude_harness,
+        opencode_harness,
+        goose_harness,
+        pi_harness,
+        deepseek_harness,
     )
 }
 _SRC = Path(acp_client.__file__).resolve().parent
@@ -187,8 +203,146 @@ _MOVED: dict[str, dict[str, tuple[str, ...]]] = {
             "_is_our_child",
             "_kill_escaped_children",
         ),
+        "kiro_crew.acp.launch": (
+            "_ADAPTER_INTERPRETERS",
+            "_is_adapter_package_entry",
+            "_named_by_override",
+            "_adapter_spawn_label",
+            "_normalize_exe_casing",
+            "_mise_node_installs_dir",
+            "_resolve_node_for_script",
+            "_UNRESOLVED",
+            "_vendored_acp_roots",
+            "_resolve_node_adapter_argv",
+            "_node_module_search_dirs",
+            "_vendored_adapter_entry",
+            "_self_served_bin_caches",
+            "_resolution_generation",
+            "_resolution_epoch",
+            "bump_resolution_generation",
+            "_resolve_self_served_bin",
+            "_SANDBOX_PREFLIGHT_TIMEOUT",
+            "_sandbox_preflight",
+            "_run_preflight_bounded",
+            "_unlink_readback_launcher",
+            "_READBACK_STDERR_SCAN_CHARS",
+            "_READBACK_FAULT_MAX_SHAPES",
+            "_READBACK_FAULT_SHAPES",
+            "_readback_stderr_diagnosis",
+            "_readback_detail_with_diagnosis",
+            "mise_data_dir",
+            "RLIMIT_PROFILE_SESSION_HOST",
+            "KIROCREW_SPAWNED_ENV",
+            "KIROCREW_SPAWNED_VALUE",
+        ),
+        "kiro_crew.acp.harness.claude": (
+            "CLAUDE_ACP_BIN",
+            "CLAUDE_CODE_BIN",
+            "CLAUDE_ACP_NPM_PKG",
+            "_CLAUDE_ACP_PKG_ENTRY",
+            "_CLAUDE_ACP_DEP_MARKER",
+            "_claude_acp_argv_cache",
+            "_resolve_vendored_claude_acp",
+            "_resolve_claude_acp_bin",
+            "_resolve_claude_code_executable",
+            "_claude_adapter_installed_version",
+        ),
+        "kiro_crew.acp.harness.opencode": (
+            "_OPENCODE_LAUNCH",
+            "OPENCODE_BIN",
+            "_ENV_OPENCODE_CONFIG_CONTENT",
+            "OPENCODE_INSTALL_COMMAND",
+            "_OPENCODE_CONFIG_READBACK_ARGS",
+            "_OPENCODE_READBACK_TIMEOUT_S",
+            "_opencode_readback_remedy",
+            "_opencode_uniform_permission",
+            "_opencode_rules_deny",
+            "_opencode_config_mcp_server_names",
+            "_opencode_config_mcp_servers_remedy",
+            "_opencode_agent_permissions",
+            "MAX_HARNESS_CONFIG_MCP_SERVERS",
+            "MAX_HARNESS_TOOL_NAME_LEN",
+            "opencode_rewrites_name",
+        ),
+        "kiro_crew.acp.harness.goose": (
+            "_ENV_GOOSE_MODE",
+            "_GOOSE_BUILTIN_ARG",
+            "_GOOSE_BUILTIN_DEVELOPER",
+        ),
+        "kiro_crew.acp.harness.pi": (
+            "PI_ACP_BIN",
+            "PI_ACP_NPM_PKG",
+            "_PI_ACP_PKG_ENTRY",
+            "_PI_ACP_DEP_MARKER",
+            "_ENV_PI_ACP_BIN",
+            "PI_BIN",
+            "PI_NPM_PKG",
+            "_ENV_PI_ACP_PI_COMMAND",
+            "PI_INSTALL_COMMAND",
+            "_PI_RPC_ARGS",
+            "_PI_EXTENSION_FLAG",
+            "_PI_READBACK_REQUEST",
+            "_PI_READBACK_TIMEOUT_S",
+            "PI_MIN_VERSION",
+            "_PI_NPM_PACKAGE_NAMES",
+            "_PI_MANIFEST_SEARCH_DEPTH",
+            "_ENV_PI_GATE_SESSION",
+            "PI_GATE_EXTENSION_SHA256",
+            "_pi_acp_argv_cache",
+            "_pi_bin_cache",
+            "_pi_gate_launcher_cache",
+            "_resolve_pi_acp_bin",
+            "_resolve_pi_bin",
+            "_pi_installed_version",
+            "_pi_version_issue",
+            "pi_gate_extension_path",
+            "_pi_gate_artifact_dir",
+            "_pi_gate_extension_bytes",
+            "_seal_pi_gate_extension",
+            "_seal_gate_extension",
+            "_publish_gate_artifact",
+            "_pi_gate_launcher_body",
+            "_ensure_pi_gate_launcher",
+            "_pi_readback_remedy",
+            "_same_file_spelling",
+            "_same_file_spelling_all",
+            "_pi_commands_from_readback",
+            "agent_sdk",
+        ),
+        "kiro_crew.acp.harness.deepseek": (
+            "_DSH_PATCH_FLAG",
+            "_ENV_DSH_GATE_SESSION",
+            "_ENV_DSH_GATE_MARKER",
+            "_ENV_DSH_GATE_SCRUB_NAMES",
+            "_DSH_GATE_SCRUB_CANARY_PREFIX",
+            "_DSH_GATE_READBACK_TIMEOUT_S",
+            "_DSH_GATE_MARKER_POLL_S",
+            "_DSH_GATE_PROBE_EXIT_S",
+            "_DSH_GATE_MARKER_MAX_BYTES",
+            "DEEPSEEK_GATE_EXTENSION_SHA256",
+            "_ENV_DEEPSEEK_PERMISSION_MODE",
+            "DEEPSEEK_PERMISSION_MODE",
+            "_DEEPSEEK_ENV_CHILD_SCRUB_CLASS",
+            "_DEEPSEEK_ENV_NAME_GRAMMAR",
+            "_DEEPSEEK_ENV_RESERVED_PREFIXES",
+            "_DEEPSEEK_ENV_CREW_OWNED_NAMES",
+            "deepseek_gate_extension_path",
+            "_seal_deepseek_gate_extension",
+            "_write_deepseek_gate_patch",
+            "_validate_deepseek_env_mapping",
+            "_deepseek_vault_env_names",
+            "_deepseek_vault_env",
+            "SECRET_URI_PREFIX",
+            "resolve_secret_uris",
+            "agent_env_scrub_prefixes",
+        ),
     },
     "kiro_crew.acp.runtime": {
+        "kiro_crew.acp.launch": (
+            "KIROCREW_SPAWNED_ENV",
+            "KIROCREW_SPAWNED_VALUE",
+            "RLIMIT_PROFILE_SESSION_HOST",
+        ),
         "kiro_crew.acp.runtime_process_tree": (
             "_get_rss_mb",
             "_own_children",
@@ -235,6 +389,34 @@ _MOVED: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
 }
+
+
+#: ``AcpClient`` methods the split turned into owner FUNCTIONS, each taking the client it
+#: served as its first argument. Their code came from the facade too, so a name they read
+#: there is a seam like any moved helper's.
+_MOVED_METHODS: dict[str, dict[str, tuple[str, ...]]] = {
+    "kiro_crew.acp.client": {
+        "kiro_crew.acp.harness.opencode": ("_verify_opencode_routing",),
+        "kiro_crew.acp.harness.pi": ("_verify_pi_gate",),
+        "kiro_crew.acp.harness.deepseek": ("_verify_deepseek_gate",),
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("facade", "owner", "name"),
+    [
+        (facade, owner, name)
+        for facade, owners in _MOVED_METHODS.items()
+        for owner, names in owners.items()
+        for name in names
+    ],
+)
+def test_a_moved_method_is_its_owners_function_and_left_no_method_behind(
+    facade: str, owner: str, name: str
+) -> None:
+    assert callable(vars(_OWNERS[owner])[name])
+    assert not hasattr(_FACADES[facade].AcpClient, name)
 
 
 class _Reached(BaseException):
@@ -386,6 +568,16 @@ def test_oversize_line_unrecoverable_keeps_the_client_path_too() -> None:
 def test_the_owners_log_under_the_names_their_code_logged_under() -> None:
     assert transport_errors.logger is acp_client.logger
     assert runtime_process_tree.logger is acp_client.logger
+    # The launch helpers and the per-process hosts were the client's code.
+    for owner in (
+        launch,
+        claude_harness,
+        opencode_harness,
+        goose_harness,
+        pi_harness,
+        deepseek_harness,
+    ):
+        assert getattr(owner, "logger", acp_client.logger) is acp_client.logger, owner
     assert runtime_start.logger is acp_runtime.logger
     assert not hasattr(transport_framing, "logger")
     assert not hasattr(runtime_models, "logger")
@@ -1184,6 +1376,27 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "kiro_crew.acp.runtime",
         ("AcpRuntimeDead", "AcpSessionHandle", "time"),
     ),
+    # The binary ladders read the client's mise probe and PATH augmentation, which its
+    # unit tests rebind there.
+    **{
+        (owner, ladder): ("kiro_crew.acp.client", ("_mise_which", "augmented_path"))
+        for owner, ladder in (
+            ("kiro_crew.acp.launch", "_resolve_node_adapter_argv"),
+            ("kiro_crew.acp.launch", "_resolve_self_served_bin"),
+            ("kiro_crew.acp.harness.claude", "_resolve_claude_code_executable"),
+            ("kiro_crew.acp.harness.pi", "_resolve_pi_bin"),
+        )
+    },
+    # A routing read-back builds its child's environment with the session's own
+    # credential repair and PATH augmentation, which stayed on the client.
+    **{
+        (owner, readback): ("kiro_crew.acp.client", ("_resolve_spawn_env", "augmented_path"))
+        for owner, readback in (
+            ("kiro_crew.acp.harness.pi", "_verify_pi_gate"),
+            ("kiro_crew.acp.harness.deepseek", "_verify_deepseek_gate"),
+            ("kiro_crew.acp.harness.opencode", "_verify_opencode_routing"),
+        )
+    },
 }
 
 
@@ -1212,7 +1425,10 @@ def test_each_seam_is_a_binding_of_the_facade_the_helper_came_from(
     owner, which binds none of them -- and the helper's code came from that facade."""
     owner, function = site
     facade, names = seam
-    assert function.split(".", 1)[0] in _MOVED[facade][owner]
+    came_from_the_facade = _MOVED[facade].get(owner, ()) + _MOVED_METHODS.get(facade, {}).get(
+        owner, ()
+    )
+    assert function.split(".", 1)[0] in came_from_the_facade
     module = _FACADES[facade]
     for name in names:
         assert name in vars(module) and name not in module._EXPORTS, name
@@ -1252,13 +1468,40 @@ def test_each_function_that_reads_a_load_time_binding_imports_it_from_the_facade
 
 
 def test_the_owners_depend_on_each_other_one_way() -> None:
-    """``transport_errors`` reads the model catalog; no other owner reads another."""
+    """The owners form layers, read downward only.
+
+    ``transport_errors`` reads the model catalog. The launch tail reads the error
+    family and the stdout bound. Each per-process host reads the launch helpers and
+    the error family, and the DeepSeek host shares pi's sealed artifact directory.
+    Nothing reads a host adapter except another host, and no owner reads back up.
+    Both import spellings are read -- ``from <owner> import name`` and ``from
+    <package> import <owner>`` -- so an edge cannot hide behind the second.
+    """
     edges: set[tuple[str, str]] = set()
     for owner in _OWNERS.values():
         for node in ast.walk(_tree(owner)):
-            if isinstance(node, ast.ImportFrom) and node.module in _OWNERS:
+            if not isinstance(node, ast.ImportFrom) or node.module is None:
+                continue
+            if node.module in _OWNERS:
                 edges.add((owner.__name__, node.module))
-    assert edges == {(transport_errors.__name__, runtime_models.__name__)}
+            for alias in node.names:
+                if f"{node.module}.{alias.name}" in _OWNERS:
+                    edges.add((owner.__name__, f"{node.module}.{alias.name}"))
+    errors, framing, the_launch = (
+        transport_errors.__name__,
+        transport_framing.__name__,
+        launch.__name__,
+    )
+    hosts = {claude_harness, opencode_harness, goose_harness, pi_harness, deepseek_harness}
+    expected = {
+        (errors, runtime_models.__name__),
+        (the_launch, errors),
+        (the_launch, framing),
+        (deepseek_harness.__name__, pi_harness.__name__),
+        *((host.__name__, the_launch) for host in hosts),
+        *((host.__name__, errors) for host in hosts - {goose_harness}),
+    }
+    assert edges == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -1501,7 +1744,9 @@ _THIS_FILE = Path(__file__).resolve().relative_to(_SRC.parents[2]).as_posix()
 #: this file's own facade-parametrized round trips, and ``self`` or fixture modules.
 _UNRESOLVED_FACADE_PATCHES: dict[tuple[str, str], int] = {
     ("test/acp_launch_capture.py", "_capture_runtime_served"): 2,
-    ("test/acp_launch_capture.py", "_stub_common"): 2,
+    ("test/acp_launch_capture.py", "_stub_common"): 4,
+    ("test/test_acp_pod_home_remap.py", "_remap_calls"): 1,
+    ("test/test_harness_parity.py", "test_is_kiro_cli_is_positive"): 2,
     **{
         ("test/test_acp_dynamic_config.py", f"TestUpdateReasoningEffortValues.{test}"): 1
         for test in (
@@ -1557,14 +1802,26 @@ def test_the_launch_capture_patches_no_moved_name() -> None:
 #: importing its own: such a patch reaches only the facade's own code. Every entry is
 #: patched for code that stayed in the facade -- the client's stderr drain and session
 #: init (``logger``), ``AcpClient.send_command`` (``redact_exfiltration_urls``), the
-#: runtime's response bound and descendant snapshot. A new entry is a decision that the
-#: patch needs no forwarding.
+#: runtime's response bound and descendant snapshot -- or for the launch the driver
+#: starts: each driver hands the launch tail its OWN sandbox wrap, scrub and scratch
+#: module (``_launch_tools``), so those patches reach the launch they drive, while a
+#: host's routing read-back wraps and scrubs with its adapter module's binding, which
+#: that host's tests patch there. ``launch`` on the runtime is the runtime's own call of
+#: the tail, which a test wraps to observe the runtime's steps. A new entry is a
+#: decision that the patch needs no forwarding.
 _SHARED_BINDINGS_PATCHED: frozenset[tuple[str, str]] = frozenset(
     {
         ("kiro_crew.acp.client", "logger"),
         ("kiro_crew.acp.client", "redact_exfiltration_urls"),
+        ("kiro_crew.acp.client", "scrub_agent_subprocess_env"),
+        ("kiro_crew.acp.client", "wrap_argv"),
+        ("kiro_crew.acp.client", "wrap_argv_async"),
         ("kiro_crew.acp.runtime", "_RESPONSE_WRITE_BOUND_SECS"),
         ("kiro_crew.acp.runtime", "_get_child_pids"),
+        ("kiro_crew.acp.runtime", "agent_scratch"),
+        ("kiro_crew.acp.runtime", "launch"),
+        ("kiro_crew.acp.runtime", "wrap_argv"),
+        ("kiro_crew.acp.runtime", "wrap_argv_async"),
     }
 )
 

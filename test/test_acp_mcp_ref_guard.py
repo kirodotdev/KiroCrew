@@ -1166,19 +1166,47 @@ class TestTheSpawnHopCarriesTheSnapshot:
         assert (tmp_path / "ok").is_dir()
         assert ok._mcp_ref_spec is None
 
-    def test_the_detector_adds_no_await_to_the_construction_path(self):
+    def test_the_detector_adds_no_await_to_the_construction_path(self, tmp_path):
         """The snapshot is never awaited on its own -- only inside the mkdir hop.
 
         Pinned as the absence of a separate hop rather than as a total await count,
         so an unrelated await added to ``_spawn`` later cannot fail this for the
         wrong reason. What must stay true is narrow: the detector's read reaches
         the executor ONLY as a passenger of the hop ``_spawn`` already had, which
-        is what keeps it off kiro-cli's suspension-point budget (H13).
+        is what keeps it off kiro-cli's suspension-point budget (H13). Read off a
+        real kiro-cli launch: every function the spawn hands a worker thread is
+        recorded, and the workspace hop is among them exactly once while the
+        detector's own read is never one of them.
         """
-        spawn = inspect.getsource(AcpClient._spawn)
-        assert "await asyncio.to_thread(self._prepare_spawn_workspace)" in spawn
-        assert "_read_mcp_ref_spec" not in spawn
-        assert "_mcp_ref_spec" not in spawn
+        import asyncio
+        import functools
+        from unittest.mock import patch
+
+        import acp_launch_capture as capture_mod
+
+        from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+
+        hops: list[str] = []
+        real_to_thread = asyncio.to_thread
+
+        def _name(fn) -> str:
+            while isinstance(fn, functools.partial):
+                fn = fn.func
+            if hasattr(fn, "_extract_mock_name"):
+                return fn._extract_mock_name()
+            return getattr(fn, "__name__", repr(fn))
+
+        async def _recording_to_thread(fn, /, *args, **kwargs):
+            hops.append(_name(fn))
+            return await real_to_thread(fn, *args, **kwargs)
+
+        capture_mod.capture(
+            ACP_BACKEND_KIRO,
+            tmp_path,
+            extra_patches=(patch("asyncio.to_thread", _recording_to_thread),),
+        )
+        assert hops.count("_prepare_spawn_workspace") == 1, hops
+        assert not [hop for hop in hops if "mcp_ref" in hop], hops
 
         # ...and the fold itself is not split back apart: one hop, both halves.
         hop = inspect.getsource(AcpClient._prepare_spawn_workspace)

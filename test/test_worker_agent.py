@@ -1985,17 +1985,30 @@ def test_the_spawn_gate_is_called_exactly_once_per_spawn():
 def test_the_harness_spawn_seam_is_reached_only_through_the_gated_owner():
     """What licenses the kiro harness not gating: its spawn seam has exactly one caller in
     the product, and that caller gates. A second caller would be an ungated spawn path,
-    which is the hole the enumeration test's exemption would otherwise hide."""
+    which is the hole the enumeration test's exemption would otherwise hide.
+
+    The client resolves the plans of the hosts it launches one process per session for
+    through the same method name, on a ``ProcessAdapter``. That call cannot reach a
+    harness: the registry it reads holds no ``HarnessAdapter`` and has no entry for
+    kiro-cli, whose client launch keeps its own gated arm. So exactly two call sites
+    exist, and only the runtime's can reach the kiro harness's seam.
+    """
+    from kiro_crew.acp.harness import _PROCESS_ADAPTERS, HarnessAdapter, process_adapter_for
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_ACP_RUNTIME
+
     invocations: list[str] = []
     for path, source in _package_sources():
         for lineno, line in enumerate(source.splitlines(), 1):
             if "resolve_spawn(" not in line or "def resolve_spawn(" in line:
                 continue
             invocations.append(f"{path.name}:{lineno}")
-    assert (
-        len(invocations) == 1
-    ), f"the spawn seam is invoked from more than one place: {invocations}"
-    assert invocations[0].startswith("runtime.py:"), invocations
+    assert sorted(name.split(":")[0] for name in invocations) == [
+        "client.py",
+        "runtime.py",
+    ], f"the spawn seam is invoked from an unexpected place: {invocations}"
+    assert not any(issubclass(cls, HarnessAdapter) for cls in _PROCESS_ADAPTERS.values())
+    for backend in ACP_BACKENDS_ACP_RUNTIME:
+        assert process_adapter_for(backend) is None
 
 
 def test_a_re_derive_during_the_hosts_own_pre_spawn_work_does_not_kill_the_session(
@@ -2692,19 +2705,32 @@ def test_the_identity_fast_path_re_stats_after_reading_the_sidecar(tmp_path, mon
     assert agent._derived_spec_matches_default("kirocrew-worker") is False
 
 
-def test_the_client_closes_the_bracket_after_the_handshake():
+def test_the_client_closes_the_bracket_after_the_handshake(tmp_path):
     """The second subprocess spawner, and the same placement rule: the AcpClient captures
     the snapshot in ``_spawn`` and must re-verify it in ``_initialize_session`` after the
     ``initialize`` response and BEFORE any session is created, so a session is never
     built on a spec nobody verified."""
     import inspect
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
 
     from kiro_crew.acp import client
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 
-    spawn_src = inspect.getsource(client.AcpClient._spawn)
-    assert (
-        "self._derived_spec_snapshot = derived_snapshot" in spawn_src
-    ), "the capture half must stay in _spawn -- it is the window's opening edge"
+    # The capture half, observed on a real kiro-cli launch: what the gate returned
+    # is what the spawn left on the client for the handshake to verify.
+    snapshot = object()
+    left: list[object] = []
+    capture_mod.capture(
+        ACP_BACKEND_KIRO,
+        tmp_path,
+        extra_patches=(patch.object(client, "require_fresh_derived_spec", return_value=snapshot),),
+        observe=lambda spawned: left.append(spawned._derived_spec_snapshot),
+    )
+    assert left == [
+        snapshot
+    ], "the capture half must stay in _spawn -- it is the window's opening edge"
 
     src = inspect.getsource(client.AcpClient._initialize_session)
     assert (

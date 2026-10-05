@@ -651,16 +651,22 @@ class TestTheMirrorFaces:
         OpenCodeMirror().write_files("kirocrew", work_dir=tmp_path)
         assert sorted(p.name for p in tmp_path.iterdir()) == before
 
-    def test_the_routing_seed_carries_no_mcp_block(self):
-        """The other half of "pick one channel", asserted against the code that
-        writes the config Crew DOES seed."""
-        import inspect
+    def test_the_routing_seed_carries_no_mcp_block(self, monkeypatch):
+        """The other half of "pick one channel", asserted against the config Crew
+        DOES seed: its only key of Crew's own is the permission setting, so no
+        ``mcp`` block reaches the harness through it, with or without an operator's
+        own config to merge over."""
+        from kiro_crew import acp_tool_gate
+        from kiro_crew.acp.harness import opencode as opencode_mod
 
-        from kiro_crew.acp import client as client_mod
+        setting_key, _value = acp_tool_gate.permission_setting_for(ACP_BACKEND_OPENCODE)
+        monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+        seeded = json.loads(opencode_mod._opencode_routing_config(ACP_BACKEND_OPENCODE))
+        assert set(seeded) == {setting_key}
 
-        body = inspect.getsource(client_mod.AcpClient._opencode_routing_config)
-        assert '"mcp"' not in body
-        assert "mcpServers" not in body
+        monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps({"theme": "dark"}))
+        merged = json.loads(opencode_mod._opencode_routing_config(ACP_BACKEND_OPENCODE))
+        assert set(merged) == {"theme", setting_key}
 
 
 # ── the real adapter ────────────────────────────────────────────────────────
@@ -1181,6 +1187,7 @@ def test_the_driver_and_stub_are_syntactically_valid_python():
 def _real_opencode_read_back(tmp_path, global_permission: dict) -> tuple[str, str]:
     """Run the real routing read-back under a private HOME holding *global_permission*."""
     from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.harness import opencode as opencode_mod
 
     home = tmp_path / "home"
     config_home = home / ".config"
@@ -1198,8 +1205,56 @@ def _real_opencode_read_back(tmp_path, global_permission: dict) -> tuple[str, st
         "XDG_STATE_HOME": str(home / ".local" / "state"),
     }
     client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_OPENCODE, extra_env=isolated)
-    seed = client._opencode_routing_config()
-    return client._verify_opencode_routing([_BIN, "debug", "config"], seed)
+    seed = opencode_mod._opencode_routing_config(ACP_BACKEND_OPENCODE)
+    return opencode_mod._verify_opencode_routing(
+        client, ACP_BACKEND_OPENCODE, [str(_BIN), "debug", "config"], seed
+    )
+
+
+@pytest.mark.parametrize(
+    ("resolved_permission", "refused"),
+    [
+        ({"bash": {"git *": "allow", "*": "ask"}, "edit": "allow", "*": "ask"}, False),
+        ({"bash": {"pwd": "deny"}, "*": "ask"}, True),
+    ],
+)
+def test_the_real_read_back_helper_reaches_the_routing_read_back(
+    tmp_path, monkeypatch, resolved_permission, refused
+):
+    """The live tests' helper, run against a canned ``debug config`` everywhere.
+
+    The live tests run only where the harness is installed, so a helper that stopped
+    reaching the read-back would fail only in the lane that installs it. Here the
+    harness's answer is canned: the helper must drive the read-back with the seed it
+    built, in the private HOME it built, and read the answer the way the live test
+    expects -- a per-tool allow under a trailing ask is in force, a deny is refused.
+    """
+    from kiro_crew.acp.harness import opencode as opencode_mod
+
+    ran: list[tuple[list[str], dict]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps({"permission": resolved_permission})
+        stderr = ""
+
+    def _run(argv, **kwargs):
+        ran.append((list(argv), dict(kwargs["env"])))
+        return _Completed()
+
+    monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _run)
+    issue, _remedy = _real_opencode_read_back(tmp_path, {"bash": {"pwd": "deny"}})
+
+    assert len(ran) == 1
+    argv, env = ran[0]
+    assert argv[1:] == ["debug", "config"]
+    assert env["HOME"] == str(tmp_path / "home")
+    assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == json.loads(
+        opencode_mod._opencode_routing_config(ACP_BACKEND_OPENCODE)
+    )
+    assert bool(issue) is refused, issue
+    if refused:
+        assert "deny" in issue
 
 
 @pytest.mark.real_adapter

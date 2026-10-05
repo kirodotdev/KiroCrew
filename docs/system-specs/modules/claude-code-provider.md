@@ -39,17 +39,19 @@ Whether a *machine* can run it is answered by `agent_sdk.probe_backend`.
 
 ## The Claude harness
 
-`acp/client.py` owns the whole Claude spawn path, and it is a live path on a
+`acp/harness/claude.py` owns the whole Claude launch, and it is a live path on a
 plain public build:
 
 - `AcpClient._is_claude` recognizes `ACP_BACKEND_CLAUDE`, and `AcpClient._spawn`
-  takes the adapter branch for it.
+  hands the launch to that host's adapter, `ClaudeLaunch`
+  (`acp.harness.process_adapter_for`).
 - `_resolve_claude_acp_bin()` finds the `claude-agent-acp` Node entry script and
   returns `(argv, searched_path)`; the result is memoized process-wide in
   `_claude_acp_argv_cache`, so the search runs once and the "not found" message
   names exactly the directories that were searched.
-- `_resolve_claude_code_executable()` finds the `claude` CLI and `_spawn` exports
-  it as `CLAUDE_CODE_EXECUTABLE` when the caller has not set one. The adapter
+- `_resolve_claude_code_executable()` finds the `claude` CLI and the adapter's
+  `apply_spawn_env` exports it as `CLAUDE_CODE_EXECUTABLE` when the caller has not
+  set one. The adapter
   forwards it to `@anthropic-ai/claude-agent-sdk` as
   `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
   "Claude native binary not found", because it does not search `PATH` for
@@ -251,8 +253,8 @@ branch — and the array is ordered by server name so the two are comparable.
 
 Those call sites are **synchronous**, and that is a harness-parity constraint
 rather than a style choice. The translation reads disk, but it runs once per
-spawn in `_resolve_session_mcp_servers` (off the loop, from the adapter-only
-branch of `_spawn`) and lands in `_session_mcp_cache`; `_session_mcp_servers` only
+spawn in `_resolve_session_mcp_servers` (off the loop, from the claude adapter's
+own launch, `ClaudeLaunch.resolve_spawn`) and lands in `_session_mcp_cache`; `_session_mcp_servers` only
 hands the cached list out. Awaiting an executor hop at the shared site would put a
 new scheduling and failure point on **every** backend's construction path,
 kiro-cli included — and the kiro path is not allowed to change in service of an
@@ -515,7 +517,7 @@ The array stays withheld when the session asked for a permission mode of its own
 since the pin sets only `default`, when a project file's deny rules cannot be read
 (above), when the adapter is below the `settingSources` floor or reports no version,
 and when the path is a link (below). The floor is decided before the array exists: the
-claude spawn arm reads the installed version (`_claude_adapter_installed_version`)
+claude adapter's launch reads the installed version (`_claude_adapter_installed_version`)
 before the settings writer runs and before the array is warmed off the loop, so nothing
 re-resolves the array after the handshake. A re-seed after the handshake uses the
 reported version. A handshake that reports a version below the floor on a session that
@@ -542,7 +544,8 @@ project does not own. A repository can ship
 input. Refusing costs that session the seed, which the caller logs as a warning
 naming what is lost.
 
-`_spawn` also merges `extra_env` into the child environment, which is how a
+The launch tail (`acp.launch.launch`) also merges `extra_env` into the child
+environment, which is how a
 caller-supplied `CLAUDE_CONFIG_DIR` reaches the adapter
 (`test_spawn_forwards_claude_config_dir_from_extra_env`). The gateway contract is
 to forward inherited `ANTHROPIC_*` and `CLAUDE_CODE_*` variables to the harness
