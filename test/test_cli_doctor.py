@@ -20,7 +20,7 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew import cli_doctor, cron, extras
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI, ACP_BACKEND_QODER
 
 
 class TestManagedServicePolicyDoctor:
@@ -948,6 +948,11 @@ class TestSelectedBackendProjectionRow:
         placed in it produced no error and no tool, verified live on pi-acp 0.0.33),
         so the row below is what tells the operator a pi session carries none of
         Kiro Crew's own tools. The case that follows pins that the row is rendered.
+
+        ``qoder`` is the other, on the OPPOSITE footing: nothing was measured, and
+        ``no-channel`` is the direction that cannot over-promise -- it is known but not
+        selectable, so no operator is shown the row, and a measured mount round trip
+        moves it to ``native``/``broker-only`` in the change that makes it selectable.
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 
@@ -956,7 +961,10 @@ class TestSelectedBackendProjectionRow:
             for backend, declared in PROJECTIONS.items()
             if declared.kind is ProjectionKind.NO_CHANNEL
         }
-        assert gaps == {ACP_BACKEND_PI}, f"no-channel backends shipping: {sorted(gaps)}"
+        assert gaps == {
+            ACP_BACKEND_PI,
+            ACP_BACKEND_QODER,
+        }, f"no-channel backends shipping: {sorted(gaps)}"
 
     def test_the_real_pi_declaration_drives_the_no_channel_row(self, capsys):
         """Read off the SHIPPED declaration: the operator is told, not left to find out."""

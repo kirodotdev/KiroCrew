@@ -273,6 +273,32 @@ ACP_BACKEND_GOOSE = "goose"
 # closure -- so one global install is the whole precondition, with no workspace
 # checkout and no per-profile dependency step.
 ACP_BACKEND_DEEPSEEK = "deepseek"
+# Qoder CLI: a single binary that serves ACP itself, behind a flag that ``--help`` does
+# not list (``qodercli --acp``). No npm adapter and no Node floor, so its install probe
+# names ONE component and its launch is a row of :data:`ACP_BACKEND_LAUNCH`.
+#
+# KNOWN BUT NOT SELECTABLE. What a live capture (qodercli 1.1.17) established:
+#
+# * ``session/new`` is refused with -32000 ``Authentication required`` until the client
+#   sends ``authenticate`` with ``methodId: "qodercli-login"``, which reuses the operator's
+#   own ``qodercli login``.
+# * it answers with ``modes`` (``default`` "Prompts for approval", ``acceptEdits``,
+#   ``bypassPermissions``, ``plan``), ``models`` and ``configOptions`` for ``mode``,
+#   ``model`` and ``reasoning_effort``. In ``default`` mode a mutating shell command
+#   raises ``session/request_permission`` and a ``reject_once`` answer stops it; a
+#   read-only one (``ls``) ran with no request, the harness's own classification.
+# * the tool identity travels in ``_meta.qoder.toolName``.
+#
+# What is NOT established, and is why it is not in :data:`BASELINE_SELECTABLE_BACKENDS`:
+# whether an allow rule in the operator's own Qoder settings pre-approves a call without
+# ever raising ``session/request_permission``. That is the question that left claude
+# outside ``tool_gate.ENFORCED_ROUTINGS``, so until it is measured this harness has no
+# verified routing mechanism (its row is ``UNVERIFIED``, which fails closed) and holds
+# no membership in a capability set that a selectable session would read. Its
+# credential leaf is likewise undeclared: it was not located, and a leaf declared from
+# documentation is a fence around a path nobody checked. The wire facts above are the starting point for the
+# follow-up, not a substitute for it.
+ACP_BACKEND_QODER = "qoder"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -290,6 +316,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -557,6 +584,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_PI: ACP_BACKEND_PI,
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_QODER: ACP_BACKEND_QODER,
 }
 
 #: The backend a deployment policy may never deny.
@@ -2410,6 +2438,13 @@ ACP_BACKEND_ROUTING: dict = {
     # extension Crew composes, which is this member, and the frame corpus carries the
     # live capture (``test/fixtures/acp_frames/deepseek/permission-request-live``).
     ACP_BACKEND_DEEPSEEK: Routing.VERIFIED_GATE_EXTENSION,
+    # qoder is named EXPLICITLY as ``UNVERIFIED`` rather than left to the table's default,
+    # so it is unverified by a recorded decision and not by omission. It is the one known
+    # harness in that state, and that is what keeps it off the switch:
+    # ``register_selectable_backend`` refuses an ``UNVERIFIED`` harness, so neither the
+    # baseline nor an edition can offer it until a mechanism is named here. See
+    # ``ACP_BACKEND_QODER`` for what has to be measured first.
+    ACP_BACKEND_QODER: Routing.UNVERIFIED,
 }
 
 
@@ -2607,6 +2642,18 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
             "this binary is the host that boots the profile it lives in."
         ),
     ),
+    ACP_BACKEND_QODER: SelfServedLaunch(
+        label="Qoder",
+        binary="qodercli",
+        acp_args=("--acp",),
+        bin_env_var="QODERCLI_BIN",
+        install_command="npm i -g @qoder-ai/qodercli",
+        protocol_version=1,
+        missing_hint=(
+            "No adapter package is needed: this harness serves ACP itself, behind "
+            "a flag its --help does not list."
+        ),
+    ),
 }
 
 #: The harnesses whose whole launch is described by :data:`ACP_BACKEND_LAUNCH`.
@@ -2616,6 +2663,16 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
 #: install probe and the driver seams ask. Derived from the table's keys rather than
 #: written a second time, so the two cannot disagree.
 ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
+
+#: Known harnesses Crew will not spawn: an explicit ``Routing.UNVERIFIED`` row. Read
+#: only by :data:`ACP_BACKEND_PROCESS_NAMES` and the ratchet over it. Explicit rows
+#: only, so a known id that merely lacks a routing row is NOT exempted -- it stays a
+#: red ``test_every_registered_backend_has_a_process_name`` rather than a silent leak.
+DORMANT_BACKENDS: frozenset = frozenset(
+    backend
+    for backend, routing in ACP_BACKEND_ROUTING.items()
+    if routing is Routing.UNVERIFIED and backend in ACP_BACKENDS_KNOWN
+)
 
 #: The argv0 basename each harness's child process runs as.
 #:
@@ -2631,6 +2688,14 @@ ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
 #: process — so nothing later can find it. ``test_pid_lifecycle`` ratchets the
 #: coverage, so the omission is a red test rather than a leaked process.
 #:
+#: A DORMANT harness has no entry. ``qoder`` is known and installable but Crew refuses
+#: to spawn it (its routing is ``UNVERIFIED``), so no tracked PID can ever be one of
+#: its processes and there is no orphan for the reclaim to recognise. Naming it anyway
+#: would only widen what the reclaim is willing to signal to any process called
+#: ``qodercli`` that the operator runs on their own. The exemption is DERIVED from the
+#: routing table rather than listed, so it ends the moment ``Routing`` names the
+#: harness's mechanism, which is the same flip that makes it spawnable.
+#:
 #: The three self-served harnesses read their own ``ACP_BACKEND_LAUNCH`` row so the
 #: two tables cannot disagree. The rest are spelled out because their launch is
 #: bespoke: kiro-cli serves both the kiro and KAS backends (KAS is kiro-cli's relay),
@@ -2642,7 +2707,11 @@ ACP_BACKEND_PROCESS_NAMES: Mapping[str, str] = {
     ACP_BACKEND_CLAUDE: "claude-agent-acp",
     ACP_BACKEND_CODEX: "codex-acp",
     ACP_BACKEND_PI: "pi-acp",
-    **{backend: record.binary for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
+    **{
+        backend: record.binary
+        for backend, record in sorted(ACP_BACKEND_LAUNCH.items())
+        if backend not in DORMANT_BACKENDS
+    },
 }
 
 

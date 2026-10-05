@@ -344,6 +344,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "kas",
         "opencode",
         "pi",
+        "qoder",
     ]
 
 

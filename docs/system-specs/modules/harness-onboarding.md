@@ -843,3 +843,69 @@ corpus, one auth declaration, one install probe, one mirror class, and the three
 per-backend sites in `acp/client.py` that every harness has extended — the spawn arm,
 the spawn label and the stderr label. Those three are the only recurring edit points
 left that a membership set does not already absorb.
+
+## Worked example: the Qoder harness
+
+The run to read for what a **dormant** landing looks like when the blocker is a missing
+measurement rather than a known hole. It is in `ACP_BACKENDS_KNOWN` and it is **not**
+selectable: `NOT_SHIPPED_SELECTABLE` in `test_agent_backend_editable.py` names it, with
+the reason. Qoder CLI serves ACP from its own binary behind a flag `--help` does not
+list (`qodercli --acp`), so it is a row of `ACP_BACKEND_LAUNCH` and needs no adapter.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_QODER`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_QODER`, policy name mapped. |
+| 2 capability sets | Deliberately **not** decided by membership: a set is an opt-in claim, and no membership has been measured. Absent from every set, which is the fail-closed answer, and the reason each is a follow-up is recorded below. |
+| 3 spawn path | One `ACP_BACKEND_LAUNCH` row (`qodercli --acp`, `QODERCLI_BIN`, `npm i -g @qoder-ai/qodercli`). The `_spawn` arm resolves the launch and then **refuses**, so the id cannot fall through to the kiro-cli arm and run under the wrong identity. |
+| 4 handshake | Done — integer `1`, captured off its own wire. |
+| 5 auth declaration | Declared with **no credential leaf**: where `qodercli login` stores its login was not located, and a leaf written from documentation fences a path nobody checked. |
+| 6 install probe | Done — `_probe_self_served` reads the launch row. |
+| 7 selectability | **Not selectable.** Routing is `UNVERIFIED`; the MCP projection is `no-channel` because no mount was measured. |
+| 8 live spill | Not reached; no live session runs. |
+| verified against | qodercli **1.1.17**. The current npm release is newer; re-measure before raising the range. |
+
+What a capture of 1.1.17 established, committed as `test/fixtures/acp_frames/qoder/handshake-live.jsonl`
+and `turn-live.jsonl` (the auth, mode and permission-option facts below are in them; the read-only
+`ls` that ran with no request is not):
+
+- `initialize` answers integer `1`, advertises `loadSession`, `session/{close,delete,fork,list,resume}`
+  and `mcpCapabilities: {http, sse}`, and lists one auth method, `qodercli-login`.
+- `session/new` is refused with -32000 `Authentication required` until the client sends
+  `authenticate` for `qodercli-login`, which reuses the operator's own login.
+- It then returns `modes` (`default` prompts; `acceptEdits`, `bypassPermissions`, `plan`),
+  `models`, and `configOptions` for `mode`, `model` and `reasoning_effort`
+  (`xhigh`/`low`/`medium`/`none`). That is the same config-option shape claude and codex use
+  for model and effort; `mode` is the shape `Routing.SESSION_CONFIG` reads.
+- In `default` mode a mutating shell command raised `session/request_permission` with the
+  options `proceed_once`, `cancel` (`reject_once`) and `proceed_always_and_save`
+  (`allow_always`, which writes a persistent allow rule into the harness's own settings —
+  Crew must never select it). A `cancel` answer stopped the command. A read-only command
+  (`ls`) ran with **no** request: the harness classifies some commands as safe itself, the
+  same residual codex carries for passive reads.
+- Tool identity travels in `_meta.qoder.toolName`.
+
+### What makes it selectable
+
+Each item is a measurement, not an edit; the edit follows the measurement.
+
+1. **Pre-approval.** Whether an allow rule in the operator's own Qoder settings lets a
+   call run without ever raising `session/request_permission`. This is the question that
+   left claude outside `tool_gate.ENFORCED_ROUTINGS`, and it decides whether `default`
+   mode read back off the `session/new` response is enough.
+2. **Routing.** Name the mechanism in `ACP_BACKEND_ROUTING` (`SESSION_CONFIG` with
+   `("mode", "default")` is the candidate) so the verdict stops reading `INDETERMINATE`,
+   and confirm the refusal path on a session that reports another mode.
+3. **Credential leaf.** Locate the store, declare it with `adapter_own_leaves` as a
+   subset, and check it against the sandbox mask.
+4. **MCP projection.** Capture a stdio element on `session/new` being asked
+   `initialize`, `tools/list` and `tools/call` by the harness, then replace `no-channel`
+   and decide `ACP_BACKENDS_SESSION_MCP_ARRAY`.
+5. **Capability sets.** Decide each set from a measurement — model and effort over config
+   option, advertised-model selection, `ACP_BACKENDS_META_IDENTITY` (the frame corpus must
+   cover every tool class), session eviction (`close` is advertised; measure that it
+   evicts), and resume without load.
+6. **The flip.** Re-record the corpus against the current release if the range moved, replace
+   the "not measured" cells in this harness's `agent-host-contract.md` column with measured
+   ones, then add the id to `BASELINE_SELECTABLE_BACKENDS` and empty `NOT_SHIPPED_SELECTABLE`. Naming the routing mechanism also gives the harness its entry in
+   `ACP_BACKEND_PROCESS_NAMES` (a dormant id is left out of it, so the orphan reclaim never
+   signals an operator's own standalone binary); `DORMANT_BACKENDS` derives from the routing row.

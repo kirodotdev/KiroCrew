@@ -865,6 +865,7 @@ class TestEndpointPayloadShape:
             "kiro",
             "opencode",
             "pi",
+            "qoder",
         ]
         for row in rows:
             assert set(row) == {
