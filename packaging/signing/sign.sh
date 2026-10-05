@@ -147,26 +147,17 @@ MANIFEST=$(SIGNER_ACCESS_ROLE_ARN="${AWS_SIGNER_ROLE_ARN}" \
 
 # Signing service ad-hoc signing API v2: POST /v2/sign-tasks. awscurl SigV4-signs
 # from the AWS credential chain (env vars, incl. AWS_SESSION_TOKEN) -- no
-# credentials on the command line. The full response body is surfaced on
-# failure so auth/manifest errors stay diagnosable.
+# credentials on the command line. submit_sign_task retries a throttled
+# submission and surfaces the full response body on any other failure, so
+# auth/manifest errors stay diagnosable.
 if ! command -v awscurl >/dev/null 2>&1; then
   echo "ERROR: awscurl not found (required for SigV4 signing)" >&2
   exit 1
 fi
 
-RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
-  -X POST -H "Content-Type: application/json" -d "$MANIFEST" \
-  "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1) || {
-  echo "ERROR: sign-task submission failed" >&2
-  echo "$RESPONSE" >&2
-  exit 4
-}
-
-SIGN_TASK_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['signTaskId'])" 2>/dev/null) || {
-  echo "ERROR: submission returned no signTaskId:" >&2
-  echo "$RESPONSE" >&2
-  exit 4
-}
+# shellcheck source=cdsigner-submit.sh
+source "$SCRIPT_DIR/cdsigner-submit.sh"
+SIGN_TASK_ID=$(submit_sign_task "$MANIFEST") || exit 4
 
 log "Sign task submitted: ${SIGN_TASK_ID}"
 

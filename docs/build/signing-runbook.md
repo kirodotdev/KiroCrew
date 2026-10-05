@@ -277,6 +277,14 @@ generic scan rejection. The known trigger is macOS tar metadata: `bsdtar` embeds
 probe matrix (vary the manifest and the input tarball independently) before
 blaming the manifest.
 
+**Submission answers `{"message":"Too Many Requests"}`.** The service throttles a
+burst, and the universal, arm64 and x64 legs of one release submit together.
+`sign.sh` and `sign-dmg.sh` submit through `cdsigner-submit.sh`, which resubmits a
+throttled request up to five times with jittered doubling backoff (at most 300s
+of waiting) and fails at once on any other answer. A throttled request created no
+task, so the resubmission is safe. Exit code 4 with "still throttled after 5
+attempts" means the service stayed saturated; rerun the failed job.
+
 **Signing times out.** `sign.sh` polls for 45 minutes (`MAX_WAIT`, 30s interval)
 and gates on the explicit `success` status flag rather than elapsed time, so a
 success arriving on the final tick is not misread as a timeout. Exit code 5 is a

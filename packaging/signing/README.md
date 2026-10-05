@@ -23,6 +23,11 @@ trigger macOS Gatekeeper warnings).
   for all Electron helper processes and frameworks.
 - `sign.sh` — CI script that packages, uploads, submits to the signing
   service, polls, downloads, and verifies the signed artifact.
+- `cdsigner-submit.sh` — the sign-task submission `sign.sh` and `sign-dmg.sh`
+  source. A throttled answer (HTTP 429, `Too Many Requests`) is resubmitted with
+  jittered doubling backoff, five attempts and at most 300s of waiting; any other
+  failure is reported at once. `test/test_cdsigner_submit.py` drills it against a
+  scripted fake `awscurl`.
 - `notarize.sh` — submits a file to the Apple notary service and polls
   `notarytool info` for the verdict, retrying transient request failures
   (NSURLErrorDomain timeouts, 5xx) with exponential backoff inside a 30m hard
