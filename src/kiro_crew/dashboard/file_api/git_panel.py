@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         _redact_project_path,
         _sel,
         _slot_project_snapshot,
-        config_hook_disable_args,
+        config_hook_disable_args_sandboxed,
         is_sensitive_path,
         popen_limited,
         redact,
@@ -389,8 +389,13 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         # `core.hooksPath`, and `status` runs `post-index-change` when it refreshes the
         # index. Each name git can see is disabled. See `kiro_crew.git_config_hooks`.
         try:
-            _git_cmd = [*_git_cmd, *config_hook_disable_args(base, env=_env)]
-        except ConfigHookScanError:
+            _git_cmd = [
+                *_git_cmd,
+                *config_hook_disable_args_sandboxed(
+                    base, spawn_argv=sandboxed_spawn_argv, mode="strict", env=_env
+                ),
+            ]
+        except (ConfigHookScanError, RuntimeError):
             return {"_status_unavailable": True}
 
         # ``rev-parse --git-dir`` proves this is a repository, not that HEAD is
@@ -773,8 +778,13 @@ async def api_project_git_log(request: web.Request) -> web.Response:
 
         # Same config-defined hook disable as the status route.
         try:
-            _git_cmd = [*_git_cmd, *config_hook_disable_args(base, env=_env)]
-        except ConfigHookScanError:
+            _git_cmd = [
+                *_git_cmd,
+                *config_hook_disable_args_sandboxed(
+                    base, spawn_argv=sandboxed_spawn_argv, mode="strict", env=_env
+                ),
+            ]
+        except (ConfigHookScanError, RuntimeError):
             return {"_log_unavailable": True}
 
         # Same filter-driver refusal as the status handler (defense in depth:

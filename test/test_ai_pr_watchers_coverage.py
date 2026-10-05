@@ -252,9 +252,7 @@ class TestGitHelper:
         assert seen["kwargs"]["errors"] == "replace"
         assert seen["kwargs"]["text"] is True
 
-    def test_a_dangling_dash_c_does_not_pin_or_crash(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_dangling_dash_c_does_not_pin_or_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pinned: list[str] = []
         monkeypatch.setattr(W, "require_pinned", lambda cwd: pinned.append(str(cwd)))
         monkeypatch.setattr(
@@ -362,9 +360,7 @@ class TestSetupIsolatedClone:
         clone, err = W.setup_isolated_clone(str(shared), str(link))
         assert clone == "" and "symlink" in err
 
-    def test_a_failed_clone_is_reported_with_git_stderr(
-        self, tmp_path: Path, git: FakeGit
-    ) -> None:
+    def test_a_failed_clone_is_reported_with_git_stderr(self, tmp_path: Path, git: FakeGit) -> None:
         shared = tmp_path / "shared"
         shared.mkdir()
         git.rule("clone", "--local", rc=128, err="fatal: repository not found")
@@ -454,7 +450,11 @@ class TestFetchBaseRef:
     def test_the_second_spelling_is_tried_when_the_first_is_absent(self, git: FakeGit) -> None:
         """``clone --local`` brings over refs/heads but not refs/remotes, so the base a PR
         targets may be held under either name."""
-        git.rule("+refs/remotes/origin/main:refs/remotes/origin/main", rc=128, err="fatal: couldn't find remote ref")
+        git.rule(
+            "+refs/remotes/origin/main:refs/remotes/origin/main",
+            rc=128,
+            err="fatal: couldn't find remote ref",
+        )
         W._fetch_base_ref("/clone", "main")
         assert git.joined() == [
             "-C /clone fetch origin +refs/remotes/origin/main:refs/remotes/origin/main",
@@ -1054,9 +1054,7 @@ class TestNudgeLoop:
         assert st.status == W.STATUS_EXHAUSTED and runner.calls == []
         assert any("provider down" in line["text"] for line in reg.get_log("fp1")["lines"])
 
-    def test_a_stop_arriving_between_passes_ends_the_loop(
-        self, loop: Any, scripted: Any
-    ) -> None:
+    def test_a_stop_arriving_between_passes_ends_the_loop(self, loop: Any, scripted: Any) -> None:
         scripted.script.append(_status())
         event = threading.Event()
 
@@ -1118,9 +1116,7 @@ class TestNudgeLoop:
         assert passes == [1], "the loop kept nudging a tree that reached a live remote"
         assert st.status != W.STATUS_EXHAUSTED
 
-    def test_a_refused_clone_is_terminal(
-        self, loop: Any, scripted: Any, tmp_path: Path
-    ) -> None:
+    def test_a_refused_clone_is_terminal(self, loop: Any, scripted: Any, tmp_path: Path) -> None:
         scripted.script.append(_status())
         runner = StubRunner()
         reg, st = self._drive(
@@ -1149,9 +1145,7 @@ class TestEnsureClone:
         st = W.WatcherState(fp="fp1", pr="x", clone=str(existing))
         assert reg._ensure_clone(st, "/shared", {}) == (str(existing), True)
 
-    def test_the_head_branch_comes_from_the_live_status(
-        self, tmp_path: Path, git: FakeGit
-    ) -> None:
+    def test_the_head_branch_comes_from_the_live_status(self, tmp_path: Path, git: FakeGit) -> None:
         """The finding record carries no branch, so the provider is authoritative about
         which branch the pull request is actually built on."""
         shared = tmp_path / "shared"
@@ -1258,6 +1252,52 @@ class TestRunAgentPass:
         git.rule("get-url", out=f"{W.DISABLED_NO_PUSH}\n")
         assert reg._verify_isolation(st, str(tmp_path)) is True
         assert st.status == W.STATUS_STARTING
+
+    def test_a_safety_pin_failure_post_turn_retains_the_clone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A GitSafetyError from the post-turn isolation probe must RETAIN the clone,
+        not let the exception skip retention and delete the only copy of the pass's
+        commits. The config-hook disable scan can raise GitSafetyError over a tree the
+        agent configured, and that must never destroy an unexported pass."""
+        reg, st = self._reg_and_state(tmp_path, isolate_clone=True)
+
+        def boom(_state: Any, _clone: str) -> bool:
+            raise W.GitSafetyError("hook config refuses a safe scan")
+
+        monkeypatch.setattr(reg, "_verify_isolation", boom)
+        # A durability probe must NOT run again after the safety failure.
+        monkeypatch.setattr(
+            reg, "_export_is_durable", lambda *a: pytest.fail("must not run git again")
+        )
+        assert reg._run_agent_pass(st, str(tmp_path), _status(), StubRunner(), 1) is False
+        assert st.unexported_work is True
+        assert st.status == W.STATUS_ERROR
+
+    def test_a_safety_pin_failure_outranks_a_faulting_runner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the pass ALSO faulted, the post-turn safety failure still wins: the pass is
+        terminal (returns False), the clone is retained, and the status is the error. A
+        return from the except branch would have reported this unverifiable tree as a
+        healthy pass and kept handing it turns."""
+        reg, st = self._reg_and_state(tmp_path, isolate_clone=True)
+
+        def boom(_state: Any, _clone: str) -> bool:
+            raise W.GitSafetyError("hook config refuses a safe scan")
+
+        monkeypatch.setattr(reg, "_verify_isolation", boom)
+        # The fault path's own durability check runs BEFORE the post-turn probe; keep it
+        # from touching git, but it is allowed to run (unlike the clean-success path).
+        monkeypatch.setattr(reg, "_export_is_durable", lambda *a: True)
+
+        class Boom:
+            def run(self, prompt: str, **kwargs: Any) -> StubResult:
+                raise RuntimeError("agent exploded")
+
+        assert reg._run_agent_pass(st, str(tmp_path), _status(), Boom(), 1) is False
+        assert st.unexported_work is True
+        assert st.status == W.STATUS_ERROR
 
 
 class TestExportDurability:
@@ -1376,7 +1416,9 @@ class TestExportFix:
         patch = store.pr_queue_dir() / "fp1.nudge-3.diff"
         assert patch.is_file()
         assert "return 3" in patch.read_text(encoding="utf-8")
-        assert any("exported this pass's fix" in line["text"] for line in reg.get_log("fp1")["lines"])
+        assert any(
+            "exported this pass's fix" in line["text"] for line in reg.get_log("fp1")["lines"]
+        )
 
     def test_an_empty_or_failing_diff_writes_nothing(self, git: FakeGit) -> None:
         reg, st = self._reg_and_state()
@@ -1533,9 +1575,7 @@ class TestRunWatcher:
     ) -> None:
         scripted.script.append(_status(pr_checks.VERDICT_READY, failing=[], reason="green"))
         runner = StubRunner()
-        reg = W.PRWatcherRegistry(
-            loop=loop, runner_factory=lambda: runner, isolate_clone=False
-        )
+        reg = W.PRWatcherRegistry(loop=loop, runner_factory=lambda: runner, isolate_clone=False)
         reg.start(fp="fp1", pr="https://github.com/o/r/pull/1", interval_s=0.0)
         snap = _await_status(reg, "fp1", {W.STATUS_READY})
         assert snap["verdict"] == pr_checks.VERDICT_READY

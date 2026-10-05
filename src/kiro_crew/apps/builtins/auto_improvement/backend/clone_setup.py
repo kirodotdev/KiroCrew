@@ -1200,7 +1200,7 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
                 where,
                 f"--work-tree={where}",
                 *_GIT_SAFE_CONFIG,
-                *hook_off_args(where),
+                *hook_off_args(where, env=_git_env()),
                 *args,
             ],
             capture_output=True,

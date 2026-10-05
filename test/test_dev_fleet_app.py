@@ -6004,7 +6004,12 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
     key = f"GIT_CONFIG_KEY_{base}"
 
     def _base(a):
-        return [Path(a[0]).name, *(a[1:2])]
+        # Skip leading `-c <value>` pairs (the config-hook disable + submodule-recursion
+        # pins) so the git SUBCOMMAND is matched, not the first pin flag.
+        i = 1
+        while i + 1 < len(a) and a[i] == "-c":
+            i += 2
+        return [Path(a[0]).name, *([a[i]] if i < len(a) else [])]
 
     fetch_envs = [e for a, e in captured if _base(a) == ["git", "fetch"]]
     build_envs = [

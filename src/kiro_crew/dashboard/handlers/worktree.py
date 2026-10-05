@@ -75,7 +75,7 @@ from typing import Callable
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
-from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
+from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args_sandboxed
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
@@ -230,9 +230,13 @@ def _run_git(
     # can see is disabled by name (see `kiro_crew.git_config_hooks`). When the names
     # cannot be listed safely git does not run, and the call reads as a git failure.
     try:
-        hook_off = config_hook_disable_args(cwd)
+        hook_off = config_hook_disable_args_sandboxed(
+            cwd, spawn_argv=sandboxed_spawn_argv, mode=_SANDBOX_MODE
+        )
     except ConfigHookScanError as exc:
         return subprocess.CompletedProcess(["git", *args], 128, "", f"fatal: {exc}")
+    except RuntimeError as exc:  # no sandbox backend and no explicit opt-in (scan path)
+        raise SandboxUnavailable(str(exc)) from exc
     try:
         argv, env, cleanup = sandboxed_spawn_argv(
             ["git", *_git_no_repo_code(), *hook_off, *args], mode=_SANDBOX_MODE

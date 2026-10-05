@@ -1642,7 +1642,7 @@ class TestConfigDefinedHooks:
         def refuse(*a, **k):
             raise ConfigHookScanError("refused")
 
-        monkeypatch.setattr(files_mod, "config_hook_disable_args", refuse)
+        monkeypatch.setattr(files_mod, "config_hook_disable_args_sandboxed", refuse)
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.get(f"/api/project/git/{route}?path={repo}")
         assert resp.status == 503

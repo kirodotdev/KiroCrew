@@ -2191,6 +2191,16 @@ async def _sync_start_locked() -> dict:
                 subprocess_executor(), runtime._with_config_hooks_off, argv, str(repo), base_env
             )
         except ConfigHookScanError as exc:
+            for _p in cleanups:
+                try:
+                    os.unlink(_p)
+                except (IsADirectoryError, PermissionError):
+                    try:
+                        os.rmdir(_p)
+                    except OSError:
+                        pass
+                except OSError:
+                    pass
             return {"ok": False, "error": f"git hook config refused: {exc}"}
         w_argv, w_env, cleanup = await shielded_prepare_off_loop(
             functools.partial(sandboxed_spawn_argv, argv, mode, env=base_env),

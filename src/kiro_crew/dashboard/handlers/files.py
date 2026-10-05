@@ -246,7 +246,7 @@ from kiro_crew.doc_blocks import extract_blocks  # noqa: F401
 from kiro_crew.doc_parser import extract_slides, extract_text, join_slides  # noqa: F401
 from kiro_crew.git_config_hooks import (  # noqa: F401
     ConfigHookScanError,
-    config_hook_disable_args,
+    config_hook_disable_args_sandboxed,
 )
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope  # noqa: F401
 from kiro_crew.github_runner import validate_provider_executable  # noqa: F401

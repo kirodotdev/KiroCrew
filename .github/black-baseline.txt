@@ -14,7 +14,6 @@ src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py
 src/kiro_crew/apps/builtins/auto_improvement/backend/routes.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py
-src/kiro_crew/apps/builtins/auto_improvement/spine/git_safety.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_data_home_isolation.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_finding_detail.py
@@ -95,7 +94,6 @@ src/kiro_crew/apps/builtins/issue_radar/tests/test_pulls_first_page.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_store_settings.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_watch.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_write_and_ai.py
-src/kiro_crew/apps/builtins/md_notebook/git_ops.py
 src/kiro_crew/apps/builtins/md_notebook/notes.py
 src/kiro_crew/apps/builtins/meetings/backend/domain/dictionary.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py
@@ -113,7 +111,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_slack_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
-src/kiro_crew/apps/builtins/papyrus/backend/gitops.py
 src/kiro_crew/apps/builtins/papyrus/backend/latex.py
 src/kiro_crew/apps/builtins/papyrus/backend/routes.py
 src/kiro_crew/apps/builtins/papyrus/backend/store.py
@@ -293,7 +290,6 @@ test/test_agent_discovery.py
 test/test_agent_source_ownership_durability.py
 test/test_ai_agent_runner_coverage.py
 test/test_ai_backend_routes_coverage.py
-test/test_ai_pr_watchers_coverage.py
 test/test_api_agent_config_put_succeeds.py
 test/test_api_agents_order.py
 test/test_api_file_diff.py

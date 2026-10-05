@@ -356,7 +356,7 @@ _REPO_EXEC_DRIVER_RE = re.compile(
     # `hook.<name>.command` (git 2.54+) is a hook defined in config. The name is the
     # repository's choice and `core.hooksPath` does not reach it, so no pin covers it.
     # `fetch` and `reset` fire `reference-transaction` and `post-index-change`.
-    r"|hook\.(?P<h>.+)\.(?:command|event))$",
+    r"|hook\.(?P<h>.*)\.(?:command|event))$",
     re.IGNORECASE,
 )
 
@@ -508,7 +508,7 @@ def repo_exec_config_reason(proj: str) -> str:
     ):
         scopes.append("--worktree")
     for scope in scopes:
-        listing = _git_probe(proj, "config", scope, "--includes", "--name-only", "--list")
+        listing = _git_probe(proj, "config", scope, "--includes", "--name-only", "-z", "--list")
         if listing is None:
             # Probe-first, classify after: git creates config.worktree lazily,
             # so a --worktree listing that failed on a genuinely ABSENT file is
@@ -535,8 +535,8 @@ def repo_exec_config_reason(proj: str) -> str:
                 ):
                     continue
             return _EXEC_CONFIG_UNREADABLE
-        for line in listing.splitlines():
-            key = line.strip()
+        for key in listing.split("\0"):
+            key = key.strip()
             if _REPO_EXEC_DRIVER_RE.match(key):
                 return f"repository declares {key[:120]}"
             if key.lower() in _REPO_UNPINNABLE_KEYS:
