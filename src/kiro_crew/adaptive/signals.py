@@ -6,10 +6,19 @@ admission points (the gateway's subagent cap and the daemon's spawn gate).
 signals fired, whether they corroborate each other, whether the pressure is
 severe enough to pause dispatch, and which provider scopes are throttled.
 
-Two things the classifier deliberately keeps apart:
+Three things the classifier deliberately keeps apart:
 
-* **Host pressure** (loop lag, memory, fd/proc counts, start latency,
-  attributable timeouts, completion rate) drives the host-wide caps.
+* **Work evidence** (fd/proc counts, start latency, attributable timeouts,
+  completion rate, slow MCP servers, spawn-gate init failures) says whether the
+  work already admitted is failing. It drives BOTH caps, the subagent
+  execution cap and the spawn gate, and only when two distinct signals
+  corroborate each other (:attr:`PressureReport.exec_corroborated`).
+* **Host-only evidence** (:data:`HOST_ONLY_SIGNALS`: the gateway's own loop
+  lag and free memory) shapes the spawn gate alone. The execution cap never
+  reads it: free memory is the per-start spawn floor's to judge
+  (``agent.spawn_min_memory_gb``), and the gateway's loop lag says nothing
+  about whether a subagent's own process is healthy. A lag spike that halved
+  the execution cap throttled every chat's subagents at once.
 * **Provider throttling** (per-provider 429s) is scoped to that provider's
   dependency channel. It is reported, never counted as a host signal: one
   provider's rate limit must not halve the concurrency every other provider
@@ -37,9 +46,16 @@ SIGNAL_COMPLETION = "completion_rate"
 SIGNAL_SLOW_KEYS = "slow_keys"
 SIGNAL_GATE_FAILURES = "gate_failures"
 
-#: Signals that are individually sufficient for a decrease. Everything else
-#: needs corroboration (>= 2 distinct signals in one sample).
-SUFFICIENT_ALONE = frozenset({SIGNAL_LOOP_LAG, SIGNAL_MEMORY})
+#: Signals the EXECUTION cap never reads: the gateway's own event loop and the
+#: host's free memory. They shape the spawn gate only; the per-start memory
+#: floor owns memory for subagent starts.
+HOST_ONLY_SIGNALS = frozenset({SIGNAL_LOOP_LAG, SIGNAL_MEMORY})
+
+#: Signals individually sufficient for a SPAWN-GATE decrease. Everything else
+#: needs corroboration (>= 2 distinct signals in one sample). Nothing is
+#: sufficient alone for the execution cap: it needs two distinct work signals
+#: (:attr:`PressureReport.exec_corroborated`).
+SUFFICIENT_ALONE = HOST_ONLY_SIGNALS
 
 
 @dataclass(frozen=True)
@@ -197,13 +213,15 @@ class PressureReport:
     """What one sample says about the host."""
 
     signals: frozenset[str]
-    #: Enough evidence to decrease: a signal from SUFFICIENT_ALONE, or >= 2
-    #: distinct signals in the same sample.
+    #: Enough evidence to decrease the SPAWN GATE: a signal from
+    #: SUFFICIENT_ALONE, or >= 2 distinct signals in the same sample.
     corroborated: bool
-    #: Memory below critical or loop lag beyond the severe line.
+    #: Memory below critical or loop lag beyond the severe line. Pauses the
+    #: spawn gate only.
     severe: bool
     #: Nothing fired AND the hysteresis "increase" side holds (lag well below
-    #: the decrease line, memory above the pressure line).
+    #: the decrease line, memory above the pressure line). The spawn gate's
+    #: increase test.
     clear_for_increase: bool
     #: Provider scopes throttled in this sample. Reported, not a host signal.
     throttled_providers: frozenset[str]
@@ -211,6 +229,16 @@ class PressureReport:
     @property
     def any(self) -> bool:
         return bool(self.signals)
+
+    @property
+    def exec_signals(self) -> frozenset[str]:
+        """The signals the execution cap reads: everything but HOST_ONLY_SIGNALS."""
+        return self.signals - HOST_ONLY_SIGNALS
+
+    @property
+    def exec_corroborated(self) -> bool:
+        """Enough evidence to decrease the EXECUTION cap: >= 2 distinct work signals."""
+        return len(self.exec_signals) >= 2
 
 
 def classify(sample: Sample, th: Thresholds) -> PressureReport:

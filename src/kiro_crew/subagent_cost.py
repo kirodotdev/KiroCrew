@@ -1,10 +1,12 @@
 """Append-only learned per-agent cost store for dynamic sub-agent sizing.
 
 One JSONL line per completed run, written via atomic ``O_APPEND`` (race-free,
-no lock). The cap is computed at startup from ``read_cap_costs``: the median
-across agents of each agent's p50 over its last N samples, less one reserve
-of ``max(per-agent p90)``; the log is
-FIFO-trimmed to the last N per agent both at startup and periodically.
+no lock). ``read_cap_costs`` feeds the memory-sized parallel count (the
+median across agents of each agent's p50 over its last N samples, less one
+reserve of ``max(per-agent p90)``): the TaskRunner's auto value always, and
+the subagent auto cap only when the spawn floor is disabled
+(``agent.spawn_min_memory_gb <= 0``). The log is FIFO-trimmed to the last N
+per agent both at startup and periodically.
 
 See ``dynamic-subagent-sizing.md`` §4.2 (storage) / §4.3 (aggregation).
 """
@@ -75,7 +77,9 @@ def append_cost_sample(
     admission gate's dedicated start projection learns from
     (:func:`read_learned_costs_checked` on ``settled_gb``, dedicated only). Written only when measured, so
     a record without it contributes nothing there. ``mem_gb`` stays the
-    whole-run peak the auto cap reads.
+    whole-run peak :func:`read_cap_costs` reads for the memory-sized count: the
+    TaskRunner's auto value, and the subagent auto cap only when the spawn
+    floor is disabled.
     """
     if mem_gb <= 0 and cpu_cores <= 0 and settled_gb <= 0:
         return  # nothing was measured

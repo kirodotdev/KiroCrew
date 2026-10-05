@@ -6,12 +6,15 @@ rules, never by calling a lower-cap API by hand. Pinned here:
 
 * the 10 -> 6 -> 4 descent under injected concurrency timeouts, and the plain
   x0.5 descent when nothing in flight is known to be healthy;
+* the two tracks read different evidence: loop lag and free memory shape the
+  spawn gate only, never the execution cap;
 * a single provider's 429s never lower the host cap;
 * the decrease cooldown and the hysteresis band (a noisy series around the
   threshold produces no oscillation);
 * slow recovery: +1 per clean window, never more;
-* pause-and-probe under severe pressure;
-* the fresh-start cap, the ceiling, and ``mode="fixed"``.
+* pause-and-probe under severe pressure, on the spawn gate only;
+* the fresh-start cap (the exec track at its ceiling), the ceiling, and
+  ``mode="fixed"``.
 """
 
 from __future__ import annotations
@@ -66,16 +69,13 @@ def test_fresh_progress_probes_one_slot_without_waiting_for_task_completion(slow
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"free_mem_mb": -1},
-        {"free_mem_mb": 1024},
         {"per_provider_429": {"provider": 1}},
         {"progressing": 0},
         {"running": 0},
         {"queued": 0},
-        {"loop_lag_ms": 1000},
     ],
 )
-def test_progress_probe_requires_measured_clear_capacity_and_waiting_work(overrides):
+def test_progress_probe_requires_fresh_progress_waiting_work_and_no_throttle(overrides):
     policy = AdaptivePolicy(PolicyParams(exec_initial=1, exec_ceiling=64, slow_start=True))
     sample = Sample(t=0, running=1, queued=63, free_mem_mb=32768, progressing=1)
     policy.observe(sample)
@@ -83,11 +83,26 @@ def test_progress_probe_requires_measured_clear_capacity_and_waiting_work(overri
     assert result.effective_exec_cap == 1
 
 
+@pytest.mark.parametrize(
+    "overrides", [{"free_mem_mb": -1}, {"free_mem_mb": 3000}, {"loop_lag_ms": 150}]
+)
+def test_free_memory_and_loop_lag_do_not_gate_the_progress_probe(overrides):
+    """The spawn floor prices every start, and the gateway's loop lag is not
+    the subagents' health: neither is a term of the exec track's probe."""
+    policy = AdaptivePolicy(PolicyParams(exec_initial=1, exec_ceiling=64, slow_start=True))
+    sample = Sample(t=0, running=1, queued=63, free_mem_mb=32768, progressing=1)
+    policy.observe(sample)
+    result = policy.observe(replace(sample, t=5, **overrides))
+    assert result.effective_exec_cap == 2
+
+
 def test_progress_during_pressure_cannot_buy_a_later_probe():
     policy = AdaptivePolicy(PolicyParams(exec_initial=1, exec_ceiling=64))
     sample = Sample(t=0, running=1, queued=63, free_mem_mb=32768)
     policy.observe(sample)
-    policy.observe(replace(sample, t=5, progressing=1, loop_lag_ms=400))
+    # A soft WORK signal (a slow start) holds the probe; the clean window then
+    # runs from it.
+    policy.observe(replace(sample, t=5, progressing=1, start_latency_p95_ms=40_000.0))
     result = policy.observe(replace(sample, t=40))
     assert result.effective_exec_cap == 1
     result = policy.observe(replace(sample, t=45, progressing=1))
@@ -126,6 +141,15 @@ def _sample(t: float, **over: object) -> Sample:
     return Sample(**base)  # type: ignore[arg-type]
 
 
+def _work(t: float, **over: object) -> Sample:
+    """Corroborated WORK pressure -- attributable timeouts on two distinct MCP
+    servers -- with nothing assumed healthy: the evidence that cuts the exec
+    track (and, being two signals, the spawn gate too)."""
+    base: dict[str, object] = dict(attributable_timeout_rate=0.5, slow_or_failing_keys=2)
+    base.update(over)
+    return _sample(t, **base)
+
+
 def _timeouts(t: float, *, running: int, timed_out: int, completions: int = 0) -> Sample:
     """``running`` starts in flight, ``timed_out`` of them attributable timeouts
     on two distinct MCP servers -- the SPEC's "10 concurrent starts wedge" shape."""
@@ -144,7 +168,10 @@ def _timeouts(t: float, *, running: int, timed_out: int, completions: int = 0) -
 
 
 class TestFreshStart:
-    def test_fresh_process_starts_at_min_user_max_and_initial(self) -> None:
+    def test_fresh_process_starts_at_the_ceiling(self) -> None:
+        assert AdaptivePolicy(PolicyParams(exec_ceiling=32)).exec_cap == 32
+        assert AdaptivePolicy(PolicyParams(exec_ceiling=3)).exec_cap == 3
+        # A test that pins a rule from a lower cap passes exec_initial.
         assert AdaptivePolicy(_params(exec_ceiling=32, exec_initial=4)).exec_cap == 4
         assert AdaptivePolicy(_params(exec_ceiling=3, exec_initial=4)).exec_cap == 3
 
@@ -154,7 +181,16 @@ class TestFreshStart:
 
     def test_params_from_config_defaults(self) -> None:
         p = params_from_config(object(), exec_ceiling=12)
-        assert (p.exec_initial, p.floor, p.exec_ceiling) == (4, 1, 12)
+        assert (p.exec_initial, p.floor, p.exec_ceiling) == (None, 1, 12)
+        assert p.exec_start == 12  # the exec track starts at the ceiling
+
+        class _Agent:
+            adaptive_initial = 4  # deprecated and inert
+
+        class _Cfg:
+            agent = _Agent()
+
+        assert params_from_config(_Cfg(), exec_ceiling=12).exec_start == 12
         assert (p.gate_initial, p.gate_floor, p.gate_ceiling) == (4, 1, 8)
         assert p.decrease_factor == 0.5
         assert p.increase_successes == 20
@@ -209,18 +245,19 @@ class TestDescent:
         t = 0.0
         seen = []
         for _ in range(5):
-            d = pol.observe(_sample(t, loop_lag_ms=400.0, running=8, queued=4))
+            d = pol.observe(_work(t, running=8, queued=4))
             seen.append(d.effective_exec_cap)
             t += 31.0
         assert seen == [4, 2, 1, 1, 1]
-        # The gate halves on the same verdict, down to its own floor.
+        # Two work signals corroborate for the gate too: it halves alongside,
+        # down to its own floor.
         assert pol.gate_cap == 1
 
     def test_descent_always_makes_progress_and_never_undercuts_healthy_work(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=10))
-        # Loop lag with every one of the 10 starts still healthy: the healthy
-        # bound would keep the cap at 10, but a decrease always cuts by >= 1.
-        d = pol.observe(_sample(0.0, loop_lag_ms=300.0, running=10, healthy_in_flight=10))
+        # Work pressure with every one of the 10 starts still healthy: the
+        # healthy bound would keep the cap at 10, but a decrease always cuts by >= 1.
+        d = pol.observe(_work(0.0, running=10, healthy_in_flight=10))
         assert d.action == ACTION_DECREASE and d.effective_exec_cap == 9
         # Healthy work above the halving target is the target: 9 -> 7, not 5.
         d = pol.observe(_timeouts(31.0, running=9, timed_out=2))
@@ -228,7 +265,7 @@ class TestDescent:
 
     def test_at_the_floor_pressure_holds(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=4, exec_initial=1, gate_initial=1))
-        d = pol.observe(_sample(0.0, loop_lag_ms=500.0))
+        d = pol.observe(_work(0.0))
         assert d.action == ACTION_HOLD
         assert d.effective_exec_cap == 1
         assert "floor" in d.reason
@@ -256,11 +293,21 @@ class TestCorroboration:
         d = pol.observe(_sample(31.0, attributable_timeout_rate=0.9, slow_or_failing_keys=2))
         assert d.action == ACTION_DECREASE
 
-    def test_loop_lag_and_memory_are_sufficient_alone(self) -> None:
-        pol = AdaptivePolicy(_params())
-        assert pol.observe(_sample(0.0, loop_lag_ms=250.0)).action == ACTION_DECREASE
-        pol = AdaptivePolicy(_params())
-        assert pol.observe(_sample(0.0, free_mem_mb=2048.0)).action == ACTION_DECREASE
+    def test_loop_lag_and_memory_cut_the_spawn_gate_alone_and_never_the_exec_cap(self) -> None:
+        for host_only in ({"loop_lag_ms": 250.0}, {"free_mem_mb": 2048.0}):
+            pol = AdaptivePolicy(_params(gate_initial=4))
+            d = pol.observe(_sample(0.0, running=10, **host_only))
+            assert d.action == ACTION_DECREASE
+            assert d.spawn_gate_capacity == 2
+            assert d.effective_exec_cap == 10, host_only
+            assert d.reason.startswith("spawn gate: corroborated pressure")
+
+    def test_nothing_is_sufficient_alone_for_the_exec_cap(self) -> None:
+        report = classify(_sample(0.0, loop_lag_ms=3000.0, free_mem_mb=500.0), TH)
+        assert report.corroborated and report.severe  # the gate's verdict
+        assert report.exec_signals == frozenset() and not report.exec_corroborated
+        report = classify(_sample(0.0, attributable_timeout_rate=0.5, loop_lag_ms=400.0), TH)
+        assert report.exec_signals == {SIGNAL_TIMEOUTS} and not report.exec_corroborated
 
     def test_single_provider_429_does_not_lower_the_cap(self) -> None:
         pol = AdaptivePolicy(_params())
@@ -286,14 +333,14 @@ class TestCorroboration:
 class TestCooldownAndHysteresis:
     def test_cooldown_blocks_a_second_cut_and_discards_successes(self) -> None:
         pol = AdaptivePolicy(_params(increase_successes=5))
-        pol.observe(_sample(0.0, loop_lag_ms=300.0, completions=0))
+        pol.observe(_work(0.0, completions=0))
         assert pol.exec_cap == 5
-        # 29 s later, still lagging: a hold, not a cut.
-        d = pol.observe(_sample(29.0, loop_lag_ms=300.0))
+        # 29 s later, still failing: a hold, not a cut.
+        d = pol.observe(_work(29.0))
         assert d.action == ACTION_HOLD and pol.exec_cap == 5
         # Successes that landed before the next decrease do not count towards
         # an increase afterwards: after the cut the base is reset.
-        pol.observe(_sample(31.0, loop_lag_ms=300.0, completions=50))
+        pol.observe(_work(31.0, completions=50))
         assert pol.exec_cap == 3
         d = pol.observe(_sample(62.0, completions=50, running=3, queued=2))
         assert d.action == ACTION_HOLD  # 0 successes since the cut
@@ -312,8 +359,9 @@ class TestCooldownAndHysteresis:
 
         Completions are held CONSTANT across the cut, which is what isolates
         the base: a surviving base leaves a positive delta and increases, while
-        a base reset to the count at the cut leaves zero and holds. That makes
-        the assertion independent of how large the increase bar is.
+        a base reset to the count at the cut leaves zero and holds. The lag
+        sample carries no exec demand, so the exec track cannot spend the
+        completions on that sample either.
         """
         pol = AdaptivePolicy(
             _params(
@@ -325,7 +373,7 @@ class TestCooldownAndHysteresis:
             )
         )
         pol.observe(_sample(0.0))  # first sample fixes the clean-window baseline
-        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, completions=19, running=1, queued=5))
+        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, completions=19))
         assert d.action == ACTION_DECREASE
         assert (pol.exec_cap, pol.gate_cap) == (1, 2)  # exec at floor, gate cut
         # 31 s of clean samples later, with NO new completion: the 19 already
@@ -348,7 +396,7 @@ class TestCooldownAndHysteresis:
         )
         pol.observe(_sample(0.0))
         busy = SpawnGateStats(capacity=1, in_flight=1, queued=2, successes=19)
-        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, spawn_gate=busy, running=4, queued=4))
+        d = pol.observe(_work(40.0, spawn_gate=busy, running=4, queued=4))
         assert d.action == ACTION_DECREASE
         assert (pol.exec_cap, pol.gate_cap) == (2, 1)  # exec cut, gate at floor
         busy = SpawnGateStats(capacity=1, in_flight=1, queued=2, successes=20)
@@ -360,7 +408,7 @@ class TestCooldownAndHysteresis:
         """Per-track means the moved track IS reset: exec cut, exec re-owes 20."""
         pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=4, increase_successes=20))
         pol.observe(_sample(0.0))
-        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, completions=19, running=4, queued=4))
+        d = pol.observe(_work(40.0, completions=19, running=4, queued=4))
         assert d.action == ACTION_DECREASE and pol.exec_cap == 2
         d = pol.observe(_sample(71.0, completions=20, running=2, queued=4))
         assert d.action == ACTION_HOLD and pol.exec_cap == 2  # 1 success since the cut
@@ -368,38 +416,53 @@ class TestCooldownAndHysteresis:
         assert d.action == ACTION_INCREASE and pol.exec_cap == 3
 
     def test_noisy_series_around_the_threshold_does_not_oscillate(self) -> None:
-        """Lag bouncing between 120 ms and 260 ms: one cut, then holds.
+        """Lag bouncing between 120 ms and 260 ms: the gate cuts, then holds;
+        the execution cap never moves.
 
-        The increase side needs < 100 ms AND 30 s without any signal, so the
-        120 ms samples (above the increase line, below the decrease line)
+        The gate's increase side needs < 100 ms AND 30 s without any signal, so
+        the 120 ms samples (above the increase line, below the decrease line)
         neither cut nor raise -- the hysteresis band absorbs the noise.
         """
-        pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=8))
+        pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=8, gate_initial=8))
         lags = [260.0, 120.0, 260.0, 120.0, 120.0, 260.0, 120.0, 260.0, 120.0, 120.0]
-        caps = []
+        gates = []
         t = 0.0
         for lag in lags:
-            d = pol.observe(_sample(t, loop_lag_ms=lag, running=8, queued=8, completions=1000))
-            caps.append(d.effective_exec_cap)
+            busy = SpawnGateStats(capacity=pol.gate_cap, in_flight=pol.gate_cap, queued=4)
+            d = pol.observe(
+                _sample(t, loop_lag_ms=lag, running=8, queued=8, completions=1000, spawn_gate=busy)
+            )
+            gates.append(d.spawn_gate_capacity)
+            assert d.effective_exec_cap == 8
             t += 5.0
-        assert caps[0] == 4
+        assert gates[0] == 4
         # After the first cut inside the cooldown nothing moves; past the
         # cooldown the 260 ms samples cut again (that IS pressure), but never
         # is a cut followed by a raise within the series.
-        assert all(b <= a for a, b in zip(caps, caps[1:])), caps
+        assert all(b <= a for a, b in zip(gates, gates[1:])), gates
 
-    def test_increase_needs_the_hysteresis_side_not_merely_no_signal(self) -> None:
-        pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=4, increase_successes=1))
+    def test_a_gate_increase_needs_the_hysteresis_side_not_merely_no_signal(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=8, increase_successes=1))
         # 150 ms lag: below the decrease line, above the increase line.
         for i in range(10):
-            d = pol.observe(
-                _sample(float(i * 31), loop_lag_ms=150.0, running=4, queued=4, completions=i * 5)
-            )
-            assert d.effective_exec_cap == 4, d
+            busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=(i + 1) * 5)
+            d = pol.observe(_sample(float(i * 31), loop_lag_ms=150.0, spawn_gate=busy))
+            assert d.spawn_gate_capacity == 4, d
         assert d.action == ACTION_HOLD
         # Memory between critical and pressure is likewise "not clear".
-        d = pol.observe(_sample(400.0, free_mem_mb=3000.0, running=4, queued=4, completions=100))
-        assert d.effective_exec_cap == 4
+        busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=500)
+        d = pol.observe(_sample(400.0, free_mem_mb=3000.0, spawn_gate=busy))
+        assert d.spawn_gate_capacity == 4
+
+    def test_the_exec_track_has_no_lag_or_memory_hysteresis(self) -> None:
+        """The band that holds the gate is a host question; the exec track climbs
+        on its own work evidence inside it."""
+        pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        d = pol.observe(_sample(31.0, loop_lag_ms=150.0, running=4, queued=4, completions=5))
+        assert d.effective_exec_cap == 5
+        d = pol.observe(_sample(62.0, free_mem_mb=3000.0, running=5, queued=4, completions=10))
+        assert d.effective_exec_cap == 6
 
 
 # --- slow recovery -------------------------------------------------------------
@@ -522,10 +585,8 @@ class TestPerAdmissionPointSaturation:
         pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=10))
         # 10 "running" are all on the lane (healthy_in_flight stays 0, as the
         # controller leaves lane slots out of healthy), with corroborated
-        # pressure (severe loop lag is sufficient-alone).
-        d = pol.observe(
-            _sample(0.0, loop_lag_ms=600.0, running=10, saturating=10, healthy_in_flight=0)
-        )
+        # work pressure.
+        d = pol.observe(_work(0.0, running=10, saturating=10, healthy_in_flight=0))
         assert d.action == ACTION_DECREASE
         assert d.effective_exec_cap == 5  # halved, not 9
 
@@ -583,28 +644,27 @@ class TestSlowStart:
         assert d.effective_exec_cap == 64
         assert "host_cap" not in pol.snapshot()
 
-    def test_memory_under_the_pressure_line_withholds_growth_and_cuts_nothing(self) -> None:
-        """Free memory is the live brake on growth, and a brake is never a cut.
-
-        Nothing is ever killed, so lowering the cap under running work frees
-        nothing; memory between the pressure and critical lines holds the cap
-        where it is, and only the critical line (corroborated pressure) cuts.
-        """
+    def test_free_memory_neither_brakes_nor_cuts_the_exec_track(self) -> None:
+        """Free memory is the spawn floor's to judge, start by start: the exec
+        track neither withholds growth under the pressure line nor cuts at the
+        critical one. The gate still reads it."""
         pol = AdaptivePolicy(self._ss(exec_ceiling=64))
         for i in range(3):
             pol.observe(self._busy(float(i * 5), pol.exec_cap, (i + 1) * 5))
         assert pol.exec_cap == 16
         d = pol.observe(self._busy(15.0, 16, 100, free_mem_mb=3072.0))
-        assert d.effective_exec_cap == 16
-        assert d.action == ACTION_HOLD
+        assert d.effective_exec_cap == 32
+        d = pol.observe(self._busy(20.0, 32, 200, free_mem_mb=1024.0))
+        assert d.effective_exec_cap == 32
+        assert SIGNAL_MEMORY in d.signals and d.spawn_gate_capacity < 4
 
     def test_one_corroborated_pressure_ends_slow_start_for_the_process(self) -> None:
         pol = AdaptivePolicy(self._ss())
         pol.observe(self._busy(0.0, 4, 5))
         d = pol.observe(self._busy(5.0, 4, 10))
         assert d.effective_exec_cap == 8 and pol.slow_start is True
-        # 300 ms lag is corroborated on its own: halve, and leave slow start.
-        pol.observe(self._busy(10.0, 8, 10, loop_lag_ms=300.0))
+        # Corroborated work pressure: halve, and leave slow start.
+        pol.observe(self._busy(10.0, 8, 10, attributable_timeout_rate=0.5, slow_or_failing_keys=2))
         assert pol.exec_cap == 4 and pol.slow_start is False
         # From here the climb is +1 per 30 s window, never x2 again.
         caps = []
@@ -671,23 +731,28 @@ class TestSlowStart:
         for i in range(6):
             d = pol.observe(_sample(float(i * 5), running=0, queued=0, completions=i * 5))
         assert d.effective_exec_cap == 4
-        # In the hysteresis band (150 ms): clear of a cut, not clear for growth.
+        # A soft work signal (slow starts) on every sample: not clear for growth.
         for i in range(6):
             d = pol.observe(
-                _sample(200.0 + i * 5, loop_lag_ms=150.0, running=4, queued=50, completions=100 + i)
+                _sample(
+                    200.0 + i * 5,
+                    start_latency_p95_ms=40_000.0,
+                    running=4,
+                    queued=50,
+                    completions=100 + i,
+                )
             )
         assert d.effective_exec_cap == 4
 
     def test_an_idle_step_beside_a_doubled_gate_step_reports_both_moves(self) -> None:
         # Slow start doubles the gate step: the note names the real move.
         pol = AdaptivePolicy(
-            _params(exec_ceiling=9, exec_initial=4, slow_start=True, increase_successes=1)
+            _params(exec_ceiling=9, exec_initial=1, slow_start=True, increase_successes=1)
         )
         pol.observe(_sample(0.0))
-        # A lowered then raised ceiling leaves the cap below the fresh-start
-        # value without any pressure, so slow start is still on.
-        pol.update_params(replace(pol.params, exec_ceiling=1))
-        pol.update_params(replace(pol.params, exec_ceiling=9))
+        # A raised fresh-start value leaves the cap below it without any
+        # pressure, so slow start is still on.
+        pol.update_params(replace(pol.params, exec_initial=4))
         assert pol.exec_cap == 1 and pol.slow_start
         busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=5)
         d = pol.observe(_sample(60.0, spawn_gate=busy))
@@ -735,29 +800,34 @@ class TestSlowStart:
 
 
 class TestPauseAndProbe:
-    def test_severe_pressure_pauses_then_probes_then_resumes(self) -> None:
+    """Severe host pressure pauses the SPAWN GATE at its floor. The execution
+    cap is never paused: memory is the spawn floor's, and the gateway's loop
+    lag is not the subagents' health."""
+
+    def test_severe_pressure_pauses_then_probes_then_resumes_the_gate(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=6))
         d1 = pol.observe(_sample(0.0, free_mem_mb=1000.0, running=6))
         assert d1.action == ACTION_DECREASE  # first severe sample: cut, not yet pause
+        assert d1.effective_exec_cap == 6 and d1.spawn_gate_capacity == 2
         d2 = pol.observe(_sample(5.0, free_mem_mb=1000.0, running=6))
         assert d2.action == ACTION_PAUSE
-        assert d2.paused and d2.effective_exec_cap == 0
+        assert d2.paused and d2.effective_exec_cap == 6
         assert d2.spawn_gate_capacity == 1
         assert SIGNAL_MEMORY in d2.signals
-        # Still severe: stays paused, no grants.
+        # Still severe: the gate stays paused; the exec cap is untouched.
         d3 = pol.observe(_sample(10.0, free_mem_mb=900.0, running=6))
-        assert d3.action == ACTION_HOLD and d3.effective_exec_cap == 0
-        # Cleared: one probe.
+        assert d3.action == ACTION_HOLD and d3.effective_exec_cap == 6
+        # Cleared: the gate probes.
         d4 = pol.observe(_sample(15.0, free_mem_mb=6000.0, running=0, completions=3))
         assert d4.action == ACTION_PROBE
-        assert d4.effective_exec_cap == 1 and d4.probing and d4.paused
+        assert d4.effective_exec_cap == 6 and d4.probing and d4.paused
         # Probe running, not yet done: hold.
         d5 = pol.observe(_sample(20.0, free_mem_mb=6000.0, running=1, completions=3))
-        assert d5.action == ACTION_HOLD and d5.effective_exec_cap == 1
-        # Probe completed without pressure: resume at floor + 1.
+        assert d5.action == ACTION_HOLD and d5.spawn_gate_capacity == 1
+        # Probe completed without pressure: the gate resumes at floor + 1.
         d6 = pol.observe(_sample(25.0, free_mem_mb=6000.0, running=0, completions=4))
         assert d6.action == ACTION_RESUME
-        assert not d6.paused and d6.effective_exec_cap == 2
+        assert not d6.paused and d6.effective_exec_cap == 6
         assert d6.spawn_gate_capacity == 2
 
     def test_probe_that_meets_pressure_re_pauses(self) -> None:
@@ -768,7 +838,8 @@ class TestPauseAndProbe:
         d = pol.observe(_sample(10.0, loop_lag_ms=50.0))
         assert d.action == ACTION_PROBE
         d = pol.observe(_sample(15.0, loop_lag_ms=300.0))
-        assert d.action == ACTION_PAUSE and d.effective_exec_cap == 0
+        assert d.action == ACTION_PAUSE and d.paused
+        assert d.effective_exec_cap == 6 and d.spawn_gate_capacity == 1
 
     def test_one_severe_sample_is_not_a_pause(self) -> None:
         pol = AdaptivePolicy(_params())
@@ -792,9 +863,9 @@ class TestIdleRecovery:
 
     @staticmethod
     def _cut_to_the_floor(pol: AdaptivePolicy) -> float:
-        # Two lag cuts 30 s apart: 4 -> 2 -> 1. The last pressure is at t=35.
-        pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))
-        pol.observe(_sample(35.0, loop_lag_ms=400.0, running=2))
+        # Two work-pressure cuts 30 s apart: 4 -> 2 -> 1. The last pressure is at t=35.
+        pol.observe(_work(0.0, running=4))
+        pol.observe(_work(35.0, running=2))
         assert pol.exec_cap == 1
         return 35.0
 
@@ -819,15 +890,15 @@ class TestIdleRecovery:
         assert all(b - a >= 30.0 for a, b in zip(steps, steps[1:]))
         assert reasons and all("toward the fresh-start cap 4" in r for r in reasons), reasons
 
-    def test_an_unreported_probe_resumes_when_idle_and_clear(self) -> None:
-        """The reported shape: severe pressure paused dispatch, the probe slot went
-        to work the exec track does not count, and the cap sat at 1."""
+    def test_an_unreported_gate_probe_resumes_when_idle_and_clear(self) -> None:
+        """Severe pressure paused the gate and nothing ran to report a probe:
+        the gate resumes once the host is idle and clear for the idle window."""
         pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
         pol.observe(_sample(0.0, free_mem_mb=1000.0))
         pol.observe(_sample(5.0, free_mem_mb=1000.0))
         assert pol.paused
         d = pol.observe(_sample(10.0))
-        assert d.action == ACTION_PROBE and d.effective_exec_cap == 1
+        assert d.action == ACTION_PROBE and d.effective_exec_cap == 4
         t = 10.0
         actions = []
         while t < 5.0 + 60.0 - 5.0:
@@ -836,14 +907,10 @@ class TestIdleRecovery:
         assert set(actions) == {ACTION_HOLD} and pol.paused
         d = pol.observe(_sample(65.0))
         assert d.action == ACTION_RESUME and not d.paused
-        assert d.effective_exec_cap == 2
+        assert d.effective_exec_cap == 4
         assert "no probe result" in d.reason
         # Idle is no evidence about backend inits: the gate stays at its floor.
         assert d.spawn_gate_capacity == 1
-        for _ in range(40):
-            t += 5.0
-            d = pol.observe(_sample(t + 5.0))
-        assert d.effective_exec_cap == 4
 
     def test_demand_or_any_signal_restarts_the_idle_clock(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
@@ -896,7 +963,7 @@ class TestIdleRecovery:
 
     def test_work_below_the_cap_is_not_idle(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
-        pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))
+        pol.observe(_work(0.0, running=4))
         assert pol.exec_cap == 2
         for i in range(1, 40):
             d = pol.observe(_sample(i * 5.0, running=1))
@@ -914,35 +981,35 @@ class TestIdleRecovery:
     def test_snapshot_names_the_cut_behind_a_low_cap(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
         assert pol.snapshot()["last_cut"] is None
-        pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))
+        pol.observe(_work(0.0, running=4, loop_lag_ms=400.0))
         cut = pol.snapshot()["last_cut"]
         assert cut["action"] == ACTION_DECREASE and cut["t"] == 0.0
-        assert cut["signals"] == [SIGNAL_LOOP_LAG]
+        # The exec cut names the work signals it read, never the loop lag.
+        assert cut["signals"] == [SIGNAL_SLOW_KEYS, SIGNAL_TIMEOUTS]
         assert "corroborated pressure" in cut["reason"]
+        # A gate pause lowers no exec cap, so it is not the cut on record.
         pol.observe(_sample(10.0, free_mem_mb=1000.0))
         pol.observe(_sample(15.0, free_mem_mb=1000.0))
+        assert pol.paused
         cut = pol.snapshot()["last_cut"]
-        assert cut["action"] == ACTION_PAUSE and cut["t"] == 15.0
+        assert cut["action"] == ACTION_DECREASE and cut["t"] == 0.0
         # An increase does not erase why the cap was lowered.
         pol.observe(_sample(20.0))
-        assert pol.snapshot()["last_cut"]["t"] == 15.0
+        assert pol.snapshot()["last_cut"]["t"] == 0.0
 
-    def test_an_idle_resume_never_passes_the_fresh_start_cap(self) -> None:
-        # floor == initial: the probe-completion resume is floor + 1, but idle
-        # evidence buys at most what a restart would start at.
+    def test_idle_recovery_never_passes_the_fresh_start_cap(self) -> None:
+        # floor == initial: a cut cannot go below 4, and idle evidence buys at
+        # most what a restart would start at -- through a gate pause as well.
         pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4, floor=4))
-        pol.observe(_sample(0.0, free_mem_mb=1000.0))
+        pol.observe(_work(0.0, running=4))
         pol.observe(_sample(5.0, free_mem_mb=1000.0))
-        assert pol.paused
-        t = 5.0
-        while pol.paused:
+        pol.observe(_sample(10.0, free_mem_mb=1000.0))
+        assert pol.paused and pol.exec_cap == 4
+        t = 10.0
+        for _ in range(60):
             t += 5.0
             d = pol.observe(_sample(t))
-        assert d.action == ACTION_RESUME and d.effective_exec_cap == 4
-        for _ in range(40):
-            t += 5.0
-            d = pol.observe(_sample(t))
-        assert d.effective_exec_cap == 4
+        assert not d.paused and d.effective_exec_cap == 4
 
     def test_the_idle_window_must_be_positive(self) -> None:
         with pytest.raises(ValueError):
@@ -988,7 +1055,9 @@ class TestCeilingAndFixed:
 
         p = params_from_config(_Cfg(), exec_ceiling=6)
         assert p.mode == MODE_FIXED
-        assert AdaptivePolicy(p).observe(_sample(0.0, loop_lag_ms=9000.0)).effective_exec_cap == 4
+        d = AdaptivePolicy(p).observe(_sample(0.0, loop_lag_ms=9000.0))
+        assert d.effective_exec_cap == 6  # pinned at its initial value: the ceiling
+        assert d.spawn_gate_capacity == 4
 
     def test_invalid_params_are_refused(self) -> None:
         with pytest.raises(ValueError):
@@ -1011,6 +1080,7 @@ class TestDecisionShape:
         assert not second.changed
         cut = pol.observe(_sample(10.0, loop_lag_ms=300.0))
         assert cut.changed and SIGNAL_LOOP_LAG in cut.signals
+        assert cut.effective_exec_cap == 10 and cut.spawn_gate_capacity == 2
 
     def test_snapshot_carries_the_state_resource_status_renders(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=10, exec_initial=4))

@@ -1,10 +1,11 @@
-"""Tests for dynamic sub-agent cap sizing (subagent.compute/resolve_max_subagents).
+"""Tests for sub-agent cap sizing (``subagent.compute/resolve_max_subagents``)
+and the memory-sized TaskRunner figure (``compute_memory_sized_parallel_cap``).
 
-Validates the formula against the worked examples in
-``dynamic-subagent-sizing.md`` §3.3 plus routing/clamp/reservation edge cases.
-Stage 2 uses fallback costs only (learned costs land in a later stage), and the
-cgroup clamp lands in Stage 8 — here we feed effective memory directly via the
-patched ``_available_memory_gb``.
+The subagent auto cap is ``agent.subagent_auto_max`` as written -- memory bounds
+each start through the spawn floor, not the count -- so the memory arithmetic and
+its worked examples now pin the TaskRunner's auto parallel-step figure, whose
+steps no per-start floor prices. Costs are fallback costs; effective memory is
+fed directly via the patched ``_available_memory_gb``.
 """
 
 from __future__ import annotations
@@ -19,7 +20,11 @@ from overload_fakes import settle_depth_emits
 
 import kiro_crew.subagent as subagent
 from conftest import absent_sysconf
-from kiro_crew.subagent import compute_max_subagents, resolve_max_subagents
+from kiro_crew.subagent import (
+    compute_max_subagents,
+    compute_memory_sized_parallel_cap,
+    resolve_max_subagents,
+)
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -29,7 +34,7 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 @pytest.fixture(autouse=True)
 def _no_learned_cost(monkeypatch):
     """Isolate from the machine's learned-cost store (~/.kirocrew/subagents/
-    cost_samples.jsonl). compute_max_subagents prefers read_cap_costs over
+    cost_samples.jsonl). compute_memory_sized_parallel_cap prefers read_cap_costs over
     the cfg fallback, so on a dev box with a populated store these tests would
     read the real mem_gb/cpu_cores instead of the per-case fallback costs and
     assert against the wrong cap. These cases exercise the fallback path by
@@ -78,8 +83,59 @@ def patch_host(monkeypatch):
 # --- memory is the only host term ------------------------------------------
 
 
+class TestTheSubagentAutoCapIsACountCeiling:
+    """``compute_max_subagents`` is ``subagent_auto_max``, whatever the host holds.
+
+    Memory bounds each start through the spawn floor; a count sized from the same
+    memory on top of it made one chat's wave hold the slots another chat's
+    subagents waited for while memory was still free.
+    """
+
+    @pytest.mark.parametrize("avail_gb", [2.0, 8.0, 16.0, 174.7])
+    def test_host_memory_does_not_size_it(self, patch_host, avail_gb) -> None:
+        patch_host(avail_gb, 8)
+        assert compute_max_subagents(_cfg(mem_cost=0.5, hard_cap=32, pool_size=5)) == 32
+
+    def test_it_never_drops_below_three(self, patch_host) -> None:
+        patch_host(174.7, 8)
+        assert compute_max_subagents(_cfg(hard_cap=2)) == 3
+
+    def test_unreadable_memory_falls_back_to_three(self, patch_host) -> None:
+        patch_host(-1.0, 8)
+        assert compute_max_subagents(_cfg(hard_cap=32)) == 3
+
+    @pytest.mark.parametrize("floor_gb", [0.0, -1.0])
+    def test_a_disabled_floor_sizes_the_cap_from_host_memory(self, patch_host, floor_gb) -> None:
+        # The disabled floor admits every start, so the count is the only bound
+        # left: 8 GB at a 0.5 GB cost is floor(8*0.8/0.5) = 12, not the 32 ceiling.
+        patch_host(8.0, 8)
+        cfg = _cfg(mem_cost=0.5, hard_cap=32)
+        cfg.agent.spawn_min_memory_gb = floor_gb
+        assert compute_max_subagents(cfg) == 12
+        assert compute_max_subagents(cfg) == compute_memory_sized_parallel_cap(cfg)
+
+    def test_an_enabled_floor_keeps_the_ceiling(self, patch_host) -> None:
+        patch_host(8.0, 8)
+        cfg = _cfg(mem_cost=0.5, hard_cap=32)
+        cfg.agent.spawn_min_memory_gb = 4.0
+        assert compute_max_subagents(cfg) == 32
+
+    def test_the_floor_switch_and_its_memory_terms_are_sizing_inputs(self) -> None:
+        from kiro_crew.subagent import SubagentManager
+
+        assert SubagentManager.SIZING_CONFIG_PATHS == (
+            "agent.max_subagents",
+            "agent.subagent_auto_max",
+            "agent.spawn_min_memory_gb",
+            "agent.subagent_mem_buffer_pct",
+            "agent.subagent_cost_gb",
+            "session.pool_size",
+        )
+        assert set(SubagentManager.SIZING_CONFIG_PATHS) <= set(SubagentManager.LIVE_CONFIG_PATHS)
+
+
 class TestMemoryIsTheOnlyHostTerm:
-    """``compute_max_subagents`` sizes the AUTO cap from memory alone.
+    """``compute_memory_sized_parallel_cap`` sizes from memory alone.
 
     Over-committing memory ends in the OOM killer, an unrecoverable hard
     failure, so it is sized up front. Over-committing CPU only slows work down,
@@ -93,14 +149,14 @@ class TestMemoryIsTheOnlyHostTerm:
         # whether the host has 1 core or 48, and whatever the CPU cost says.
         patch_host(174.7, 1)
         cfg = _cfg(mem_cost=0.315, cpu_cost=100.0, hard_cap=64)
-        assert compute_max_subagents(cfg) == 64
+        assert compute_memory_sized_parallel_cap(cfg) == 64
         patch_host(174.7, 48)
-        assert compute_max_subagents(cfg) == 64
+        assert compute_memory_sized_parallel_cap(cfg) == 64
 
     def test_memory_still_binds(self, patch_host) -> None:
         patch_host(8.0, 64)  # mem_term = floor(8*0.8/0.5) = 12
         cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=64)
-        assert compute_max_subagents(cfg) == 12
+        assert compute_memory_sized_parallel_cap(cfg) == 12
 
     def test_the_deprecated_cpu_cost_key_is_not_a_sizing_input(self) -> None:
         from kiro_crew.subagent import SubagentManager
@@ -116,28 +172,28 @@ def test_example_a_hard_cap_binds(patch_host) -> None:
     # 174.7 GB: mem_term=443, clamp(443,3,16) = 16
     patch_host(174.7, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
-    assert compute_max_subagents(cfg) == 16
+    assert compute_memory_sized_parallel_cap(cfg) == 16
 
 
 def test_example_b_floor(patch_host) -> None:
     # 2 GB, fallback cost: mem_term = floor(2*0.8/0.5) = 3, floor = 3
     patch_host(2.0, 4)
     cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
-    assert compute_max_subagents(cfg) == 3
+    assert compute_memory_sized_parallel_cap(cfg) == 3
 
 
 def test_example_c_pool_reservation_binds(patch_host) -> None:
     # 8 GB, pool=5: mem_term = floor((8*0.8 - 5*0.4)/0.4) = 11, clamp(11,3,16) = 11
     patch_host(8.0, 12)
     cfg = _cfg(mem_cost=0.4, cpu_cost=0.8, hard_cap=16, pool_size=5)
-    assert compute_max_subagents(cfg) == 11
+    assert compute_memory_sized_parallel_cap(cfg) == 11
 
 
 def test_example_d_memory_binds(patch_host) -> None:
     # Effective 4 GB (cgroup headroom fed directly): mem_term=10
     patch_host(4.0, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
-    assert compute_max_subagents(cfg) == 10
+    assert compute_memory_sized_parallel_cap(cfg) == 10
 
 
 def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
@@ -147,7 +203,7 @@ def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
     # mem_term = floor((8*0.8)/0.05) = 128; clamp(128, 3, 16) = 16.
     patch_host(8.0, 4)
     cfg = _cfg(mem_cost=0.05, cpu_cost=0.25, hard_cap=16)
-    assert compute_max_subagents(cfg) == 16
+    assert compute_memory_sized_parallel_cap(cfg) == 16
 
 
 # --- Edge cases ------------------------------------------------------------
@@ -156,8 +212,12 @@ def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
 def test_pool_reservation_reduces_memory_budget(patch_host) -> None:
     # Same host, with vs without a warm pool: reservation lowers mem_term.
     patch_host(20.0, 64)
-    no_pool = compute_max_subagents(_cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=0, hard_cap=100))
-    with_pool = compute_max_subagents(_cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=10, hard_cap=100))
+    no_pool = compute_memory_sized_parallel_cap(
+        _cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=0, hard_cap=100)
+    )
+    with_pool = compute_memory_sized_parallel_cap(
+        _cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=10, hard_cap=100)
+    )
     # no_pool: floor(20*0.8/0.5)=32 ; with_pool: floor((16-5)/0.5)=22
     assert no_pool == 32
     assert with_pool == 22
@@ -166,13 +226,13 @@ def test_pool_reservation_reduces_memory_budget(patch_host) -> None:
 def test_hard_cap_clamps_high(patch_host) -> None:
     patch_host(174.7, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=8)
-    assert compute_max_subagents(cfg) == 8
+    assert compute_memory_sized_parallel_cap(cfg) == 8
 
 
 def test_floor_never_below_three(patch_host) -> None:
     patch_host(1.0, 1)  # tiny host
     cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
-    assert compute_max_subagents(cfg) == 3
+    assert compute_memory_sized_parallel_cap(cfg) == 3
 
 
 def test_hard_cap_below_floor_is_raised_to_three(patch_host) -> None:
@@ -181,13 +241,13 @@ def test_hard_cap_below_floor_is_raised_to_three(patch_host) -> None:
     # subagent_auto_max up to 3, but compute defends independently).
     patch_host(174.7, 48)
     cfg = _cfg(hard_cap=2)
-    assert compute_max_subagents(cfg) == 3
+    assert compute_memory_sized_parallel_cap(cfg) == 3
 
 
 def test_unreadable_memory_fails_open_to_legacy_default(patch_host) -> None:
     patch_host(-1.0, 48)  # /proc/meminfo unreadable
     cfg = _cfg(hard_cap=16)
-    assert compute_max_subagents(cfg) == 3
+    assert compute_memory_sized_parallel_cap(cfg) == 3
 
 
 # --- Sentinel routing ------------------------------------------------------
@@ -249,7 +309,7 @@ def test_manager_effective_cap_sits_under_the_resolved_ceiling(patch_host) -> No
     patch_host(174.7, 48)
     cap = resolve_max_subagents(_cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16))
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), max_concurrent=cap)
-    assert mgr.set_effective_cap(4) == 4  # fresh-process start: min(user_max, 4)
+    assert mgr.set_effective_cap(4) == 4  # a bound beneath the ceiling (a cut)
     assert mgr.max_concurrent == 4
     assert mgr.user_max_concurrent == 16
     assert mgr.set_effective_cap(40) == 16  # ceiling binds
@@ -614,9 +674,10 @@ class TestQueuedReasonOnTheEvent:
         events = asyncio.run(run())
         assert events and events[-1] == {"queued": 1, "reason": "concurrency_limit"}
 
-    def test_adaptive_cap_at_zero_is_labelled_as_such(self, monkeypatch) -> None:
-        """Cap 0 is the one queue the concurrency text cannot explain: nothing is
-        running, the configured cap still reads 4, and the row waits anyway."""
+    def test_a_cap_of_zero_has_no_pause_label_of_its_own(self, monkeypatch) -> None:
+        """The adaptive controller never pauses the execution cap (it reads no
+        memory or loop lag), so there is no pause kind: a cap a caller pinned to 0
+        is labelled as the ordinary capacity wait, with no prose."""
         import asyncio
         import time as _t
 
@@ -630,17 +691,14 @@ class TestQueuedReasonOnTheEvent:
             events = self._capture(m)
             info = m.spawn(task="x", parent_session_key="dashboard:s1")
             assert info is not None and info.queued is True
-            assert info.queued_reason == "adaptive_cap_zero"
-            # Answered to callers as a deferral, so it carries a sentence, not
-            # the bare kind.
-            assert "dispatch paused" in info.queued_reason_detail
-            assert "effective cap 0" in info.queued_reason_detail
+            assert info.queued_reason == "concurrency_limit"
+            assert not info.queued_reason_detail
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             return events
 
         events = asyncio.run(run())
-        assert events and events[-1]["reason"] == "adaptive_cap_zero"
+        assert events and events[-1]["reason"] == "concurrency_limit"
 
     def test_a_re_emit_keeps_the_last_reason_until_the_parent_drains(self) -> None:
         """The drain re-emits the depth with no verdict of its own. It must not
@@ -1366,7 +1424,7 @@ class TestCgroupAvailable:
         assert subagent.check_memory_available(min_gb=expected + 0.01) == (False, expected)
         assert subagent._available_memory_gb() == expected
         cfg = _cfg(buffer_pct=0, mem_cost=0.25, cpu_cost=1.0, hard_cap=32)
-        assert compute_max_subagents(cfg) == max(3, int(expected / 0.25))
+        assert compute_memory_sized_parallel_cap(cfg) == max(3, int(expected / 0.25))
 
     @pytest.mark.parametrize("limit", [None, "max"])
     @pytest.mark.parametrize(
@@ -1473,7 +1531,7 @@ class TestAvailableMemoryClamp:
         assert sub._available_memory_gb() == -1.0
 
     def test_cgroup_clamp_lowers_computed_cap(self, monkeypatch) -> None:
-        """End-to-end: a 6 GB cgroup cap on a big host caps the count via memory."""
+        """End-to-end: a 4 GB cgroup headroom on a big host caps the memory-sized figure."""
         import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
@@ -1483,7 +1541,7 @@ class TestAvailableMemoryClamp:
         monkeypatch.setattr(sub.os, "cpu_count", lambda: 48)
         cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
         # mem_term = floor(4*0.8/0.315)=10 ; cpu_term=48 → min 10, clamp(10,3,16)=10
-        assert compute_max_subagents(cfg) == 10
+        assert compute_memory_sized_parallel_cap(cfg) == 10
 
     # --- platform dispatch -------------------------------------------------
 

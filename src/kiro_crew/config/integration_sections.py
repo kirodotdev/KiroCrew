@@ -446,7 +446,11 @@ class McpGatewayConfig:
         metadata=_meta(
             "Spawn Concurrency Ceiling",
             "Highest value the adaptive controller may raise spawn concurrency to "
-            "when spawns keep succeeding without pressure.",
+            "when spawns keep succeeding without pressure. The broker uses the "
+            "subagent ceiling instead (agent.max_subagents, or "
+            "agent.subagent_auto_max when that is 0) when it is higher, so a "
+            "fan-out the subagent cap admits is not queued behind backend "
+            "initializations.",
             restart=True,
         ),
     )

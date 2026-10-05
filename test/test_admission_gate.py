@@ -1255,25 +1255,26 @@ class TestSpawnAdmissionGate:
         info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued_reason == "memory_pressure"
 
-    def test_a_paused_cap_keeps_its_own_label_under_pressure(
+    def test_a_zero_cap_has_no_pause_label_under_pressure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """With the adaptive cap at 0 nothing starts before the controller's probe
-        recovers, so the row keeps ``adaptive_cap_zero`` (and its detail), and the
-        end of the hold relabels to it rather than to the bare capacity kind."""
+        """There is no pause kind: the adaptive controller never takes the
+        execution cap to 0 (it reads no memory or loop lag). A cap a caller
+        pinned to 0 is an ordinary capacity wait, so the kernel's pressure
+        verdict labels the row, and the end of the hold relabels to the bare
+        capacity kind."""
         mgr = self._mgr()
         self._busy(mgr)
         mgr._max_concurrent = 0
         self._level(monkeypatch, 2)
         info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
-        assert info is not None and info.queued_reason == "adaptive_cap_zero"
-        assert "effective cap 0" in info.queued_reason_detail
+        assert info is not None and info.queued_reason == "memory_pressure"
         mgr._queue_wait["sess-1"] = {"reason": "memory_pressure"}
         mgr._pressure_hold_on = True
         self._level(monkeypatch, 1)
         with self._gate_patches():
             assert mgr._memory_pressure_hold() is None
-        assert mgr._queue_wait["sess-1"] == {"reason": "adaptive_cap_zero"}
+        assert mgr._queue_wait["sess-1"] == {"reason": "concurrency_limit"}
 
     def test_a_held_root_release_does_not_block_a_child_behind_it(
         self, monkeypatch: pytest.MonkeyPatch

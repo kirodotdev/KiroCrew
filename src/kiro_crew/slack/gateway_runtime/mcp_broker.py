@@ -173,6 +173,13 @@ async def _init_mcp_gateway(
         except Exception:
             logger.debug("mcp launch approvals: SEL write failed", exc_info=True)
 
+    from kiro_crew.mcp_gateway.admission import derive_spawn_gate_ceiling
+    from kiro_crew.subagent import subagent_count_ceiling
+
+    # From config alone, not the subagent manager: this runs on the boot path
+    # before _init_subagents builds the manager, and it must not probe host
+    # memory there. The gate needs only the upper bound the cap can reach.
+    subagent_ceiling = subagent_count_ceiling(self._cfg)
     manager = GatewayManager(
         GatewaySpec(
             socket_path=socket_path,
@@ -183,7 +190,11 @@ async def _init_mcp_gateway(
             # Admission keys ride the daemon's argv like max_backends.
             spawn_concurrency_initial=cfg_gw.spawn_concurrency_initial,
             spawn_concurrency_min=cfg_gw.spawn_concurrency_min,
-            spawn_concurrency_max=cfg_gw.spawn_concurrency_max,
+            # Raised to the subagent ceiling, so the gate can carry one backend
+            # initialization per subagent the cap admits.
+            spawn_concurrency_max=derive_spawn_gate_ceiling(
+                cfg_gw.spawn_concurrency_max, subagent_ceiling
+            ),
             spawn_queue_wait_secs=cfg_gw.spawn_queue_wait_secs,
             initialize_timeout_secs=cfg_gw.initialize_timeout_secs,
             host_budget_max_procs=cfg_gw.host_budget_max_procs,

@@ -612,19 +612,24 @@ results = await asyncio.gather(
 ```
 
 The limit is `self._max_parallel_steps`, computed in `__init__` as
-`min(taskrunner.max_parallel_steps, compute_max_subagents(cfg))` and re-derived
-at every run entry (see *Live config* below):
+`min(taskrunner.max_parallel_steps, compute_memory_sized_parallel_cap(cfg))` and
+re-derived at every run entry (see *Live config* below):
 
-- `compute_max_subagents` is the **host-safe ceiling**: available memory and the
-  learned/configured per-agent memory cost size the result, then
-  `agent.subagent_auto_max` caps it. CPU is deliberately not a sizing term; the
-  adaptive controller reacts to live pressure instead.
+- `compute_memory_sized_parallel_cap` is the **host-safe ceiling**: available
+  memory and the learned/configured per-agent memory cost size the result, then
+  `agent.subagent_auto_max` caps it, never below 3 (3 when memory cannot be
+  read), so the auto value is never 0. It keeps the memory arithmetic the
+  subagent cap dropped (`compute_max_subagents` is now the bare
+  `subagent_auto_max` ceiling, because memory bounds subagents per start)
+  because no per-start memory floor prices a TaskRunner step. CPU is
+  deliberately not a sizing term; the adaptive controller reacts to failing
+  work instead.
 - A positive `taskrunner.max_parallel_steps` may only **lower** it (intentional
   throttling for cost / rate limits). `0` or unset means "use the ceiling".
 - An explicit knob value can therefore never raise concurrency above the
   host-safe maximum. A test that asserts a specific concurrency **must** pin
-  `compute_max_subagents`, or it measures the runner's hardware rather than the
-  knob — a small CI runner computes 3.
+  `compute_memory_sized_parallel_cap`, or it measures the runner's hardware
+  rather than the knob — a small CI runner computes 3.
 
 ### Live config: `taskrunner.max_parallel_steps` / `taskrunner.workspace_dir`
 

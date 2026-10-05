@@ -10773,7 +10773,6 @@
         "retry_failed_error": "Einige fehlgeschlagene Subagents konnten nicht wiederholt werden"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "wartet auf den Start — Starts sind pausiert, solange dieser Computer wenig Speicher hat oder überlastet ist; sie laufen von selbst weiter, sobald er sich erholt",
         "low_memory": "wartet auf den Start — benötigt {{required}} freien Speicher, aktuell {{available}} frei; gib Speicher frei, um fortzufahren",
         "low_memory_no_figures": "wartet auf den Start — nicht genug freier Speicher; gib Speicher frei, um fortzufahren",
         "memory_pressure": "wartet auf den Start — macOS meldet Speicherdruck; die Starts laufen von selbst weiter, sobald er nachlässt oder die laufenden Agenten fertig sind; Starts geben auf, sobald der Druck länger als das Wartelimit anhält"
@@ -17325,10 +17324,10 @@
       "lane_system": "Systemspur",
       "lane_tip": "Wie viele Läufe diese Spur gerade gleichzeitig starten darf. Die Zeilen darunter sagen, wie das zu deinem eigenen Limit steht und wie viele gerade laufen.",
       "degrade_reason": "Drosselungsgrund",
-      "degrade_reason_tip": "Warum die wirksame Parallelität gerade unter deinem Limit liegt (Event-Loop-Verzögerung, wenig Speicher, Zeitüberschreitungen, Drosselung durch den Anbieter).",
+      "degrade_reason_tip": "Warum eine Spur gerade unter deinem Limit liegt. Subagent-Läufe werden nur auf Hinweise aus der Arbeit selbst hin gesenkt (etwa Zeitüberschreitungen, langsame oder fehlschlagende Starts, erschöpfte Datei-Handles oder Prozesse); Backend-Starts werden zusätzlich gesenkt, solange dieser Computer wenig Speicher hat oder überlastet ist.",
       "degrade_adaptive_decrease": "Parallelität wegen Last gesenkt",
-      "degrade_adaptive_pause": "Neue Läufe angehalten, bis sich der Host erholt",
-      "degrade_adaptive_probe": "Ein Lauf wird getestet, bevor es weitergeht",
+      "degrade_adaptive_pause": "Backend-Starts auf das Minimum begrenzt, bis dieser Computer wieder Speicher frei hat oder die Last nachlässt",
+      "degrade_adaptive_probe": "Backend-Starts: einer wird getestet, bevor das Limit steigt",
       "task_retries": "Wiederholungsversuche",
       "task_retries_tip": "Versuche, die die Aufgaben unter Aufgaben in Wiederholung schon verbraucht haben. Gezählt werden Versuche, nicht Aufgaben.",
       "recovering_runs": "Backends starten neu",

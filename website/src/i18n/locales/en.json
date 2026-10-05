@@ -6534,7 +6534,6 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "waiting to start — starts are paused while this computer is low on memory or overloaded; they resume on their own once it recovers",
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",
         "low_memory_no_figures": "waiting to start — not enough free memory; free up memory to continue",
         "memory_pressure": "waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure outlasts the wait limit"
@@ -9496,10 +9495,10 @@
       "lane_system": "System lane",
       "lane_tip": "How many runs this lane may start at once right now. The lines beneath say how that stands against your own limit, and how many are running.",
       "degrade_reason": "Degrade reason",
-      "degrade_reason_tip": "Why the effective concurrency is below your limit right now (event-loop lag, low memory, timeouts, provider throttling).",
+      "degrade_reason_tip": "Why a lane is below your limit right now. Subagent runs are lowered only on evidence from the work itself (such as timeouts, slow or failing starts, or running out of file handles or processes); Backend starts are also lowered while this computer is low on memory or overloaded.",
       "degrade_adaptive_decrease": "Concurrency lowered under load",
-      "degrade_adaptive_pause": "New runs paused until the host recovers",
-      "degrade_adaptive_probe": "Testing one run before resuming",
+      "degrade_adaptive_pause": "Backend starts held to the minimum until this computer frees up memory or load eases",
+      "degrade_adaptive_probe": "Backend starts: testing one before raising the limit",
       "task_retries": "Retry attempts",
       "task_retries_tip": "Attempts already spent by the tasks under Tasks retrying. It counts attempts, not tasks.",
       "recovering_runs": "Backends restarting",

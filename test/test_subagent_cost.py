@@ -114,6 +114,9 @@ def test_auto_cap_prices_slots_at_a_typical_run(
             subagent_mem_buffer_pct=20,
             subagent_cost_gb=0.315,
             subagent_auto_max=AgentConfig().subagent_auto_max,
+            # The memory terms size the subagent cap only with the spawn floor
+            # off; with it on the cap is the ceiling whatever the terms say.
+            spawn_min_memory_gb=0,
         ),
         session=types.SimpleNamespace(pool_size=2),
     )
@@ -121,7 +124,9 @@ def test_auto_cap_prices_slots_at_a_typical_run(
     assert typical == pytest.approx(2.0, abs=0.01)
     assert peak == pytest.approx(heavy_peak, abs=0.01)
     assert subagent._host_mem_term(cfg) == mem_term
-    # What users get: the default ``subagent_auto_max`` clamp binds in every case.
+    # What users get: min(mem_term, 32), so the default ``subagent_auto_max``
+    # clamp binds in every case.
+    assert subagent.compute_memory_sized_parallel_cap(cfg) == min(mem_term, 32) == 32
     assert subagent.compute_max_subagents(cfg) == AgentConfig().subagent_auto_max == 32
 
 

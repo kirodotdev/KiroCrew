@@ -54,7 +54,7 @@ async def test_api_system_includes_resource_posture(monkeypatch):
             "kiro_crew.resource_status.probe", lambda cfg=None: _MOCK_STATUS
         )
         monkeypatch.setattr(
-            "kiro_crew.subagent.compute_max_subagents", lambda cfg: 7
+            "kiro_crew.subagent.resolve_max_subagents", lambda cfg: 7
         )
         resp = await hs.api_system(_Req())
 
@@ -105,7 +105,7 @@ async def test_api_system_resource_posture_ample(monkeypatch):
         "kiro_crew.resource_status.probe", lambda cfg=None: ample_status
     )
     monkeypatch.setattr(
-        "kiro_crew.subagent.compute_max_subagents", lambda cfg: 11
+        "kiro_crew.subagent.resolve_max_subagents", lambda cfg: 11
     )
     monkeypatch.setattr(hs, "_local_ip", lambda: "127.0.0.1")
 

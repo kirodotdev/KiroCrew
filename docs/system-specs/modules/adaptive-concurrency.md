@@ -3,12 +3,29 @@
 The controller that turns the user's concurrency configuration into a runtime
 cap the host can actually sustain. It implements RFC
 [overload-resilience §5](../../request-for-change/rfc-overload-resilience.md#5-adaptive-controller):
-the user's `agent.max_subagents` (or its auto-sized value) is the **ceiling and
-is never written**; beneath it a live **effective cap** halves on corroborated
-host pressure, earns its way back one step per clean window, pauses dispatch
-under severe pressure and re-opens with a single probe. The same verdict shapes
-the MCP gateway daemon's `SpawnGate` capacity. Nothing is ever killed to fit a
-smaller cap: both actuators shrink naturally as in-flight work finishes.
+the user's `agent.max_subagents` (or `agent.subagent_auto_max` when it is 0) is
+the **ceiling and is never written**; a live **effective cap** starts AT it,
+halves when admitted work keeps failing, and earns its way back one step per
+clean window. A second track shapes the MCP gateway daemon's `SpawnGate`
+capacity, and only that track reads loop lag and free memory, halves on either
+alone, and pauses under severe host pressure. Memory is bounded per start by the
+spawn floor (`agent.spawn_min_memory_gb`, [subagent.md](subagent.md) *Memory
+guard*), never by this cap. Nothing is ever killed to fit a smaller cap: both
+actuators shrink naturally as in-flight work finishes.
+
+**Why the execution cap does not read memory or loop lag.** It used to: it
+started at `min(user_max, 4)`, halved on 250 ms of gateway loop lag alone or on
+memory at the critical line, and paused dispatch at 0 under severe pressure, on
+top of an auto ceiling that was itself sized from host memory. Every one of
+those is a COUNT bound sitting under the per-start memory floor, so one chat's
+wave held the slots (or the halved cap) another chat's subagents waited for
+while memory was still free -- the "more than two chats with subagents throttle
+each other" report. The floor already prices each start at what it will settle
+at and queues the ones that would not leave it free, so a count moved by the
+same memory only stalls work early; and the gateway's loop lag says nothing
+about whether a subagent's own process is healthy. What the floor cannot see --
+provider 429s (scoped, below), attributable timeouts, slow or failing MCP
+servers, fd and process exhaustion -- is what still cuts the execution cap.
 
 ## Modules
 
@@ -23,18 +40,24 @@ smaller cap: both actuators shrink naturally as in-flight work finishes.
 Sampled every `agent.controller_sample_secs` (5 s) into a ring of 60. Every field
 has a "not measured" value and an unmeasured field never fires.
 
-| Signal | Source | Scope | Fires when |
+| Signal | Source | Read by | Fires when |
 |---|---|---|---|
-| `loop_lag` | how late the controller's own timer fired on the gateway loop | host | `>= DEFAULT_LAG_DECREASE_MS` (250); **severe** `>= DEFAULT_LAG_SEVERE_MS` (2000) |
-| `memory` | `resource_status._read_available_gb` (cgroup-clamped) | host | `<= resource_critical_gb` (2 GB); always **severe** |
-| `fds` | `/proc/self/fd` or `/dev/fd` count vs `RLIMIT_NOFILE` soft | host | `>= 80 %` of the limit |
-| `procs` | daemon `stats.admission.host_budget` (`procs` / `max_procs`) | host | `>= 90 %` of the budget |
-| `start_latency` | `record_start(duration_ms, ...)` hook (session/new, backend initialize) | host | p95 over the window `>= 30 s` |
-| `timeouts` | attributable start timeouts + attributable run failures / finished in window | host | rate `>= DEFAULT_TIMEOUT_RATE` (0.2) |
-| `completion_rate` | successful runs / runs finished in window (needs >= 5 finished) | host | `< 0.5` |
-| `slow_keys` | distinct PoolKeys with a slow or failing start in the window | host | `>= 2` |
-| `gate_failures` | `SpawnGate` `failure` outcomes (daemon snapshot, or `note_gate_outcome` for an in-process gate) | host | `>= 2` in window |
+| `loop_lag` | how late the controller's own timer fired on the gateway loop | **spawn gate only** (`HOST_ONLY_SIGNALS`) | `>= DEFAULT_LAG_DECREASE_MS` (250); **severe** `>= DEFAULT_LAG_SEVERE_MS` (2000) |
+| `memory` | `resource_status._read_available_gb` (cgroup-clamped) | **spawn gate only** (`HOST_ONLY_SIGNALS`) | `<= resource_critical_gb` (2 GB); always **severe** |
+| `fds` | `/proc/self/fd` or `/dev/fd` count vs `RLIMIT_NOFILE` soft | both tracks | `>= 80 %` of the limit |
+| `procs` | daemon `stats.admission.host_budget` (`procs` / `max_procs`) | both tracks | `>= 90 %` of the budget |
+| `start_latency` | `record_start(duration_ms, ...)` hook (session/new, backend initialize) | both tracks | p95 over the window `>= 30 s` |
+| `timeouts` | attributable start timeouts + attributable run failures / finished in window | both tracks | rate `>= DEFAULT_TIMEOUT_RATE` (0.2) |
+| `completion_rate` | successful runs / runs finished in window (needs >= 5 finished) | both tracks | `< 0.5` |
+| `slow_keys` | distinct PoolKeys with a slow or failing start in the window | both tracks | `>= 2` |
+| `gate_failures` | `SpawnGate` `failure` outcomes (daemon snapshot, or `note_gate_outcome` for an in-process gate) | both tracks | `>= 2` in window |
 | provider 429 | `record_provider_throttle(scope)` | **per provider** | reported on `Decision.throttled_providers`; **never** a host signal |
+
+`PressureReport.exec_signals` is the set minus `HOST_ONLY_SIGNALS`, and
+`exec_corroborated` is two or more of them in one sample: nothing is sufficient
+alone for the execution cap. `corroborated`, `severe` and `clear_for_increase`
+are the spawn gate's verdict, where `SUFFICIENT_ALONE` (`loop_lag`, `memory`)
+still applies.
 
 Attributable means a congestion failure: a start or turn that timed out, a
 stall, a backend that never initialised (`controller.ATTRIBUTABLE_MARKERS`).
@@ -62,43 +85,103 @@ below.
 
 Parameters are the `agent.adaptive_*` keys; numbers below are their defaults.
 
+Each sample is judged once per track (`AdaptivePolicy._exec_step` /
+`_gate_step`); the decision's `action` is the stronger of the two (pause > probe
+> resume > decrease > increase > hold) and its `reason` names each track that
+moved. Each track keeps its own decrease cooldown, clean-window clock and
+one-increase-per-window clock.
+
 | Rule | When | Effect |
 |---|---|---|
-| **Decrease** | pressure is **corroborated**: a signal from `SUFFICIENT_ALONE` (`loop_lag`, `memory`) or **>= 2 distinct** signals in one sample; and >= `DEFAULT_DECREASE_COOLDOWN_SECS` (30) since the last decrease | exec cap -> `clamp(max(ceil(cap x 0.5), healthy_in_flight), floor, cap - 1)`; gate capacity -> `max(gate_floor, ceil(cap x 0.5))` at most `cap - 1`. Successes counted before the cut are discarded on the track whose cap moved; a track already at its floor keeps its earned successes. |
-| **Hold** | a single soft signal, or pressure inside the cooldown, or clear but inside the hysteresis band | nothing moves |
-| **Progress probe** | new stream activity since the previous sample, active work at the cap, queued ready work, measured memory above the pressure line, no provider throttle, and the same clear 5 s / 30 s window as the current regime | at most `+1` exec slot without waiting for a whole task to finish; never doubles or relaxes the init-gate success bar |
-| **Increase (slow start)** | `adaptive_slow_start` is on AND this process has never met corroborated pressure or a pause, AND the sample is clear (as below) AND >= `DEFAULT_SLOW_START_CLEAN_SECS` (5) since the last pressure AND since the last increase AND >= `DEFAULT_SLOW_START_SUCCESSES` (1) since the last change AND demand at the cap. The eased success bar is the **exec track only** -- the gate still owes its flat `increase_successes` (below) | `x DEFAULT_SLOW_START_FACTOR` (2) on the track that qualified, bounded by its growth ceiling (see below) |
-| **Increase (congestion avoidance)** | after the first corroborated pressure or pause: the sample is clear -- no signal at all AND `loop_lag < DEFAULT_LAG_INCREASE_MS` (100) AND `memory >= resource_pressure_gb` (4 GB) -- AND >= `DEFAULT_INCREASE_CLEAN_SECS` (30) since the last pressure AND since the last increase AND enough work since the last change (exec: `min(DEFAULT_INCREASE_SUCCESSES, cap)`, i.e. one wave of the CURRENT cap; gate: `DEFAULT_INCREASE_SUCCESSES` (20) backend inits) AND demand at the cap (exec: `running + queued >= cap`; gate: `queued > 0` or `in_flight >= capacity`) | `+1` on the track that qualified, bounded by its growth ceiling; at most one increase per window |
-| **Idle recovery** | the exec cap is below the fresh-start value `min(user_max, adaptive_initial)`, the sample is clear (as above), the exec track has had NO demand (`running + queued == 0`) and the host no signal of any kind for `DEFAULT_IDLE_RECOVERY_SECS` (60), AND >= one window since the last increase | `+1` toward the fresh-start value, never past it; while paused and probing, a probe that never reported resumes the exec cap at `floor + 1` (at most the fresh-start value) instead of waiting for a completion; the gate stays at its floor and earns on inits. Demand or any signal restarts the idle clock |
-| **Pause** | severe pressure for `severe_samples` (2) consecutive samples | exec cap `0` (no new grants), gate at its floor; running work untouched |
-| **Probe** | paused and the severe condition cleared | exec cap `1`; the gate stays at floor |
-| **Resume** | the probe completed (completions advanced) with no signal | caps to `floor + 1`; normal AIMD resumes. A probe that meets corroborated pressure re-pauses |
-| **Fresh start** | process start | exec cap `min(user_max, adaptive_initial=4)`, gate at `mcp_gateway.spawn_concurrency_initial`; the first clean window is measured from the first sample |
-| **Fixed** | `adaptive_concurrency_mode = "fixed"` | both caps pinned at their initial values on every tick (Q2 reversal) |
+| **Decrease (exec)** | **>= 2 distinct work signals** in one sample (`exec_corroborated`) and >= `DEFAULT_DECREASE_COOLDOWN_SECS` (30) since the last exec decrease | exec cap -> `clamp(max(ceil(cap x 0.5), healthy_in_flight), floor, cap - 1)`. Successes counted before the cut are discarded on the exec track only |
+| **Decrease (gate)** | **corroborated**: a signal from `SUFFICIENT_ALONE` (`loop_lag`, `memory`) or >= 2 distinct signals; and >= 30 s since the last gate decrease | gate capacity -> `max(gate_floor, ceil(cap x 0.5))` at most `cap - 1`; its successes are discarded on the gate track only |
+| **Hold** | a single soft signal for that track, or pressure inside its cooldown, or (gate) clear but inside the hysteresis band | nothing moves on that track |
+| **Progress probe** (exec) | new stream activity since the previous sample, active work at the cap, queued ready work, no provider throttle, and the same clear 5 s / 30 s window as the current regime. Free memory is not a term: the spawn floor prices every start | at most `+1` exec slot without waiting for a whole task to finish; never doubles or relaxes the init-gate success bar |
+| **Increase (slow start)** | `adaptive_slow_start` is on AND this process has never met corroborated pressure or a pause, AND the sample is clear for the track AND >= `DEFAULT_SLOW_START_CLEAN_SECS` (5) since that track's last pressure AND last increase AND (exec) >= `DEFAULT_SLOW_START_SUCCESSES` (1) since the last change AND demand at the cap. The eased success bar is the **exec track only** -- the gate still owes its flat `increase_successes` (below) | `x DEFAULT_SLOW_START_FACTOR` (2) on the track that qualified, bounded by its ceiling |
+| **Increase (congestion avoidance)** | after the first corroborated pressure or pause: the sample is clear for the track -- exec: no work signal; gate: no signal at all AND `loop_lag < DEFAULT_LAG_INCREASE_MS` (100) AND `memory >= resource_pressure_gb` (4 GB) -- AND >= `DEFAULT_INCREASE_CLEAN_SECS` (30) since that track's last pressure AND last increase AND enough work since the last change (exec: `min(DEFAULT_INCREASE_SUCCESSES, cap)`, i.e. one wave of the CURRENT cap; gate: `DEFAULT_INCREASE_SUCCESSES` (20) backend inits) AND demand at the cap (exec: `running + queued >= cap`; gate: `queued > 0` or `in_flight >= capacity`) | `+1` on the track that qualified, bounded by its ceiling; at most one increase per window per track |
+| **Idle recovery** (exec) | the exec cap is below the fresh-start value (the ceiling), the exec track has had NO demand (`running + queued == 0`) and no work signal for `DEFAULT_IDLE_RECOVERY_SECS` (60), AND >= one window since the last exec increase | `+1` toward the fresh-start value, never past it. Demand or any work signal restarts the idle clock; loop lag and memory do not |
+| **Pause** (gate) | severe pressure (memory below critical, or loop lag beyond 2 s) for `severe_samples` (2) consecutive samples | gate at its floor; `paused`. The exec cap is untouched; running work untouched |
+| **Probe** (gate) | paused and the severe condition cleared | `probing`; the gate stays at its floor |
+| **Resume** (gate) | the probe completed (completions advanced) with no signal; or the host is idle and clear for `DEFAULT_IDLE_RECOVERY_SECS` with no probe result | gate to `floor + 1` (idle: left at its floor, to earn on inits); normal AIMD resumes. A probe that meets corroborated pressure re-pauses |
+| **Fresh start** | process start | exec cap AT its ceiling (`user_max`); gate at `mcp_gateway.spawn_concurrency_initial`; the first clean window is measured from the first sample |
+| **Ceiling raised** | `user_max` rises (a hot reload of `agent.max_subagents`) while the exec cap sat at the old ceiling | the exec cap follows to the new ceiling at once; a cap below the old ceiling (a cut) keeps earning its room |
+| **Fixed** | `adaptive_concurrency_mode = "fixed"` | both caps pinned at their initial values on every tick -- the exec cap at its ceiling (Q2 reversal) |
 
 `healthy_in_flight` (running minus stalled) bounds a decrease from below because
 natural shrink cannot free what is currently working; that is what turns "10
 concurrent starts, 4 time out" into 6, then 4, rather than 5, then 3. A decrease
 always cuts by at least one so pressure with all work healthy still makes progress.
 
-Bounds: exec track `min(user_max, 4)` / `adaptive_floor` (1) / `user_max`; gate
-track `spawn_concurrency_initial` (4) / `spawn_concurrency_min` (1) /
-`spawn_concurrency_max` (8). The user's ceiling is re-read from
-`SubagentManager.user_max_concurrent` on every tick, so a hot reload of
-`agent.max_subagents` clamps the live cap immediately and never writes the
-adaptive bound into the config.
+Bounds: exec track `user_max` / `adaptive_floor` (1) / `user_max` (start / floor
+/ ceiling); gate track `spawn_concurrency_initial` (4) / `spawn_concurrency_min`
+(1) / the derived gate ceiling, `max(spawn_concurrency_max, user_max)`
+(`mcp_gateway.admission.derive_spawn_gate_ceiling`, 32 at defaults; below). The
+user's ceiling is re-read from `SubagentManager.user_max_concurrent` on every
+tick, so a hot reload of `agent.max_subagents` clamps the live cap immediately
+and never writes the adaptive bound into the config.
+
+`PolicyParams.exec_initial` is `None` in production (start at the ceiling);
+`agent.adaptive_initial` is inert, kept on load and save so an existing config
+is not rewritten. It is deliberately not marked `deprecated`: `to_dict()` writes
+it into every save, so a deprecation notice would fire on every launch for a
+value the operator cannot clear. A test that pins a rule from a lower cap
+passes `exec_initial`.
+
+### The spawn gate's ceiling follows the subagent ceiling
+
+The gate bounds how many MCP backend processes fork and initialize at once,
+daemon-wide. With its old ceiling of 8 under a subagent ceiling of 32, a fan-out
+the subagent cap admitted in full had its backend initializations queued behind
+eight windows, so the gate, not memory, bounded how many subagents got started.
+The broker therefore launches the daemon with `--spawn-concurrency-max` raised
+to the subagent ceiling at launch (`slack/gateway_runtime/mcp_broker.py`), and
+the controller's gate track uses the same figure (`gateway_runtime/admission.py`).
+Both read that ceiling from CONFIG alone (`subagent_count_ceiling`: the explicit
+pin floored at 3, else `agent.subagent_auto_max`), never from the subagent
+manager and never through a host-memory probe: on the boot path the broker
+starts before `_init_subagents` builds the manager, so a manager-derived figure
+launched the daemon at the plain 8 while the controller targeted 32, and the
+daemon clamped every raise back; and the boot path before readiness takes no
+memory reading. The gate needs only the upper bound the resolved cap can reach,
+which that figure is. Pinned by
+`test_the_daemon_is_launched_with_the_subagent_ceiling_at_boot` and
+`test_the_boot_path_sizes_the_gate_without_probing_host_memory`.
+The gate still STARTS at `spawn_concurrency_initial`, still halves on loop lag,
+memory and failing inits, and climbs only on clean backend inits with demand
+(slow start doubles its step, never its bar), so a 20-wide fan-out takes it past
+8 within a few windows. Like every other `mcp_gateway` admission key the
+daemon's ceiling is fixed at its launch; a later `max_subagents` change reaches
+it at the next broker start. The host budget is unchanged: at 40 GiB available
+it derives a 273-process ceiling, far above 20 subagents with five private
+servers each. Pinned by `test_subagent_memory_bounds_concurrency.py`
+(`test_the_spawn_gate_ceiling_reaches_the_subagent_ceiling`,
+`test_twenty_backend_initializations_run_at_once_under_the_derived_ceiling`,
+`test_the_gate_track_climbs_past_eight_on_clean_init_evidence`,
+`test_the_host_budget_admits_twenty_subagents_of_backends_at_40_gib`).
+
+The degrade reason the gateway publishes to session health
+(`_wire_overload_health`) keeps its closed set, but `adaptive_pause` and
+`adaptive_probe` now come only from the spawn gate, since the exec cap is never
+paused. Their Tasks Capacity card copy therefore leads with the lane's own
+label, "Backend starts" ("Backend starts held to the minimum until this
+computer frees up memory or load eases"), not runs. A paused gate still admits
+its floor, so the copy says "held to the minimum" rather than "paused", which
+would contradict the lane's own "Up to 1 at once". The pause and probe flags
+sit on the `spawn_gate` cap source. The Degrade reason tip names the split:
+Subagent runs are lowered only by work evidence, Backend starts also by low
+memory or load.
 
 ### Growth ceiling: the user's pin, judged live
 
 An exec increase climbs toward `user_max` -- the resolved `agent.max_subagents`
-(an explicit pin, or `compute_max_subagents`'s memory-sized value when it is 0)
--- and nothing else. No static host prediction sits under that ceiling. The
-point of the loop is that many sessions may ask for many workers at once, the
-controller admits them up to the ceiling the user chose, and the LIVE pressure
-signals in each 5 s sample -- free memory against the pressure line, loop lag,
-attributable timeouts, slow starts -- are what withhold the next increase or
-cut the cap. Work that cannot be admitted yet queues on the manager and the
-spawn gate; it is never refused for a guessed number.
+(an explicit pin, or `agent.subagent_auto_max` when it is 0) -- and nothing
+else. No host prediction sits under that ceiling. The point of the loop is that
+many sessions may ask for many workers at once, the controller admits them up to
+the ceiling the user chose, the spawn floor admits each start only while memory
+holds it, and the WORK signals in each 5 s sample -- attributable timeouts, slow
+starts, fd and process exhaustion -- are what withhold the next increase or cut
+the cap. Work that cannot be admitted yet queues on the manager and the spawn
+gate; it is never refused for a guessed number.
 
 An earlier reading clamped the climb to `min(user_max, Sample.host_cap)`, a
 figure predicted from each agent's p90 peak memory AND peak CPU (the auto-sizing
@@ -107,11 +190,8 @@ inverted the loop: one build-heavy agent's one-minute burst (20 cores, 9 GB)
 priced every slot at that burst, so a 32-core host with 96 GB free computed a
 CPU term of 4 and held the cap at its fresh-start value for the life of the
 process, while the controller it sat under saw nothing but clean samples. Memory
-over-commit is the one unrecoverable failure and it is guarded live, three
-times: an increase needs a measured `free_mem_mb` at or above the pressure line
-(an unreadable reading, `-1`, fails open, as it does everywhere else the
-sample is unmeasurable -- `classify` treats it as clear), corroborated
-pressure at the critical line halves the cap, and the spawn gate defers every
+over-commit is the one unrecoverable failure and it is guarded live, once, where
+the start is decided: the spawn gate defers every
 start that would not leave `spawn_min_memory_gb` free after its own price and
 the running agents' unobserved growth (`_startup_memory_reserve_gb`: a start that
 has not settled -- the next one, a claim awaiting registration, a worker fewer
@@ -120,11 +200,17 @@ projection from the measured default or the learned settled RSS and never below
 `agent.subagent_cost_gb`, or that less the process a shared start skips; never a
 whole-run peak, in full until it settles; a settled worker owes nothing, since
 its memory is already inside the free-memory reading; yielded parents included --
-see `subagent.md`). CPU
-over-commit only slows work, and slowness is exactly the pressure the loop
-already backs off from. `compute_max_subagents` therefore sizes the AUTO ceiling
-from memory alone as well; `agent.subagent_cpu_cost_cores` is deprecated and
-inert, preserved on load and save so an existing config is not rewritten.
+see `subagent.md`). The execution cap does not guard memory a second time: an
+increase gated on the pressure line and a halving at the critical line were
+count bounds on top of that floor, and they are what throttled one chat's
+subagents behind another's. CPU over-commit only slows work, and slowness is
+exactly the pressure the loop already backs off from. `compute_max_subagents`
+is therefore not a memory figure at all: it is `agent.subagent_auto_max` as
+written (3 when host memory cannot be read, because the floor then fails open,
+and sized from host memory when `agent.spawn_min_memory_gb <= 0` turns the floor
+off);
+`agent.subagent_cpu_cost_cores` is deprecated and inert, preserved on load and
+save so an existing config is not rewritten.
 
 `probe_host` reads memory, RSS and fds only -- live signals -- and no longer
 loads config or the learned-cost store on the worker thread.
@@ -134,9 +220,9 @@ test_no_static_host_prediction_sits_under_the_user_ceiling`,
 test_the_climb_is_bounded_by_the_user_ceiling_alone` and
 `test_subagent_sizing.py::TestMemoryIsTheOnlyHostTerm` pin it.
 
-This is what makes `max_subagents = 64` on a clear host with demand reach 64,
-and on a host under memory pressure settle wherever the pressure line says,
-rather than at a number guessed before the work existed.
+This is what makes `max_subagents = 64` on a clear host start at 64, and on a
+host short of memory run however many starts the floor admits, rather than a
+number guessed before the work existed.
 
 ### Why the increase is not symmetric with the decrease
 
@@ -146,16 +232,16 @@ A decrease is multiplicative on ONE corroborated sample. With a flat `+1` per
 fresh-start `adaptive_initial` (4) is 60 windows: 60 x 30 s = 30 minutes of
 perfectly clean samples and 60 x 20 = 1200 finished runs -- and at the floor,
 `1 -> 2` costs 20 runs each executed ALONE, so a cap cut to the floor on a
-transient lag spike stays there. Three rules close that gap without weakening any
-decrease:
+transient lag spike stays there. The exec track now STARTS at its ceiling, so these rules matter only after a
+cut, but they still close that gap without weakening any decrease:
 
 - **slow start** doubles per 5 s window until this process has evidence the host
   refuses (its first corroborated pressure or pause);
 - the exec bar scales to the cap (`min(increase_successes, cap)`), so a step is
   earned by one full wave of the cap being tested rather than by a constant that
   is cheap at 30 and prohibitive at 1. It is never above the old constant;
-- fresh stream progress can earn one probe slot within measured headroom, so
-  a long task need not finish before the next queued task can begin. Queued,
+- fresh stream progress can earn one probe slot, so a long task need not
+  finish before the next queued task can begin. Queued,
   parked, stalled and unstarted records do not supply progress evidence. An
   unchanged activity timestamp never buys another probe.
 
@@ -185,15 +271,12 @@ low until fresh lane or manager load earned it back.
 
 Idle recovery retires that stale evidence without trusting the host with more
 than a restart would: after `DEFAULT_IDLE_RECOVERY_SECS` with no exec demand on
-EITHER admission point and no signal, the cap climbs `+1` per clean window back
-to the fresh-start value, and an unreported probe resumes at `floor + 1`, never
-above the fresh-start value even when `adaptive_floor >= adaptive_initial`.
-Above the fresh-start value every step is still earned; the next corroborated
-pressure cuts as before, and one signal of any kind restarts the idle clock.
-Idle means neither point has demand -- live runner-lane load keeps the track
-out of idle recovery, so the bound there is the fresh-start value and not the
-user's ceiling. A lowered-then-raised `max_subagents` that left the cap below
-the fresh-start value recovers the same way.
+EITHER admission point and no work signal, the cap climbs `+1` per clean window
+back to the fresh-start value -- the ceiling -- never past it. The next
+corroborated work pressure cuts as before, and one work signal restarts the idle
+clock; loop lag and memory do not, because the exec track does not read them.
+Idle means neither point has demand -- live runner-lane load keeps the track out
+of idle recovery, so under load a cut is earned back by the rules above.
 
 ### Accepted scope: one-way slow-start retirement
 
@@ -205,11 +288,11 @@ The target defect is a cap that cannot climb at all, not slower growth after the
 host has rejected doubling.
 
 The gate track keeps the flat `increase_successes` and slow start does not ease
-it: its counter is backend inits, which land far faster than runs finish, and its
-whole range is `4 -> 8` -- one doubling, not the tens of steps slow start exists
-to cross. Easing it would take the gate to its ceiling on a single init inside
-one clean window, and hand a respawned daemon its full capacity back for one
-success, against the restart-rebase contract above.
+it: its counter is backend inits, which land far faster than runs finish. Easing
+it would double the gate on a single init inside one clean window, and hand a
+respawned daemon its capacity back for one success, against the restart-rebase
+contract above. Slow start does double the gate's STEP once the bar is paid,
+which is how a fan-out takes it from 4 past 8 toward the derived ceiling.
 
 ## Actuators
 
@@ -224,11 +307,12 @@ success, against the restart-rebase contract above.
   lane slot and nothing else will release one
   ([taskq.md](taskq.md) § Runner adapters). The two gates count their own
   occupancy under the shared ceiling; it does not bound their total. A cut
-  admits nothing new and cancels nothing; `0` pauses grants. `None` removes the
-  bound. Applied synchronously at controller construction so the first spawn
-  already sees the fresh-start cap -- before the gateway's wiring pass, so that
-  first application legitimately finds no lane hook and needs none (no waiters
-  exist yet).
+  admits nothing new and cancels nothing; `0` admits nothing (the controller no
+  longer produces it: the exec track has no pause). `None` removes the bound.
+  Applied synchronously at controller construction so the first spawn already
+  sees the fresh-start cap -- the ceiling -- before the gateway's wiring pass,
+  so that first application legitimately finds no lane hook and needs none (no
+  waiters exist yet).
 - **Spawn gate.** `GatewayManager.set_spawn_capacity(n)` sends
   `{"type": "set-spawn-capacity", "capacity": n}` on a one-shot control
   connection; gatewayd answers `{"type": "spawn-capacity", "capacity": <clamped>,
@@ -242,10 +326,10 @@ success, against the restart-rebase contract above.
 | Key | Default | Meaning |
 |---|---|---|
 | `adaptive_concurrency` | `true` | run the controller; `false` = user cap only, gate back to its initial |
-| `adaptive_concurrency_mode` | `"aimd"` | `"fixed"` pins both caps (plain semaphore) |
-| `adaptive_floor` | `1` | lowest exec cap under sustained pressure (clamped 1..64) |
-| `adaptive_initial` | `4` | fresh-start exec cap, bounded by `max_subagents` (1..64) |
-| `adaptive_slow_start` | `true` | before the first corroborated pressure, double the exec cap per clear 5 s window instead of `+1` per 30 s; `false` = `+1` per clear 30 s window from the start, with the exec success bar still scaled to the live cap (`min(DEFAULT_INCREASE_SUCCESSES, cap)`) |
+| `adaptive_concurrency_mode` | `"aimd"` | `"fixed"` pins both caps (plain semaphore; the exec cap at its ceiling) |
+| `adaptive_floor` | `1` | lowest exec cap under sustained work pressure (clamped 1..64) |
+| `adaptive_initial` | `4` | **inert** (not flagged deprecated, see above): the exec cap starts at its ceiling. Kept on load and save |
+| `adaptive_slow_start` | `true` | before the first corroborated pressure, double a cap below its ceiling per clear 5 s window instead of `+1` per 30 s; `false` = `+1` per clear 30 s window from the start, with the exec success bar still scaled to the live cap (`min(DEFAULT_INCREASE_SUCCESSES, cap)`) |
 | `controller_sample_secs` | `5` | sampling interval (1..300) |
 
 `adaptive_concurrency = false` costs the launch nothing, not even an import.
@@ -265,8 +349,9 @@ Pinned by
 in a subprocess because this suite's `sys.modules` already holds whatever else
 imported it.
 
-Memory thresholds reuse `resource_pressure_gb` / `resource_critical_gb`. The
-controller subscribes to all of these through `live.watch_object` and
+Memory thresholds reuse `resource_pressure_gb` / `resource_critical_gb`; they
+shape the spawn gate only. The controller subscribes to all of these (bar the
+inert `adaptive_initial`) through `live.watch_object` and
 re-parameterises the policy in place (`update_params`): a lowered ceiling clamps,
 a raised one does not lift the live cap (it is earned), and a mode switch to
 `fixed` snaps on the next tick.
@@ -296,7 +381,7 @@ These are module constants, not settings. Tests and experiments may pass
 
 `AdaptiveController.state()` carries the enabled flag, mode, effective exec cap
 vs ceiling, the growth regime (`slow_start`), gate
-capacity vs ceiling, paused/probing, decision counts, the applied and pending
+capacity vs ceiling, the gate's paused/probing flags, decision counts, the applied and pending
 actuator values, the last error, the last sample, and `recent_decisions`: the
 last 32 cap-changing decisions, newest last, each with its wall-clock time,
 action, reason, the caps the actuators confirmed after it (a gate update the
@@ -306,17 +391,20 @@ cap (action, reason, signals, the sample time `t`, and in `state()` its
 `age_secs`); it is never cleared by an increase, so the answer to "why is the
 cap low" survives both the holds that follow and the decision ring rolling
 over. A clear hold's `reason` says what the next exec step waits for: the
-ceiling, the idle clock ("idle; restoring toward 4 in 25s"), demand at the cap,
-or the completions still owed. Cap decreases, pauses and resumes are logged at
+ceiling, the idle clock ("idle; restoring toward 32 in 25s"), demand at the cap,
+or the completions still owed; when only loop lag or memory fired, the gate's
+hold is named instead. Cap decreases, pauses and resumes are logged at
 WARNING (growth at INFO) so `gateway.log` keeps them.
 `resource_status.adaptive_state()` reads it from the registry and
 `adaptive_summary_lines()` renders it at the end of the `resource_status` MCP
-tool's report ("Execution cap: 8/64   MCP spawn gate: 4/8   Dispatch: active",
+tool's report ("Execution cap: 64/64   MCP spawn gate: 4/32 (active)", the
+gate's state in brackets -- `paused` or `probing` under severe host pressure --
 then "Growth toward ceiling: slow start (x2/window)", the last decision and
 its signals, throttled provider scopes, and the last five of
 `recent_decisions` under "Recent cap changes"). While the exec cap is below the
 ceiling and a cut is on record it adds "Last pressure cut: decrease 42s ago
-(corroborated pressure: loop_lag,timeouts); signals: ...").
+(corroborated pressure: slow_keys,timeouts); signals: ..."). Only an exec cut
+is on record: a gate cut or pause lowers no exec cap.
 
 **A tool server is not the gateway process,** so that registry is empty there:
 `mcp_tools/spawn.py::_live_adaptive_state` falls back to `GET
@@ -335,7 +423,8 @@ has to be the effective one.
 
 The two other places the model is handed a fan-out figure -- the spawn tool
 descriptions (`mcp_tools/spawn.py::schemas`, "You can run up to N sub-agents
-concurrently") and the `{{MAX_SUBAGENTS}}` prompt token
+concurrently", followed in both branches by the note that each start also waits
+until host memory can hold it) and the `{{MAX_SUBAGENTS}}` prompt token
 (`context.py::_resolve_prompt_templates`) -- read the in-process registry only,
 through `resource_status.adaptive_exec_cap()`, and never the loopback API: the
 prompt token is resolved once per session -- a session start takes the reading
@@ -344,10 +433,16 @@ since evicted that session, in which case the restore takes a live reading and
 the two renders can differ -- and `schemas()`
 runs on the gateway's own discovery cycle as well as in a tool server. In the
 gateway that read is the live cap (a disabled controller reports the user's max,
-which is then the cap in force; a paused dispatch reads as unknown). Where it is
-empty the configured ceiling is printed and labelled as one -- "N (configured
-ceiling)" in the prompt, "Your configured sub-agent ceiling is N; the cap
-actually in force may be lower" in the tool description.
+which is then the cap in force; a cap of 0, which the controller no longer
+produces, reads as unknown). Where it is empty the configured ceiling is printed
+and labelled as one -- "N (configured ceiling)" in the prompt, "Your configured
+sub-agent ceiling is N; the cap actually in force may be lower" in the tool
+description. `resolve_max_subagents` never answers 0, so the figure is always a
+number (`subagent_auto_max`, 32, at defaults on any host; 3 where host memory
+cannot be read); "several" is left only for a config that cannot be loaded.
+Pinned by `test_subagent_memory_bounds_concurrency.py::
+test_the_prompt_figure_is_the_auto_ceiling_on_any_host` and
+`test_the_spawn_tool_names_the_figure_and_the_memory_wait`.
 
 Metrics: `kirocrew.adaptive.decisions{action}` (`metrics/events.py::ADAPTIVE_DECISIONS`)
 increments once per decision that changed a cap or the paused flag; `action` is
@@ -365,34 +460,50 @@ the controller itself never lowers a host cap for a 429.
 
 `test_adaptive_startup_memory.py` runs the real manager, durable pump, admission
 guard and controller with virtual time, 0.25-second starts and five-second RSS
-growth. A post-sample host-memory shock must leave the configured memory floor
-intact; the ample-host case still fills the earned execution slots. Small cases
-cover unregistered claims, yielded parents, shared sessions and observed RSS
-replacing reservations.
+growth, under a cap of 64 the controller never moves. The floor's reserve, not
+a count, stops the wave; a post-sample host-memory shock stops the drain at
+once (nothing starts after it), and a shock inside the headroom the floor kept
+leaves the floor intact -- a larger one is another application's memory, which
+admission does not shed. Small cases cover unregistered claims, yielded parents,
+shared sessions and observed RSS replacing reservations.
 
-`test_adaptive_policy.py` (pure, injected timestamps): fresh start at
-`min(user_max, 4)`; the 10 -> 6 -> 4 descent produced by `observe` under injected
-concurrency timeouts, the plain x0.5 descent to the floor, minimum progress and
-the healthy-work bound; a single soft signal never cuts, one slow server is not
-the host, lag and memory cut alone; a single provider's 429s never move either
+`test_subagent_memory_bounds_concurrency.py` is the acceptance map for memory,
+not a count, bounding concurrency: 20 auto-sized spawns on a host simulated at
+40 GiB all start, paced only by the stagger, with the real controller attached;
+3 s of loop lag, or memory at the critical line, leaves the exec cap unchanged
+(the gate still backs off); an explicit `max_subagents=3` still caps and the
+child reserve still hands a yielded slot to the waiting parent's child; the gate
+ceiling and host budget carry the fan-out; timeouts on two servers and fd plus
+process exhaustion still cut the exec cap, a 429 still never does; the prompt
+and spawn-tool figures are defined; the TaskRunner auto value is never 0 and a
+non-positive workflow concurrency is bounded.
+
+`test_adaptive_policy.py` (pure, injected timestamps): fresh start at the
+ceiling (or a pinned `exec_initial`); the 10 -> 6 -> 4 descent produced by
+`observe` under injected concurrency timeouts, the plain x0.5 descent to the
+floor, minimum progress and the healthy-work bound; a single soft signal never
+cuts, one slow server is not the host, lag and memory cut the spawn gate alone
+and never the exec cap, and nothing is sufficient alone for the exec cap; a
+single provider's 429s never move either
 cap but are reported; cooldown blocks a second cut and discards pre-cut
 successes on the cut track only -- a gate-only cut with exec at its floor leaves
 the exec completions counted, so the 20th completion afterwards still buys
 exec its `+1`, and a pause / resume likewise resets only the tracks it moved;
-a noisy lag series around the threshold never oscillates and the
-increase side needs the hysteresis band; +1 per clean window with demand and
-successes, no demand no increase, the gate earns on inits; pause -> probe ->
-resume, a probe meeting pressure re-pauses, one severe sample is not a pause;
+a noisy lag series around the threshold never oscillates the gate, the gate's
+increase side needs the hysteresis band and the exec track has none; +1 per
+clean window with demand and successes, no demand no increase, the gate earns
+on inits; the gate's pause -> probe -> resume with the exec cap untouched, a
+probe meeting pressure re-pauses, one severe sample is not a pause;
 the ceiling is never exceeded, a lowered ceiling clamps, `fixed` disables
 adaptation; `TestIdleRecovery`: a cut cap climbs back one step per window to the
-fresh-start value and stops there, an unreported probe resumes once idle and
-clear, demand or a lone soft signal restarts the idle clock, work below the cap
+fresh-start value and stops there, an unreported gate probe resumes once idle
+and clear, demand or a lone soft work signal restarts the idle clock, work below the cap
 is not idle, a gate step on the same sample does not suppress the idle exec step due on it, and every increase names each track it moved (a gate step as its `spawn gate target X -> Y`, never under an exec note; `TestSlowStart` pins the doubled-gate variant), a cap already at the fresh-start value never drifts, and
-`last_cut` names the cut behind a low cap; `Decision.changed` and the snapshot shape. Those cases construct
+`last_cut` names the exec cut behind a low cap, never a gate pause; `Decision.changed` and the snapshot shape. Those cases construct
 their params with slow start OFF, because each one pins a congestion-avoidance
 rule; `TestSlowStart` owns the other regime: doubling per window up to the
-user ceiling with no static host prediction under it, free memory under the
-pressure line braking growth without cutting, one corroborated pressure ending
+user ceiling with no static host prediction under it, free memory neither
+braking nor cutting the exec track, one corroborated pressure ending
 slow start for the life of the process (including pressure the cooldown only
 holds, and a config edit that turns the key back on), a pause ending it too, the
 exec bar scaling to the cap instead of a flat 20, demand and a clear sample still
@@ -406,10 +517,12 @@ carrying no gate snapshot at all leaves the base alone, so a failed stats read
 buys the cap nothing.
 
 `test_adaptive_controller.py` (fakes for the manager and daemon, injected clock
-and host probe): the fresh-start cap is applied synchronously; a decrease reaches
-`set_effective_cap` and `set_capacity`; the shaped descent is driven end to end
-by the controller; a gate value stays pending until the daemon answers; pause
-sets 0 grants and the gate floor; the ceiling is re-read every tick; disabling
+and host probe): the fresh-start cap -- the ceiling, whatever `adaptive_initial`
+says -- is applied synchronously; a decrease reaches `set_effective_cap` and
+`set_capacity`; loop lag and low memory move the gate and never the exec cap;
+the shaped descent is driven end to end by the controller; a gate value stays
+pending until the daemon answers; a pause holds the gate at its floor and
+leaves the exec cap; the ceiling is re-read every tick and a raise is followed; disabling
 removes the bound and re-enabling restores the earned position; fixed mode pins
 both caps; one full `tick` reads host, gate and manager runs without
 double-counting; the hooks feed the sample; the area-L listener fires; the run
@@ -419,8 +532,8 @@ moves only the ceiling, a raise pumps the queue, `reconfigure` never shrinks the
 ceiling to the bound); the gatewayd frame clamps and rejects; the manager
 actuator's round trip; `resource_status` rendering and the registry; config
 defaults, parse clamps and that every live path is a schema key; an idle
-controller restores the cap after a lag cut and `resource_status` names the cut
-("Last pressure cut") until the cap is back at the ceiling. The climb is
+controller restores the cap after a cut on failing starts and `resource_status`
+names the cut ("Last pressure cut") until the cap is back at the ceiling. The climb is
 pinned to the user's ceiling alone: the sizing helpers are not consulted on the
 way up and `probe_host` reads only live signals.
 `test_mcp_core_more_coverage.py::TestResourceStatusTool` /

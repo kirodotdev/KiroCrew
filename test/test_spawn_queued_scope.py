@@ -66,20 +66,19 @@ async def test_every_queued_child_of_a_wave_answers_queued_to_its_parent(env) ->
 
 
 @pytest.mark.asyncio
-async def test_a_child_held_by_a_paused_cap_settles_the_wait(env) -> None:
-    """A cap the adaptive controller paused (effective cap 0) is a deferral the
-    accept answer already called ``queued``, but such a row has no ``deferred``
-    event to carry its sentence. Every poll names the pause instead, so the
-    blocking wait settles on it rather than holding the parent until max_wait."""
-    mgr = _manager("paused1")
+async def test_a_child_behind_a_zero_cap_is_a_capacity_wait(env) -> None:
+    """There is no pause kind: the adaptive controller never takes the execution
+    cap to 0, so a cap pinned to 0 answers the parent's label like any capacity
+    wait, and the blocking wait keeps following the row."""
+    mgr = _manager("zero1")
     assert mgr.set_effective_cap(0) == 0
-    mgr._queue_wait[PARENT] = {"reason": "concurrency_limit"}  # a sibling's stale label
+    mgr._queue_wait[PARENT] = {"reason": "concurrency_limit"}
     env.state.subagents = mgr
     resp = await messaging.api_spawn_status(
-        _req(env, "paused1", internal=True, session=PARENT, attested=True)
+        _req(env, "zero1", internal=True, session=PARENT, attested=True)
     )
     body = json.loads(resp.text)
     assert resp.status == 200 and body["queued"] is True and body["done"] is False
-    assert body["reason"] == "adaptive_cap_zero"
-    assert "effective cap 0" in body["reason_detail"]
-    assert spawn_tools._held_by_a_deferral(body) is True
+    assert body["reason"] == "concurrency_limit"
+    assert not body.get("reason_detail")
+    assert spawn_tools._held_by_a_deferral(body) is False

@@ -609,8 +609,8 @@ class WorkflowRunner:
     ``agent_fn`` is the injected agent executor (stub in tests). ``timeout_secs``
     is the B5 wall-clock ceiling — a runaway backstop, not a data-loss event: every
     terminal path returns the agent results collected so far. ``concurrency`` bounds
-    agent calls RUN-GLOBALLY (and each ``parallel``/``pipeline`` fan-out); the caller
-    passes ``resolve_max_subagents()`` in prod, ``None`` for no limit.
+    agent calls RUN-GLOBALLY (and each ``parallel``/``pipeline`` fan-out); the
+    dashboard passes its fixed workflow cap in prod, a test ``None`` for no limit.
     """
 
     def __init__(

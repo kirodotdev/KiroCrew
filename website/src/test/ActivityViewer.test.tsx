@@ -774,14 +774,15 @@ describe('ActivityViewer — queued subagents', () => {
     expect(text).not.toContain('concurrency limit')
   })
 
-  it('says a paused cap is about memory or load, in user words, not the concurrency limit', () => {
+  it('renders an older gateway\'s paused-cap label as the default text', () => {
+    // The execution cap is never paused any more, so the kind is not one the
+    // chip knows; it falls back to the text an unlabelled wait shows.
     render(<ActivityViewer {...baseProps} view="subagents" />, {
       wrapper: queuedWrapper(2, { reason: 'adaptive_cap_zero' }),
     })
     const text = screen.getByTestId('subagent-queued-banner').textContent ?? ''
-    expect(text).toContain('low on memory or overloaded')
-    expect(text).not.toContain('controller')
-    expect(text).not.toContain('concurrency limit')
+    expect(text).toContain('2 waiting to start')
+    expect(text).not.toContain('low on memory or overloaded')
   })
 
   it('names macOS memory pressure without GB figures, even if an event carries them', () => {

@@ -19,7 +19,7 @@ from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIM
 
 
 DEFAULT_MAX_PARALLEL_STEPS = (
-    0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
+    0  # 0 = auto: host memory over the per-agent cost (compute_memory_sized_parallel_cap)
 )
 
 
@@ -29,7 +29,7 @@ class TaskRunnerConfig:
         default=DEFAULT_MAX_PARALLEL_STEPS,
         metadata=_meta(
             "Max Parallel Steps",
-            "Maximum task steps to run in parallel. 0 = auto (the host-safe cap from agent.subagent_auto_max, clamped to memory/CPU). A positive value only *lowers* concurrency — it is capped at the auto maximum and can never exceed the host-safe limit.",
+            "Maximum task steps to run in parallel. 0 = auto: a host-safe cap sized from available memory and agent.subagent_cost_gb, between 3 and agent.subagent_auto_max (3 when memory cannot be read). A positive value only *lowers* concurrency — it is capped at the auto maximum and can never exceed the host-safe limit.",
         ),
     )
     workspace_dir: str = field(

@@ -10920,7 +10920,6 @@
         "retry_failed_error": "Não foi possível repetir alguns subagentes com falha"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "aguardando para iniciar — os inícios estão pausados enquanto este computador está com pouca memória ou sobrecarregado; eles retomam sozinhos quando ele se recupera",
         "low_memory": "aguardando para iniciar — precisa de {{required}} de memória livre, {{available}} livres agora; libere memória para continuar",
         "low_memory_no_figures": "aguardando para iniciar — memória livre insuficiente; libere memória para continuar",
         "memory_pressure": "aguardando para iniciar — o macOS relata pressão de memória; os inícios são retomados sozinhos quando ela diminuir ou os agentes em execução terminarem; os inícios desistem quando a pressão ultrapassa o limite de espera"
@@ -17576,10 +17575,10 @@
       "lane_system": "Faixa do sistema",
       "lane_tip": "Quantas execuções esta faixa pode iniciar por vez neste momento. As linhas abaixo dizem como isso se compara com seu próprio limite e quantas estão em execução.",
       "degrade_reason": "Motivo da degradação",
-      "degrade_reason_tip": "Por que a concorrência efetiva está agora abaixo do seu limite (atraso do loop de eventos, pouca memória, tempos esgotados, limitação do provedor).",
+      "degrade_reason_tip": "Por que uma faixa está agora abaixo do seu limite. As execuções de subagentes só são reduzidas com base em indícios do próprio trabalho (como tempos esgotados, inícios lentos ou com falha, ou falta de identificadores de arquivo ou de processos); os inícios de backend também são reduzidos enquanto este computador está com pouca memória ou sobrecarregado.",
       "degrade_adaptive_decrease": "Concorrência reduzida pela carga",
-      "degrade_adaptive_pause": "Novas execuções pausadas até o host se recuperar",
-      "degrade_adaptive_probe": "Testando uma execução antes de retomar",
+      "degrade_adaptive_pause": "Inícios de backend limitados ao mínimo até este computador liberar memória ou a carga diminuir",
+      "degrade_adaptive_probe": "Inícios de backend: testando um antes de aumentar o limite",
       "task_retries": "Número de tentativas",
       "task_retries_tip": "Tentativas já gastas pelas tarefas em Tarefas em nova tentativa. Conta tentativas, não tarefas.",
       "recovering_runs": "Backends reiniciando",

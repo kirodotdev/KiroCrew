@@ -16,10 +16,11 @@ answer must not describe them as a capacity queue: ``low_memory`` is re-checked
 after the admit wait for as long as the host stays below the bar (a store
 DEFERRAL for a durable row, a stamped window wait for one with no row), bounded
 by ``agent.subagent_queue_max_wait_secs`` and ended with
-:data:`QUEUED_WAIT_EXPIRED_TEXT`; ``adaptive_cap_zero`` is the manager's pause,
-not the row's, and clears with it; and ``memory_pressure`` waits in the capacity
+:data:`QUEUED_WAIT_EXPIRED_TEXT`; and ``memory_pressure`` waits in the capacity
 window, bounded by the same key (subagent.md, *macOS: the kernel memory-pressure
-hold*).
+hold*). There is no pause kind: the adaptive controller never takes the
+execution cap to 0, because it does not read free memory or loop lag (the floor
+owns memory).
 
 The memory posture tier (``resource_critical_gb``) is not one of them: spawns
 are not gated on it, only on the floor (``low_memory``). Cron still defers its
@@ -33,7 +34,6 @@ from typing import Any
 
 QUEUED_REASON_CONCURRENCY_LIMIT = "concurrency_limit"
 QUEUED_REASON_LOW_MEMORY = "low_memory"
-QUEUED_REASON_ADAPTIVE_CAP_ZERO = "adaptive_cap_zero"
 #: The macOS kernel reports memory pressure (WARN or worse) while a dedicated
 #: child of this gateway is running or warming. Carries no GB figures: the
 #: reclaimable figure cleared the floor, so any pair of numbers would contradict
@@ -58,7 +58,6 @@ MEMORY_PRESSURE_DETAIL = (
 DEFERRED_QUEUED_REASONS: frozenset[str] = frozenset(
     {
         QUEUED_REASON_LOW_MEMORY,
-        QUEUED_REASON_ADAPTIVE_CAP_ZERO,
         QUEUED_REASON_MEMORY_PRESSURE,
     }
 )
@@ -85,27 +84,11 @@ __all__ = [
     "MEMORY_PRESSURE_DETAIL",
     "MEMORY_PRESSURE_PHRASE",
     "MEMORY_PRESSURE_RECHECK_SECS",
-    "QUEUED_REASON_ADAPTIVE_CAP_ZERO",
     "QUEUED_REASON_CONCURRENCY_LIMIT",
     "QUEUED_REASON_LOW_MEMORY",
     "QUEUED_REASON_MEMORY_PRESSURE",
     "QUEUED_WAIT_EXPIRED_TEXT",
-    "adaptive_pause_text",
 ]
-
-
-def adaptive_pause_text(configured_cap: int) -> str:
-    """The gate's sentence for a spawn held while the effective cap is 0.
-
-    One wording for the accept answer and for every later read of the row, which
-    has no ``deferred`` event to carry it: the pause is the manager's state, not
-    the row's.
-    """
-    return (
-        "dispatch paused: the host is low on memory or overloaded, so no new "
-        f"subagent starts until it recovers (configured cap {configured_cap}, "
-        "effective cap 0)"
-    )
 
 
 #: What a queued record's wait kind means, for one the gateway sent without the
@@ -113,9 +96,6 @@ def adaptive_pause_text(configured_cap: int) -> str:
 #: wait and not yet re-checked.
 QUEUED_KIND_TEXT: dict[str, str] = {
     QUEUED_REASON_LOW_MEMORY: "not enough free memory to start it",
-    QUEUED_REASON_ADAPTIVE_CAP_ZERO: (
-        "starts are paused while the host is low on memory or overloaded"
-    ),
     QUEUED_REASON_CONCURRENCY_LIMIT: "waiting for a free slot behind the concurrency limit",
     # A held row has no ``deferred`` event; the hold is read live, so its kind
     # carries the gate's own sentence.

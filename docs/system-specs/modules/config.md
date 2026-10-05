@@ -2333,7 +2333,9 @@ answers it, and this prose is a reader's convenience.
 
 The broker's admission keys are in that `mcp_gateway.*` set and ride the
 daemon's argv from `GatewayManager._spawn_once`: `spawn_concurrency_initial`
-(4), `spawn_concurrency_min` (1) and `spawn_concurrency_max` (8) size the
+(4), `spawn_concurrency_min` (1) and `spawn_concurrency_max` (8, raised on the
+daemon's argv to the subagent ceiling when that is higher --
+`mcp_gateway.admission.derive_spawn_gate_ceiling`) size the
 daemon-global spawn gate (a fixed count of backend spawn+initialize windows in
 flight, FIFO past it; the band is what the adaptive controller later moves the
 live value within); `spawn_queue_wait_secs` (600) is the CEILING on how long a
@@ -2422,8 +2424,8 @@ class AgentConfig:
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
     yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown
-    max_subagents: int = 0         # 0 = auto-size from host memory and learned per-agent cost; fixed pins load in [3, 64]
-    subagent_auto_max: int = 32    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
+    max_subagents: int = 0         # 0 = auto: the subagent_auto_max ceiling (3 when host memory cannot be read); memory bounds starts beneath it (spawn_min_memory_gb). With spawn_min_memory_gb <= 0 the floor is off and auto is sized from memory (compute_memory_sized_parallel_cap). Fixed pins load in [3, 64]
+    subagent_auto_max: int = 32    # the count ceiling when max_subagents=0 (provider concurrency / fd / PID stand-in; not sized from memory while the spawn floor is on, and capping the memory-sized figure when spawn_min_memory_gb <= 0 disables it); also caps the TaskRunner's memory-sized auto value. Load-time clamped to [3, 64]
     subagent_max_turns: int = 1000  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]
     subagent_timeout_secs: int = 10800  # per-subagent wall-clock timeout; 0 uses the default; load-time clamped to 60..86400
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
@@ -2441,11 +2443,11 @@ class AgentConfig:
     child_reserve: int = 1               # execution slots a depth-0 task may never take while a nested task is queued or a parent waits on children; also lifts an adaptive squeeze to adaptive_floor + child_reserve while a parent waits (never above max_subagents). 0 disables. Load-time clamped to [0, 8]. Live. See modules/subagent.md § Fairness lanes and the child reserve
     recovery_backoff_base_secs: float = 2.0    # first retry delay of the shared recovery ladder (tool call / backend / ACP runtime) and of a dependency wait; doubles with equal jitter. Snapshotted onto the process ladder by `recovery.ladder.configure_default_ladder(cfg)` in `GatewayOrchestrator._init_subagents`; the gatewayd supervisor's rung is pinned and does not follow it, and the two import-time readers (`acp/client._ACP_RESPAWN_BACKOFF_S`, `taskq/model.recovery_backoff_secs`) keep the static defaults. Load-time clamped to [0.1, 60]; restart=True. See modules/session.md § Recovery ladder
     recovery_backoff_max_secs: float = 120.0   # cap on that delay; a server retry hint is honoured up to it. Same snapshot seam and same exclusions as the base. Load-time clamped to [1, 3600], never below the base; restart=True
-    adaptive_concurrency: bool = True        # run the adaptive concurrency controller: a runtime execution cap beneath max_subagents (the ceiling, never written) plus the MCP daemon's spawn-gate capacity. false = user cap only. Live. See modules/adaptive-concurrency.md
-    adaptive_concurrency_mode: str = "aimd"  # "aimd" | "fixed" ("fixed" pins both caps at their initial values -- the one-flip reversal). Live
-    adaptive_floor: int = 1                  # lowest execution cap under sustained pressure. Load-time clamped to [1, 64]. Live
-    adaptive_initial: int = 4                # fresh-gateway execution cap, bounded by max_subagents; earned upward. Load-time clamped to [1, 64]. Live
-    adaptive_slow_start: bool = True          # before the first corroborated pressure, double the execution cap per clear 5 s window instead of +1 per 30 s, bounded by max_subagents and by what this host's memory and CPU size the cap at. Live
+    adaptive_concurrency: bool = True        # run the adaptive concurrency controller: a runtime execution cap beneath max_subagents (the ceiling, never written; starts AT it; cut only by failing work, never by loop lag or memory) plus the MCP daemon's spawn-gate capacity. false = user cap only. Live. See modules/adaptive-concurrency.md
+    adaptive_concurrency_mode: str = "aimd"  # "aimd" | "fixed" ("fixed" pins both caps at their initial values, the execution cap at its ceiling -- the one-flip reversal). Live
+    adaptive_floor: int = 1                  # lowest execution cap under sustained work pressure. Load-time clamped to [1, 64]. Live
+    adaptive_initial: int = 4                # Inert (not flagged deprecated: every save writes it): the execution cap starts at its ceiling. Load-time clamped to [1, 64] and preserved on save
+    adaptive_slow_start: bool = True          # before the first corroborated pressure, double a cap below its ceiling per clear 5 s window instead of +1 per 30 s, bounded by max_subagents. Live
     # AIMD tuning uses fixed constants in adaptive/policy.py.
     controller_sample_secs: int = 5          # adaptive controller sampling interval. Load-time clamped to [1, 300]. Live
     dependency_max_attempts: int = 20          # coordinated probes a dependency scope gets before every waiter is failed. Load-time clamped to [1, 1000]

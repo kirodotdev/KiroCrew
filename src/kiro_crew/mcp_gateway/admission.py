@@ -59,6 +59,29 @@ DEFAULT_CAPACITY = 4
 DEFAULT_FLOOR = 1
 DEFAULT_CEILING = 8
 
+
+def derive_spawn_gate_ceiling(configured_max: int, subagent_ceiling: int) -> int:
+    """The spawn gate's ceiling: ``mcp_gateway.spawn_concurrency_max``, raised
+    to the subagent ceiling when that is higher.
+
+    The gate bounds how many backend processes fork and initialize at once. Its
+    configured ceiling (8 by default) is far below the subagent ceiling
+    (``agent.subagent_auto_max``, 32, or an explicit ``agent.max_subagents``),
+    so a fan-out the subagent cap admits in full had its backend initializations
+    queued behind eight windows: the gate, not memory, became the bound on how
+    many subagents could get started. Raising the ceiling to the subagent
+    ceiling lets the adaptive controller grow the gate to one backend
+    initialization in flight per subagent the cap admits, on clean init
+    evidence only; it still STARTS at ``spawn_concurrency_initial``, still
+    halves on loop lag, memory and failing inits, and never exceeds the larger
+    of the two figures. ``subagent_ceiling`` is the value at the daemon's
+    launch: like every other ``mcp_gateway`` admission key, the daemon reads it
+    once, from its command line.
+    """
+    configured = max(1, int(configured_max))
+    return max(configured, int(subagent_ceiling))
+
+
 #: How often a queued waiter's ``on_queued`` callback fires while it waits.
 #: This is the ``queued`` keepalive cadence a new stub renews its silence
 #: timer on; it must stay comfortably below the stub's 25 s silence window.

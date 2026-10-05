@@ -9,11 +9,9 @@ import time as _time
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from kiro_crew.subagent_wait_reasons import (
-    QUEUED_REASON_ADAPTIVE_CAP_ZERO,
     QUEUED_WAIT_EXPIRED_TEXT,
     RESUMING_AFTER_RESTART,
     RESUMING_RETRY,
-    adaptive_pause_text,
 )
 
 from .._component import ManagerComponent
@@ -1792,12 +1790,6 @@ class _TaskqBridgeMixin(ManagerComponent):
         manager = self._manager
         label = manager._queue_wait.get(parent) or {}
         reason = "" if resuming else str(label.get("reason") or "")
-        if not resuming and not detail and manager._max_concurrent <= 0:
-            # A paused cap holds every unstarted row, whatever the parent's last
-            # label says, and the row has no ``deferred`` event to say so: the
-            # pause is read live, and clears with it.
-            reason = QUEUED_REASON_ADAPTIVE_CAP_ZERO
-            detail = adaptive_pause_text(manager._user_max_concurrent)
         return QueuedRun(
             id=agent_id,
             task=str(params.get("task") or ""),

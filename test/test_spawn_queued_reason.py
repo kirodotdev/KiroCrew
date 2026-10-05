@@ -89,9 +89,9 @@ class TestDeferredSpawnIsReportedAsQueued:
         assert "Queued" not in out
 
     def test_a_queued_answer_without_detail_falls_back_to_the_reason_kind(self) -> None:
-        out = _run([{"id": "q1", "status": "queued", "reason": "adaptive_cap_zero"}])
+        out = _run([{"id": "q1", "status": "queued", "reason": "some_future_kind"}])
         assert out.splitlines()[0].startswith(
-            "Queued 1 subagent(s). Not started yet: adaptive_cap_zero"
+            "Queued 1 subagent(s). Not started yet: some_future_kind"
         )
 
 
@@ -382,7 +382,7 @@ class TestSpawnStatusAndListShowAQueuedRun:
             "agents": [],
             "queued": [
                 {"id": "q1", "task": "summarize the log", "reason_detail": _DETAIL},
-                {"id": "q2", "task": "second", "reason": "adaptive_cap_zero"},
+                {"id": "q2", "task": "second", "reason": "concurrency_limit"},
             ],
         }
         with (
@@ -392,7 +392,7 @@ class TestSpawnStatusAndListShowAQueuedRun:
             out = spawn_tools.spawn_list("spawn_list", {})
         assert "No subagents running." not in out
         assert f"q1  [queued] (not started: {_DETAIL})  summarize the log" in out
-        assert "q2  [queued] (not started: starts are paused" in out
+        assert "q2  [queued] (not started: waiting for a free slot behind the concurrency" in out
 
     def test_spawn_list_says_when_the_queued_list_is_partial(self) -> None:
         answer = {

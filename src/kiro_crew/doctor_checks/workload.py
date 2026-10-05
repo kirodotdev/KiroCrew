@@ -147,9 +147,10 @@ def _doctor_overload_resilience(cfg: KiroCrewConfig) -> None:
         f"(live gate counts: GET /api/sessions/health)"
     )
     mode = agent.adaptive_concurrency_mode if agent.adaptive_concurrency else "off"
+    # The execution cap starts at its ceiling; adaptive_initial is inert.
     print(
         f"  adaptive concurrency: {mode} floor={agent.adaptive_floor} "
-        f"initial={agent.adaptive_initial} sample={agent.controller_sample_secs}s"
+        f"sample={agent.controller_sample_secs}s"
     )
     print("  recovery ladder:")
     # Through the boot seam a gateway uses, on this process's own ladder: these

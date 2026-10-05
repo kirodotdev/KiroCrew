@@ -2176,13 +2176,16 @@ class ContextBuilder:
     def _live_cap_figure() -> str:
         """The concurrent sub-agent cap in force, as a prompt spells it.
 
-        ``agent.max_subagents`` is a ceiling the adaptive controller may be
-        dispatching 1 at a time under, so the figure is the cap IN FORCE -- a
-        registry read (``resource_status.adaptive_exec_cap``) this
-        gateway-process path can afford. When no controller runs here (the CLI,
-        tests) the configured ceiling is used and labelled as one. Both readings
-        are derived from live host conditions, which is why a session holds one
-        of them: see :meth:`_session_cap_figure`.
+        ``agent.max_subagents`` (or ``agent.subagent_auto_max`` when it is 0) is
+        a ceiling the adaptive controller may have cut after admitted work kept
+        failing, so the figure is the cap IN FORCE -- a registry read
+        (``resource_status.adaptive_exec_cap``) this gateway-process path can
+        afford. When no controller runs here (the CLI, tests) the configured
+        ceiling is used and labelled as one. ``resolve_max_subagents`` never
+        answers 0, so a figure is always defined; "several" is left only for a
+        config that cannot be read. The live reading moves with the
+        controller, which is why a session holds one: see
+        :meth:`_session_cap_figure`.
         """
         cap = resource_status.adaptive_exec_cap()
         if cap > 0:

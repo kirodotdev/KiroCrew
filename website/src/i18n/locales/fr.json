@@ -10920,7 +10920,6 @@
         "retry_failed_error": "Impossible de réessayer certains sous-agents en échec"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "en attente de démarrage — les démarrages sont suspendus tant que cet ordinateur manque de mémoire ou est surchargé ; ils reprennent d’eux-mêmes une fois la situation rétablie",
         "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
         "low_memory_no_figures": "en attente de démarrage — mémoire libre insuffisante ; libère de la mémoire pour continuer",
         "memory_pressure": "en attente de démarrage — macOS signale une pression mémoire ; les démarrages reprennent d’eux-mêmes dès qu’elle diminue ou que les agents en cours se terminent ; les démarrages abandonnent dès que la pression dépasse la limite d’attente"
@@ -17576,10 +17575,10 @@
       "lane_system": "Voie système",
       "lane_tip": "Combien d’exécutions cette voie peut démarrer à la fois en ce moment. Les lignes en dessous disent comment cela se situe par rapport à ta propre limite et combien sont en cours.",
       "degrade_reason": "Motif de dégradation",
-      "degrade_reason_tip": "Pourquoi la concurrence effective est actuellement inférieure à ta limite (latence de la boucle d’événements, mémoire faible, délais dépassés, limitation du fournisseur).",
+      "degrade_reason_tip": "Pourquoi une voie est actuellement inférieure à ta limite. Les exécutions de sous-agents ne sont réduites que sur des indices venant du travail lui-même (délais dépassés, démarrages lents ou en échec, manque de descripteurs de fichiers ou de processus) ; les démarrages du backend sont aussi réduits tant que cet ordinateur manque de mémoire ou est surchargé.",
       "degrade_adaptive_decrease": "Concurrence réduite sous la charge",
-      "degrade_adaptive_pause": "Nouvelles exécutions en pause jusqu’au rétablissement de l’hôte",
-      "degrade_adaptive_probe": "Test d’une exécution avant la reprise",
+      "degrade_adaptive_pause": "Démarrages du backend limités au minimum jusqu’à ce que cet ordinateur libère de la mémoire ou que la charge baisse",
+      "degrade_adaptive_probe": "Démarrages du backend : test d’un démarrage avant de relever la limite",
       "task_retries": "Nombre de tentatives",
       "task_retries_tip": "Tentatives déjà consommées par les tâches listées sous Tâches en nouvelle tentative. On compte des tentatives, pas des tâches.",
       "recovering_runs": "Backends en redémarrage",

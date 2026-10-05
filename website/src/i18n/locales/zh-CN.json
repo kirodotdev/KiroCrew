@@ -10626,7 +10626,6 @@
         "retry_failed_error": "部分失败的子代理无法重试"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "等待开始 — 本机内存不足或负载过高，暂停启动新任务；恢复后会自动继续",
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
         "low_memory_no_figures": "等待开始 — 可用内存不足；请释放内存以继续",
         "memory_pressure": "等待开始 — macOS 报告内存压力；压力缓解或正在运行的代理完成后会自动恢复启动；压力持续超过等待上限后启动会被放弃"
@@ -17074,10 +17073,10 @@
       "lane_system": "系统通道",
       "lane_tip": "此通道当前可同时启动的运行数。下方各行说明它与你的上限相比如何，以及当前有多少正在运行。",
       "degrade_reason": "降载原因",
-      "degrade_reason_tip": "当前有效并发低于你的上限的原因（事件循环延迟、内存不足、超时、提供方限流）。",
+      "degrade_reason_tip": "某个通道当前低于你的上限的原因。子代理运行只会在工作本身出现问题迹象（如超时、启动缓慢或失败、文件句柄或进程耗尽）时降低；后端启动在本机内存不足或负载过高时也会降低。",
       "degrade_adaptive_decrease": "负载过高，已降低并发",
-      "degrade_adaptive_pause": "已暂停新的运行，等待主机恢复",
-      "degrade_adaptive_probe": "先试运行一个，再恢复",
+      "degrade_adaptive_pause": "后端启动已限制到最低，直到本机释放内存或负载下降",
+      "degrade_adaptive_probe": "后端启动：先试一次，再提高上限",
       "task_retries": "重试次数",
       "task_retries_tip": "重试中的任务迄今已用掉的尝试次数。这里数的是尝试，不是任务。",
       "recovering_runs": "后端重启中",

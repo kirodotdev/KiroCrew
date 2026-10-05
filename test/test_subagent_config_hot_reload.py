@@ -149,13 +149,24 @@ class TestReconfigureDerivesEveryField:
 
     @pytest.mark.asyncio
     async def test_pool_size_change_recomputes_the_cap(self) -> None:
-        """``session.pool_size`` is an input to the auto-sized cap."""
+        """``session.pool_size`` sizes the auto cap when the spawn floor is off, so a
+        change re-resolves it."""
         mgr = _mgr(max_concurrent=4)
         fresh = KiroCrewConfig()
         fresh.session.pool_size = 5
         with patch("kiro_crew.subagent.resolve_max_subagents", return_value=6):
             await _dispatch(fresh, "session.pool_size")
         assert mgr.max_concurrent == 6
+
+    @pytest.mark.asyncio
+    async def test_disabling_the_spawn_floor_recomputes_the_cap(self) -> None:
+        """A floor switched off live moves the auto cap onto host memory at once."""
+        mgr = _mgr(max_concurrent=4)
+        fresh = KiroCrewConfig()
+        fresh.agent.spawn_min_memory_gb = 0.0
+        with patch("kiro_crew.subagent.resolve_max_subagents", return_value=7):
+            await _dispatch(fresh, "agent.spawn_min_memory_gb")
+        assert mgr.max_concurrent == 7
 
     @pytest.mark.asyncio
     async def test_a_non_sizing_change_skips_the_resolve_thread_hop(self) -> None:

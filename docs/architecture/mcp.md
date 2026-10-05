@@ -850,7 +850,10 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
 - **`SpawnGate`** is one daemon-wide count of spawn+initialize windows in
   flight, FIFO past that. Fixed capacity from `spawn_concurrency_initial`
   (default 4), clamped to `[spawn_concurrency_min, spawn_concurrency_max]`
-  (1/8); `set_capacity(n)` is the seam the adaptive controller plugs into. A
+  (1/8, the ceiling raised on the daemon's argv to the subagent ceiling when that
+  is higher, so a fan-out the subagent cap admits is not queued behind eight
+  backend initializations); `set_capacity(n)` is the seam the adaptive
+  controller plugs into. A
   `Permit` covers the fork and the backend's first `initialize`: `ready` is sent
   to the stub before the handshake arrives (the stub forwards kiro-cli's first
   frame), so the spawn path never awaits it inline -- a detached watcher on

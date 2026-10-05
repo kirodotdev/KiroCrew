@@ -68,11 +68,11 @@ _DIAGNOSTICS = frozenset({"memory_check_unavailable", "auto_approved_spawn"})
 
 #: Every wait label a queued spawn can carry, and which of them are deferrals.
 #: The posture tier (``posture_critical``) is deliberately absent: spawns admit
-#: on the floor alone, and only cron still defers on posture.
-_WAIT_REASONS = frozenset(
-    {"concurrency_limit", "low_memory", "adaptive_cap_zero", "memory_pressure"}
-)
-_DEFERRALS = frozenset({"low_memory", "adaptive_cap_zero", "memory_pressure"})
+#: on the floor alone, and only cron still defers on posture. So is a paused
+#: execution cap (``adaptive_cap_zero``): the adaptive controller reads no memory
+#: or loop lag and never takes the cap to 0, so a 0 cap is a capacity wait.
+_WAIT_REASONS = frozenset({"concurrency_limit", "low_memory", "memory_pressure"})
+_DEFERRALS = frozenset({"low_memory", "memory_pressure"})
 
 
 def _string_constants(node: ast.AST) -> set[str]:
@@ -339,10 +339,10 @@ async def test_every_capacity_condition_queues_and_only_policy_refuses(monkeypat
         verdicts["stagger"] = await _verdict(mgr, started)
         mgr._spawn_stagger_secs = 0.0
         mgr._last_spawn_ts = 0.0
-        paused = mgr._max_concurrent
+        pinned = mgr._max_concurrent
         mgr._max_concurrent = 0
-        verdicts["adaptive_cap_zero"] = await _verdict(mgr, started)
-        mgr._max_concurrent = paused
+        verdicts["zero_cap"] = await _verdict(mgr, started)
+        mgr._max_concurrent = pinned
         # The policy refusals, which stay refusals.
         verdicts["empty_task"] = await _verdict(mgr, started, task="   ")
         verdicts["cwd"] = await _verdict(mgr, started, cwd="/definitely/not/an/allowed/root")
@@ -361,7 +361,7 @@ async def test_every_capacity_condition_queues_and_only_policy_refuses(monkeypat
         "memory_pressure": "queued",
         "memory_pressure_non_durable": "queued",
         "stagger": "queued",
-        "adaptive_cap_zero": "queued",
+        "zero_cap": "queued",
         "empty_task": "refused",
         "cwd": "refused",
         "governance": "refused",
@@ -372,6 +372,7 @@ async def test_every_capacity_condition_queues_and_only_policy_refuses(monkeypat
     assert verdicts["low_memory_non_durable"] == ("queued", "low_memory")
     assert verdicts["memory_pressure"] == ("queued", "memory_pressure")
     assert verdicts["memory_pressure_non_durable"] == ("queued", "memory_pressure")
+    assert verdicts["zero_cap"] == ("queued", "concurrency_limit")
     assert "governance" in verdicts["governance"][1]
     assert "memory_unavailable" in verdicts["memory_identity"][1]
 

@@ -455,8 +455,8 @@ fails loudly rather than handing the child a reachable bus.
 > page counters differently. The budget's version is tighter — it does not re-add
 > `speculative_count` (which `free_count` already contains) and it bounds `inactive_count`
 > by `external_page_count`. The sub-agent version is knowingly looser and stays that way,
-> because tightening it moves `compute_max_subagents`, a number that is documented and that
-> operators tune against. Do not "unify" them; only the Mach call itself is shared.
+> because tightening it moves the spawn memory floor's macOS reading (and the TaskRunner's
+> memory-sized auto value), numbers that are documented and that operators tune against. Do not "unify" them; only the Mach call itself is shared.
 
 pytest-xdist resolves `-n auto` to the CPU count and never looks at memory, so on a
 many-core host a full-suite run inside an agent turn spawns one worker per core at roughly

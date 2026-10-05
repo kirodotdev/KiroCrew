@@ -10920,7 +10920,6 @@
         "retry_failed_error": "Impossibile riprovare alcuni subagenti non riusciti"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "in attesa di avvio — gli avvii sono in pausa finché questo computer ha poca memoria o è sovraccarico; riprendono da soli quando si ristabilisce",
         "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",
         "low_memory_no_figures": "in attesa di avvio — memoria libera insufficiente; libera memoria per continuare",
         "memory_pressure": "in attesa di avvio — macOS segnala pressione sulla memoria; gli avvii riprendono da soli quando si allenta o quando terminano gli agenti in esecuzione; gli avvii si interrompono quando la pressione supera il limite di attesa"
@@ -17576,10 +17575,10 @@
       "lane_system": "Corsia di sistema",
       "lane_tip": "Quante esecuzioni questa corsia può avviare alla volta in questo momento. Le righe sotto dicono come si confronta con il tuo limite e quante sono in esecuzione.",
       "degrade_reason": "Motivo della riduzione",
-      "degrade_reason_tip": "Perché la concorrenza effettiva è ora sotto il tuo limite (ritardo del ciclo eventi, memoria scarsa, timeout, limitazione del provider).",
+      "degrade_reason_tip": "Perché una corsia è ora sotto il tuo limite. Le esecuzioni di sottoagenti vengono ridotte solo in base a indizi del lavoro stesso (come timeout, avvii lenti o non riusciti, esaurimento di handle di file o di processi); gli avvii del backend vengono ridotti anche finché questo computer ha poca memoria o è sovraccarico.",
       "degrade_adaptive_decrease": "Concorrenza ridotta per il carico",
-      "degrade_adaptive_pause": "Nuove esecuzioni in pausa fino al ripristino dell’host",
-      "degrade_adaptive_probe": "Prova di un’esecuzione prima di riprendere",
+      "degrade_adaptive_pause": "Avvii del backend limitati al minimo finché questo computer non libera memoria o il carico non cala",
+      "degrade_adaptive_probe": "Avvii del backend: prova di un avvio prima di alzare il limite",
       "task_retries": "Numero di tentativi",
       "task_retries_tip": "Tentativi già consumati dalle attività elencate in Attività in nuovo tentativo. Conta i tentativi, non le attività.",
       "recovering_runs": "Backend in riavvio",

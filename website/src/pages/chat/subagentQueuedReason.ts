@@ -23,11 +23,13 @@ import backendPhrases from '../../lib/backendPhrases.json'
  *  others can wait possibly for hours. `memory_pressure` is the macOS kernel's
  *  pressure verdict and carries no GB figures: the free-memory figure cleared
  *  the floor, so numbers would contradict it. The memory posture tier is not a
- *  spawn wait: spawns admit on the floor alone. */
+ *  spawn wait: spawns admit on the floor alone. Nor is a paused execution cap:
+ *  the adaptive controller no longer pauses it, so an older gateway's
+ *  `adaptive_cap_zero` label falls back to the default text like any unknown
+ *  kind. */
 const KINDS = [
   'concurrency_limit',
   'low_memory',
-  'adaptive_cap_zero',
   'memory_pressure',
 ] as const
 
@@ -93,8 +95,6 @@ export function queuedWaitText(reason: SubagentQueuedReason | undefined): string
           available: gb(reason.available_gb),
         })
         : i18nT('pages.chat.subagentQueued.low_memory_no_figures')
-    case 'adaptive_cap_zero':
-      return i18nT('pages.chat.subagentQueued.adaptive_cap_zero')
     case 'memory_pressure':
       return i18nT('pages.chat.subagentQueued.memory_pressure')
     default:

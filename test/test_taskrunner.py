@@ -5242,13 +5242,13 @@ class TestWorkspaceDirValidation:
 
 
 class TestMaxParallelStepsClamp:
-    """`compute_max_subagents` is the host-safe ceiling; a positive
+    """`compute_memory_sized_parallel_cap` is the host-safe ceiling; a positive
     `max_parallel_steps` may only lower it, never raise it above the ceiling."""
 
     def _cap(self, value):
         sessions = _make_mock_sessions()
         # Pin the computed host-safe ceiling to a known value (9).
-        with patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9):
+        with patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9):
             runner = TaskRunner(sessions=sessions, auto_test=False, max_parallel_steps=value)
         return runner._max_parallel_steps
 
@@ -5268,7 +5268,10 @@ class TestMaxParallelStepsClamp:
 
     def test_compute_failure_falls_back_to_legacy_default(self):
         sessions = _make_mock_sessions()
-        with patch("kiro_crew.taskrunner.compute_max_subagents", side_effect=RuntimeError("boom")):
+        with patch(
+            "kiro_crew.taskrunner.compute_memory_sized_parallel_cap",
+            side_effect=RuntimeError("boom"),
+        ):
             runner = TaskRunner(sessions=sessions, auto_test=False, max_parallel_steps=0)
         # Falls back to _MAX_PARALLEL_TASKS (3) when the ceiling can't be computed.
         assert runner._max_parallel_steps == 3
@@ -5327,7 +5330,9 @@ class TestSemaphoreParallelScheduling:
         assertion would then hold even if the knob were ignored entirely, so
         without this the test proves nothing.
         """
-        monkeypatch.setattr("kiro_crew.taskrunner.compute_max_subagents", lambda _cfg: 64)
+        monkeypatch.setattr(
+            "kiro_crew.taskrunner.compute_memory_sized_parallel_cap", lambda _cfg: 64
+        )
         sessions = _make_mock_sessions()
         runner = TaskRunner(
             sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=3
@@ -5351,7 +5356,9 @@ class TestSemaphoreParallelScheduling:
         to isolate the knob. This one pins it BELOW the knob to prove the OOM
         guard still wins — the property those tests deliberately stop covering.
         """
-        monkeypatch.setattr("kiro_crew.taskrunner.compute_max_subagents", lambda _cfg: 2)
+        monkeypatch.setattr(
+            "kiro_crew.taskrunner.compute_memory_sized_parallel_cap", lambda _cfg: 2
+        )
         runner = TaskRunner(
             sessions=_make_mock_sessions(),
             auto_test=False,
@@ -5373,7 +5380,9 @@ class TestSemaphoreParallelScheduling:
         ceiling's own authority is covered by
         ``test_host_ceiling_still_caps_the_knob``.
         """
-        monkeypatch.setattr("kiro_crew.taskrunner.compute_max_subagents", lambda _cfg: 64)
+        monkeypatch.setattr(
+            "kiro_crew.taskrunner.compute_memory_sized_parallel_cap", lambda _cfg: 64
+        )
         sessions = _make_mock_sessions()
         runner = TaskRunner(
             sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=6

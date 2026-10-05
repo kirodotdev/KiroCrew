@@ -254,7 +254,7 @@ async def test_startup_cost_cannot_lower_enabled_floor_on_exhausted_cgroup(
         mgr._taskq.close()
 
 
-@pytest.mark.parametrize("shock_gb", [0.0, 16.0])
+@pytest.mark.parametrize("shock_gb", [0.0, 8.0, 16.0])
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
@@ -281,6 +281,7 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
     launch_times: list[float] = []
     external_gb = 0.0
     free_samples: list[float] = []
+    shock_at = float("inf")
     refused_at: list[float] = []
     decisions: list[str] = []
     timer_handles = []
@@ -304,7 +305,9 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
             for agent_id, started in starts.items()
             if not mgr._agents[agent_id].done
         )
-        return 24.0 - external_gb - resident
+        # A real reader never reports less than nothing: a negative figure is
+        # its "unmeasurable" sentinel, which fails open.
+        return max(0.0, 24.0 - external_gb - resident)
 
     def memory_check(*, min_gb, **_kw):
         free = available()
@@ -358,8 +361,8 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
             for agent_id, started in starts.items():
                 mgr._agents[agent_id].last_rss_gb = 0.5 if clock() - started >= 5.0 else 0.05
             if step in (20, 40):
-                # One real completion earns each slow-start increase; the
-                # rest of the dedicated workers remain resident.
+                # One real completion lands; the rest of the dedicated workers
+                # remain resident.
                 oldest = next(agent_id for agent_id in starts if not mgr._agents[agent_id].done)
                 finishes[oldest].set_result(None)
                 await asyncio.wait_for(asyncio.shield(mgr._tasks[oldest]), 5)
@@ -370,21 +373,29 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
                 # sampled. New workers would grow five seconds after passing
                 # a raw free-memory check, inside its next sampling window.
                 external_gb = shock_gb
+                shock_at = clock()
             await pump()
             free_samples.append(available())
 
-        assert "increase" in decisions
-        assert min(free_samples) >= cfg.agent.spawn_min_memory_gb, (
-            min(free_samples),
-            len(starts),
-            decisions,
-        )
+        floor = cfg.agent.spawn_min_memory_gb
+        # The execution cap starts at its ceiling and never moves on memory:
+        # the spawn floor alone decides how many of the 64 start, and it is what
+        # stops the wave -- the reserve each warming start owes, not a count.
+        # (A shock to zero free memory does cut and pause the MCP spawn gate.)
+        assert "increase" not in decisions, decisions
+        assert mgr.max_concurrent == 64
+        assert refused_at, "the real admission guard must stop the drain"
+        assert min(free_samples[:39]) >= floor, (min(free_samples), len(starts))
+        assert 16 <= len(starts) < 64, len(starts)
         if shock_gb:
-            assert refused_at, "the real admission guard must stop the drain"
-        else:
-            assert not refused_at
-            assert len(starts) == 18, "ample hosts must fill the earned 16 slots quickly"
-        assert len(starts) < 64
+            # Nothing starts once the shock lands: every later start would take
+            # the host further below what the floor must leave free.
+            assert all(at < shock_at for at in launch_times), (shock_at, launch_times)
+        if shock_gb <= 8.0:
+            # A shock inside the headroom the floor kept leaves it intact. A
+            # larger one is another application's memory, which admission
+            # does not shed (subagent.md, *Memory guard*).
+            assert min(free_samples) >= floor, (min(free_samples), len(starts))
         assert mgr._queue or mgr._taskq.count(state="queued")
         assert all(b - a >= 0.25 for a, b in zip(launch_times, launch_times[1:]))
         assert clock() - epoch == 25.0

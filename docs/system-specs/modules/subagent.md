@@ -103,7 +103,7 @@ pool default changes.
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` defaults to `0` = auto-size the cap (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg-apply_limitscfg-max_concurrentnone-live-config). Session-shared subagents are cost-sampled as the runtime's measured RSS divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
+| `_MAX_CONCURRENT` | 3 | Legacy fallback and floor. `agent.max_subagents` defaults to `0` = auto: the cap is `agent.subagent_auto_max` (default 32) as written, a high count ceiling standing in for provider concurrency and fd / PID limits; memory bounds starts beneath it through the spawn floor (*Memory guard*), never the count. 3 applies when host memory cannot be read. A positive value pins a fixed cap (floored at 3). The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg-apply_limitscfg-max_concurrentnone-live-config). |
 | `_TIMEOUT_SECS` | 10800 | Hard timeout per subagent (3 hours), from `constants.SUBAGENT_TIMEOUT_SECS` |
 | `DEFAULT_SPAWN_MIN_MEMORY_GB` | 2.0 | Default of `agent.spawn_min_memory_gb`, from `constants.DEFAULT_SPAWN_MIN_MEMORY_GB`: GiB that must remain available AFTER an admitted start. The one source for the dataclass default, the loader fallback, the gate's fallback and `check_memory_available`'s default |
 | `_UNLEARNED_DEDICATED_START_GB` | 1.0 | Dedicated start price for a cost bucket with no learned settled figure yet: the default `kirocrew` agent's measured first-session tree (kiro-cli 2.26.1, USS, its MCP roster included), rounded up. See *Memory guard* |
@@ -135,14 +135,54 @@ reports that value without rewriting it. The existing `kirocrew config defaults
 --adopt agent.subagent_max_turns` command removes that pin when the operator chooses
 to follow the current default; `--keep` affirms it.
 
-### Concurrency Auto-Sizing — Memory Probe (per platform)
+### Memory, not a count cap, bounds concurrency
 
-When `agent.max_subagents == 0`, `compute_max_subagents()` sizes the cap from
-host memory alone, clamped to `[3, agent.subagent_auto_max]` (CPU is not a
-term: over-committing it only slows work the adaptive controller already backs
-off from, whereas memory over-commit is an unrecoverable OOM). The
-available-memory term is read by `_available_memory_gb()`, which is dispatched
-per operating system (see `dynamic-subagent-sizing.md`):
+When `agent.max_subagents == 0`, `compute_max_subagents()` answers
+`agent.subagent_auto_max` (never below 3). It is not sized from host memory: the
+spawn floor (*Memory guard*, below) prices every start at what it will settle at
+and queues the ones that would not leave `spawn_min_memory_gb` free, so on any
+16-32 GB host memory is reached long before 32 starts. A count sized from the
+same memory on top of the floor -- and an adaptive execution cap that started
+at 4 and halved on loop lag or low memory -- is what throttled a second chat's
+subagents behind the first chat's wave while memory was still free. The ceiling
+still bounds what the floor does not model: provider 429 storms and fd / PID
+exhaustion ([adaptive-concurrency.md](adaptive-concurrency.md) cuts beneath it
+on those). Where `_available_memory_gb()` cannot read host memory at all the
+floor fails open, so the count is the only guard left and the auto cap is 3.
+A floor the operator disabled (`agent.spawn_min_memory_gb <= 0`) admits every
+start the same way, so there the auto cap is sized from host memory
+(`compute_memory_sized_parallel_cap`, the TaskRunner's auto figure), and the
+floor switch plus that figure's inputs (`subagent_mem_buffer_pct`,
+`subagent_cost_gb`, `session.pool_size`) are live sizing paths.
+
+Every consumer of the resolved cap (`resolve_max_subagents`, never 0) has a
+defined figure: the manager's ceiling; the `{{MAX_SUBAGENTS}}` prompt token
+and the spawn tool descriptions, which also say each start waits until host
+memory can hold it; `resource_status`; the dashboard's `subagent_cap` readout
+(`/api/system`, now the resolved cap, explicit pin included); and the MCP
+gateway spawn gate's ceiling, raised to it
+([adaptive-concurrency.md](adaptive-concurrency.md), *The spawn gate's ceiling
+follows the subagent ceiling*). The TaskRunner's auto
+`taskrunner.max_parallel_steps` keeps a memory-sized figure,
+`compute_memory_sized_parallel_cap` (`[3, subagent_auto_max]`), because no
+per-start floor prices a TaskRunner step ([taskrunner.md](taskrunner.md)).
+Workflow agent concurrency stays the dashboard's fixed 4, and a non-positive
+figure is bounded there, never read as unlimited ([workflows.md](workflows.md)).
+
+**Accepted residuals.** Windows sizes nothing from commit charge: the floor
+reads available physical memory (`platform_compat.host_available_mib`), so a
+host near its commit limit with physical memory free can still admit starts
+that later fail to commit; tracked as
+[#16983](https://github.com/kirodotdev/KiroCrew/issues/16983). And under an explicit
+`max_subagents` N, a start parked on the spawn-approval prompt holds its
+running slot for as long as the prompt is unanswered (`pump.py`'s released-start
+path re-enters with its slot already held), so N unanswered prompts hold all N
+slots; with the auto ceiling the same parking costs slots no one is short of.
+
+The available-memory reading itself is `_available_memory_gb()` (the TaskRunner
+figure and the unreadable-host fallback), dispatched per operating system (see
+`dynamic-subagent-sizing.md`); the spawn floor reads the same sources through
+`check_memory_available`:
 
 - **Linux** — `/proc/meminfo` `MemAvailable`, then clamped by cgroup headroom.
   `/proc/self/cgroup` and `/proc/self/mountinfo` locate the process's v1/v2
@@ -174,21 +214,21 @@ per operating system (see `dynamic-subagent-sizing.md`):
   (`asyncio.to_thread`), since by then the loop is serving turns.
 - **Windows** — available physical memory from
   `platform_compat.host_available_mib`, converted from MiB to GiB. An unreadable
-  result returns `-1.0` and fails open to the legacy floor of 3.
-- **Other** — no probe yet; returns `-1.0` and fails open to the legacy floor of 3.
+  result returns `-1.0`, and the auto cap falls back to the legacy floor of 3.
+- **Other** — no probe yet; returns `-1.0`, and the auto cap falls back to 3.
 
-Hard floor: the auto-sized cap is always ≥ 3 — `compute_max_subagents` clamps to
-`[3, hard_cap]` and the config loader clamps `subagent_auto_max` UP to 3 (with a
+Hard floor: the auto cap is always ≥ 3 — `compute_max_subagents` floors
+`subagent_auto_max` at 3 and the config loader clamps it UP to 3 (with a
 warning + `config_bounds_clamped` SEL event, mirroring the > 64 ceiling clamp).
-Applies only to auto-sizing (`max_subagents=0`). Zero remains the auto-size
-sentinel; an explicit `max_subagents` pin is clamped to 3..64 (and dashboard
-writes must also fit under the configured `subagent_auto_max`).
+Zero remains the auto sentinel; an explicit `max_subagents` pin is clamped to
+3..64 (and dashboard writes must also fit under the configured
+`subagent_auto_max`). The floor of 3 for an explicit pin is kept as it is.
 
 The per-spawn `spawn_min_memory_gb` admission gate (`check_memory_available`)
 uses the same cgroup headroom on Linux and native memory readers on macOS and
-Windows. A known cgroup bound still applies when the Linux host reading fails.
-Auto-sizing and the runtime gate are independent guards; readings fail open
-only when neither host memory nor a finite cgroup limit is available.
+Windows. A known cgroup bound still applies when the Linux host reading fails;
+readings fail open only when neither host memory nor a finite cgroup limit is
+available.
 
 #### Memory guard: what must remain after the start
 
@@ -392,12 +432,36 @@ start clock resumes when the wait ends, a cancel included: the wait is added to
 the floor at the prices above, and the prices are projections. The floor is not
 above `resource_critical_gb` (both 2.0 at defaults, and posture counts equal as
 critical), so a host admission has filled to the floor reads `critical`: cron
-defers its firings and the adaptive controller cuts its cap until 4 GiB is free.
-Spawns do not read the posture (admission step 4), so the floor alone decides
-them; the adaptive memory rule is separate work. It does not shed
+defers its firings and the adaptive controller cuts and pauses the MCP spawn
+gate (never the subagent cap, [adaptive-concurrency.md](adaptive-concurrency.md))
+until 4 GiB is free. Spawns do not read the posture (admission step 4), so the
+floor alone decides them. It does not shed
 running work: a settled child that runs builds or tests can still push the host
 below it. And a start admitted shared whose runtime then dies may, after its
 bounded wait, launch a dedicated process below the floor rather than fail.
+
+**Accepted decision: starts are priced settled, not at peak.** The memory-sized
+auto cap this floor replaced priced every slot at a whole-run figure up front (a
+typical run, with the heaviest agent's p90 peak reserved once), so growth after
+admission was bounded by the count. The floor prices
+a start at what it settles at (learned, capped at
+`_SETTLED_PROJECTION_CEILING_GB`), and the auto ceiling no longer stands under
+it, so a wave admitted at about 1-2 GB each that later runs builds can grow past
+the floor, swap, or meet the OOM killer, and nothing lowers the count of
+running agents in response. This is accepted, not measured: peak pricing is
+what held a second chat's subagents behind the first chat's wave while memory
+was free (#16480 symptom b), and the RFC already records that a prediction from
+the busiest agent's burst pins a host with 96 GB free at its fresh-start cap
+([rfc-overload-resilience §5.2, Q11](../../request-for-change/rfc-overload-resilience.md#52-two-actuators-one-policy-object)).
+What still answers growth: every later start re-reads live free memory, so
+running children that grow make the next start wait; the spawn gate halves and
+then pauses backend starts at the critical line; on macOS the kernel
+memory-pressure hold vetoes starts at WARN. Memory pressure is deliberately not
+an execution-cap cut: a cut stops nothing already running (both actuators only
+shrink as work finishes), so it would throttle new starts the floor already
+gates, which is the count bound this change removed. An operator whose fan-outs
+are build-heavy pins `agent.max_subagents` or raises
+`agent.spawn_min_memory_gb`.
 
 **macOS: the kernel memory-pressure hold.** The macOS reading of the floor has
 a second input: the kernel's `kern.memorystatus_vm_pressure_level`, read fresh
@@ -519,11 +583,10 @@ timer (`_pressure_recheck_handle`, cancelled at shutdown) pumps every
 `MEMORY_PRESSURE_RECHECK_SECS`, so a level that eases with nothing finishing is
 noticed. The label is the binding reason: a start the hold keeps is labelled
 `memory_pressure` even when a full cap or the stagger would also have queued
-it, except under an adaptive cap of 0, which keeps `adaptive_cap_zero` because
-nothing starts before the controller's probe recovers. A row first held at the
+it. A row first held at the
 pump's pick (queued earlier for capacity) is relabelled there. When the hold
 stops applying, a parent still labelled `memory_pressure` is relabelled
-`concurrency_limit`, or `adaptive_cap_zero` while the cap is 0. Because the row never leaves the window
+`concurrency_limit`. Because the row never leaves the window
 machinery, its crew-log pin, its parent's teardown and the continuation checks
 see it as they see any capacity wait. The same rule is re-checked where a start
 could otherwise pass it later: an approval-released start
@@ -579,9 +642,10 @@ filters an unrelated `agent.*` write rather than the applier re-deriving on it.
 
 ### `reconfigure(cfg)` / `apply_limits(cfg, *, max_concurrent=None)` — live config
 
-`reconfigure` is the watcher's entry point and is `async`: the concurrent cap can
-auto-size from host memory, which is filesystem I/O, so it is resolved off the
-loop and handed to the synchronous `apply_limits`, which does the whole apply.
+`reconfigure` is the watcher's entry point and is `async`: resolving the auto cap
+checks that host memory is readable, which is filesystem I/O, so it is resolved
+off the loop and handed to the synchronous `apply_limits`, which does the whole
+apply.
 
 Every limit the constructor copies out of `config.json` is a LIVE value: a
 reload that touches any path in `SubagentManager.LIVE_CONFIG_PATHS` re-derives
@@ -590,7 +654,7 @@ ALL of them from the new config, whichever writer produced it (dashboard,
 
 | Config path | Manager field | Normalization (same as the constructor) |
 |---|---|---|
-| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `session.pool_size` | `_user_max_concurrent` (and `_max_concurrent` re-clamped) | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the host-sized auto value |
+| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.spawn_min_memory_gb`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `session.pool_size` (`SIZING_CONFIG_PATHS`) | `_user_max_concurrent` (and `_max_concurrent` re-clamped) | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the `subagent_auto_max` auto ceiling. The last four size the cap only while `spawn_min_memory_gb <= 0` disables the floor (the auto cap is then `compute_memory_sized_parallel_cap`), but all six are watched so a reload that turns the floor off or on, or moves a memory term under a disabled floor, re-resolves the cap; a reload that moves none of them keeps the cap without a memory probe |
 | `agent.subagent_max_turns` | `_default_turn_limit` | `int` |
 | `agent.subagent_timeout_secs` | `_default_timeout` | `0` keeps `_TIMEOUT_SECS` |
 | `agent.subagent_stall_idle_secs` | `_stall_idle_secs` | `0` keeps `_STALL_IDLE_SECS` |
@@ -605,8 +669,8 @@ while the others keep the boot value would make the UI's "restart required"
 true for some tool calls and false for others. `_global_approval_mode` stays the
 value cached at construction.
 
-The applier (`reconfigure`) resolves the cap with `asyncio.to_thread` because
-auto-sizing reads `/proc/meminfo` / cgroup files, then calls
+The applier (`reconfigure`) resolves the cap with `asyncio.to_thread` because the
+readability check reads `/proc/meminfo` / cgroup files, then calls
 `apply_limits(cfg, max_concurrent=cap)`; a direct `apply_limits(cfg)` resolves
 the cap inline. A resolution failure keeps the current cap and logs at WARNING.
 
@@ -750,15 +814,16 @@ sees the labelled ceiling and is pointed at `resource_status` for the live cap.
 ### `set_effective_cap(cap | None) -> int` — the adaptive-controller seam
 
 The resolved user cap is a **ceiling**, not the live value. Two fields:
-`_user_max_concurrent` is what `apply_limits` writes (the pin or the auto-sized
-value); `_adaptive_cap` is what the adaptive concurrency controller
+`_user_max_concurrent` is what `apply_limits` writes (the pin or the
+`subagent_auto_max` auto ceiling); `_adaptive_cap` is what the adaptive concurrency controller
 ([`adaptive-concurrency.md`](adaptive-concurrency.md)) writes through
 `set_effective_cap`. `_max_concurrent` -- the attribute every admission read
 site consults -- is always `min(_user_max_concurrent, _adaptive_cap)` (or the
 user cap alone when no bound is set). The two writers never touch each other's
 field: a config raise cannot lift the adaptive bound, a config cut below the
 bound clamps it, and the controller never writes `config.json`. `None` removes
-the bound; `0` pauses new grants (in-flight runs finish; nothing is cancelled).
+the bound; `0` admits nothing new (in-flight runs finish; nothing is cancelled)
+-- the controller no longer writes it, because its execution cap has no pause.
 A raise goes through the same `_notify_cap_raised` a config raise uses: the
 staggered queue drain, plus the runner lane's `pump()` (see the two cap-change
 invariants above). Neither raise site grants past the new cap.
@@ -766,8 +831,8 @@ invariants above). Neither raise site grants past the new cap.
 `_max_concurrent`, so a reload can never shrink the ceiling to the bound.
 `user_max_concurrent` exposes the ceiling; `max_concurrent` stays the effective
 value the gate enforces and the dashboard's capacity error reports. A fresh
-gateway starts bounded at `min(user_max, agent.adaptive_initial)` and earns its
-way up.
+gateway's controller applies the ceiling itself (`agent.adaptive_initial` is
+inert) and cuts beneath it only on failing work.
 
 ### `spawn(task, parent_session_key="") -> SubagentInfo | None`
 Spawns a background agent. Accepted running or queued work returns a stable
@@ -829,9 +894,10 @@ imports `kiro_crew.subagent` at runtime): `QUEUED_REASON_LOW_MEMORY` (step 4,
 with `queued_reason_detail` = the gate's own sentence, the same text the task
 store's `deferred` event records), `QUEUED_REASON_MEMORY_PRESSURE` (step 5 while
 the kernel pressure hold keeps the start, with its figure-free detail),
-`QUEUED_REASON_ADAPTIVE_CAP_ZERO` (step 5 when the effective cap is 0) or
-`QUEUED_REASON_CONCURRENCY_LIMIT` (step 5 otherwise: a taken slot or the stagger
-tick). The label is a report of a decision already
+or `QUEUED_REASON_CONCURRENCY_LIMIT` (step 5 otherwise: a taken slot or the
+stagger tick). There is no pause kind (`adaptive_cap_zero` is gone): the
+adaptive controller never takes the execution cap to 0, so a cap of 0 a caller
+pinned is an ordinary capacity wait; cron never used the kind. The label is a report of a decision already
 made; no gate reads it back. Two consumers:
 
 - The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
@@ -3220,7 +3286,7 @@ awaiting-approval case it says to approve the run in the dashboard (Approvals) t
 start it rather than promising a transcript with the completion event.
 
 **An accepted spawn that has not started is `queued`, not "not found".** The gate
-may defer a spawn (memory floor, adaptive cap at 0) or queue it
+may defer a spawn (memory floor, macOS memory pressure) or queue it
 for a slot, and until the pump claims and registers it, its only record is a
 window entry or a task-store row. It has no `SubagentInfo` and no run folder.
 "Accepted, no run yet" has ONE definition, shared by the by-id read, the listing
@@ -3243,12 +3309,7 @@ is registered for (`_live_run_ids`). `SubagentManager.queued_run_async(id)` /
   writer wins, as on `subagent_queued`), and `reason_detail` is the gate's
   sentence from the row's latest `deferred` event while that deferral is in force
   AND newer than the row's last claim or transition (one batched event read per
-  page). A row with no such sentence while the effective cap is 0 answers
-  `reason: "adaptive_cap_zero"` and the pause sentence
-  (`subagent_wait_reasons.adaptive_pause_text`, the accept answer's wording), read
-  live from the manager: a paused cap holds every unstarted row and records no
-  event, so without it `spawn_sub_agents` would wait on a member the accept answer
-  called deferred. A row that already ran — `recovering` after a restart, or `retry_wait`
+  page). A row that already ran — `recovering` after a restart, or `retry_wait`
   with attempts — reports `resuming: true` with `resuming_reason`
   (`gateway_restart` / `retry`) instead, and no tool calls it "not started". The
   ownership check (`_spawn_scope_refusal`) takes the row's session key as the

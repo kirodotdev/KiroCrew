@@ -235,12 +235,10 @@ from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - re-exported: the g
     MEMORY_PRESSURE_DETAIL,
     MEMORY_PRESSURE_NEVER_STARTED,
     MEMORY_PRESSURE_RECHECK_SECS,
-    QUEUED_REASON_ADAPTIVE_CAP_ZERO,
     QUEUED_REASON_CONCURRENCY_LIMIT,
     QUEUED_REASON_LOW_MEMORY,
     QUEUED_REASON_MEMORY_PRESSURE,
     QUEUED_WAIT_EXPIRED_TEXT,
-    adaptive_pause_text,
 )
 from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
 
@@ -1702,8 +1700,9 @@ def _available_memory_gb() -> float:
     Each OS reports "available" memory through a different, non-portable
     interface, so the probe is a small per-platform branch. Every branch
     returns a best-effort available-GB figure, or ``-1.0`` when this platform
-    has no probe yet / the read failed — in which case the caller
-    (``compute_max_subagents``) fails open to the legacy default cap.
+    has no probe yet / the read failed — in which case
+    ``compute_max_subagents`` falls back to the legacy default cap, and the
+    TaskRunner's ``compute_memory_sized_parallel_cap`` to its floor.
 
         • Linux  — ``/proc/meminfo`` ``MemAvailable`` (via ``check_memory_available``),
                    then clamped by cgroup headroom so the tighter of a
@@ -1771,8 +1770,10 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:
     This sum is knowingly looser than ``platform_compat.host_available_mib``,
     which bounds ``inactive`` by ``external_page_count`` and does not re-add
     ``speculative`` (``free_count`` already contains it). The two are not
-    interchangeable: tightening this one moves ``compute_max_subagents``, a
-    number that is documented and that operators tune against.
+    interchangeable: tightening this one moves the spawn memory floor's macOS
+    reading and the TaskRunner's memory-sized auto value
+    (``compute_memory_sized_parallel_cap``), figures that are documented and
+    that operators tune against.
     """
     probe = platform_compat.macos_vm_statistics()
     if probe is None:
@@ -2048,88 +2049,116 @@ def _agents_slice_available_gb() -> float:
     return max(0.0, (min(ceilings) - _working_set(slice_dir, True, current)) / (1024**3))
 
 
+def _auto_ceiling(cfg: KiroCrewConfig) -> int:
+    """``agent.subagent_auto_max``, never below 3: the auto cap's count ceiling."""
+    try:
+        return max(_LEGACY_DEFAULT_MAX, int(cfg.agent.subagent_auto_max))
+    except (AttributeError, TypeError, ValueError):
+        return _LEGACY_DEFAULT_MAX
+
+
+def _configured_max_subagents(cfg: KiroCrewConfig) -> int:
+    """``agent.max_subagents`` as an int; an unparseable value reads as the legacy 3."""
+    try:
+        return int(cfg.agent.max_subagents)
+    except (AttributeError, TypeError, ValueError):
+        return _LEGACY_DEFAULT_MAX
+
+
+def subagent_count_ceiling(cfg: KiroCrewConfig) -> int:
+    """The highest cap :func:`resolve_max_subagents` can return, from config alone.
+
+    An explicit pin (floored at 3), else the auto ceiling. It never reads host
+    memory, so the gateway boot path can size the MCP spawn gate's ceiling with
+    it before the subagent manager exists; the gate only needs an upper bound,
+    and the resolved cap (memory-dependent only in its fallbacks) never exceeds
+    this figure.
+    """
+    configured = _configured_max_subagents(cfg)
+    if configured > 0:
+        return max(configured, _LEGACY_DEFAULT_MAX)
+    return _auto_ceiling(cfg)
+
+
 def compute_max_subagents(cfg: KiroCrewConfig) -> int:
-    """Compute the concurrent sub-agent cap from host memory.
+    """The AUTO subagent cap (``agent.max_subagents == 0``): a high count ceiling.
 
-    Memory is the ONLY host resource that sizes the cap: a buffered memory
-    budget divided by a per-agent memory cost. CPU is deliberately not a term.
-    Over-committing memory ends in the OOM killer, an unrecoverable hard
-    failure, so it must be sized up front; over-committing CPU only slows work
-    down, and the adaptive controller already backs off on the pressure signals
-    that slowness produces (timeouts, slow starts). A static CPU estimate on top
-    of that closed loop only ever closed the door early: peak-of-one-minute
-    CPU readings from build/test-heavy runs priced every slot at the busiest
-    agent's burst and pinned the cap to its starting value on 32-core hosts
-    with tens of GB free.
+    ``agent.subagent_auto_max`` (32 by default, never below 3) as written. It is
+    NOT sized from host memory: memory is bounded per start by the spawn floor
+    (``agent.spawn_min_memory_gb``), which prices every start at what it will
+    settle at and queues the ones that would not leave the floor free. A count
+    cap sized from the same memory on top of that floor only made a second
+    chat's subagents wait for slots the first chat's wave held while memory was
+    still free. The ceiling stands in for what the floor does not model -- the
+    LLM provider's concurrency, and fd / PID limits -- so on any 16-32 GB host
+    the floor is reached long before it.
 
-    The result is clamped to ``[3, hard_cap]`` — never below the legacy
-    default (the per-spawn ``spawn_min_memory_gb`` gate is the real-time
-    memory guard), never above the absolute ``subagent_auto_max`` (which
-    stands in for the unmodeled LLM-provider concurrency limit).
+    Where host memory cannot be read at all (no probe on this platform, or the
+    read failed) the floor fails open, so the count is the only guard left and
+    the cap falls back to the legacy 3 (``_LEGACY_DEFAULT_MAX``). A floor the
+    operator disabled (``agent.spawn_min_memory_gb <= 0``) admits every start
+    the same way, so there the count is sized from host memory instead
+    (:func:`compute_memory_sized_parallel_cap`), the bound the floor would
+    otherwise have provided.
 
-    The per-slot memory cost is a typical run's, from the learned cost store
-    (``read_cap_costs``), with the heaviest agent's p90 reserved once; when no
-    learned value exists yet, the configured
-    first-boot fallback (``subagent_cost_gb``) is used and nothing is reserved.
-    Fails open to the legacy default when memory can't be read (e.g. non-Linux
-    hosts).
+    See ``dynamic-subagent-sizing.md``.
+    """
+    ceiling = _auto_ceiling(cfg)
+    try:
+        floor_off = float(cfg.agent.spawn_min_memory_gb) <= 0
+    except (AttributeError, TypeError, ValueError):
+        floor_off = False
+    if floor_off:
+        cap = compute_memory_sized_parallel_cap(cfg)
+        logger.info(
+            "subagent auto cap = %d (agent.spawn_min_memory_gb disables the spawn "
+            "floor, so the count is sized from host memory)",
+            cap,
+        )
+        return cap
+    if _available_memory_gb() <= 0:
+        logger.info(
+            "subagent auto cap = %d (memory unreadable, so the spawn floor cannot "
+            "bound starts; fail-safe to the legacy default)",
+            _LEGACY_DEFAULT_MAX,
+        )
+        return _LEGACY_DEFAULT_MAX
+    logger.info("subagent auto cap = %d (agent.subagent_auto_max)", ceiling)
+    return ceiling
 
-    See ``dynamic-subagent-sizing.md`` §3.
+
+def compute_memory_sized_parallel_cap(cfg: KiroCrewConfig) -> int:
+    """A parallel-step count sized from host memory, for the TaskRunner's auto value.
+
+    TaskRunner steps run on the runner lane, which no per-start memory floor
+    prices, so their auto value (``taskrunner.max_parallel_steps == 0``) is the
+    memory arithmetic the subagent cap does not use: a buffered memory
+    budget divided by a per-agent memory cost, clamped to ``[3,
+    agent.subagent_auto_max]``. CPU is deliberately not a term: over-committing
+    memory ends in the OOM killer, while over-committing CPU only slows work
+    down. Fails safe to the legacy 3 when memory cannot be read.
     """
     agent = cfg.agent
-    # Hard floor of 3 (``_LEGACY_DEFAULT_MAX``): the auto-sized cap never drops
-    # below today's behavior even if ``subagent_auto_max`` is somehow < 3 (the
-    # config loader clamps it up to 3, but defend here too so the runtime cap is
-    # guaranteed >= 3). ``subagent_auto_max`` is the upper ceiling.
     hard_cap = max(_LEGACY_DEFAULT_MAX, agent.subagent_auto_max)
     lo = _LEGACY_DEFAULT_MAX
-
     mem_term = _host_mem_term(cfg)
     if mem_term is None:
-        # Memory unreadable (non-Linux / read error) — fail open.
-        logger.info(
-            "dynamic subagent cap = %d (memory unreadable; fail-open to legacy default)",
-            lo,
-        )
         return lo
-
-    result = max(lo, min(mem_term, hard_cap))
-
-    # Name the active bound for an explainable startup log (§5.2).
-    if mem_term >= hard_cap:
-        reason = "hard_cap"
-    elif mem_term <= lo:
-        reason = "floor"
-    else:
-        reason = "mem_term"
-    logger.info(
-        "dynamic subagent cap = %d (%s; mem_term=%d, floor=%d, hard_cap=%d)",
-        result,
-        reason,
-        mem_term,
-        lo,
-        hard_cap,
-    )
-    return result
+    return max(lo, min(mem_term, hard_cap))
 
 
 def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
     """How many agents fit in this host's available memory, or None when unreadable.
 
-    THE one place the sizing arithmetic lives, so the auto-sized cap
-    (:func:`compute_max_subagents`) and its startup log line can never drift
-    apart. It sizes the AUTO ceiling only (``max_subagents=0``); an explicit
-    ``max_subagents`` is the ceiling as written, and the adaptive controller
-    climbs toward whichever applies on live pressure signals, not on this
-    prediction.
+    The one place the memory arithmetic lives, for
+    :func:`compute_memory_sized_parallel_cap`. It sizes the subagent cap only
+    when the spawn floor is disabled.
 
     ``floor((avail * buf - pool_size * typical - heavy_peak) / typical)``:
     every slot is priced at a typical run (median across agents of each
     agent's p50), and the heaviest agent's p90 (``heavy_peak``) is reserved
-    once. The reserve is what covers that agent's growth after it starts: the
-    per-spawn gate prices a start at its settled RSS (at most ~2 GB) and checks
-    free memory once, and the adaptive controller stops new starts but never
-    shrinks running ones.
+    once. The reserve is what covers that agent's growth after it starts,
+    which no per-start price models.
     """
     agent = cfg.agent
     avail_gb = _available_memory_gb()
@@ -2444,15 +2473,15 @@ def _cost_bucket(agent: str, execution: Any) -> str:
 
 
 def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
-    """Resolve the effective cap: explicit value when > 0, else auto-compute.
+    """Resolve the subagent count ceiling: the explicit value when > 0, else auto.
 
-    ``agent.max_subagents == 0`` is the "auto" sentinel that triggers
-    :func:`compute_max_subagents`. See ``dynamic-subagent-sizing.md`` §5.1.
+    ``agent.max_subagents == 0`` is the "auto" sentinel: :func:`compute_max_subagents`,
+    the high ``agent.subagent_auto_max`` ceiling that memory (the spawn floor)
+    reaches first. Never 0, so every consumer -- the manager, the prompt's
+    ``{{MAX_SUBAGENTS}}``, the spawn tool description -- has a defined figure.
+    See ``dynamic-subagent-sizing.md``.
     """
-    try:
-        configured = int(cfg.agent.max_subagents)
-    except (AttributeError, TypeError, ValueError):
-        configured = _LEGACY_DEFAULT_MAX
+    configured = _configured_max_subagents(cfg)
     if configured > 0:
         # An explicit pin below the legacy floor (1 or 2) would silently disable
         # auto-sizing AND run below today's default; floor it to 3. 0 stays the
@@ -3435,7 +3464,7 @@ class SubagentManager:
         self._queue_dispatch_hold_logged = False
         # ``_max_concurrent`` is the EFFECTIVE cap every admission read site
         # consults: ``min(user cap, adaptive cap)``. The user's resolved cap
-        # (``agent.max_subagents`` / auto-size) is the ceiling in
+        # (``agent.max_subagents`` / the auto ceiling) is the ceiling in
         # ``_user_max_concurrent``; the adaptive controller lowers the runtime
         # value through :meth:`set_effective_cap` and never writes the ceiling.
         self._user_max_concurrent = max_concurrent
@@ -3914,6 +3943,7 @@ class SubagentManager:
     LIVE_CONFIG_PATHS: tuple[str, ...] = (
         "agent.max_subagents",
         "agent.subagent_auto_max",
+        "agent.spawn_min_memory_gb",
         "agent.subagent_mem_buffer_pct",
         "agent.subagent_cost_gb",
         "session.pool_size",
@@ -3928,15 +3958,16 @@ class SubagentManager:
     )
 
     #: The subset of ``LIVE_CONFIG_PATHS`` that actually feeds
-    #: :func:`resolve_max_subagents` / :func:`compute_max_subagents` (the
-    #: explicit pin, the auto-sizing inputs, and the pool-size term). Every
-    #: other watched path only affects a plain field copy in
-    #: :meth:`apply_limits`, so a reload that touches none of these has no way
-    #: to change the resolved cap and must not pay for
-    #: :func:`resolve_max_subagents`'s host memory / cgroup probe.
+    #: :func:`resolve_max_subagents` (the explicit pin, the auto ceiling, and
+    #: the floor switch plus the memory terms the auto cap is sized from when
+    #: ``agent.spawn_min_memory_gb`` disables the floor). Every other watched
+    #: path only affects a plain field copy in :meth:`apply_limits`, so a
+    #: reload that touches none of these has no way to change the resolved cap
+    #: and must not pay for :func:`resolve_max_subagents`'s memory probe.
     SIZING_CONFIG_PATHS: tuple[str, ...] = (
         "agent.max_subagents",
         "agent.subagent_auto_max",
+        "agent.spawn_min_memory_gb",
         "agent.subagent_mem_buffer_pct",
         "agent.subagent_cost_gb",
         "session.pool_size",
@@ -3956,6 +3987,7 @@ class SubagentManager:
         return (
             agent.max_subagents,
             agent.subagent_auto_max,
+            agent.spawn_min_memory_gb,
             agent.subagent_mem_buffer_pct,
             agent.subagent_cost_gb,
             cfg.session.pool_size,
@@ -3964,10 +3996,10 @@ class SubagentManager:
     async def reconfigure(self, cfg: KiroCrewConfig) -> None:
         """Live-config applier: re-derive the captured limits from *cfg*.
 
-        The concurrent cap may auto-size from host memory (``/proc/meminfo``,
-        cgroup files), which is filesystem I/O -- resolved off the loop and
-        handed to :meth:`apply_limits` ready-made, but ONLY when a sizing input
-        actually moved. ``reconfigure`` is invoked on every reload that touches
+        Resolving the auto cap checks that host memory is readable
+        (``/proc/meminfo``, cgroup files), which is filesystem I/O -- resolved
+        off the loop and handed to :meth:`apply_limits` ready-made, but ONLY
+        when a sizing input actually moved. ``reconfigure`` is invoked on every reload that touches
         any of ``LIVE_CONFIG_PATHS`` (e.g. ``agent.completion_keep``), most of
         which cannot change the resolved cap at all; re-probing host memory on
         every one of those is a needless thread hop. When nothing in
@@ -3993,8 +4025,9 @@ class SubagentManager:
         timeout / stall interval keeps the built-in default (the sentinel the
         gateway passes when the field is unset), the stagger interval is floored
         at ``0.0``, and the cap goes through :func:`resolve_max_subagents` (the
-        explicit ``max_subagents`` pin, or the host-sized auto value) unless the
-        caller already resolved it and passes *max_concurrent*.
+        explicit ``max_subagents`` pin, or the ``subagent_auto_max`` auto
+        ceiling) unless the caller already resolved it and passes
+        *max_concurrent*.
 
         Raising the cap admits queued spawns through the staggered pump;
         lowering it only stops new admissions -- an in-flight run is never

@@ -1,7 +1,7 @@
 ---
 title: Overload resilience — durable task queue, admission before allocation, adaptive concurrency, layered recovery
 status: partial
-revision: v6
+revision: v7
 author: bolichen
 created: 2026-09-12
 last-audited: 2026-09-12
@@ -399,19 +399,20 @@ feed the controller.
 
 | Parameter | gatewayd `SpawnGate` | gateway `ExecutionCap` |
 |---|---|---|
-| initial / floor / ceiling | 4 / 1 / 8 | `min(user_max, 4)` / 1 / `user_max` |
-| decrease | ×0.5 floor 1 on **corroborated** pressure (host signal + ≥2 distinct keys slow/failing, or ENOMEM/EAGAIN) | ×0.5 floor 1 |
+| initial / floor / ceiling | 4 / 1 / 8 (ceiling raised to the subagent ceiling when lower, Q11) | `user_max` / 1 / `user_max` (Q11) |
+| decrease | ×0.5 floor 1 on **corroborated** pressure (host signal + ≥2 distinct keys slow/failing, or ENOMEM/EAGAIN) | ×0.5 floor 1 on ≥2 distinct work signals in one sample; loop lag and memory are not exec signals (Q11) |
 | increase | +1 after ≥20 successful inits AND ≥30s without pressure AND demand at the limit | ×2 per 5s clean window until this process meets corroborated pressure, then +1 per clean window; the success bar is `min(increase_successes, cap)` |
 | cooldown after decrease | 30s; pre-decrease successes discarded | 60s |
-| hysteresis | decrease at lag ≥ 250ms or mem ≤ `resource_critical_gb`; increase only below 100ms and ≥ `resource_pressure_gb` | same thresholds |
-| pause | mem ≤ critical for 2 samples, or dependency (gatewayd/provider) down | stop admitting; keep running work |
-| probe after pause | admit 1 task; require it to reach `running` before capacity returns to floor+1 | same |
+| hysteresis | decrease at lag ≥ 250ms or mem ≤ `resource_critical_gb`; increase only below 100ms and ≥ `resource_pressure_gb` | none on lag or memory: an increase needs a sample with no work signal (Q11) |
+| pause | mem ≤ critical for 2 samples, or dependency (gatewayd/provider) down | none: the exec track never pauses (Q11); running work is kept |
+| probe after pause | admit 1 task; require it to reach `running` before capacity returns to floor+1 | none (no pause to probe out of, Q11) |
 
 The gateway actuator is `SubagentManager.apply_limits(cfg, max_concurrent=effective)`
 (existing) plus equivalent hooks on `TaskRunner` and the workflow `WorkerPool`;
 `effective ≤ user max` always, and `apply_limits` never writes `config.json` — the
 user's value stays the ceiling. On a fresh gateway start `effective` begins at
-`min(user_max, 4)` and earns its way up (no full concurrency until work completes).
+`user_max` and is cut only on work evidence (Q11): attributable timeouts, slow or
+failing starts, fd or process exhaustion.
 Per-provider 429s multiply only that provider's lane share (§6), never the host
 cap.
 
@@ -432,9 +433,11 @@ pins a 32-core host with 96 GB free at the fresh-start cap for the life of the
 process, under a controller that sees only clean samples -- the loop exists so
 that many sessions can ask for many workers, be admitted up to the ceiling the
 user chose, and queue on real pressure rather than be refused for a guess. Memory
-over-commit is the one unrecoverable failure and is guarded live (the pressure
-line gates increases, the critical line cuts, the spawn gate defers cold starts
-that would breach `spawn_min_memory_gb` plus unobserved growth); CPU over-commit
+over-commit is the one unrecoverable failure and is guarded live, per start and
+on the spawn gate, not on the execution cap (Q11): the spawn floor queues every
+start that would not leave `spawn_min_memory_gb` free at its projected price,
+and on the gate the pressure line gates increases and the critical line cuts and
+pauses backend starts; CPU over-commit
 only slows work, which is the pressure the loop already backs off from, so CPU
 is not a sizing term for the auto ceiling either. Doubling is
 one-way per process: the first corroborated pressure or pause retires it and the
@@ -744,6 +747,8 @@ Question text is kept as asked; the decision below it is final for this PR.
   fault-injection harness (wave J), not by external hosts. Reversal:
   `agent.adaptive_concurrency_mode="fixed"` turns both actuators into plain
   semaphores at `spawn_concurrency_initial` and `min(user_max, 4)`.
+  **Amended by Q11 (2026-10-05):** the execution actuator starts at
+  `user_max`, so `fixed` pins it there.
 - **Q3.** Checkpoint-pause for dedicated-runtime parents depends on continuable
   sessions surviving a runtime close; what if `session/load` fidelity is not
   there for a mid-tool-call parent?
@@ -914,6 +919,39 @@ Question text is kept as asked; the decision below it is final for this PR.
   lifts both. Reversal:
   `agent.spawn_min_memory_gb=0` disables the floor, the reserve and the veto
   together.
+- **Q11 (2026-10-05, accepted).** §5.2 started the execution cap at
+  `min(user_max, 4)`, halved it on loop lag ≥ 250 ms or memory at the critical
+  line alone, and paused it under severe pressure, on top of an auto ceiling
+  sized from host memory, while Q9's floor already priced every start at what it
+  settles at. With more than two chats running subagents, one chat's wave held
+  the slots (or the halved cap) the next chat's starts waited for while memory
+  was still free (#16480, symptom b). Should a count still move on the signals
+  the floor already answers?
+  **Decision (owner direction, 2026-10-05, the fix for #16480 symptom b):** no.
+  The subagent execution track starts at its ceiling (`user_max`, or
+  `agent.subagent_auto_max` when `agent.max_subagents` is 0) and is cut only on
+  work evidence: two or more distinct work signals in one sample (attributable
+  timeouts, slow or failing starts, fd or process exhaustion), while a
+  provider's 429s scale only that provider's lane share, never the cap. Loop
+  lag alone and memory do not cut the subagent cap, and the execution track
+  never pauses. Memory is bounded per start by the floor (Q9, #16355); lag and
+  memory still cut or pause the spawn gate, whose ceiling is raised to the subagent ceiling so a wide fan-out is not
+  queued behind eight backend initializations. The auto ceiling is no longer
+  sized from host memory, except where the floor cannot bound starts: an
+  unreadable host falls back to 3, and a disabled floor
+  (`agent.spawn_min_memory_gb <= 0`) keeps the memory-sized figure.
+  `agent.adaptive_initial` is accepted and inert. Grounds: every bound removed
+  here was a count sitting under the per-start memory floor, so it held work
+  back only while memory was free, and the gateway's own loop lag says nothing
+  about whether a subagent's process is healthy. **Residual:** starts are priced
+  at their settled size, not at the busiest agent's peak, and nothing sheds
+  running work, so children admitted settled that later run builds or tests can
+  push the host below the floor ([subagent.md § Memory guard](../system-specs/modules/subagent.md#memory-guard-what-must-remain-after-the-start)
+  records this as accepted). Reversal: an explicit `agent.max_subagents` pins the
+  ceiling; `agent.adaptive_concurrency_mode="fixed"` pins the execution cap at
+  it; `agent.adaptive_concurrency=false` turns the controller off.
+  **Implementation:** [#17017](https://github.com/kirodotdev/KiroCrew/pull/17017),
+  whose spec is [adaptive-concurrency.md](../system-specs/modules/adaptive-concurrency.md).
 
 ## 14. Waits, yielding and nested recovery (owner addendum, 2026-09-12 15:12)
 

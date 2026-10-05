@@ -21,7 +21,6 @@ if TYPE_CHECKING:
         MEMORY_PRESSURE_DETAIL,
         MEMORY_PRESSURE_NEVER_STARTED,
         MEMORY_PRESSURE_RECHECK_SECS,
-        QUEUED_REASON_ADAPTIVE_CAP_ZERO,
         QUEUED_REASON_CONCURRENCY_LIMIT,
         QUEUED_REASON_LOW_MEMORY,
         QUEUED_REASON_MEMORY_PRESSURE,
@@ -41,7 +40,6 @@ if TYPE_CHECKING:
         _validate_app_agent_ownership,
         _vet_parent_available_agents,
         _vet_spawn_governance,
-        adaptive_pause_text,
         asyncio,
         check_memory_available,
         logger,
@@ -1299,32 +1297,19 @@ class _GateMixin(ManagerComponent):
                 self._manager._startup_population(),
                 self._manager._startup_cap(),
             )
-            # Which wait this is. A cap the adaptive controller has squeezed to 0
-            # is the one capacity queue "behind the concurrency limit" misreads:
-            # nothing runs, the configured cap still reads N, and the row waits
-            # for the controller's probe, not for a slot. The stagger tick and a
-            # genuinely full cap both clear on their own and keep the default.
-            # The paused kind is answered to callers as a DEFERRAL, so it carries
-            # the same human sentence the memory kinds do; the ordinary kind is
-            # never surfaced as prose and stays bare.
-            # A memory wait keeps its own label and sentence, the same ones a
-            # durable deferral carries.
-            adaptive_paused = self._manager._max_concurrent <= 0
+            # Which wait this is. A memory wait keeps its own label and sentence,
+            # the same ones a durable deferral carries; otherwise the stagger
+            # tick or a full cap, which both clear on their own and are never
+            # surfaced as prose. The execution cap is never paused (the adaptive
+            # controller does not read memory or loop lag), so a capacity wait
+            # is always this ordinary kind.
             capacity_wait: dict[str, Any] = memory_wait or {
-                "reason": (
-                    QUEUED_REASON_ADAPTIVE_CAP_ZERO
-                    if adaptive_paused
-                    else QUEUED_REASON_CONCURRENCY_LIMIT
-                )
+                "reason": QUEUED_REASON_CONCURRENCY_LIMIT
             }
-            capacity_detail = memory_detail or (
-                adaptive_pause_text(self._manager._user_max_concurrent) if adaptive_paused else ""
-            )
-            if pressure_level is not None and not adaptive_paused:
+            capacity_detail = memory_detail or ""
+            if pressure_level is not None:
                 # No GB figures: the figure cleared the floor, so any "N GB free,
-                # needs M GB" pair would contradict the verdict. A paused cap
-                # keeps its own label: nothing starts before the controller's
-                # probe recovers, whatever the kernel says.
+                # needs M GB" pair would contradict the verdict.
                 capacity_wait = {"reason": QUEUED_REASON_MEMORY_PRESSURE}
                 capacity_detail = MEMORY_PRESSURE_DETAIL
             # Advisory UI signal: tell the chip how many agents are now waiting
@@ -1676,14 +1661,11 @@ class _GateMixin(ManagerComponent):
             mgr._pressure_hold_level = None
             if mgr._pressure_hold_on:
                 mgr._pressure_hold_on = False
-                capacity = (
-                    QUEUED_REASON_ADAPTIVE_CAP_ZERO
-                    if mgr._max_concurrent <= 0
-                    else QUEUED_REASON_CONCURRENCY_LIMIT
-                )
                 for parent, wait in list(mgr._queue_wait.items()):
                     if wait.get("reason") == QUEUED_REASON_MEMORY_PRESSURE:
-                        mgr._emit_queue_depth(parent, wait={"reason": capacity})
+                        mgr._emit_queue_depth(
+                            parent, wait={"reason": QUEUED_REASON_CONCURRENCY_LIMIT}
+                        )
             # A row's clock outlives a pause in the hold (our last runtime ending
             # between two of its starts), so only clocks far past any wait are
             # dropped here: rows that left without a registration or a refusal.

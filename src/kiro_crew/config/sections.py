@@ -149,8 +149,9 @@ CONTEXT_WARN_MARGIN_PCT = 10.0
 # session.pool_size — warm pool OFF by default. Each pooled slot is a full
 # kiro-cli process plus the MCP stdio servers its agent spec spawns (~109 MB per
 # backend), and a non-zero value is also reserved out of the memory term that
-# sizes the subagent cap (subagent.compute_max_subagents), so the cost is paid on
-# every host whether or not the pool is ever claimed. Cold start is instead
+# sizes the TaskRunner's auto parallel cap
+# (subagent.compute_memory_sized_parallel_cap), so the cost is paid on every host
+# whether or not the pool is ever claimed. Cold start is instead
 # hidden by session.eager_spawn, which is on by default and pre-creates a slot's
 # session behind user think-time.
 #
@@ -1164,11 +1165,15 @@ class AgentConfig:
         default=0,
         metadata=_meta(
             "Max SubAgents",
-            "Maximum amount of subagents at one time. 0 = auto-size the cap at "
-            "startup from host memory/CPU and a learned per-agent cost "
-            "(see dynamic-subagent-sizing docs). Default; set a fixed cap by "
-            "pinning an integer >= 3 (values of 1 or 2 are raised to 3 — a pin "
-            "below 3 would disable auto-sizing and run under the default).",
+            "Maximum amount of subagents at one time. 0 = auto: the "
+            "subagent_auto_max ceiling, with free memory bounding each start "
+            "through spawn_min_memory_gb long before that on most hosts (sized "
+            "from host memory when spawn_min_memory_gb is 0, 3 when host memory "
+            "cannot be read; see dynamic-subagent-sizing docs). "
+            "Default; set a fixed cap by pinning an integer >= 3 (values of 1 or "
+            "2 are raised to 3). A live edit moves the subagent cap at once; the "
+            "MCP gateway's spawn-gate ceiling, raised to this figure, follows "
+            "at the next gateway restart.",
         ),
     )
     max_stop_hook_nudges: int = field(
@@ -1194,7 +1199,9 @@ class AgentConfig:
             "admit_wait_secs; one in temporary or incognito memory mode, or with "
             "task_queue_enabled off, is lost if the gateway restarts. On macOS a start also "
             "waits while the kernel reports memory pressure and one of this gateway's "
-            "dedicated subagents is running. 0 disables the check, that wait included.",
+            "dedicated subagents is running. 0 disables the check, that wait included, "
+            "and then sizes the auto subagent cap (max_subagents=0) from available memory "
+            "instead.",
         ),
     )
     resource_pressure_gb: float = field(
@@ -1370,12 +1377,14 @@ class AgentConfig:
         metadata=_meta(
             "Adaptive Concurrency",
             "Run the adaptive concurrency controller: a runtime execution cap "
-            "beneath max_subagents (the ceiling, never written) that halves on "
-            "corroborated host pressure (event-loop lag, low memory, fd/process "
-            "counts, attributable start timeouts, slow starts on several MCP "
-            "servers) and earns +1 back per clean window, plus the same shaping "
-            "for the MCP gateway daemon's spawn gate. A fresh gateway starts at "
-            "min(max_subagents, adaptive_initial) and earns its way up. Set false "
+            "beneath max_subagents (the ceiling, never written) that starts AT "
+            "that ceiling, halves when two signals that admitted work is failing "
+            "agree (attributable start timeouts, slow starts on several MCP "
+            "servers, failing backend inits, fd or process counts near their "
+            "limit, a low completion rate) and earns +1 back per clean window. "
+            "It never reads event-loop lag or free memory: spawn_min_memory_gb "
+            "bounds memory per start. The MCP gateway daemon's spawn gate is "
+            "shaped too, and it does react to loop lag and low memory. Set false "
             "to run at the user cap only.",
         ),
     )
@@ -1383,8 +1392,9 @@ class AgentConfig:
         default="aimd",
         metadata=_meta(
             "Adaptive Concurrency Mode",
-            "'aimd': multiplicative decrease / additive increase with pause-and-"
-            "probe. 'fixed': both caps pinned at their initial values -- a plain "
+            "'aimd': multiplicative decrease / additive increase, with "
+            "pause-and-probe on the MCP spawn gate. 'fixed': both caps pinned at "
+            "their initial values (the execution cap at max_subagents) -- a plain "
             "semaphore -- the one-flip reversal if the controller is seen to "
             "oscillate.",
             enum=["aimd", "fixed"],
@@ -1395,33 +1405,34 @@ class AgentConfig:
         metadata=_meta(
             "Adaptive Floor",
             "Lowest execution cap the controller may shrink to under sustained "
-            "pressure (a pause takes new grants to 0 temporarily). Clamped to "
-            "1..64.",
+            "pressure. Clamped to 1..64.",
         ),
     )
     adaptive_initial: int = field(
         default=4,
         metadata=_meta(
             "Adaptive Initial Cap",
-            "Execution cap a fresh gateway starts at, bounded by max_subagents. "
-            "Healthy work and queued demand let the controller raise it; see "
-            "adaptive_slow_start for growth rules. Clamped to 1..64.",
+            "Inert: the execution cap now starts at max_subagents (or "
+            "subagent_auto_max when it is 0), because free memory, not a count, "
+            "bounds how many subagents start. Preserved on load and save so an "
+            "existing config is not rewritten out from under the operator.",
         ),
     )
     adaptive_slow_start: bool = field(
         default=True,
         metadata=_meta(
             "Adaptive Slow Start",
-            "Until the gateway first meets corroborated host pressure, let the "
-            "execution cap DOUBLE per clear 5-second window (on one completion "
-            "and real demand) instead of climbing +1 per clear 30-second window, "
-            "bounded by max_subagents and by what this host's memory and CPU "
-            "size the cap at. The first pressure ends slow start for the life "
+            "Until the gateway first meets corroborated host pressure, let a "
+            "cap below its ceiling DOUBLE per clear 5-second window (on one "
+            "completion and real demand) instead of climbing +1 per clear "
+            "30-second window, bounded by max_subagents. The execution cap "
+            "starts at that ceiling, so this is how a cut cap climbs back. The "
+            "first pressure ends slow start for the life "
             "of the process. Set false to climb +1 per clear 30-second window "
             "from the start. Slow start earns an increase on one completion plus "
             "real demand; congestion avoidance earns each +1 after one full wave "
             "of the CURRENT cap completes (at most 20 runs). Alternatively, "
-            "fresh stream progress with queued work and measured headroom can "
+            "fresh stream progress with queued work and no provider throttle can "
             "earn one probe slot per clear window without a completion; this "
             "never earns doubling or relaxes the initialization gate.",
         ),
@@ -1499,8 +1510,12 @@ class AgentConfig:
         default=20,
         metadata=_meta(
             "SubAgent Memory Buffer %",
-            "Percent of available memory and CPU reserved for the OS and other "
-            "processes when auto-sizing the subagent cap (max_subagents=0).",
+            "Percent of available memory reserved for the OS and other processes "
+            "when sizing the TaskRunner's auto parallel-step cap "
+            "(taskrunner.max_parallel_steps=0). The auto subagent cap is sized "
+            "from memory only when spawn_min_memory_gb is 0 or less and so "
+            "disables the per-start floor; then it uses this same figure. "
+            "Otherwise spawn_min_memory_gb bounds each subagent start.",
         ),
     )
     chat_turn_timeout_secs: int = field(
@@ -1605,19 +1620,21 @@ class AgentConfig:
             "SubAgent Memory Cost (GB)",
             "The least a dedicated sub-agent start is priced at when admission "
             "reserves its memory (the measured or learned settled size applies "
-            "when higher); also the per-agent fallback used to auto-size the cap "
-            "until a learned value accumulates.",
+            "when higher); also the per-agent fallback the TaskRunner's auto "
+            "parallel-step cap is sized with until a learned value accumulates, "
+            "and the auto subagent cap too while spawn_min_memory_gb is 0 or "
+            "less and so disables the per-start floor.",
         ),
     )
     subagent_cpu_cost_cores: float = field(
         default=1.0,
         metadata=_meta(
             "SubAgent CPU Cost (cores)",
-            "Deprecated and inert: the subagent cap is sized from host memory "
-            "only, because over-committing memory is an unrecoverable OOM while "
-            "over-committing CPU only slows work the adaptive controller already "
-            "backs off from. Preserved on load and save so an existing config is "
-            "not rewritten out from under the operator.",
+            "Deprecated and inert: CPU never sizes subagent concurrency, because "
+            "over-committing memory is an unrecoverable OOM while over-committing "
+            "CPU only slows work the adaptive controller already backs off from. "
+            "Preserved on load and save so an existing config is not rewritten "
+            "out from under the operator.",
             deprecated=True,
         ),
     )
@@ -1625,10 +1642,16 @@ class AgentConfig:
         default=32,
         metadata=_meta(
             "SubAgent Auto-Size Max",
-            "Ceiling on the auto-sized subagent cap (only applies when "
-            "max_subagents=0). Stands in for the LLM-provider concurrency limit "
-            "the local memory/CPU formula does not model. Ignored when "
-            "max_subagents is set explicitly.",
+            "How many subagents may run at once when max_subagents=0 (auto). A "
+            "high count ceiling, not a memory figure: free memory bounds each "
+            "start through spawn_min_memory_gb and is reached long before this on "
+            "most hosts. It stands in for what the memory floor does not model, "
+            "the LLM provider's concurrency and the host's file-descriptor and "
+            "process limits. 3 applies instead when host memory cannot be read. "
+            "Also the upper bound of the TaskRunner's auto parallel-step cap. "
+            "Ignored when max_subagents is set explicitly. Like max_subagents, "
+            "a live edit reaches the MCP spawn-gate ceiling at the next gateway "
+            "restart.",
         ),
     )
     subagent_spawn_stagger_secs: float = field(
@@ -1642,7 +1665,8 @@ class AgentConfig:
             "host or the model provider is the bottleneck -- a spawn still has "
             "to leave spawn_min_memory_gb free after its start and clear the host "
             "budget, and the adaptive "
-            "controller cuts the cap on real pressure, so this is a smoothing "
+            "controller cuts the cap when admitted work fails (timeouts, slow "
+            "starts, fd or process exhaustion), so this is a smoothing "
             "interval rather than the memory guard.",
         ),
     )
