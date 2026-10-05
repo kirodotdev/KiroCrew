@@ -1391,8 +1391,11 @@ against sweep completeness, and are torn down at `close_all`.
   start paths to post a user-visible "session recycled" notice into
   `dashboard:` slots, tagged `meta={"kind": "compaction"}` so the [OPTIONS:]
   backward scan skips it). Idle/orphan sweeps do NOT fire the recycle
-  callback. Linux-only measurement (`get_session_rss_mb` returns 0 elsewhere),
-  so the feature is inert off-Linux.
+  callback. Linux sums the `/proc` tree; Windows uses
+  `platform_compat.proc_rss_tree_mb_for_pid`; macOS sums each process's
+  footprint over libproc's live child lists (`platform_compat.darwin_footprint_tree_mb`).
+  Any other host reads 0 and logs one warning that the ceiling cannot measure.
+  On macOS the background runtime's 1536 MiB fallback ceiling applies too.
 - **Harness background work** (`CleanupDeps.provider_background_launch`,
   `HARNESS_BACKGROUND_WORK_HOLD_SECS` = 3600 s,
   `HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR` = 2): a free semaphore only proves Kiro

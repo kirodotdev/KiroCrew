@@ -5529,6 +5529,46 @@ def _build_child_map(proc_root: Path | None = None) -> dict[int, list[int]]:
     return {} if child_map is None else child_map
 
 
+_rss_ceiling_inert_warned = False
+
+
+def _warn_rss_ceiling_inert_once(reason: str) -> None:
+    """Say once per process that the session RSS ceiling cannot measure here.
+
+    Without it an unsupported host reads every tree as 0 MiB and silently never
+    recycles a session, however large it grows.
+    """
+    global _rss_ceiling_inert_warned
+    if _rss_ceiling_inert_warned:
+        return
+    _rss_ceiling_inert_warned = True
+    logger.warning(
+        "session RSS ceiling cannot measure on this host (%s): every tree reads 0 MiB "
+        "and no session is recycled for memory",
+        reason,
+    )
+
+
+def _off_linux_tree_mb(pid: int, exclude_pids: set[int]) -> int:
+    """Tree reading (MiB) where there is no ``/proc``: macOS walks libproc.
+
+    It does not reuse the runtime watchdog's ``acp.runtime._get_rss_tree_mb``:
+    this module sits outside the agent-SDK boundary, and
+    ``scripts/check_agent_sdk_boundary.py`` refuses new ACP-layer imports here.
+
+    Any other host, or a Mac whose libproc does not load, cannot measure; it
+    answers 0 and warns once. Windows never comes here (see ``get_session_rss_mb``).
+    """
+    if sys.platform != "darwin":
+        _warn_rss_ceiling_inert_once(f"platform {sys.platform}")
+        return 0
+    if not platform_compat.darwin_libproc_available():
+        _warn_rss_ceiling_inert_once("libproc unavailable")
+        return 0
+    tree_mb = platform_compat.darwin_footprint_tree_mb(pid, exclude_pids)
+    return 0 if tree_mb is None else int(tree_mb)
+
+
 def _rss_mb_from_tree(
     pid: int,
     child_map: dict[int, list[int]],
@@ -5544,7 +5584,13 @@ def _rss_mb_from_tree(
     across sequential/threaded calls. Any PID in *exclude_pids* is skipped along
     with its subtree. Resident pages are summed across the tree and converted to
     MiB once at the end.
+
+    Off Linux (no *proc_root*) the map is not used: macOS sums each process's
+    footprint over libproc's live child lists instead (``_off_linux_tree_mb``),
+    honouring *exclude_pids* the same way.
     """
+    if proc_root is None and sys.platform != "linux":
+        return _off_linux_tree_mb(pid, exclude_pids)
     total_pages = 0
     seen: set[int] = set()
     frontier = [pid]
@@ -5582,17 +5628,18 @@ def get_session_rss_mb(
     walk (see ``_build_child_map``), so it delegates to
     ``platform_compat.proc_rss_tree_mb_for_pid``, which sums only
     lineage-validated descendants; without that the ceiling measured every tree
-    as 0 MiB there and no session was ever recycled. macOS has no ctypes-only
-    per-pid RSS path, so it returns 0 and the ceiling stays inert.
+    as 0 MiB there and no session was ever recycled. macOS has no ``/proc``
+    either; it sums footprints over libproc (``_off_linux_tree_mb``). Any other
+    host returns 0 and logs one warning that the ceiling cannot measure.
 
-    *exclude_pids* is honoured on the ``/proc`` route. The Windows route derives
-    its own validated descendant set, so a caller that needs a subtree barrier
-    there must exclude the pid before calling.
+    *exclude_pids* is honoured on the ``/proc`` and macOS routes. The Windows
+    route derives its own validated descendant set, so a caller that needs a
+    subtree barrier there must exclude the pid before calling.
     """
     if platform_compat.IS_WINDOWS and proc_root is None:
         tree_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
         return 0 if tree_mb is None else int(tree_mb)
-    if sys.platform != "linux":
-        return 0
+    if proc_root is None and sys.platform != "linux":
+        return _off_linux_tree_mb(pid, exclude_pids)
     child_map = _build_child_map(proc_root)
     return _rss_mb_from_tree(pid, child_map, exclude_pids, proc_root)

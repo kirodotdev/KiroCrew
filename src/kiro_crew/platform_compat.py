@@ -1262,6 +1262,46 @@ def proc_phys_footprint_bytes_for_pid(pid: int) -> int | None:
     return _darwin_process_phys_footprint_bytes(pid)
 
 
+def darwin_libproc_available() -> bool:
+    """True when ``libproc`` loads, so the macOS memory and tree probes can answer."""
+    return _darwin_libproc_handle() is not None
+
+
+def darwin_footprint_tree_mb(
+    pid: int, exclude_pids: "frozenset[int] | set[int]" = frozenset()
+) -> float | None:
+    """Footprint (MiB) of *pid* plus its live descendants on macOS; None elsewhere.
+
+    The session RSS ceiling's macOS reading. Each process is measured by
+    ``phys_footprint`` (see ``_darwin_process_phys_footprint_bytes``), the figure
+    the runtime ceilings judge by. Children come from the kernel's own
+    ``proc_listchildpids`` list of a live parent, so no stale parent field can
+    attach a stranger's subtree. A pid in *exclude_pids* is skipped with its
+    subtree, and a descendant whose footprint cannot be read adds nothing.
+
+    None when the root itself cannot be read: "unknown, do not judge", the
+    contract :func:`proc_rss_tree_mb_for_pid` keeps on Windows. In-process
+    libproc calls only, one or two per process; executor thread, never the loop.
+    """
+    if not IS_MACOS:
+        return None
+    if pid in exclude_pids:
+        return 0.0
+    total = _darwin_process_phys_footprint_bytes(pid)
+    if total is None:
+        return None
+    seen = {pid}
+    frontier = [pid]
+    while frontier:
+        for child in darwin_child_pids(frontier.pop()) or ():
+            if child in seen or child in exclude_pids:
+                continue
+            seen.add(child)
+            total += _darwin_process_phys_footprint_bytes(child) or 0
+            frontier.append(child)
+    return total / (1024 * 1024)
+
+
 def _darwin_process_start_microtime(pid: int) -> str | None:
     """macOS start time of *pid* via the atomic ``proc_bsdinfo`` reader."""
     identity = _darwin_process_start_identity(pid)

@@ -655,8 +655,8 @@ validates every parent->child edge against exact creation/exit times across two
 snapshots, and treats an unreadable tree as `None` → 0 MiB so the ceiling never
 fires on a guess. The cost is one enumeration per candidate instead of the single
 shared `/proc` scan the POSIX sweep does per tick; `_build_child_map` therefore
-deliberately has no Windows branch. macOS still has no ctypes-only per-pid RSS
-path and keeps returning 0.
+deliberately has no Windows branch. macOS sums each process's footprint over
+libproc's live child lists (`platform_compat.darwin_footprint_tree_mb`).
 
 ## Directory links on Windows
 

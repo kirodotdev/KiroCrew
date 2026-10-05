@@ -60,13 +60,6 @@ class TestGetSessionRssMb:
         """
         monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", False)
 
-    def test_macos_returns_zero(self) -> None:
-        """macOS has no ctypes-only per-pid RSS route, so the ceiling stays inert."""
-        with patch("kiro_crew.session_pid.sys.platform", "darwin"), patch(
-            "kiro_crew.session_pid.platform_compat.IS_WINDOWS", False
-        ):
-            assert session_pid.get_session_rss_mb(123) == 0
-
     def test_windows_measures_the_tree_rather_than_returning_zero(self) -> None:
         """Windows has no /proc, but it MUST still measure.
 
@@ -165,7 +158,7 @@ class TestGetSessionRssMb:
         # _rss_mb_from_tree consumes a prebuilt map (no /proc scan of its own).
         child_map = {100: [200, 300], 300: [400]}
         pages = {100: 1000, 200: 2000, 300: 3000, 400: 4000}
-        with patch(
+        with patch("kiro_crew.session_pid.sys.platform", "linux"), patch(
             "kiro_crew.session_pid._read_rss_pages",
             side_effect=lambda p, proc_root=None: pages.get(p, 0),
         ), patch("kiro_crew.session_pid._build_child_map") as bm:
