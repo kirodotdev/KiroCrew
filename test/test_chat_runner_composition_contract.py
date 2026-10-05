@@ -105,13 +105,14 @@ _BASE_NAMES = frozenset("""
         SESSION_NOT_FOUND_CANCELLED_TEXT
         SESSION_NOT_FOUND_GIVE_UP_TEXT SESSION_NOT_FOUND_RETRY_TEXT
         SESSION_RECOVERY_MAX_ATTEMPTS SESSION_START_FAILED_KIND SLACK_NAMESPACE
-        STAGE_DELIVERY_KINDS STALE_RECOVERY_PREFIX
+        STALE_RECOVERY_PREFIX
         STEER_NOTICE_BOUND_SECS STEER_POSSIBLY_DELIVERED_META
         STEER_POSSIBLY_DELIVERED_NOTE STEER_STATE_CONSUMED
         STEER_STATE_REQUEUED STOP_CLASS_FAILED STOP_REASON_CANCELLED
         STOP_REASON_COMPACTION_FAILED STOP_REASON_END_TURN STOP_REASON_REFUSAL
         STOP_REASON_STALE_RECOVER STOP_REASON_TOOL_STALL STOP_RECOVERY_MAX_RETRIES
-        SUBAGENT_COMPLETION_KIND SUBAGENT_COMPLETION_PREFIXES SUBAGENT_SYNTHESIS_PREFIX
+        SUBAGENT_COMPLETION_KIND SUBAGENT_COMPLETION_PREFIXES SUBAGENT_DELIVERY_KINDS
+        SUBAGENT_SYNTHESIS_PREFIX
         SUBAGENT_SYNTHESIS_PROMPT SYNTHESIS_CLEAR SYNTHESIS_HELD SYNTHESIS_UNKNOWN
         SYNTHETIC_RECOVERY_KIND SecurityEvent SessionBusyError
         SessionClosingError SessionEndingError
@@ -244,7 +245,7 @@ _BASE_NAMES = frozenset("""
         logging math mcp_apps_render member_lifecycle mint_options_token mirror_is_paused
         model_is_unusable model_registry normalize_agent_model normalize_banner
         normalize_stop_reason note_coding_activity oauth_url_contains_credential os
-        owned_stage_delivery_entry parse_hook_continuations parse_session_key
+        parse_hook_continuations parse_session_key
         parse_workflow_command payload_for_replay
         persist_token_record_async person_priority pick_epoch_host
         pin_human_approval post_linked_approval pre_tool_match_names prepare_store_vectors
@@ -275,7 +276,7 @@ _BASE_NAMES = frozenset("""
         should_notice_mixed_turn_leak should_queue_hook_continuation
         should_queue_refusal_recovery should_recover_promise_only shutdown_event
         slack_mirror_is_paused slot_history_key slot_steering_principal
-        slot_switch_session_lock spawn_guarded_turn split_blocks stage_boundary_for stat_module
+        slot_switch_session_lock spawn_guarded_turn split_blocks stat_module
         stricter_memory_mode strip_control_comments subagents_attached_async
         subprocess_executor synthesis_fire_verdict
         telemetry_channel_of tighten_live_session_execution

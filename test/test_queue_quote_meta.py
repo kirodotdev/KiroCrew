@@ -184,7 +184,7 @@ def _busy_state(tmp_path, monkeypatch):
     state = _make_full_state(tmp_path)
     state.broadcast_ws = MagicMock()
     slot = state.get_or_create_slot("busy-chat")
-    slot._in_stage_execution = True  # force the busy queue path
+    slot._turn_admission_reserved = True  # force the busy queue path
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
     return state, slot
 
@@ -261,7 +261,7 @@ class TestQuoteThroughTheHandler:
             {"quote": dict(_QUOTE), "files": ["/tmp/a.pdf"]},
         )
         state.subagents = None
-        slot._in_stage_execution = False
+        slot._turn_admission_reserved = False
         await _drain_once(state, slot)
         pops = [
             c.args[1]
@@ -283,7 +283,7 @@ class TestQuoteThroughTheHandler:
         hot = {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}
         slot.queue_append("> key AKIAIOSFODNN7EXAMPLE here\n\nwhy?", meta={"quote": dict(hot)})
         state.subagents = None
-        slot._in_stage_execution = False
+        slot._turn_admission_reserved = False
         await _drain_once(state, slot)
         row = _user_rows(slot)[-1]
         assert "AKIAIOSFODNN7EXAMPLE" not in row["meta"]["quote"]["text"]

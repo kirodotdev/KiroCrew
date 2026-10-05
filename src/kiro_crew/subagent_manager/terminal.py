@@ -476,8 +476,7 @@ class TerminalCoordinator(ManagerComponent):
         """Spawn the shielded terminal report and block until it completes.
 
         Convenience for callers that have no cancellable ``await`` between
-        taking the claim and reporting (the cancel-recovery failure arm, the
-        boundary redeliveries): there is no window in which a cancellation
+        taking the claim and reporting (the cancel-recovery failure arm): there is no window in which a cancellation
         could strand the outcome before the report task exists, so spawning and
         awaiting can be adjacent. Callers that DO have awaits between the claim
         and the report must instead :meth:`_spawn_terminal_report` BEFORE those
@@ -541,20 +540,10 @@ class TerminalCoordinator(ManagerComponent):
             self._manager._report_tasks.discard(t)
             owner = self._manager._report_owners.pop(t, None)
             self._manager._run_events._forget_finished_live_state(info)
-            if owner is None:
-                return
-            failed = t.cancelled()
-            if not failed:
-                try:
-                    failed = t.result() is False
-                except asyncio.CancelledError:
-                    failed = True
-                except Exception:
-                    failed = True
-            if failed:
-                self._manager._latch_report_failure(owner)
-            else:
-                self._manager._clear_report_failure(owner)
+            if owner is not None and not t.cancelled():
+                # Retrieve the outcome so a failed report never logs
+                # "Task exception was never retrieved".
+                t.exception()
 
         task.add_done_callback(_forget)
         return task

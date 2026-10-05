@@ -274,8 +274,8 @@ open panel cached one. Approvals share the app shell's
 `global-approvals` cache, which keeps its own 30-second refresh and is re-read on
 reconnect. A `slot_projection` frame never cancels a work read in flight; one
 more read follows it once it settles. The shared model's session-state rule — a
-session is running while its turn runs or while subagents run, it is
-orchestrating, or it holds queued messages; a paused workflow waits and a planning
+session is running while its turn runs, while subagents run, or while it
+holds queued messages; a paused workflow waits and a planning
 one runs — also governs the all-session view's Running badge and its sort
 priority, which read the same model rather than the slot's turn flag alone. The all-session view takes its sort order
 when the set of sessions, what needs attention, the filter or the page changes,

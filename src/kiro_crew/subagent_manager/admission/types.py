@@ -69,14 +69,16 @@ def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
     if recorded is not None:
         return recorded
     if cause in _NEUTRAL_REAP_REASONS:
-        # A user stop, a parent end and a stage cancel are deliberate stops,
-        # written by the same reap: the row they leave behind is cancelled, not
-        # a run to recover on the next boot. Read from the set that makes the
-        # live record neutral (``SubagentInfo.stop_is_neutral``), so the two
-        # cannot drift.
+        # A user stop and a parent end are deliberate stops, written by the
+        # same reap: the row they leave behind is cancelled, not a run to
+        # recover on the next boot. Read from the set that makes the live record
+        # neutral (``SubagentInfo.stop_is_neutral``), so the two cannot drift.
         return taskq.CANCELLED
     return {
         "delivered": taskq.DONE,
+        # ``stage_cancel`` tombstones written by the retired chat Autopilot can
+        # still sit on disk, and they read as the deliberate stop they were.
+        "stage_cancel": taskq.CANCELLED,
         "cancelled": taskq.CANCELLED,
         "error": taskq.FAILED,
         "timeout": taskq.FAILED,
@@ -168,13 +170,10 @@ class ClaimPoint:
     event-loop dispatcher takes the claim on the store's writer thread and
     re-enters with ``_claimed``, which CONSUMES the reservation (registration
     does not count the run a second time); every non-start exit of that
-    re-entry releases it (:meth:`SpawnAdmissionCoordinator.release_reservation`).
-    Boundary identity crosses the await so cancellation can be revalidated
-    immediately before registration instead of trusting a stale claim result."""
+    re-entry releases it (:meth:`SpawnAdmissionCoordinator.release_reservation`)."""
 
     agent_id: str
     parent_session_key: str = ""
-    boundary_owner: str = ""
 
 
 @dataclass(frozen=True)

@@ -1223,12 +1223,10 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
       product decision — the fire path this route arms already made it, with its
       reason written down at the site: queueing "would stack identical 3KB+
       nudges and blow up the context window" (``_fire_dashboard_nudge``). The
-      predicate is the repository's canonical one, ``slot.running or
-      slot._in_stage_execution``, read here exactly as the cron-injection
-      handler reads it (``handlers/messaging.py``) — ``slot.running`` alone is
-      False between the stages of a multi-stage plan, so it would let this land
-      a concurrent turn on top of the plan. Note the two consumers of that
-      predicate diverge deliberately: the cron path QUEUES, this one REFUSES,
+      predicate is the repository's canonical one, ``slot.running``, read here
+      exactly as the cron-injection handler reads it
+      (``handlers/messaging.py``). Note the two consumers of that predicate
+      diverge deliberately: the cron path QUEUES, this one REFUSES,
       and the nudge path's stated reason is the one that applies here.
 
       This check is an AFFORDANCE, not a guarantee: a turn that starts between
@@ -1359,7 +1357,7 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
         )
     state: DashboardState = request.app["state"]
     slot = state.get_slot(existing.slot_key)
-    if slot is not None and (slot.running or slot._in_stage_execution):
+    if slot is not None and slot.running:
         # Names the OUTCOME and the NEXT STEP, not just the condition. "a turn is
         # in flight" leaves a reader unable to tell a refusal from a delay, and
         # the distinction is the whole point here: the press was refused, not

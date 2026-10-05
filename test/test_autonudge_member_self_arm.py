@@ -619,7 +619,6 @@ class TestFireTimeModeRecheck:
         slot = MagicMock()
         slot.key = "member-conductor"
         slot.running = False
-        slot._in_stage_execution = False
         slot._closing = False
         slot.is_closing = False
         slot.mode = mode

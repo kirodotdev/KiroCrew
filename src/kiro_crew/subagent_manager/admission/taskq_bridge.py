@@ -1810,68 +1810,6 @@ class _TaskqBridgeMixin(ManagerComponent):
             resuming=resuming,
         )
 
-    def taskq_cancel_boundary_store(
-        self,
-        store: "_taskq.TaskStore",
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Store phase for exact queued cancellation; runs on the writer thread."""
-        from kiro_crew import taskq as _taskq
-
-        cancelled: list[dict[str, Any]] = []
-        try:
-            rows = store.list_pending(
-                _taskq.KIND_SUBAGENT,
-                session_key=parent_session_key,
-            )
-            rows.extend(
-                row
-                for row in store.active_rows()
-                if row.kind == _taskq.KIND_SUBAGENT
-                and row.session_key == parent_session_key
-                and row.state == _taskq.ADMITTED
-            )
-            unstarted = _taskq.CLAIMABLE | frozenset({_taskq.ADMITTED})
-            seen: set[str] = set()
-            for row in rows:
-                if (
-                    row.id in seen
-                    or str(row.params.get("_stage_boundary_owner") or "") != boundary_owner
-                ):
-                    continue
-                seen.add(row.id)
-                previous = store.cancel(
-                    row.id,
-                    reason="user_stop",
-                    only_from=unstarted,
-                    generation=row.generation,
-                )
-                if previous is None:
-                    continue
-                params = dict(row.params)
-                params["_preassigned_id"] = row.id
-                cancelled.append(params)
-        except _taskq.TaskStoreUnavailable as exc:
-            return cancelled, str(exc) or "task store unavailable"
-        return cancelled, ""
-
-    async def taskq_cancel_boundary_async(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Cancel exact queued rows on the store's single writer thread."""
-        store = self.taskq_store()
-        if store is None:
-            return [], ""
-        return await store.run(
-            self.taskq_cancel_boundary_store,
-            store,
-            parent_session_key,
-            boundary_owner,
-        )
-
     def taskq_batch_pending(self, batch_id: str) -> bool:
         """True when a store-only queued row belongs to *batch_id*.
 
@@ -1956,8 +1894,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         try:
             absent, lanes = self._refill_absent(store, children_only)
             room, want = self._refill_make_room(store, absent, lanes)
-            rows = self._refill_fetch(store, absent, room, want, children_only)
-            rows = self._reconcile_refill_boundaries_sync(store, rows)
+            rows, retired, stranded = self._refill_fetch_retiring(
+                store, absent, room, want, children_only
+            )
+            self._report_retired_stage_rows(store, retired, stranded)
             self._refill_apply(rows)
             wake_at = (
                 self._refill_idle_wake_read(store, children_only)()
@@ -1982,8 +1922,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         try:
             absent, lanes = await store.run(self._refill_absent, store, children_only)
             room, want = self._refill_make_room(store, absent, lanes)
-            rows = await store.run(self._refill_fetch, store, absent, room, want, children_only)
-            rows = await self._reconcile_refill_boundaries_async(rows)
+            rows, retired, stranded = await store.run(
+                self._refill_fetch_retiring, store, absent, room, want, children_only
+            )
+            self._report_retired_stage_rows(store, retired, stranded)
             self._refill_apply(rows)
             wake_at = (
                 await store.run(self._refill_idle_wake_read(store, children_only))
@@ -1994,90 +1936,6 @@ class _TaskqBridgeMixin(ManagerComponent):
             return len(rows)
         self._refill_schedule_wake(store, wake_at)
         return len(rows)
-
-    @staticmethod
-    def _refill_boundary_scope(rec: "_taskq.TaskRecord") -> tuple[str, str] | None:
-        owner = str(rec.params.get("_stage_boundary_owner") or "")
-        parent = str(rec.session_key or rec.params.get("parent_session_key") or "")
-        return (parent, owner) if parent and owner else None
-
-    def _stale_refill_boundary_scopes(
-        self,
-        rows: list["_taskq.TaskRecord"],
-    ) -> set[tuple[str, str]]:
-        """Exact stage scopes without a live boundary owner.
-
-        The resolver is gateway-wired and reads loop-owned dashboard state, so
-        the async refill calls this only after its store fetch returns. A manager
-        without that resolver keeps legacy/test behavior. Resolver failure is
-        observable but is not treated as boundary absence, so no row is
-        cancelled without a positive stale-owner verdict.
-        """
-        resolver = getattr(self._manager, "_stage_boundary_for_scope", None)
-        if not callable(resolver):
-            return set()
-        stale: set[tuple[str, str]] = set()
-        for rec in rows:
-            scope = self._refill_boundary_scope(rec)
-            if scope is None:
-                continue
-            try:
-                boundary = resolver(*scope)
-            except Exception:
-                _glue_logger.warning(
-                    "taskq: stage-boundary lookup failed during refill for parent=%s owner=%s",
-                    *scope,
-                    exc_info=True,
-                )
-                continue
-            if boundary is None:
-                stale.add(scope)
-        return stale
-
-    def _without_refill_boundary_scopes(
-        self,
-        rows: list["_taskq.TaskRecord"],
-        stale: set[tuple[str, str]],
-    ) -> list["_taskq.TaskRecord"]:
-        if not stale:
-            return rows
-        return [rec for rec in rows if self._refill_boundary_scope(rec) not in stale]
-
-    def _reconcile_refill_boundaries_sync(
-        self,
-        store: "_taskq.TaskStore",
-        rows: list["_taskq.TaskRecord"],
-    ) -> list["_taskq.TaskRecord"]:
-        """Cancel stale stage rows inline for the non-loop refill variant."""
-        stale = self._stale_refill_boundary_scopes(rows)
-        for parent, owner in sorted(stale):
-            if self._manager._hold_boundary_cancellation(parent, owner):
-                continue
-            cancelled, failure = self.taskq_cancel_boundary_store(store, parent, owner)
-            if failure:
-                failure = self._manager._bounded_boundary_cancellation_failure(failure)
-            self._manager._apply_boundary_cancelled_rows(
-                parent,
-                owner,
-                cancelled,
-                settled=not failure,
-            )
-            if failure:
-                self._manager._pending_boundary_cancellations[(parent, owner)] = failure
-                self._manager._schedule_boundary_cancel_retry()
-        return self._without_refill_boundary_scopes(rows, stale)
-
-    async def _reconcile_refill_boundaries_async(
-        self,
-        rows: list["_taskq.TaskRecord"],
-    ) -> list["_taskq.TaskRecord"]:
-        """Cancel stale stage rows through the exact off-loop writer path."""
-        stale = self._stale_refill_boundary_scopes(rows)
-        for parent, owner in sorted(stale):
-            if self._manager._hold_boundary_cancellation(parent, owner):
-                continue
-            await self._manager._settle_boundary_queue(parent, owner)
-        return self._without_refill_boundary_scopes(rows, stale)
 
     def _refill_absent(
         self, store: "_taskq.TaskStore", children_only: bool
@@ -2161,6 +2019,84 @@ class _TaskqBridgeMixin(ManagerComponent):
             )
         return rows
 
+    def _refill_fetch_retiring(
+        self,
+        store: "_taskq.TaskStore",
+        *fetch_args: Any,
+    ) -> tuple[list["_taskq.TaskRecord"], list[dict[str, Any]], bool]:
+        """Store phase: :meth:`_refill_fetch`, then retire legacy stage rows.
+
+        One store step, so the off-loop refill keeps its single writer-thread hop.
+        """
+        return self._retire_legacy_stage_rows(store, self._refill_fetch(store, *fetch_args))
+
+    @staticmethod
+    def _retire_legacy_stage_rows(
+        store: "_taskq.TaskStore",
+        rows: list["_taskq.TaskRecord"],
+    ) -> tuple[list["_taskq.TaskRecord"], list[dict[str, Any]], bool]:
+        """Store phase: cancel rows a chat Autopilot stage queued, keep the rest.
+
+        Such a row carries ``_stage_boundary_owner``. The stage that owned it is
+        gone with the retired Autopilot, so the row is stopped rather than run.
+        Returns the rows still to dispatch, the params of each one stopped, and
+        whether a store outage left any stage row uncancelled. An outage stops
+        the cancelling but still returns every row already cancelled, so each
+        committed cancel is reported; the rest stay queued, are never
+        dispatched from this pass, and the caller arms a retry pass for them.
+        """
+        from kiro_crew import taskq as _taskq
+
+        kept: list[_taskq.TaskRecord] = []
+        retired: list[dict[str, Any]] = []
+        store_down = False
+        for rec in rows:
+            if not rec.params.get("_stage_boundary_owner"):
+                kept.append(rec)
+                continue
+            if store_down:
+                continue
+            try:
+                previous = store.cancel(
+                    rec.id,
+                    reason="user_stop",
+                    only_from=_taskq.CLAIMABLE,
+                    generation=rec.generation,
+                )
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.warning(
+                    "taskq: cancel of retired-stage row %s failed", rec.id, exc_info=True
+                )
+                store_down = True
+                continue
+            if previous is not None:
+                params = dict(rec.params)
+                params["_preassigned_id"] = rec.id
+                params["_stop_origin"] = "queued by chat Autopilot, which was removed"
+                retired.append(params)
+        return kept, retired, store_down
+
+    def _report_retired_stage_rows(
+        self,
+        store: "_taskq.TaskStore",
+        retired: list[dict[str, Any]],
+        stranded: bool,
+    ) -> None:
+        """Loop step: publish each retired stage row as stopped before start.
+
+        A stage row a store outage left queued gets a retry pass of its own:
+        the refill that follows may finish without any further store step, and
+        nothing else is certain to drain the queue again in this process.
+        """
+        if stranded:
+            self._refill_schedule_wake(store, store.now() + self.taskq_admit_wait_secs())
+        for params in retired:
+            _glue_logger.info(
+                "taskq: %s was queued by chat Autopilot, which was removed; stopped",
+                params.get("_preassigned_id"),
+            )
+            self._manager._report_queued_stop(params)
+
     def _refill_apply(self, rows: list["_taskq.TaskRecord"]) -> None:
         """Loop step: the fetched rows join the window (skipping any that a
         concurrent step already placed).
@@ -2201,8 +2137,6 @@ class _TaskqBridgeMixin(ManagerComponent):
                 # leaves it to the gate, which re-checks the floor before the
                 # pressure hold, and no pressure clock starts below the floor.
                 entry[MEMORY_WAIT_UNTIL_KEY] = 0.0
-            if self._manager._boundary_cancellation_pending(entry):
-                continue
             if str(entry.get("parent_session_key") or "") in stopping:
                 continue
             if rec.id not in present:
@@ -2263,6 +2197,11 @@ class _TaskqBridgeMixin(ManagerComponent):
         if rec.state == _taskq.RECOVERING:
             params[WINDOW_ENTRY_RECOVERING] = True
         params.pop("_legacy_import", None)
+        # Every row written before the stage-owner token was removed carries
+        # ``_stage_boundary_owner`` (empty for an unowned spawn). ``spawn`` no
+        # longer takes that keyword, so it is dropped here; a NON-empty owner
+        # never reaches this point, ``_retire_legacy_stage_rows`` stops it first.
+        params.pop("_stage_boundary_owner", None)
         # Both process-local params are stripped on the READ side as well as by
         # ``taskq_build_record``, because a row is written by one build and
         # started by another: a row that still carries either one replays one

@@ -2398,15 +2398,11 @@ class TestADismissalOutlivesTheManager:
 
         monkeypatch.setattr(subagent_module, "record_panel_dismissal_outcome", record)
         manager = SimpleNamespace(
-            _agents={
-                "a1": SimpleNamespace(
-                    id="a1", _report_failure_latched=False, _ending_claimed=False, done=True
-                )
-            },
+            _agents={"a1": SimpleNamespace(id="a1", _ending_claimed=False, done=True)},
             _tasks={},
             _report_owners={},
         )
-        asyncio.run(subagent_module.SubagentManager.settle_before_delete(manager, "a1", ""))
+        asyncio.run(subagent_module.SubagentManager.settle_before_delete(manager, "a1"))
         assert recorded == ["a1"]
         assert "a1" not in manager._agents
 
@@ -2462,11 +2458,7 @@ class TestAFailedDismissalWriteIsNotPublished:
 
     def manager(self):
         return SimpleNamespace(
-            _agents={
-                "a1": SimpleNamespace(
-                    id="a1", _report_failure_latched=False, _ending_claimed=False, done=True
-                )
-            },
+            _agents={"a1": SimpleNamespace(id="a1", _ending_claimed=False, done=True)},
             _tasks={"a1": object()},
             _report_owners={},
         )
@@ -2478,9 +2470,7 @@ class TestAFailedDismissalWriteIsNotPublished:
             subagent_module, "record_panel_dismissal_outcome", lambda agent_id: outcome
         )
         manager = self.manager()
-        result = asyncio.run(
-            subagent_module.SubagentManager.settle_before_delete(manager, "a1", "")
-        )
+        result = asyncio.run(subagent_module.SubagentManager.settle_before_delete(manager, "a1"))
         return result, manager
 
     def test_a_failed_write_keeps_the_run_and_asks_for_a_retry(self, agent_root, monkeypatch):
@@ -3470,7 +3460,6 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
             _agents={
                 "live1": SimpleNamespace(
                     id="live1",
-                    _report_failure_latched=False,
                     _ending_claimed=False,
                     done=True,
                     parent_session_key="dashboard:chat-1",
@@ -3483,9 +3472,7 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
     def settle(self, manager):
         import kiro_crew.subagent as subagent_module
 
-        return asyncio.run(
-            subagent_module.SubagentManager.settle_before_delete(manager, "live1", "")
-        )
+        return asyncio.run(subagent_module.SubagentManager.settle_before_delete(manager, "live1"))
 
     def _session_with_child(self, unit_id: str, agent_id: str, slot: str = "chat-1"):
         """A dispatched child, closed through the REAL terminal report.

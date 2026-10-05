@@ -398,12 +398,9 @@ def _body(response: web.StreamResponse) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-def _slot(*, running: bool = False, in_stage: bool = False) -> MagicMock:
+def _slot(*, running: bool = False) -> MagicMock:
     slot = MagicMock()
     slot.running = running
-    # Modelled explicitly: a bare MagicMock attribute is truthy and would trip
-    # the busy guard on every test.
-    slot._in_stage_execution = in_stage
     return slot
 
 
@@ -435,25 +432,6 @@ async def test_route_refuses_when_the_session_already_has_a_turn_in_flight(monke
     monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
 
     resp = await h.api_autonudge_fire(_mk("lp-1", slot=_slot(running=True)))
-
-    assert resp.status == 409
-    assert _body(resp)["code"] == "session_busy"
-    assert svc.fired == []
-
-
-@pytest.mark.asyncio
-async def test_route_refuses_between_the_stages_of_a_multi_stage_plan(monkeypatch) -> None:
-    """``slot.running`` alone reads False in that window.
-
-    Which is exactly why the canonical predicate is two-term. Without the
-    ``_in_stage_execution`` half this press would land a concurrent turn on top
-    of a plan that is mid-flight.
-    """
-    loop = NudgeLoop(id="lp-1", slot_key="chat-1-111", message="check", idle_secs=300)
-    svc = _FakeSvc([loop])
-    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
-
-    resp = await h.api_autonudge_fire(_mk("lp-1", slot=_slot(running=False, in_stage=True)))
 
     assert resp.status == 409
     assert _body(resp)["code"] == "session_busy"

@@ -3713,16 +3713,16 @@ class TestSuccessorClaim:
 
     @staticmethod
     def _state_continuation_starting(m: SubagentManager, f: SubagentInfo) -> None:
-        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        assert m._claim_continuation(f.id, "x", "")[1] is None
 
     @staticmethod
     def _state_continued(m: SubagentManager, f: SubagentInfo) -> None:
-        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        assert m._claim_continuation(f.id, "x", "")[1] is None
         m._settle_continuation(f, SubagentInfo(id="cont0001", task="t"))
 
     @staticmethod
     def _state_continuation_start_failed(m: SubagentManager, f: SubagentInfo) -> None:
-        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        assert m._claim_continuation(f.id, "x", "")[1] is None
         m._settle_continuation(f, None)
 
     @staticmethod
@@ -3733,13 +3733,13 @@ class TestSuccessorClaim:
 
     @staticmethod
     def _state_continuation_start_raised(m: SubagentManager, f: SubagentInfo) -> None:
-        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        assert m._claim_continuation(f.id, "x", "")[1] is None
         m._settle_continuation(f, None, raised=True)
 
     @staticmethod
     def _state_continued_then_refused(m: SubagentManager, f: SubagentInfo) -> None:
         TestSuccessorClaim._state_continued(m, f)
-        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        assert m._claim_continuation(f.id, "x", "")[1] is None
         busy = SubagentInfo(id="x", task="t", done=True, error="conversation_busy: busy")
         m._settle_continuation(f, busy)
 
@@ -3787,7 +3787,7 @@ class TestSuccessorClaim:
             if op == "retry":
                 assert (manager.claim_retry(failed) == "") is retry_granted, op
             else:
-                refusal = manager._claim_continuation(failed.id, "x", "", "")[1]
+                refusal = manager._claim_continuation(failed.id, "x", "")[1]
                 assert (refusal is None) is continue_granted, op
                 if refusal is not None:
                     assert refusal.error.startswith("conversation_busy")
@@ -3838,7 +3838,7 @@ class TestSuccessorClaim:
         ):
             await manager.continue_conversation_async("fail1234", "x")
         assert manager.claim_retry(failed) == SUCCESSOR_UNKNOWN
-        assert manager._claim_continuation("fail1234", "x", "", "")[1] is None
+        assert manager._claim_continuation("fail1234", "x", "")[1] is None
 
     @pytest.mark.asyncio
     async def test_second_continuation_is_refused_while_the_first_is_starting(self) -> None:

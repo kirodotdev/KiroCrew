@@ -82,7 +82,6 @@ def _slot(key: str = "chat-1-1785") -> MagicMock:
     slot = MagicMock()
     slot.key = key
     slot.running = False
-    slot._in_stage_execution = False
     return slot
 
 

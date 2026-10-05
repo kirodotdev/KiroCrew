@@ -256,7 +256,6 @@ class TestRunnerBranch:
         for guard in (
             "_prompt_depth == 0",
             "_stop_reason == STOP_REASON_END_TURN",
-            "not slot._in_stage_execution",
             "not _should_suppress_requeue(slot)",
             "_stop_gen_turn_start",
             "not _has_user_queued_followup(slot)",

@@ -84,7 +84,6 @@ def _recover(**over):
         successful_tool_call_ids=frozenset(),
         builtin_identity_trusted=True,
         directive_user_origin=True,
-        in_stage_execution=False,
     )
     kw.update(over)
     parameters = inspect.signature(should_recover_promise_only).parameters
@@ -589,16 +588,6 @@ def test_completed_tool_call_does_not_trigger():
     assert _recover(turn_tool_calls=3) is False
     # control: the same promise with no tool call this turn still recovers
     assert _recover(turn_tool_calls=0) is True
-
-
-# 4q. A stage-execution turn must NOT trigger recovery: the
-#     orchestrator's stage loop records the stage complete and advances
-#     before an injected continuation finishes, corrupting stage attribution. Excluded
-#     like the plan turn (`_armed_final`) is.
-def test_stage_execution_turn_does_not_trigger():
-    assert _recover(in_stage_execution=True) is False
-    # control: the identical promise outside stage execution still recovers
-    assert _recover(in_stage_execution=False) is True
 
 
 # 4p. A queued cron / sub-agent SYSTEM INJECTION must NOT count as user intervention

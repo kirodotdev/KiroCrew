@@ -249,31 +249,15 @@ async def test_a_childless_parent_end_is_not_a_warning(caplog):
     ]
 
 
-def test_a_stage_cancel_names_itself_before_the_reap():
-    """A stage-boundary cancel is neither a user Stop nor a parent end."""
-    manager = _manager()
-    info = SubagentInfo(id="stage0001", task="t", parent_session_key="dashboard:p")
-    info._stage_boundary_owner = "owner-7"
-    manager._agents["stage0001"] = info
-    revoked = manager._cancellation._revoke_boundary_owners_impl("dashboard:p", "owner-7")
-    assert [i.id for i in revoked] == ["stage0001"]
-    assert info.user_stopped is True
-    assert info._reap_reason == "stage_cancel"
-    assert info._stop_origin == "stage cancelled (owner-7)"
-
-
 @pytest.mark.asyncio
 async def test_the_first_stopper_keeps_the_attribution():
-    """A later parent end or stage cancel must not rewrite who stopped the run."""
+    """A later parent end must not rewrite who stopped the run."""
     manager = _manager()
     info = SubagentInfo(id="first0001", task="t", parent_session_key="dashboard:p")
-    info._stage_boundary_owner = "owner-9"
     manager._agents["first0001"] = info
     # The user's Stop has begun and named itself; the reap is still in flight.
     info._reap_reason = "user_stop"
     info._stop_origin = "stopped by user"
-    manager._cancellation._revoke_boundary_owners_impl("dashboard:p", "owner-9")
-    assert (info._reap_reason, info._stop_origin) == ("user_stop", "stopped by user")
     with patch.object(manager, "cancel", new_callable=AsyncMock, return_value=True):
         await manager.cancel_for_teardown(
             ["first0001"], parent_session_key="dashboard:p", verb="destroy"

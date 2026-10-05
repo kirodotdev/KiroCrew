@@ -37,15 +37,12 @@ if TYPE_CHECKING:
         _run_belongs_to_caller,
         _sel,
         _spawn_on_loop,
-        _stage_boundary_owner_for_parent,
-        _stage_boundary_slot_for_parent,
         dashboard_slot_key,
         effective_session_key,
         internal_memory_scope,
         logger,
         read_state,
         record_panel_dismissal_outcome,
-        stage_boundary_owner_for_run,
         subagent_event_slot,
         warm_project_agents_for_spawn,
     )
@@ -519,25 +516,6 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
     # current config before any discovery read.
     if old.agent:
         await warm_project_agents_for_spawn(state, old.cwd or "")
-    # Keep the failed run's captured owner only while that exact boundary is
-    # still active. After release, current parent routing wins; an empty owner
-    # lets completion select the canonical slot at delivery time instead of
-    # carrying a stale token that exact lookup must reject.
-    previous_boundary_owner = stage_boundary_owner_for_run(old)
-    exact_boundary = (
-        _stage_boundary_slot_for_parent(
-            state,
-            old.parent_session_key,
-            boundary_owner=previous_boundary_owner,
-        )
-        if previous_boundary_owner
-        else None
-    )
-    retry_boundary_owner = (
-        previous_boundary_owner
-        if exact_boundary is not None
-        else _stage_boundary_owner_for_parent(state, old.parent_session_key)
-    )
     start = _spawn_on_loop(
         state,
         old._raw_task or old.task,
@@ -565,7 +543,6 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
         app=execution.app,
         _memory_mode=execution.memory_mode,
         _execution_context=execution.to_record(),
-        _stage_boundary_owner=retry_boundary_owner,
     )
     try:
         info = await start
@@ -815,18 +792,7 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "cancelled": False, "dismissed": True})
     cancelled = await manager.cancel(agent_id)
     if not cancelled:
-        deleted_owner = stage_boundary_owner_for_run(info)
-        deleted_boundary_slot = (
-            _stage_boundary_slot_for_parent(
-                state,
-                info.parent_session_key,
-                boundary_owner=deleted_owner,
-            )
-            if deleted_owner
-            else None
-        )
-        active_owner = deleted_owner if deleted_boundary_slot is not None else ""
-        settlement = await manager.settle_before_delete(agent_id, active_owner)
+        settlement = await manager.settle_before_delete(agent_id)
         if settlement == "pending":
             return web.json_response(
                 {

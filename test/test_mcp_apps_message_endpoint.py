@@ -79,7 +79,6 @@ class _FakeSlot:
 
     def __init__(self, running: bool = False):
         self.running = running
-        self._in_stage_execution = False
         self.is_restricted = False  # read by _is_restricted_session
         self._queue: list[dict] = []
         self.messages: list[dict] = []

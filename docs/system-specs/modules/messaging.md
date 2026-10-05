@@ -2289,7 +2289,7 @@ dispatcher, so a silent hand-off would read as a drop. The refusal (`⏳ That se
 stays for the cases the slot cannot take (`slot_unable_to_take`, fail-closed on
 an attribute the slot cannot answer): no open slot for the key, a closing slot, a
 remote-bound slot (no local drain), and a slot that is NOT itself driving the
-turn (`running or _in_stage_execution` false while the lease is held — Discord's
+turn (`running` false while the lease is held — Discord's
 own turn on the resumed key is that case; the slot then has no client to steer
 into, no drain coming, and the queue-or-run admission would start a second turn
 against the held lease). A message carrying attachments is refused with wording

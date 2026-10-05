@@ -97,7 +97,6 @@ _BASE_NAMES = frozenset("""
         _retry_failed_run _run_belongs_to_caller _sanitize_blocks _sel
         _send_to_channel_target _session_link_blocks _slack_config_save_locked
         _spawn_on_loop _spawn_request_memory_mode _spawn_result_view _spawn_scope_refusal
-        _stage_boundary_owner_for_parent _stage_boundary_slot_for_parent
         _start_browser_install_job _teams_config_save _telegram_config_save_locked
         _terminate_install_scope _threshold_pct_rejection _validate_discord_token
         _validate_slack_token _validate_teams_app_credentials _validate_telegram_token
@@ -135,7 +134,7 @@ _BASE_NAMES = frozenset("""
         record_panel_dismissal_outcome redact_credentials redact_exfiltration_urls
         redact_for_display rehydrate_slot_from_history_async remember_slack_options
         run_to_completion slack_options_owner_key slot_owner_snapshot sole_direct_target
-        stage_boundary_for stage_boundary_owner_for_run stop_browser_install
+        stop_browser_install
         stored_folder_name subagent_event_slot validate_tool_args
         warm_project_agents_for_spawn web
     """.split())
@@ -162,8 +161,7 @@ _OWNER_MODULES = (
 #: Each moved name and the owner its responsibility puts it in.
 _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "spawn": tuple("""
-        _continue_on_loop _spawn_on_loop _spawn_request_memory_mode
-        _stage_boundary_owner_for_parent _stage_boundary_slot_for_parent api_spawn
+        _continue_on_loop _spawn_on_loop _spawn_request_memory_mode api_spawn
         api_spawn_continue
         """.split()),
     "run_control": tuple("""
@@ -227,7 +225,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "a274e959606d57a11870ea9dbb2965eb940a0b195da9860371db2bf592084837"
+_BASE_SHAPE_DIGEST = "140f95078d00ee2c3b73e500e5ec24d015d4dd307d18a5cf2efbbf232c4dfc3d"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -430,7 +428,7 @@ def test_the_seams_other_modules_import_keep_their_identity() -> None:
             if isinstance(node, ast.ImportFrom) and node.module == _FACADE
             for alias in node.names
         }
-    assert "_stage_boundary_slot_for_parent" in lazy
+    assert "_slot_for_parent" in lazy
     assert sorted(name for name in lazy if not hasattr(msg, name)) == []
 
 
@@ -558,7 +556,7 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(
         f"{name} {_shape(getattr(msg, name))}" for names in _BASE_OWNERS.values() for name in names
     )
-    assert len(lines) == 88
+    assert len(lines) == 86
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -1240,14 +1238,13 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 #: Constructs repository guards read in ``dashboard/handlers/messaging.py`` by
 #: path: the cron origin-session dispatch the turn-timeout scan counts, the slot
-#: reservation read and task publish the pending-boundary inventory keys by
+#: task publish the slot-reader inventory keys by
 #: ``api_send_message``, and the two bounded body reads the JSON-body register
 #: keys by function. An owner that grew one would move it out of the guard's
 #: sight, so each stays in the facade.
 _STAYS_IN_THE_FACADE = (
     r"spawn_guarded_turn\(",
     r"\b_run_chat\(",
-    r"slot\._in_stage_execution",
     r"\bslot\.task = task\b",
     r"await read_bounded_json\(",
 )

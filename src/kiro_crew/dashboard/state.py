@@ -19,7 +19,6 @@ import uuid
 import weakref
 from collections.abc import Coroutine, Iterable, Iterator
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
@@ -2568,112 +2567,6 @@ def request_slot_origin(app: str, *, cron_creator: str = "") -> str:
     return SlotOrigin.APP if app else SlotOrigin.USER
 
 
-STAGE_BOUNDARY_OWNER_META_KEY = "stageBoundaryOwner"
-
-
-@dataclass
-class StageBoundary:
-    """One stage's delivery, recovery, and cancellation ownership."""
-
-    stage: int | None = None
-    consumed: bool = True
-    retry_queue_id: str = ""
-    continuation_required: bool = False
-    preserve_stop_generation: int = -1
-    parent_session_keys: set[str] = dataclass_field(default_factory=set)
-    synthetic_recovery_inflight: int = 0
-    recovery_retrigger_count: int = 0
-    report_retention_refused: str | None = None
-    cancellation_hold_refused: str | None = None
-    generation: str = ""
-    armed_at: int = 0
-
-    @property
-    def owner(self) -> str | None:
-        """The current queue-ownership token, if a boundary is armed."""
-        return self.generation if self.stage is not None and self.generation else None
-
-    def arm(self, stage: int, *, consumed: bool = False) -> None:
-        """Start a new stage boundary and mint its queue ownership token."""
-        new_boundary = self.stage != stage or self.owner is None
-        if new_boundary:
-            self.generation = uuid.uuid4().hex
-            self.report_retention_refused = None
-            self.cancellation_hold_refused = None
-        self.stage = stage
-        self.armed_at = time.monotonic_ns()
-        self.consumed = consumed
-        self.retry_queue_id = ""
-        self.continuation_required = False
-        self.preserve_stop_generation = -1
-        self.parent_session_keys.clear()
-        self.synthetic_recovery_inflight = 0
-
-    def preserve(self, stage: int, *, consumed: bool) -> None:
-        """Keep an interrupted stage armed until a later guarded Go."""
-        if self.stage != stage:
-            self.arm(stage, consumed=consumed)
-        else:
-            self.consumed = consumed
-        self.continuation_required = consumed
-
-    def mark_consumed(self, consumed: bool) -> None:
-        """Record provider consumption and retire an obsolete exact retry."""
-        self.consumed = consumed
-        if consumed:
-            self.retry_queue_id = ""
-
-    def clear(self) -> None:
-        """Atomically release every live field owned by the current boundary."""
-        self.stage = None
-        self.armed_at = 0
-        self.consumed = True
-        self.retry_queue_id = ""
-        self.continuation_required = False
-        self.preserve_stop_generation = -1
-        self.parent_session_keys.clear()
-        self.synthetic_recovery_inflight = 0
-        self.report_retention_refused = None
-        self.cancellation_hold_refused = None
-
-    def tag_meta(self, meta: dict | None = None, *, owner: str | None = None) -> dict:
-        """Copy *meta* and tag it with an explicit or current owner token."""
-        tagged = dict(meta or {})
-        actual_owner = self.owner if owner is None else owner
-        if actual_owner:
-            tagged[STAGE_BOUNDARY_OWNER_META_KEY] = actual_owner
-        return tagged
-
-    def owns_entry(self, entry: dict, *, owner: str | None = None) -> bool:
-        """Whether a queue entry belongs to the selected boundary token."""
-        meta = entry.get("meta")
-        actual_owner = self.owner if owner is None else owner
-        return bool(
-            actual_owner
-            and isinstance(meta, dict)
-            and meta.get(STAGE_BOUNDARY_OWNER_META_KEY) == actual_owner
-        )
-
-
-def stage_boundary_for(slot: object) -> StageBoundary:
-    """Return *slot*'s boundary; a minimal test double starts unarmed."""
-    boundary: StageBoundary | None = getattr(slot, "stage_boundary", None)
-    if boundary is not None:
-        return boundary
-    boundary = StageBoundary()
-    try:
-        setattr(slot, "stage_boundary", boundary)
-    except (AttributeError, TypeError):
-        if isinstance(slot, _ChatSlot):
-            raise
-        logger.warning(
-            "stage_boundary_for could not attach a boundary to non-slot object "
-            "of type %s; using an ephemeral boundary",
-            type(slot).__qualname__,
-        )
-    return boundary
-
-
 def _todo_canonical_text(text: Any) -> str:
     """The one-line form of a task text that the checklist prompt blocks emit.
 
@@ -2824,8 +2717,7 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
-        "_in_stage_execution",
-        "stage_boundary",
+        "recovery_retrigger_count",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
         "_recovery_chat_triggered",
@@ -3525,25 +3417,9 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
-        # True only while _stage_loop is driving a stage-execution turn. Gates
-        # the end-of-turn plan detector so a stage turn whose output happens to
-        # contain plan-like text cannot re-arm / re-count the plan (which
-        # corrupted the stage total and produced "Stage N of M" over-runs).
-        # It ALSO gates mid-plan message handling: while set, api_chat queues a
-        # user message (chip card) even when slot.task is momentarily idle between
-        # stages, and _start_next_queued_turn HOLDS user messages (recovery/system
-        # still drain) until the plan ends — so autopilot reuses the normal-chat
-        # queue/chip path. After the controller exits, an uncancelled pending
-        # boundary keeps ``running`` true until guarded Go settles or reruns it.
-        self._in_stage_execution: bool = False
-        # Atomic owner of the active stage's delivery, recovery, parent-session,
-        # and cancellation state. Compatibility properties below expose the old
-        # names to focused tests, but production paths mutate this object.
-        self.stage_boundary = StageBoundary()
-        # Set by _run_chat's teardown to that turn's ACP auth-required outcome, so
-        # the orchestrator _stage_loop can mirror the "hold the queue for
-        # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
-        # must not pop the held follow-up into another auth failure).
+        # Set by _run_chat's teardown to that turn's ACP auth-required outcome.
+        # The completion-sound gate reads it: a queue held for post-login resume
+        # does not count as the session continuing.
         self._last_turn_auth_required: bool = False
         # Whether a turn of the current queue cycle reached a provider (it opened
         # its stream). Set by each turn's tail, read and cleared where the cycle
@@ -3552,6 +3428,9 @@ class _ChatSlot:
         # also ran.
         self._cycle_reached_provider: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
+        # Consecutive recovery re-triggers since the last user send. The Slack
+        # gateway's ``_retrigger_recovery`` caps it; ``api_chat`` resets it.
+        self.recovery_retrigger_count: int = 0
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
@@ -5297,11 +5176,7 @@ class _ChatSlot:
 
         See ``docs/system-specs/modules/session.md``.
         """
-        return bool(
-            self.turn_running
-            or self._turn_admission_reserved
-            or self.stage_boundary.stage is not None
-        )
+        return bool(self.turn_running or self._turn_admission_reserved)
 
     @property
     def queue_depth(self) -> int:
@@ -5582,30 +5457,12 @@ class _ChatSlot:
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
 
-        Busy is ``running or _in_stage_execution``, not ``running`` alone. A
-        multi-stage plan closes each stage's own turn before opening the next, so
-        ``self.task`` is None and ``running`` reads False in the gap between
-        stages while the plan is still live. Gating on ``running`` alone admits a
-        prompt there and starts a SECOND turn alongside the plan, with no
-        recovery once two turns own one slot. ``_in_stage_execution`` is held for
-        the whole loop (set by ``_stage_loop``, cleared in its ``finally``) and is
-        the predicate every other producer that must not stack a turn already
-        reads -- the composer and cron injection (``chat_handlers``), the nudge arm
-        (``handlers/autonudge``), channel messaging (``handlers/messaging``),
-        regenerate (``chat_regenerate``) and the transfer gate. This method was the
-        one admission point that did not, which is what left the Slack heartbeat
-        (``slack/gateway.py``), the workflow auto-turn (``dashboard/server.py``) and
-        the Issue Radar crew dispatch (``issue_radar`` ``crew_runtime``) able to
-        start a mid-plan turn while recording no intent to interrupt a plan.
-        Nothing is dropped: ``_stage_loop``'s ``finally`` hands the queue off once
-        the flag clears, so a prompt held here is delivered after the plan.
-
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running or self._in_stage_execution:
+        if self.running:
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta

@@ -43,27 +43,6 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.history import ConversationLog
 
 
-class _StageManager:
-    def __init__(self) -> None:
-        self.running_agents_for = MagicMock(return_value=[])
-
-    async def has_pending_work_for_async(self, _parent: str) -> bool:
-        return False
-
-    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
-        return False
-
-
-def _mark_stage_consumed(kwargs: dict) -> None:
-    callback = kwargs.get("_on_consumed")
-    if callable(callback):
-        callback(True)
-
-
-async def _consumed_stage_turn(*_args, **kwargs) -> None:
-    _mark_stage_consumed(kwargs)
-
-
 def _provider_mock() -> AsyncMock:
     """A stand-in for the ACP session provider a chat turn drives.
 
@@ -19713,7 +19692,8 @@ class TestEmptyResponseRetry:
             slot._stop_generation += 1
         elif intervention == "followup":
             slot.queue_append("Never mind", directive_user_origin=True)
-            slot._in_stage_execution = True  # hold the replacement after purge
+            # A running child holds the user's follow-up after the purge.
+            state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["child"]))
         else:
             slot._pending_steers = [{"content": "Stop; keep it"}]
 

@@ -30,7 +30,6 @@ if TYPE_CHECKING:
         internal_memory_scope,
         parent_spawn_allowlists,
         parent_work_supported,
-        stage_boundary_for,
         validate_tool_args,
         warm_project_agents_for_spawn,
     )
@@ -50,12 +49,8 @@ async def _spawn_request_memory_mode(
     return strictest((parent_mode, caller_mode)) or "persistent"
 
 
-def _stage_boundary_slot_for_parent(
-    state: DashboardState,
-    parent: str,
-    boundary_owner: str = "",
-) -> Any | None:
-    """Return an exact tagged owner, or legacy parent/latest fallback."""
+def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
+    """Return the slot a parent session key names, or one bound to it."""
     slots = getattr(state, "_slots", None)
     if not isinstance(slots, dict):
         return None
@@ -68,43 +63,7 @@ def _stage_boundary_slot_for_parent(
         for candidate in slots.values()
         if candidate is canonical or effective_session_key(candidate) == parent
     )
-    if boundary_owner:
-        return next(
-            (
-                candidate
-                for candidate in same_parent
-                if stage_boundary_for(candidate).owner == boundary_owner
-            ),
-            None,
-        )
-    aliases = tuple(candidate for candidate in same_parent if candidate is not canonical)
-    active_aliases = tuple(
-        candidate for candidate in aliases if stage_boundary_for(candidate).owner
-    )
-    if active_aliases:
-        parent_matches = tuple(
-            candidate
-            for candidate in active_aliases
-            if parent in stage_boundary_for(candidate).parent_session_keys
-        )
-        eligible = parent_matches or active_aliases
-        return max(
-            eligible,
-            key=lambda candidate: (
-                stage_boundary_for(candidate).armed_at,
-                str(getattr(candidate, "key", "")),
-            ),
-        )
     return canonical or (same_parent[0] if same_parent else None)
-
-
-def _stage_boundary_owner_for_parent(state: DashboardState, parent: str) -> str:
-    """Return the active stage token for *parent*, or explicit unowned ``""``."""
-    slot = _stage_boundary_slot_for_parent(state, parent)
-    if slot is None:
-        return ""
-    owner = stage_boundary_for(slot).owner
-    return owner if isinstance(owner, str) else ""
 
 
 async def api_spawn(request: web.Request) -> web.Response:
@@ -303,7 +262,6 @@ async def api_spawn(request: web.Request) -> web.Response:
         crew=crew,
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
-        _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
         _parent_spawn_policy=parent_spawn_policy,
     )
     if not info:
@@ -493,7 +451,6 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         max_turns=max_turns,
         cwd=resumed_cwd,
         _memory_mode=admitted_mode,
-        _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
     )
     if not info:
         return web.json_response(

@@ -234,12 +234,6 @@ def test_nested_prompts_never_notice():
     assert _notice(prompt_depth=1) is False
 
 
-def test_stage_execution_turns_never_notice():
-    # The orchestrator's stage loop reads the turn result for stage accounting;
-    # un-landing a stage turn would record an unfinished stage as complete.
-    assert _notice(in_stage_execution=True) is False
-
-
 def test_non_leak_text_never_notices():
     assert _notice(final_segment_text="All done — the queue is empty.") is False
 
@@ -370,8 +364,6 @@ def test_a_dropped_leak_needs_no_tool_count():
 
     ``turn_tool_calls`` is absent because that gate exists on the zero-call
     sibling to protect UN-LANDING, and this predicate un-lands nothing.
-    ``in_stage_execution`` is absent for the reason its mixed-turn sibling omits
-    it: a notice changes no turn result the stage loop reads.
     ``final_segment_text`` is absent because the text is already gone at turn
     end, which is the defect -- the boundary fact travels instead.
 

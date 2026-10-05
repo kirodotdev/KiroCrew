@@ -22,7 +22,6 @@ if TYPE_CHECKING:
         clear_tombstone,
         delivery_is_parked,
         logger,
-        stage_boundary_owner_for_run,
         time,
     )
 
@@ -430,7 +429,6 @@ class CancellationCoordinator(ManagerComponent):
             id=str(params.get("_preassigned_id") or ""),
             task=str(params.get("task") or "(stopped before start)"),
             parent_session_key=str(params.get("parent_session_key") or ""),
-            _stage_boundary_owner=str(params.get("_stage_boundary_owner") or ""),
             agent=str(params.get("agent") or ""),
             user_stopped=not error,
             error=error,
@@ -440,6 +438,11 @@ class CancellationCoordinator(ManagerComponent):
         )
         if not info.id:
             return None
+        # A caller that is not the user names the stop, so the announce does not
+        # credit the user with a stop they never pressed.
+        stop_origin = params.get("_stop_origin")
+        if isinstance(stop_origin, str) and stop_origin:
+            info._stop_origin = stop_origin
         # Never over a REGISTERED run's record. A row the pump claimed and
         # registered while its stop was still on the way is a live run: a
         # synthetic ``queued=True`` terminal laid over it leaves the run
@@ -791,7 +794,7 @@ class CancellationCoordinator(ManagerComponent):
                 # record first: the run's own record and log then name the parent
                 # end that stopped it, not the runtime death the reap's teardown
                 # caused, and ``cancel`` carries the cause into the tombstone.
-                # First stopper wins: a user Stop or a stage cancel already in
+                # First stopper wins: a user Stop or a deadline reap already in
                 # flight owns the attribution, and this teardown must not rewrite
                 # the record of who actually ended the run.
                 if not info._reap_reason:
@@ -1093,8 +1096,8 @@ class CancellationCoordinator(ManagerComponent):
         """Re-publish *parent_session_key*'s queued depth after a stop.
 
         A dashboard still showing a count from a frame it never saw superseded
-        gets its answer here even from a stop that found nothing: Stop all and
-        the stage's Cancel are the controls a user reaches for exactly then,
+        gets its answer here even from a stop that found nothing: Stop all is
+        the control a user reaches for exactly then,
         and this is the authoritative count that repairs the card (and, at
         depth 0, forgets the remembered wait label). Guarded: an advisory event
         must never turn a stop into a failed request.
@@ -1107,279 +1110,6 @@ class CancellationCoordinator(ManagerComponent):
             self._manager._emit_queue_depth(parent_session_key, batch_id)
         except Exception:
             logger.debug("queue-depth re-emit failed after stop", exc_info=True)
-
-    def _boundary_scope_matches_impl(
-        self,
-        params: Mapping[str, object],
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> bool:
-        return (
-            str(params.get("parent_session_key") or "") == parent_session_key
-            and str(params.get("_stage_boundary_owner") or "") == boundary_owner
-        )
-
-    def _boundary_cancellation_pending_impl(self, params: Mapping[str, object]) -> bool:
-        """Whether exact cancellation authority forbids dispatch of *params*."""
-        parent = str(params.get("parent_session_key") or "")
-        owner = str(params.get("_stage_boundary_owner") or "")
-        return bool(
-            parent
-            and owner
-            and (
-                (parent, owner) in self._manager._pending_boundary_cancellations
-                or self._manager.boundary_cancellation_refused(parent, owner)
-            )
-        )
-
-    def boundary_cancellation_pending_reason_impl(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> str:
-        """Latest settlement failure or cap refusal for one exact scope."""
-        retained = self._manager._pending_boundary_cancellations.get(
-            (parent_session_key, boundary_owner),
-            "",
-        )
-        return retained or self._manager._boundary_cancellation_refusal(
-            parent_session_key,
-            boundary_owner,
-        )
-
-    def _schedule_boundary_cancel_retry_impl(self) -> None:
-        """Arm one later pump pass for unresolved durable cancellations."""
-        if not self._manager._pending_boundary_cancellations:
-            return
-        pending = self._manager._boundary_cancel_retry_handle
-        if pending is not None and not pending.cancelled():
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-
-        def _retry() -> None:
-            self._manager._boundary_cancel_retry_handle = None
-            self._manager._drain_queue()
-
-        from kiro_crew.subagent_manager.admission.types import MIN_RECHECK_DELAY_SECS
-
-        delay = max(MIN_RECHECK_DELAY_SECS, self._manager._admission.taskq_admit_wait_secs())
-        self._manager._boundary_cancel_retry_handle = loop.call_later(delay, _retry)
-
-    def _apply_boundary_cancelled_rows_impl(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-        cancelled: list[dict],
-        *,
-        settled: bool,
-    ) -> int:
-        """Apply confirmed store cancels to loop-owned queue state and reports."""
-        by_id = {
-            str(params.get("_preassigned_id") or ""): params
-            for params in cancelled
-            if params.get("_preassigned_id")
-        }
-        # The rows whose store cancel landed: that cancel is their terminal
-        # write, so their reports write no second one (``taskq_settle``).
-        landed = set(by_id)
-        dropped_rows: list[dict] = []
-        for index in range(len(self._manager._queue) - 1, -1, -1):
-            params = self._manager._queue[index]
-            if params.get("_resume_id") or not self._manager._boundary_scope_matches(
-                params,
-                parent_session_key,
-                boundary_owner,
-            ):
-                continue
-            agent_id = str(params.get("_preassigned_id") or "")
-            if not settled and agent_id not in by_id:
-                continue
-            dropped_rows.append(self._manager._queue.pop(index))
-            by_id.pop(agent_id, None)
-        # A non-durable row of this scope the coroutine pump is dispatching has
-        # no store row to cancel; taking it here keeps the pump from starting it.
-        in_dispatch = self._manager._undurable_in_dispatch
-        for agent_id, params in list(in_dispatch.items()):
-            if self._manager._boundary_scope_matches(
-                params, parent_session_key, boundary_owner
-            ) and (settled or agent_id in by_id):
-                dropped_rows.append(in_dispatch.pop(agent_id))
-                by_id.pop(agent_id, None)
-        stopped_rows = [
-            *reversed(dropped_rows),
-            *(
-                params
-                for agent_id, params in by_id.items()
-                if agent_id not in self._manager._agents
-            ),
-        ]
-        for params in stopped_rows:
-            self._manager._report_queued_stop(
-                params, row_settled=str(params.get("_preassigned_id") or "") in landed
-            )
-        if settled:
-            self._manager._pending_boundary_cancellations.pop(
-                (parent_session_key, boundary_owner),
-                None,
-            )
-        return len(stopped_rows)
-
-    async def _settle_boundary_queue_impl(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> int:
-        """Cancel one scope's durable queued rows without blocking the loop."""
-        cancelled: list[dict] = []
-        failure = ""
-        try:
-            cancelled, failure = await self._manager._admission.taskq_cancel_boundary_async(
-                parent_session_key,
-                boundary_owner,
-            )
-        except Exception as exc:
-            failure = str(exc).strip() or type(exc).__name__
-            logger.warning(
-                "Stage-boundary queued cancellation failed for parent=%s owner=%s",
-                parent_session_key,
-                boundary_owner,
-                exc_info=True,
-            )
-        if failure:
-            failure = self._manager._bounded_boundary_cancellation_failure(failure)
-        settled = not failure
-        stopped = self._manager._apply_boundary_cancelled_rows(
-            parent_session_key,
-            boundary_owner,
-            cancelled,
-            settled=settled,
-        )
-        if failure:
-            self._manager._pending_boundary_cancellations[(parent_session_key, boundary_owner)] = (
-                failure
-            )
-            logger.warning(
-                "Stage-boundary queued cancellation remains pending for " "parent=%s owner=%s: %s",
-                parent_session_key,
-                boundary_owner,
-                failure,
-            )
-            self._manager._schedule_boundary_cancel_retry()
-        elif not self._manager._pending_boundary_cancellations:
-            pending = self._manager._boundary_cancel_retry_handle
-            if pending is not None and not pending.cancelled():
-                self._manager._cancel_task_intentionally(
-                    pending,
-                    reason="boundary cancellation settled",
-                )
-            self._manager._boundary_cancel_retry_handle = None
-        return stopped
-
-    async def retry_pending_boundary_cancellations_impl(self) -> None:
-        """Retry exact durable cancels before the pump may dispatch a row."""
-        for parent_session_key, boundary_owner in tuple(
-            self._manager._pending_boundary_cancellations
-        ):
-            await self._manager._settle_boundary_queue(
-                parent_session_key,
-                boundary_owner,
-            )
-
-    def _revoke_boundary_owners_impl(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> tuple[SubagentInfo, ...]:
-        """Revoke every in-process record owned by one exact boundary."""
-        candidates = (
-            *self._manager._agents.values(),
-            *self._manager._report_owners.values(),
-            *getattr(self._manager, "_followup_watcher_infos", {}).values(),
-        )
-        matching: list[SubagentInfo] = []
-        seen: set[int] = set()
-        for info in candidates:
-            identity = id(info)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            if (
-                info.parent_session_key != parent_session_key
-                or stage_boundary_owner_for_run(info) != boundary_owner
-            ):
-                continue
-            matching.append(info)
-            info.user_stopped = True
-            info._stage_boundary_cancelled = True
-            # The reap this revocation leads to reads these: the tombstone and
-            # the run's own stop line then say a stage was cancelled, not that
-            # the user pressed Stop. First stopper wins -- a cancel already in
-            # flight keeps its own attribution.
-            if not info._reap_reason:
-                info._reap_reason = "stage_cancel"
-            if not info._stop_origin:
-                info._stop_origin = f"stage cancelled ({boundary_owner})"
-            if info.pending_followups:
-                info.pending_followups = []
-                self._manager._audit_followup(info, "followup_suppressed")
-            watcher = self._manager._followup_watchers.get(info.id)
-            if watcher is not None and not watcher.done():
-                self._manager._cancel_task_intentionally(
-                    watcher,
-                    info,
-                    reason="stage boundary cancelled",
-                )
-        self._manager.discard_report_failures(parent_session_key, boundary_owner)
-        return tuple(info for info in matching if not info.done and not info.queued)
-
-    async def cancel_for_boundary_impl(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-        *,
-        retain_scope: bool = True,
-    ) -> tuple[int, int]:
-        """Stop work owned by one exact stage boundary, including approval waits."""
-        if not parent_session_key or not boundary_owner:
-            return (0, 0)
-        refusal = (
-            self._manager._hold_boundary_cancellation(
-                parent_session_key,
-                boundary_owner,
-            )
-            if retain_scope
-            else self._manager._boundary_cancellation_refusal(
-                parent_session_key,
-                boundary_owner,
-            )
-        )
-        # The scope decision is synchronous. Revoke live work, completed reports,
-        # and watcher-owned follow-ups before any durable writer can suspend.
-        live_infos = self._manager._revoke_boundary_owners(
-            parent_session_key,
-            boundary_owner,
-        )
-        # A refused scope stops its live owners but touches no durable row:
-        # the store pass is what the refusal withheld. Both arms re-publish the
-        # depth before the reaps, so a Cancel that found nothing to stop still
-        # answers the card.
-        queued_stopped = (
-            0
-            if refusal
-            else await self._manager._settle_boundary_queue(
-                parent_session_key,
-                boundary_owner,
-            )
-        )
-        self._republish_queue_depth(parent_session_key)
-        results = await asyncio.gather(
-            *(self._manager.cancel(info.id) for info in live_infos),
-            return_exceptions=True,
-        )
-        return (sum(result is True for result in results), queued_stopped)
 
     async def _stop_queued(self, agent_ids: Sequence[str], parent_session_key: str) -> int:
         """Unqueue each id that is still waiting and report it stopped; count them.
@@ -1574,9 +1304,9 @@ class CancellationCoordinator(ManagerComponent):
         carries ``stopped: true`` so the UI renders a neutral "stopped" card.
 
         A caller that is NOT the user pressing Stop names itself on the record
-        first: the parent-end teardown and the stage-boundary cancel write
-        ``info._reap_reason`` (the tombstone cause -- ``parent_end``,
-        ``stage_cancel``) and ``info._stop_origin`` (the one-line who/why)
+        first: the parent-end teardown writes
+        ``info._reap_reason`` (the tombstone cause -- ``parent_end``)
+        and ``info._stop_origin`` (the one-line who/why)
         before calling here, and both ride into the reap unchanged. Nothing is
         inferred from the origin text. The run loop reads the same fields when
         its stream dies under the reap, so it reports that stop rather than the
@@ -1670,14 +1400,6 @@ class CancellationCoordinator(ManagerComponent):
         # Shutdown-driven cancellations must never trigger the one-shot
         # unexpected-cancel auto-continue (the loop is going away).
         self._manager._shutting_down = True
-        boundary_retry = self._manager._boundary_cancel_retry_handle
-        if boundary_retry is not None and not boundary_retry.cancelled():
-            self._manager._cancel_task_intentionally(
-                boundary_retry,
-                reason="shutdown boundary cancellation retry",
-            )
-        self._manager._boundary_cancel_retry_handle = None
-        self._manager._pending_boundary_cancellations.clear()
         retained_retry = self._manager._retained_claim_retry_handle
         if retained_retry is not None and not retained_retry.cancelled():
             self._manager._cancel_task_intentionally(

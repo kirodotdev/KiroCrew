@@ -276,7 +276,6 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     parse_cls_meta,
     request_slot_origin,
     row_mid,
-    stage_boundary_for,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
@@ -1169,13 +1168,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
-    _pending_stage_boundary = stage_boundary_for(slot).stage is not None
-    if (
-        slot.turn_running
-        or slot._turn_admission_reserved
-        or slot._in_stage_execution
-        or _pending_stage_boundary
-    ):
+    if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
@@ -1187,12 +1180,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # client / unsupported backend / RPC error), fall through to the queue
         # path so the user's text is NEVER silently dropped.
         #
-        # ``slot._in_stage_execution`` extends this to autopilot: during a multi-stage
-        # plan ``slot.running`` briefly reads False between stages (each stage's
-        # _run_chat closes its own turn), so a mid-plan message would otherwise
-        # start a concurrent turn. The orchestrating flag keeps it on the queue
-        # path (steer is unavailable between stages, so it falls through to the
-        # queue below and is held until the plan ends).
         # `steer: "auto"` is the composer's third mode: the sender asked Jev which
         # of the two shipped paths this message takes. Decided HERE, above both
         # branches, because the answer chooses between them -- and only here, where
@@ -1729,7 +1716,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     finally:
         if _reserve_turn_admission:
             slot._turn_admission_reserved = False
-    stage_boundary_for(slot).recovery_retrigger_count = 0
+    slot.recovery_retrigger_count = 0
     state.push_slots_update()
 
     if ws_mode:
@@ -4024,7 +4011,7 @@ async def _settle_discarded_stage_deliveries(
     slot: "_ChatSlot",
     contents: list[str],
 ) -> None:
-    """Settle queued completion and boundary report debt through one seam."""
+    """Settle the queued completion debt a discarded queue owed."""
     manager = getattr(state, "subagents", None)
     if manager is None:
         return
@@ -4040,13 +4027,6 @@ async def _settle_discarded_stage_deliveries(
                 slot.key,
                 exc_info=True,
             )
-    boundary = stage_boundary_for(slot)
-    owner = boundary.owner or boundary.generation
-    parents = tuple(boundary.parent_session_keys) or (effective_session_key(slot),)
-    discard_failures = getattr(manager, "discard_report_failures", None)
-    if owner and callable(discard_failures):
-        for parent in parents:
-            discard_failures(parent, owner)
 
 
 async def stop_slot_turn(
@@ -4166,7 +4146,6 @@ async def stop_slot_turn(
     # timeout retry. A withheld escalation falls into the no-op branch below.
     if escalate and slot._stop_state == "soft_pending":
         slot._stop_state = "killing"
-        stage_boundary_for(slot).preserve_stop_generation = -1
         # A decline settled its own card and left no open one; the hard kill
         # that follows needs a row of its own, or the last stop row the user
         # sees still reads "nothing was stopped" for a session that was reset.
@@ -4328,7 +4307,6 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
-    stage_boundary_for(slot).preserve_stop_generation = slot._stop_generation
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -4498,14 +4476,6 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         if slot.running:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
-            )
-        if slot._in_stage_execution:
-            # An autopilot plan reads `running` False BETWEEN stages while it is
-            # still mid-plan, so `running` alone would let a Continue dispatch
-            # concurrently with the next stage — two turns interleaving tool calls
-            # and repository writes on one slot.
-            return web.json_response(
-                {"error": "slot is orchestrating", "code": "slot_orchestrating"}, status=409
             )
         if slot._stopping or slot._stop_state != "idle":
             return web.json_response(
@@ -4842,11 +4812,6 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             if slot.running:
                 return web.json_response(
                     {"error": "slot started running", "code": "slot_running"}, status=409
-                )
-            if slot._in_stage_execution:
-                return web.json_response(
-                    {"error": "slot is orchestrating", "code": "slot_orchestrating"},
-                    status=409,
                 )
             if slot._stopping or slot._stop_state != "idle":
                 return web.json_response(
@@ -10992,7 +10957,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # written at the turn's end, which is why `appended` is reported separately.
     # This is decided BEFORE either write: a note rejected for a full hold must
     # not leave its context half behind to reach the next turn anyway.
-    deferred = slot.running or slot._in_stage_execution
+    deferred = slot.running
     if deferred and len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
         return web.json_response(
             {

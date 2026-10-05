@@ -32,7 +32,6 @@ if TYPE_CHECKING:
         is_synthetic_payload_item,
         logger,
         model_is_unusable,
-        stage_boundary_for,
     )
 
 
@@ -866,12 +865,10 @@ async def _requeue_auth_retry(
 ) -> None:
     """Put a runner-authored input that hit a signed-out CLI back at the queue head.
 
-    The queue is held intact for after sign-in. The stage boundary's retry id is
-    cleared first; then a synthetic-recovery, synthesis or sub-agent input this turn
-    already popped is restored once, at the queue head, with its delivery provenance.
+    The queue is held intact for after sign-in. A synthetic-recovery, synthesis or
+    sub-agent input this turn already popped is restored once, at the queue head,
+    with its delivery provenance.
     """
-    if slot._in_stage_execution:
-        stage_boundary_for(slot).retry_queue_id = ""
     _auth_retry_kind = ""
     if _synthetic_recovery_turn or (_synthetic_payload and message == SUBAGENT_SYNTHESIS_PROMPT):
         # A synthesis turn is runner-authored even though its ledger actor is
@@ -893,14 +890,12 @@ async def _requeue_auth_retry(
             if _current_message is not None and isinstance(_current_message.get("meta"), dict)
             else None
         )
-        retry_queue_id = _queue_recovery(
+        _queue_recovery(
             0,
             message,
             kind=_auth_retry_kind,
             extra_meta=_current_meta,
         )
-        if slot._in_stage_execution:
-            stage_boundary_for(slot).retry_queue_id = retry_queue_id
 
 
 async def _requeue_after_prompt_busy(

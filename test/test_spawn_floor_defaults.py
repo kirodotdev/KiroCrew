@@ -656,7 +656,7 @@ async def _stop(mgr, how: str, agent_id: str) -> bool:
             ids == (agent_id,)
             and await mgr.cancel_for_teardown(ids, parent_session_key=PARENT) == 1
         )
-    return sum(await mgr.cancel_for_boundary(PARENT, "owner-1")) == 1
+    raise AssertionError(f"unknown stop path {how!r}")
 
 
 @pytest.mark.asyncio
@@ -674,7 +674,7 @@ async def _stop(mgr, how: str, agent_id: str) -> bool:
         "host-read",
     ],
 )
-@pytest.mark.parametrize("how", ["cancel", "stop-all", "parent-end", "stage-boundary"])
+@pytest.mark.parametrize("how", ["cancel", "stop-all", "parent-end"])
 @pytest.mark.parametrize("mode", ["incognito", "no-store"])
 async def test_a_stop_reaches_a_non_durable_row_the_pump_is_dispatching(
     monkeypatch, tmp_path, mode, how, blocked_in
@@ -709,9 +709,7 @@ async def test_a_stop_reaches_a_non_durable_row_the_pump_is_dispatching(
         monkeypatch.setattr(
             subagent_mod, "parent_spawn_policy", _blocked(subagent_mod.parent_spawn_policy)
         )
-    host, mgr, started, store, info = await _undurable_low_memory_wait(
-        monkeypatch, tmp_path, mode, _stage_boundary_owner="owner-1"
-    )
+    host, mgr, started, store, info = await _undurable_low_memory_wait(monkeypatch, tmp_path, mode)
     try:
         blocking.append(True)
         if blocked_in == "policy-read-floor-off":
