@@ -4576,11 +4576,18 @@ def descendant_termination_handles(
         raise
 
 
+#: How long :func:`terminate_process_handle` waits for a refused process object to
+#: signal when its exit code cannot settle the refusal: a process whose exit code is
+#: 259, or one that is genuinely refused. Off the event loop only. A wait that ends
+#: unsignalled keeps the refusal an error, which the drain retains and retries.
+_WINDOWS_TERMINATE_REFUSAL_WAIT_MS = 250
+
+
 def terminate_process_handle(handle: int) -> bool:
     """Terminate the exact Windows process object referenced by *handle*.
 
     Returns ``True`` when this call terminated a live process and ``False`` when
-    the process had already exited, including one that exits on its own between
+    the process had already exited, including one whose own exit begins between
     the liveness read and the terminate.
     """
 
@@ -4609,18 +4616,31 @@ def terminate_process_handle(handle: int) -> bool:
         return False
     if not kernel32.TerminateProcess(process_handle, 1):
         error = _windows_last_error()
-        # The kernel answers a terminate aimed at an already-exited process with
-        # ERROR_ACCESS_DENIED, the same code a genuine refusal carries. A process
-        # that exits on its own between the read above and the call lands here --
-        # a console host leaving once its last client is gone does this inside a
-        # drain. The object's signal state tells the two apart: a signalled
-        # process object has terminated, so there is nothing left to end. Any
-        # other refusal, or a handle that cannot be waited on, stays an error.
-        if (
-            error == error_access_denied
-            and int(kernel32.WaitForSingleObject(process_handle, 0)) == wait_object_0
-        ):
-            return False
+        # The kernel answers a terminate aimed at a process whose exit has begun
+        # with ERROR_ACCESS_DENIED, the same code a genuine refusal carries. A
+        # process that starts exiting between the read above and the call lands
+        # here -- a console host leaving once its last client is gone does this
+        # inside a drain. Its exit publishes the exit code, then runs the process
+        # down (from which point the terminate is refused), and only then signals
+        # the object, so the refusal can arrive while the object is unsignalled.
+        # An exit code other than STILL_ACTIVE proves the exit, since a running
+        # process always reads STILL_ACTIVE. While it still reads STILL_ACTIVE (a
+        # process whose exit code IS 259, or a live one), the signal decides,
+        # within a bounded wait -- a zero-time look on the event loop, which must
+        # never wait. A refusal the signal does not settle, including one on a
+        # handle that cannot be waited on, stays an error, as does any other
+        # error.
+        if error == error_access_denied:
+            if (
+                kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code))
+                and exit_code.value != still_active
+            ):
+                return False
+            wait_ms = (
+                0 if platform_lock_compat._on_event_loop() else _WINDOWS_TERMINATE_REFUSAL_WAIT_MS
+            )
+            if int(kernel32.WaitForSingleObject(process_handle, wait_ms)) == wait_object_0:
+                return False
         raise OSError(error, "TerminateProcess failed")
     return True
 

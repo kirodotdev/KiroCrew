@@ -291,12 +291,19 @@ def retire_identity(handle: int, *, timeout: float) -> None:
         return
     if result != 258:  # WAIT_TIMEOUT is the only positive evidence of a live object.
         raise _error("query publisher exit")
+    refused = None
     if not kernel.TerminateProcess(native, 1):
-        # It can exit between wait and terminate. Only a signaled object clears that error.
-        if kernel.WaitForSingleObject(native, 0) != 0:
-            raise _error("terminate publisher")
+        refused = _error("terminate publisher")  # Captured before the next native call.
+        # It can start exiting between wait and terminate, and the kernel answers a
+        # terminate from the exit's rundown on with ERROR_ACCESS_DENIED (5) -- before
+        # the object signals. So that refusal is judged by the bounded wait below.
+        # Any other refusal stands unless the object has already signalled.
+        if refused.errno != 5 and kernel.WaitForSingleObject(native, 0) != 0:
+            raise refused
     result = kernel.WaitForSingleObject(native, min(int(timeout * 1000), 0xFFFFFFFE))
     if result == 258:
+        if refused is not None:
+            raise refused
         raise TimeoutError("Windows pod publisher did not retire")
     if result != 0:
         raise _error("wait for publisher retirement")

@@ -910,7 +910,10 @@ def test_a_member_exiting_inside_the_terminate_window_reads_as_exited(tmp_path, 
 
 
 def test_a_terminate_refused_on_a_live_process_still_raises(tmp_path, monkeypatch):
-    """The exited reading needs the object signalled; a live refusal is an error."""
+    """A refusal neither the re-read exit code nor the bounded wait settles is an error.
+
+    The sleeper is live: its exit code reads STILL_ACTIVE and its object never signals.
+    """
 
     import ctypes
 
@@ -933,4 +936,70 @@ def test_a_terminate_refused_on_a_live_process_still_raises(tmp_path, monkeypatc
         if child.poll() is None:
             child.kill()
         child.wait(timeout=10)
+        pc.close_process_handle(handle)
+
+
+#: Lost-run ceiling for a terminated sleeper's exit, not a race to tune. The kernel
+#: tears a single-threaded sleeper down in milliseconds once it is terminated, so this
+#: sits orders of magnitude above that even on a starved shard, and far under the
+#: suite's 120 s ``--timeout``: a wedged exit fails at its own line, quoting this
+#: bound, instead of killing the xdist worker.
+_SLEEPER_EXIT_LOST_RUN_SECS = 10.0
+
+
+def test_a_member_refused_before_its_object_signals_reads_as_exited(tmp_path, monkeypatch):
+    """The refusal lands while the exiting member's object is still unsignalled.
+
+    An exit publishes the exit code, runs the process down and only then signals
+    the object, and the kernel refuses a terminate from the rundown on. So the
+    drain must read the refusal as an exit from the exit code alone: every wait
+    inside the terminate here answers WAIT_TIMEOUT, as it would before the signal.
+    """
+
+    child, handle = _spawn_sleeper(tmp_path)
+    state = None
+    fired = []
+    waits = []
+
+    def exits_after_the_read(real, process_handle, exit_code):
+        result = real(process_handle, exit_code)
+        if not fired and process_handle.value == handle and exit_code._obj.value == 259:
+            fired.append(True)
+            # Ends the process for real, so the terminate that follows is refused
+            # by the kernel itself and the re-read returns the real exit code.
+            kernel32 = __import__("ctypes").WinDLL("kernel32", use_last_error=True)
+            assert kernel32.TerminateProcess(process_handle, 7)
+            ceiling_ms = int(_SLEEPER_EXIT_LOST_RUN_SECS * 1000)
+            assert (
+                kernel32.WaitForSingleObject(process_handle, ceiling_ms) == 0
+            ), f"the terminated sleeper did not signal within {_SLEEPER_EXIT_LOST_RUN_SECS}s"
+        return result
+
+    def not_signalled_yet(real, process_handle, millis):
+        if process_handle.value != handle:
+            return real(process_handle, millis)
+        waits.append(millis)
+        return 0x102  # WAIT_TIMEOUT
+
+    try:
+        _hook_terminate_process_handle(
+            monkeypatch,
+            {"GetExitCodeProcess": exits_after_the_read, "WaitForSingleObject": not_signalled_yet},
+        )
+        identity = pc._windows_process_handle_identity(handle)
+        assert identity is not None and identity[2] is None
+        state = pc._PendingWindowsTreeCleanup(handle, identity)
+
+        assert pc._drain_windows_process_tree(state) is True
+        assert fired, "the forced interleaving never ran"
+        assert waits == [], "a published exit code must settle the refusal without a wait"
+        assert child.wait(timeout=_SLEEPER_EXIT_LOST_RUN_SECS) == 7
+        assert state.terminally_scanned == set(state.handles)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=_SLEEPER_EXIT_LOST_RUN_SECS)
+        for member in () if state is None else state.handles.values():
+            if member != handle:
+                pc.close_process_handle(member)
         pc.close_process_handle(handle)

@@ -96,6 +96,9 @@ function Stop-GatewayTree {
         foreach ($holder in $holders) {
             $holderPid = $holder.ProcessId
             & taskkill.exe /PID $holderPid /T /F *> $null
+            # Consumed here like the root kill's: 128 means this holder had already
+            # gone, often with an earlier holder's /T tree. The poll decides.
+            $global:LASTEXITCODE = 0
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)

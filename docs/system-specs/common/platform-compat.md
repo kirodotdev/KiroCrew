@@ -288,9 +288,10 @@ process the backend does not own (the Task Scheduler service finishing with the
 action file, an indexer or AV scanner) can still have it open, and the delete
 fails with `[WinError 32]`. `pod.windows._unlink_waiting_out_sharing` retries that
 one error under a bounded deadline and re-raises it unchanged once the deadline
-passes, so a real leak still fails closed; every other error raises at once. A
-teardown that deletes a file another process may have just used follows the same
-rule: retry `ERROR_SHARING_VIOLATION` only, with a deadline, never any
+passes, so a real leak still fails closed; every other error raises at once. The
+startup rollback of a cancelled `pod up` deletes the same wrapper through the same
+helper. A teardown that deletes a file another process may have just used follows
+the same rule: retry `ERROR_SHARING_VIOLATION` only, with a deadline, never any
 `PermissionError`.
 
 On write failure, rollback removes only the bytes counted for that append when
@@ -573,16 +574,27 @@ alone: no liveness wait, no poll, and no sleep on a coroutine's thread. The
 creation `FILETIME` is the whole identity, so answering without the exit half
 costs the caller nothing.
 
-`TerminateProcess` answers a process that has already exited with
+`TerminateProcess` answers a process whose exit has begun with
 `ERROR_ACCESS_DENIED`, the same code a genuine refusal carries, and a drain meets
 that routinely: every member started with `CREATE_NO_WINDOW` owns a `conhost.exe`
 that Toolhelp lists as its child, and that console host exits on its own once its
-client is killed, so it can leave between the liveness read and the terminate.
-`terminate_process_handle` therefore reads that refusal as an exit when the process
-object is signalled and returns `False`, as it does for any member that had already
-exited. A refusal on an unsignalled object, or on a handle that cannot be waited
-on, stays an `OSError`. A real-process regression forces the interleaving:
-`test/test_runtime_cleanup_windows.py::test_a_member_exiting_inside_the_terminate_window_reads_as_exited`.
+client is killed, so it can leave between the liveness read and the terminate. The
+refusal can arrive before the object signals: an exit publishes the exit code, then
+runs the process down (the terminate is refused from there on), and only then
+signals the object. `terminate_process_handle` therefore reads that refusal as an
+exit, and returns `False` as it does for any member that had already exited, when
+`GetExitCodeProcess` no longer answers `STILL_ACTIVE` (a running process always
+does), or when the object signals within a bounded wait
+(`_WINDOWS_TERMINATE_REFUSAL_WAIT_MS`, a zero-time look on the event loop), which
+covers a process whose exit code is 259. A refusal neither settles stays an
+`OSError`: a genuine refusal of a process still running after that wait, or one on a
+handle that cannot be waited on while its exit code reads `STILL_ACTIVE`. So does any
+other error. Real-process regressions force both interleavings:
+`test/test_runtime_cleanup_windows.py::test_a_member_exiting_inside_the_terminate_window_reads_as_exited`
+and `test/test_runtime_cleanup_windows.py::test_a_member_refused_before_its_object_signals_reads_as_exited`;
+`test/test_platform_compat.py::TestTerminateRefusedOnAnExitingMember` pins each
+branch on a virtual clock. `pod._windows_job.retire_identity` meets the same refusal
+when it ends a pod publisher, and judges it by its own bounded retirement wait.
 
 Teardown deliberately does not keep a Job handle and call `TerminateJobObject`
 instead of draining exact handles. The Job that `apply_job_limits` creates is
