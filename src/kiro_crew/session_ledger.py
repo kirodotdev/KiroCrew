@@ -81,6 +81,7 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.paths import data_home
 from kiro_crew.constants import env_file_display
 from kiro_crew.platform_compat import (
+    IS_WINDOWS,
     make_owner_only_dir,
     release_lock,
     strip_extended_length_prefix,
@@ -111,6 +112,14 @@ _ENTRY_SRC = "gateway"
 #: point; it runs on a worker thread, so it costs no event-loop time. On expiry
 #: the entry is still owed and counted by the writer rather than lost.
 _APPEND_FLUSH_SECONDS = 5.0
+
+#: How many times :func:`_unit_last_seq` opens a unit's log that refused to open, and
+#: how long it waits between opens: about half a second in all, the window
+#: ``atomic_write`` budgets for the same Windows hold -- an indexer or scanner handle on
+#: a file that was just written. A heuristic shared with that one, not a measured
+#: hold-time distribution.
+_SEQ_READ_ATTEMPTS = 10
+_SEQ_READ_BACKOFF_SECS = 0.05
 
 #: Whether each slot's LAST append reached disk before its call answered. Read by
 #: the record route so a caller is told, rather than being handed a 200 that
@@ -698,17 +707,76 @@ def _fold_checkpoint(slot_key: str, units: "tuple[str, ...]") -> Any:
     return _projection().fold_slot_warm(_FOLD_NAME, units, slot=slot_key)
 
 
-def _unit_last_seq(unit_id: str) -> int:
-    """The newest seq in *unit_id*'s log as the file itself reports it, or 0."""
-    try:
-        handle = _projection().open_session_log(unit_id)
-    except Exception:
-        return 0
-    if handle is None:
-        return 0
-    # ``last_seq`` on a freshly opened handle is read off the file's tail, which is
-    # what makes it usable as a growth signal for a reader that never appends.
-    return int(getattr(handle, "last_seq", 0) or 0)
+def _unit_last_seq(unit_id: str) -> int | None:
+    """The newest seq in *unit_id*'s log as the file itself reports it.
+
+    0 when the unit has no log, and ``None`` when its log could not be READ. The two
+    are kept apart because a growth check needs opposite answers from them. A unit
+    with no log has written nothing, so 0 is a fact about it. A log that refused to
+    open says nothing about how far it has grown, and reading that as 0 makes the
+    check wrong both ways: sampled after an append it reads as "did not grow", so a
+    landed update is reported lost and its unit's precedence is never published;
+    sampled before one it reads as "was empty", so the entries already there count as
+    this append landing.
+
+    A refusal that clears on its own (:func:`_clears_on_its_own`) is retried first,
+    because Windows refuses an open for as long as another handle -- an indexer, a
+    scanner -- holds the file in a way that excludes it, and that window is short.
+    Bounded by a COUNT rather than by a clock, so one sequence of refusals gets one
+    answer on every host. Any other failure answers ``None`` at once.
+    """
+    failure = ""
+    attempts = 0
+    while attempts < _SEQ_READ_ATTEMPTS:
+        if attempts:
+            time.sleep(_SEQ_READ_BACKOFF_SECS)
+        attempts += 1
+        try:
+            handle = _projection().open_session_log(unit_id)
+        except Exception as exc:
+            # Kept as TEXT, never as the exception: its traceback would hold this frame
+            # and its callers', and a crew log handle bound in any of them with it.
+            failure = f"{type(exc).__name__}: {exc}"
+            if _clears_on_its_own(exc):
+                continue
+            break
+        if handle is None:
+            return 0
+        # ``last_seq`` on a freshly opened handle is read off the file's tail, which is
+        # what makes it usable as a growth signal for a reader that never appends.
+        return int(getattr(handle, "last_seq", 0) or 0)
+    logger.warning(
+        "ledger: could not read this unit's crew log (%d attempt(s)): %s", attempts, failure
+    )
+    return None
+
+
+def _clears_on_its_own(exc: Exception) -> bool:
+    """Whether an open that raised *exc* is worth trying again.
+
+    ``FileNotFoundError`` is the unit's newest segment vanishing between being listed
+    and its tail being read -- a replace, a prune -- and the next listing finds it or
+    finds it gone, on every platform. (A header segment that vanishes reads as a
+    damaged header instead, which is not retried and fails closed.) ``PermissionError``
+    is a sharing or lock violation only on Windows; on POSIX it is a real access fault
+    that no retry clears, so it answers at once, the split ``atomic_write`` makes for
+    the same error. Nothing else is retried: the store lock's own refusal is a plain
+    ``OSError`` raised after its ceiling, on a holder that is stuck, so a retry would
+    only wait that ceiling out again, and a damaged header reads the same every time.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return True
+    return IS_WINDOWS and isinstance(exc, PermissionError)
+
+
+def _grew(seq_before: int | None, seq_after: int | None) -> bool:
+    """Whether two samples of one unit's newest seq PROVE its log grew between them.
+
+    An unreadable sample proves nothing, so it never counts as growth. That is the
+    fail-closed side: everything this gates -- a durable acknowledgement, a published
+    precedence, a committed carry -- is a claim that something landed.
+    """
+    return seq_before is not None and seq_after is not None and seq_after > seq_before
 
 
 def read_state(slot_key: str, live_session_id: str = "") -> dict[str, Any]:
@@ -928,7 +996,10 @@ def record_update(
     # nothing was written HERE, whatever the counter says. Both are required, so the
     # remaining false positive needs a concurrent append into the SAME unit -- the
     # same conversation writing twice at once -- rather than any session anywhere.
-    landed = _unit_last_seq(session_id) > seq_before
+    # A sample that could not be read proves nothing either way, so it is NOT landed.
+    seq_after = _unit_last_seq(session_id)
+    landed = _grew(seq_before, seq_after)
+    unread = seq_before is None or seq_after is None
     durable = drained and landed and crew_log_emit.dropped_writes() == refused_before
     # PUBLISH PRECEDENCE ONLY ONCE THIS UNIT'S LOG HAS ACTUALLY GROWN. This call must
     # stay AFTER ``landed`` is computed, and the order is load-bearing rather than
@@ -945,15 +1016,29 @@ def record_update(
     # PROCESS-WIDE, so a concurrent session's refusal would suppress a precedence
     # note this unit had genuinely earned. ``landed`` is exactly the fact the file
     # asserts: this unit's own newest seq moved.
+    #
+    # A log that could not be read on either side leaves the move unproved, and the
+    # note is withheld then too: it is a claim that this unit recorded, and an unproved
+    # claim is not made. A missing note is also the state a crash between an entry and
+    # its note already leaves, which this unit's next proved record corrects.
     if landed:
         _note_unit_order(slot_key, session_id)
+    if unread:
+        logger.warning(
+            "ledger: this unit's crew log could not be read %s the append, so the update "
+            "is not proved to have landed; it is reported not durable and this unit's "
+            "precedence is not published",
+            " and ".join(
+                side for side, seq in (("before", seq_before), ("after", seq_after)) if seq is None
+            ),
+        )
     if not drained:
         logger.warning(
             "ledger: the crew log writer did not drain within %.1fs; this update is "
             "queued and counted, not yet durable",
             _APPEND_FLUSH_SECONDS,
         )
-    elif not durable:
+    elif not durable and not unread:
         logger.warning(
             "ledger: the crew log refused an append while this update was in flight; "
             "the update may not have landed and the next one supersedes it"
@@ -1163,16 +1248,17 @@ def _carry_legacy_forward(slot_key: str, session_id: str) -> bool:
     # checks it: a process-wide refusal counter cannot say whether this append landed,
     # and committing the claim on a weaker signal marks the document consumed when it
     # was not carried.
-    landed = _unit_last_seq(session_id) > seq_before
+    seq_after = _unit_last_seq(session_id)
+    landed = _grew(seq_before, seq_after)
     if not drained or not landed or crew_log_emit.dropped_writes() != refused_before:
         # The carry is owed rather than lost, but this call must not go on to fold a
         # base that is missing it and then write an update over the gap: that would
         # order the update ahead of the state it is meant to extend. Refusing sends
         # the caller back.
-        if drained and not landed:
-            # PROVED it can never land: the queue emptied and this unit's own seq did
-            # not move, so nothing of this carry is still in flight. RELEASING is what
-            # lets the retry carry at once.
+        if drained and not landed and seq_before is not None and seq_after is not None:
+            # PROVED it can never land: the queue emptied and this unit's own seq, read
+            # both times, did not move, so nothing of this carry is still in flight.
+            # RELEASING is what lets the retry carry at once.
             _finish_carry(slot_key, landed=False)
         # Otherwise the append may still be QUEUED -- a flush that ran out of budget
         # leaves work behind, and the process-wide refusal counter cannot say whose
@@ -1184,6 +1270,11 @@ def _carry_legacy_forward(slot_key: str, session_id: str) -> bool:
         # goes stale after _CARRY_STALE_SECS and a take-over carries, which is safe for
         # that same reason. A refusal bounded by the staleness window is the cheaper
         # side of the trade against history that cannot be repaired.
+        #
+        # A seq that could not be READ is held the same way, since it proves neither
+        # side: the carry may have landed in the very log that would not open, and a
+        # retry whose fold cannot read that log either may see an empty record and
+        # carry again.
         raise LedgerUnavailable(
             "this slot's earlier ledger state is still being carried into its crew log; "
             "try the update again"
