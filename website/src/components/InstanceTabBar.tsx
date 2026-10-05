@@ -983,7 +983,11 @@ function useClippedChipIds(
  * The row needs no width cap of its own: it sits in the topbar's left grid track
  * (`minmax(0,1fr)`) inside `.tb-left`, which carries `min-width:0` and
  * `overflow:hidden`, so the track already prevents it from reaching the centered
- * search column.
+ * search column. On desktop the group's collapse ladder measures its contents'
+ * width, so there the row contributes no width of its own (`width:0`) and grows
+ * into the group's spare room up to its natural width (index.css,
+ * `.topbar.tb-measured`): the pinned crews still give way before anything else
+ * in the group collapses.
  */
 function CrewChipRow({
   chips,
@@ -1117,7 +1121,10 @@ function Switcher({
   const activeIsChip = chips.some(e => (e.id ?? null) === activeId)
   const showLeadingActive = !stableOrder || !activeIsChip
   return (
-    <div className="flex items-center gap-1 min-w-0">
+    // `tb-crew-grow` is a top-bar layout hook, on every wrapper between the
+    // identity group and the pinned row: the desktop top bar (index.css,
+    // `.topbar.tb-measured`) grows them so the row can take the group's spare room.
+    <div className="tb-crew-grow flex items-center gap-1 min-w-0">
       {showLeadingActive && active ? (
         <SwitcherChip
           entry={active}
@@ -1380,19 +1387,26 @@ export default function InstanceTabBar({
       role="group"
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
-      <div className={`flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
+      <div className={`tb-crew-grow flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
         <Switcher entries={entries} activeId={activeId} onSelect={onSelect} />
         {/* Only a 403 (feature gated) used to be interpreted; every other
             listInstances failure was dropped and the bar simply showed no
             crews. askAgent on: the bar holds no draft. */}
         {/* Clamped on the message, not `truncate` on the root: the notice root is
-            a flex container, where text-overflow is inert and nowrap only blocks the break. */}
+            a flex container, where text-overflow is inert and nowrap only blocks the break.
+            `tb-crew-notice`: the desktop top bar lets it take only the room
+            the identity group has spare (index.css, `.topbar.tb-measured`). Its floor
+            is its own max-content, and `tb-crew-notice-msg` makes the message the
+            only part of it that can shrink, so the warning icon and the unwrapped
+            hand-off stay whole while the clamped line can go down to a few
+            letters; the tooltip carries the whole message. */}
         {listFailure && (
           <ErrorNotice
             variant="inline"
-            className="ml-2 min-w-0 max-w-[320px]"
-            messageClassName="line-clamp-1"
+            className="tb-crew-notice ml-2 min-w-0 max-w-[320px]"
+            messageClassName="line-clamp-1 tb-crew-notice-msg"
             message={listFailure}
+            messageTooltip={listFailure}
             askAgent
             testId="instance-tab-bar-list-error"
           />

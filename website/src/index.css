@@ -2007,6 +2007,10 @@ file-tree-container{
    so the search is exactly window-centred by construction — no measurement, no
    ResizeObserver, no absolutely-positioned overlay to keep clear of.
 
+   Desktop windows keep these tracks and the container rungs below. The measured
+   ladder (`tb-measured`, at the end of this section) adds folds wherever those
+   rungs leave a group's contents overflowing.
+
    The side tracks deliberately have NO floor: they are pure remainder, and each
    group re-lays-out its own contents against the width it was handed
    (`container-type: inline-size` below). Content never pushes back on the track,
@@ -2084,6 +2088,7 @@ file-tree-container{
    exactly the semantics wanted here: the track is sized by the window, and the
    contents adapt to it. */
 .tb-left,.tb-right{container-type:inline-size;min-width:0;display:flex;align-items:center;overflow:hidden}
+.tb-left > .tb-measure,.tb-right > .tb-measure{display:contents}
 .tb-left{justify-content:flex-start;gap:.5rem}
 /* The actions group ends flush with the header's own padding edge, and the
    notification bell's unread badge is deliberately offset 4px past the button's
@@ -2118,7 +2123,12 @@ file-tree-container{
    breakpoint that cannot know what the group currently holds (usage pill
    present or not, resource posture firing, extension segments registered).
    Rungs drop cheapest-first: metric numbers, then the credit counter, then the
-   feedback labels, then the readouts entirely. */
+   feedback labels, then the readouts entirely. These rungs stay live on desktop;
+   the measured `.tbl-N` / `.tbr-N` ladders at the end of this section fold more
+   wherever contents still overflow. The readout rungs (the capsule's included)
+   and the Back/Forward rung target elements that render only on the desktop
+   layout; on a phone only the identity group's crew-name and active-chip rungs
+   have anything to hide. */
 /* Thresholds are the MEASURED content width of the rung above, plus a small
    margin: the rung must fire before the group gets narrower than its contents,
    because flex children would otherwise absorb the difference by squeezing their
@@ -2234,6 +2244,84 @@ file-tree-container{
    and shrinking (unlike `display:none`) is what its own measurement reads as cut
    off, so those crews' unread rolls into the aggregate badge. */
 @container (max-width:128px){ .tb-left .tb-crew-active-chip{display:none} }
+
+/* Desktop (`tb-measured`, set by App.tsx whenever the desktop form is rendered).
+   The tracks and size containers are the ones above, so the search stays on the
+   header's centre line and the container rungs still respond to each group's
+   width. The `.tbl-N` (identity) and `.tbr-N` (actions) classes add folds at the
+   lowest level whose contents fit, so an item no fixed threshold counted (a
+   prerelease chip, an update pill, a longer locale) collapses something in its
+   own group instead of clipping. The measured level never sits below the last
+   step the container rungs have folded, so the two ladders fold in one order.
+   The hook reads each group's contents through
+   its `.tb-measure` wrapper, which gets a max-content flex box only for the read.
+   The actions group's last rung folds the update pill to its icon, so no built-in
+   item can push the bell out. The group aligns `safe` to its end: if it still
+   overflows there (an extension widget past its budget), it clips from its far
+   end, the bell first, so its first item, the connection dot, goes last.
+
+   Pinned crews still give way first, as they do on a phone: the chip row adds
+   nothing to the identity group's measured width (`width:0`), grows into whatever
+   room the group has spare up to its natural width, and its own clipped-chip
+   measurement takes over from there. Every wrapper between the group and the
+   row (`.instance-tab-bar-inline`, `.tb-crew-grow`) grows to pass that room down.
+   The crews list's error notice (`.tb-crew-notice`) gives way the same way, so a
+   failing list is truncated rather than collapsing the rest of the group.
+   Its floor is its own max-content, so the hand-off's label never wraps in that
+   calculation, and only its message (`.tb-crew-notice-msg`) can shrink inside
+   it: with `width:0` the message adds nothing to that max-content, so the floor
+   is the warning icon, the gaps and the unwrapped hand-off button, which stay
+   whole and in view at every width unless the group holds something no rung can
+   hide (a clipped hand-off would still take keyboard focus). Its 4px end margin, part of that floor, keeps the hand-off's
+   focus ring (2px outline plus 2px offset) inside the group's clip when the
+   notice ends flush with the group. The message grows into the notice's spare
+   room up to its own text (`max-width:max-content`), so it holds no blank width
+   beyond its own text; a clamped line can still end short of the hand-off,
+   because the clamp breaks between words. While it shows, the switcher's own wrapper is
+   flattened (`display:contents`) so the pinned row, the dropdown and the notice
+   are siblings in one flex line: the notice follows the dropdown directly instead
+   of trailing an empty grown wrapper. The notice grows first (`flex-grow:100`
+   against the row's 1), up to its 320px cap, so the failure stays readable; the
+   pinned row takes what is left, and its cut chips stay in the dropdown. An even
+   split squeezes the message out at mid widths and leaves only a clipped
+   hand-off link. (`flex-grow:0` on that wrapper would keep the notice in
+   place but starve the row, which only grows THROUGH that wrapper, so every
+   pinned chip would measure as cut at any width.) Nothing reads that
+   wrapper's box -- the row is its own offsetParent and the menu anchors to its
+   trigger -- so flattening it costs no measurement.
+   Rung tbl-2 hides the chip names, and with them the 5ch floor a connected chip
+   keeps for a readable name (`min-w-[calc(5ch+…)]` in InstanceTabBar.tsx), so
+   the chips go icon-only instead of holding blank width.
+
+   The metrics fetch failure (`.tb-metrics-notice`) keeps its natural width, since
+   its text is short and fixed, and the actions ladder makes room for it like any
+   other item. Rung tbr-5 folds it to its warning and hand-off icons with the
+   capsule's readouts: the message is hidden visually (the sr-only property set),
+   so the alert still reads the failure to assistive tech, and the hand-off label
+   collapses (`font-size:0`), so the button keeps its name and title. Rung tbr-2
+   leaves it whole, because a bare icon there would have no visible name on
+   keyboard focus. */
+@media (min-width:768px){
+  .topbar.tb-measured > .tb-right{justify-content:safe flex-end}
+  .topbar.tb-measured .tb-left .instance-tab-bar-inline,.topbar.tb-measured .tb-left .tb-crew-grow{flex:1 1 auto}
+  .topbar.tb-measured .tb-left .crew-chip-row{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-measured .tb-left .tb-crew-notice{width:0;flex:100 1 auto;min-width:max-content;margin-right:4px}
+  .topbar.tb-measured .tb-left .tb-crew-notice-msg{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-measured .tb-left .tb-crew-grow:has(> .tb-crew-notice) > .tb-crew-grow{display:contents}
+  .tb-measured.tbl-1 .tb-left .tb-drop-navhistory{display:none}
+  .tb-measured.tbl-2 .tb-left .tb-drop-crew-name{display:none}
+  .tb-measured.tbl-2 .tb-left .crew-chip-row > *{min-width:auto}
+  .tb-measured.tbl-3 .tb-left .tb-crew-active-chip{display:none}
+  .tb-measured.tbr-1 .tb-right .tb-narrow-only{display:block}
+  .tb-measured.tbr-1 .tb-right .tb-drop-metrics{display:none}
+  .tb-measured.tbr-2 .tb-right .tb-drop-feedback-label{display:none}
+  .tb-measured.tbr-3 .tb-right .tb-drop-usage{display:none}
+  .tb-measured.tbr-4 .tb-right .tb-drop-feedback{display:none}
+  .tb-measured.tbr-5 .tb-right .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none}
+  .tb-measured.tbr-5 .tb-right .tb-metrics-notice button{font-size:0;gap:0}
+  .tb-measured.tbr-5 .tb-right .tb-metrics-notice-msg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
+  .tb-measured.tbr-6 .tb-right .tb-drop-update-label{display:none}
+}
 
 /* ── Topbar glass ── */
 .topbar-glass{

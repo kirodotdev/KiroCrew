@@ -427,12 +427,17 @@ mounts a status segment INSIDE the header's readout capsule, sharing its border,
 this over `registerTopBarWidgets` when the readout must join that grouping (a
 credential-TTL or spend segment, say). `App.tsx` splices registered segments after
 the core segments in ascending `order`; each renders with an `offline` prop and is
-isolated in its own `ErrorBoundary` with `fallback={null}`.
+isolated in its own `ErrorBoundary` with `fallback={null}`. A segment must not
+change its size in response to the header's collapse classes (`tbl-N` / `tbr-N`)
+or level: the desktop bar picks the level by measuring its contents, so a
+segment that resizes with it re-lays the bar out without ever settling.
 
 **Top-bar widgets.** `registerTopBarWidgets([{ id, component }])` mounts a
 standalone pill in the header's right-hand actions area, next to the capsule.
 Widgets render in insertion order, take no props (each reads its own state or
-queries), and are each `ErrorBoundary`-isolated.
+queries), and are each `ErrorBoundary`-isolated. The same rule as for capsule
+segments applies: a widget's size must not depend on the collapse classes or
+level.
 
 **Theme centre decoration is a backdrop, not a cell.** `branding.topBar` used to
 render as a sized flow cell between the search and the actions group
@@ -453,41 +458,39 @@ locale; the update-pill shift (below) is measured across every shipped locale. A
 wider-than-measured tier squeezes or truncates its text before the rung fires —
 graceful, but it means the constants are an approximation, not a guarantee.
 Re-measure with that harness when readout content or the catalogs change
-materially.
+materially. On desktop the measured ladder also counts registered components and
+folds built-ins wherever the container rungs still leave the group overflowing.
 
 
 **Width budget for both top-bar seams.** The header is a three-track grid whose
 side groups are pure remainder (`minmax(0,1fr)`, no floor) — see `.topbar` in
 `src/index.css`. The actions group therefore does NOT grow to fit its contents;
 it gets what the window leaves after the centred search, and its built-in
-readouts give that space back through container-query rungs. Registered segments
-and widgets do not participate in those rungs, so a registered component must
+readouts give that space back through container-query rungs. Registered widgets do
+not participate in those rungs, and registered capsule segments only in the
+last, dot-only one, so a registered component must
 stay inside a budget: **keep the collapsed form under ~40px** and drop your own
 labels with your own `@container` rule keyed off `.tb-right` if you render text.
+On desktop the measured ladder counts the component too and folds built-ins to
+make room, while the component itself never collapses with the measured level.
 The narrowest desktop width leaves the group about 206px, of which the built-in
-dot, metric icon, credit icon and bell already claim roughly 139px. A component
-wider than the remainder is clipped from the group's leading edge (the group
-clips deliberately rather than pushing the notifications bell out of the
-header), and at the terminal rung the capsule is reduced to its connection dot,
-which hides registered segments along with the core readouts.
+dot, metric icon, credit icon and bell already claim roughly 139px. At the last
+rungs the capsule is reduced to its connection dot, which hides registered
+segments along with the core readouts, and the measured ladder folds the update
+pill to its icon. A group that still overflows clips instead of overflowing the
+header: on desktop from its far end, the bell first and the connection dot last;
+on phones from its leading edge.
 
-**The budget has TWO bases.** While an update is pending, the top bar mounts the
-update pill — a non-shrinking sibling of the ladder — and the actions group
-carries `tb-has-update`, which shifts the rungs by the pill's footprint (see the
-rung comments in `src/index.css`). The footprint follows the pill's own label
-gate (`hidden sm:inline`, 640px viewport): at ≥640px it is the widest
-shipped-locale label form plus the group gap (201.7px + 6px = 208) and every
-rung shifts, terminal included (408px instead of 200px); below 640px the pill
-is icon-only (34px + 6px gap = 40) and only the terminal rung shifts (240px).
-The ≥640 shift is a deliberate over-reservation for every narrower-label
-locale — static CSS cannot key a rung on the active language, so an English
-pill (~134px) gives up readouts ~68px earlier than its own width requires, in
-exchange for no locale ever re-entering the squeeze band. For a registered
-segment that means the ~40px collapsed-form budget above holds only in the
-no-update state; with an update pending the same window width leaves up to
-208px less, and at the narrowest desktop widths the remainder for registered
-content is zero. Treat the update-pending state as one of the widths your own
-`@container` rule must survive.
+**An update pending takes room from the readouts.** While an update is pending,
+the top bar mounts the update pill — a non-shrinking sibling of the ladder — and
+the actions group carries `tb-has-update`, which shifts the container rungs by
+the pill's footprint at ≥640px (up to 208px for the widest shipped-locale label,
+including the group gap). The desktop measured ladder also counts the pill and
+its last rung folds the label to its icon. A registered component's ~40px budget
+therefore holds only in the no-update state; with an update pending the same
+window width leaves that much less. Below 640px the pill is icon-only and the
+container ladder takes no shift; a phone renders no readouts to give back, so its
+actions group clips from the leading edge.
 
 **Overview status cards.** `registerOverviewStatCards([{ id, order?, component }])`
 adds a self-contained `StatCard` (owning its own query and state, like the core

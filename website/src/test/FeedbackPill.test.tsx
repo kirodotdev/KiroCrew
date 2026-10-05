@@ -9,11 +9,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { i18nT } from '../i18n/t'
 
 import FeedbackPill from '../components/FeedbackPill'
+import { OPEN_DELAY_MS } from '../components/InstantTip'
 
 const status: {
   release_channel?: string
@@ -149,7 +150,7 @@ describe('FeedbackPill', () => {
     status.release_channel = 'insider'
     mount()
     const chip = screen.getByTestId('prerelease-report-chip')
-    expect(chip.getAttribute('title')).toMatch(/problem/i)
+    expect(chip).toHaveAccessibleName(/problem/i)
     expect(chip.textContent).not.toMatch(/\bbug\b/i)
   })
 
@@ -171,12 +172,65 @@ describe('FeedbackPill', () => {
 
   it('still names the lane in the tooltip', () => {
     // Which build a report gets tagged against is real information — it is
-    // supplementary, not absent.
+    // supplementary, not absent. It lives in the instant tip (below), not in a
+    // native `title`: once the desktop top bar hides the chip's label (rung 2), the
+    // chip is an icon alone, and a native title is the one tooltip keyboard
+    // focus never shows. One tip, not two: the native title goes so the two
+    // can never stack on hover.
     status.release_channel = 'nightly'
     mount()
-    expect(screen.getByTestId('prerelease-report-chip').getAttribute('title')).toMatch(
-      /nightly/i,
-    )
+    const chip = screen.getByTestId('prerelease-report-chip')
+    expect(chip).not.toHaveAttribute('title')
+    fireEvent.focus(chip)
+    expect(screen.getByRole('tooltip').textContent).toMatch(/nightly/i)
+  })
+
+  it('shows Report problem a styled tip on hover intent and on keyboard focus, without repeating its name as a description', () => {
+    // From rung 2 the feedback labels hide and the chip is a bare icon: the tip
+    // is then its only visible name. Same mechanism as its sibling -- a DOM
+    // bubble opened synchronously on keyboard focus and after the hover-intent
+    // delay, placed below the pill -- but its OWN hook instance: each anchor
+    // owns one bubble, and the two sit side by side. The tip's text IS the
+    // chip's accessible name, so the chip carries no aria-describedby.
+    vi.useFakeTimers()
+    try {
+      status.release_channel = 'nightly'
+      mount()
+      const chip = screen.getByTestId('prerelease-report-chip')
+      const feature = screen.getByRole('button', { name: /request a feature/i })
+      const expected = i18nT('components.feedbackPill.report_problem_on_build', {
+        channel: i18nT('components.feedbackPill.nightly'),
+      })
+      expect(chip).toHaveAccessibleName(expected)
+      expect(chip).not.toHaveAttribute('aria-describedby')
+      expect(screen.queryByRole('tooltip')).toBeNull()
+
+      // Keyboard focus: synchronous.
+      fireEvent.focus(chip)
+      let tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'below')
+      expect(tip).toHaveTextContent(expected)
+      expect(chip).toHaveAccessibleDescription('')
+      fireEvent.blur(chip)
+      expect(screen.queryByRole('tooltip')).toBeNull()
+
+      // Hover intent: after the shared delay, the same bubble.
+      fireEvent.mouseEnter(chip)
+      expect(screen.queryByRole('tooltip')).toBeNull()
+      act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+      tip = screen.getByRole('tooltip')
+      expect(tip).toHaveTextContent(expected)
+      fireEvent.mouseLeave(chip)
+      expect(screen.queryByRole('tooltip')).toBeNull()
+
+      // The sibling's tip is untouched by the chip's: focusing it shows ITS copy.
+      fireEvent.focus(feature)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(
+        i18nT('components.feedbackPill.request_feature_starts_agent'),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('tells the user up front, in plain words, that Request a Feature starts a chat that spends monthly usage (#13342)', () => {

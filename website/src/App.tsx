@@ -35,7 +35,7 @@ import { api, isAuthBannerShown } from './api/client'
 import { useKiroUsageReadout, kiroUsageSegment } from './shell/topbar/kiroUsageReadout'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { useMetricsReadout, metricsSegment, MetricsCard } from './shell/topbar/metricsReadout'
+import { useMetricsReadout, metricsSegment, MetricsCard, MetricsErrorNotice } from './shell/topbar/metricsReadout'
 import { Rocket, Bell, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { useFirstRunChapters, FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
@@ -62,6 +62,7 @@ const MOBILE_NAV_INSET = 8
 const mobileNavTravel = () =>
   MOBILE_NAV_WIDTH + MOBILE_NAV_INSET + 3 + safeAreaLeft()
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
+import { useTopbarCollapse } from './lib/useTopbarCollapse'
 import { setNativeBadgeCount, subscribeNativeNavigate, useMacFullscreen } from './shell/platform/electronBridge'
 import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -1271,7 +1272,12 @@ export default function App() {
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry } = useKiroUsageReadout()
-  const metrics = useMetricsReadout(isMobile, updateAvailable)
+  // Both forms use the side groups' container-query ladders. On desktop the
+  // measured ladder (`.topbar.tb-measured`, index.css) adds folds when those
+  // rungs still leave a group's contents overflowing; its level classes can
+  // hide metric numbers without resizing the box the metrics probe observes.
+  const topbarLevels = useTopbarCollapse(topPeekSurface, !isMobile)
+  const metrics = useMetricsReadout(isMobile, updateAvailable, topbarLevels.right)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
 
   const { devMode, devPageSeen } = useDeveloperMode(location.pathname)
@@ -1384,11 +1390,13 @@ export default function App() {
     setRailWidth(focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
   }, [isMobile, effectiveCollapsed, focusActive])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
-  // the search width is a function of the window, the two side groups split the
-  // remainder, and each group re-lays-out its own contents with a container
-  // query. Nothing measures a cluster any more — the drag-region reporter
-  // addresses the header itself and the layout tests match the group classes, so
-  // the two cluster refs this used to keep are gone with the measurement.
+  // the search width is a function of the window and the two side groups split
+  // the remainder. Each group re-lays-out its own contents with container
+  // queries on both forms; on desktop (`tb-measured`) useTopbarCollapse also
+  // reads the contents through the group's `.tb-measure` wrapper and adds folds
+  // wherever the container rungs still overflow. The drag-region reporter
+  // addresses the header itself and the layout tests match the group classes,
+  // so no cluster ref is kept for either form.
   const closeMobileNav = isMobile ? closeMobileNavDrawer : undefined
   const { activePath, libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive } =
     useRouteActiveModel(location.pathname, location.search, advertisedNavItems)
@@ -1762,7 +1770,13 @@ export default function App() {
         // container in an `auto` track has no content size to give, so it
         // collapses to its padding and clips whatever it holds
         // (test/topbarMenuButtonNarrow.test.ts records the measurement).
-        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}`}
+        //
+        // `tb-measured` is the desktop form: both forms keep each side group's
+        // container-query ladder, and desktop adds a measured ladder that folds
+        // more when those rungs still leave contents overflowing
+        // (useTopbarCollapse above). Desktop only, on purpose: below 768px the
+        // phone header's icon-only search and container rungs already fit.
+        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-measured'}`}
         // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
         // theme-overlay ceiling from them — the header must outrank pack
         // decoration in both layouts (#7377), and a literal here could drift.
@@ -1807,11 +1821,12 @@ export default function App() {
             that needs a real WebKit check, not a local one. */}
         {!mobileSingle && (
         <div className="tb-left relative h-full">
+          <div className="tb-measure">
           {/* Windows only: the application menu shares this cluster. It needs no
               width reservation of its own: the identity group is sized by its own
               grid track, and the menu growing from the hamburger to its six
-              labels therefore consumes the GROUP's width -- which its container
-              query responds to -- instead of eating the centred search's. */}
+              labels therefore consumes the GROUP's width -- which its collapse
+              ladder responds to -- instead of eating the centred search's. */}
           {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
 
           {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
@@ -1848,6 +1863,7 @@ export default function App() {
             </button>
           )}
           <InstanceTabBar variant="inline" />
+          </div>
         </div>
         )}
         {/* Phone chat page, leading cell: the crew switcher (renders nothing
@@ -1986,6 +2002,7 @@ export default function App() {
             room briefly and harms nothing. */}
         {!mobileSingle && (
         <div ref={metricsGroupRef} className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
+          <div className="tb-measure">
           {/* Zero-footprint probe for the metrics rung. It carries the readings'
               own class, so JS reads the LADDER's verdict rather than a copy of
               its thresholds. Out of flow and 0x0, so it costs no ladder budget
@@ -2141,6 +2158,7 @@ export default function App() {
               </motion.div>
             )
           })()}
+          {!isMobile && <MetricsErrorNotice metrics={metrics} />}
           {/* Extension slot: downstream-registered top-bar widgets (e.g. a
               credential-TTL capsule or spend pill). Empty in the stock build.
               Each widget is isolated in its own ErrorBoundary (fallback=null) so
@@ -2178,6 +2196,7 @@ export default function App() {
               beside the pop-out control — see ChatPage — so opening the panel
               no longer narrows this full-width header.) */}
           <NotificationsBellButton />
+          </div>
         </div>
         )}
         {/* Phone chat page, trailing cell: EXACTLY two controls (the
