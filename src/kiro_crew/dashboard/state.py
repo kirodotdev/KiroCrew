@@ -2717,6 +2717,7 @@ class _ChatSlot:
         "_crew_log_previous_undecided",
         "_crew_log_previous_from_mapping",
         "_crew_log_opened_sid",
+        "_crew_log_pending_channel",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -3041,6 +3042,11 @@ class _ChatSlot:
         # are written by a background writer that may not have run yet. "" = this
         # process has not opened a crew log for this slot.
         self._crew_log_opened_sid: str = ""
+        # Whether the crew-log class recorder has recorded this slot as published to
+        # a channel. `chat_runner._crew_log_class` folds it into the class (the name is
+        # `chat_runner.PENDING_CHANNEL_ATTR`), so a log opened after the link is gone
+        # still records the restriction. Never cleared.
+        self._crew_log_pending_channel: bool = False
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
