@@ -1561,6 +1561,8 @@ _CONVERTED_TURN_SURFACES: tuple[tuple[str, str], ...] = (
     # Auto-nudge continues the nudged session; both injections continue the PARENT.
     ("src/kiro_crew/slack/gateway.py", "key"),
     ("src/kiro_crew/slack/gateway.py", "parent_key"),
+    # The heartbeat resolves the store of its own fixed key.
+    ("src/kiro_crew/slack/gateway.py", "session_key"),
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]

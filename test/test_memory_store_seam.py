@@ -45,23 +45,10 @@ _GATE_PATH = _REPO_ROOT / "scripts" / "check_memory_store_seam.py"
 # both of its sites now name the global store, and
 # :func:`test_no_resolver_site_reaches_its_root_by_omission` is what keeps them
 # naming it rather than silently drifting back to omission.
-# The remaining call has no crew identity: the process-wide heartbeat uses
-# Global context on the fixed heartbeat template. Changed calls must still name
-# their store explicitly; the offline evaluator names DEFAULT_MEMORY_STORE.
-EXPECTED_BACKLOG = {
-    # 16 before subagent runs were converted, then 15. The eight that came off
-    # next are the surfaces that DO hold an identity: Slack (native and
-    # transport), Discord, Telegram, the shared messaging pipeline, auto-nudge,
-    # and both subagent-completion injections now resolve the session's own
-    # recorded binding through `context.session_store_for_turn`, so a
-    # conversation bound to a crew reads that crew's silo over every channel
-    # instead of the operator's global store.
-    # Named cron jobs now persist member_id and resolve their bound store at
-    # execution, removing the two scheduled-context sites from this backlog.
-    # Webhooks and task planner/executor continuations now preserve the trusted
-    # originating session binding, removing three more sites.
-    "store-identity-required": 1,
-}
+# ``store-identity-required`` is in that state too: every memory-context call
+# names its store. The process-wide heartbeat has no crew identity, so the
+# ``session_store_for_turn`` call it makes for its fixed key answers Global.
+EXPECTED_BACKLOG: dict[str, int] = {}
 
 # A call in the shape every site actually uses: the bound method is handed to the
 # embed pool as a VALUE, so the keywords land on the ENCLOSING call. There are no
@@ -233,9 +220,10 @@ def test_every_rule_has_a_probe(gate: ModuleType) -> None:
 def test_whole_tree_mode_reports_without_enforcing(gate: ModuleType, whole_tree: list) -> None:
     """With no base ref the gate reports the backlog and exits 0.
 
-    The operator heartbeat and offline evaluation coordinator intentionally
-    retain Global context. Their exact backlog is pinned separately; changed
-    unscoped calls remain subject to diff enforcement.
+    The operator heartbeat and offline evaluation coordinator retain Global
+    context: the evaluator names DEFAULT_MEMORY_STORE, and the heartbeat's
+    resolver finds no binding for its fixed key. The backlog is pinned
+    separately; changed unscoped calls remain subject to diff enforcement.
     """
     assert gate.report(whole_tree, enforcing=False, base=None) == 0
 

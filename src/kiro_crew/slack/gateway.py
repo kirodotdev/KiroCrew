@@ -6117,7 +6117,21 @@ class GatewayOrchestrator:
             # without a gateway restart (cross-surface consistency).
             heartbeat_hooks = _build_heartbeat_hooks(self.ctx_builder.hooks)
             _acquired = False
+            # Whether this task's prompt landed, read from its completion's stop
+            # reason, so the finally can settle the skill-body record its build
+            # wrote: a prompt that never landed must not leave the next task of
+            # this cycle a pointer to a body the session never received.
+            _turn_landed = False
+            _turn_stop: dict[str, str | None] = {"reason": None}
+
+            def _note_complete(ev: Any, _box: dict[str, str | None] = _turn_stop) -> None:
+                _box["reason"] = str(getattr(ev, "stop_reason", "") or "")
+
             try:
+                # Heartbeat tasks are the operator's own queue, so nothing binds
+                # the heartbeat key to a crew and the shared session resolver
+                # answers the default memory store.
+                _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
                 # Use the dedicated ``kirocrew-heartbeat`` agent — minimal
                 # MCP surface (kirocrew-core only on public installs) so cycle
                 # cold-starts stay cheap.  Tool calls are still gated at
@@ -6135,9 +6149,17 @@ class GatewayOrchestrator:
                 # system-prompt copies of the same instruction can drift out
                 # of effective context.
                 injected = _HEARTBEAT_KEEP_INJECTION + task_text
-                # Off-loop: build_message embeds the episodic query.
+                # Off-loop: build_message embeds the episodic query. Every task
+                # of a cycle runs on this one session, so the record of skill
+                # bodies it already holds is kept under the heartbeat key: a
+                # skill two tasks match reaches the session once. The prompt is
+                # still built without a session key.
                 full_message, _ = await run_in_embed_pool(
-                    self.ctx_builder.build_message, injected, is_new
+                    self.ctx_builder.build_message,
+                    injected,
+                    is_new,
+                    memory_store=_memory_store,
+                    skill_bodies_session=session_key,
                 )
 
                 # A heartbeat turn runs unattended. Bound it with a hard deadline
@@ -6162,10 +6184,12 @@ class GatewayOrchestrator:
                         approval_policy=ToolApprovalPolicy.HOOK_BASED,
                         hooks=heartbeat_hooks,
                         on_tool_approval=self._heartbeat_approval,
+                        on_complete=_note_complete,
                         fallback_models=configured_fallback_chain(),
                     ),
                     timeout=HEARTBEAT_TASK_TIMEOUT_SECS,
                 )
+                _turn_landed = stop_reason_landed(_turn_stop["reason"])
 
                 if not result_text:
                     result_text = "_No response._"
@@ -6225,6 +6249,10 @@ class GatewayOrchestrator:
                 raise
             finally:
                 if _acquired:
+                    # Settle this task's skill-body record BEFORE the release:
+                    # the next task of the cycle builds on the same session, and
+                    # a settle after it would act on that task's build instead.
+                    rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
                     # Release the per-session semaphore so the next task in
                     # this cycle (asyncio.gather'd) can acquire the SAME
                     # warm session.  Cycle-end teardown is handled by

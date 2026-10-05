@@ -41,6 +41,9 @@ def _make_orchestrator():
     ctx_builder.build_message = MagicMock(return_value=("full message", None))
     ctx_builder.hooks = MagicMock()
     ctx_builder.memory = MagicMock()
+    # The heartbeat's store resolver reads the builder's conversation log, and an
+    # auto-created mock attribute is not one.
+    ctx_builder.conversation_log = None
     orch.ctx_builder = ctx_builder
 
     orch.consolidator = None

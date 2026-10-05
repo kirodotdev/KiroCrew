@@ -236,7 +236,10 @@ The mechanism, when on:
   matches in a provider session**; a later match of the same unconfined skill in
   that same session demotes to the one-line pointer in `[Relevant skills for this
   message]` instead, because the provider replays the body from native history
-  (see "Per-session body dedup" below). An unconfined skill opts out entirely
+  (see "Per-session body dedup" below). The session is the build's
+  `session_key`, or `skill_bodies_session` for a caller that builds without one
+  on a real session: the heartbeat names its `_hb` session there, so a skill two
+  tasks of one cycle match reaches it once. An unconfined skill opts out entirely
   with `inject_on_trigger: false` and contributes only that pointer line from
   `skill_runtime/delivery.py` → `trigger_hint`. A confined project skill always
   takes the body path on every match (never demoted), because handing out a live

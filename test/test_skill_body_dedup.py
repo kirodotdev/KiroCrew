@@ -23,6 +23,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.memory import MemoryStore
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import drive_turn
+from kiro_crew.session import HEARTBEAT_KEY
 from kiro_crew.skills import SkillsLoader
 
 BODY_SENTINEL = "STEP ONE: pour the concrete before the rebar."
@@ -104,6 +105,52 @@ class TestNoSessionKeyNeverDedups:
 
         for _ in range(3):
             assert BODY_SENTINEL in _send(builder, session_key=None)
+
+
+class TestKeylessBuildOnASession:
+    """A caller that builds without a session key on a real provider session
+    names that session in ``skill_bodies_session``, as the heartbeat does.
+
+    The record is then kept under that session, exactly as under a session key,
+    while the rest of the prompt stays what a keyless build produces.
+    """
+
+    def test_a_second_build_on_the_session_sends_the_pointer(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        path = _write_skill(skills, "foundation")
+        builder = _builder(tmp_path, _loader(skills))
+
+        first = _send(builder, session_key=None, skill_bodies_session=HEARTBEAT_KEY)
+        assert BODY_SENTINEL in first
+
+        second = _send(builder, session_key=None, skill_bodies_session=HEARTBEAT_KEY)
+        assert BODY_SENTINEL not in second
+        assert HINT_HEADER in second
+        assert str(path) in second
+
+    def test_a_fresh_session_sends_the_body_again(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        _write_skill(skills, "foundation")
+        builder = _builder(tmp_path, _loader(skills))
+
+        _send(builder, session_key=None, skill_bodies_session=HEARTBEAT_KEY)
+        again = _send(
+            builder, session_key=None, skill_bodies_session=HEARTBEAT_KEY, is_new_session=True
+        )
+        assert BODY_SENTINEL in again
+
+    def test_naming_the_session_changes_nothing_else_in_the_prompt(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        _write_skill(skills, "foundation")
+        loader = _loader(skills)
+
+        named = _send(
+            _builder(tmp_path / "named", loader),
+            session_key=None,
+            skill_bodies_session=HEARTBEAT_KEY,
+        )
+        keyless = _send(_builder(tmp_path / "keyless", loader), session_key=None)
+        assert named == keyless
 
 
 class TestUnlandedTurnFallsBackToPointerNotSilence:
