@@ -10465,6 +10465,12 @@
         "summary_hint": "摘要已折叠，展开查看",
         "title": "上下文已压缩"
       },
+      "skillLoadCard": {
+        "body_context": "代理在本轮次遵循的技能指令",
+        "body_empty": "此技能没有指令",
+        "body_unavailable": "未记录较早轮次的指令",
+        "title_other": "已加载的技能"
+      },
       "recoveryCard": {
         "action_not_taken": "未执行操作",
         "announced_no_action_continuing": "已声明但未执行 · 已自动发送续接指令",

@@ -21195,11 +21195,41 @@ class TestExpandDollarSkills:
         assert "[Skill: oncall-handover]" in out
         assert "BODY-A" in out
         # a system chip is appended and the UI is poked
-        assert any(
-            "Loaded skill(s)" in m.get("content", "") and m.get("role") == "system"
+        notice = next(
+            m
             for m in slot.messages
+            if "Loaded skill(s)" in m.get("content", "") and m.get("role") == "system"
         )
+        assert notice["meta"]["kind"] == "skill_load"
+        assert notice["meta"]["skills"] == [
+            {"name": "oncall-handover", "body": "# Handover\nBODY-A"}
+        ]
         state.push_slots_update.assert_called_once()
+
+    def test_skill_notice_preserves_multiple_resolved_bodies_in_order(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_runner import _expand_dollar_skills
+
+        state = self._state_with_skills(
+            tmp_path,
+            monkeypatch,
+            ("first", "---\nname: first\n---\n# First\nONE"),
+            ("second", "---\nname: second\n---\n# Second\nTWO"),
+        )
+        slot = _ChatSlot("s1")
+
+        out, n = _expand_dollar_skills("use $first then $second", state, slot, "sess")
+
+        assert n == 2
+        assert out.index("[Skill: first]") < out.index("[Skill: second]")
+        notice = next(m for m in slot.messages if m.get("role") == "system")
+        assert notice["meta"] == {
+            "kind": "skill_load",
+            "skills": [
+                {"name": "first", "body": "# First\nONE"},
+                {"name": "second", "body": "# Second\nTWO"},
+            ],
+            "mid": notice["meta"]["mid"],
+        }
 
     def test_unresolved_token_no_chip(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import chat_runner

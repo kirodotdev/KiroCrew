@@ -10465,6 +10465,12 @@
         "summary_hint": "요약이 접혀 있습니다 — 펼쳐서 보기",
         "title": "컨텍스트가 압축되었습니다"
       },
+      "skillLoadCard": {
+        "body_context": "이 턴에서 에이전트가 따른 스킬 지침",
+        "body_empty": "이 스킬에는 지침이 없습니다",
+        "body_unavailable": "이전 턴의 지침은 기록되지 않았습니다",
+        "title_other": "로드된 스킬"
+      },
       "recoveryCard": {
         "action_not_taken": "작업이 실행되지 않음",
         "announced_no_action_continuing": "예고했지만 실행되지 않음 · 자동으로 후속 요청 전송됨",

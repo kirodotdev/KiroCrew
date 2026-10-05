@@ -154,6 +154,7 @@ describe('CompactionCard', () => {
     const { container } = render(<CompactionCard content={COMPLETED} />)
     const toggle = screen.getByTestId('compaction-card-toggle')
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle).toHaveClass('hover:bg-bg-hover')
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     const body = container.querySelector('[data-testid="compaction-card-body"]')!

@@ -31,6 +31,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { resolveTransientNotice } from '../pages/chat/transientNotice'
@@ -493,11 +494,19 @@ export function renderAssistantBubble(
 }
 
 /**
- * The built-in registry, in resolution order. A stop event and a sub-agent
- * completion are recognised by shape rather than by role, so they claim `'*'`
- * and gate on `match`; they come first for that reason.
+ * The built-in registry, in resolution order. Skill loads, stop events and
+ * sub-agent completions are recognised by shape rather than by a broad role,
+ * so they gate on `match` before generic role entries.
  */
 export const defaultMessageRenderers: readonly MessageRenderer[] = [
+  {
+    id: 'skill_load',
+    roles: ['system'],
+    match: isSkillLoadRow,
+    render: (m, ctx) => ctx.row(
+      <SkillLoadCard message={m} disclosureKey={ctx.key} />,
+    ),
+  },
   {
     id: 'stop_event',
     roles: ['*'],

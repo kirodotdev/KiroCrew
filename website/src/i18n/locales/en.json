@@ -6438,6 +6438,13 @@
         "summary_hint": "Summary folded — expand to read",
         "title": "Context compacted"
       },
+      "skillLoadCard": {
+        "body_context": "Skill instructions the agent followed this turn",
+        "body_empty": "This skill has no instructions",
+        "body_unavailable": "Instructions weren't recorded for older turns",
+        "title_one": "Loaded skill",
+        "title_other": "Loaded skills"
+      },
       "recoveryCard": {
         "action_not_taken": "Action not taken",
         "announced_no_action_continuing": "announced but not done · continuation sent automatically",

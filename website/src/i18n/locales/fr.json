@@ -10755,6 +10755,14 @@
         "summary_hint": "Résumé replié — développer pour lire",
         "title": "Contexte compacté"
       },
+      "skillLoadCard": {
+        "body_context": "Instructions du skill suivies par l’agent pendant ce tour",
+        "body_empty": "Ce skill ne contient aucune instruction",
+        "body_unavailable": "Les instructions n’ont pas été enregistrées pour les tours précédents",
+        "title_one": "Skill chargé",
+        "title_many": "Skills chargés",
+        "title_other": "Skills chargés"
+      },
       "recoveryCard": {
         "action_not_taken": "Action non effectuée",
         "announced_no_action_continuing": "annoncé mais non effectué · reprise envoyée automatiquement",

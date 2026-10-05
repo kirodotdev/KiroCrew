@@ -4623,7 +4623,9 @@ def _expand_dollar_skills(
     Leaves the literal ``$token`` in place (decision (a)) and appends a
     ``[Skill: name]`` block per resolved skill after the user's message, so the
     agent sees both the user's intent marker and the loaded procedure. Unknown
-    tokens are left untouched.
+    tokens are left untouched. The transcript row snapshots each redacted,
+    frontmatter-free body in ``meta.skills`` so the dashboard can show exactly
+    what this turn loaded even if the source skill changes or disappears later.
 
     Resolution + security live in ``SkillsLoader.resolve_dollar_skills`` (allowlist
     match, no path construction — per input-validation guidance). This function adds
@@ -4671,11 +4673,13 @@ def _expand_dollar_skills(
 
     blocks: list[str] = []
     names: list[str] = []
+    snapshots: list[dict[str, str]] = []
     for _token, name, body in resolved:
         body, _ = redact_credentials(body)
         body, _ = redact_exfiltration_urls(body)
         blocks.append(f"[Skill: {name}]\n\n{body}")
         names.append(name)
+        snapshots.append({"name": name, "body": body})
 
     expanded = message + "\n\n" + "\n\n---\n\n".join(blocks)
 
@@ -4683,6 +4687,7 @@ def _expand_dollar_skills(
         "system",
         f"📎 Loaded skill(s) via `$`: **{', '.join(names)}**",
         "msg msg-info",
+        meta={"kind": "skill_load", "skills": snapshots},
     )
     state.push_slots_update()
     return expanded, len(names)

@@ -2441,6 +2441,22 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   mask-image:linear-gradient(to bottom,black calc(100% - 20px),transparent);
   -webkit-mask-image:linear-gradient(to bottom,black calc(100% - 20px),transparent)}
 
+
+/* The disclosure shell applies this only while content remains below the
+   capped body. The mask uses the theme's opaque text token as its alpha source,
+   so the cue carries no fixed visible colour and disappears at the scroll end. */
+.markdown-disclosure-scroll-more{
+  mask-image:linear-gradient(to bottom,var(--text) calc(100% - 20px),transparent);
+  -webkit-mask-image:linear-gradient(to bottom,var(--text) calc(100% - 20px),transparent)}
+
+/* Skill instructions are supporting transcript detail, not an assistant answer.
+   Keep their heading hierarchy inside the card and below the answer's scale. */
+.skill-load-markdown h1{font-size:15px;line-height:20px;margin-top:12px;margin-bottom:6px}
+.skill-load-markdown h2{font-size:14px;line-height:20px;margin-top:10px;margin-bottom:6px}
+.skill-load-markdown h3,
+.skill-load-markdown h4,
+.skill-load-markdown h5,
+.skill-load-markdown h6{font-size:13px;line-height:20px;margin-top:8px;margin-bottom:4px}
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
 

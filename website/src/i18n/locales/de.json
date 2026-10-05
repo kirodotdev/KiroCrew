@@ -10610,6 +10610,13 @@
         "summary_hint": "Zusammenfassung eingeklappt – zum Lesen aufklappen",
         "title": "Kontext komprimiert"
       },
+      "skillLoadCard": {
+        "body_context": "Skill-Anweisungen, denen der Agent in diesem Durchgang gefolgt ist",
+        "body_empty": "Dieser Skill enthält keine Anweisungen",
+        "body_unavailable": "Für ältere Durchgänge wurden keine Anweisungen aufgezeichnet",
+        "title_one": "Geladener Skill",
+        "title_other": "Geladene Skills"
+      },
       "recoveryCard": {
         "action_not_taken": "Aktion nicht ausgeführt",
         "announced_no_action_continuing": "angekündigt, aber nicht ausgeführt · Fortsetzung automatisch gesendet",

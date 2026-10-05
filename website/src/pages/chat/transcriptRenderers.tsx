@@ -37,6 +37,7 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
+import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
@@ -288,6 +289,17 @@ export function createTranscriptRenderers(
 
   return [
     // ── Shape-matched rows, ahead of anything keyed only by role ──
+    {
+      // A dollar-picked skill is gateway-authored context, not a conversational
+      // reply. Its metadata carries the exact redacted body that entered this
+      // turn, so the card remains truthful after the source skill changes.
+      id: 'skill_load',
+      roles: ['system'],
+      match: isSkillLoadRow,
+      render: (m, ctx) => ctx.row(
+        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} />,
+      ),
+    },
     {
       // Replaces the default: same card, but wired to open a folder and the
       // side panel the way the single-chat surface does.

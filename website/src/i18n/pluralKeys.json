@@ -146,6 +146,7 @@
   "pages.chat.collapsibleToolGroup.tool_call",
   "pages.chat.sessionSummary.open_items",
   "pages.chat.sideChat.turn",
+  "pages.chat.skillLoadCard.title",
   "pages.chat.thread.replies_count",
   "pages.chat.subagentProgressBar.tool",
   "pages.chat.subagentRunCard.agent",

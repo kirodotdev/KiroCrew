@@ -10755,6 +10755,14 @@
         "summary_hint": "Resumo recolhido — expanda para ler",
         "title": "Contexto compactado"
       },
+      "skillLoadCard": {
+        "body_context": "Instruções da skill que o agente seguiu neste turno",
+        "body_empty": "Esta skill não tem instruções",
+        "body_unavailable": "As instruções não foram registradas para turnos anteriores",
+        "title_one": "Skill carregada",
+        "title_many": "Skills carregadas",
+        "title_other": "Skills carregadas"
+      },
       "recoveryCard": {
         "action_not_taken": "Ação não realizada",
         "announced_no_action_continuing": "anunciado mas não realizado · continuação enviada automaticamente",

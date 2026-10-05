@@ -3768,6 +3768,29 @@ for native view and inherited steering behavior.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded wherever a body reaches the model: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt), `resolve_dollar_skills`, an exact `skill_search` read (below), and direct reads of `SKILL.md` (see **Direct reads**). Since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config, so the other three supply the hits unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
+**Dollar-load transcript snapshot:** the dashboard chat runner records each
+successful `$skillname` selection as one `system` row with
+`meta.kind=skill_load`. `meta.skills` keeps the ordered `{name, body}` list that
+entered that turn. `resolve_dollar_skills` has already removed frontmatter, and
+the runner applies credential and outbound-URL redaction before it writes either
+the model block or the snapshot. The snapshot therefore remains accurate if a
+skill changes or disappears later and adds no second filesystem read. Existing
+dollar-skill count and file-read caps bound the row. The dashboard renders the
+row through the same disclosure shell as a compaction summary, collapsed by
+default. The skill card uses a book icon while the legacy notice text keeps its
+paperclip for exact parsing. A one-skill card keeps one native outer button and a
+keyboard-scrollable capped body. A card with several skills opens to one context
+line and one collapsed native button per skill. Each skill button controls only
+that skill's keyboard-scrollable capped body, so another skill's header remains
+reachable. Each capped body has a measured bottom fade that clears at the scroll
+end. Compact headings keep the instructions below assistant answers in the
+transcript hierarchy. The expanded body states once per card that these are the
+skill instructions the agent followed in that turn. A structured skill whose
+saved body is empty stays non-interactive and states that the skill has no
+instructions. A pre-snapshot row is still recognized by its exact legacy notice
+text and renders as a non-interactive name-only card that says instructions were
+not recorded for older turns.
+
 **`skill_search` MCP tool (`kirocrew-core`):** supports `search`, `list` and `read`.
 A signed session resolves its active template and project at the gateway. An
 unreadable or missing custom template fails scope resolution rather than widening

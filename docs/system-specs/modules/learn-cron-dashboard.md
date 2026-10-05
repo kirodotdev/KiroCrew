@@ -1596,7 +1596,7 @@ names:
 | `directives` | not-applied directive wording and the unclaimed-directive backstop |
 | `chat_runner.py` | eager spawn and prefetch: the task entries (`_eager_spawn`, `_prefetch_ttl`) and the `get_or_create` allocation |
 | `chat_runner.py` | native card projection: the `_native_subagent_sync` redactor and `_post_native_question_card` |
-| `chat_runner.py` | prompt and skill mention expansion: the `_resolve_prompt_mention` redactor |
+| `chat_runner.py` | prompt and skill mention expansion: the `_resolve_prompt_mention` redactor and `_expand_dollar_skills` transcript snapshot |
 | `chat_runner.py` | crew-log attribution: the crew-log closers and `latch_crew_log_previous` |
 | `chat_runner.py` | the MCP OAuth banner lifecycle: the `_emit_mcp_oauth_request` redactor |
 | `chat_runner.py` | segment flush and projection: the `_flush_segment` sink |
