@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import codecs
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -390,3 +391,21 @@ def parse_agent_spec_text(text: str, path: str | Path) -> Any:
 def parse_agent_spec_bytes(raw: bytes, path: str | Path) -> Any:
     """:func:`parse_agent_spec_text` over UTF-8 bytes; ``UnicodeDecodeError`` propagates."""
     return parse_agent_spec_text(raw.decode("utf-8"), path)
+
+
+# MCP env keys whose VALUE a launcher re-stamps on every launch (a per-launch
+# nonce, not a credential the agent's grants depend on), so a changed value is no
+# change. Every other env value counts: a rotated credential is a different grant.
+# Extended, never narrowed, by ``KIROCREW_SKILL_VIEW_VOLATILE_ENV`` (comma-separated
+# key names), for a launcher this list does not know yet. Lives here, beside the
+# spec parser, because both the ACP skill views and the worker-spec freshness gate
+# hash ``mcpServers`` and must leave out the same keys -- the gate cannot import
+# the ACP layer to ask.
+VOLATILE_ENV_KEYS_DEFAULT = frozenset({"AIM_CREDS_AGENT_INJECTION"})
+VOLATILE_ENV_VAR = "KIROCREW_SKILL_VIEW_VOLATILE_ENV"
+
+
+def volatile_env_keys() -> frozenset[str]:
+    """The MCP env keys whose values identity digests and fingerprints ignore (see above)."""
+    extra = os.environ.get(VOLATILE_ENV_VAR, "")
+    return VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}
