@@ -2378,13 +2378,21 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         Race-safe against the drain because the STATE TEST AND THE CANCEL SHARE
         ONE TRANSACTION: ``unstarted`` is both the predicate this code judges the
-        row it read by and the ``only_from`` the store re-tests under the
-        generation that read returned, so a row a drain claimed and started in
-        between answers None here and the caller falls through to the live reap
-        -- never a ``cancelled`` row with a running spawn under it, whose own
-        later writes the generation bump would fence out. A row claimed but not
-        started (``admitted``) is still this path's: the spawn re-reads the state
-        before it registers and stops there.
+        row it read by and the ``only_from`` the store re-tests inside the cancel,
+        so a row a drain claimed and started in between answers None here and the
+        caller falls through to the live reap -- never a ``cancelled`` row with a
+        running spawn under it. A row claimed but not started (``admitted``) is
+        still this path's: the spawn re-reads the state before it registers and
+        stops there.
+
+        The cancel is deliberately NOT fenced on the read's generation. A claim, a
+        requeue or a wake can bump the generation while the row stays unstarted
+        (``queued`` -> ``admitted``, a wait woken into ``retry_wait``); a generation
+        fence refused that cancel as ``stale_result`` and dropped the stop, leaving a
+        row nothing executes and nothing cancels -- a ``retry_wait`` row is outside
+        the boot reconciler's ``ACTIVE`` set, and the parent's queued count keeps it
+        attached. ``only_from`` alone is the guarantee the fence was there
+        for: whatever generation the row is at, it is cancelled only while unstarted.
         """
         from kiro_crew import taskq as _taskq
 
@@ -2400,9 +2408,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 unstarted = unstarted | frozenset({_taskq.ADMITTED})
             if rec.state not in unstarted:
                 return None
-            previous = store.cancel(
-                agent_id, reason="user_stop", only_from=unstarted, generation=rec.generation
-            )
+            previous = store.cancel(agent_id, reason="user_stop", only_from=unstarted)
         except _taskq.TaskStoreUnavailable:
             _glue_logger.warning("taskq: cancel of %s failed", agent_id, exc_info=True)
             return None

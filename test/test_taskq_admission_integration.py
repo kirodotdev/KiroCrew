@@ -708,6 +708,51 @@ async def test_a_queued_row_the_drain_started_is_not_cancelled_under_the_spawn(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parked_in", [model.QUEUED, model.RETRY_WAIT])
+async def test_a_stop_whose_generation_moved_under_an_unstarted_row_still_cancels(
+    quiet, monkeypatch: pytest.MonkeyPatch, parked_in: str
+) -> None:
+    """A generation bump that leaves the row UNSTARTED does not lose the stop.
+
+    Between ``taskq_cancel_queued``'s read and its cancel a concurrent claim moves
+    the row to ``admitted`` under generation+1. A cancel fenced on the read's
+    generation was refused as ``stale_result``, leaving a ``retry_wait`` row that
+    the boot reconciler never examines and the parent's queued count kept
+    attached, so the stop stayed lost. ``only_from`` alone must let it land.
+    """
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first = mgr.spawn("run", parent_session_key="dash:1")
+        outside = mgr.spawn("o", parent_session_key="dash:1")
+    store = mgr._taskq
+    if parked_in == model.RETRY_WAIT:
+        assert store.claim(outside.id) is not None
+        assert store.transition(outside.id, model.STARTING)
+        assert store.transition(outside.id, model.RETRY_WAIT)
+    assert store.state_of(outside.id) == parked_in
+    real_get = store.get
+    raced: list[int] = []
+
+    def _claim_between(task_id: str):
+        rec = real_get(task_id)
+        if task_id == outside.id and not raced:
+            raced.append(rec.generation)
+            assert store.claim(task_id) is not None
+        return rec
+
+    monkeypatch.setattr(store, "get", _claim_between)
+    params = mgr._admission.taskq_cancel_queued(outside.id)
+    assert raced, "the race was never forced"
+    assert params is not None and params["_preassigned_id"] == outside.id
+    assert store.state_of(outside.id) == model.CANCELLED
+    assert raced[0] < store.get(outside.id).generation, "the generation never moved"
+    kinds = [e.kind for e in store.events(outside.id)]
+    assert "stale_result" not in kinds, "the stop was fenced on a stale generation"
+    del first
+
+
+@pytest.mark.asyncio
 async def test_cancel_in_window_marks_store_and_unqueues(quiet) -> None:
     mgr = await _manager(max_concurrent=1)
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
