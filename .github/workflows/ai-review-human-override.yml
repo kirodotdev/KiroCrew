@@ -14,8 +14,8 @@ on:
   issue_comment:
     types: [created, edited]
 
-# Re-run completed Opus / GPT workflows and record the trusted decision.
-# PR-write is required because the trusted
+# Re-run the affected reviewer workflows, dispatch PR Readiness, and record the
+# trusted decision. PR-write is required because the trusted
 # record is a pull-request comment. Deliberately no id-token or contents:write.
 permissions:
   actions: write
@@ -163,6 +163,8 @@ jobs:
             echo "source=$COMMENT_ID"
             echo "reason=$reason"
             echo "fork=$is_fork"
+            echo "head_repo=$head_repo"
+            echo "head_ref=$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
           } >> "$GITHUB_OUTPUT"
 
       - name: Re-run line reviewers with the human decision
@@ -179,8 +181,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.issue.number }}
           HEAD: ${{ steps.context.outputs.head }}
+          HEAD_REPO: ${{ steps.context.outputs.head_repo }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
           TARGET: ${{ steps.context.outputs.target }}
           IS_FORK: ${{ steps.context.outputs.fork }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
@@ -196,9 +201,21 @@ jobs:
           # that cannot be re-run automatically is collected and reported as a
           # warning plus a PR notice naming what to re-run by hand.
           failed_lanes=""
+          rerun_count=0
           fail_lane() {
             echo "::warning::$2"
             failed_lanes="${failed_lanes:+$failed_lanes, }$1"
+          }
+
+          # Every read below keeps its exit status AND its error text. On an
+          # HTTP error (403, 404, 5xx) `gh` prints the API's JSON error body on
+          # STDOUT, so a read whose status was discarded hands that body on as
+          # if it were the answer, and the failure is then reported as whatever
+          # the body happens to parse to. A failed read is reported as a failed
+          # read, naming the API's own words.
+          ERR_FILE="$(mktemp)"
+          read_error() {
+            tr '\n' ' ' < "$ERR_FILE" | cut -c1-200
           }
 
           # Cancel a still-running run first, then re-run it. A pushback
@@ -209,12 +226,17 @@ jobs:
             local run_id="$1"
             local label="$2"
             local status="$3"
+            local now
             if [ "$status" != "completed" ]; then
-              gh api --method POST "repos/$REPO/actions/runs/$run_id/cancel" \
-                >/dev/null 2>&1 || true
+              if ! gh api --method POST "repos/$REPO/actions/runs/$run_id/cancel" \
+                >/dev/null 2>"$ERR_FILE"; then
+                echo "Cancelling $label workflow run $run_id was refused ($(read_error)); waiting for it to finish."
+              fi
               for _ in $(seq 1 30); do
-                status="$(gh api "repos/$REPO/actions/runs/$run_id" \
-                  --jq '.status' 2>/dev/null || true)"
+                if now="$(gh api "repos/$REPO/actions/runs/$run_id" \
+                  --jq '.status' 2>"$ERR_FILE")"; then
+                  status="$now"
+                fi
                 [ "$status" = "completed" ] && break
                 sleep 2
               done
@@ -224,11 +246,142 @@ jobs:
               return 0
             fi
             if ! gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" \
-              >/dev/null; then
-              fail_lane "$label" "could not re-run $label workflow run $run_id"
+              >/dev/null 2>"$ERR_FILE"; then
+              fail_lane "$label" "could not re-run $label workflow run $run_id ($(read_error))"
               return 0
             fi
+            rerun_count=$((rerun_count + 1))
             echo "Re-running $label workflow run $run_id for $HEAD"
+          }
+
+          # The Fast Gate run PR Readiness binds a fork PR's lanes to: the
+          # newest run of fast-gate.yml for this head on THIS pull request's head
+          # repository and branch, plus that run's attempt. Readiness expects
+          # each lane's check-run at `<lane>-pr-<PR>-<run id>-<attempt>` and
+          # reads the newest row carrying that id, so the handler reads the
+          # same row: the lane run it re-runs is the one whose verdict readiness
+          # is holding, never a sibling pull request's or an earlier attempt's.
+          # Read once, for every lane.
+          fork_trigger=""
+          fork_trigger_error=""
+          fork_trigger_read=""
+          bind_fork_trigger() {
+            local runs
+            [ -n "$fork_trigger_read" ] && return 0
+            fork_trigger_read=1
+            # A deleted fork has no head repository, and readiness binds no
+            # run to it; matching an empty name here would bind runs readiness
+            # never reads.
+            if [ -z "$HEAD_REPO" ] || [ -z "$HEAD_REF" ]; then
+              fork_trigger_error="this pull request's head repository or branch is gone, so no lane run is bound to it"
+              return 0
+            fi
+            if ! runs="$(gh api --method GET --paginate \
+              "repos/$REPO/actions/runs?event=pull_request&head_sha=$HEAD&per_page=100" \
+              2>"$ERR_FILE")"; then
+              fork_trigger_error="reading the workflow runs for $HEAD failed ($(read_error))"
+              return 0
+            fi
+            if ! fork_trigger="$(printf '%s' "$runs" | jq -rs \
+              --arg path ".github/workflows/fast-gate.yml" \
+              --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
+                [.[].workflow_runs[]
+                 | select(.path == $path
+                          and (.head_repository.full_name // "") == $repo
+                          and (.head_branch // "") == $ref)]
+                | max_by(.id) // empty
+                | "\(.id)-\(.run_attempt // 1)"' 2>"$ERR_FILE")"; then
+              fork_trigger=""
+              fork_trigger_error="the workflow runs for $HEAD could not be parsed ($(read_error))"
+            fi
+          }
+
+          # A fork PR is reviewed by the workflow_run-triggered Stage-2 lane.
+          # Its run objects are keyed to the DEFAULT branch context
+          # (head_branch/head_sha are main's) and their pull_requests arrays
+          # are empty, so no runs query by the PR head can find them. The lane
+          # writes its own run id into every write of the check-run it posts on
+          # the PR head, as `<!-- ai-review-fork-lane run=<id> -->` in
+          # `output.text`, and that marker is read back from the bound row.
+          # Not from `details_url`: GitHub stores an Actions-created
+          # check-run's details_url as the check-run's own page, whatever the
+          # lane's POST passed.
+          #
+          # Only a lane whose bound row is NOT passing is re-run. The re-run
+          # skips the model only when it reads the record, and a lane that
+          # cannot read it reviews normally, so re-running a passing lane can
+          # only spend a model call and risk turning it red. A lane with no
+          # row at this attempt yet needs nothing either. Each lane opens its
+          # row before it reads the record, so a run with no row has not read
+          # it yet; the scope lane, which posts its only row at the end, reads
+          # the record again just before it decides.
+          rerun_fork_lane() {
+            local label="$1"
+            local check_name="$2"
+            local lane="$3"
+            local fork_workflow="$4"
+            local want enc rows row status conclusion run_id run_json run_path run_status
+            bind_fork_trigger
+            if [ -z "$fork_trigger" ]; then
+              if [ -n "$fork_trigger_error" ]; then
+                fail_lane "$label" "$fork_trigger_error; re-run the latest $fork_workflow run manually"
+              else
+                echo "Fast Gate has not run for $HEAD on this pull request, so $label has not started; its run reads the record when it does."
+              fi
+              return 0
+            fi
+            want="$lane-pr-$PR-$fork_trigger"
+            enc="$(jq -rn --arg name "$check_name" '$name | @uri')"
+            # filter=all: the default (latest) returns one check-run per name,
+            # which can be a sibling pull request's row on a shared head.
+            if ! rows="$(gh api --method GET --paginate \
+              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all" \
+              2>"$ERR_FILE")"; then
+              fail_lane "$label" "reading the $check_name check-runs on $HEAD failed ($(read_error)); re-run the latest $fork_workflow run manually"
+              return 0
+            fi
+            if ! row="$(printf '%s' "$rows" | jq -cs --arg x "$want" '
+                [.[].check_runs[] | select(.external_id == $x)]
+                | max_by(.id) // empty' 2>"$ERR_FILE")"; then
+              fail_lane "$label" "the $check_name check-runs on $HEAD could not be parsed ($(read_error)); re-run the latest $fork_workflow run manually"
+              return 0
+            fi
+            if [ -z "$row" ]; then
+              echo "$label has posted no check-run for PR #$PR at this attempt ($want); its run reads the record before it reviews or publishes."
+              return 0
+            fi
+            status="$(jq -r '.status // ""' <<<"$row")" || status=""
+            conclusion="$(jq -r '.conclusion // ""' <<<"$row")" || conclusion=""
+            if [ "$status" = "completed" ]; then
+              case "$conclusion" in
+                success|neutral)
+                  echo "$label already passes for $HEAD ($conclusion); not re-run."
+                  return 0
+                  ;;
+              esac
+            fi
+            run_id="$(jq -r '(.output.text // "")
+              | capture("<!-- ai-review-fork-lane run=(?<id>[0-9]+) -->").id // empty' \
+              <<<"$row")" || run_id=""
+            if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+              fail_lane "$label" "the $check_name check-run bound to PR #$PR ($want) carries no lane-run id; re-run the latest $fork_workflow run manually"
+              return 0
+            fi
+            # The marker is written by the trusted Stage-2 lane, but a check-run
+            # of this name could in principle be posted by any workflow with
+            # checks:write -- verify the resolved run really is the expected
+            # fork lane before re-running anything.
+            if ! run_json="$(gh api "repos/$REPO/actions/runs/$run_id" 2>"$ERR_FILE")"; then
+              fail_lane "$label" "reading $fork_workflow run $run_id failed ($(read_error)); re-run it manually"
+              return 0
+            fi
+            run_path="$(jq -r '.path // ""' <<<"$run_json")" || run_path=""
+            if [ "$run_path" != ".github/workflows/$fork_workflow" ]; then
+              fail_lane "$label" "check-run for $label points at '$run_path', not $fork_workflow; refusing to re-run it"
+              return 0
+            fi
+            run_status="$(jq -r '.status // ""' <<<"$run_json")" || run_status=""
+            rerun_run "$run_id" "$label" "$run_status"
           }
 
           rerun_reviewer() {
@@ -237,72 +390,40 @@ jobs:
             local check_name="$3"
             local lane="$4"
             local fork_workflow="$5"
-            local enc details_url run_id run_json run_path status run_data
+            local run_id status run_data
 
             if [ "$IS_FORK" = "true" ]; then
-              # A fork PR is reviewed by the workflow_run-triggered Stage-2
-              # lane. Its run objects are keyed to the DEFAULT branch context
-              # (head_branch/head_sha are main's) and their pull_requests
-              # arrays are empty, so no runs query by the PR head can find
-              # them. The lane stamps its own run URL into the details_url of
-              # the check-run it posts on the PR head; read the run id back
-              # from the newest check-run this PR created there.
-              # The external_id is now attempt-scoped (<lane>-pr-<PR>-<run>-<attempt>),
-              # so match the PR dimension by prefix and let sort_by(.started_at)|last
-              # pick the newest attempt regardless of suffix. Trailing hyphen keeps
-              # -pr-9 from matching -pr-99. filter=all: the default (latest) returns one
-              # check-run per name, which leaves sort_by nothing to choose between.
-              enc="$(jq -rn --arg name "$check_name" '$name | @uri')"
-              details_url="$(gh api --method GET \
-                "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all" \
-                --jq "[.check_runs[]
-                       | select(.external_id != null)
-                       | select(.external_id | startswith(\"$lane-pr-$PR-\"))]
-                      | sort_by(.started_at) | last | .details_url // empty" \
-                2>/dev/null || true)"
-              run_id="$(printf '%s' "$details_url" \
-                | sed -n 's#.*/actions/runs/\([0-9][0-9]*\).*#\1#p')"
-              if [ -z "$run_id" ]; then
-                fail_lane "$label" "no $label fork-lane run recorded for PR #$PR at $HEAD (its check-run carries no run URL); re-run the latest $fork_workflow run manually"
-                return 0
-              fi
-              # The details_url is written by the trusted Stage-2 lane, but a
-              # check-run of this name could in principle be posted by any
-              # workflow with checks:write — verify the resolved run really is
-              # the expected fork lane before re-running anything.
-              run_json="$(gh api "repos/$REPO/actions/runs/$run_id" \
-                2>/dev/null || true)"
-              run_path="$(printf '%s' "$run_json" | jq -r '.path // empty' \
-                2>/dev/null || true)"
-              if [ "$run_path" != ".github/workflows/$fork_workflow" ]; then
-                fail_lane "$label" "check-run for $label points at '$run_path', not $fork_workflow; refusing to re-run it"
-                return 0
-              fi
-              status="$(printf '%s' "$run_json" | jq -r '.status' \
-                2>/dev/null || true)"
-              rerun_run "$run_id" "$label" "$status"
+              rerun_fork_lane "$label" "$check_name" "$lane" "$fork_workflow"
               return 0
             fi
 
-            run_data="$(gh api --method GET \
+            if ! run_data="$(gh api --method GET \
               "repos/$REPO/actions/workflows/$workflow/runs" \
               -f event=pull_request -f head_sha="$HEAD" -f per_page=20 \
-              2>/dev/null || true)"
+              2>"$ERR_FILE")"; then
+              fail_lane "$label" "reading the $workflow runs for $HEAD failed ($(read_error))"
+              return 0
+            fi
             run_id="$(printf '%s' "$run_data" | jq -r --argjson pr "$PR" --arg head "$HEAD" \
               '[.workflow_runs[]
-              | select(.head_sha == $head and (.pull_requests | any(.number == $pr)))][0].id // empty' \
-              2>/dev/null || true)"
+              | select(.head_sha == $head and (.pull_requests | any(.number == $pr)))][0].id // empty')" \
+              || run_id=""
             status="$(printf '%s' "$run_data" | jq -r --argjson pr "$PR" --arg head "$HEAD" \
               '[.workflow_runs[]
-              | select(.head_sha == $head and (.pull_requests | any(.number == $pr)))][0].status // empty' \
-              2>/dev/null || true)"
-            if [ -z "$run_id" ]; then
+              | select(.head_sha == $head and (.pull_requests | any(.number == $pr)))][0].status // empty')" \
+              || status=""
+            if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
               fail_lane "$label" "no $label workflow run found for PR #$PR at $HEAD"
               return 0
             fi
             rerun_run "$run_id" "$label" "$status"
           }
 
+          # Every lane clears a BLOCK the same way on both PR types: the
+          # re-run's "Resolve human override" step finds this recorded marker,
+          # skips the model review, and publishes a passing check-run with the
+          # "human override accepted" note. Re-running is what lets that skip
+          # take effect (a deterministic BLOCK would otherwise re-BLOCK).
           #                workflow             label      fork check-run name / external-id lane / fork workflow
           if [ "$TARGET" = "fable" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "claude-review.yml" "Opus 5.5" "Opus 5.5 Review" "opus" "fork-opus-review.yml"
@@ -310,15 +431,6 @@ jobs:
           if [ "$TARGET" = "gpt" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "codex-review.yml" "GPT 6.1" "GPT 6.1 Review" "gpt" "fork-gpt-review.yml"
           fi
-          # The design-family lanes clear a BLOCK the same way: the re-run's
-          # "Resolve human override" step finds this recorded marker, skips the
-          # model review, and the gate passes. Re-running is what lets that
-          # skip take effect (a deterministic BLOCK would otherwise re-BLOCK).
-          # The FORK design-family lanes consume no override marker, so their
-          # re-run is a fresh review roll rather than a forced pass. PR
-          # Readiness's supersession gate does read this record, so a clean
-          # re-roll replacing an earlier BLOCK at this head is not held as a
-          # dropped block.
           if [ "$TARGET" = "design" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "design-review.yml" "Design Review" "Design Review" "design" "fork-design-review.yml"
           fi
@@ -328,20 +440,16 @@ jobs:
           if [ "$TARGET" = "first-principles" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "first-principles-review.yml" "First Principles Review" "First Principles Review" "first-principles" "fork-first-principles-review.yml"
           fi
-          # What an override does to Security Scope Review, on each PR type.
-          #
-          # SAME-REPO: the re-run's "Resolve human override" step finds this marker
-          # and skips the review WHOLE -- the model call, the candidate validation
-          # and the per-platform differential -- and the lane's gate step passes on
-          # the marker alone. So a script-confirmed newly-refused operation clears
-          # here, exactly as a model-side BLOCK does. That uniformity is the point:
-          # the alternative is a pull request whose only path to green is withdrawing
-          # the corpus row the classifier flipped, which this lane refuses to accept
-          # as a fix, leaving human judgment with nothing to act through.
-          #
-          # FORK: the Stage-2 lane reads no override marker, so the re-run below
-          # recomputes both halves from the same two refs and reaches the same
-          # verdict. Recording an override for a fork PR does not clear that lane.
+          # Security Scope Review: the re-run's "Resolve human override" step
+          # finds this marker and skips the review WHOLE -- the model call, the
+          # candidate validation and the per-platform differential -- and the
+          # lane passes on the marker alone, past the per-head floor on a fork
+          # PR as well. So a script-confirmed newly-refused operation clears
+          # here, exactly as a model-side BLOCK does. That uniformity is the
+          # point: the alternative is a pull request whose only path to green is
+          # withdrawing the corpus row the classifier flipped, which this lane
+          # refuses to accept as a fix, leaving human judgment with nothing to
+          # act through.
           if [ "$TARGET" = "scope" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "security-scope-review.yml" "Security Scope Review" "Security Scope Review" "scope" "fork-security-scope-review.yml"
           fi
@@ -349,4 +457,21 @@ jobs:
           if [ -n "$failed_lanes" ]; then
             post_notice "Human judgment recorded, but the following reviewer lane(s) could not be re-run automatically: **$failed_lanes**. Re-run the lane's latest workflow run for \`$HEAD\` manually from the Actions tab." \
               || echo "::warning::could not post the rerun-failure notice"
+          fi
+
+          # PR Readiness recomputes here whenever no lane run is about to
+          # complete for it. A re-run lane's completion reaches readiness
+          # through its sweep, but the record also changes what readiness's
+          # disposition and supersession reads answer at this head, and a lane
+          # that was not re-run (passing, not started, or not re-runnable)
+          # produces no completion for the sweep to notice.
+          if [ "$rerun_count" -eq 0 ] || [ -n "$failed_lanes" ]; then
+            if gh api --method POST \
+              "repos/$REPO/actions/workflows/pr-readiness.yml/dispatches" \
+              -f ref="$DEFAULT_BRANCH" -f "inputs[pr]=$PR" -f "inputs[sha]=$HEAD" \
+              >/dev/null 2>"$ERR_FILE"; then
+              echo "Dispatched PR Readiness for #$PR at $HEAD."
+            else
+              echo "::warning::could not dispatch PR Readiness for #$PR at $HEAD ($(read_error)); its next sweep recomputes the verdict."
+            fi
           fi

@@ -224,7 +224,7 @@ do not ask — when all four hold:
 Start the reason with `agent:` so a reader can tell it from a person's ruling,
 and post it with `gh pr comment <n> --body "<the command>"`, naming one lane
 (`all` only when one ruling truly covers every lane). It binds that SHA alone: a
-new push needs a fresh judgment, and the fork lanes consume no override. **Report
+new push needs a fresh judgment. Fork lanes honour it like same-repo ones. **Report
 every override afterwards** — lane, span, SHA and reason — in the Phase 4 report.
 
 ## Scripts — decisions come from exit codes

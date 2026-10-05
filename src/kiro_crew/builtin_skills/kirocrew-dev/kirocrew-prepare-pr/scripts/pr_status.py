@@ -1866,8 +1866,9 @@ def decide(
         # for EVERY lane, not a new head, and on a fork PR too: the accepted
         # record itself adjudicates every block the lane raised at this head
         # before it was recorded (superseded_verdicts reads it), and the
-        # same-repo arm also replaces the slot with a note that carries no
-        # `[<LANE>-REVIEWED] <head>` stamp, so `current_stamped` goes False. And
+        # lane's override arm, same-repo and fork alike, also replaces the slot
+        # with a note that carries no `[<LANE>-REVIEWED] <head>` stamp, so
+        # `current_stamped` goes False. And
         # what clears the GPT family by decision is the workflow-authored
         # `(all downgraded on adjudication)` heading, NOT the
         # `[BLOCK-MERGE-DOWNGRADED]` marker: _sanctioned_downgrade reads the

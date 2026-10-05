@@ -1959,10 +1959,8 @@ Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
   so the set is closed and nothing fails open -- and a `partial` RFC main deliberately
   diverged from does not cover the diverged shape; or a maintainer's
   `/ai-review override first-principles <head>`
-  on that head. The override is consumed by the same-repo lane only: the fork lane
-  re-rolls instead, which cannot clear a trigger read off the base RFC list, so on a
-  fork PR the remedies are merging the RFC first or a maintainer pushing the branch to
-  this repository. The workflow writes the RFC status list from the base sha in the same
+  on that head. The same-repo and the fork lane both honour the override before the
+  model runs. The workflow writes the RFC status list from the base sha in the same
   step that extracts the contract, so a PR cannot record its own decision by flipping
   `status:` or shipping the RFC beside the change -- both read as `draft`. That base sha
   is the one the triggering event recorded, and a bare re-run reuses it: once the RFC has
@@ -2588,23 +2586,60 @@ characters, then posts a **bot-authored** marker comment that the reviewer workf
 trust. Raw PR comments can never turn a gate green directly; only that marker can.
 The scope is **this commit only**, so a new push needs a new judgment. The workflow
 then re-runs the affected reviewer, cancelling an in-flight run first so its stale
-verdict cannot race the human decision. On a fork PR the affected reviewer is the
-`workflow_run`-triggered Stage-2 lane, whose run objects are keyed to the default
-branch — the handler locates the lane run through the run URL the lane stamps into
-the `details_url` of the check-run it posts on the PR head, verifies the resolved
-run belongs to the expected fork workflow, and re-runs it. The fork lanes consume
-no override marker, so that re-run is a fresh review roll rather than a forced
-pass. PR Readiness's supersession gate does read the record, so when that clean
-re-roll replaces the BLOCK at the same head, the replaced block counts as
-adjudicated rather than dropped (see the supersession bullets under PR
-Readiness). A rerun failure after the judgment has recorded is reported as a warning
-annotation plus a PR notice naming the lane to re-run manually — never as a failed
-run, which would make a recorded judgment look rejected.
+verdict cannot race the human decision. The re-run's `Resolve human override` step
+reads the record before any credential or model call and, when it holds, skips the
+review: the lane completes its check `success` and replaces its slot comment with a
+"human override accepted" note, unstamped except on the two scope lanes, whose note
+carries the lane's stamp for this head. That is true of the Stage-2 fork lanes as
+well as the same-repo ones. A fork lane reads the record on the same terms, each
+failing closed: a `github-actions[bot]` author, the marker as the comment's leading
+bytes, this lane's target (or `all`) and this exact head. A record for another head
+or lane, a look-alike any other account wrote, or a comment feed the step could not
+read leaves the fork lane reviewing normally, so a read failure costs a model call
+and never clears a block. The cost of that direction: a lane re-run by hand after
+its note landed, whose read then fails, reviews again and can publish a fresh BLOCK
+at the head; the handler never re-runs a passing lane, and re-posting the override
+clears it. The fork Security Scope Review lane skips its validate and adjudicate
+jobs and its per-head floor the same way.
+
+On a fork PR the affected reviewer is the `workflow_run`-triggered Stage-2 lane,
+whose run objects are keyed to the default branch. The handler re-runs the exact
+lane run PR Readiness binds: the newest `Fast Gate` run for this head on the PR's
+head repository and branch, plus its attempt, names the expected check-run id
+`<lane>-pr-<PR>-<run>-<attempt>`, and the newest check-run carrying it is the row
+readiness reads. The lane writes its run id into that row's `output.text` as
+`<!-- ai-review-fork-lane run=<id> -->` on every write, and every write carries the
+conclusion the run's verdict earned. That includes the finalize step's fallback POST,
+which becomes the row readiness reads when the opening POST was lost, so it never
+publishes a fixed conclusion: not a neutral pass for a BLOCK, and not a red for an
+accepted override. `details_url` cannot carry
+it, because GitHub stores an Actions-created check-run's details_url as the
+check-run's own page. The handler accepts the id only as digits, verifies the run
+belongs to the expected fork workflow, and re-runs it only when the bound row is not
+already passing (`target=all` re-runs the red lanes, not the green ones): a passing
+lane has nothing to clear, and a re-run that could not read the record would review
+again and might turn it red. A lane with no row at this attempt needs nothing: each
+fork lane opens its row before it reads the record, and the handler posts the record
+before it reads the rows, so a run the handler finds no row for has not read the
+record yet. The scope lane opens no row before its `publish` job, so `publish` reads
+the record again just before it decides; the window left there is the time between
+that read and the check-run's POST, which includes the comment write. Every read keeps its exit status
+and error text, because `gh` prints the API's JSON error body on stdout on an HTTP
+error, so a failed read is reported as a failed read. When no lane was re-run, or a
+lane could not be, the handler dispatches `pr-readiness.yml` for the PR and head,
+because the record also changes what readiness's disposition and supersession reads
+answer at this head. A rerun failure after the judgment has recorded is reported as a
+warning annotation plus a PR notice naming the lane to re-run manually — never as a
+failed run, which would make a recorded judgment look rejected.
 `test/test_ai_review_workflows.py` pins the contract from both ends:
 `test_handler_requires_write_permission_fresh_sha_and_reason` for the authorization and
 freshness checks, and `test_fable_consumes_only_a_bot_authored_sha_scoped_record` plus
 `test_gpt_has_clear_verdict_banner_and_human_override` for the consumer side, so an
 untrusted PR comment or a decision for an earlier push cannot turn a gate green.
+`TestForkLaneConsumesTheOverrideRecord` runs each fork lane's resolve step against
+every failing condition and a failed read, and
+`TestOverrideHandlerReRunsTheBoundForkLaneRun` runs the handler's fork re-run against
+a stubbed API.
 
 ## `Security Scope Review`: what a tightening newly refuses
 
@@ -2727,22 +2762,22 @@ override scope <sha>` remains that lane's escape either way.
 Read the lane's comment. Each row is an operation the classifier confirms `<sha>`
 newly refuses, with the tier that refused it and the refusal text. Narrow the rule
 so it no longer catches the row. A human who has judged the scope acceptable by
-hand records `/ai-review override scope <current-sha>: <reason>` on the same-repo
-lane.
+hand records `/ai-review override scope <current-sha>: <reason>`, on a fork PR as on
+a same-repo one.
 
-**A fork PR's override does not clear this lane yet**, and that is a gap rather than
-a rule. The fork lane consumes no override marker today, so a scope judged acceptable
-on a fork clears only by re-raising the change from a branch in this repository —
-where the same-repo lane does honour the override — or by a maintainer with admin
-rights dismissing the required check. It is worth being exact about why, because the
-lane used to claim a threat it does not have: the marker is posted by
-`ai-review-human-override.yml` as `github-actions[bot]` after that workflow checks the
-commenter's write permission, and the same-repo lane authenticates it by that bot
-login on this repository's own comment feed, read with this repository's token and
-pinned to one head SHA. Nothing in that chain depends on the pull request being
-same-repo. Reading it on the fork lane is missing work, tracked in #10109, not a
-door held shut. A *transient* failure needs none of this: such a run marks its own
-check-run `[scope-floor:unsettled]`, sets no per-head floor, and clears on a re-run.
+On a fork PR the Stage-2 lane's `generate` job reads the record before it mints the
+Bedrock credential, with the same checks as the same-repo lane: the marker is posted
+by `ai-review-human-override.yml` as `github-actions[bot]` after that workflow checks
+the commenter's write permission, and the lane authenticates it by that bot login on
+this repository's own comment feed, read with this repository's token and pinned to
+one head SHA. Nothing in that chain depends on the pull request being same-repo.
+`generate` holds `pull-requests: read` for that one read, which decides only whether
+the model is called. An accepted record skips the model, `validate` and `adjudicate`,
+and `publish` completes the check `success` past the per-head floor: the floor
+exists so a re-roll cannot soften a measured block, and a writer's decision at this
+exact head is not a re-roll. A *transient* failure needs none of this: such a run
+marks its own check-run `[scope-floor:unsettled]`, sets no per-head floor, and clears
+on a re-run.
 
 ## `pr-readiness.yml`: the aggregator
 
@@ -2882,9 +2917,11 @@ status plus one `readiness:` label**.
   which.** On the GPT lane, clear the verdict the sanctioned way and the gate
   reads it as cleared. The whole-design lanes have no downgrade artifact at all,
   so a superseded BLOCK there cannot be stamped away. Their same-head exit, and
-  every lane's, is `/ai-review override <lane> <head>`. The same-repo arm
-  replaces the slot with an unstamped note, which ends the reading. A Stage-2
-  fork lane writes no note, so the gate reads the record itself. A block counts
+  every lane's, is `/ai-review override <lane> <head>`. The lane's override arm,
+  same-repo and Stage-2 fork alike, replaces the slot with an unstamped note, which
+  ends the reading. The gate also reads the record itself, so a block the note has
+  not replaced (the note's write failed, or a re-run could not read the record and
+  re-sampled instead) is still adjudicated. A block counts
   as adjudicated when an accepted override for that lane (or `all`) names this
   head EXACTLY, its marker comment was written by a trusted marker author
   (`github-actions[bot]` by default, with the marker as its leading bytes), and

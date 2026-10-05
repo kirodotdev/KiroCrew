@@ -320,16 +320,10 @@ rather than inventing a justification for it.
      document the diff adds or edits, or to nothing, fails.
    - a maintainer's explicit decision on THIS head, recorded as
      `/ai-review override first-principles <head sha>: <decision>`.
-     The same-repo workflow honours that before you are invoked, so
-     if you are reading this on a same-repo pull request, no such
-     decision exists yet for this head. The FORK lane consumes no
-     override marker (a re-run there is a fresh roll, which cannot
-     clear a trigger read off the base RFC list), so on a fork pull
-     request the two remedies are: merge the RFC to the base branch
-     first, or a maintainer pushes the branch to this repository,
-     where the override is honoured. Name the fork remedies in
-     `Clears when:` when the pull request is from a fork. In either
-     lane the list is read from the base commit the triggering event
+     The workflow honours that before you are invoked, on a fork pull
+     request as on a same-repo one, so if you are reading this, the
+     workflow found no such decision for this head. In either lane the list
+     is read from the base commit the triggering event
      recorded, which a bare re-run reuses: once the RFC has merged,
      the author refreshes it by pushing a commit (or rebasing), not
      by re-running -- say "push or rebase", never "re-run", when

@@ -613,11 +613,11 @@ def superseded_verdicts(
 
     A lane is also NOT named for a block that an accepted human-override record
     for this lane and this EXACT head post-dates: a repository writer adjudicated
-    the lane at this commit after that block was on the board. This is the only
-    same-head exit a FORK lane has. The same-repo override arm also replaces the
-    slot with an unstamped note, which ends the reading through
-    ``current_stamped``, but a Stage-2 fork lane writes no such note, so without
-    the record its clean re-roll reads as a dropped block that nothing can clear.
+    the lane at this commit after that block was on the board. Each lane's
+    override arm, same-repo and Stage-2 fork alike, also replaces the slot with
+    an unstamped note, which ends the reading through ``current_stamped``; the
+    record answers for the block whatever the slot shows, including when that
+    note never landed.
     Records come from ``human_override_instants``: a trusted bot author, the
     marker as the leading bytes, the exact head, and this lane's target or
     ``all``. A block published in or after the second the newest such record

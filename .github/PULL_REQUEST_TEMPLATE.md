@@ -47,9 +47,7 @@
        `implemented`; an RFC shipped in this PR, or
        whose status this PR flips, does not count. Without one the First
        Principles lane BLOCKs until a maintainer records the decision with
-       `/ai-review override first-principles <head-sha>: <reason>` (same-repo
-       PRs only -- on a fork PR the override is not consumed: merge the RFC
-       first, or ask a maintainer to push the branch to this repository). -->
+       `/ai-review override first-principles <head-sha>: <reason>`. -->
 
 ## Backwards compatibility
 
