@@ -45,9 +45,10 @@ the transport, not after it.
       maintainers before phase 4 is scheduled. This is **blocking** for a
       policy-constrained owner, so the viable answers are in-tree or an app
 - [ ] Resolve open question 3 (which sealing primitive) with a reviewer who has a
-      cryptography opinion, before phase 5
+      cryptography opinion, before phase 3 — sealing ships in phase 3's codec,
+      so the primitive gates the first PR that can put a frame on the wire
 
-## Phase 2 — Extract the transport seam (refactor, with one stated behaviour change)
+## Phase 2 — Extract the transport seam (refactor, with two stated behaviour changes)
 
 - [ ] Create `src/kiro_crew/instances/transports/__init__.py` with the
       `PeerTransport` protocol: `validate`, `open`, `mint`, `describe_target`,
@@ -89,6 +90,21 @@ exist, is what stops phase 3 from shipping a record that renders as SSH.
       `RemoteCrewPanel.tsx` and the inline `=== 'ssm' ? 'ssm' : 'ssh'` in
       `website/src/components/InstancesViewport.tsx`, which does not use the
       shared helper at all
+- [ ] Three further surfaces branch on the method with `ssh` as their last arm and
+      are not reached by the two helpers above, so the claim that this section
+      stops a record from rendering as SSH is false until they route through the
+      mapping too: the row badge and target in
+      `website/src/pages/settings/InstancesPanel.tsx` (prints the literal `'SSH'`),
+      the tab-row target in `website/src/components/InstanceTabBar.tsx` (falls back
+      to `ssh_host`), and the selector hint in
+      `website/src/pages/settings/InstanceFormFields.tsx`
+- [ ] **Second intended behaviour change, and the one with teeth:**
+      `InstanceFormFields.tsx` collapses an unrecognised `connection_method` to
+      `'ssh'` when it loads a record into the form, so opening an unmapped crew for
+      edit and saving it **rewrites its method** — data loss, not a label defect.
+      Make that arm exhaustive and add the regression test of record: loading a
+      record whose method the form does not know leaves the method unchanged on
+      save
 - [ ] **Intended behaviour change, stated rather than absorbed:** this corrects an
       existing defect — a `fargate` crew's failure report says `transport: ssh`
       today. Add it as the regression test of record: a `fargate` instance's
@@ -112,6 +128,16 @@ exist, is what stops phase 3 from shipping a record that renders as SSH.
       `CLOSE`, `MINT`, `RESTART`, `EVENT`, `CANCEL` — nine types, each with
       instance identity, correlation id, expiry and verified sender, and none
       carrying a command, path, user name or shell argument
+- [ ] Sealed-payload layer per RFC §3.7 in the same codec, using the primitive
+      chosen in phase 1: every `OPEN`/`DATA`/`MINT`/`RESTART`/`EVENT` payload is
+      closed between owner and peer, and the envelope carries only peer handle,
+      correlation id, length and expiry. There is no plaintext mode to turn on;
+      the in-trust posture is a statement in the guide, not a codec switch
+- [ ] Test: a frame captured at the service boundary carries no token, no
+      cookie, no header and no request path in readable form, and a frame whose
+      seal fails to verify is refused and audited, not forwarded to the listener
+- [ ] Test: the client refuses to dial a service at all when no sealing key is
+      enrolled, so no phase-3 build can put an unsealed frame on the wire
 - [ ] Implement the in-process loopback listener: bind `127.0.0.1:<local_port>`
       from the allocator, translate each HTTP request into `OPEN`/`DATA`/`CLOSE`
       and stream the response back
@@ -125,6 +151,11 @@ exist, is what stops phase 3 from shipping a record that renders as SSH.
       channel and releases the port
 - [ ] Config section for the transport, default off; document the default in the
       config reference
+- [ ] State in the phase 3 PR description that, until phase 6, the config
+      default-off and the missing add-instance entry are what keep an owner from
+      creating an `outbound` record by hand, so the reviewer judges that window
+      deliberately. Payload confidentiality does not depend on that window: it is
+      carried by the sealing above from the first frame
 
 ### Phase 3 posture controls — ship with the transport, not after it
 
@@ -134,11 +165,19 @@ to refuse, so these are in the same PR (RFC §5).
 - [ ] Add `allowed_methods` to `InstancesConfig`
       (`src/kiro_crew/config/sections.py`), defaulting to every registered
       method so existing installs are unchanged
-- [ ] Enforce it in `Instance.__post_init__`
-      (`src/kiro_crew/instances/registry.py`) so a forbidden method is refused
-      at validation — not at connect — and cannot be created or loaded
-- [ ] Test: with `allowed_methods=["outbound"]`, creating or loading an `ssh`,
+- [ ] Enforce it in `Instance.validate()`
+      (`src/kiro_crew/instances/registry.py`), which the add and update paths
+      already run, so the API cannot create or edit a forbidden record
+- [ ] Refuse a forbidden method on the connect path, before any forwarder or
+      socket is opened
+- [ ] Keep an existing forbidden record loaded and quarantined: `from_dict`
+      stays lenient, the record surfaces as `method_not_allowed` (not
+      connectable), and a save writes it back unchanged
+- [ ] Test: with `allowed_methods=["outbound"]`, creating or updating an `ssh`,
       `ssm` or `fargate` record fails, and the add-instance API returns a refusal
+- [ ] Test: tightening `allowed_methods` over existing `ssh`/`ssm` records
+      neither raises from load nor drops a record on the next save, and
+      connecting a quarantined record is refused
 - [ ] Add the pinned rendezvous-host allowlist to the same config section, and
       refuse a `hub_url` outside it in the same validation path
 - [ ] Test: an agent-written record naming an unlisted host fails validation
@@ -173,9 +212,15 @@ a row per security control, so the effective posture is registered as one.
 
 Phase 2 makes the mapping exhaustive; this gives the new entry something to print.
 
-- [ ] Add the badge label and the transport hint for `outbound` to every shipped
-      locale catalog (`website/src/i18n/locales/`), following the precedent set
-      when `fargate` landed in all thirteen rather than in English alone
+- [ ] Add all **three** strings for `outbound` to every shipped locale catalog
+      (`website/src/i18n/locales/`, thirteen catalogs), following what `fargate`
+      actually landed rather than the two-key reading: the badge label
+      `pages.settings.remoteCrewPanel.type_outbound`, the card hint
+      `pages.settings.remoteCrewPanel.transport_hint_outbound`, and the form's
+      method hint `pages.settings.instancesPanel.outbound_method_hint` — a
+      different namespace and a different naming scheme, and the one key `fargate`
+      has no `ssh`/`ssm` sibling for, so it is the one this phase will otherwise
+      ship without
 - [ ] Re-snapshot the untranslated-strings baseline if the gate requires it, and
       confirm the i18n tests pass rather than assuming they are unaffected
 
@@ -184,6 +229,8 @@ Phase 2 makes the mapping exhaustive; this gives the new entry something to prin
 - [ ] Peer-side dispatch acting on exactly three inbound verbs — forward HTTP to
       its own loopback dashboard port, mint its own token, restart its own gateway
       unit — and refusing everything else
+- [ ] The peer opens and seals payloads with the phase 3 codec under its own
+      enrolment key, and refuses any frame whose seal fails before dispatch
 - [ ] Test asserting the inbound dispatch table is exactly those three verbs, so a
       fourth capability cannot be added without failing a test. Assert the verb
       set, not the codec's frame count: a codec may grow a frame type harmlessly
@@ -220,10 +267,9 @@ a service they have no transport at all (RFC §5).**
 - [ ] Rendezvous service reference implementation or deployment recipe, per the
       answer to open question 1 — noting that "guide-only" is not an available
       answer for a policy-constrained owner
-- [ ] Sealed-payload layer per RFC §3.7, resolving open question 3 (which
-      primitive), so the service routes on an envelope and cannot read a body
-- [ ] Test asserting the service sees no token and no request path in a frame it
-      forwards
+- [ ] Test asserting the reference service routes on the envelope alone and sees
+      no token and no request path in a frame it forwards (the sealing itself
+      landed in phase 3; this proves the service needs nothing more)
 - [ ] Protocol document precise enough for a third party to implement the
       service
 - [ ] Guide section in `docs/guides/` covering enrolment, revocation and the

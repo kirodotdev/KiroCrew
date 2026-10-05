@@ -122,11 +122,20 @@ This RFC is small because it changes one layer and leaves four contracts alone.
 Introduce a `PeerTransport` protocol in a new module
 `src/kiro_crew/instances/transports/` with one implementation per method, and
 make `SshTunnelManager` hold a resolved transport instead of re-branching on a
-string. The protocol is exactly what the eight existing branch sites need:
+string. The protocol is exactly what the **eighteen** existing branch sites need.
+Counted at `18f9984b0` as every comparison of the method string (`==`, `!=`, `in`)
+on the gateway side: fifteen in `src/kiro_crew/instances/ssh_tunnel_manager.py`
+and three in `src/kiro_crew/instances/registry.py`, spread over record
+validation, `_resolve_transport`, the mint, connect, both self-heal tiers,
+diagnostics and restart. An earlier revision of this document said eight, which
+does not match the code at the revision it claims to audit; the figure above is
+measured and re-derivable from that definition.
+
+Those eighteen sites collapse onto six protocol members:
 
 | Member | Answers |
 |---|---|
-| `validate(inst)` | the per-method field validation now in `_resolve_transport` |
+| `validate(inst)` | the per-method field validation, which today is split across `Instance.validate` (`src/kiro_crew/instances/registry.py`, the `ssh` and `fargate` arms plus the method-membership check) and `_resolve_transport` |
 | `open(inst, local_port)` | bring up reach; return a handle the manager can poll and kill |
 | `mint(inst)` | return a dashboard token, or declare that this method has none (the `fargate` answer) |
 | `describe_target()` | the human-facing target string used in messages |
@@ -135,8 +144,8 @@ string. The protocol is exactly what the eight existing branch sites need:
 
 On the gateway side `ssh`, `ssm` and `fargate` move behind it with no behaviour
 change, asserted by the existing tests. The dashboard branches on the same string
-independently; that half of the seam is §3.9, and it carries one deliberate
-correction. This lands as its own PR and is separately revertible.
+independently; that half of the seam is §3.9, and it carries two deliberate
+corrections. This lands as its own PR and is separately revertible.
 
 ### 3.2 The outbound transport
 
@@ -344,14 +353,35 @@ gap — never an inherited SSH badge. This belongs in §3.1's refactor, before a
 new method exists, because it is the same seam and because fixing it afterwards
 means shipping the window first.
 
-The one intended behaviour change it carries is the `fargate` correction above.
-That is stated rather than absorbed: everything else in §3.1 is assert-unchanged,
-and this single line is an existing defect the exhaustive mapping repairs.
+It carries **two** intended behaviour changes, both stated rather than absorbed;
+everything else in §3.1 is assert-unchanged. The first is the `fargate`
+correction above. The second is heavier and was missed by an earlier revision of
+this section: `InstanceFormFields.tsx` collapses an unrecognised
+`connection_method` to `'ssh'` when it loads a record into the edit form
+(`inst.connection_method === 'fargate' ? 'fargate' : inst.connection_method ===
+'ssm' ? 'ssm' : 'ssh'`), so opening an unmapped crew and saving it **rewrites the
+stored method**. That is not a label falling through to a sibling, it is the
+record losing its transport, and it is the reason the mapping has to reach the
+form and not only the card.
 
-A mapping entry is not complete until it has strings in every shipped catalog.
-Each method carries a badge label and a hint, and the precedent set when `fargate`
-landed is that both went into all thirteen shipped locale catalogs, not into
-English alone (`website/src/i18n/locales/`). A method mapped in code but absent
+A mapping entry is not complete until it has strings in every shipped catalog, and
+the precedent `fargate` set is **three** strings per catalog, not two. Two of them
+follow one per-method family under `pages.settings.remoteCrewPanel`: the badge
+label `type_<method>` and the card hint `transport_hint_<method>`, both complete
+for `("ssh", "ssm", "fargate")` in all thirteen shipped locale catalogs
+(`website/src/i18n/locales/`, which is fourteen files less the `en.manual.json`
+overlay). The third does not follow it: the add-and-edit form's method hint
+`pages.settings.instancesPanel.fargate_method_hint`
+(`website/src/pages/settings/InstanceFormFields.tsx`) sits in a different
+namespace under a different naming scheme, and at `18f9984b0` it exists for
+`fargate` alone — there is no `ssh_method_hint` and no `ssm_method_hint` anywhere
+in the tree, because that selector's other two arms print content-derived keys
+(`tunnels_via_aws_ssm_start_session_no_inbound_ssh` and
+`opens_ssh_n_l_to_the_host_requires_non_interacti`) instead. There is, in other
+words, no `<method>_method_hint` family to extend: `fargate` is the only arm named
+after its method. A fourth method therefore needs all three strings, and the form
+hint is precisely the one an author following the two-key reading of this
+precedent will ship without. A method mapped in code but absent
 from twelve catalogs renders raw or falls back to English for the users who
 selected those languages, which is the same class of defect one layer down. So
 locale parity is a delivery requirement of the method, in the same change that
@@ -367,7 +397,7 @@ registers it — not a later translation pass.
 | Channel as a remote-exec surface | The peer acts on three parameterless verbs and no command execution. Asserted by a test that the peer's inbound dispatch table is exactly those three |
 | `RESTART` widened into an exec surface | The frame takes no arguments and is scoped to the peer's own gateway unit. No command, path, user or shell argument exists anywhere in the protocol to widen |
 | Channel redirected to an attacker's service | `hub_url` lives on an agent-writable record, so the record is not the control: the dial is pinned against a configured allowlist and a record naming an unlisted host fails validation (§5.3) |
-| A forbidden transport reintroduced after rollout | `allowed_methods` rejects it at record validation, not at connect time, so a non-compliant instance cannot be created or loaded (§5.2) |
+| A forbidden transport reintroduced after rollout | `allowed_methods` rejects it when a record is created or updated, refuses it on connect, and quarantines an existing record instead of loading it as connectable (§5.2) |
 | Token exfiltration | The token is minted by the peer, travels once sealed, and is stored by the local gateway the same way an SSM-minted token is. It is never written to the registry record |
 | Enrolment code replay | Single use, short expiry, invalidated on first exchange. The primary path has no code to replay at all (§3.6) |
 | Token IP pinning is inert behind a tunnel | Already true of every transport today and correctly diagnosed in [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md); this transport does not make it worse and does not claim to fix it |
@@ -398,12 +428,23 @@ today's behaviour and only bites when an owner turns it on.
 ### 5.2 Fail-closed method allowlist
 
 `InstancesConfig` gains `allowed_methods`, defaulting to every registered method.
-`Instance` validation (`__post_init__`, `src/kiro_crew/instances/registry.py`)
-rejects a method outside it, so a non-compliant record can be neither created via
-the API nor loaded into a live registry — the refusal is at validation, not at
-connect, because a record that merely fails to connect still sits in the fleet
-looking legitimate. The add-instance form offers only allowed methods, and
-`kirocrew doctor` reports the effective posture so an owner can evidence it.
+It is enforced at two points, and never by failing the load:
+
+- **Create and update.** `Instance.validate()` (`src/kiro_crew/instances/registry.py`,
+  the check the add and update paths already run) rejects a method outside the
+  list, so the API cannot create or edit a non-compliant record.
+- **Connect.** The connect path refuses a record whose method is not allowed,
+  before any forwarder or socket is opened.
+
+A record that already exists when the owner tightens the list stays LOADED and is
+QUARANTINED: `from_dict` keeps reading it leniently, the fleet view shows it with
+an explicit `method_not_allowed` state instead of a connect button, and a save
+writes it back unchanged. Failing the load would take the whole fleet view down;
+skipping the record would let the next save drop it from `instances.json`, which
+is silent data loss. The quarantine state is what keeps such a record from
+looking legitimate: it is visible, not connectable, and says why. The
+add-instance form offers only allowed methods, and `kirocrew doctor` reports the
+effective posture and every quarantined record so an owner can evidence it.
 
 An owner under policy sets `["outbound"]`. The other three then fail closed rather
 than sitting unused, and the posture is a config fact a reviewer can read.
@@ -563,9 +604,14 @@ Six PRs, each independently revertible. The full task list is
 
 1. **This document.**
 2. **Seam extraction** (§3.1) — refactor; existing tests unchanged, plus the
-   exhaustive surface mapping of §3.9 and its one intended `fargate` correction.
+   exhaustive surface mapping of §3.9 and its two intended corrections (the
+   `fargate` diagnostics label, and the edit form no longer rewriting an unmapped
+   method to `ssh`).
 3. **Outbound client** (§3.2–3.5) — registry fields, config section, listener,
-   frames, status, mint RPC, teardown. Carries the posture controls with it: the
+   frames, status, mint RPC, teardown. The frame codec ships **sealed** (§3.7):
+   the sealed posture is the one the client ships with, so it lands with the
+   first code that can put a frame on the wire, not after it, and a client with
+   no enrolled sealing key refuses to dial. Carries the posture controls with it: the
    `allowed_methods` gate (§5.2), the pinned hub allowlist (§5.3), proxy plus
    CA-bundle egress (§5.4) and the posture row (§5.7), because a transport that
    ships before its controls invites exactly the record it is meant to refuse. It
@@ -575,7 +621,8 @@ Six PRs, each independently revertible. The full task list is
    `RESTART` verb, the audit trail (§3.8), and independent supervision (§5.6).
 5. **Reference service and guide** (§3.7) — **not optional** for an owner under a
    no-SSH, no-SSM policy: without a service they have no transport at all. The
-   guide carries the enrolment, revocation, conformity checklist (§5.5) and the
+   service routes on the envelope phase 3 already seals; it adds no cryptography.
+   The guide carries the enrolment, revocation, conformity checklist (§5.5) and the
    break-glass cost (§5.6).
 6. **Owner-facing entry and diagnosis** — the add-instance option and its
    method-filtered form, `kirocrew doctor` checks, and per-method diagnosis. What
@@ -600,6 +647,10 @@ A phase is done when these are measured, not argued:
   by a test, and no frame in the codec carries a command, path, user or argument;
 - a method outside `allowed_methods` is refused at `Instance` validation and by
   the add-instance API, asserted by a test — not merely absent from the UI;
+- tightening `allowed_methods` over existing records neither raises from load nor
+  drops a record on the next save: each such record is quarantined
+  (`method_not_allowed`, not connectable), and connecting it is refused, asserted
+  by a test;
 - a `hub_url` outside the configured allowlist fails validation, asserted by a
   test, so an agent-written record cannot redirect a channel;
 - the channel dials out through a configured `CONNECT` proxy and trusts a supplied
@@ -641,7 +692,9 @@ A phase is done when these are measured, not argued:
    reusing the enrolment key for an authenticated channel under it, or deferring to
    the identity plane in
    [rfc-agentcore-identity-gateway.md](rfc-agentcore-identity-gateway.md). This
-   needs a reviewer with a cryptography opinion, not a decision taken here.
+   needs a reviewer with a cryptography opinion, not a decision taken here, and it
+   must be answered before phase 3, because phase 3's codec is the first code that
+   seals.
 4. **Multiple owners per peer.** Out of scope as written (one enrolment, one
    owner). Whether that stays true affects the `REGISTER` proof.
 
