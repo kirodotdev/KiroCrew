@@ -4046,7 +4046,7 @@ permits an unprivileged user namespace (stock Ubuntu 23.10+ is the notable excep
 gateway tracks is not the harness at all. `sandbox.namespace_argv` wraps the spawn as
 `<interpreter> -I -S <run dir>/kirocrew_sandbox_<pid>_<rand>.py <harness argv…>`, and the
 launcher's PARENT never execs: it writes the child's uid/gid maps and then blocks in
-`waitpid` for the life of the session (`sandbox_launcher.main`). So the gate's `argv[0]`
+`waitpid` for the life of the session (`sandbox_launcher_program.main`). So the gate's `argv[0]`
 is the interpreter and the harness sits past the script, where the two positional rules
 above were not looking, and every sandboxed agent root answered "not managed". The cost
 was not a spared process: the settled-token arm RETAINS an entry the argv gate does not

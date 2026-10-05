@@ -421,13 +421,22 @@ def test_the_namespace_launcher_forks_once_and_its_parent_only_waits(tier):
     parent_calls = {
         ast.unparse(c.func) for s in parent.body for c in ast.walk(s) if isinstance(c, ast.Call)
     }
-    child_calls = {
-        ast.unparse(c.func) for s in parent.orelse for c in ast.walk(s) if isinstance(c, ast.Call)
-    }
     assert "os.waitpid" in parent_calls
     assert not parent_calls & process_makers
     assert ast.unparse(parent.body[-1]).startswith("sys.exit(")
-    assert "os.execvp" in child_calls
+    # The child carries on past the parent's branch: its exec is reached through
+    # ``run_child``, whose last statement is ``exec_agent``, the one ``os.execvp``.
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    child = main.body[main.body.index(parent) + 1 :]
+    child_calls = {
+        ast.unparse(c.func) for s in child for c in ast.walk(s) if isinstance(c, ast.Call)
+    }
+    assert "run_child" in child_calls and not child_calls & process_makers
+    assert ast.unparse(functions["run_child"].body[-1]) == "exec_agent(launch, argv)"
+    exec_calls = {
+        ast.unparse(c.func) for c in ast.walk(functions["exec_agent"]) if isinstance(c, ast.Call)
+    }
+    assert "os.execvp" in exec_calls
 
 
 def test_spawn_sets_forking_launcher_false_for_a_noop_wrap(

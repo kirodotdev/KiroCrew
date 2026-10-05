@@ -4,33 +4,54 @@
 for each private window (``extra_private_dir_ids``), plus ``(device, inode)`` pairs for the
 Linux pre-exec hardlink scan (``extra_alias_credential_ids``). These cases pin how the
 Linux launcher and the Seatbelt profile consume them, and how a window inside a caller's
-mask is pinned, staged and retired. They build launcher text or a profile and spawn
-nothing.
+mask is pinned, staged and retired. They read the confinement plan, the profile the
+Seatbelt path is handed, and -- for what the Linux child does with the plan -- the
+launcher program's own stages driven against a stand-in libc over a real tree. They
+spawn nothing.
 """
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import inspect
-import json
 import os
 import re
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from test_sandbox_launcher_program import (
+    CoveringLibc,
+    RecordingLibc,
+    identity,
+    launch,
+    payload,
+    refusal,
+)
 
-from kiro_crew import sandbox, sandbox_plan
+from kiro_crew import sandbox
+from kiro_crew import sandbox_launcher_program as program
+from kiro_crew import sandbox_plan
 from kiro_crew.sandbox import SandboxCeilingUnsealable
 
 _POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits / bind-mount mask")
+#: The launcher program's stages pin through ``O_PATH`` and ``/proc/self/fd``, which only
+#: Linux has; the namespace launcher runs nowhere else.
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+)
+
+_MS_BIND = 4096
 
 
 @pytest.fixture(autouse=True)
 def _no_real_ssh_probe(monkeypatch):
-    """Pin the ``lru_cache``d ``ssh -V`` probe behind ``_build_launcher_script``.
+    """Pin the ``lru_cache``d ``ssh -V`` probe behind the namespace plan.
 
-    The launcher text these tests read must not vary with the host's ssh, and a real
-    binary spawned from the test process is a host dependency.
+    The plan these tests read must not vary with the host's ssh, and a real binary
+    spawned from the test process is a host dependency.
     """
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
@@ -269,14 +290,35 @@ class TestTheAliasedCredentialInodesReachTheLauncher:
         apps = tmp_path / "apps"
         apps.mkdir()
 
-        script = sandbox._build_launcher_script(
-            "cc", extra_hidden_dirs=(str(apps),), extra_alias_credential_ids=((7, 99),)
+        plan = sandbox._spawn_plan(
+            "namespace", "cc", extra_hidden_dirs=(str(apps),), extra_alias_credential_ids=((7, 99),)
         )
 
-        ids = json.loads(re.search(r"ALIAS_CREDENTIAL_IDS = (\[.*?\])\n", script, re.S).group(1))
-        assert ids == [[7, 99]]
-        assert "for _acid in ALIAS_CREDENTIAL_IDS:" in script
-        assert "os.scandir(_asr)" not in script, "the child must not read the tree"
+        assert sandbox_plan.namespace_payload(plan)["alias_credential_ids"] == [[7, 99]]
+
+        # The child arms its pre-exec scan from that literal alone. The credential is
+        # nowhere under the masked tree the child could read -- the apps tree is empty,
+        # as its mask leaves it -- and a second link to the carried inode is refused.
+        secret = tmp_path / "read-by-the-parent" / ".app_secret"
+        secret.parent.mkdir()
+        secret.write_text("secret")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        os.link(secret, workspace / "alias")
+        info = os.stat(secret)
+        child_plan = sandbox_plan.plan_confinement(
+            sandbox_plan.SandboxRequest(
+                tier="cc",
+                extra_hidden_dirs=(str(apps),),
+                extra_alias_credential_ids=((info.st_dev, info.st_ino),),
+            ),
+            sandbox_plan.PlanHost(home=str(tmp_path / "home")),
+        )
+        child = launch(tmp_path, sandbox_plan.namespace_payload(child_plan))
+        message = refusal(program.refuse_hardlinked_credentials, child, [str(workspace)])
+
+        assert message is not None, "the carried pair did not arm the pre-exec scan"
+        assert str(workspace / "alias") in message
 
     def test_the_seatbelt_backend_is_not_handed_inodes_it_cannot_use(self):
         """Stated boundary, not an oversight: there is no launcher script to scan in.
@@ -330,20 +372,43 @@ class TestAWindowAtOrAboveAHiddenLeaf:
         assert window in plan.windows
         assert profile_windows == []
 
-    @_POSIX_ONLY
-    def test_the_launcher_re_hides_a_nested_leaf_after_binding_the_window(self):
-        """Order is the property: before the window, the re-mask lands on a shadowed path."""
-        home = os.path.expanduser("~")
-        apps = os.path.join(home, ".kirocrew", "apps")
-        window = os.path.join(apps, "meetings", "data")
+    @_LINUX_ONLY
+    def test_the_launcher_re_hides_a_nested_leaf_after_binding_the_window(self, tmp_path):
+        """Order is the property: before the window, the re-mask lands on a shadowed path.
 
-        script = sandbox._build_launcher_script(
-            "cc", extra_hidden_dirs=(apps,), extra_private_dirs=(window,)
+        The production shape, planned and then placed by the launcher program over a real
+        tree: the tier masks the leaf ``apps/meetings/data/edits`` and the caller masks
+        ``apps`` with the containing window ``apps/meetings/data``. The leaf's own mask is
+        placed first, in list order, and the window's bind then lays the real tree back
+        over it, so the leaf is masked AGAIN after the window is bound.
+        """
+        home = tmp_path / "home"
+        apps = home / ".kirocrew" / "apps"
+        window = apps / "meetings" / "data"
+        nested = window / "edits"
+        nested.mkdir(parents=True)
+        (window / "notes.md").write_text("notes")
+        (nested / "draft").write_text("draft")
+        plan = sandbox_plan.plan_confinement(
+            sandbox_plan.SandboxRequest(
+                tier="cc", extra_hidden_dirs=(str(apps),), extra_private_dirs=(str(window),)
+            ),
+            sandbox_plan.PlanHost(
+                home=str(home), tier_dirs=(".kirocrew/apps/meetings/data/edits",)
+            ),
         )
+        assert plan.sensitive_dirs == (str(nested), str(apps))
+        assert plan.windows == (str(window),), "the namespace plan refused a containing window"
+        libc = CoveringLibc()
+        run = launch(tmp_path, sandbox_plan.namespace_payload(plan), libc=libc)
 
-        assert script.index("opening private window") < script.index(
-            "re-hiding nested masked directory"
-        )
+        assert refusal(program.place_masks, run) is None
+
+        targets = [call.target_path for call in libc.calls if call.flags & _MS_BIND]
+        last_nested = max(i for i, target in enumerate(targets) if target == str(nested))
+        assert targets.index(str(window)) < last_nested, "no mask re-hid the leaf after the window"
+        assert sorted(os.listdir(window)) == ["edits", "notes.md"]
+        assert os.listdir(nested) == [], "the nested leaf came back live inside the window"
 
     @_POSIX_ONLY
     def test_a_window_equal_to_a_hidden_leaf_is_still_refused_everywhere(self):
@@ -381,6 +446,19 @@ class TestAWindowAtOrAboveAHiddenLeaf:
         assert ordinary in plan.windows
 
 
+def _window_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A masked ``apps`` tree holding the window ``alpha/data`` and a sibling's secret."""
+    apps = tmp_path / "home" / ".kirocrew" / "apps"
+    window = apps / "alpha" / "data"
+    window.mkdir(parents=True)
+    (window / "state.db").write_text("own state")
+    sibling = apps / "aws-control" / "data"
+    sibling.mkdir(parents=True)
+    (sibling / "secret").write_text("sibling secret")
+    return apps, window, sibling
+
+
+@_LINUX_ONLY
 class TestTheLauncherPinsAWindowAgainstASwappedAncestor:
     """The window is resolved a component at a time, from its mask entry down.
 
@@ -390,44 +468,101 @@ class TestTheLauncherPinsAWindowAgainstASwappedAncestor:
     have its target traversed, and the staging bind runs before the mask loop, so the
     masked leaf would be re-bound read-write at the window's path.
 
-    Asserted over the generated launcher text, which is where the walk lives: the
-    descriptor-relative form must be present AND the whole-path form must be absent.
-    The second half is the one that catches a regression, since a reviewer adding a
-    convenience open beside the walk leaves the first half true.
+    Driven through the launcher program's staging stage with a stand-in libc: the swap is
+    made on a real tree, and what the stage mounts -- or declines to -- is read back.
     """
 
-    @_POSIX_ONLY
-    def test_every_component_below_the_mask_is_opened_relative_to_a_descriptor(self):
-        script = sandbox._build_launcher_script(
-            "cc",
-            extra_hidden_dirs=(os.path.join(os.path.expanduser("~"), ".kirocrew", "apps"),),
-            extra_private_dirs=(
-                os.path.join(os.path.expanduser("~"), ".kirocrew", "apps", "alpha", "data"),
-            ),
+    def test_every_component_below_the_mask_is_opened_relative_to_a_descriptor(self, tmp_path):
+        apps, window, sibling = _window_tree(tmp_path)
+        sibling_id = identity(sibling)
+        # The ancestor swap, after the parent approved the window by name.
+        os.rename(apps / "alpha", apps / "alpha.real")
+        os.symlink(apps / "aws-control", apps / "alpha", target_is_directory=True)
+        assert (window / "secret").exists(), "the swap must make the window name the sibling"
+        libc = CoveringLibc()
+        run = launch(
+            tmp_path, payload(sensitive_dirs=[str(apps)], private_dirs=[str(window)]), libc=libc
         )
 
-        assert "os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY" in script
-        assert "dir_fd=fd" in script
-        # The regression shape: one open of the joined path, which leaves every
-        # ancestor component following.
-        assert "os.open(p, os.O_PATH" not in script
+        program.stage_private_windows(run)
 
-    @_POSIX_ONLY
-    def test_the_bind_source_is_the_descriptor_not_the_name(self):
+        # Nothing was staged: the walk met the link at ``alpha`` and skipped the window,
+        # which leaves the parent's mask over it -- the fail-closed direction.
+        assert libc.calls == [], "the swapped ancestor was traversed and its leaf staged"
+        assert refusal(program.mask_sensitive, run) is None
+        assert os.listdir(apps) == [], "the masked tree shows something after the swap"
+        assert sibling_id not in {call.source_id for call in libc.calls}
+
+    def test_the_bind_source_is_the_descriptor_not_the_name(self, tmp_path):
         """A second name resolution is a second chance to be redirected."""
-        script = sandbox._build_launcher_script(
-            "cc",
-            extra_hidden_dirs=(os.path.join(os.path.expanduser("~"), ".kirocrew", "apps"),),
-            extra_private_dirs=(
-                os.path.join(os.path.expanduser("~"), ".kirocrew", "apps", "alpha", "data"),
-            ),
+        apps, window, _sibling = _window_tree(tmp_path)
+        approved = identity(window)
+        libc = _SwapBeforeFirstMount(window)
+        run = launch(
+            tmp_path, payload(sensitive_dirs=[str(apps)], private_dirs=[str(window)]), libc=libc
         )
 
-        assert "/proc/self/fd/%d" in script
-        assert 'staging private window %s" % p' in script
+        program.stage_private_windows(run)
+
+        # The window's name was swapped for a decoy between the pin and the bind, and the
+        # staging bind still reached the inode the pin holds.
+        assert libc.calls[0].source_id == approved
+        assert libc.calls[0].source_id != identity(window)
+
+        # And that mount is a control the spawn refuses without, named for the window.
+        failing = RecordingLibc(fail_at=1)
+        apps, window, _sibling = _window_tree(tmp_path / "again")
+        run = launch(
+            tmp_path / "again",
+            payload(sensitive_dirs=[str(apps)], private_dirs=[str(window)]),
+            libc=failing,
+        )
+        message = refusal(program.stage_private_windows, run)
+        assert message is not None
+        assert message.startswith(f"sandbox: BLOCKED -- staging private window {window} failed")
 
 
-@_POSIX_ONLY
+class _SwapBeforeFirstMount(RecordingLibc):
+    """A libc whose first ``mount`` finds *name* renamed aside and a decoy in its place.
+
+    The swap a same-uid writer can make after a stage has checked a directory and before
+    it mounts: whatever a mount's source or target names is judged at the moment
+    ``mount`` runs, so one that names the directory by path reaches the decoy.
+    """
+
+    def __init__(self, name: Path) -> None:
+        super().__init__()
+        self.name = name
+
+    def mount(self, source, target, fstype, flags, data):  # noqa: ANN001, ANN201
+        if not self.calls:
+            os.rename(self.name, self.name.with_name(self.name.name + ".moved"))
+            self.name.mkdir()
+        return super().mount(source, target, fstype, flags, data)
+
+
+class _EventLibc(CoveringLibc):
+    """A :class:`CoveringLibc` that keeps every mount and detach in one ordered log."""
+
+    def __init__(self, umount_errno: int = 0) -> None:
+        super().__init__()
+        self.events: list[tuple[str, str, int]] = []
+        self.umount_errno = umount_errno
+
+    def mount(self, source, target, fstype, flags, data):  # noqa: ANN001, ANN201
+        result = super().mount(source, target, fstype, flags, data)
+        self.events.append(("mount", self.calls[-1].target_path, flags))
+        return result
+
+    def umount2(self, target, flags):  # noqa: ANN001, ANN201
+        self.events.append(("detach", os.fsdecode(target), flags))
+        if self.umount_errno:
+            ctypes.set_errno(self.umount_errno)
+            return -1
+        return super().umount2(target, flags)
+
+
+@_LINUX_ONLY
 class TestNoSecondPathToAWindowOutlivesTheMask:
     """A window's staging mount is retired once every window is bound.
 
@@ -436,55 +571,86 @@ class TestNoSecondPathToAWindowOutlivesTheMask:
     re-mask that re-hides a masked leaf INSIDE the window lands on the window's own path:
     a non-recursive bind carries no submount, so the leaf stays readable through the stage.
 
-    Order is the property, which is why it is asserted over the generated launcher rather
-    than over a call count: retiring before the window is bound would leave the child with
-    no window, and retiring before the re-mask would leave the leaf live. A stage whose
-    mask root never materialized is retired by the same pass, so the sweep's own guarantee
-    is that NO stage outlives the mask loop.
+    Order is the property, which is why it is asserted over the order of the mounts and
+    detaches the launcher program's stages make rather than over a call count: retiring
+    before the window is bound would leave the child with no window, and retiring before
+    the re-mask would leave the leaf live. A stage whose mask root never materialized is
+    retired by the same pass, so the sweep's own guarantee is that NO stage outlives the
+    mask loop.
     """
 
     @staticmethod
-    def _script(apps: Path) -> str:
-        return sandbox._build_launcher_script(
-            "cc",
-            extra_hidden_dirs=(str(apps),),
-            extra_private_dirs=(str(apps / "alpha" / "data"),),
-        )
+    def _launch(tmp_path: Path, libc: RecordingLibc, **overrides: object):
+        apps, window, _sibling = _window_tree(tmp_path)
+        nested = window / "edits"
+        nested.mkdir()
+        (nested / "draft").write_text("draft")
+        fields: dict = {
+            "sensitive_dirs": [str(apps), str(nested)],
+            "private_dirs": [str(window)],
+        }
+        fields.update(overrides)
+        return launch(tmp_path, payload(**fields), libc=libc), apps, window, nested
 
     def test_every_stage_is_retired_after_the_windows_and_their_nested_masks(self, tmp_path):
-        script = self._script(tmp_path / "apps")
-        # The CALL, not the helper definition, which necessarily precedes the whole loop.
-        call = script.index("_retire_stage_or_die(_private_stage.pop(_staged)")
+        libc = _EventLibc()
+        run, _apps, window, nested = self._launch(tmp_path, libc)
 
-        assert script.index("opening private window") < call
-        assert script.index("re-hiding nested masked directory") < call
-        assert "for _staged in list(_private_stage):" in script
+        assert refusal(program.place_masks, run) is None
+
+        order = [(kind, path) for kind, path, _flags in libc.events]
+        stage = libc.calls[0].target_path
+        retired = order.index(("detach", stage))
+        assert order.index(("mount", str(window))) < retired
+        nested_masks = [i for i, event in enumerate(order) if event == ("mount", str(nested))]
+        assert nested_masks and max(nested_masks) < retired
+        # Every stage is retired, and nothing is left at its path.
+        assert libc.detached == [stage]
+        assert not os.path.exists(stage)
 
     def test_the_sweep_runs_outside_the_loop_that_may_skip_a_mask_root(self, tmp_path):
         """A stage whose mask root never materialized is still a second path to the tree."""
-        script = self._script(tmp_path / "apps")
-        loop = script.index("for d in SENSITIVE_DIRS:")
-        sweep = script.index("for _staged in list(_private_stage):")
-        readonly = script.index("for d in READONLY_DIRS:")
+        run_dir = tmp_path / "home" / ".kirocrew" / "run"
+        run_dir.mkdir(parents=True)
+        libc = _EventLibc()
+        run, apps, _window, _nested = self._launch(tmp_path, libc, readonly_dirs=[str(run_dir)])
 
-        # The sweep runs AFTER the SENSITIVE_DIRS mask loop, so it retires a stage even
-        # for a mask root that loop skipped. The READONLY_DIRS seal precedes the
-        # SENSITIVE_DIRS hide, so a hide lands on top of an already-sealed parent rather
-        # than under it. The load-bearing relationship here is that the sweep follows the
-        # mask loop.
-        assert readonly < loop < sweep
+        assert refusal(program.place_masks, run) is None
 
-    def test_retiring_detaches_and_refuses_rather_than_warning(self, tmp_path):
-        script = self._script(tmp_path / "apps")
-        body = script.split("def _retire_stage_or_die(")[1].split("\ndef ")[0]
+        # The READONLY seal precedes the hide, so a hide lands on top of an already-sealed
+        # parent rather than under it, and the sweep follows the mask loop.
+        order = [(kind, path) for kind, path, _flags in libc.events]
+        stage = libc.calls[0].target_path
+        assert order.index(("mount", str(run_dir))) < order.index(("mount", str(apps)))
+        assert order.index(("mount", str(apps))) < order.index(("detach", stage))
 
-        assert "_MNT_DETACH" in body
+        # The sweep retires a stage even for a mask root the mask loop skipped: the root
+        # vanished between the staging and the mask, so no mask and no window was placed.
+        libc = _EventLibc()
+        run, apps, _window, _nested = self._launch(tmp_path / "skipped", libc)
+        program.stage_private_windows(run)
+        stage = libc.calls[0].target_path
+        os.rename(apps, apps.with_name("apps.gone"))
+
+        assert refusal(program.mask_sensitive, run) is None
+        assert [kind for kind, _path, _flags in libc.events] == ["mount", "detach"]
+        assert libc.detached == [stage]
+
+    def test_retiring_detaches_and_refuses_rather_than_warning(self, tmp_path, capfd):
+        libc = _EventLibc(umount_errno=errno.EBUSY)
+        run, _apps, _window, _nested = self._launch(tmp_path, libc)
+
+        message = refusal(program.place_masks, run)
+
+        detaches = [flags for kind, _path, flags in libc.events if kind == "detach"]
+        assert detaches == [program._MNT_DETACH]
         # A warning here would leave the exposure in place with the spawn proceeding.
-        assert "sys.exit(" in body
-        assert "sandbox: WARNING" not in body
+        assert message is not None
+        assert message.startswith("sandbox: BLOCKED -- could not retire the staging mount for")
+        assert "sandbox: WARNING" not in capfd.readouterr().err
 
 
-@_POSIX_ONLY
+@_LINUX_ONLY
 class TestTheMaskBindsOntoTheApprovedDirectoryNotItsName:
     """Comparing the inode and then mounting on the NAME leaves the race open.
 
@@ -494,36 +660,56 @@ class TestTheMaskBindsOntoTheApprovedDirectoryNotItsName:
     identity keeps the plain name.
     """
 
-    @staticmethod
-    def _script(apps: Path, ids: tuple) -> str:
-        return sandbox._build_launcher_script(
-            "cc",
-            extra_hidden_dirs=(str(apps),),
-            extra_hidden_dir_ids=ids,
-        )
-
     def test_the_bind_target_becomes_the_compared_descriptor(self, tmp_path):
         apps = tmp_path / "apps"
         apps.mkdir()
-
+        (apps / "secret").write_text("secret")
         st = os.lstat(str(apps))
-        script = self._script(apps, ((str(apps), st.st_dev, st.st_ino),))
-        region = script.split("_want_dir_id = SENSITIVE_DIR_IDS.get(d)")[1]
-        region = region.split("hiding credential directory")[0]
+        approved = (st.st_dev, st.st_ino)
+        libc = _SwapBeforeFirstMount(apps)
+        run = launch(
+            tmp_path,
+            payload(sensitive_dirs=[str(apps)], sensitive_dir_ids={str(apps): list(approved)}),
+            libc=libc,
+        )
 
-        assert 'target = ("/proc/self/fd/%d" % _mask_fd).encode()' in region
-        # The descriptor must still be open when the mount runs: closing it first is the
-        # regression that turns the comparison back into a name check.
-        assert "os.close(_mask_fd)" not in region.split("target = (")[1]
+        message = refusal(program.mask_sensitive, run)
+
+        # The mask landed on the approved directory, wherever its name went, and the
+        # descriptor was still open when the mount ran: a closed one names nothing.
+        assert libc.calls[0].target_id == approved
+        assert libc.calls[0].target_id != identity(apps)
+        # The name now reaches the decoy rather than the mask, which the read-back refuses.
+        assert message is not None and "does not reach its mask after mounting" in message
 
     def test_a_caller_that_vouches_for_nothing_still_binds_on_the_name(self, tmp_path):
+        """A symlinked mask root is a supported layout when no identity was approved.
+
+        Only an approved root is opened no-follow and refused as a link; any other root
+        is pinned once through the name, following the link, and masked.
+        """
+        real = tmp_path / "real-apps"
+        real.mkdir()
+        (real / "secret").write_text("secret")
         apps = tmp_path / "apps"
-        apps.mkdir()
+        apps.symlink_to(real, target_is_directory=True)
+        st = os.stat(real)
 
-        script = self._script(apps, ())
+        run = launch(tmp_path, payload(sensitive_dirs=[str(apps)]))
 
-        assert "if _want_dir_id is not None:" in script
-        assert "_mask_fd = -1" in script
+        assert refusal(program.mask_sensitive, run) is None
+        assert os.listdir(apps) == [], "the tree the link reaches is still readable"
+
+        (tmp_path / "vouched").mkdir()
+        vouched = launch(
+            tmp_path / "vouched",
+            payload(
+                sensitive_dirs=[str(apps)], sensitive_dir_ids={str(apps): [st.st_dev, st.st_ino]}
+            ),
+        )
+        message = refusal(program.mask_sensitive, vouched)
+        assert message is not None
+        assert message.startswith(f"sandbox: BLOCKED -- cannot open approved mask root {apps}")
 
 
 class TestThePrivateWindowGate:

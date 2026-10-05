@@ -495,9 +495,10 @@ def _sandbox_launcher_wrapped_argv(tokens: list[bytes]) -> list[bytes] | None:
         ``<interpreter> -I -S <run dir>/kirocrew_sandbox_<pid>_<rand>.py <harness argv…>``
 
     and the launcher's parent never execs: it writes the child's uid/gid maps and then
-    blocks in ``waitpid`` for the life of the session (``sandbox_launcher.main``). So the
-    gate's ``argv[0]`` is the interpreter and the harness sits past the script, out of
-    reach of :func:`_harness_naming_tokens`'s two positions.
+    blocks in ``waitpid`` for the life of the session
+    (``sandbox_launcher_program.main``). So the gate's ``argv[0]`` is the interpreter and
+    the harness sits past the script, out of reach of :func:`_harness_naming_tokens`'s two
+    positions.
 
     Recognising it is not optional, because an unrecognised agent root is UNRECLAIMABLE
     rather than spared: :func:`_sweep_pid_entries` RETAINS a settled-token entry the argv

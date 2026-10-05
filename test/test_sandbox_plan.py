@@ -443,6 +443,7 @@ def test_the_payload_carries_no_value_python_cannot_read_as_a_literal() -> None:
     assert payload["mask_occupants"][f"{HOME}/.ssh"] == [1, 2, 1, 1, 3, 4]
     assert payload["hide_ssh"] == 1
     assert payload["strict_host_key_opt"] == " -o StrictHostKeyChecking=accept-new"
+    assert payload["stand_in_roots"] == ["/run/user/1000", "/dev/shm"]
 
 
 # --------------------------------------------------------------------------- #

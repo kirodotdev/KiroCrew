@@ -2491,7 +2491,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
     """
 
     def test_the_masked_targets_are_directories_that_exist(self) -> None:
-        """A FILE path silently no-ops: the launcher's `SENSITIVE_DIRS` loop is guarded by
+        """A FILE path silently no-ops: the launcher's `sensitive_dirs` loop is guarded by
         `os.path.isdir(target)`, and files are masked through a separate list that
         `sandboxed_spawn_argv` does not expose. Passing files is why the first attempt at
         this fix changed nothing."""

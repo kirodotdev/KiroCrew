@@ -1,52 +1,50 @@
-"""The two programs the sandbox writes out are the bytes they were before the split.
+"""The two programs a spawn writes out, against a fully pinned host.
 
-The Linux namespace launcher (``_build_launcher_script``) and the macOS Seatbelt profile
-(``_build_seatbelt_profile``) are generated text, and a mask, seal or carve-out lives in
-that text: one reordered block or one dropped path changes what the agent can reach, and
-nothing else in the gateway would notice. So each builder is pinned here byte for byte,
-as a SHA-256 of its output for a matrix of inputs that covers every tier and every kind
-of extra path the callers pass, with every host input pinned so the digest does not
-depend on the machine that computes it.
+The Linux namespace launcher and the macOS Seatbelt profile are renderings of one
+confinement plan (``kiro_crew.sandbox_plan``). Each is pinned here by ONE golden, taken
+through the live host adapter (``kiro_crew.sandbox._live_plan_host``) with every host
+input pinned so the golden does not depend on the machine that computes it: the run
+root is ``tmp_path`` and is folded to ``<ROOT>``, and every table whose entries reach
+either program is replaced by the small stand-in in ``_PINNED_TABLES``, so a leaf
+added to a real table leaves these goldens alone.
 
-The digests were recorded from the builders as they stood before they moved into
-``kiro_crew.sandbox_launcher`` and ``kiro_crew.sandbox_seatbelt``. The move changed
-exactly one line of the generated launcher: its docstring spelled the product name as
-one word, which the brand gate refuses on a line a change adds, and it now reads
-``Kiro Crew``. Every digest is therefore taken with that one line restored, and a
-separate case pins that the new spelling is present exactly once.
+* The launcher's golden is the PLAN DATA it carries -- its one substitution -- for a
+  spawn that passes every kind of extra path and identity. The program text around it
+  is the ``kiro_crew.sandbox_launcher_program`` module itself, which
+  ``test_sandbox_launcher_program.py`` drives stage by stage.
+* The profile's golden is its full text for a spawn with private windows.
+* Every host reader and table the live host plans from is read off
+  ``kiro_crew.sandbox`` when it runs, so a test that rebinds one there reaches the plan
+  of either backend.
 
-The host inputs are pinned at names that stay in ``kiro_crew.sandbox`` and are read
-there or through it at call time: ``config_dir``, ``kiro_agents_dir``,
-``carveout_chain_has_planted_link``, the voice-runtime path cache and
-``_ssh_supports_accept_new``, plus ``Path.home``, ``HOME``, the pod variables and the
-process ids. The run root is ``tmp_path`` and is folded to ``<ROOT>`` before hashing.
-Every table whose entries reach either program -- the tier lists, the crew-home leaf
-tables, the cc files, the pod sub-leaves and the environment lists -- is replaced by the
-small stand-in in ``_PINNED_TABLES``, so adding a leaf or a directory to a real table
-leaves these digests alone. A change to either program's text does move them; it
-updates them in the same commit, from the ``actual`` digest each failing case reports.
+Both goldens are the output the builders produced before the plan existed, so they
+also pin that the plan changed nothing a spawn sees. What each field means is pinned
+in ``test_sandbox_plan.py``, as a table over ``plan_confinement``.
 """
 
 from __future__ import annotations
 
-import hashlib
+import dataclasses
+import json
+import logging
 import os
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
+from test_sandbox_launcher_program import rendered_payload
 
-from kiro_crew import sandbox
+from kiro_crew import sandbox, sandbox_launcher, sandbox_launcher_program, sandbox_plan
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="both programs are POSIX-only: the launcher reads os.getuid and the paths are POSIX",
 )
 
-#: The launcher docstring line as it stood before the split, and as it reads now.
-_OLD_DOC_LINE = '"""Namespace sandbox launcher — spawned by KiroCrew.'  # brand-ok: pre-split text
-_NEW_DOC_LINE = '"""Namespace sandbox launcher — spawned by Kiro Crew.'
+#: The launcher docstring line, spelled with the product name in two words.
+_DOC_LINE = '"""Namespace sandbox launcher — spawned by Kiro Crew.'
 
 _UID, _GID = 4242, 4343
 
@@ -103,9 +101,9 @@ _PINNED_TABLES: dict[str, object] = {
 class _Host:
     """The pinned host a case renders against."""
 
-    def __init__(self, root: Path, home: str = "home") -> None:
+    def __init__(self, root: Path) -> None:
         self.root = root
-        self.home = root / home
+        self.home = root / "op"
         self.crew = root / "crew"
         self.home.mkdir()
         self.crew.mkdir()
@@ -118,9 +116,9 @@ class _Host:
         return (str(crew), str(root), (str(root),), (str(run),), (str(run), str(crew)))
 
 
-def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch, home: str = "home") -> _Host:
+def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     """Pin every host input either builder reads under ``root``."""
-    pinned = _Host(root.resolve(), home)
+    pinned = _Host(root.resolve())
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: pinned.home))
     monkeypatch.setenv("HOME", str(pinned.home))
     for name in ("KIROCREW_POD", "KIROCREW_OS_HOME", "KIRO_HOME"):
@@ -141,13 +139,6 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch, home: str = "home"
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     return _pinned_host(tmp_path, monkeypatch)
-
-
-def _default_home(host: _Host, monkeypatch: pytest.MonkeyPatch) -> None:
-    crew = host.home / ".kiro" / "crew"
-    crew.mkdir(parents=True)
-    monkeypatch.setattr(sandbox, "config_dir", lambda: crew)
-    monkeypatch.setattr(sandbox, "_voice_runtime_paths_cache", host.voice_cache(crew))
 
 
 def _symlinked_home(host: _Host, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,28 +180,6 @@ def _carveout(host: _Host) -> dict[str, Any]:
     probe = host.crew / "run" / "mcp-tmp" / "probe-x"
     probe.mkdir(parents=True)
     return {"extra_writable_dirs": (str(probe),)}
-
-
-def _refused_carveouts(host: _Host) -> dict[str, Any]:
-    return {
-        "extra_writable_dirs": (
-            str(host.crew / "run"),
-            str(host.crew / "run" / "voice-runtime"),
-            "relative/dir",
-            str(host.root / "missing"),
-        )
-    }
-
-
-def _hidden_and_visible(host: _Host) -> dict[str, Any]:
-    exposed = host.crew / "run" / "exposed"
-    inside = exposed / "inside"
-    inside.mkdir(parents=True)
-    return {
-        "extra_hidden_dirs": (str(exposed),),
-        "extra_visible_dirs": (str(exposed), str(host.crew / "policy_cache")),
-        "extra_writable_dirs": (str(inside),),
-    }
 
 
 def _private_windows(host: _Host) -> dict[str, Any]:
@@ -256,155 +225,191 @@ def _expose(host: _Host) -> dict[str, Any]:
     return {"extra_expose_files": (str(host.home / ".aws" / "sso" / "cache" / "token.json"),)}
 
 
-_Setup = Callable[[_Host, pytest.MonkeyPatch], None]
-_Kwargs = Callable[[_Host], dict[str, Any]]
+def _everything(host: _Host) -> dict[str, Any]:
+    """Every kind of extra path and identity a caller passes, in one spawn."""
+    merged: dict[str, Any] = {}
+    for part in (_identities, _private_windows, _carveout, _expose, _crew_home_alias):
+        for key, value in part(host).items():
+            merged[key] = merged[key] + value if key in merged else value
+    merged["extra_visible_dirs"] = (str(host.crew / "policy_cache"),)
+    merged["strip_python_env"] = True
+    merged["forward_ssh_auth_sock"] = True
+    return merged
 
-#: case -> (tier, host setup or None, builder keyword arguments or None).
-_LAUNCHER_CASES: dict[str, tuple[str, _Setup | None, _Kwargs | None]] = {
-    "strict": ("strict", None, None),
-    "standard": ("standard", None, None),
-    "cc": ("cc", None, None),
-    "strict-default-home": ("strict", _default_home, None),
-    "standard-default-home": ("standard", _default_home, None),
-    "strict-symlinked-home": ("strict", _symlinked_home, None),
-    "strict-no-accept-new": ("strict", _no_accept_new, None),
-    "strict-python-env-ssh-sock": (
-        "strict",
-        None,
-        lambda h: {"strip_python_env": True, "forward_ssh_auth_sock": True},
-    ),
-    "cc-python-env-ssh-sock": (
-        "cc",
-        None,
-        lambda h: {"strip_python_env": True, "forward_ssh_auth_sock": True},
-    ),
-    "strict-pod": ("strict", _pod_home, None),
-    "standard-pod": ("standard", _pod_home, None),
-    "standard-notebook-chain": ("standard", _planted_notebook_chain, None),
-    "standard-carveout": ("standard", None, _carveout),
-    "strict-carveout": ("strict", None, _carveout),
-    "cc-carveout": ("cc", None, _carveout),
-    "standard-refused-carveouts": ("standard", None, _refused_carveouts),
-    "standard-hidden-and-visible": ("standard", None, _hidden_and_visible),
-    "cc-private-windows": ("cc", None, _private_windows),
-    "strict-identities": ("strict", None, _identities),
-    "strict-crew-home-alias": ("strict", None, _crew_home_alias),
-    "cc-expose": ("cc", None, _expose),
-    "strict-expose": ("strict", None, _expose),
+
+def _fold(value: Any, host: _Host) -> Any:
+    """*value* with the run root spelled ``<ROOT>``."""
+    if isinstance(value, str):
+        return value.replace(str(host.root), "<ROOT>")
+    if isinstance(value, list):
+        return [_fold(item, host) for item in value]
+    if isinstance(value, dict):
+        return {_fold(k, host): _fold(v, host) for k, v in value.items()}
+    return value
+
+
+#: The plan data the launcher carries for ``_everything`` at the strict tier in a pod.
+_LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
+    "real_uid": 4242,
+    "real_gid": 4343,
+    "sensitive_dirs": [
+        "<ROOT>/op/.kiro/crew-auth-staging",
+        "<ROOT>/op/.gnupg",
+        "<ROOT>/op/.config/gcloud",
+        "<ROOT>/crew/.vault",
+        "<ROOT>/op/.kirocrew/.vault",
+        "<ROOT>/op/.kirocrew/policy_cache",
+        "<ROOT>/crew/run/voice-runtime",
+        "<ROOT>/op/.kirocrew/run/voice-runtime",
+        "<ROOT>/crew/.env",
+        "<ROOT>/crew/diag",
+        "<ROOT>/crew/apps/aws-control/data",
+        "<ROOT>/crew/workspace/md-notebook/pat",
+        "<ROOT>/crew/workspace/md-notebook/vaults.json",
+        "<ROOT>/crew/live_target.json",
+        "<ROOT>/crew/crew-panels",
+        "<ROOT>/op/.kirocrew/.env",
+        "<ROOT>/op/.kirocrew/diag",
+        "<ROOT>/op/.kirocrew/apps/aws-control/data",
+        "<ROOT>/op/.kirocrew/workspace/md-notebook/pat",
+        "<ROOT>/op/.kirocrew/workspace/md-notebook/vaults.json",
+        "<ROOT>/op/.kirocrew/live_target.json",
+        "<ROOT>/op/.kirocrew/crew-panels",
+        "<ROOT>/op/.aws",
+        "<ROOT>/op/.config/gh",
+        "<ROOT>/op/.kube",
+        "<ROOT>/podhome/.kiro/crew-auth-staging",
+        "<ROOT>/podhome/.gnupg",
+        "<ROOT>/podhome/.config/gcloud",
+        "<ROOT>/podhome/.kiro/crew/.vault",
+        "<ROOT>/podhome/.kiro/crew/policy_cache",
+        "<ROOT>/podhome/.kirocrew/.vault",
+        "<ROOT>/podhome/.kirocrew/policy_cache",
+        "<ROOT>/podhome/.kiro/crew/run/voice-runtime",
+        "<ROOT>/podhome/.kirocrew/run/voice-runtime",
+        "<ROOT>/podhome/.kiro/crew/.env",
+        "<ROOT>/podhome/.kiro/crew/diag",
+        "<ROOT>/podhome/.kiro/crew/apps/aws-control/data",
+        "<ROOT>/podhome/.kiro/crew/workspace/md-notebook/pat",
+        "<ROOT>/podhome/.kiro/crew/workspace/md-notebook/vaults.json",
+        "<ROOT>/podhome/.kiro/crew/live_target.json",
+        "<ROOT>/podhome/.kiro/crew/crew-panels",
+        "<ROOT>/podhome/.kirocrew/.env",
+        "<ROOT>/podhome/.kirocrew/diag",
+        "<ROOT>/podhome/.kirocrew/apps/aws-control/data",
+        "<ROOT>/podhome/.kirocrew/workspace/md-notebook/pat",
+        "<ROOT>/podhome/.kirocrew/workspace/md-notebook/vaults.json",
+        "<ROOT>/podhome/.kirocrew/live_target.json",
+        "<ROOT>/podhome/.kirocrew/crew-panels",
+        "<ROOT>/podhome/.config/gh",
+        "<ROOT>/podhome/.kube",
+        "<ROOT>/podhome/.aws/config",
+        "<ROOT>/podhome/.aws/credentials",
+        "<ROOT>/crew/apps",
+    ],
+    "sensitive_dir_ids": {"<ROOT>/crew/apps": [13, 14]},
+    "private_dirs": ["<ROOT>/crew/apps/alpha/data"],
+    "private_dir_ids": {"<ROOT>/crew/apps/alpha/data": [11, 12]},
+    "readonly_dirs": [
+        "<ROOT>/crew/policy_cache",
+        "<ROOT>/crew/run",
+        "<ROOT>/crew/subagents",
+        "<ROOT>/crew/security_policy.json",
+        "<ROOT>/crew/profiles",
+        "<ROOT>/crew/apps/.dev-grants.json",
+        "<ROOT>/crew/mcp-launch-approvals",
+        "<ROOT>/crew/mcp/resolved",
+        "<ROOT>/op/.kirocrew/subagents",
+        "<ROOT>/op/.kirocrew/security_policy.json",
+        "<ROOT>/op/.kirocrew/profiles",
+        "<ROOT>/op/.kirocrew/apps/.dev-grants.json",
+        "<ROOT>/op/.kirocrew/mcp-launch-approvals",
+        "<ROOT>/op/.kirocrew/mcp/resolved",
+        "<ROOT>/op/.kiro/agents",
+    ],
+    "writable_dirs": ["<ROOT>/crew/run/mcp-tmp/probe-x"],
+    "sensitive_files": [
+        "<ROOT>/op/.npmrc",
+        "<ROOT>/op/.netrc",
+        "<ROOT>/crew/.env",
+        "<ROOT>/op/.kirocrew/.env",
+        "<ROOT>/op/.kiro/crew-auth-staging",
+        "<ROOT>/op/.gnupg",
+        "<ROOT>/op/.config/gcloud",
+        "<ROOT>/crew/.vault",
+        "<ROOT>/op/.kirocrew/.vault",
+        "<ROOT>/op/.kirocrew/policy_cache",
+        "<ROOT>/crew/run/voice-runtime",
+        "<ROOT>/op/.kirocrew/run/voice-runtime",
+        "<ROOT>/crew/diag",
+        "<ROOT>/crew/apps/aws-control/data",
+        "<ROOT>/crew/workspace/md-notebook/pat",
+        "<ROOT>/crew/workspace/md-notebook/vaults.json",
+        "<ROOT>/crew/live_target.json",
+        "<ROOT>/crew/crew-panels",
+        "<ROOT>/op/.kirocrew/diag",
+        "<ROOT>/op/.kirocrew/apps/aws-control/data",
+        "<ROOT>/op/.kirocrew/workspace/md-notebook/pat",
+        "<ROOT>/op/.kirocrew/workspace/md-notebook/vaults.json",
+        "<ROOT>/op/.kirocrew/live_target.json",
+        "<ROOT>/op/.kirocrew/crew-panels",
+        "<ROOT>/op/.aws",
+        "<ROOT>/op/.config/gh",
+        "<ROOT>/op/.kube",
+        "<ROOT>/podhome/.kiro/crew-auth-staging",
+        "<ROOT>/podhome/.gnupg",
+        "<ROOT>/podhome/.config/gcloud",
+        "<ROOT>/podhome/.kiro/crew/.vault",
+        "<ROOT>/podhome/.kiro/crew/policy_cache",
+        "<ROOT>/podhome/.kirocrew/.vault",
+        "<ROOT>/podhome/.kirocrew/policy_cache",
+        "<ROOT>/podhome/.kiro/crew/run/voice-runtime",
+        "<ROOT>/podhome/.kirocrew/run/voice-runtime",
+        "<ROOT>/podhome/.kiro/crew/.env",
+        "<ROOT>/podhome/.kiro/crew/diag",
+        "<ROOT>/podhome/.kiro/crew/apps/aws-control/data",
+        "<ROOT>/podhome/.kiro/crew/workspace/md-notebook/pat",
+        "<ROOT>/podhome/.kiro/crew/workspace/md-notebook/vaults.json",
+        "<ROOT>/podhome/.kiro/crew/live_target.json",
+        "<ROOT>/podhome/.kiro/crew/crew-panels",
+        "<ROOT>/podhome/.kirocrew/.env",
+        "<ROOT>/podhome/.kirocrew/diag",
+        "<ROOT>/podhome/.kirocrew/apps/aws-control/data",
+        "<ROOT>/podhome/.kirocrew/workspace/md-notebook/pat",
+        "<ROOT>/podhome/.kirocrew/workspace/md-notebook/vaults.json",
+        "<ROOT>/podhome/.kirocrew/live_target.json",
+        "<ROOT>/podhome/.kirocrew/crew-panels",
+        "<ROOT>/podhome/.config/gh",
+        "<ROOT>/podhome/.kube",
+        "<ROOT>/podhome/.aws/config",
+        "<ROOT>/podhome/.aws/credentials",
+        "<ROOT>/crew/apps",
+    ],
+    "fail_closed_file_masks": [["<ROOT>/op/.npmrc", 3, 4]],
+    "alias_credential_ids": [[7, 99], [8, 1]],
+    "required_mask_targets": ["<ROOT>/outside"],
+    "mask_occupants": {"<ROOT>/crew/apps": [21, 22, 0], "<ROOT>/op/.aws": [23, 24, 1, 1, 25, 26]},
+    "crew_home_aliases": [["<ROOT>/op/.kiro/crew", "<ROOT>/crew", 31, 32]],
+    "expose_files": [["<ROOT>/op/.aws/sso/cache/token.json", "token.json"]],
+    "env_prefixes": [
+        "AWS_SECRET",
+        "GIT_ASKPASS",
+        "SLACK_BOT_TOKEN",
+        "JIRA_TOKEN_",
+        "KIROCREW_POLICY_URL",
+        "PYTHONPATH",
+        "PYTHONHOME",
+    ],
+    "ssh_dir": "<ROOT>/op/.ssh",
+    "ssh_known_hosts": "<ROOT>/op/.ssh/known_hosts",
+    "hide_ssh": 1,
+    "sandbox_level": "strict",
+    "unreadable_masks": ["live_target.json"],
+    "strict_host_key_opt": " -o StrictHostKeyChecking=accept-new",
+    "stand_in_roots": ["/run/user/4242", "/dev/shm"],
 }
 
-#: Seatbelt cases. Never two exposed files under one tier directory: the profile
-#: orders those clauses by iterating a set, so their order follows the string hash.
-_PROFILE_CASES: dict[str, tuple[str, _Setup | None, _Kwargs | None]] = {
-    "strict": ("strict", None, None),
-    "standard": ("standard", None, None),
-    "cc": ("cc", None, None),
-    "strict-default-home": ("strict", _default_home, None),
-    "strict-symlinked-home": ("strict", _symlinked_home, None),
-    "strict-pod": ("strict", _pod_home, None),
-    "standard-notebook-chain": ("standard", _planted_notebook_chain, None),
-    "standard-carveout": ("standard", None, _carveout),
-    "standard-refused-carveouts": ("standard", None, _refused_carveouts),
-    "standard-hidden-and-visible": ("standard", None, _hidden_and_visible),
-    "cc-private-windows": (
-        "cc",
-        None,
-        lambda h: {k: v for k, v in _private_windows(h).items() if not k.endswith("_ids")},
-    ),
-    "strict-expose": ("strict", None, _expose),
-}
-
-_LAUNCHER_DIGESTS: dict[str, str] = {
-    "cc": "6df9d76e627c1b1af3c0483ba566027e388523a6406e979de5869dadbab13ce0",
-    "cc-carveout": "af8e3c0148b47b9e00e9eb676a05aaa21a7cb41956aa3f251c2a2c197b4058ac",
-    "cc-expose": "8a4a2d7b24f2e26fc4580fb6b7a921a9db4949f10457288a24fe4804cf5de640",
-    "cc-private-windows": "83af73b096fb6a0d7d8fd195d1ee7f34247407d04d313a30b25671dc5fabad99",
-    "cc-python-env-ssh-sock": "07981e61a7ec283287655d8151325930173bd6fd5e14edc00c908f1800dc4a48",
-    "standard": "9ca038fac1f297762cdb8d42c6689c717eb8d546170d0d936f073ef8cf552089",
-    "standard-carveout": "2023107a1a1634c5f507bb5129671aaa5c279a88721a6934ee861389a59ddfe1",
-    "standard-default-home": "cd67d4eb1fa287985d8ade7a432948d5f071ada4873c176dcb54cbd82d1ee6d9",
-    "standard-hidden-and-visible": "92b1c4a87d38ab94dc562c0df3ade0759e858d9005b9455242964579ff3b6926",
-    "standard-notebook-chain": "88707a4ae813306c63f269de2c1d57a2e00e3339ad3315bcbb624fa72036ff61",
-    "standard-pod": "1dcddae71c4fb279aad2232be6289eb5a017af8ffa65790f00f378024661e0f9",
-    "standard-refused-carveouts": "9ca038fac1f297762cdb8d42c6689c717eb8d546170d0d936f073ef8cf552089",
-    "strict": "e5911b6f133e28bc00bde4d04f9b5486f63e0dfbcf2264c4e10f1fc53e327a90",
-    "strict-carveout": "c48671515c68da0fb6706a4f1052ebb47a7b1cadb27eabc1a8cac97cffaf0c17",
-    "strict-crew-home-alias": "f82e84df840f981dc5cb772e643bc009a1c70647562382e4f065a55680d5ffdd",
-    "strict-default-home": "07b022719b46e6ec9f12ff0bb10ae4438950f017b77149bac443007771ef061b",
-    "strict-expose": "8a2c2d2673ecde49ab4124b3ca1d7052f21f486043b03e2231bded836cbedad3",
-    "strict-identities": "06662aa4a3d5b73d50c243d673b16eaaf1db4dc070c5c0a1af30d32b1d35a11a",
-    "strict-no-accept-new": "2ed3464334c4de5869ee5a92b4c44c0ec3f3bfc2a181d04681a1624d42c61b4f",
-    "strict-pod": "7cdbced22c47c14ab02c25df06bea842cf5ba0880691a63a3f4562ebc1abb12e",
-    "strict-python-env-ssh-sock": "6532dbf30306891410594f76e9ea2e36cd6038d140d7c73a41d40b8ad75903f1",
-    "strict-symlinked-home": "f0699339f925996b51b10d4071a44fa5d2e764978e5587d25e2a9c32a4a5d1bc",
-}
-
-_PROFILE_DIGESTS: dict[str, str] = {
-    "cc": "ff0989ba3f35397dfe5e6c724ea13195e59a4d4f20e7358ecb9d88de3688d5d1",
-    "cc-private-windows": "b17f2c3c9a92af197cd21703742755c7b7c904a935c9e7ef68d61044568a5647",
-    "standard": "7ff81e62faba059966ec6643c7bfdbb71985d2eacc03b03c07e46a110e250669",
-    "standard-carveout": "2afae4a5c908df82ca0f8abc638bad8564b733d260baf08a750b12dcf427d6f2",
-    "standard-hidden-and-visible": "532b032826e530f431ce4e0fc498b0ed2f489f22af97eb7c541a171d57b5a532",
-    "standard-notebook-chain": "1f086f06f4fb14366ed2e3d5759e6e9781c3a21011d1c66f0127cef9a7a7bea3",
-    "standard-refused-carveouts": "7ff81e62faba059966ec6643c7bfdbb71985d2eacc03b03c07e46a110e250669",
-    "strict": "50052d925aa857ae41952ae26c26225d41ff0168d49bc8891917b8da85ac4575",
-    "strict-default-home": "3c51ebb93ba728e96e14bc9101a7f7e78b06f0792aafbf126e4589d58143f6b9",
-    "strict-expose": "0deb9f6ec67d200bedcfea797020ff534b8d8113ee0b13f2efb39fc50ee94296",
-    "strict-pod": "5fb789a232c2b277c22c9d79fc1b76e8d357925ee3ecd7d0dd947c228f5dd001",
-    "strict-symlinked-home": "d74d60d65019a1cddf8aa9add915c24a394c6bd88149733760e452527cf1c010",
-}
-
-
-def _render(
-    builder: Callable[..., str],
-    case: tuple[str, _Setup | None, _Kwargs | None],
-    host: _Host,
-    monkeypatch: pytest.MonkeyPatch,
-) -> str:
-    tier, setup, kwargs = case
-    if setup is not None:
-        setup(host, monkeypatch)
-    return builder(tier, **(kwargs(host) if kwargs else {}))
-
-
-def _digest(text: str, host: _Host) -> str:
-    folded = text.replace(str(host.root), "<ROOT>")
-    return hashlib.sha256(folded.encode("utf-8")).hexdigest()
-
-
-def _launcher_digest(case: str, host: _Host, monkeypatch: pytest.MonkeyPatch) -> str:
-    script = _render(sandbox._build_launcher_script, _LAUNCHER_CASES[case], host, monkeypatch)
-    return _digest(script.replace(_NEW_DOC_LINE, _OLD_DOC_LINE), host)
-
-
-def _profile_digest(case: str, host: _Host, monkeypatch: pytest.MonkeyPatch) -> str:
-    profile = _render(sandbox._build_seatbelt_profile, _PROFILE_CASES[case], host, monkeypatch)
-    return _digest(profile, host)
-
-
-@pytest.mark.parametrize("case", sorted(_LAUNCHER_CASES))
-def test_the_launcher_is_the_pre_split_bytes(
-    case: str, host: _Host, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    actual = _launcher_digest(case, host, monkeypatch)
-    assert actual == _LAUNCHER_DIGESTS[case], f"{case}: actual {actual}"
-
-
-@pytest.mark.parametrize("case", sorted(_PROFILE_CASES))
-def test_the_seatbelt_profile_is_the_pre_split_bytes(
-    case: str, host: _Host, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    actual = _profile_digest(case, host, monkeypatch)
-    assert actual == _PROFILE_DIGESTS[case], f"{case}: actual {actual}"
-
-
-@pytest.fixture
-def golden_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
-    """The pinned host the golden below renders against: its home is not named ``home``."""
-    return _pinned_host(tmp_path, monkeypatch, home="op")
-
-
-#: The Seatbelt profile for one cc spawn with private windows, folded to ``<ROOT>``.
+#: The Seatbelt profile for ``_private_windows`` at the cc tier.
 _PROFILE_GOLDEN = """\
 (version 1)
 (allow default)
@@ -600,64 +605,74 @@ _PROFILE_GOLDEN = """\
 """
 
 
-def test_the_seatbelt_profile_is_the_golden(golden_host: _Host) -> None:
-    kwargs = {k: v for k, v in _private_windows(golden_host).items() if not k.endswith("_ids")}
-    profile = sandbox._build_seatbelt_profile("cc", **kwargs)
-    assert profile.replace(str(golden_host.root), "<ROOT>") == _PROFILE_GOLDEN
-
-
-def test_the_digests_cover_every_case() -> None:
-    assert set(_LAUNCHER_DIGESTS) == set(_LAUNCHER_CASES)
-    assert set(_PROFILE_DIGESTS) == set(_PROFILE_CASES)
-
-
-def test_the_digests_see_the_inputs_they_pin(host: _Host, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pinned input that stopped reaching the output would leave its cases passing
-    on a builder that ignores it, so each family must move the digest."""
-    digests = {case: _launcher_digest(case, host, monkeypatch) for case in ("strict",)}
-    for other in (
-        "standard",
-        "cc",
-        "strict-no-accept-new",
-        "strict-identities",
-        "strict-crew-home-alias",
-    ):
-        with pytest.MonkeyPatch.context() as scoped:
-            digests[other] = _launcher_digest(other, host, scoped)
-    assert len(set(digests.values())) == len(digests)
-
-
-@pytest.mark.parametrize("tier", ["strict", "standard", "cc"])
-def test_the_launcher_stages_seals_hides_then_carves(tier: str, host: _Host) -> None:
-    """Private windows are staged, READONLY dirs sealed, SENSITIVE dirs hidden and the
-    write carve-outs applied, in that order, in every tier."""
-    script = sandbox._build_launcher_script(tier)
-    order = [
-        "for p in PRIVATE_DIRS:",
-        "for d in READONLY_DIRS:",
-        "for d in SENSITIVE_DIRS:",
-        "for d in WRITABLE_DIRS:",
+def test_the_launcher_carries_the_golden_plan(
+    host: _Host, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _pod_home(host, monkeypatch)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.sandbox")
+    script = sandbox._build_launcher_script("strict", **_everything(host))
+    assert _fold(rendered_payload(script), host) == _LAUNCHER_PLAN_GOLDEN
+    # The window that holds a masked tree is refused, as a log line naming no path.
+    assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.sandbox"] == [
+        sandbox_plan.WINDOW_REFUSAL
     ]
-    positions = [script.index(marker) for marker in order]
-    assert positions == sorted(positions)
-    assert all(script.count(marker) == 1 for marker in order)
 
 
-def test_the_launcher_names_the_product_once_in_two_words(host: _Host) -> None:
-    script = sandbox._build_launcher_script("strict")
-    assert script.count(_NEW_DOC_LINE) == 1
-    assert _OLD_DOC_LINE not in script
+def test_the_launcher_is_the_program_module_plus_the_plan(host: _Host) -> None:
+    """One substitution: the program module's own source, with the plan's data in it."""
+    plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "strict", **_everything(host))
+    source = Path(sandbox_launcher_program.__file__).read_text(encoding="utf-8")
+    line = "_PLAN = %s\n" % json.dumps(sandbox_plan.namespace_payload(plan))
+    assert sandbox_launcher.render_namespace_launcher(plan) == source.replace(
+        sandbox_launcher.PLAN_PLACEHOLDER, line
+    )
+
+
+def test_the_seatbelt_profile_is_the_golden(host: _Host) -> None:
+    kwargs = {k: v for k, v in _private_windows(host).items() if not k.endswith("_ids")}
+    profile = sandbox._build_seatbelt_profile("cc", **kwargs)
+    assert profile.replace(str(host.root), "<ROOT>") == _PROFILE_GOLDEN
+
+
+def test_each_pinned_host_input_reaches_the_plan(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host input that stopped reaching the plan would leave the goldens above passing
+    on a planner that ignores it, so each one must move the plan."""
+
+    def _plan(**kwargs: Any) -> sandbox_plan.ConfinementPlan:
+        return sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "strict", **kwargs)
+
+    plain = _plan()
+    assert plain.ssh_accept_new is True
+    with pytest.MonkeyPatch.context() as scoped:
+        _no_accept_new(host, scoped)
+        assert _plan().ssh_accept_new is False
+    with pytest.MonkeyPatch.context() as scoped:
+        _pod_home(host, scoped)
+        pod = str(host.root / "podhome")
+        assert [d for d in _plan().sensitive_dirs if d.startswith(pod)]
+        assert not [d for d in plain.sensitive_dirs if d.startswith(pod)]
+    with pytest.MonkeyPatch.context() as scoped:
+        _planted_notebook_chain(host, scoped)
+        degraded = str(host.crew / "workspace" / "md-notebook")
+        assert degraded in _plan().sensitive_dirs and degraded not in plain.sensitive_dirs
+    with pytest.MonkeyPatch.context() as scoped:
+        _symlinked_home(host, scoped)
+        assert str(host.crew / "run" / "voice-runtime") in _plan().sensitive_dirs
+    assert plain.uid == _UID and plain.gid == _GID
+    assert plain.home == str(host.home)
 
 
 # --------------------------------------------------------------------------- #
-# Each builder reads the plan it renders from kiro_crew.sandbox when it runs.
+# The live host reads what it plans from kiro_crew.sandbox when it runs.
 # --------------------------------------------------------------------------- #
 
 
 class _Reached(BaseException):
-    """Raised by a stub to prove the builder called the name it replaced.
+    """Raised by a stub to prove the host adapter called the name it replaced.
 
-    A ``BaseException`` because several of the helpers are best-effort and swallow
+    A ``BaseException`` because several of the readers are best-effort and swallow
     ``Exception``, which would let a patch that MISSED read as one that landed.
     """
 
@@ -669,57 +684,69 @@ def _raiser(label: str) -> Callable[..., object]:
     return _stub
 
 
-#: Host readers the launcher builder calls through the plan host, with the arguments that
-#: make it reach each: a patch of one on ``kiro_crew.sandbox`` still moves the launcher.
-#: The masking rules themselves are ``kiro_crew.sandbox_plan``'s, tested there.
-_LAUNCHER_CALLS: dict[str, Callable[[_Host], dict[str, Any]] | None] = {
-    "_md_notebook_degraded_mask_dirs": None,
-    "_relocated_crew_targets": None,
-    "_relocated_policy_cache_dirs": None,
-    "_resolved_kiro_agents_targets": None,
-    "_sandbox_policy": None,
-    "_ssh_supports_accept_new": None,
-    "_voice_runtime_parent_paths": None,
-    "_voice_runtime_sandbox_paths": None,
+#: The host readers ``_live_plan_host`` calls for each backend. A patch of one on
+#: ``kiro_crew.sandbox`` must still reach that backend's plan.
+_HOST_READERS: dict[str, tuple[str, ...]] = {
+    sandbox_plan.BACKEND_NAMESPACE: (
+        "_md_notebook_degraded_mask_dirs",
+        "_relocated_crew_targets",
+        "_relocated_policy_cache_dirs",
+        "_resolved_kiro_agents_targets",
+        "_sandbox_policy",
+        "_ssh_supports_accept_new",
+        "_voice_runtime_parent_paths",
+        "_voice_runtime_sandbox_paths",
+    ),
+    sandbox_plan.BACKEND_SEATBELT: (
+        "_md_notebook_degraded_mask_dirs",
+        "_relocated_crew_targets",
+        "_relocated_policy_cache_dirs",
+        "_resolved_kiro_agents_targets",
+        "_sandbox_policy",
+        "_voice_runtime_ancestor_guards",
+        "_voice_runtime_parent_paths",
+        "_voice_runtime_sandbox_paths",
+    ),
 }
 
-#: Host readers the Seatbelt builder calls through the plan host.
-_PROFILE_CALLS: dict[str, Callable[[_Host], dict[str, Any]] | None] = {
-    "_md_notebook_degraded_mask_dirs": None,
-    "_relocated_crew_targets": None,
-    "_relocated_policy_cache_dirs": None,
-    "_resolved_kiro_agents_targets": None,
-    "_sandbox_policy": None,
-    "_voice_runtime_ancestor_guards": None,
-    "_voice_runtime_parent_paths": None,
-    "_voice_runtime_sandbox_paths": None,
-}
 
-
-@pytest.mark.parametrize("name", sorted(_LAUNCHER_CALLS))
-def test_a_helper_patched_on_the_sandbox_reaches_the_launcher(
-    name: str, host: _Host, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("backend", "name"),
+    [(backend, name) for backend, names in _HOST_READERS.items() for name in names],
+)
+def test_a_reader_patched_on_the_sandbox_reaches_the_plan(
+    backend: str, name: str, host: _Host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    kwargs = _LAUNCHER_CALLS[name]
-    arguments = kwargs(host) if kwargs else {}
     monkeypatch.setattr(sandbox, name, _raiser(name))
     with pytest.raises(_Reached, match=name):
-        sandbox._build_launcher_script("strict", **arguments)
+        sandbox._spawn_plan(backend, "strict")
 
 
-@pytest.mark.parametrize("name", sorted(_PROFILE_CALLS))
-def test_a_helper_patched_on_the_sandbox_reaches_the_seatbelt_profile(
-    name: str, host: _Host, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    kwargs = _PROFILE_CALLS[name]
-    arguments = kwargs(host) if kwargs else {}
-    monkeypatch.setattr(sandbox, name, _raiser(name))
-    with pytest.raises(_Reached, match=name):
-        sandbox._build_seatbelt_profile("strict", **arguments)
+def _strings(value: object) -> list[str]:
+    """Every string *value* holds: a plan's fields, a payload's lists and keys."""
+    if isinstance(value, str):
+        return [value]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return [
+            s for field in dataclasses.fields(value) for s in _strings(getattr(value, field.name))
+        ]
+    if isinstance(value, Mapping):
+        return [s for key, item in value.items() for s in _strings(key) + _strings(item)]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [s for item in value for s in _strings(item)]
+    return []
 
 
-#: Tables each builder renders, as (name, tier, builder keyword arguments, the probe
-#: value, and the text the probe must put into the output).
+def _planned(backend: str, tier: str, kwargs: dict[str, Any]) -> list[str]:
+    """What *backend* is handed for one spawn: the launcher's payload, or the plan itself."""
+    plan = sandbox._spawn_plan(backend, tier, **kwargs)
+    if backend == sandbox_plan.BACKEND_NAMESPACE:
+        return _strings(sandbox_plan.namespace_payload(plan))
+    return _strings(plan)
+
+
+#: Tables both backends plan from, as (name, tier, keyword arguments, the probe value,
+#: and the text the probe must put into the plan).
 _TABLES: list[tuple[str, str, dict[str, Any], object, str]] = [
     ("_STANDARD_DIRS", "standard", {}, [".b10-probe-dir"], "/.b10-probe-dir"),
     ("_CC_FILES", "cc", {}, [".b10-probe-file"], "/.b10-probe-file"),
@@ -729,8 +756,8 @@ _TABLES: list[tuple[str, str, dict[str, Any], object, str]] = [
     ("_CC_EXPOSE_FILES", "cc", {}, [".gnupg/b10-probe-expose"], "/.gnupg/b10-probe-expose"),
 ]
 
-#: Tables only the launcher renders into its output: the environment scrub lists and the
-#: leaves whose Linux mask refuses the read.
+#: Tables only the launcher's plan carries: the environment scrub lists and the leaves
+#: whose Linux mask refuses the read.
 _LAUNCHER_ONLY_TABLES: list[tuple[str, str, dict[str, Any], object, str]] = [
     ("_SENSITIVE_ENV_PREFIXES", "standard", {}, ("B10_PROBE_SENSITIVE_",), "B10_PROBE_SENSITIVE_"),
     ("_AGENT_DENIED_ENV_KEYS", "strict", {}, ("B10_PROBE_DENIED",), "B10_PROBE_DENIED"),
@@ -750,13 +777,17 @@ _LAUNCHER_ONLY_TABLES: list[tuple[str, str, dict[str, Any], object, str]] = [
     ),
 ]
 
+_TABLE_CASES = [(sandbox_plan.BACKEND_NAMESPACE, *row) for row in _TABLES + _LAUNCHER_ONLY_TABLES]
+_TABLE_CASES += [(sandbox_plan.BACKEND_SEATBELT, *row) for row in _TABLES]
+
 
 @pytest.mark.parametrize(
-    ("name", "tier", "kwargs", "value", "needle"),
-    _TABLES + _LAUNCHER_ONLY_TABLES,
-    ids=[row[0] for row in _TABLES + _LAUNCHER_ONLY_TABLES],
+    ("backend", "name", "tier", "kwargs", "value", "needle"),
+    _TABLE_CASES,
+    ids=[f"{case[0]}-{case[1]}" for case in _TABLE_CASES],
 )
-def test_a_table_patched_on_the_sandbox_reaches_the_launcher(
+def test_a_table_patched_on_the_sandbox_reaches_the_plan(
+    backend: str,
     name: str,
     tier: str,
     kwargs: dict[str, Any],
@@ -765,26 +796,9 @@ def test_a_table_patched_on_the_sandbox_reaches_the_launcher(
     host: _Host,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert needle not in sandbox._build_launcher_script(tier, **kwargs)
+    assert not [s for s in _planned(backend, tier, kwargs) if needle in s]
     monkeypatch.setattr(sandbox, name, value)
-    assert needle in sandbox._build_launcher_script(tier, **kwargs)
-
-
-@pytest.mark.parametrize(
-    ("name", "tier", "kwargs", "value", "needle"), _TABLES, ids=[row[0] for row in _TABLES]
-)
-def test_a_table_patched_on_the_sandbox_reaches_the_seatbelt_profile(
-    name: str,
-    tier: str,
-    kwargs: dict[str, Any],
-    value: object,
-    needle: str,
-    host: _Host,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert needle not in sandbox._build_seatbelt_profile(tier, **kwargs)
-    monkeypatch.setattr(sandbox, name, value)
-    assert needle in sandbox._build_seatbelt_profile(tier, **kwargs)
+    assert [s for s in _planned(backend, tier, kwargs) if needle in s]
 
 
 @pytest.mark.parametrize("tier", ["strict", "standard", "cc"])
@@ -809,3 +823,8 @@ def test_namespace_argv_writes_exactly_what_the_builder_renders(
     assert launcher.parent == host.crew / "run"
     assert launcher.name.startswith(f"kirocrew_sandbox_{os.getpid()}_")
     assert launcher.read_bytes() == rendered[0].encode("utf-8")
+
+
+def test_the_launcher_names_the_product_once_in_two_words(host: _Host) -> None:
+    script = sandbox._build_launcher_script("strict")
+    assert script.count(_DOC_LINE) == 1

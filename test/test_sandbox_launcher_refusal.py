@@ -5,33 +5,27 @@ also refuse AFTER the spawn — a host that passed the probe still denies a
 control at spawn time — and that refusal reaches its caller only as exit 1 plus
 one ``sandbox:``-prefixed line on stderr. Read as a plain non-zero exit, a
 present, signed-in kiro-cli was reported as not installed. These tests pin the
-classifier to the launcher's real wording, so a drift in either side reds here
-rather than in a container.
+classifier to the launcher's real wording -- every line the launcher program's
+source spells, and a refusal its own stage emits -- so a drift in either side
+reds here rather than in a container.
 """
 
 from __future__ import annotations
 
+import ast
 import errno
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from test_sandbox_launcher_program import RecordingLibc, launch, refusal
 
 from kiro_crew import sandbox as sb
-
-
-@pytest.fixture(autouse=True)
-def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
-
-    The refusal lines read out of the launcher do not depend on that answer, and a
-    real ssh spawned from the test process is a host dependency this module is not
-    about. Pinned so no binary runs.
-    """
-    monkeypatch.setattr(sb, "_ssh_supports_accept_new", lambda: True)
-
+from kiro_crew import sandbox_launcher
+from kiro_crew import sandbox_launcher_program as program
 
 #: The exact line a container under its runtime's default AppArmor profile
 #: produces: both unshares succeed, the launcher's first mount is refused.
@@ -364,27 +358,63 @@ class TestOneOwnerForTheLauncherPrefixes:
         assert clone_setup._LAUNCHER_EXIT_PREFIXES is sb.LAUNCHER_EXIT_PREFIXES
 
 
+def _launcher_string_literals() -> list[str]:
+    """Every string literal in the launcher program, as the renderer emits its source.
+
+    An f-string contributes its literal head, which is where a launcher line's prefix
+    sits. Read from the source rather than from a run: a refusal no test triggers is
+    still a line the launcher can print.
+    """
+    tree = ast.parse(sandbox_launcher.launcher_program_source())
+    literals: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            literals.append(node.value)
+        elif isinstance(node, ast.JoinedStr) and node.values:
+            head = node.values[0]
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                literals.append(head.value)
+    return literals
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="the namespace launcher is Linux-only")
 class TestClassifierMatchesTheLauncher:
-    """The wording lives in the launcher template; the classifier must keep up."""
+    """The wording lives in the launcher program; the classifier must keep up."""
 
     def test_every_launcher_line_is_a_known_refusal_or_the_advisory_prefix(self) -> None:
-        source = sb._build_launcher_script("strict")
-        spellings = set(re.findall(r'"(sandbox: [^"%{]+)', source))
-        assert spellings, "the launcher template no longer spells its lines this way"
+        spellings = {
+            re.split(r"[%{]", literal, maxsplit=1)[0]
+            for literal in _launcher_string_literals()
+            if literal.startswith("sandbox: ")
+        }
+        assert spellings, "the launcher program spells no line this way"
         for spelling in spellings:
             recognized = spelling.startswith(sb.LAUNCHER_EXIT_PREFIXES) or spelling.startswith(
                 "sandbox: WARNING"
             )
             assert recognized, f"a new launcher line the classifier does not know: {spelling!r}"
 
-    def test_the_mount_or_die_wording_parses_to_the_mount_step(self) -> None:
-        # Rendered the way ``_mount_or_die`` renders it, with the errno the
-        # container case produces.
+    def test_the_mount_or_die_wording_parses_to_the_mount_step(self, tmp_path: Path) -> None:
+        # The container case: both unshares succeed and the launcher's first mount,
+        # the propagation pin on ``/``, is refused EACCES. The line is the one the
+        # launcher's own namespace stage exits with, not a copy of it.
+        libc = RecordingLibc(fail_at=1, fail_errno=errno.EACCES)
+        run = launch(tmp_path, libc=libc)
+        c2p_r, c2p_w = os.pipe()
+        p2c_r, p2c_w = os.pipe()
+        os.write(p2c_w, b"x")
+        try:
+            # The stage closes its own two ends once the parent has been signalled.
+            line = refusal(program.enter_namespaces, run, c2p_w, p2c_r)
+            assert os.read(c2p_r, 1) == b"x"
+        finally:
+            os.close(c2p_r)
+            os.close(p2c_w)
         rendered = (
             "sandbox: BLOCKED -- %s failed: errno %d (%s). The sandbox could not "
             "establish this control, so the agent would run with the path "
             "visible. Lower agent.sandbox to run without this control deliberately."
         ) % ("making mount propagation private on /", errno.EACCES, "Permission denied")
-        assert "_mount_or_die" in sb._build_launcher_script("strict")
-        assert sb.launcher_refusal(rendered) == ("no_backend", rendered, sb.REMEDY_MOUNT_DENIED)
+        assert libc.calls[0].target == b"/"
+        assert line == rendered
+        assert sb.launcher_refusal(line) == ("no_backend", line, sb.REMEDY_MOUNT_DENIED)

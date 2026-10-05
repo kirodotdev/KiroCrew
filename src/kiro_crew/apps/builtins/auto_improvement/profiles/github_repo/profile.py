@@ -268,9 +268,9 @@ def _write_protected_targets() -> tuple[str, ...]:
     were wrong in the first attempt, both found by measuring rather than reasoning:
 
     * The PARENT DIRECTORY is masked, not the file. ``sandboxed_spawn_argv``'s
-      ``extra_hidden_dirs`` reaches the launcher's ``SENSITIVE_DIRS`` loop, which is guarded
+      ``extra_hidden_dirs`` reaches the launcher's ``sensitive_dirs`` loop, which is guarded
       by ``os.path.isdir(target)`` — so a FILE path is silently skipped and the mask
-      no-ops. (Files are masked through a separate ``SENSITIVE_FILES`` list the public helper
+      no-ops. (Files are masked through a separate ``sensitive_files`` list the public helper
       does not expose.) Measured: passing the file paths left the child able to append to
       ``~/.kiro/crew/config.json`` and exit 0; passing the parent blocked it.
     * Only EXISTING directories are returned — the launcher mounts over each target, and a

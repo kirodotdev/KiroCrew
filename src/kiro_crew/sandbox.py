@@ -1421,7 +1421,7 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #:   * ``admission_policy.json`` — already seeded at first run by
 #:     ``platform.admission.seed_default_policy``, so it is not absent to begin with.
 #:
-#: The same ``mount(2)`` limit leaves the ``SENSITIVE_DIRS`` / ``SENSITIVE_FILES``
+#: The same ``mount(2)`` limit leaves the ``sensitive_dirs`` / ``sensitive_files``
 #: mask loops skipping their own absent targets. That is a real sibling gap, not one
 #: this list closes: a mask needs the opposite treatment (an empty bind OVER the
 #: name), and ``_CREW_HIDDEN_LEAVES`` has no reader to prove an empty document is
@@ -1660,7 +1660,7 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: absent-equivalent because nothing but the gateway reads it -- it cuts a fresh
 #: per-call subdirectory for one CLI transfer and removes it again. Left to lazy
 #: creation, a sandbox spawned on a fresh install before the first transfer finds
-#: the target absent, the ``SENSITIVE_DIRS`` loop skips it, and the directory the
+#: the target absent, the ``sensitive_dirs`` loop skips it, and the directory the
 #: gateway creates later appears INSIDE that running sandbox's view -- where a
 #: same-UID agent can swap the transfer's destination for a link. Materialised
 #: (empty, 0o700) before every namespace spawn instead, so the mask always has a
@@ -1685,7 +1685,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # nonce dir is created on demand only when the owner first ARMS a grant
     # (``file_delivery_consent.arm_grant`` -> ``make_owner_only_dir(path.parent)``).
     # On a fresh install with no prior arm the leaf is absent at spawn, the
-    # ``isdir``-guarded SENSITIVE_DIRS loop skips it, and a later dashboard arm
+    # ``isdir``-guarded sensitive_dirs loop skips it, and a later dashboard arm
     # materialises the nonce INSIDE a running sandbox's view -- where a same-UID
     # agent reads it and drives the loopback /approve to self-grant. Precreated
     # (empty, 0o700) before every spawn so the mask always has a name to bind over.
@@ -1698,7 +1698,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the
-    # ``SENSITIVE_DIRS`` loop skips it, and the directory the backend creates later shows
+    # ``sensitive_dirs`` loop skips it, and the directory the backend creates later shows
     # up INSIDE that running sandbox — with the PAT staging window in it.
     _MD_NOTEBOOK_STAGING_LEAF,
     # The live-target stub's staging directory, by the same rule: created before the
@@ -1706,7 +1706,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # in it is never visible to a running namespace.
     _LIVE_TARGET_STAGING_LEAF,
     # The auth stores' staging directory, by the same rule. Left to lazy creation, a sandbox
-    # spawned before the first key or chain-state write finds it absent, the ``SENSITIVE_DIRS``
+    # spawned before the first key or chain-state write finds it absent, the ``sensitive_dirs``
     # loop skips it, and the directory the gateway creates later shows up INSIDE that running
     # sandbox -- with the signing-key staging window in it.
     _AUTH_STORE_STAGING_LEAF,
@@ -1728,7 +1728,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that
-    # write finds the name absent, the ``SENSITIVE_DIRS`` loop skips what does not
+    # write finds the name absent, the ``sensitive_dirs`` loop skips what does not
     # exist, and the mask is then vacuous for the life of that sandbox -- which can
     # itself create the directory and populate it with entries a conductor would
     # read as the gateway's. Materialising it empty at 0700 gives the bind a name
@@ -1748,7 +1748,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # The cross-process work root, and it needs this entry MORE than the stores
     # above rather than less: it is created lazily by the first ``allocate_work``
     # call, so on a fresh home the leaf is absent at every spawn until some job
-    # allocates, the ``isdir``-guarded ``SENSITIVE_DIRS`` loop skips what does not
+    # allocates, the ``isdir``-guarded ``sensitive_dirs`` loop skips what does not
     # exist, and the mask is vacuous for the life of those sandboxes. The
     # ``scratch`` sibling carries no entry because every spawn allocates one, so
     # that root exists by construction; nothing allocates a work directory for a
@@ -1761,7 +1761,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "work",
     # The refused-inbound spool root, and its consequence is the sharpest kind: the
     # store is created by its own first write, so on a host where no inbound message
-    # has been refused the name is absent, the ``isdir``-guarded ``SENSITIVE_DIRS``
+    # has been refused the name is absent, the ``isdir``-guarded ``sensitive_dirs``
     # loop skips it, and the mask is vacuous for the life of every sandbox spawned
     # first. One of those can create the directory ITSELF and leave an entry the
     # gateway reads on the next start and quotes verbatim, as the operator's own
@@ -1776,7 +1776,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each
 #: holds. This is the per-leaf argument the sibling-gap note above asks for: ``mount(2)``
-#: cannot mask an absent path and the ``SENSITIVE_FILES`` loop guards on ``isfile``, so an
+#: cannot mask an absent path and the ``sensitive_files`` loop guards on ``isfile``, so an
 #: ABSENT leaf gets NO mask, and a namespace that outlives the leaf's later creation reads
 #: the real bytes — the PAT among them. That was vacuous while nothing could create these
 #: files on a sandboxed host; the backend carve-out
@@ -1803,7 +1803,7 @@ assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
 
 #: The masked live-target pointer materialised before a namespace spawn, and what it
 #: holds. Same gap as :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` closes, arrived at from the
-#: opposite direction: the ``SENSITIVE_FILES`` loop guards on ``isfile``, so an ABSENT
+#: opposite direction: the ``sensitive_files`` loop guards on ``isfile``, so an ABSENT
 #: pointer gets NO mask, and a namespace that outlives the pointer's later creation sees
 #: the real file in a directory it can write. For md-notebook that gap leaks a secret; for
 #: this leaf it hands over a code-execution input — the pointer names the checkout the
@@ -1852,7 +1852,7 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
     spellings because either tree may still hold bytes; creation has the opposite
     requirement, since a stub in the deprecated ``~/.kirocrew`` of a migrated host is a
     file nothing will ever read. Whichever spelling ``config_dir()`` resolves to is
-    already in the launcher's ``READONLY_DIRS``: both ``$HOME``-relative prefixes are
+    already in the launcher's ``readonly_dirs``: both ``$HOME``-relative prefixes are
     listed there, and ``_relocated_crew_targets`` adds a data home that escapes
     ``$HOME``.
 
@@ -1947,7 +1947,7 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
     data home. ``warning`` rather than ``debug`` for that reason: a refused spawn with no
     explanation is indistinguishable from an unrelated failure.
 
-    Per spawn rather than once per process, matching the launcher's own ``EXPOSE_FILES``
+    Per spawn rather than once per process, matching the launcher's own ``expose_files``
     pre-read warning — a host where this keeps happening has a real problem, and
     de-duplicating it would hide how often the control cannot be established.
     """
@@ -2203,7 +2203,7 @@ def _warn_if_alias_backed(target: str) -> None:
     snapshot tool holding a hardlink — by turning them into a hard spawn failure, which is
     a much wider blast radius than the exposure. Neither shape is introduced here either:
     the ceilings this module publishes end at ``st_nlink == 1`` and are never symlinks, so
-    this is a PRE-EXISTING property of every entry in ``READONLY_DIRS``, reachable only on
+    this is a PRE-EXISTING property of every entry in ``readonly_dirs``, reachable only on
     a host where something else already created the ceiling that way. Closing it needs the
     data-home root sealed, which is a different change.
 
@@ -2516,7 +2516,7 @@ def _materialize_sealable_ceilings(established: list[str] | None = None) -> list
     """Create every absent sealable ceiling; return the paths actually created.
 
     Runs on the Linux spawn path only, immediately before the launcher builds its
-    ``READONLY_DIRS`` mount sequence, so a ceiling that did not exist a moment ago is
+    ``readonly_dirs`` mount sequence, so a ceiling that did not exist a moment ago is
     a read-only mountpoint by the time the sandboxed command runs.
 
     **Fail-closed.** If a ceiling cannot be made sealable this raises
@@ -2800,7 +2800,7 @@ def _materialize_maskable_dirs(established: list[str] | None = None) -> list[str
     """Create the absent on-demand HIDDEN directories so the mask loop can bind over them.
 
     The mirror image of :func:`_materialize_sealable_ceilings` for
-    :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`: the launcher's ``SENSITIVE_DIRS`` loop
+    :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`: the launcher's ``sensitive_dirs`` loop
     is guarded on ``isdir``, so an absent target gets no empty bind over it and the
     directory the gateway creates later is visible to the running sandbox. Same
     fail-closed shape as the ceilings -- a dangling link squatting the name, a plain
@@ -3638,7 +3638,7 @@ def _materialize_live_target_mask_target(
     no per-component descent is needed — the whole hazard
     :func:`_materialize_md_notebook_mask_targets` walks chains to avoid.
 
-    Why at all: the launcher's ``SENSITIVE_FILES`` loop guards on ``isfile``, so an absent
+    Why at all: the launcher's ``sensitive_files`` loop guards on ``isfile``, so an absent
     pointer is an UNMASKED pointer for every namespace already running, and the crew data
     home is writable at OS level. An agent in such a namespace can simply CREATE the
     pointer, and the gateway ``execve``s into whatever it names at its next start.
@@ -4455,7 +4455,7 @@ def _materialize_md_notebook_mask_targets(established: list[str] | None = None) 
     ``mkdir``, because ``mkdir`` itself follows a planted link.
 
     Closes the sibling gap named at :data:`_CREW_PRECREATE_READONLY_DIR_LEAVES`: the
-    ``SENSITIVE_FILES`` mask loop guards on ``isfile``, so an ABSENT leaf gets no mask at
+    ``sensitive_files`` mask loop guards on ``isfile``, so an ABSENT leaf gets no mask at
     all. :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` carries the per-leaf absent-equivalence
     argument that gap note requires.
 
@@ -7640,7 +7640,7 @@ def namespace_argv(
     if resolved_argv:
         resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
 
-    # Give the seal something to mount ON, or refuse the spawn. ``READONLY_DIRS`` is
+    # Give the seal something to mount ON, or refuse the spawn. ``readonly_dirs`` is
     # guarded on
     # ``os.path.exists`` in the launcher (a ceiling may be a plain file, so the guard
     # cannot be ``isdir``), and an absent ceiling therefore gets no bind + remount pair
@@ -7654,7 +7654,7 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
-    # And the ``SENSITIVE_FILES`` loop is guarded on ``isfile``, so md-notebook's state
+    # And the ``sensitive_files`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
     _materialize_md_notebook_mask_targets(_required_targets)
@@ -8415,8 +8415,8 @@ def sandbox_exec_argv(
     # since loader.py seeds them into os.environ for trusted children only.
     unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
     # Mark the sandboxed tree, exactly as the Linux namespace launcher does after
-    # its own env scrub (see the export beside ``KIROCREW_HOST_PID`` in the program
-    # ``_build_launcher_script`` renders). Without
+    # its own env scrub (see ``scrub_env`` in ``sandbox_launcher_program``, the
+    # program ``_build_launcher_script`` renders). Without
     # this, an in-sandbox ``wrap_argv`` call cannot tell that KiroCrew's own
     # sandbox already confines it, tries to nest, and gets EPERM — which then
     # fail-closes every app-backend and MCP spawn on the host. Set as an ``env``
@@ -8866,16 +8866,16 @@ def configured_sandbox_mode() -> str:
 # The single environment marker that proves this process is already INSIDE a
 # KiroCrew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at
-# exactly one site — the namespace launcher main() that
-# ``_build_launcher_script`` renders (see the export beside
-# ``KIROCREW_HOST_PID``). We deliberately do NOT key on ``KIROCREW_HOST_PID``:
+# exactly one site — the namespace launcher's ``scrub_env`` stage
+# (``sandbox_launcher_program``, which ``_build_launcher_script`` renders). We
+# deliberately do NOT key on ``KIROCREW_HOST_PID``:
 # it is dual-purpose session-identity plumbing, and gating a security-relevant
 # passthrough on a variable set for other reasons is a latent bypass. Since the
 # launcher sets ``KIROCREW_SANDBOX_ACTIVE`` at the same site, no fallback marker
 # is needed. No unsandboxed code path sets this marker.
 #
 # Two sites set it, each immediately after applying that platform's credential-env
-# scrub: the Linux namespace launcher's ``main()`` (after its ``ENV_PREFIXES``
+# scrub: the Linux namespace launcher's ``scrub_env`` stage (after its ``env_prefixes``
 # loop) and the macOS ``env`` prefix built by :func:`sandbox_exec_argv` (after its
 # ``env -u`` flags, derived from the SAME prefix lists — see
 # :func:`_sandbox_env_unset_args`). A marked process therefore always has an
@@ -10038,7 +10038,7 @@ def wrap_argv(
             read-write as a window; the parent's mask and every sibling stay hidden.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
             ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
-            the launcher's ``EXPOSE_FILES`` primitive (cc mode's mechanism
+            the launcher's ``expose_files`` primitive (cc mode's mechanism
             for ``.aws/config``); Seatbelt carves a ``require-not (literal)``
             exception out of the hidden dir's read deny (the shape it uses
             for ``.ssh/known_hosts``). Writes and hardlinks stay denied on
@@ -10812,10 +10812,10 @@ async def wrap_argv_async(
 # names that must never reach a spawn whose command, arguments, or working
 # directory the agent (or a hostile MCP-config / repo) can influence. The OS
 # sandbox launcher already drops these when a backend is present (see
-# ``ENV_PREFIXES`` in ``namespace_argv`` / ``sandbox_exec_argv``), but scrubbing
+# ``env_prefixes`` in ``namespace_argv`` / ``sandbox_exec_argv``), but scrubbing
 # at the parent level too means the guarantee holds even on the opted-in
 # ``sandbox_allow_unsandboxed_exec`` fail-open path where no launcher runs.
-# Prefix match via ``startswith`` (mirrors the launcher's ENV_PREFIXES check).
+# Prefix match via ``startswith`` (mirrors the launcher's env_prefixes check).
 _SPAWN_SCRUB_ENV_PREFIXES: list[str] = list(_SENSITIVE_ENV_PREFIXES) + list(_AGENT_DENIED_ENV_KEYS)
 
 
@@ -10882,7 +10882,7 @@ def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
     ``_SENSITIVE_ENV_PREFIXES`` (AWS/SSH/GPG): the ``standard`` sandbox is
     designed to leave git-over-SSH, the AWS CLI and kubectl usable, so those
     vars must survive the parent scrub. Prefix match via ``startswith`` mirrors
-    the launcher's ENV_PREFIXES check.
+    the launcher's env_prefixes check.
     """
     return {
         k: v for k, v in env.items() if not any(k.startswith(p) for p in _AGENT_DENIED_ENV_KEYS)

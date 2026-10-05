@@ -480,6 +480,7 @@ custom-rules:
       - "src/kiro_crew/sandbox.py"
       - "src/kiro_crew/sandbox_plan.py"
       - "src/kiro_crew/sandbox_launcher.py"
+      - "src/kiro_crew/sandbox_launcher_program.py"
       - "src/kiro_crew/sandbox_seatbelt.py"
     rule: |
       Kiro Crew drives ONE first-class agent harness — kiro-cli
@@ -955,6 +956,7 @@ custom-rules:
       - "src/kiro_crew/sandbox.py"
       - "src/kiro_crew/sandbox_plan.py"
       - "src/kiro_crew/sandbox_launcher.py"
+      - "src/kiro_crew/sandbox_launcher_program.py"
       - "src/kiro_crew/sandbox_seatbelt.py"
       - "src/kiro_crew/sandbox_mount_sweep.py"
       - "src/kiro_crew/security.py"

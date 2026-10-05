@@ -1138,7 +1138,7 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "the client-declared X-Session-Key header, degrades to status quo "
         "when unresolvable"
     ),
-    "sandbox_launcher.py": (
+    "sandbox_launcher_program.py": (
         "writer-adjacent: launcher exports KIROCREW_HOST_PID (its own HOST pid — "
         "the exact pid the gateway keys the file by) before fork/namespace work, "
         "so in-namespace readers can look the file up directly without a /proc walk"

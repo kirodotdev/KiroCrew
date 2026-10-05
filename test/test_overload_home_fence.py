@@ -16,17 +16,26 @@ sibling session's sandbox.
 
 The paths asserted are the ones the module REALLY uses
 (``TaskStore.default_path``), so a moved file cannot silently leave the fence
-behind.
+behind. The sandbox half reads the confinement plan both backends render
+(``sandbox._spawn_plan``), the Seatbelt profile text, and -- for the order the
+mounts must land in -- the Linux launcher program's own stages, driven with a
+stand-in libc.
 """
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
+import sys
 from pathlib import Path
 
 import pytest
+from test_sandbox_launcher_program import CoveringLibc, launch, payload, refusal, rendered_payload
 
-from kiro_crew import sandbox, security
+from kiro_crew import sandbox
+from kiro_crew import sandbox_launcher_program as program
+from kiro_crew import security
 from kiro_crew.taskq.store import TaskStore
 
 _HOME = os.path.expanduser("~")
@@ -35,11 +44,11 @@ _CREW = os.path.join(_HOME, ".kiro", "crew")
 
 @pytest.fixture(autouse=True)
 def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+    """The namespace plan asks the HOST's ``ssh -V`` for accept-new support.
 
-    Every launcher-building test here reads the generated mask list; none is about
-    that probe, and a real ssh spawned from the test process is a host dependency
-    the launcher text must not vary with. Pinned so no binary runs.
+    Every plan-building test here reads the planned mask list; none is about that
+    probe, and a real ssh spawned from the test process is a host dependency the
+    plan must not vary with. Pinned so no binary runs.
     """
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
@@ -185,16 +194,36 @@ def _outside_any_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
 
 
+_MS_BIND = 4096
+_MS_REMOUNT = 32
+
+
+class _MountPointLibc(CoveringLibc):
+    """A :class:`CoveringLibc` that refuses a bind onto an absent mount point.
+
+    ``mount(2)`` resolves its target, so a bind whose target names nothing fails
+    ``ENOENT``; the stand-in libc's rename would otherwise create the name.
+    """
+
+    def bound(self, source, target, fstype, flags):  # noqa: ANN001, ANN201
+        if source is not None and flags & _MS_BIND and not flags & _MS_REMOUNT:
+            spelling = os.fsdecode(target)
+            if not spelling.startswith("/proc/self/fd/") and not os.path.lexists(spelling):
+                ctypes.set_errno(errno.ENOENT)
+                return -1
+        return super().bound(source, target, fstype, flags)
+
+
 class TestThePrivateWindowSurvivesTheRoutingItDependsOn:
     """Two lines carry the scratch window onto a real Linux spawn, and both read
     ZERO tests when deleted.
 
-    The tests above build the launcher script and the Seatbelt profile DIRECTLY,
-    so they prove the window's CONTENT and never the route to it. Measured:
-    dropping `or extra_private_dirs` from `wrap_argv`'s namespace-backend
-    condition passes 1874 tests with `PRIVATE_DIRS` silently `[]` on the default
-    Linux kiro spawn, and dropping the launcher's placeholder `os.makedirs` passes
-    1047 with the window's bind then failing ENOENT and refusing the spawn.
+    The tests above build the plan and the Seatbelt profile DIRECTLY, so they
+    prove the window's CONTENT and never the route to it. Dropping
+    `or extra_private_dirs` from `wrap_argv`'s namespace-backend condition leaves
+    the launcher's private windows silently empty on the default Linux kiro spawn,
+    and dropping the launcher's placeholder `os.makedirs` leaves the window's bind
+    failing ENOENT and refusing the spawn -- and every content test still passes.
     """
 
     @pytest.mark.skipif(os.name == "nt", reason="the namespace backend is Linux")
@@ -205,8 +234,6 @@ class TestThePrivateWindowSurvivesTheRoutingItDependsOn:
         the launcher that carries it. The window is the one restriction that
         arrives on EVERY session spawn, so a condition that ignores it silently
         withdraws the fence from the default path rather than an unusual one."""
-        import json
-        import re
         from unittest.mock import MagicMock, patch
 
         _outside_any_sandbox(monkeypatch)
@@ -232,10 +259,11 @@ class TestThePrivateWindowSurvivesTheRoutingItDependsOn:
             )
         try:
             assert cleanup is not None, "no launcher was written, so no window can be carried"
-            script = open(cleanup, encoding="utf-8").read()
-            windows = json.loads(re.search(r"PRIVATE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+            with open(cleanup, encoding="utf-8") as fh:
+                carried = rendered_payload(fh.read())
+            windows = carried["private_dirs"]
             assert windows == [own], f"the window did not reach the launcher: {windows}"
-            hidden = json.loads(re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+            hidden = carried["sensitive_dirs"]
             assert os.path.join(_CREW, "scratch") in hidden, "the root is not masked at all"
         finally:
             if cleanup is not None:
@@ -276,21 +304,37 @@ class TestThePrivateWindowSurvivesTheRoutingItDependsOn:
             f"denies the whole scratch root with no window: {seen!r}"
         )
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX launcher only")
-    def test_the_window_placeholder_is_created_before_its_parent_is_masked(self) -> None:
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+    )
+    def test_the_window_placeholder_is_created_before_its_parent_is_masked(
+        self, tmp_path: Path
+    ) -> None:
         """The window binds onto a path INSIDE the parent's empty stand-in, so the
         stand-in has to carry that path before the parent is masked. Without the
         placeholder the bind gets ENOENT and `_mount_or_die` refuses the spawn --
         fail-closed, but a fence that refuses every session is not the fence this
-        is. Ordering is the assertion, because the placeholder is only correct
-        where it is."""
-        script = sandbox._build_launcher_script(
-            "standard", extra_private_dirs=(os.path.join(_CREW, "scratch", "session-aaaa"),)
+        is. The stand-in libc refuses a bind onto an absent mount point exactly as
+        the kernel does, so the spawn going through is the placeholder's proof, and
+        the recorded mounts carry the order: the parent's mask, then the window."""
+        root = tmp_path / "crew" / "scratch"
+        own = root / "session-aaaa"
+        own.mkdir(parents=True)
+        (own / "build.log").write_text("own log")
+        sibling = root / "session-bbbb"
+        sibling.mkdir()
+        (sibling / "build.log").write_text("another session's log")
+        libc = _MountPointLibc()
+        run = launch(
+            tmp_path, payload(sensitive_dirs=[str(root)], private_dirs=[str(own)]), libc=libc
         )
-        makedirs = script.index("os.makedirs(os.path.join(per_dir_empty.decode()")
-        mask = script.index('"hiding credential directory %s"')
-        window = script.index('"opening private window %s"')
-        assert makedirs < mask < window, (
+
+        assert refusal(program.place_masks, run) is None, "the window's bind was refused"
+
+        assert sorted(os.listdir(root)) == ["session-aaaa"], "a sibling session is visible"
+        assert (own / "build.log").read_text() == "own log"
+        binds = [call.target_path for call in libc.calls if call.flags & _MS_BIND]
+        assert binds.index(str(root)) < binds.index(str(own)), (
             "the placeholder must be staged BEFORE the parent's mask (the mask "
             "shadows the real path) and the window bound AFTER it"
         )

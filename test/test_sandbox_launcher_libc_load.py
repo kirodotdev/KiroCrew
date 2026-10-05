@@ -1,9 +1,9 @@
 """The namespace launcher must resolve libc via ``dlopen(NULL)``, never PATH.
 
-The launcher's module scope runs BEFORE its ``fork()`` and before either
-``unshare()``, under an environment the SPAWNING CALLER supplies -- and a
-caller-declared ``PATH`` does reach it (``cron_script`` forwards a per-server
-``env`` block; ``mcp_discovery`` composes a declared ``PATH`` into the probe env).
+The launcher loads libc BEFORE its ``fork()`` and before either ``unshare()``, under
+an environment the SPAWNING CALLER supplies -- and a caller-declared ``PATH`` does
+reach it (``cron_script`` forwards a per-server ``env`` block; ``mcp_discovery``
+composes a declared ``PATH`` into the probe env).
 
 ``ctypes.util.find_library("c")`` is therefore unsafe there. On Linux it
 EXECUTES helper processes to locate libc: ``_findSoname_ldconfig`` first
@@ -14,64 +14,67 @@ PATH-resolving ``_findLib_gcc`` (``shutil.which('gcc')`` / ``'cc'``),
 caller-controlled ``gcc`` on ``PATH`` would be same-user code execution ahead of
 the confinement the launcher exists to establish.
 
-The spawned userns probe already followed this rule; these tests pin the
+The spawned userns probe already followed this rule; these tests hold the
 launcher to it too, so the two pre-confinement scripts cannot drift apart again.
 
-Two deliberate shapes here:
+The launcher is ``kiro_crew.sandbox_launcher_program``, and the file a spawn runs is
+that module's source with one plan line substituted
+(``test_sandbox_launcher_program.py`` holds that). So:
 
-* Assertions run over the parsed AST, not the source text. Every one of these
-  scripts *documents* the rule in a comment naming ``find_library``, so a
-  substring match would be satisfied by the prose and would pass on a script
-  that still calls it.
-* The scripts are built inside a fixture rather than at module scope, and the
-  module is Linux-marked. ``_build_launcher_script`` calls ``os.getuid()``,
-  which does not exist on Windows -- building at import time would crash
-  COLLECTION there rather than skipping, and macOS libc carries no ``unshare``
-  for the symbol check below. The launcher is Linux-only in production, so
-  there is nothing to assert elsewhere.
+* Its libc load is CALLED: ``main`` -- the entry point the rendered file runs --
+  loads libc through ``_load_libc``, here with ``ctypes.CDLL`` and
+  ``ctypes.util.find_library`` replaced by recorders, so the call it makes is
+  observed rather than read. A rendered launcher is also loaded in a fresh
+  isolated interpreter, which is the only place "``ctypes.util`` is never
+  imported" can be observed: this test process imports it for other reasons.
+* The whole-program rules -- no call ANYWHERE resolves libc through a lookup, every
+  ``CDLL`` is ``CDLL(None)`` -- are read from the parsed AST of the program's
+  source (``sandbox_launcher.launcher_program_source``, the text the renderer
+  substitutes into), because no finite set of runs covers every branch. The probe
+  shim is a source string handed to ``python -c``, so it is read the same way.
+  AST, not substring: both scripts *document* the rule in a comment naming
+  ``find_library``, so a substring match would be satisfied by the prose.
+
+Linux-marked: the launcher is Linux-only in production, and macOS libc carries no
+``unshare`` for the symbol check below.
 """
 
 from __future__ import annotations
 
 import ast
 import ctypes
+import ctypes.util
+import subprocess
 import sys
+import types
+from pathlib import Path
 
 import pytest
+from test_sandbox_launcher_program import payload, refusal
 
-import kiro_crew.sandbox as sandbox_mod
-from kiro_crew.sandbox import _PROBE_SHIM_CODE, _build_launcher_script
+from kiro_crew import sandbox_launcher, sandbox_launcher_program, sandbox_plan
+from kiro_crew.sandbox import _PROBE_SHIM_CODE
+
+program = sandbox_launcher_program
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
-    reason="the namespace launcher is Linux-only: _build_launcher_script uses "
-    "os.getuid() (absent on Windows) and binds unshare() (absent on macOS libc)",
+    reason="the namespace launcher is Linux-only: it binds unshare() (absent on macOS "
+    "libc) and its payload carries os.getuid() (absent on Windows)",
 )
 
 
-@pytest.fixture(autouse=True)
-def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
-
-    The AST these tests walk does not depend on that answer, and a real ssh
-    spawned from the test process is a host dependency this module is not about.
-    Pinned so no binary runs.
-    """
-    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
-
-
-#: Labels for every pre-confinement script this module generates. Both kinds run
-#: with a caller-supplied environment before any namespace exists, so both are
-#: bound by the no-``find_library`` rule -- asserting over the pair is what stops
-#: a future change from fixing one and reopening the other.
-_PRECONFINEMENT_LABELS = ("launcher(standard)", "launcher(strict)", "probe shim")
+#: Labels for every pre-confinement script. Both run with a caller-supplied
+#: environment before any namespace exists, so both are bound by the
+#: no-``find_library`` rule -- asserting over the pair is what stops a future change
+#: from fixing one and reopening the other.
+_PRECONFINEMENT_LABELS = ("launcher program", "probe shim")
 
 
 def _source_for(label: str) -> str:
     if label == "probe shim":
         return _PROBE_SHIM_CODE
-    mode = label[len("launcher(") : -1]
-    return _build_launcher_script(mode)
+    return sandbox_launcher.launcher_program_source()
 
 
 def _dotted_name(node: ast.AST) -> str:
@@ -91,12 +94,7 @@ def _called_names(tree: ast.AST) -> list[str]:
 
 @pytest.fixture(params=_PRECONFINEMENT_LABELS, ids=_PRECONFINEMENT_LABELS)
 def preconfinement(request: pytest.FixtureRequest) -> tuple[str, ast.Module]:
-    """A pre-confinement script's label and parsed tree.
-
-    Parsing here doubles as a syntax regression on the generated launcher: an
-    f-string template that produced invalid Python would fail every test in this
-    module rather than only surfacing at spawn time.
-    """
+    """A pre-confinement script's label and parsed tree."""
     label = request.param
     return label, ast.parse(_source_for(label))
 
@@ -146,17 +144,87 @@ def test_does_not_import_ctypes_util(preconfinement: tuple[str, ast.Module]) -> 
     assert "ctypes.util" not in imported, f"{label} imports ctypes.util"
 
 
+class _RecordedLibc:
+    """What ``ctypes.CDLL`` returns here: every function the launcher binds, as a slot."""
+
+    def __init__(self) -> None:
+        for name in ("mount", "unshare", "umount2", "prctl"):
+            setattr(self, name, types.SimpleNamespace(argtypes=None, restype=None))
+
+
+def test_the_launcher_entry_point_loads_libc_by_dlopen_null_and_never_looks_it_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``main`` with no libc handed in takes the process's own, through ``CDLL(None)``.
+
+    Called with no agent command, ``main`` loads libc and then refuses before it
+    forks, so the load it makes is the whole of what runs.
+    """
+    loads: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    lookups: list[str] = []
+
+    def _cdll(*args: object, **kwargs: object) -> _RecordedLibc:
+        loads.append((args, kwargs))
+        return _RecordedLibc()
+
+    def _find_library(name: str) -> None:
+        lookups.append(name)
+
+    monkeypatch.setattr(program.ctypes, "CDLL", _cdll)
+    monkeypatch.setattr(ctypes.util, "find_library", _find_library)
+
+    message = refusal(program.main, payload(), None, [])
+
+    assert message == "sandbox_launcher: no command given"
+    assert loads == [
+        ((None,), {"use_errno": True})
+    ], "the launcher must load the already-mapped libc with dlopen(NULL), once"
+    assert lookups == [], "the launcher looked libc up, which runs a PATH-resolved helper"
+
+
+def test_a_rendered_launcher_never_imports_ctypes_util(tmp_path: Path) -> None:
+    """Loaded and asked for its libc in a fresh interpreter, ``ctypes.util`` stays absent.
+
+    ``-I -S`` is how a spawn runs the launcher, so nothing but the program's own
+    imports can put the module there. Loaded under a module name other than
+    ``__main__``, so the program defines its stages and does not start.
+    """
+    plan = sandbox_plan.plan_confinement(
+        sandbox_plan.SandboxRequest(tier="strict"), sandbox_plan.PlanHost(home=str(tmp_path))
+    )
+    script = tmp_path / "kirocrew_sandbox_libc_load.py"
+    script.write_text(sandbox_launcher.render_namespace_launcher(plan), encoding="utf-8")
+    driver = (
+        "import importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('launcher_under_test', sys.argv[1])\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "module._load_libc()\n"
+        "print('ctypes.util' in sys.modules)\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", driver, str(script)],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+        cwd=str(tmp_path),
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "False", "the launcher program imported ctypes.util"
+
+
 def test_dlopen_null_exposes_the_syscalls_the_launcher_binds() -> None:
     """``dlopen(NULL)`` really carries the symbols, not just the right spelling.
 
-    Guards the substitution rather than its source text: had ``CDLL(None)`` not
-    carried these, every assertion above would still pass while each namespace
-    spawn died at the launcher's module scope. ``prctl`` is excluded -- the
-    launcher already treats it as optional via ``hasattr``.
+    Runs the launcher's own libc load for real: had ``CDLL(None)`` not carried these,
+    every assertion above would still pass while each namespace spawn died binding
+    them before it forked. ``prctl`` is excluded -- the launcher treats it as optional
+    and every stage checks for it.
     """
-    libc = ctypes.CDLL(None, use_errno=True)
-    for symbol in ("mount", "unshare"):
-        assert hasattr(libc, symbol), (
-            f"dlopen(NULL) does not expose {symbol}(); the launcher binds it at "
-            "module scope and would fail to start"
+    libc = program._load_libc()
+    for symbol in ("mount", "unshare", "umount2"):
+        assert getattr(libc, symbol).restype is ctypes.c_int, (
+            f"dlopen(NULL) does not expose {symbol}(); the launcher binds it before it "
+            "forks and would fail to start"
         )

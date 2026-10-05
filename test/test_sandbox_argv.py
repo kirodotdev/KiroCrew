@@ -1,23 +1,38 @@
-"""Additional tests for kiro_crew.sandbox — wrap_argv, profiles, env scrubbing."""
+"""Tests for kiro_crew.sandbox: wrap_argv, the backends' argv, plans, profiles, env scrubbing.
+
+The Linux namespace launcher is tested at its two interfaces. What a spawn masks, seals
+and re-opens is read off the :class:`~kiro_crew.sandbox_plan.ConfinementPlan` that
+``sandbox._spawn_plan`` builds for it; what the launcher program then DOES with that plan
+is driven through the stages of ``kiro_crew.sandbox_launcher_program`` with the shared
+stand-in libc from ``test_sandbox_launcher_program``, on a tree under ``tmp_path``. The
+rendered program itself is run end to end where it can be: the stdlib-shadowing guard,
+and the seccomp broadcast filter on a host with user namespaces. The macOS Seatbelt
+profile is asserted on the rule text its renderer emits.
+"""
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import errno
 import json
 import os
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
-import textwrap
 import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from test_sandbox_launcher_program import CoveringLibc, RecordingLibc, launch, payload, refusal
 
 import kiro_crew.sandbox as sandbox_mod
+from kiro_crew import sandbox_launcher
+from kiro_crew import sandbox_launcher_program as launcher_program
 from kiro_crew import sandbox_plan
 from kiro_crew.sandbox import (
     _CC_FILES,
@@ -49,6 +64,115 @@ _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
 )
+
+# The launcher program's mount stages pin each target through ``O_PATH`` and address it
+# as ``/proc/self/fd/<n>``, which only Linux has, so a test that drives them for real
+# runs there; the plan they are driven from is checked on every POSIX host.
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the launcher program's mount stages pin through O_PATH and /proc/self/fd",
+)
+
+#: The stages ``sandbox_launcher_program.place_masks`` runs.
+_MASK_STAGES = (
+    "stage_private_windows",
+    "seal_readonly",
+    "mask_sensitive",
+    "apply_carveouts",
+    "restore_exposed_files",
+    "verify_fail_closed_aliases",
+    "mask_sensitive_files",
+    "mask_ssh_keys",
+)
+
+#: ``mount(2)`` flags, as the kernel defines them.
+_MS_RDONLY = 1
+_MS_NOSUID = 2
+_MS_NODEV = 4
+_MS_NOEXEC = 8
+_MS_REMOUNT = 32
+_MS_BIND = 4096
+
+#: The verdicts the launcher's seccomp program returns.
+_SECCOMP_ALLOW = 0x7FFF0000
+_SECCOMP_EPERM = 0x00050001
+_AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
+
+
+def _payload_under(plan: sandbox_plan.ConfinementPlan, root: Path) -> dict:
+    """The launcher payload of *plan*, narrowed to the paths inside *root*.
+
+    The planner also names this host's real credential homes under ``Path.home()``. A
+    stage driven in-process here must never mount over those, so every path list keeps
+    only the entries inside the test's own tree, in the plan's order, and ``~/.ssh``
+    (the real one) is left alone.
+    """
+    data = sandbox_plan.namespace_payload(plan)
+    prefix = str(root).rstrip("/") + "/"
+    for key in (
+        "sensitive_dirs",
+        "private_dirs",
+        "readonly_dirs",
+        "writable_dirs",
+        "sensitive_files",
+        "required_mask_targets",
+    ):
+        data[key] = [path for path in data[key] if path.startswith(prefix)]
+    for key in ("sensitive_dir_ids", "private_dir_ids", "mask_occupants"):
+        data[key] = {path: ident for path, ident in data[key].items() if path.startswith(prefix)}
+    for key in ("expose_files", "fail_closed_file_masks", "crew_home_aliases"):
+        data[key] = [entry for entry in data[key] if entry[0].startswith(prefix)]
+    data["hide_ssh"] = 0
+    data["stand_in_roots"] = []
+    return data
+
+
+def _stage_order(monkeypatch: pytest.MonkeyPatch, run: launcher_program.Launch) -> list[str]:
+    """The stages ``place_masks`` runs for *run*, in order, each recorded instead of run."""
+    order: list[str] = []
+    for name in _MASK_STAGES:
+        monkeypatch.setattr(launcher_program, name, lambda _launch, name=name: order.append(name))
+    launcher_program.place_masks(run)
+    return order
+
+
+def _bind_targets(libc: RecordingLibc) -> list[str]:
+    """The resolved target of every bind a stage made, in order, remounts excluded."""
+    return [
+        os.path.realpath(call.target_path)
+        for call in libc.calls
+        if call.flags & _MS_BIND and not call.flags & _MS_REMOUNT
+    ]
+
+
+def _seccomp_verdict(machine: str, nr: int, arg0: int, arch: int | None = None) -> int:
+    """What the launcher's seccomp program answers for one syscall, by running it.
+
+    The program is classic BPF over ``struct seccomp_data``: the syscall number at
+    offset 0, the audit arch at 4, the instruction pointer at 8 and ``args[0]`` at 16,
+    as two little-endian 32-bit words -- the low one at 16, the high one at 20.
+    """
+    data = struct.pack(
+        "<iIQQ",
+        nr,
+        _AUDIT_ARCH[machine] if arch is None else arch,
+        0,
+        arg0 & 0xFFFF_FFFF_FFFF_FFFF,
+    )
+    insns = launcher_program.seccomp_program(machine)
+    acc = 0
+    pc = 0
+    while True:
+        code, jt, jf, k = struct.unpack("<HBBI", insns[pc])
+        if code == 0x20:  # BPF_LD | BPF_W | BPF_ABS
+            (acc,) = struct.unpack_from("<I", data, k)
+            pc += 1
+        elif code == 0x15:  # BPF_JMP | BPF_JEQ | BPF_K
+            pc += 1 + (jt if acc == k else jf)
+        elif code == 0x06:  # BPF_RET | BPF_K
+            return k
+        else:  # pragma: no cover - an opcode the program does not use
+            raise AssertionError(f"unexpected BPF opcode {code:#x}")
 
 
 @pytest.fixture()
@@ -96,12 +220,13 @@ def clean_backend(monkeypatch):
     the gateway process itself runs sandboxed. Tests that exercise the
     passthrough set the env var explicitly.
 
-    Pins ``_ssh_supports_accept_new`` at the module seam ``_build_launcher_script``
-    reads: the real probe runs the host's ``ssh -V`` from whichever of the ~30
-    launcher-building tests happens to call it first (it is ``lru_cache``d), a
-    host program none of them is about (test-hygiene class 7). ``True`` is what a
-    modern host answers. ``TestSshSupportsAcceptNew`` still exercises the real
-    function through the name it imported, with ``subprocess.run`` patched.
+    Pins ``_ssh_supports_accept_new`` at the module seam the namespace plan's host
+    facts are read from (``sandbox._live_plan_host``): the real probe runs the host's
+    ``ssh -V`` from whichever of the ~30 plan-building tests happens to call it first
+    (it is ``lru_cache``d), a host program none of them is about (test-hygiene class
+    7). ``True`` is what a modern host answers. ``TestSshSupportsAcceptNew`` still
+    exercises the real function through the name it imported, with
+    ``subprocess.run`` patched.
     """
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(
@@ -978,28 +1103,46 @@ class TestWritableCarveouts:
     @_POSIX_ONLY
     def test_launcher_embeds_validated_carveout(self, monkeypatch, tmp_path):
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script("standard", extra_writable_dirs=(str(probe),))
-        expected = json.dumps(self._spellings(probe))
-        assert f"WRITABLE_DIRS = {expected}" in script
-        # Structural anchor (not prose): the carve-out loop's remount must
-        # clear the seal -- a remount that re-passed MS_RDONLY would silently
-        # keep the carve-out read-only. Scope the check to the loop body.
-        loop = self._writable_loop(script)
-        assert "_MS_REMOUNT | _MS_BIND" in loop
-        assert "_locked_mount_flags(target)" in loop
-        assert "_MS_RDONLY" not in loop
+        plan = sandbox_mod._spawn_plan("namespace", "standard", extra_writable_dirs=(str(probe),))
+        assert plan.writable == tuple(self._spellings(probe))
+        assert sandbox_plan.namespace_payload(plan)["writable_dirs"] == self._spellings(probe)
+        # The carve-out's remount must clear the seal -- a remount that re-passed
+        # MS_RDONLY would silently keep the carve-out read-only -- and must re-assert
+        # the bits the kernel locked on the mount the bind inherited, read off that
+        # very target.
+        statvfs_targets: list[object] = []
 
-    @staticmethod
-    def _writable_loop(script: str) -> str:
-        """The carve-out loop's body, anchored on structure, not prose.
+        class _Vfs:
+            f_flag = (
+                getattr(os, "ST_NOSUID", 0)
+                | getattr(os, "ST_NODEV", 0)
+                | getattr(os, "ST_NOEXEC", 0)
+            )
 
-        ``EXPOSE_FILES`` is looped twice in the script (a pre-read before the
-        seals and the restore after them); anchor on the restore loop, i.e.
-        the first occurrence AFTER the carve-out loop starts.
-        """
-        start = script.index("for d in WRITABLE_DIRS:")
-        end = script.index("for src_path, filename in EXPOSE_FILES:", start)
-        return script[start:end]
+        def _statvfs(target):
+            statvfs_targets.append(target)
+            return _Vfs()
+
+        monkeypatch.setattr(launcher_program.os, "statvfs", _statvfs)
+        locked = (
+            (_MS_NOSUID if hasattr(os, "ST_NOSUID") else 0)
+            | (_MS_NODEV if hasattr(os, "ST_NODEV") else 0)
+            | (_MS_NOEXEC if hasattr(os, "ST_NOEXEC") else 0)
+        )
+        libc = RecordingLibc()
+        launcher_program.apply_carveouts(
+            launch(tmp_path, payload(writable_dirs=list(plan.writable)), libc=libc)
+        )
+        expected = []
+        for spelling in plan.writable:
+            target = spelling.encode()
+            expected += [
+                (target, target, _MS_BIND),
+                (target, target, _MS_REMOUNT | _MS_BIND | locked),
+            ]
+        assert [(call.source, call.target, call.flags) for call in libc.calls] == expected
+        assert not any(call.flags & _MS_RDONLY for call in libc.calls)
+        assert statvfs_targets == [spelling.encode() for spelling in plan.writable]
 
     @_POSIX_ONLY
     def test_launcher_refuses_unsafe_carveout(self, monkeypatch, tmp_path):
@@ -1019,50 +1162,90 @@ class TestWritableCarveouts:
         Load-bearing ordering: a non-recursive MS_BIND does not replicate
         submounts, so a parent self-bind established AFTER the carve-out would
         mask the carve-out mount entirely -- the writable window vanishes
-        silently and the writable-TMPDIR failure returns with no error.
+        silently and the writable-TMPDIR failure returns with no error. The
+        mounts themselves are recorded in that order by
+        ``test_the_plans_mounts_land_seal_then_hide_then_carve_out``.
         """
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script("standard", extra_writable_dirs=(str(probe),))
-        assert script.index("for d in READONLY_DIRS:") < script.index("for d in WRITABLE_DIRS:")
+        plan = sandbox_mod._spawn_plan("namespace", "standard", extra_writable_dirs=(str(probe),))
+        assert str(home / "run") in plan.readonly
+        assert str(probe) in plan.writable
+        order = _stage_order(monkeypatch, launch(tmp_path, _payload_under(plan, tmp_path)))
+        assert order.index("seal_readonly") < order.index("apply_carveouts")
 
     @_POSIX_ONLY
     @pytest.mark.parametrize("level", ["strict", "standard", "cc"])
     def test_launcher_seals_before_hiding(self, monkeypatch, tmp_path, level):
-        """The READONLY seal must precede the SENSITIVE_DIRS hide.
+        """The READONLY seal must precede the sensitive_dirs hide.
 
         Same kernel property as the carve-out pin above, in the other
         direction: ``run/voice-runtime`` is hidden and its parent ``run`` is
         sealed, and a non-recursive self-bind of ``run`` issued AFTER the hide
         masks it -- the real leaf becomes readable through the new mount.
-        Seal first, then hide ON the sealed parent. The carve-out loop stays
-        last, so the three loops are seal < hide < carve-out. Every tier, since
-        all three emit the same launcher body.
+        Seal first, then hide ON the sealed parent. The carve-out stays last,
+        so the three stages are seal < hide < carve-out. Every tier, since all
+        three run the same launcher program.
         """
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script(level, extra_writable_dirs=(str(probe),))
-        seal = script.index("for d in READONLY_DIRS:")
-        hide = script.index("for d in SENSITIVE_DIRS:")
-        carve = script.index("for d in WRITABLE_DIRS:")
-        assert seal < hide < carve
-        # The pair this pin exists for is actually emitted: the leaf is hidden
-        # and its parent is sealed, in the lists the two loops consume.
+        plan = sandbox_mod._spawn_plan("namespace", level, extra_writable_dirs=(str(probe),))
+        # The pair this pin exists for is actually planned: the leaf is hidden and its
+        # parent is sealed.
         voice_roots = _voice_runtime_sandbox_paths()
         voice_parents = _voice_runtime_parent_paths()
-        hidden = json.loads(script.split("SENSITIVE_DIRS = ", 1)[1].split("\n", 1)[0])
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
-        assert set(hidden) >= set(voice_roots)
-        assert set(readonly) >= set(voice_parents)
+        assert set(plan.sensitive_dirs) >= set(voice_roots)
+        assert set(plan.readonly) >= set(voice_parents)
+        order = _stage_order(monkeypatch, launch(tmp_path, _payload_under(plan, tmp_path)))
+        seal = order.index("seal_readonly")
+        hide = order.index("mask_sensitive")
+        carve = order.index("apply_carveouts")
+        assert seal < hide < carve
 
-    @_POSIX_ONLY
-    def test_launcher_carveout_mounts_fail_open(self, monkeypatch, tmp_path):
+    @_LINUX_ONLY
+    @pytest.mark.parametrize("level", ["strict", "standard", "cc"])
+    def test_the_plans_mounts_land_seal_then_hide_then_carve_out(
+        self, monkeypatch, tmp_path, level
+    ):
+        """The mounts the program places for a plan, in the order the kernel needs.
+
+        The two ordering pins above, at the mount level: the launcher program
+        places this tier's plan over this test's tree and the stand-in libc
+        records each bind. The sealed ``run`` is bound before the hidden voice
+        runtime under it, which is bound before the carve-out, and the leaf's
+        contents are gone from its name.
+        """
+        home, probe = self._relocated_home(monkeypatch, tmp_path)
+        plan = sandbox_mod._spawn_plan("namespace", level, extra_writable_dirs=(str(probe),))
+        # The voice-runtime paths are cached per data-home spelling, so the directory
+        # is created here rather than left to the cache's first fill.
+        leaf = home / "run" / "voice-runtime"
+        leaf.mkdir(exist_ok=True)
+        (leaf / "decoder.bin").write_bytes(b"model")
+        libc = CoveringLibc()
+        launcher_program.place_masks(launch(tmp_path, _payload_under(plan, tmp_path), libc=libc))
+        targets = _bind_targets(libc)
+        seal = targets.index(os.path.realpath(home / "run"))
+        hide = targets.index(os.path.realpath(leaf))
+        carve = targets.index(os.path.realpath(probe))
+        assert seal < hide < carve
+        assert os.listdir(leaf) == []
+
+    def test_launcher_carveout_mounts_fail_open(self, monkeypatch, tmp_path, capfd):
         """The two carve-out mounts WIDEN access, so they must not route
         through ``_mount_or_die``: a host refusing them keeps the seal
         (pre-carve-out behavior) instead of losing every sandboxed probe."""
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script("standard", extra_writable_dirs=(str(probe),))
-        loop = self._writable_loop(script)
-        assert "_mount_or_die" not in loop
-        assert "_mount_or_warn" in loop
+        plan = sandbox_mod._spawn_plan("namespace", "standard", extra_writable_dirs=(str(probe),))
+        carve = plan.writable[0]
+        for fail_at, what in ((1, "bind"), (2, "remount")):
+            libc = RecordingLibc(fail_at=fail_at)
+            run = launch(tmp_path, payload(writable_dirs=[carve]), libc=libc)
+            assert refusal(launcher_program.apply_carveouts, run) is None
+            assert (
+                f"sandbox: WARNING -- writable carve-out {what} for {carve} failed "
+                f"(errno {errno.EPERM}); continuing with the path sealed"
+            ) in capfd.readouterr().err
+            # A bind that failed is not followed by its remount.
+            assert len(libc.calls) == fail_at
 
     @_POSIX_ONLY
     def test_launcher_refuses_carveout_inside_unhidden_tree(self, monkeypatch, tmp_path):
@@ -1417,20 +1600,26 @@ class TestBuildLauncherScript:
         link/linkat -- hardlink containment is the bind-mask's job, and a
         blanket link ban broke hardlink-using build tools (npm cacache). Guards
         against an accidental re-add of link/linkat or drop of an escape
-        syscall (pentest finding #9 remediation)."""
-        script = _build_launcher_script("strict")
-        # x86_64: mount=165 umount2=166 unshare=272 setns=308 pivot_root=155
-        assert "_DENY_SYSCALLS = (165, 166, 272, 308, 155)" in script
-        # aarch64: mount=40 umount2=39 unshare=97 setns=268 pivot_root=41
-        assert "_DENY_SYSCALLS = (40, 39, 97, 268, 41)" in script
-        # link=86/linkat=265 (x86_64) and linkat=37 (aarch64) must be gone
-        assert "308, 155, 86, 265)" not in script
-        assert "268, 41, 37)" not in script
+        syscall (pentest finding #9 remediation). Asserted on the filter the
+        launcher installs, by running it on each syscall."""
+        cases = (
+            # mount=165 umount2=166 unshare=272 setns=308 pivot_root=155; link=86 linkat=265
+            ("x86_64", (165, 166, 272, 308, 155), (86, 265)),
+            # mount=40 umount2=39 unshare=97 setns=268 pivot_root=41; linkat=37
+            ("aarch64", (40, 39, 97, 268, 41), (37,)),
+        )
+        for machine, escape, links in cases:
+            denied, _kill_nr = launcher_program.seccomp_deny_table(machine)
+            assert denied == escape
+            for nr in escape:
+                assert _seccomp_verdict(machine, nr, 0) == _SECCOMP_EPERM, (machine, nr)
+            for nr in links:
+                assert _seccomp_verdict(machine, nr, 0) == _SECCOMP_ALLOW, (machine, nr)
 
     @_POSIX_ONLY
-    def test_launcher_refuses_when_seccomp_cannot_be_installed(self):
+    def test_launcher_refuses_when_seccomp_cannot_be_installed(self, monkeypatch, tmp_path):
         """An arch with no syscall table, or a libc without prctl(2), must make
-        the launcher EXIT -- not skip Step 5/6 and exec the agent anyway.
+        the launcher EXIT -- not skip the confinement steps and exec the agent anyway.
 
         Skipping leaves ``unshare`` permitted, so the child can enter a nested
         user namespace, hold CAP_SYS_ADMIN over a copy of this mount tree, and
@@ -1440,58 +1629,41 @@ class TestBuildLauncherScript:
         confined "by the outer namespace + seccomp", so a silent skip makes that
         claim false while every caller still reads the spawn as isolated.
         """
-        script = _build_launcher_script("strict")
-        # The generated launcher must stay valid Python at every tier.
+        # The rendered launcher stays valid Python at every tier.
         for level in ("standard", "cc", "strict"):
             compile(_build_launcher_script(level), "<launcher-%s>" % level, "exec")
-        assert "no seccomp syscall table for machine" in script
-        assert "libc exposes no prctl(2)" in script
-        # The old fail-open marker must not come back.
-        assert "unknown arch" not in script
-
-        # Execute the arch-dispatch block itself, so this proves the refusal
-        # FIRES rather than that its message is present as text. The block
-        # starts at the machine read: ``import platform`` does not sit here —
-        # it is hoisted to the preamble so no first-time stdlib import runs
-        # after namespace/mount isolation.
-        lines = script.splitlines()
-        start = -1
-        end = -1
-        for index, line in enumerate(lines):
-            if start < 0 and line.strip() == "_machine = _plat.machine()":
-                start = index
-            elif start >= 0 and "if _DENY_SYSCALLS:" in line:
-                end = index
-                break
-        assert start >= 0 and end > start, "arch-dispatch block not found"
-        block = textwrap.dedent("\n".join(lines[start:end]))
-
-        class _FakePlat:
-            def __init__(self, machine):
-                self._machine = machine
-
-            def machine(self):
-                return self._machine
 
         supported = (
             ("x86_64", (165, 166, 272, 308, 155)),
             ("aarch64", (40, 39, 97, 268, 41)),
         )
         for machine, table in supported:
-            namespace = {"sys": sys, "_plat": _FakePlat(machine)}
-            exec(block, namespace)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs this repo's OWN generated launcher source, never external input  # noqa: E501  # fmt: skip
-            assert namespace["_DENY_SYSCALLS"] == table
+            monkeypatch.setattr(launcher_program._plat, "machine", lambda m=machine: m)
+            libc = RecordingLibc()
+            assert refusal(launcher_program.install_seccomp, launch(tmp_path, libc=libc)) is None
+            assert launcher_program.seccomp_deny_table(machine)[0] == table
+            # PR_SET_SECCOMP with SECCOMP_MODE_FILTER: the filter was installed.
+            assert [p[:2] for p in libc.prctls] == [(22, 2)]
 
         for machine in ("riscv64", "armv7l", "ppc64le", "s390x"):
-            namespace = {"sys": sys, "_plat": _FakePlat(machine)}
-            with pytest.raises(SystemExit) as excinfo:
-                exec(block, namespace)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs this repo's OWN generated launcher source, never external input  # noqa: E501  # fmt: skip
-            message = str(excinfo.value)
-            assert "sandbox: BLOCKED" in message
+            monkeypatch.setattr(launcher_program._plat, "machine", lambda m=machine: m)
+            libc = RecordingLibc()
+            run = launch(tmp_path, libc=libc)
+            message = refusal(launcher_program.run_child, run, ["/bin/agent"])
+            assert message is not None and "sandbox: BLOCKED" in message
             assert repr(machine) in message
             # The refusal must name the explicit opt-out, or an operator on such
             # a host is left with no way forward.
             assert "agent.sandbox_allow_unsandboxed_exec" in message
+            assert all(p[0] != 22 for p in libc.prctls), "a filter was installed"
+            assert run.execs == []
+
+        libc = RecordingLibc()
+        libc.prctl = None  # type: ignore[assignment]
+        run = launch(tmp_path, libc=libc)
+        message = refusal(launcher_program.run_child, run, ["/bin/agent"])
+        assert message is not None and "libc exposes no prctl(2)" in message
+        assert run.execs == []
 
     @_POSIX_ONLY
     def test_standard_script_excludes_aws(self):
@@ -1637,6 +1809,28 @@ class TestBuildLauncherScript:
             assert path in plan.sensitive_dirs, f"{path} never reaches the directory loop"
             assert path in plan.sensitive_files, f"{path} never reaches the file loop"
 
+    @_LINUX_ONLY
+    def test_both_hiding_stages_hide_a_planned_path_by_its_kind(self, tmp_path):
+        """Offered every hidden path, the two stages hide each by its own kind.
+
+        The file and the directory a caller asked to hide are planned into both
+        lists; the launcher's directory stage masks the directory and skips the
+        file, its file stage masks the file and skips the directory's stand-in.
+        """
+        secret = tmp_path / "token_signing.key"
+        secret.write_text("s3cret", encoding="utf-8")
+        real_dir = tmp_path / "creds"
+        real_dir.mkdir()
+        (real_dir / "id").write_text("key", encoding="utf-8")
+        plan = sandbox_mod._spawn_plan(
+            "namespace", "strict", extra_hidden_dirs=(str(secret), str(real_dir))
+        )
+        run = launch(tmp_path, _payload_under(plan, tmp_path))
+        launcher_program.mask_sensitive(run)
+        launcher_program.mask_sensitive_files(run)
+        assert secret.read_text(encoding="utf-8") == ""
+        assert os.listdir(real_dir) == []
+
     @_POSIX_ONLY
     def test_cc_script_exposes_aws_config(self):
         plan = sandbox_mod._spawn_plan("namespace", "cc")
@@ -1646,58 +1840,64 @@ class TestBuildLauncherScript:
         assert (os.path.join(aws, "config"), "config") in plan.expose
 
     @_POSIX_ONLY
-    def test_script_scrubs_env_vars(self):
-        script = _build_launcher_script("strict")
-        for prefix in _SENSITIVE_ENV_PREFIXES:
-            assert prefix in script
+    def test_script_scrubs_env_vars(self, tmp_path):
+        plan = sandbox_mod._spawn_plan("namespace", "strict")
+        assert set(_SENSITIVE_ENV_PREFIXES) <= set(plan.env_scrub_prefixes)
+        planted = {prefix + "_PLANTED": "secret" for prefix in _SENSITIVE_ENV_PREFIXES}
+        run = launch(
+            tmp_path,
+            payload(env_prefixes=list(plan.env_scrub_prefixes)),
+            environ={**planted, "KEEP_ME": "1"},
+        )
+        launcher_program.scrub_env(run)
+        assert sorted(set(planted) & set(run.environ)) == []
+        assert run.environ["KEEP_ME"] == "1"
 
     @_POSIX_ONLY
-    def test_strips_self_dir_before_ctypes_import(self):
-        """The sys.path hardening must run before the first shadowable import.
-
-        Regression guard for the /tmp/struct.py shadowing outage: ctypes does
-        ``from struct import calcsize`` at import time, so the launcher dir must
-        be removed from sys.path *before* ``import ctypes``.
-        """
-        script = _build_launcher_script("strict")
-        assert "sys.path[:]" in script
-        assert script.index("sys.path[:]") < script.index("import ctypes")
-        # sys must be imported first (it is a builtin and cannot be shadowed).
-        assert script.index("import sys") < script.index("sys.path[:]")
-
-    @_POSIX_ONLY
-    def test_launcher_has_no_unimportable_kiro_crew_refs(self):
+    def test_launcher_has_no_unimportable_kiro_crew_refs(self, tmp_path):
         """The launcher runs as a standalone ~/.kirocrew/run script with the
         launcher dir scrubbed from sys.path, so it CANNOT import kiro_crew.
         Referencing a module-level helper like ``platform_compat`` NameErrors at
-        runtime and crashed every command cron. Guard: chmod is inlined, the
-        script stays syntactically valid, and there is no module-qualified
-        RUNTIME reference to any host-only module the isolated launcher can't
-        import.
+        runtime and crashed every command cron. Guard: the program imports only
+        the standard library, there is no module-qualified RUNTIME reference to
+        any host-only module the isolated launcher can't import, the rendered
+        script stays syntactically valid at every tier, and the read-only copy
+        an exposed file is restored as is made with the program's own chmod.
 
-        The naive ``"platform_compat" not in script`` string check that upstream
-        also carries is DELETED here: the fork's launcher COMMENT intentionally
-        names platform_compat (explaining why the inline os.chmod must NOT use
-        it), so a substring check false-positives. The AST guard below proves
-        there is no runtime module-qualified reference, which is the correct
-        behavioral check.
+        AST-based over the program's source -- the rendered launcher is that
+        source plus one data line -- so the program's own explanatory comment
+        naming platform_compat (why the inline os.chmod must NOT use it) does
+        not false-positive: only module-qualified attribute access counts.
         """
+        tree = ast.parse(Path(launcher_program.__file__).read_text(encoding="utf-8"))
+        used_modules = {
+            node.value.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+        }
+        forbidden = used_modules & {"platform_compat", "kiro_crew", "logger", "logging"}
+        assert not forbidden, f"launcher references un-importable module(s) {forbidden}"
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                assert node.level == 0 and node.module, "the launcher imports relative to nothing"
+                imported.add(node.module.split(".")[0])
+        assert imported <= set(sys.stdlib_module_names), sorted(
+            imported - set(sys.stdlib_module_names)
+        )
         for level in ("strict", "standard", "cc"):
-            script = _build_launcher_script(level)
-            assert "os.chmod(dest, 0o444)" in script, f"{level}: inline chmod missing"
-            compile(script, "<launcher>", "exec")
-            # AST-based so mentions in comments/strings (e.g. the fork's own
-            # explanatory comment naming platform_compat/kiro_crew) don't
-            # false-positive — only module-qualified attribute access counts.
-            used_modules = {
-                node.value.id
-                for node in ast.walk(ast.parse(script))
-                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-            }
-            forbidden = used_modules & {"platform_compat", "kiro_crew", "logger", "logging"}
-            assert (
-                not forbidden
-            ), f"{level}: launcher references un-importable module(s) {forbidden}"
+            compile(_build_launcher_script(level), "<launcher>", "exec")
+
+        config = tmp_path / "config"
+        config.write_text("[profile x]\n", encoding="utf-8")
+        run = launch(tmp_path, payload(expose_files=[[str(config), "config"]]))
+        launcher_program.preread_exposed_files(run)
+        config.unlink()  # what the empty mask over its parent leaves
+        launcher_program.restore_exposed_files(run)
+        assert config.read_text(encoding="utf-8") == "[profile x]\n"
+        assert stat.S_IMODE(os.stat(config).st_mode) == 0o444
 
 
 class TestAgentEnvPassthroughContract:
@@ -1733,99 +1933,189 @@ class TestAgentEnvPassthroughContract:
 
 @_POSIX_ONLY
 class TestHardlinkScanBudget:
-    """Step-7 pre-exec hardlink scan: per-root budgets + loud truncation.
+    """The pre-exec hardlink scan: per-root budgets, loud truncation, no pruning.
 
-    The launcher needs ``unshare`` so it cannot run end-to-end in CI; these
-    are text/compile assertions on the generated script, the same pattern as
-    the other launcher-script tests above. A single budget shared across the
-    CWD and /tmp walks let a large worktree consume the whole budget before
-    /tmp (the world-writable root the check exists for) was scanned at all,
-    and an exhausted budget fell through to exec silently — a truncated scan
-    was indistinguishable from a clean one.
+    Driven through ``refuse_hardlinked_credentials``, the launcher stage that runs
+    last before exec, over a tree under ``tmp_path``. Each root has its own budget,
+    because one shared across the CWD and /tmp walks lets a large worktree consume it
+    all before /tmp (the world-writable root the check exists for) is scanned at all;
+    and an exhausted budget warns, because a silent one makes a truncated scan
+    indistinguishable from a clean one.
     """
 
-    def test_shared_budget_counter_is_gone(self):
-        script = _build_launcher_script("strict")
-        assert "_scan_count > _MAX_SCAN" not in script
-        assert "_scan_count" not in script
+    @staticmethod
+    def _credential(tmp_path):
+        """A masked credential directory and the regular file inside it."""
+        creds = tmp_path / "creds"
+        creds.mkdir()
+        secret = creds / "key"
+        secret.write_text("s", encoding="utf-8")
+        return creds, secret
 
-    def test_only_aliased_credential_inodes_arm_the_walk(self):
+    @staticmethod
+    def _scan(run, roots, *budget):
+        """The scan stage over *roots*; its refusal message, or ``None``."""
+        return refusal(
+            launcher_program.refuse_hardlinked_credentials, run, [str(r) for r in roots], *budget
+        )
+
+    def test_only_aliased_credential_inodes_arm_the_walk(self, tmp_path, capfd):
         # An inode with st_nlink == 1 has no alias anywhere on the
         # filesystem, so it must not enter the match set: when every
         # credential has nlink == 1 the CWD + /tmp walk is skipped and the
         # common healthy-host spawn pays nothing (and emits no truncation
-        # warning). BOTH collection loops carry the gate: SENSITIVE_DIRS
-        # (depth 1) and SENSITIVE_FILES. The per-app credentials one level below
-        # a mask root reach the child as inodes the PARENT read -- it cannot stat
-        # them itself, because it masks that tree in this same process -- and the
-        # parent applies the same gate before sending one. The count is how this
-        # notices a third loop added without the gate.
+        # warning). BOTH collection loops carry the gate: the masked
+        # directories (depth 1) and the masked files. The per-app credentials
+        # one level below a mask root reach the child as inodes the PARENT
+        # read -- it cannot stat them itself, because it masks that tree in
+        # this same process -- and the parent applies the same gate before
+        # sending one. Every other path list the launcher carries is filled
+        # with directories too, which is how this notices a further
+        # collection loop added without the gate.
         #
         # REGULAR FILES only, and that half is not cosmetic: every directory has
-        # nlink >= 2, and SENSITIVE_FILES carries directories on purpose, so a bare
-        # nlink test armed the walk on every spawn. Behaviour is covered in
-        # test_sandbox_hardlink_scan.py; this is the source-level pin that every
-        # collection loop still carries the gate.
-        script = _build_launcher_script("strict")
-        assert script.count("if stat.S_ISREG(_st.st_mode) and _st.st_nlink > 1:") == 2
+        # nlink >= 2, and the masked-file list carries directories on purpose, so a
+        # bare nlink test armed the walk on every spawn. A FIFO with a second name
+        # stands in for every other non-regular kind. More behaviour is covered in
+        # test_sandbox_hardlink_scan.py.
+        creds, secret = self._credential(tmp_path)
+        (creds / "sub").mkdir()
+        fifo = creds / "fifo"
+        os.mkfifo(fifo)
+        try:
+            os.link(fifo, tmp_path / "fifo-link")
+        except OSError:
+            pass  # a filesystem that gives a FIFO no second name has nothing to gate
+        lone = tmp_path / "lone"
+        lone.write_text("s", encoding="utf-8")
+        a_dir = tmp_path / "a-dir"
+        (a_dir / "inner").mkdir(parents=True)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "f").write_text("f", encoding="utf-8")
+        run = launch(
+            tmp_path,
+            payload(
+                sensitive_dirs=[str(creds), str(a_dir)],
+                sensitive_files=[str(lone), str(a_dir), str(creds), str(fifo)],
+                readonly_dirs=[str(a_dir)],
+                writable_dirs=[str(a_dir)],
+                private_dirs=[str(a_dir / "inner")],
+                expose_files=[[str(lone), "lone"]],
+            ),
+        )
+        # A budget of 0 makes an armed walk report itself at the first file it meets.
+        assert self._scan(run, [workspace], 0) is None
+        assert "hardlink scan truncated" not in capfd.readouterr().err
 
-    def test_per_root_budget_covers_a_busy_tmp(self):
+        # A second name for a credential in a masked directory arms it ...
+        os.link(secret, tmp_path / "secret-link")
+        assert self._scan(run, [workspace], 0) is None
+        assert f"truncated at 0 files in {workspace}" in capfd.readouterr().err
+        os.unlink(tmp_path / "secret-link")
+        # ... and so does one for a masked file.
+        os.link(lone, tmp_path / "lone-link")
+        assert self._scan(run, [workspace], 0) is None
+        assert f"truncated at 0 files in {workspace}" in capfd.readouterr().err
+
+    def test_per_root_budget_covers_a_busy_tmp(self, tmp_path, capfd, monkeypatch):
         # The budget only applies once a credential inode is actually
         # aliased (see the nlink gate above), so it can afford to be
         # generous: 100k covers the busiest observed /tmp (~11.8k files)
         # with an order of magnitude to spare, making truncation genuinely
-        # exceptional rather than a steady-state warning.
-        script = _build_launcher_script("strict")
-        assert "_MAX_SCAN_PER_ROOT = 100000" in script
+        # exceptional rather than a steady-state warning. The stage's own
+        # default is what the launcher runs with; a root reporting one entry
+        # more than that is where it stops.
+        _creds, secret = self._credential(tmp_path)
+        os.link(secret, tmp_path / "secret-link")
+        busy = tmp_path / "busy-tmp"
+        busy.mkdir()
+        names = [f"entry-{index}" for index in range(100_001)]
+        real_walk = os.walk
 
-    def test_per_root_budget_with_counter_reset_inside_root_loop(self):
-        script = _build_launcher_script("strict")
-        assert "_MAX_SCAN_PER_ROOT" in script
-        # The counter reset must be a DIRECT child of the per-root loop body:
-        # each root gets exactly one fresh budget, so a large CWD cannot
-        # starve the /tmp scan. AST-based, because a byte-offset check cannot
-        # tell this apart from a reset nested inside the os.walk loop (which
-        # would reset per-directory and make the scan effectively unbounded).
-        root_loops = [
-            node
-            for node in ast.walk(ast.parse(script))
-            if isinstance(node, ast.For)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "_scan_root"
-        ]
-        assert len(root_loops) == 1
-        direct_assigns = [
-            stmt
-            for stmt in root_loops[0].body
-            if isinstance(stmt, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "_root_scanned" for t in stmt.targets)
-        ]
-        assert (
-            len(direct_assigns) == 1
-        ), "_root_scanned reset must sit directly in the per-root loop body"
+        def _walk(top, *args, **kwargs):
+            if top == str(busy):
+                yield top, [], names
+                return
+            yield from real_walk(top, *args, **kwargs)
 
-    def test_truncation_warns_on_stderr_without_exiting(self):
-        script = _build_launcher_script("strict")
-        assert "hardlink scan truncated" in script
-        assert "scan incomplete" in script
-        # The diagnostic goes to stderr, which the parent already captures.
-        warn_idx = script.index("hardlink scan truncated")
-        stderr_idx = script.index("file=sys.stderr", warn_idx)
+        monkeypatch.setattr(launcher_program.os, "walk", _walk)
+        run = launch(tmp_path, payload(sensitive_files=[str(secret)]))
+        assert self._scan(run, [busy]) is None
+        assert f"truncated at 100000 files in {busy}" in capfd.readouterr().err
+
+    def test_per_root_budget_with_counter_reset_inside_root_loop(self, tmp_path, capfd):
+        # Each root gets exactly one fresh budget, so a large CWD cannot
+        # starve the /tmp scan -- and one budget per ROOT, not per directory:
+        # a reset inside the walk would make the scan effectively unbounded.
+        _creds, secret = self._credential(tmp_path)
+        large = tmp_path / "large-cwd"
+        for sub in ("d1", "d2"):
+            (large / sub).mkdir(parents=True)
+            for name in ("x", "y"):
+                (large / sub / name).write_text(name, encoding="utf-8")
+        small = tmp_path / "small-tmp"
+        small.mkdir()
+        os.link(secret, small / "alias")
+        run = launch(tmp_path, payload(sensitive_files=[str(secret)]))
+        message = self._scan(run, [large, small], 3)
+        # The first root ran out across its directories ...
+        assert f"truncated at 3 files in {large}" in capfd.readouterr().err
+        # ... and the second still had a whole budget of its own.
+        assert message is not None and str(small / "alias") in message
+
+    def test_truncation_warns_on_stderr_without_exiting(self, tmp_path, capfd):
+        _creds, secret = self._credential(tmp_path)
+        os.link(secret, tmp_path / "secret-link")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        for name in ("a", "b", "c"):
+            (workspace / name).write_text(name, encoding="utf-8")
+        run = launch(tmp_path, payload(sensitive_files=[str(secret)]))
         # Deliberate fail-open: the truncation path warns, it never exits.
-        assert "sys.exit" not in script[warn_idx:stderr_idx]
+        assert self._scan(run, [workspace], 2) is None
+        # The diagnostic goes to stderr, which the parent already captures.
+        assert (
+            "sandbox: WARNING — pre-exec hardlink scan truncated at 2 files in "
+            f"{workspace}; scan incomplete (control degrades open)"
+        ) in capfd.readouterr().err
 
-    def test_blocked_exit_path_for_found_hardlinks_still_present(self):
-        script = _build_launcher_script("strict")
-        assert "sandbox: BLOCKED — found hardlink" in script
+    def test_blocked_exit_path_for_found_hardlinks_still_present(self, tmp_path):
+        _creds, secret = self._credential(tmp_path)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        os.link(secret, workspace / "copy")
+        run = launch(tmp_path, payload(sensitive_files=[str(secret)]))
+        assert self._scan(run, [workspace]) == (
+            "sandbox: BLOCKED — found hardlink(s) to protected credential inodes: "
+            f"{[str(workspace / 'copy')]}. Remove them before running."
+        )
 
-    def test_no_directory_pruning_in_the_scan(self):
+    def test_no_directory_pruning_in_the_scan(self, tmp_path):
         # /tmp is world-writable and the sandboxed agent shares the uid, so
         # any name- or prefix-based prune list is a deterministic bypass: the
         # attacker just names their directory to match. The scan must visit
         # every directory the depth limit allows; noisy trees are handled by
-        # the per-root budget + truncation warning, never by skipping.
-        script = _build_launcher_script("strict")
-        assert "_SKIP_TMP_DIR_PREFIXES" not in script
+        # the per-root budget + truncation warning, never by skipping. So an
+        # alias under each of the names a noisy /tmp holds is found.
+        _creds, secret = self._credential(tmp_path)
+        tmp_root = tmp_path / "tmp"
+        aliases = []
+        for name in (
+            "systemd-private-1234",
+            ".X11-unix",
+            "pip-build-env-x",
+            "node-compile-cache",
+            "pytest-of-agent",
+        ):
+            nested = tmp_root / name / "nested"
+            nested.mkdir(parents=True)
+            os.link(secret, nested / "alias")
+            aliases.append(str(nested / "alias"))
+        run = launch(tmp_path, payload(sensitive_files=[str(secret)]))
+        message = self._scan(run, [tmp_root])
+        assert message is not None
+        assert [alias for alias in aliases if alias not in message] == []
 
     def test_generated_script_compiles_at_every_level(self):
         # Proves the rendered launcher is syntactically valid Python for every
@@ -1845,6 +2135,19 @@ class TestLauncherStdlibShadowing:
 
     # A drop-in stdlib name that ctypes -> struct.calcsize depends on.
     _POISON = "def calcsize(*a, **k):\n    raise RuntimeError('shadowed!')\n"
+
+    # A sibling ``ctypes`` that announces itself. ``ctypes`` is the first module the
+    # launcher resolves from the filesystem and no interpreter imports it at startup,
+    # so this poison is imported whenever a directory holding it is still on sys.path.
+    _CTYPES_POISON = (
+        "import json, sys\nprint('SHADOWED ' + json.dumps(sys.path))\nraise SystemExit(97)\n"
+    )
+
+    # Runs a program as ``__main__`` from ``python -c``, where ``""`` (the cwd) heads
+    # sys.path, taking the program's own path back off argv so it sees no command.
+    _RUN_AS_MAIN = (
+        "import runpy, sys; path = sys.argv.pop(1); runpy.run_path(path, run_name='__main__')"
+    )
 
     def _run_launcher(self, script_dir: Path) -> subprocess.CompletedProcess:
         """Write the launcher into script_dir and run it with no args.
@@ -1866,28 +2169,40 @@ class TestLauncherStdlibShadowing:
     def test_prelude_removes_script_dir_from_syspath(self, tmp_path):
         """Deterministic proof of the mechanism, independent of struct caching.
 
-        Runs the launcher's real generated prelude (everything up to the first
-        ``import ctypes``) from a tmp dir, then dumps sys.path. The script's own
-        directory — which CPython puts at sys.path[0] — must be gone afterwards.
-        Unlike the struct e2e below, this does not depend on whether the
-        interpreter pre-imports ``struct``, so it always discriminates the fix.
+        Runs the rendered launcher beside a poisoned ``ctypes.py``, then again from a
+        cwd holding one, with the cwd entry ``""`` heading sys.path as it does under
+        ``python -c``. Neither poison may be imported: the prelude drops the script's
+        own directory — which CPython puts at sys.path[0] — and any ``""`` entry
+        before the first import that resolves from the filesystem. Unlike the struct
+        e2e below, this does not depend on whether the interpreter pre-imports
+        ``struct``, so it always discriminates the fix.
         """
-        script = _build_launcher_script("standard")
-        prelude = script[: script.index("import ctypes")]
+        (tmp_path / "ctypes.py").write_text(self._CTYPES_POISON)
         probe = tmp_path / "launcher.py"
-        probe.write_text(prelude + "import json\nprint(json.dumps(sys.path))\n")
+        probe.write_text(_build_launcher_script("standard"))
         result = subprocess.run(
             [sys.executable, str(probe)],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        assert result.returncode == 0, result.stderr
-        import json
-
-        paths = json.loads(result.stdout.strip().splitlines()[-1])
-        assert str(tmp_path) not in paths, f"script dir not stripped: {paths}"
-        assert "" not in paths, f"cwd entry not stripped: {paths}"
+        assert "SHADOWED" not in result.stdout, f"script dir not stripped: {result.stdout}"
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        (cwd / "ctypes.py").write_text(self._CTYPES_POISON)
+        from_cwd = subprocess.run(
+            [sys.executable, "-c", self._RUN_AS_MAIN, str(probe)],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=30,
+            cwd=cwd,
+        )
+        assert "SHADOWED" not in from_cwd.stdout, f"cwd entry not stripped: {from_cwd.stdout}"
+        # Both runs got past every import to the argv guard, on the one platform
+        # whose libc carries the calls the launcher binds before it.
+        if sys.platform.startswith("linux"):
+            for run in (result, from_cwd):
+                assert "no command given" in run.stderr, run.stderr
 
     def test_launcher_survives_sibling_struct_py(self, tmp_path):
         """With the fix, a sibling struct.py is ignored and imports succeed."""
@@ -1906,20 +2221,22 @@ class TestLauncherStdlibShadowing:
             "no command given" in result.stderr
         ), f"launcher did not reach the argv guard; stderr={result.stderr!r}"
 
-    def test_control_unstripped_launcher_would_crash(self, tmp_path):
-        """Sanity: prove the poison is real — an un-hardened launcher DOES crash.
+    #: The launcher's first filesystem import, without the prelude's hardening.
+    _UNHARDENED = "import sys\nimport ctypes\nsys.exit('sandbox_launcher: no command given')\n"
 
-        Strips the hardening line so we don't silently ship a test that passes
+    def test_control_unstripped_launcher_would_crash(self, tmp_path):
+        """Control: prove the poison is real — the launcher's imports, un-hardened, DO crash.
+
+        A script that makes the launcher's first filesystem import, ``import ctypes``,
+        without the prelude's hardening, so we don't silently ship a test that passes
         for the wrong reason. The poison only bites if the interpreter imports
         ``struct`` fresh (not already cached at startup); if a given build
         interpreter pre-caches ``struct``, the shadowing can't be demonstrated
         here, so we skip rather than red the build for an unrelated reason.
         """
         (tmp_path / "struct.py").write_text(self._POISON)
-        hardened = _build_launcher_script("standard")
-        unstripped = "\n".join(ln for ln in hardened.splitlines() if "sys.path[:]" not in ln)
         launcher = tmp_path / "launcher.py"
-        launcher.write_text(unstripped)
+        launcher.write_text(self._UNHARDENED)
         result = subprocess.run(
             [sys.executable, str(launcher)],
             capture_output=True,
@@ -1931,7 +2248,7 @@ class TestLauncherStdlibShadowing:
                 "interpreter pre-caches 'struct'; sibling shadowing not "
                 "reproducible here — positive test still guards the fix"
             )
-        # Otherwise the shadowed struct broke the ctypes import -> launcher
+        # Otherwise the shadowed struct broke the ctypes import -> the script
         # died before reaching the argv guard, proving the poison is real.
         if ("calcsize" not in result.stderr) and ("shadowed!" not in result.stderr):
             preview = repr(result.stderr)[:120]
@@ -1940,6 +2257,27 @@ class TestLauncherStdlibShadowing:
                 f"(stderr={preview}); "
                 "positive test (test_launcher_survives_sibling_struct_py) still guards the fix"
             )
+
+    def test_control_unhardened_import_takes_a_sibling_ctypes(self, tmp_path):
+        """Control for the prelude test: the ``ctypes.py`` poison bites an un-hardened script.
+
+        Skipped, like the struct control, on an interpreter that has ``ctypes``
+        imported before any script runs, where no sibling can shadow it.
+        """
+        (tmp_path / "ctypes.py").write_text(self._CTYPES_POISON)
+        launcher = tmp_path / "launcher.py"
+        launcher.write_text(self._UNHARDENED)
+        result = subprocess.run(
+            [sys.executable, str(launcher)],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=30,
+            cwd=str(tmp_path),
+        )
+        if "no command given" in result.stderr:
+            pytest.skip("interpreter imports 'ctypes' at startup; no sibling can shadow it")
+        assert "SHADOWED" in result.stdout, (result.stdout, result.stderr)
+        assert result.returncode == 97
 
 
 class TestSignalBroadcastGuard:
@@ -1953,27 +2291,54 @@ class TestSignalBroadcastGuard:
 
     @_POSIX_ONLY
     def test_launcher_script_contains_kill_filter(self):
-        """Static: the generated launcher carries the kill-broadcast filter
-        (arg-inspection block) and per-arch kill syscall numbers."""
-        script = _build_launcher_script("standard")
-        assert "_KILL_NR = 62" in script  # x86_64 kill
-        assert "_KILL_NR = 129" in script  # aarch64 kill
-        # arg-inspection: args[0] LOW word only, at seccomp_data offset 16.
-        # The high word (offset 20) must NOT be matched: pid_t is a 32-bit
-        # int and the x86-64 ABI leaves the upper register half undefined
-        # (glibc zero-extends, so a high==0xFFFFFFFF check never fires).
-        assert "0, 0, 16))" in script
-        assert "0, 0, 20))" not in script
-        assert "0xFFFFFFFF" in script  # 32-bit pid -1 comparison
+        """The filter the launcher installs denies the kill broadcast, per arch,
+        by inspecting the pid argument -- asserted by running it on each call."""
+        for machine, kill_nr in (("x86_64", 62), ("aarch64", 129)):
+            assert launcher_program.seccomp_deny_table(machine)[1] == kill_nr
+            assert _seccomp_verdict(machine, kill_nr, -1) == _SECCOMP_EPERM
+            # args[0] LOW word only, at seccomp_data offset 16, compared as the
+            # 32-bit pid -1. The high word (offset 20) must NOT be matched: pid_t
+            # is a 32-bit int and the x86-64 ABI leaves the upper register half
+            # undefined (glibc zero-extends, so a high==0xFFFFFFFF check never
+            # fires).
+            assert _seccomp_verdict(machine, kill_nr, 0x0000_0000_FFFF_FFFF) == _SECCOMP_EPERM
+            assert _seccomp_verdict(machine, kill_nr, 0xFFFF_FFFF_0000_0005) == _SECCOMP_ALLOW
+            # A targeted kill, and a process-group target, stay allowed.
+            assert _seccomp_verdict(machine, kill_nr, 1234) == _SECCOMP_ALLOW
+            assert _seccomp_verdict(machine, kill_nr, -1234) == _SECCOMP_ALLOW
 
     @_POSIX_ONLY
-    def test_launcher_script_exports_host_pid(self):
-        """Static: launcher exports KIROCREW_HOST_PID before fork so the
-        whole subtree can resolve session_pid files by the recorded pid."""
-        script = _build_launcher_script("standard")
-        assert 'os.environ["KIROCREW_HOST_PID"] = str(os.getpid())' in script
-        # Must appear in main() BEFORE the fork so the child inherits it.
-        assert script.index("KIROCREW_HOST_PID") < script.index("os.fork()")
+    def test_launcher_script_exports_host_pid(self, monkeypatch):
+        """The launcher exports KIROCREW_HOST_PID before fork so the whole
+        subtree can resolve session_pid files by the recorded pid.
+
+        Driven through the program's ``main`` with ``fork`` answering as the
+        child, and the child's two steps recorded rather than run.
+        """
+        # A stale value main must overwrite, set through monkeypatch so teardown restores
+        # the variable: main writes it into the real environment.
+        monkeypatch.setenv("KIROCREW_HOST_PID", "0")
+        at_fork: list[str | None] = []
+        child_steps: list[str] = []
+
+        def _fork() -> int:
+            at_fork.append(os.environ.get("KIROCREW_HOST_PID"))
+            return 0
+
+        def _enter_namespaces(_launch, c2p_w, p2c_r) -> None:
+            os.close(c2p_w)
+            os.close(p2c_r)
+            child_steps.append("enter_namespaces")
+
+        monkeypatch.setattr(launcher_program.os, "fork", _fork)
+        monkeypatch.setattr(launcher_program, "enter_namespaces", _enter_namespaces)
+        monkeypatch.setattr(
+            launcher_program, "run_child", lambda _launch, argv: child_steps.append("run_child")
+        )
+        launcher_program.main(payload(), libc=RecordingLibc(), argv=["/bin/agent"])
+        # Set BEFORE the fork, so the child inherits it.
+        assert at_fork == [str(os.getpid())]
+        assert child_steps == ["enter_namespaces", "run_child"]
 
     def test_kill_broadcast_denied_targeted_allowed_e2e(self, tmp_path):
         """Live e2e through the real launcher: inside the sandbox,
@@ -2021,6 +2386,52 @@ class TestSignalBroadcastGuard:
         ), f"kill(-1, 0) not denied: stdout={result.stdout!r} stderr={result.stderr!r}"
         assert "TARGETED_OK" in result.stdout, result.stdout
         assert "HOSTPID_SET" in result.stdout, result.stdout
+
+    def test_the_child_keeps_the_real_ids_and_its_exit_code_e2e(self, tmp_path):
+        """Live e2e through the real launcher: the child runs as the caller's own uid and
+        gid under an identity map, never as root, and the launcher exits with its code."""
+        if sys.platform != "linux":
+            pytest.skip("sandbox launcher is Linux-only")
+        import kiro_crew.sandbox as _sb
+
+        if not _sb._probe_unshare():
+            pytest.skip("user+mount namespaces unavailable on this host")
+        probe = tmp_path / "probe.py"
+        probe.write_text(
+            "import os, sys\n"
+            "print(os.getuid(), os.getgid())\n"
+            "for name in ('uid_map', 'gid_map', 'setgroups'):\n"
+            "    with open('/proc/self/' + name) as f:\n"
+            "        print(name, *f.read().split())\n"
+            "sys.exit(7)\n"
+        )
+        # A plan with nothing to mask and no stand-in roots, so the child creates no
+        # bind source on the host; only the identity maps and the exit code are under test.
+        launcher = tmp_path / "launcher.py"
+        launcher.write_text(
+            sandbox_launcher.launcher_program_source().replace(
+                sandbox_launcher.PLAN_PLACEHOLDER, "_PLAN = %s\n" % json.dumps(payload())
+            ),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [sys.executable, str(launcher), sys.executable, str(probe)],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=60,
+            cwd=str(tmp_path),
+            env={**os.environ, "TMPDIR": str(tmp_path)},
+        )
+        if "unshare(NEWUSER) failed" in result.stderr or "unshare(NEWNS) failed" in result.stderr:
+            pytest.skip("namespaces unavailable on this host")
+        uid, gid = str(os.getuid()), str(os.getgid())
+        assert result.stdout.splitlines() == [
+            f"{uid} {gid}",
+            f"uid_map {uid} {uid} 1",
+            f"gid_map {gid} {gid} 1",
+            "setgroups deny",
+        ], result.stderr
+        assert result.returncode == 7, result.stderr
 
 
 class TestSandboxExecArgv:

@@ -763,7 +763,6 @@ test/test_sage_backend_routes_coverage.py
 test/test_sandbox_backend_cache.py
 test/test_sandbox_default_fix.py
 test/test_sandbox_first_party_exec.py
-test/test_sandbox_hardlink_scan.py
 test/test_sandbox_launcher_sweep.py
 test/test_sandbox_probe.py
 test/test_sandbox_remedy.py

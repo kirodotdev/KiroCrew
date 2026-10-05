@@ -1,23 +1,33 @@
-"""Tests for sandbox 'cc' mode — routing, dir lists, and profile generation."""
+"""Sandbox 'cc' mode: the tier tables, the plan each tier yields, and the launcher stages.
+
+The tier tables are read directly. What a tier masks, re-exposes and scrubs on Linux is
+read off the confinement plan ``sandbox._spawn_plan`` builds for the namespace backend,
+and the environment scrub runs as the launcher program's own ``scrub_env`` stage over
+that plan's data. The launcher's two setup pre-reads -- the cc tier's exposed files and
+the strict tier's ``known_hosts`` -- run as the program's own stages
+(``preread_exposed_files``, ``mask_ssh_keys``) against real files. The macOS Seatbelt
+profile and ``wrap_argv``'s routing are checked on what they produce.
+"""
 
 from __future__ import annotations
 
+import errno
 import os
-import runpy
-import textwrap
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from test_sandbox_launcher_program import launch, payload, rendered_payload
 
 import kiro_crew.sandbox as _sb_mod
+from kiro_crew import sandbox_launcher_program as program
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     _CC_DIRS,
     _CC_EXPOSE_FILES,
     _CC_FILES,
     _STANDARD_DIRS,
-    _build_launcher_script,
     _build_seatbelt_profile,
     sandbox_exec_argv,
     sandboxed_spawn_argv,
@@ -25,7 +35,13 @@ from kiro_crew.sandbox import (
     scrub_env,
     wrap_argv,
 )
-from kiro_crew.sandbox_plan import BACKEND_NAMESPACE, ConfinementPlan
+from kiro_crew.sandbox_plan import BACKEND_NAMESPACE, ConfinementPlan, namespace_payload
+
+#: The launcher stages that MOUNT run against ``CoveringLibc``, which resolves each
+#: ``/proc/self/fd/<n>`` target as only Linux can; the namespace launcher runs nowhere else.
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -37,11 +53,16 @@ def _neutralize_sandbox_env(monkeypatch):
         "_KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
-    # ``_build_launcher_script`` asks the HOST's ``ssh -V`` whether it knows
+    # Planning a namespace spawn asks the HOST's ``ssh -V`` whether it knows
     # ``StrictHostKeyChecking=accept-new``. Nothing here is about that probe, and
-    # a real ssh spawned from the test process is a host dependency the launcher
-    # text must not vary with -- pin the answer so no binary runs.
+    # a real ssh spawned from the test process is a host dependency the plan
+    # must not vary with -- pin the answer so no binary runs.
     monkeypatch.setattr(_sb_mod, "_ssh_supports_accept_new", lambda: True)
+
+
+def _plan(tier: str, **kwargs: object) -> ConfinementPlan:
+    """The Linux namespace plan for one spawn at *tier* on this host."""
+    return _sb_mod._spawn_plan(BACKEND_NAMESPACE, tier, **kwargs)
 
 
 def _home(rel: str) -> str:
@@ -49,9 +70,15 @@ def _home(rel: str) -> str:
     return os.path.join(str(Path.home()), rel)
 
 
-def _plan(tier: str, **kwargs: object) -> ConfinementPlan:
-    """The Linux namespace plan for one spawn at *tier* on this host."""
-    return _sb_mod._spawn_plan(BACKEND_NAMESPACE, tier, **kwargs)
+def _scrubbed(tmp_path: Path, tier: str, environ: dict[str, str]) -> dict[str, str]:
+    """The environment the agent inherits once the launcher has scrubbed *environ*.
+
+    The plan's own launcher data drives ``scrub_env``, so this is what the child execs
+    with, not a list the test assembled.
+    """
+    run = launch(tmp_path, namespace_payload(_plan(tier)), environ=dict(environ))
+    program.scrub_env(run)
+    return run.environ
 
 
 class TestCcDirsList:
@@ -103,6 +130,12 @@ class TestCcFilesList:
 
 
 class TestBuildLauncherScriptCcMode:
+    """What each tier's Linux plan masks, re-exposes and leaves visible.
+
+    ``_build_launcher_script`` renders exactly this plan into the launcher, so a field
+    here is what the child acts on.
+    """
+
     def test_extra_hidden_directory_is_bound_over(self):
         plan = _plan("strict", extra_hidden_dirs=("/private/kiro/crew",))
 
@@ -320,8 +353,8 @@ class TestWrapArgvCcMode:
 
 class TestAgentDeniedEnvKeys:
     """Sandboxed agents (cc/strict) must not see credentials that loader.py
-    propagates into os.environ for trusted children. The launcher script and
-    sandbox-exec wrapper both scrub these keys."""
+    propagates into os.environ for trusted children. The namespace launcher and
+    the sandbox-exec wrapper both scrub these keys."""
 
     def test_default_set_includes_slack_tokens(self):
         assert "SLACK_BOT_TOKEN" in _AGENT_DENIED_ENV_KEYS
@@ -330,29 +363,36 @@ class TestAgentDeniedEnvKeys:
         assert "FEISHU_APP_ID" in _AGENT_DENIED_ENV_KEYS
         assert "FEISHU_APP_SECRET" in _AGENT_DENIED_ENV_KEYS
 
-    def test_cc_launcher_scrubs_agent_creds(self):
-        """cc launcher script's ENV_PREFIXES list contains the cred keys."""
-        script = _build_launcher_script("cc")
+    def test_cc_launcher_scrubs_agent_creds(self, tmp_path):
+        """The cc plan's scrub list carries the cred keys, and the launcher drops them."""
+        prefixes = _plan("cc").env_scrub_prefixes
         for key in _AGENT_DENIED_ENV_KEYS:
-            assert key in script, f"{key} should appear in cc launcher ENV_PREFIXES"
+            assert key in prefixes, f"{key} should be in the cc launcher's scrub list"
+        env = _scrubbed(tmp_path, "cc", {key: "FAKE" for key in _AGENT_DENIED_ENV_KEYS})
+        leaked = sorted(key for key in _AGENT_DENIED_ENV_KEYS if key in env)
+        assert not leaked, f"the cc launcher let these reach the agent: {leaked}"
 
-    def test_strict_launcher_scrubs_agent_creds(self):
-        script = _build_launcher_script("strict")
+    def test_strict_launcher_scrubs_agent_creds(self, tmp_path):
+        prefixes = _plan("strict").env_scrub_prefixes
         for key in _AGENT_DENIED_ENV_KEYS:
-            assert key in script
+            assert key in prefixes
+        env = _scrubbed(tmp_path, "strict", {key: "FAKE" for key in _AGENT_DENIED_ENV_KEYS})
+        assert not [key for key in _AGENT_DENIED_ENV_KEYS if key in env]
 
-    def test_standard_launcher_does_not_scrub_agent_creds(self):
+    def test_standard_launcher_does_not_scrub_agent_creds(self, tmp_path):
         """Standard mode is for trusted subprocess wrappers (git, aws CLI,
         kubectl). They legitimately need Slack tokens for things like cron
         scripts. Only cc/strict (LLM-controlled agents) scrub them."""
-        script = _build_launcher_script("standard")
-        # Tokens should NOT appear in the standard launcher's ENV_PREFIXES.
-        # We check by looking for the key inside the JSON-encoded list right
-        # after "ENV_PREFIXES = " — substring on the whole script would also
-        # match comments, so be precise.
-        line = next(ln for ln in script.splitlines() if ln.startswith("ENV_PREFIXES = "))
+        prefixes = _plan("standard").env_scrub_prefixes
+        # No scrub entry may even contain a token's name: the list is the standard
+        # launcher's whole scrub, so a key inside any entry is a key it targets.
         for key in _AGENT_DENIED_ENV_KEYS:
-            assert key not in line, f"{key} should NOT be in standard ENV_PREFIXES"
+            assert not any(
+                key in prefix for prefix in prefixes
+            ), f"{key} should NOT be in the standard launcher's scrub list"
+        env = _scrubbed(tmp_path, "standard", {key: "FAKE" for key in _AGENT_DENIED_ENV_KEYS})
+        dropped = sorted(key for key in _AGENT_DENIED_ENV_KEYS if key not in env)
+        assert not dropped, f"the standard launcher scrubbed {dropped}"
 
     def test_cc_sandbox_exec_scrubs_agent_creds(self, monkeypatch):
         """sandbox-exec (macOS) cc path emits env -u for cred keys present in env."""
@@ -377,14 +417,15 @@ class TestAgentDeniedEnvKeys:
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
     def test_cc_namespace_launcher_hides_aws_exposes_config(self, _mock_backend):
+        """The launcher ``wrap_argv`` writes for cc carries the cc plan: ``~/.aws``
+        masked with its ``config`` re-exposed, and ``~/.ssh`` left alone."""
         wrapped, cleanup = wrap_argv(["echo", "hi"], mode="cc")
         assert cleanup is not None
         try:
-            content = open(cleanup).read()
-            assert "HIDE_SSH = False" in content
-            assert ".aws" in content
-            assert "EXPOSE_FILES" in content
-            assert ".aws/config" in content
+            carried = rendered_payload(Path(cleanup).read_text(encoding="utf-8"))
+            assert carried["hide_ssh"] == 0
+            assert _home(".aws") in carried["sensitive_dirs"]
+            assert [_home(".aws/config"), "config"] in carried["expose_files"]
         finally:
             os.unlink(cleanup)
 
@@ -450,14 +491,15 @@ class TestChannelCredentialIsolation:
             if cleanup:
                 os.unlink(cleanup)
 
-    def test_cc_and_strict_launchers_strip_oss_channel_secrets(self):
+    def test_cc_and_strict_launchers_strip_oss_channel_secrets(self, tmp_path):
+        keys = ("WECOM_BOT_ID", "WECOM_SECRET", "TELEGRAM_BOT_TOKEN")
         for mode in ("cc", "strict"):
-            script = _build_launcher_script(mode)
-            env_prefixes = next(
-                line for line in script.splitlines() if line.startswith("ENV_PREFIXES = ")
-            )
-            for key in ("WECOM_BOT_ID", "WECOM_SECRET", "TELEGRAM_BOT_TOKEN"):
+            env_prefixes = _plan(mode).env_scrub_prefixes
+            for key in keys:
                 assert key in env_prefixes, f"{key} missing from {mode} launcher"
+            env = _scrubbed(tmp_path, mode, {key: _FAKE_CHANNEL_ENV[key] for key in keys})
+            for key in keys:
+                assert key not in env, f"{key} reached the agent through the {mode} launcher"
 
     def test_macos_cc_launcher_strips_oss_channel_secrets(self, monkeypatch):
         keys = ("WECOM_BOT_ID", "WECOM_SECRET", "TELEGRAM_BOT_TOKEN")
@@ -515,65 +557,24 @@ class TestChannelCredentialIsolation:
 # cover UNREADABLE, which is a different condition (an EACCES on open() still
 # passes isfile when the path is traversable and stat-able).
 #
-# Like test_sandbox_hardlink_scan.py, these run the block from the SHIPPED
-# launcher source rather than a copy, so they cannot drift from what the child
-# actually executes.
-_EXPOSE_BLOCK_START = "expose_data = {}"
-#: The private-window staging sits between the pre-read and the credential
-#: loop, so the end marker is the staging comment: ending at the credential
-#: loop instead would pull staging into a slice named for the pre-read and
-#: exec it with ``PRIVATE_DIRS`` undefined.
-_EXPOSE_BLOCK_END = "# Private windows: a directory INSIDE a hidden tree that stays"
-#: Structural landmarks the slice must contain, so an edit that moves either
-#: marker and shrinks the block fails HERE rather than leaving the assertions
-#: below vacuously green against a fragment that does not hold the read.
-_EXPOSE_SLICE_LANDMARKS = (
-    "for src_path, filename in EXPOSE_FILES:",  # the loop
-    "os.path.isfile(src_path)",  # the absent-file guard
-    'open(src_path, "rb")',  # the read itself
-)
-
-
-def _expose_pre_read_source() -> str:
-    """The expose pre-read, lifted verbatim out of the generated cc launcher.
-
-    Sliced from the START OF THE LINE, not from the marker: ``dedent`` measures
-    the common prefix across all lines, so a first line already stripped of its
-    indent leaves the rest indented and the block will not parse.
-    """
-    script = _build_launcher_script("cc")
-    start = script.rindex("\n", 0, script.index(_EXPOSE_BLOCK_START)) + 1
-    end = script.rindex("\n", 0, script.index(_EXPOSE_BLOCK_END, start)) + 1
-    block = textwrap.dedent(script[start:end])
-    missing = [mark for mark in _EXPOSE_SLICE_LANDMARKS if mark not in block]
-    assert not missing, f"the extracted expose pre-read is missing {missing}"
-    return block
+# These run the launcher program's own stage,
+# ``sandbox_launcher_program.preread_exposed_files``, over real files, so they
+# cannot drift from what the child actually executes. The stage records what it
+# read in ``Launch.expose_data``, the bytes the later restore writes back into
+# the empty mask, and that is what is asserted.
 
 
 def _run_expose_pre_read(
-    *, expose_files: list[tuple[str, str]], tmp_path: Path
+    *, expose_files: list[tuple[str, str]], tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> tuple[dict[str, bytes], str]:
     """Run the pre-read over *expose_files*; return ``(expose_data, stderr)``.
 
-    Via ``runpy.run_path`` rather than ``exec`` for the reason given in
-    test_sandbox_hardlink_scan.py: ``exec`` trips the SAST gate's
-    ``exec-detected`` rule, and a suppression would be this repo's first.
+    Propagates whatever the stage raises, so not raising is itself asserted.
     """
-    written: list[str] = []
-
-    class _Stderr:
-        def write(self, text: str) -> int:
-            written.append(text)
-            return len(text)
-
-    fake_sys = type("_sys", (), {"stderr": _Stderr()})()
-    block = tmp_path / "_expose_block.py"
-    block.write_text(_expose_pre_read_source(), encoding="utf-8")
-    result = runpy.run_path(
-        str(block),
-        init_globals={"os": os, "sys": fake_sys, "EXPOSE_FILES": expose_files},
-    )
-    return result["expose_data"], "".join(written)
+    run = launch(tmp_path, payload(expose_files=[[src, name] for src, name in expose_files]))
+    capfd.readouterr()
+    program.preread_exposed_files(run)
+    return run.expose_data, capfd.readouterr().err
 
 
 def _require_eacces(path: Path) -> None:
@@ -583,11 +584,20 @@ def _require_eacces(path: Path) -> None:
         pytest.skip("this host can read a 0000 file; EACCES is unreachable")
 
 
-class TestCcExposePreReadIsNonFatal:
-    def test_an_unreadable_expose_source_does_not_abort_setup(self, tmp_path: Path) -> None:
-        """The regression. Before the guard this raised PermissionError.
+def _denied_read_reported(stderr: str) -> bool:
+    """Whether *stderr* carries the error an ``open`` of an unreadable file raised.
 
-        The read sits in sandbox setup, so the exception killed the spawn
+    The stage reports the exception it caught, so this text is present only when the
+    read was ATTEMPTED and denied -- never when something skipped the read up front.
+    """
+    return f"[Errno {errno.EACCES}]" in stderr
+
+
+class TestCcExposePreReadIsNonFatal:
+    def test_an_unreadable_expose_source_does_not_abort_setup(self, tmp_path: Path, capfd) -> None:
+        """The regression the guard closes. Without it this raises PermissionError.
+
+        The read sits in sandbox setup, so the exception kills the spawn
         outright. Measured consequence on one host: every cc-mode spawn died,
         which is both cron kinds (``run_command_sandboxed`` and
         ``run_script_sandboxed`` both use ``mode="cc"``),
@@ -599,12 +609,12 @@ class TestCcExposePreReadIsNonFatal:
 
         # Not raising IS the assertion; _run_expose_pre_read propagates.
         expose_data, _ = _run_expose_pre_read(
-            expose_files=[(str(src), "config")], tmp_path=tmp_path
+            expose_files=[(str(src), "config")], tmp_path=tmp_path, capfd=capfd
         )
 
         assert str(src) not in expose_data, "an unreadable source must not be exposed"
 
-    def test_an_unreadable_expose_source_is_reported_on_stderr(self, tmp_path: Path) -> None:
+    def test_an_unreadable_expose_source_is_reported_on_stderr(self, tmp_path: Path, capfd) -> None:
         """Degrading SILENTLY would be the opposite of the intent.
 
         Without the exposure the child has no ~/.aws/config, so Bedrock auth
@@ -615,12 +625,14 @@ class TestCcExposePreReadIsNonFatal:
         src.write_text("[default]\n", encoding="utf-8")
         _require_eacces(src)
 
-        _, stderr = _run_expose_pre_read(expose_files=[(str(src), "config")], tmp_path=tmp_path)
+        _, stderr = _run_expose_pre_read(
+            expose_files=[(str(src), "config")], tmp_path=tmp_path, capfd=capfd
+        )
 
         assert stderr, "skipping an exposure silently must not be an option"
         assert str(src) in stderr, "the warning must name the path it skipped"
 
-    def test_a_readable_expose_source_is_still_read(self, tmp_path: Path) -> None:
+    def test_a_readable_expose_source_is_still_read(self, tmp_path: Path, capfd) -> None:
         """Positive control: the guard must not swallow the happy path.
 
         This passes with or without the guard, on purpose -- it is what would
@@ -630,26 +642,28 @@ class TestCcExposePreReadIsNonFatal:
         src.write_bytes(b"[default]\nregion = eu-west-1\n")
 
         expose_data, stderr = _run_expose_pre_read(
-            expose_files=[(str(src), "config")], tmp_path=tmp_path
+            expose_files=[(str(src), "config")], tmp_path=tmp_path, capfd=capfd
         )
 
         assert expose_data[str(src)] == b"[default]\nregion = eu-west-1\n"
         assert stderr == "", "a successful read must stay quiet"
 
-    def test_an_absent_expose_source_stays_silent(self, tmp_path: Path) -> None:
+    def test_an_absent_expose_source_stays_silent(self, tmp_path: Path, capfd) -> None:
         """``isfile`` still shorts out first, so absence is not a warning.
 
         ~/.aws/config does not exist on plenty of hosts. Warning there would put
         a line on stderr for every cc-mode spawn on all of them.
         """
         expose_data, stderr = _run_expose_pre_read(
-            expose_files=[(str(tmp_path / "absent"), "config")], tmp_path=tmp_path
+            expose_files=[(str(tmp_path / "absent"), "config")], tmp_path=tmp_path, capfd=capfd
         )
 
         assert expose_data == {}
         assert stderr == "", "an absent optional exposure is not a problem"
 
-    def test_the_guard_is_the_exception_not_a_pre_flight_access_check(self, tmp_path: Path) -> None:
+    def test_the_guard_is_the_exception_not_a_pre_flight_access_check(
+        self, tmp_path: Path, capfd, monkeypatch
+    ) -> None:
         """`os.access` is not a valid substitute for catching the error.
 
         Measured on the affected host: `os.stat()` succeeded and `os.access()`
@@ -657,57 +671,26 @@ class TestCcExposePreReadIsNonFatal:
         anyway. So a reviewer "tightening" the guard into
         `os.access(src_path, os.R_OK)` would look equivalent from the source and
         silently restore the abort. This pins the read as being attempted and the
-        failure as being caught, by handing the block an `os` whose `access`
-        lies exactly the way the real one did.
+        failure as being caught, by running the stage while `os.access` lies
+        exactly the way the real one did.
         """
         src = tmp_path / "config"
         src.write_text("[default]\n", encoding="utf-8")
         _require_eacces(src)
 
-        opened: list[str] = []
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "access", lambda _path, _mode, **_kw: True)
+            expose_data, stderr = _run_expose_pre_read(
+                expose_files=[(str(src), "config")], tmp_path=tmp_path, capfd=capfd
+            )
 
-        class _LyingOs:
-            """The real ``os``, but ``access`` always says yes (as measured)."""
+        # A pre-flight os.access guard trusts the lie and opens unguarded, which
+        # raises out of the stage; one that skips emits nothing. Both fail here.
+        assert _denied_read_reported(stderr), "the read must be attempted, not gated on os.access"
+        assert str(src) in stderr, "the denied read must still be reported"
+        assert str(src) not in expose_data
 
-            def access(self, path, mode) -> bool:
-                return True
-
-            def __getattr__(self, name: str):
-                return getattr(os, name)
-
-        real_open = open
-
-        def _counting_open(path, *args, **kwargs):
-            opened.append(str(path))
-            return real_open(path, *args, **kwargs)
-
-        written: list[str] = []
-
-        class _Stderr:
-            def write(self, text: str) -> int:
-                written.append(text)
-                return len(text)
-
-        fake_sys = type("_sys", (), {"stderr": _Stderr()})()
-        block = tmp_path / "_expose_block_access.py"
-        block.write_text(_expose_pre_read_source(), encoding="utf-8")
-        result = runpy.run_path(
-            str(block),
-            init_globals={
-                "os": _LyingOs(),
-                "sys": fake_sys,
-                "open": _counting_open,
-                "EXPOSE_FILES": [(str(src), "config")],
-            },
-        )
-
-        # A pre-flight os.access guard would have skipped the open entirely and
-        # emitted nothing, so BOTH of these fail on that rewrite.
-        assert opened == [str(src)], "the read must be attempted, not gated on os.access"
-        assert "".join(written), "the denied read must still be reported"
-        assert str(src) not in result["expose_data"]
-
-    def test_one_unreadable_source_does_not_block_the_others(self, tmp_path: Path) -> None:
+    def test_one_unreadable_source_does_not_block_the_others(self, tmp_path: Path, capfd) -> None:
         """The skip is per entry, not per loop.
 
         ``_CC_EXPOSE_FILES`` carries one path today, so without this the
@@ -722,6 +705,7 @@ class TestCcExposePreReadIsNonFatal:
         expose_data, stderr = _run_expose_pre_read(
             expose_files=[(str(bad), "unreadable"), (str(good), "readable")],
             tmp_path=tmp_path,
+            capfd=capfd,
         )
 
         assert str(bad) not in expose_data
@@ -740,183 +724,119 @@ class TestCcExposePreReadIsNonFatal:
 #   - an unreadable known_hosts costs VERIFICATION, because the launcher sets
 #     StrictHostKeyChecking=accept-new in GIT_SSH_COMMAND gated only on that
 #     variable being unset -- never on whether this read succeeded. Continuing
-#     with an empty kh_data therefore leaves auto-accept on with no trust
+#     with no known_hosts therefore leaves auto-accept on with no trust
 #     anchors, so any host key is accepted as new.
 #
-# Reach: HIDE_SSH is set at the DEFAULT strict level (`hide_ssh = sandbox_level
-# == "strict"`, and `sandbox_level` defaults to "strict"), not just in cc mode.
+# Reach: the plan hides ~/.ssh at the DEFAULT strict level (`hide_ssh` is
+# `tier == "strict"`, and `sandbox_level` defaults to "strict"), not just in cc mode.
 #
-# Sliced from the SHIPPED launcher for the same anti-drift reason as the block
-# above. Only the pre-read is sliced, NOT the whole `.ssh` block: the lines
-# around it call `_libc.mount()`, which cannot run in-process.
-_KH_BLOCK_START = 'kh_data = b""'
-_KH_BLOCK_END = "# Cross-fs source for the same kernel-race"
-#: Structural landmarks, so an edit that moves a marker and shrinks the slice
-#: fails HERE rather than leaving the assertions vacuously green.
-_KH_SLICE_LANDMARKS = (
-    "os.path.isfile(SSH_KNOWN_HOSTS)",  # the absent-file guard
-    'open(SSH_KNOWN_HOSTS, "rb")',  # the read itself
-)
+# These run the launcher program's own ``mask_ssh_keys`` stage over a real
+# ~/.ssh. Its read comes first, so a refusal is observed before any mount; the
+# cases that get past the read go on to bind the stand-in over ~/.ssh, through
+# ``CoveringLibc``, and are Linux-only like the launcher itself.
 
 
-def _known_hosts_pre_read_source() -> str:
-    """The known_hosts pre-read, lifted verbatim out of the strict launcher."""
-    script = _build_launcher_script("strict")
-    start = script.rindex("\n", 0, script.index(_KH_BLOCK_START)) + 1
-    end = script.rindex("\n", 0, script.index(_KH_BLOCK_END, start)) + 1
-    block = textwrap.dedent(script[start:end])
-    missing = [mark for mark in _KH_SLICE_LANDMARKS if mark not in block]
-    assert not missing, f"the extracted known_hosts pre-read is missing {missing}"
-    return block
-
-
-def _run_known_hosts_pre_read(
-    *, known_hosts: str, tmp_path: Path, stderr_sink: list[str] | None = None
-) -> tuple[bytes, str]:
-    """Run the pre-read over *known_hosts*; return ``(kh_data, stderr)``.
-
-    Propagates whatever the block raises -- the refusal is the behaviour under
-    test. Pass ``stderr_sink`` to keep the collected stderr reachable when it DOES
-    raise, since the returned tuple is unreachable in exactly that case; the
-    caller owns the list, so nothing has to be carried in module state.
-    """
-    written: list[str] = stderr_sink if stderr_sink is not None else []
-
-    class _Stderr:
-        def write(self, text: str) -> int:
-            written.append(text)
-            return len(text)
-
-    fake_sys = type("_sys", (), {"stderr": _Stderr()})()
-    block = tmp_path / "_known_hosts_block.py"
-    block.write_text(_known_hosts_pre_read_source(), encoding="utf-8")
-    result = runpy.run_path(
-        str(block),
-        init_globals={"os": os, "sys": fake_sys, "SSH_KNOWN_HOSTS": known_hosts},
-    )
-    return result["kh_data"], "".join(written)
+def _ssh_launch(tmp_path: Path, known_hosts: bytes | None) -> tuple[program.Launch, Path, Path]:
+    """A strict-tier launch over a real ``~/.ssh`` holding a key and, optionally, known_hosts."""
+    ssh = tmp_path / ".ssh"
+    ssh.mkdir()
+    (ssh / "id_ed25519").write_text("key", encoding="utf-8")
+    kh = ssh / "known_hosts"
+    if known_hosts is not None:
+        kh.write_bytes(known_hosts)
+    run = launch(tmp_path, payload(hide_ssh=1, ssh_dir=str(ssh), ssh_known_hosts=str(kh)))
+    return run, ssh, kh
 
 
 class TestKnownHostsPreReadFailsClosed:
-    def test_an_unreadable_known_hosts_aborts_setup(self, tmp_path: Path) -> None:
+    def test_an_unreadable_known_hosts_aborts_setup(self, tmp_path: Path, capfd) -> None:
         """Unreadable host-trust data must FAIL CLOSED, not degrade.
 
-        This must fail closed because the
-        launcher injects ``StrictHostKeyChecking=accept-new`` into
-        ``GIT_SSH_COMMAND`` (built and applied by the program
-        ``sandbox._build_launcher_script`` renders) gated only on that
-        variable being unset -- NOT on
-        whether known_hosts was restored. So degrading to an empty ``kh_data``
-        leaves the sandbox pointing ``UserKnownHostsFile`` at an absent file
-        while auto-accept is still on: every host reads as NEW, and an
-        interceptor's key is accepted. With known_hosts PRESENT, ``accept-new``
-        REFUSES a CHANGED key. Degrading therefore converts "refuse a changed
-        key" into "accept anything".
+        This must fail closed because the launcher's ``scrub_env`` stage injects
+        ``StrictHostKeyChecking=accept-new`` into ``GIT_SSH_COMMAND`` gated only
+        on that variable being unset -- NOT on whether known_hosts was restored.
+        So degrading to no known_hosts leaves the sandbox pointing
+        ``UserKnownHostsFile`` at an absent file while auto-accept is still on:
+        every host reads as NEW, and an interceptor's key is accepted. With
+        known_hosts PRESENT, ``accept-new`` REFUSES a CHANGED key. Degrading
+        therefore converts "refuse a changed key" into "accept anything".
 
-        That is why this site is NOT symmetric with the EXPOSE_FILES pre-read.
+        That is why this site is NOT symmetric with the exposed-file pre-read.
         Hiding ~/.aws/config only costs reachability; hiding known_hosts removes
         a trust anchor while leaving the auto-accept that anchor was gating.
         """
-        kh = tmp_path / "known_hosts"
-        kh.write_text("example.com ssh-ed25519 AAAA\n", encoding="utf-8")
+        run, _ssh, kh = _ssh_launch(tmp_path, b"example.com ssh-ed25519 AAAA\n")
         _require_eacces(kh)
+        capfd.readouterr()
 
-        stderr: list[str] = []
         with pytest.raises(OSError):
-            _run_known_hosts_pre_read(known_hosts=str(kh), tmp_path=tmp_path, stderr_sink=stderr)
+            program.mask_ssh_keys(run)
 
         # The refusal and its diagnostic are ONE behaviour observed from ONE setup,
         # so they are asserted together. Refusing silently would strand the operator
         # on a bare OSError out of a pre-read they have no reason to connect to host
         # trust, which is why the message is pinned as tightly as the raise.
-        emitted = "".join(stderr)
+        emitted = capfd.readouterr().err
         assert emitted, "refusing must not be silent"
         assert str(kh) in emitted, "the message must name the path"
         assert "FATAL" in emitted, "this is a refusal, not a warning"
 
-    def test_a_readable_known_hosts_is_still_read(self, tmp_path: Path) -> None:
+    @_LINUX_ONLY
+    def test_a_readable_known_hosts_is_still_read(self, tmp_path: Path, capfd) -> None:
         """Positive control: the guard must not swallow the happy path.
 
         Passes with or without the guard, on purpose -- it is what would catch a
-        "fix" that skipped the exposure unconditionally.
+        "fix" that skipped the exposure unconditionally. What was read is what
+        the masked ~/.ssh holds afterwards.
         """
-        kh = tmp_path / "known_hosts"
-        kh.write_bytes(b"host.example ssh-rsa BBBB\n")
+        run, ssh, _kh = _ssh_launch(tmp_path, b"host.example ssh-rsa BBBB\n")
+        capfd.readouterr()
 
-        kh_data, stderr = _run_known_hosts_pre_read(known_hosts=str(kh), tmp_path=tmp_path)
+        program.mask_ssh_keys(run)
 
-        assert kh_data == b"host.example ssh-rsa BBBB\n"
-        assert stderr == "", "a successful read must stay quiet"
+        assert sorted(os.listdir(ssh)) == ["known_hosts"], "the keys were not masked"
+        assert (ssh / "known_hosts").read_bytes() == b"host.example ssh-rsa BBBB\n"
+        assert capfd.readouterr().err == "", "a successful read must stay quiet"
 
-    def test_an_absent_known_hosts_stays_silent(self, tmp_path: Path) -> None:
+    @_LINUX_ONLY
+    def test_an_absent_known_hosts_stays_silent(self, tmp_path: Path, capfd) -> None:
         """``isfile`` still shorts out first, so absence is not a warning.
 
         Plenty of hosts have a .ssh directory and no known_hosts; warning there
         would put a line on stderr for every strict-mode spawn on all of them.
         """
-        kh_data, stderr = _run_known_hosts_pre_read(
-            known_hosts=str(tmp_path / "absent"), tmp_path=tmp_path
-        )
+        run, ssh, _kh = _ssh_launch(tmp_path, None)
+        capfd.readouterr()
 
-        assert kh_data == b""
-        assert stderr == "", "an absent known_hosts is not a problem"
+        program.mask_ssh_keys(run)
+
+        assert os.listdir(ssh) == [], "the masked ~/.ssh must hold no known_hosts"
+        assert capfd.readouterr().err == "", "an absent known_hosts is not a problem"
 
     def test_the_known_hosts_guard_is_the_exception_not_a_pre_flight_access_check(
-        self, tmp_path: Path
+        self, tmp_path: Path, capfd, monkeypatch
     ) -> None:
         """`os.access` is not a valid substitute here either.
 
         Same measurement as the expose site: `os.stat()` succeeded and
         `os.access()` reported R_OK True while the read was denied anyway. Pinned
-        the same way -- hand the block an `os` whose `access` lies, and assert
-        the read was still ATTEMPTED and the failure CAUGHT.
+        the same way -- run the stage while `os.access` lies, and assert the read
+        was still ATTEMPTED and the failure CAUGHT, reported and re-raised.
         """
-        kh = tmp_path / "known_hosts"
-        kh.write_text("example.com ssh-ed25519 AAAA\n", encoding="utf-8")
+        run, _ssh, kh = _ssh_launch(tmp_path, b"example.com ssh-ed25519 AAAA\n")
         _require_eacces(kh)
+        capfd.readouterr()
 
-        opened: list[str] = []
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "access", lambda _path, _mode, **_kw: True)
+            with pytest.raises(OSError) as raised:
+                program.mask_ssh_keys(run)
 
-        class _LyingOs:
-            """The real ``os``, but ``access`` always says yes (as measured)."""
-
-            def access(self, path, mode) -> bool:
-                return True
-
-            def __getattr__(self, name: str):
-                return getattr(os, name)
-
-        real_open = open
-
-        def _counting_open(path, *args, **kwargs):
-            opened.append(str(path))
-            return real_open(path, *args, **kwargs)
-
-        written: list[str] = []
-
-        class _Stderr:
-            def write(self, text: str) -> int:
-                written.append(text)
-                return len(text)
-
-        fake_sys = type("_sys", (), {"stderr": _Stderr()})()
-        block = tmp_path / "_known_hosts_block_access.py"
-        block.write_text(_known_hosts_pre_read_source(), encoding="utf-8")
-        with pytest.raises(OSError):
-            runpy.run_path(
-                str(block),
-                init_globals={
-                    "os": _LyingOs(),
-                    "sys": fake_sys,
-                    "open": _counting_open,
-                    "SSH_KNOWN_HOSTS": str(kh),
-                },
-            )
-
-        # A pre-flight os.access guard would have skipped the open entirely,
-        # emitted nothing, and CONTINUED with an empty kh_data -- which is the
-        # fail-open this site must not do. All three of these fail on that
-        # rewrite: no open attempted, no message, and no refusal.
-        assert opened == [str(kh)], "the read must be attempted, not gated on os.access"
-        assert "".join(written), "the denied read must still be reported"
-        assert "FATAL" in "".join(written), "this is a refusal, not a warning"
+        # A pre-flight os.access guard would skip the open and CONTINUE with no
+        # known_hosts -- the fail-open this site must not do. The error that
+        # escapes is the denied open of known_hosts itself, and it was reported.
+        assert raised.value.errno == errno.EACCES, "the read must be attempted"
+        assert raised.value.filename == str(kh), "the read must be of known_hosts"
+        emitted = capfd.readouterr().err
+        assert _denied_read_reported(emitted), "the denied read must still be reported"
+        assert "FATAL" in emitted, "this is a refusal, not a warning"

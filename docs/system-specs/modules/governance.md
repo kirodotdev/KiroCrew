@@ -863,7 +863,7 @@ directory (`sandbox._is_policy_cache_dir`, matched on the leaf so it holds for t
 `$HOME`-relative, legacy `~/.kirocrew`, and relocated spellings alike) means a future
 caller cannot re-open the hole by passing the path:
 
-- **Linux** drops it from the hidden list and puts it in `READONLY_DIRS`, which the
+- **Linux** drops it from the hidden list and puts it in `readonly_dirs`, which the
   launcher binds over itself and then **remounts** `MS_RDONLY`. Both mounts are
   load-bearing — `MS_RDONLY` is ignored on the initial `MS_BIND` — and both go through
   `_mount_or_die`, so a seal that does not land refuses the spawn rather than silently

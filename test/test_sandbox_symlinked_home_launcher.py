@@ -3,41 +3,45 @@
 ``/home/u -> /mnt/home/u``: ``Path.home()`` keeps the link spelling and
 ``config_dir()`` returns the resolved one, so every crew-home path has two
 spellings that reach one directory. The launcher keeps its records per NAME --
-``MASK_OCCUPANTS`` from the pre-spawn pass, ``_MASKED_NAMES`` from the loops --
+``mask_occupants`` from the pre-spawn pass, ``masked_names`` from its mask stages --
 and compares them against the filesystem by identity, so two names for one
 object make those records disagree with what a name reaches. Every spawn
 failure this layout has produced had that one shape.
 
-This suite pins the two halves of the answer: the producers emit one spelling
-per directory (the one the tier lists carry, so the occupant pass records
-under a name the launcher looks up), and the launcher's own hiding region runs
-to the end against the script those producers actually write for such a host,
-with a bind that HIDES its target the way a real mount does.
+This suite holds the two halves of the answer. The producers emit one spelling
+per directory (the one the tier lists carry, so the occupant pass records under a
+name the launcher looks up): read from the plan line of the launcher
+``namespace_argv`` really writes for such a host. And the launcher's own stages
+(``kiro_crew.sandbox_launcher_program``) run to the end against that plan, with a
+bind that HIDES its target the way a real mount does; the crew-home alias checks on
+either side of the masks refuse a home link re-aimed in between, at the point in
+the child run where each one stands.
 """
 
 from __future__ import annotations
 
-import ast
-import ctypes
 import os
-import re
-import runpy
-import stat
 import sys
-import tempfile
-import textwrap
 from pathlib import Path
 
 import pytest
-from test_sandbox_mount_pinned_target import _CoveringLibc, _region
+from test_sandbox_launcher_program import CoveringLibc, launch, refusal, rendered_payload
 
 import kiro_crew.sandbox as sb
 from kiro_crew import kiro_prerequisite as kp
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sandbox_launcher_program
+
+program = sandbox_launcher_program
 
 pytestmark = pytest.mark.skipif(
     not platform_compat.IS_POSIX,
     reason="the launcher script and the symlinked home are POSIX mechanisms",
+)
+
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the mask stages pin through O_PATH and /proc/self/fd; the namespace launcher "
+    "is Linux-only",
 )
 
 
@@ -58,33 +62,6 @@ def symlinked_home(tmp_path, monkeypatch):
     return link_home, data_home
 
 
-def _lists(script: str) -> dict:
-    def get(name: str):
-        match = re.search(r"^%s *= *(.*)$" % re.escape(name), script, re.M)
-        assert match, f"the launcher does not emit {name}"
-        value = match.group(1)
-        if value.startswith("frozenset("):
-            value = value[len("frozenset(") : -1]
-        return ast.literal_eval(value)
-
-    return {
-        name: get(name)
-        for name in (
-            "SENSITIVE_DIRS",
-            "SENSITIVE_DIR_IDS",
-            "PRIVATE_DIRS",
-            "PRIVATE_DIR_IDS",
-            "READONLY_DIRS",
-            "WRITABLE_DIRS",
-            "SENSITIVE_FILES",
-            "REQUIRED_MASK_TARGETS",
-            "FAIL_CLOSED_FILE_MASKS",
-            "MASK_OCCUPANTS",
-            "CREW_HOME_ALIASES",
-        )
-    }
-
-
 def _probe_script(link_home: Path, data_home: Path) -> str:
     """The launcher the readiness probe writes for this host, through the real pass."""
     service = kp.KiroPrerequisiteService(
@@ -102,6 +79,26 @@ def _probe_script(link_home: Path, data_home: Path) -> str:
         os.unlink(script_path)
 
 
+def _probe_plan(link_home: Path, data_home: Path) -> dict:
+    """The plan the probe's launcher carries for this host."""
+    return rendered_payload(_probe_script(link_home, data_home))
+
+
+def _child_plan(plan: dict) -> dict:
+    """*plan* with no host stand-in root to probe, so a child run stages under ``tmp_path``."""
+    return dict(plan, stand_in_roots=[])
+
+
+def _re_aim_home(tmp_path: Path, to: str) -> Path:
+    """Re-aim the ``$HOME`` link at ``tmp_path/<to>/home``; returns the new ``u``."""
+    target = tmp_path / to / "home" / "u"
+    (target / ".kirocrew").mkdir(parents=True, exist_ok=True)
+    home_link = tmp_path / "home"
+    home_link.unlink()
+    home_link.symlink_to(tmp_path / to / "home", target_is_directory=True)
+    return target
+
+
 def _identity(path: str) -> tuple[int, int] | None:
     try:
         info = os.stat(path)
@@ -117,7 +114,7 @@ def test_the_probes_home_spellings_fold_onto_the_data_home(symlinked_home) -> No
         platform_name="linux", home=link_home, data_home=data_home, environ={}
     )
     assert str(link_home / ".kirocrew") in service._hidden_probe_dirs, "fixture drifted"
-    dirs = _lists(_probe_script(link_home, data_home))["SENSITIVE_DIRS"]
+    dirs = _probe_plan(link_home, data_home)["sensitive_dirs"]
     assert dirs.count(str(data_home)) == 1
     assert str(link_home / ".kirocrew") not in dirs
 
@@ -135,10 +132,10 @@ def test_a_relocated_home_is_still_listed_under_its_own_spelling(tmp_path, monke
 
 def test_the_launcher_is_handed_one_spelling_per_directory(symlinked_home) -> None:
     link_home, data_home = symlinked_home
-    lists = _lists(_probe_script(link_home, data_home))
+    plan = _probe_plan(link_home, data_home)
 
     seen: dict[tuple[int, int], str] = {}
-    for name in lists["SENSITIVE_DIRS"]:
+    for name in plan["sensitive_dirs"]:
         ident = _identity(name)
         if ident is None:
             continue
@@ -147,11 +144,9 @@ def test_the_launcher_is_handed_one_spelling_per_directory(symlinked_home) -> No
     # The resolved spelling is the canonical one: it is how the pre-spawn passes
     # already spell the leaves they record, and how ``.vault`` -- a tier entry with
     # no relocated twin -- is still masked after the fold.
-    assert str(data_home / "diag") in lists["SENSITIVE_DIRS"]
-    assert str(data_home / ".vault") in lists["SENSITIVE_DIRS"]
-    assert not any(
-        name.startswith(str(link_home / ".kirocrew")) for name in lists["SENSITIVE_DIRS"]
-    )
+    assert str(data_home / "diag") in plan["sensitive_dirs"]
+    assert str(data_home / ".vault") in plan["sensitive_dirs"]
+    assert not any(name.startswith(str(link_home / ".kirocrew")) for name in plan["sensitive_dirs"])
 
 
 def test_the_carried_leaf_identity_is_under_the_spelling_the_launcher_lists(
@@ -159,83 +154,45 @@ def test_the_carried_leaf_identity_is_under_the_spelling_the_launcher_lists(
 ) -> None:
     """The record and the list agree on the name, so the identity check runs for the leaf."""
     link_home, data_home = symlinked_home
-    lists = _lists(_probe_script(link_home, data_home))
+    plan = _probe_plan(link_home, data_home)
     leaf = str(data_home / "diag")
-    assert leaf in lists["SENSITIVE_DIRS"]
-    assert leaf in lists["MASK_OCCUPANTS"], "the crew leaf lost its carried identity"
+    assert leaf in plan["sensitive_dirs"]
+    assert leaf in plan["mask_occupants"], "the crew leaf lost its carried identity"
     assert not any(
-        name.startswith(str(link_home / ".kirocrew")) for name in lists["MASK_OCCUPANTS"]
+        name.startswith(str(link_home / ".kirocrew")) for name in plan["mask_occupants"]
     ), "an occupant was recorded under the alias spelling"
 
 
-def _replay_namespace(link_home: Path, lists: dict, tmpfs: Path, libc: _CoveringLibc) -> dict:
-    return {
-        "_libc": libc,
-        "_HARNESS_VERIFY": lambda name, stand_in, what: None,
-        "_MS_BIND": 4096,
-        "_MS_REC": 16384,
-        "_MS_PRIVATE": 1 << 18,
-        "_MS_RDONLY": 1,
-        "_MS_REMOUNT": 32,
-        "_MS_NOSUID": 2,
-        "_MS_NODEV": 4,
-        "_MS_NOEXEC": 8,
-        "_MNT_DETACH": 2,
-        "ctypes": ctypes,
-        "os": os,
-        "stat": stat,
-        "sys": sys,
-        "tempfile": tempfile,
-        "_tmpfs_src": str(tmpfs),
-        "_src_prefix": "kirocrew_sb_%d_" % os.getpid(),
-        # Set ahead of the region by the real launcher once prctl made it
-        # non-dumpable; False here keeps every mask on the readable path the
-        # covering libc knows how to bind.
-        "_launcher_nondumpable": False,
-        "expose_data": {},
-        "EXPOSE_FILES": [],
-        "REQUIRED_MASK_TARGETS": frozenset(lists["REQUIRED_MASK_TARGETS"]),
-        "SSH_DIR": str(link_home / ".ssh"),
-        "SSH_KNOWN_HOSTS": str(link_home / ".ssh" / "known_hosts"),
-        "HIDE_SSH": True,
-        **{k: v for k, v in lists.items() if k != "REQUIRED_MASK_TARGETS"},
-    }
-
-
-def _replay(script: str, namespace: dict, tmp_path: Path) -> dict:
-    region_file = tmp_path / "region.py"
-    region_file.write_text(_region(script))
-    return runpy.run_path(str(region_file), init_globals=namespace)
-
-
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="the replayed region pins through O_PATH and /proc/self/fd; the namespace launcher is Linux-only",
-)
+@_LINUX_ONLY
 def test_the_hiding_region_runs_to_the_end_on_a_symlinked_home(symlinked_home, tmp_path) -> None:
-    """The script the producers write for this host, replayed with a covering bind."""
+    """The plan the producers write for this host, run through the mask stages with a covering bind.
+
+    Every hiding mount is placed and read back for real, between the two crew-home
+    alias checks, as the child runs them.
+    """
     link_home, data_home = symlinked_home
     (link_home / ".ssh").mkdir()
     (link_home / ".ssh" / "known_hosts").write_text("example.com ssh-rsa AAAA\n")
     (link_home / ".kiro" / "agents").mkdir(parents=True)
-    script = _probe_script(link_home, data_home)
-    lists = _lists(script)
-    tmpfs = tmp_path / "tmpfs"
-    tmpfs.mkdir()
-    libc = _CoveringLibc()
+    plan = _probe_plan(link_home, data_home)
+    libc = CoveringLibc()
+    run = launch(tmp_path, _child_plan(plan), libc=libc, environ={"HOME": str(link_home)})
     try:
-        result = _replay(script, _replay_namespace(link_home, lists, tmpfs, libc), tmp_path)
+        program.check_crew_home_aliases(run)
+        program.place_masks(run)
+        program.confirm_crew_home_aliases(run)
     except SystemExit as exc:
         pytest.fail(f"the launcher refused on a symlinked home: {exc.code}")
     assert libc.covered.count(str(data_home)) == 1, "the data home was masked more than once"
     assert not (data_home / "diag").exists(), "the stand-in is not empty"
-    for name, stand_in_id in result["_MASKED_NAMES"].items():
-        assert stand_in_id in result["_OWN_STAND_INS"], name
+    assert run.masked_names, "no mask was recorded"
+    for name, stand_in_id in run.masked_names.items():
+        assert tuple(stand_in_id) in run.own_stand_ins, name
 
 
 def test_the_folded_alias_travels_with_the_identity_it_rested_on(symlinked_home) -> None:
     link_home, data_home = symlinked_home
-    aliases = _lists(_probe_script(link_home, data_home))["CREW_HOME_ALIASES"]
+    aliases = _probe_plan(link_home, data_home)["crew_home_aliases"]
     info = os.stat(data_home)
     assert [str(link_home / ".kirocrew"), str(data_home), info.st_dev, info.st_ino] in aliases
     # ``.kiro/crew`` is absent on this host, so it is no alias and keeps its own rules.
@@ -297,46 +254,27 @@ def test_a_bind_mounted_data_home_keeps_its_own_spelling(tmp_path, monkeypatch) 
     assert sb._crew_home_alias_roots() == ()
 
 
-_ALIAS_START = "        # A crew-home alias is a ``$HOME`` spelling the producer folded onto the"
-_ALIAS_END = "        # Pre-read files that must survive dir hiding."
-
-
-def _alias_check(script: str) -> str:
-    """The launcher's alias re-read, lifted from the script as the loop harness lifts the loops."""
-    a = script.rindex("\n", 0, script.index(_ALIAS_START)) + 1
-    b = script.rindex("\n", 0, script.index(_ALIAS_END, a)) + 1
-    return textwrap.dedent(script[a:b])
-
-
 def test_an_alias_re_aimed_after_the_fold_refuses_before_any_mask(symlinked_home, tmp_path) -> None:
     """The fold is decided in the producer and acted on in the child; the link in between is a name.
 
     A writer re-aims the home link after the producer looked and before the child
     mounts. The alias spelling then reaches another directory, one no folded rule
     covers. The child reads the alias again, ahead of every hiding mount, and
-    refuses the spawn. The same block passes while the link still holds.
+    refuses the spawn. The same check passes while the link still holds.
     """
     link_home, data_home = symlinked_home
-    script = _probe_script(link_home, data_home)
-    lists = _lists(script)
-    assert lists["CREW_HOME_ALIASES"], "the fixture produced no alias to re-aim"
-    check = tmp_path / "alias_check.py"
-    check.write_text(_alias_check(script))
-    namespace = {"os": os, "sys": sys, "CREW_HOME_ALIASES": lists["CREW_HOME_ALIASES"]}
+    plan = _probe_plan(link_home, data_home)
+    assert plan["crew_home_aliases"], "the fixture produced no alias to re-aim"
+    run = launch(tmp_path, plan)
 
-    runpy.run_path(str(check), init_globals=dict(namespace))  # the link holds: no refusal
+    assert refusal(program.check_crew_home_aliases, run) is None  # the link holds
 
-    elsewhere = tmp_path / "elsewhere" / "home" / "u"
-    (elsewhere / ".kirocrew").mkdir(parents=True)
+    elsewhere = _re_aim_home(tmp_path, "elsewhere")
     (elsewhere / ".kirocrew" / ".env").write_text("PLANTED=1\n")
-    home_link = tmp_path / "home"
-    home_link.unlink()
-    home_link.symlink_to(tmp_path / "elsewhere" / "home", target_is_directory=True)
     assert not os.path.samefile(link_home / ".kirocrew", data_home)
 
-    with pytest.raises(SystemExit) as refused:
-        runpy.run_path(str(check), init_globals=dict(namespace))
-    assert "reaches a different directory now" in str(refused.value.code)
+    refused = refusal(program.check_crew_home_aliases, run)
+    assert refused is not None and "reaches a different directory now" in refused
 
 
 def test_a_canonical_swapped_under_a_still_true_alias_refuses(symlinked_home, tmp_path) -> None:
@@ -349,14 +287,11 @@ def test_a_canonical_swapped_under_a_still_true_alias_refuses(symlinked_home, tm
     re-read requires the canonical spelling to reach the recorded directory too.
     """
     link_home, data_home = symlinked_home
-    script = _probe_script(link_home, data_home)
-    lists = _lists(script)
-    assert lists["CREW_HOME_ALIASES"], "the fixture produced no alias to swap under"
-    check = tmp_path / "alias_check.py"
-    check.write_text(_alias_check(script))
-    namespace = {"os": os, "sys": sys, "CREW_HOME_ALIASES": lists["CREW_HOME_ALIASES"]}
+    plan = _probe_plan(link_home, data_home)
+    assert plan["crew_home_aliases"], "the fixture produced no alias to swap under"
+    run = launch(tmp_path, plan)
 
-    runpy.run_path(str(check), init_globals=dict(namespace))  # nothing moved: no refusal
+    assert refusal(program.check_crew_home_aliases, run) is None  # nothing moved
 
     aside = tmp_path / "aside" / "home" / "u"
     aside.mkdir(parents=True)
@@ -368,28 +303,30 @@ def test_a_canonical_swapped_under_a_still_true_alias_refuses(symlinked_home, tm
     assert os.path.samefile(link_home / ".kirocrew", aside / ".kirocrew")
     assert not os.path.samefile(link_home / ".kirocrew", data_home)
 
-    with pytest.raises(SystemExit) as refused:
-        runpy.run_path(str(check), init_globals=dict(namespace))
-    assert "holds a different directory now" in str(refused.value.code)
-    assert str(data_home) in str(refused.value.code), "the refusal names the swapped spelling"
+    refused = refusal(program.check_crew_home_aliases, run)
+    assert refused is not None and "holds a different directory now" in refused
+    assert str(data_home) in refused, "the refusal names the swapped spelling"
 
 
-def test_the_alias_re_read_runs_ahead_of_every_hiding_mount() -> None:
-    """Ordering is the guarantee: the re-read sits before the first mask the loops place."""
-    script = sb._build_launcher_script("strict")
-    assert script.index(_ALIAS_START) < script.index(_ALIAS_END)
-    assert script.index(_ALIAS_START) > script.index("def _mount_or_die(")
+def test_the_alias_re_read_runs_ahead_of_every_hiding_mount(symlinked_home, tmp_path) -> None:
+    """Ordering is the guarantee: a re-aimed alias refuses the child before its first mask.
 
+    The whole child run is started with the link already re-aimed, over a plan with
+    masks to place; the refusal comes from the alias re-read and no mount has been
+    made by then.
+    """
+    link_home, data_home = symlinked_home
+    plan = _probe_plan(link_home, data_home)
+    assert plan["crew_home_aliases"] and plan["sensitive_dirs"], "the fixture drifted"
+    _re_aim_home(tmp_path, "elsewhere")
+    libc = CoveringLibc()
+    run = launch(tmp_path, _child_plan(plan), libc=libc, environ={"HOME": str(link_home)})
 
-_AFTER_START = "        # The alias re-read above ran BEFORE the hiding mounts, and a writer who"
-_AFTER_END = "        # Mark the sandboxed tree so in-sandbox wrap_argv calls know OS"
+    refused = refusal(program.run_child, run, ["/usr/bin/env", "kiro-cli"])
 
-
-def _alias_after_check(script: str) -> str:
-    """The launcher's post-mount alias read, lifted the same way."""
-    a = script.rindex("\n", 0, script.index(_AFTER_START)) + 1
-    b = script.rindex("\n", 0, script.index(_AFTER_END, a)) + 1
-    return textwrap.dedent(script[a:b])
+    assert refused is not None and "reaches a different directory now" in refused
+    assert libc.calls == [], "a hiding mount was placed before the alias was read again"
+    assert run.execs == []
 
 
 def test_an_alias_re_aimed_between_the_read_and_the_mounts_refuses_after_them(
@@ -403,52 +340,89 @@ def test_an_alias_re_aimed_between_the_read_and_the_mounts_refuses_after_them(
     reaches an unmasked directory and disagrees, and the spawn is refused.
     """
     link_home, data_home = symlinked_home
-    script = _probe_script(link_home, data_home)
-    lists = _lists(script)
-    assert lists["CREW_HOME_ALIASES"], "the fixture produced no alias to re-aim"
-    check = tmp_path / "alias_after.py"
-    check.write_text(_alias_after_check(script))
-    namespace = {"os": os, "sys": sys, "CREW_HOME_ALIASES": lists["CREW_HOME_ALIASES"]}
+    plan = _probe_plan(link_home, data_home)
+    assert plan["crew_home_aliases"], "the fixture produced no alias to re-aim"
+    run = launch(tmp_path, plan)
 
-    runpy.run_path(str(check), init_globals=dict(namespace))  # both names, one directory
+    assert refusal(program.confirm_crew_home_aliases, run) is None  # both names, one directory
 
-    elsewhere = tmp_path / "elsewhere" / "home" / "u"
-    (elsewhere / ".kirocrew").mkdir(parents=True)
-    home_link = tmp_path / "home"
-    home_link.unlink()
-    home_link.symlink_to(tmp_path / "elsewhere" / "home", target_is_directory=True)
+    _re_aim_home(tmp_path, "elsewhere")
     assert not os.path.samefile(link_home / ".kirocrew", data_home)
 
-    with pytest.raises(SystemExit) as refused:
-        runpy.run_path(str(check), init_globals=dict(namespace))
-    assert "now that the masks are placed" in str(refused.value.code)
+    refused = refusal(program.confirm_crew_home_aliases, run)
+    assert refused is not None and "now that the masks are placed" in refused
 
 
-def test_the_post_mount_alias_read_runs_after_every_hiding_mount() -> None:
-    """Ordering is the guarantee: the second read sits after the last mask, the ssh one."""
-    script = sb._build_launcher_script("strict")
-    ssh_mask = script.index('"hiding ssh key directory %s" % SSH_DIR')
-    assert script.index(_ALIAS_END) < ssh_mask < script.index(_AFTER_START)
-    assert script.index(_AFTER_START) < script.index(_AFTER_END)
-    assert script.index(_AFTER_START) < script.index("os.execvp(argv[0], argv)")
+class _ReAimingAtTheLastMask(CoveringLibc):
+    """A covering libc that re-aims the ``$HOME`` link as it binds the ``~/.ssh`` mask.
 
-
-def _one_identity_os(*shared: Path):
-    """An ``os`` whose ``stat`` reports one identity for every path in *shared*.
-
-    Resolution stays honest: ``os.path`` is the real module, so ``realpath`` still
-    walks the real links. This is a second mount of the data home as a gate would
-    see it -- the same ``(st_dev, st_ino)`` under a name that does not resolve to
-    the canonical one -- without a mount.
+    The writer lands after the alias's first read, inside the last hiding mount. The
+    bound ``~/.ssh`` stand-in moves with the link, as a mounted mask stays on its
+    name, so that mask's own read-back still reaches it and only the alias tells the
+    move apart.
     """
-    import types
 
+    def __init__(self, ssh: Path, re_aim) -> None:  # noqa: ANN001
+        super().__init__()
+        self.ssh = str(ssh)
+        self.re_aim = re_aim
+        self.fired = False
+
+    def bound(self, source, target, fstype, flags):  # noqa: ANN001, ANN201
+        result = super().bound(source, target, fstype, flags)
+        if not self.fired and self.covered and self.covered[-1] == self.ssh:
+            self.fired = True
+            self.re_aim()
+        return result
+
+
+@_LINUX_ONLY
+def test_the_post_mount_alias_read_runs_after_every_hiding_mount(symlinked_home, tmp_path) -> None:
+    """Ordering is the guarantee: the second read sits after the last mask, the ssh one.
+
+    A re-aim that lands while the ``~/.ssh`` mask is being bound -- after the first
+    read, inside the last hiding mount -- is still refused, and the agent is never
+    exec'd.
+    """
+    link_home, data_home = symlinked_home
+    real_ssh = data_home.parent / ".ssh"
+    real_ssh.mkdir()
+    (real_ssh / "known_hosts").write_text("example.com ssh-rsa AAAA\n")
+    plan = _probe_plan(link_home, data_home)
+    assert plan["crew_home_aliases"] and plan["hide_ssh"], "the fixture drifted"
+
+    def _re_aim() -> None:
+        moved = tmp_path / "elsewhere" / "home" / "u"
+        moved.mkdir(parents=True)
+        real_ssh.rename(moved / ".ssh")
+        _re_aim_home(tmp_path, "elsewhere")
+
+    libc = _ReAimingAtTheLastMask(real_ssh, _re_aim)
+    run = launch(tmp_path, _child_plan(plan), libc=libc, environ={"HOME": str(link_home)})
+
+    refused = refusal(program.run_child, run, ["/usr/bin/env", "kiro-cli"])
+
+    assert libc.fired, "the ~/.ssh mask was never bound"
+    assert libc.calls[-1].target_path == str(real_ssh), "the ~/.ssh mask is not the last mount"
+    assert refused is not None and "now that the masks are placed" in refused
+    assert run.execs == []
+
+
+def _one_identity(*shared: Path):
+    """An ``os.stat`` that reports one identity for every path in *shared*.
+
+    Resolution stays honest: ``os.path`` is untouched, so ``realpath`` still walks
+    the real links. This is a second mount of the data home as a gate would see it
+    -- the same ``(st_dev, st_ino)`` under a name that does not resolve to the
+    canonical one -- without a mount.
+    """
+    real_stat = os.stat
     names = {os.path.realpath(str(path)) for path in shared}
-    anchor = os.stat(str(next(iter(shared))))
+    anchor = real_stat(str(next(iter(shared))))
 
     def one_identity(path, *args, **kwargs):
-        result = os.stat(path, *args, **kwargs)
-        if os.path.realpath(os.fspath(path)) in names:
+        result = real_stat(path, *args, **kwargs)
+        if isinstance(path, (str, bytes, os.PathLike)) and os.path.realpath(path) in names:
             return os.stat_result(
                 (
                     result.st_mode,
@@ -465,12 +439,15 @@ def _one_identity_os(*shared: Path):
             )
         return result
 
-    return types.SimpleNamespace(stat=one_identity, path=os.path, fspath=os.fspath)
+    return one_identity
 
 
-@pytest.mark.parametrize("lift", [_alias_check, _alias_after_check], ids=["before", "after"])
+_GATES = [program.check_crew_home_aliases, program.confirm_crew_home_aliases]
+
+
+@pytest.mark.parametrize("gate", _GATES, ids=["before", "after"])
 def test_an_alias_re_aimed_at_a_second_mount_of_the_data_home_refuses(
-    symlinked_home, tmp_path, lift
+    symlinked_home, tmp_path, monkeypatch, gate
 ) -> None:
     """Identity is not the test at either gate; the name's resolution is.
 
@@ -481,34 +458,32 @@ def test_an_alias_re_aimed_at_a_second_mount_of_the_data_home_refuses(
     alias and requires the canonical path itself.
     """
     link_home, data_home = symlinked_home
-    script = _probe_script(link_home, data_home)
-    lists = _lists(script)
-    assert lists["CREW_HOME_ALIASES"], "the fixture produced no alias to re-aim"
-    check = tmp_path / "gate.py"
-    check.write_text(lift(script))
+    plan = _probe_plan(link_home, data_home)
+    assert plan["crew_home_aliases"], "the fixture produced no alias to re-aim"
+    run = launch(tmp_path, plan)
 
     second = tmp_path / "second" / "home" / "u"
     (second / ".kirocrew").mkdir(parents=True)
-    fake_os = _one_identity_os(data_home, second / ".kirocrew")
-    namespace = {"os": fake_os, "sys": sys, "CREW_HOME_ALIASES": lists["CREW_HOME_ALIASES"]}
+    one_identity = _one_identity(data_home, second / ".kirocrew")
 
-    runpy.run_path(str(check), init_globals=dict(namespace))  # the link holds: no refusal
+    with monkeypatch.context() as patched:
+        patched.setattr(program.os, "stat", one_identity)
+        assert refusal(gate, run) is None  # the link holds
 
-    home_link = tmp_path / "home"
-    home_link.unlink()
-    home_link.symlink_to(tmp_path / "second" / "home", target_is_directory=True)
-    a, b = fake_os.stat(str(link_home / ".kirocrew")), fake_os.stat(str(data_home))
+    _re_aim_home(tmp_path, "second")
+    a, b = one_identity(str(link_home / ".kirocrew")), one_identity(str(data_home))
     assert (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino), "the fixture did not share the identity"
 
-    with pytest.raises(SystemExit) as refused:
-        runpy.run_path(str(check), init_globals=dict(namespace))
-    assert str(second / ".kirocrew") in str(
-        refused.value.code
+    with monkeypatch.context() as patched:
+        patched.setattr(program.os, "stat", one_identity)
+        refused = refusal(gate, run)
+    assert (
+        refused is not None and str(second / ".kirocrew") in refused
     ), "the refusal names where the alias went"
 
 
-@pytest.mark.parametrize("lift", [_alias_check, _alias_after_check], ids=["before", "after"])
-def test_a_legacy_link_canonical_under_a_symlinked_home_spawns(tmp_path, monkeypatch, lift) -> None:
+@pytest.mark.parametrize("gate", _GATES, ids=["before", "after"])
+def test_a_legacy_link_canonical_under_a_symlinked_home_spawns(tmp_path, monkeypatch, gate) -> None:
     """The canonical spelling is the passes' spelling, and it may be a link itself.
 
     A default data home on a symlinked host: ``config_dir()`` is ``$HOME/.kiro/crew``,
@@ -535,21 +510,11 @@ def test_a_legacy_link_canonical_under_a_symlinked_home_spawns(tmp_path, monkeyp
     pairs = sb._crew_home_alias_roots()
     assert [(a, c) for a, c, _d, _i in pairs] == [(str(link_home / ".kirocrew"), str(legacy))]
 
-    script = _probe_script(link_home, legacy)
-    lists = _lists(script)
-    check = tmp_path / "gate.py"
-    check.write_text(lift(script))
-    namespace = {"os": os, "sys": sys, "CREW_HOME_ALIASES": lists["CREW_HOME_ALIASES"]}
-    runpy.run_path(str(check), init_globals=dict(namespace))  # untouched filesystem: no refusal
+    run = launch(tmp_path, _probe_plan(link_home, legacy))
+    assert refusal(gate, run) is None  # untouched filesystem: no refusal
 
-    elsewhere = tmp_path / "elsewhere" / "home" / "u"
-    (elsewhere / ".kirocrew").mkdir(parents=True)
+    elsewhere = _re_aim_home(tmp_path, "elsewhere")
     (elsewhere / ".kiro").mkdir()
     (elsewhere / ".kiro" / "crew").symlink_to(data_home, target_is_directory=True)
-    home_link = tmp_path / "home"
-    home_link.unlink()
-    home_link.symlink_to(tmp_path / "elsewhere" / "home", target_is_directory=True)
-    with pytest.raises(
-        SystemExit
-    ):  # the alias now resolves elsewhere; the canonical still to the data home
-        runpy.run_path(str(check), init_globals=dict(namespace))
+    # The alias now resolves elsewhere; the canonical still to the data home.
+    assert refusal(gate, run) is not None

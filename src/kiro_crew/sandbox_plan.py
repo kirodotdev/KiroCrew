@@ -1036,9 +1036,10 @@ _PLANNERS: Mapping[
 def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
     """The data the namespace launcher program reads, as JSON-safe values.
 
-    Each value is spelled as the launcher has always received it, so a path appears in
-    the program exactly as ``json.dumps`` writes it. Every flag is an ``int`` and nothing
-    is null, so the payload reads the same as JSON and as a Python literal.
+    This is the ONE substitution the launcher renderer makes. It is embedded in the
+    program as a Python literal, so it carries no ``true``/``false``/``null``: every flag
+    is an ``int``. Each value is spelled as the launcher has always received it, so a
+    path appears in the program exactly as ``json.dumps`` writes it.
     """
     ids = plan.identities
     return {
@@ -1075,4 +1076,5 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "strict_host_key_opt": (
             " -o StrictHostKeyChecking=accept-new" if plan.ssh_accept_new else ""
         ),
+        "stand_in_roots": [f"/run/user/{plan.uid}", "/dev/shm"],
     }

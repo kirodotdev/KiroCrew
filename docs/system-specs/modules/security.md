@@ -150,7 +150,7 @@ and the `fork`/`unshare`, so an occupant read there and compared there answers a
 instant twice and closes nothing. `_refuse_aliased_masked_leaves` already `lstat`s every crew
 hidden leaf to refuse an aliased one, so it records what it saw at no extra syscall; the four
 materialisers' established targets and `~/.ssh` are added beside it. The builder serialises
-that map as `MASK_OCCUPANTS` and probes nothing, which is the property
+that map as `mask_occupants` and probes nothing, which is the property
 `test_the_builder_does_not_stat_the_hidden_paths` pins for it. `_pin_mount_path` then looks
 its OWN target up in that map rather than taking an `expect_occupant` argument from each
 caller: every hiding mount reaches that one function, so binding the check to the function
@@ -180,7 +180,7 @@ link's spelling and the resolved one, while `_refuse_aliased_masked_leaves` dedu
 inode and records an expectation for the resolved spelling only. The launcher masks the first
 spelling by binding a stand-in over it; the second spelling then reaches that stand-in, whose
 identity is not the recorded one. A pin that judged that by identity alone would read it as a
-swapped object and refuse every spawn on such a host. So the launcher records, in `_OWN_STAND_INS`, the `(dev, ino)` of every stand-in it creates mapped
+swapped object and refuse every spawn on such a host. So the launcher records, in `own_stand_ins`, the `(dev, ino)` of every stand-in it creates mapped
 to the `(dev, ino)` of the object it is bound over -- read off the pinned descriptor the
 mount goes through, at every mask loop, before the mount. A changed occupant that IS a
 stand-in registered against the very object this name's expectation carries is the mask in
@@ -205,7 +205,7 @@ parent, and the file loop, which is offered every directory entry and always run
 leaf's expectation is still carried, so the absence branch alone would refuse it as a vanished
 object, and did: with the whole-home hide every probe spawn refused at
 `~/.kiro/crew/diag`, `/api/models` answered 503 and Settings reported `Failed to load config`.
-So the launcher also records, in `_MASKED_NAMES`, every NAME it has confirmed reaches one of
+So the launcher also records, in `masked_names`, every NAME it has confirmed reaches one of
 its own stand-ins -- each mask the loops mount and read back, and each second spelling the
 pin finds already covered -- and an absent name is skipped when a proper ancestor of it is
 recorded there AND, resolved again now, still reaches the stand-in recorded for it
@@ -219,9 +219,9 @@ the pin itself followed, as the read-back accepts it. A private window met on th
 the walk with a refusal: the window mounts the real tree back over the stand-in, read-write, so
 a leaf beneath it (`apps/meetings/data/edits` under the `apps/meetings/data` window) resolves
 into that real tree and no stand-in above covers it -- its absence at the nested re-hide is the
-leaf having moved, and the launcher records every window it binds (`_BOUND_WINDOWS`) so the
+leaf having moved, and the launcher records every window it binds (`bound_windows`) so the
 walk can tell. The builder's lexical subtraction of
-nested `REQUIRED_MASK_TARGETS` remains: it answers for a target whose ancestor is in the
+nested `required_mask_targets` remains: it answers for a target whose ancestor is in the
 mask LIST, this answers for one whose ancestor has a mask IN PLACE, and the second spelling
 is in the second set but not the first.
 
@@ -643,22 +643,34 @@ backend: one flat mask list folded onto the resolved data-home spelling for the
 launcher, which re-applies a mask nested inside a private window; a rule set per masked
 tree for Seatbelt, which cannot, so it refuses that window.
 
-Two renderers read the plan. `sandbox_launcher.render_namespace_launcher` spells the
-plan's data as the constants of the Linux namespace launcher program around its fixed
-body, and `sandbox_seatbelt.render_seatbelt_profile` spells it as Seatbelt rules.
+Two renderers read the plan. `sandbox_launcher.render_namespace_launcher` returns the
+source of `sandbox_launcher_program` -- the stdlib-only Linux launcher, a real module
+run as `main(plan, libc=None, argv=None)`, whose child enters the namespaces
+(`enter_namespaces`) and then runs named stages, among them `stage_private_windows`,
+`seal_readonly`, `mask_sensitive`, `apply_carveouts`, `mask_sensitive_files`,
+`mask_ssh_keys`, `scrub_env`, `drop_privileges`, `install_seccomp`,
+`refuse_hardlinked_credentials` and `exec_agent`, in the order `run_child` and
+`place_masks` fix -- with exactly one substitution, the plan's data. The program's
+source is read once, when `sandbox_launcher` is imported, so a package replaced on disk
+under a running gateway cannot pair the new program with the old code's plan; a package
+without a readable program still imports, and every Linux spawn then refuses.
+`sandbox_seatbelt.render_seatbelt_profile` spells the plan as Seatbelt rules.
 `sandbox_mount_sweep` reclaims the launcher's stale bind-mount sources for
 `cleanup_stale_sandbox_profiles`. Choosing a spawn's tier and backend, materializing its
 mask targets, gathering the host, writing the program and building its argv
 (`namespace_argv`, `sandbox_exec_argv`, which call `_build_launcher_script` /
 `_build_seatbelt_profile`) stay in `sandbox.py`. A new mask rule goes in
-`sandbox_plan`, and a new host fact in `_live_plan_host`. Every name moved to
+`sandbox_plan`, a new launcher step in `sandbox_launcher_program` as a stage, and a new
+host fact in `_live_plan_host`. Every name moved to
 `sandbox_seatbelt` or `sandbox_mount_sweep` (`_EXPORTS_BY_OWNER`) is forwarded, so reading
 or patching `kiro_crew.sandbox.<name>` reaches its owner. The path rules moved to
 `sandbox_plan` are not forwarded: the few `sandbox.py` still binds under their old names
 are compatibility aliases, and patching one does not reach the planner -- patch
 `sandbox_plan.<rule>`, or build a `PlanHost`.
-`test/test_sandbox_plan.py` pins the plan as a table over `plan_confinement`, and
-`test/test_sandbox_refactor_generated_programs.py` pins both programs byte for byte.
+`test/test_sandbox_plan.py` pins the plan as a table over `plan_confinement`,
+`test/test_sandbox_refactor_generated_programs.py` pins one golden per renderer through
+the pinned live host, and `test/test_sandbox_launcher_program.py` drives the launcher's
+stages in-process with a stand-in libc.
 
 Hides credential paths from kiro-cli subprocess tree using platform-native isolation:
 
@@ -718,7 +730,7 @@ This is a deliberate trade with a real cost, recorded rather than glossed: on Wi
 
 `transient` and `foreign_sandbox` are unaffected: neither is `no_backend`, both still raise, and no platform default applies to them.
 
-**Nested-sandbox passthrough**: when `wrap_argv()` is called from a process that is *already inside* a Kiro Crew sandbox (script-cron ticks, sandboxed agent children, app backends, pooled MCP servers), it returns the argv unchanged (one-shot info log) instead of trying to wrap again. Nested sandboxing is impossible on **both** backends — the Linux launcher's seccomp-BPF filter denies `unshare`/`setns`, and macOS Seatbelt refuses `sandbox_apply` with EPERM from inside an existing sandbox even under an `(allow default)` outer profile — so a nested wrap would fail with EPERM and the fail-closed `RuntimeError` above would brick **every** in-sandbox MCP spawn (the probe error was raised on each `ctx.call_tool` and silently swallowed by the caller). This is **not** a fail-open path: the outer namespace + seccomp still confine every descendant, so passthrough spawns within the existing isolation boundary. In-sandbox detection is env-marker based and **deny-by-default** (`_inside_kirocrew_sandbox()` / `_IN_SANDBOX_MARKER`): the gate keys **solely** on the explicit, single-purpose `KIROCREW_SANDBOX_ACTIVE=1`, which is exported at exactly two sites, each immediately after that platform's credential-env scrub: the Linux launcher `main()` (at the same site as `KIROCREW_HOST_PID`) and the macOS `env` prefix built by `sandbox_exec_argv()`. It deliberately does **not** key on `KIROCREW_HOST_PID` — that variable is dual-purpose session-identity plumbing, and gating a security-relevant passthrough on a variable set for unrelated reasons would be a latent bypass. No unsandboxed code path sets the marker. The passthrough is SEL-audited on **every** invocation via `log_tool_invocation(outcome="allowed", metadata={"reason": "nested_sandbox_passthrough"}, critical=True)`, mirroring the `denied` event on the fail-closed path so the security decision is tamper-evidently recorded. `critical=True` gives it the same write reliability as the `denied`/`delegated` audits — the event is written **synchronously** after draining the async backlog, so a slow or wedged background writer cannot silently drop passthrough records. It stops short of full audit-or-deny (re-raise on SEL failure) deliberately: unlike `_delegate_to_kiro_internal_sandbox` — which on audit failure falls back to Kiro Crew's own seatbelt, an equally-safe audited layer — a nested passthrough has **no** safe alternative (seccomp denies the re-wrap by design), so failing the spawn on a SEL filesystem error would couple every in-sandbox MCP call to SEL health and reintroduce a prior in-sandbox spawn outage. On a hard write failure it therefore logs loudly and proceeds: the child is confined by the outer namespace + seccomp whether or not the record lands.
+**Nested-sandbox passthrough**: when `wrap_argv()` is called from a process that is *already inside* a Kiro Crew sandbox (script-cron ticks, sandboxed agent children, app backends, pooled MCP servers), it returns the argv unchanged (one-shot info log) instead of trying to wrap again. Nested sandboxing is impossible on **both** backends — the Linux launcher's seccomp-BPF filter denies `unshare`/`setns`, and macOS Seatbelt refuses `sandbox_apply` with EPERM from inside an existing sandbox even under an `(allow default)` outer profile — so a nested wrap would fail with EPERM and the fail-closed `RuntimeError` above would brick **every** in-sandbox MCP spawn (the probe error was raised on each `ctx.call_tool` and silently swallowed by the caller). This is **not** a fail-open path: the outer namespace + seccomp still confine every descendant, so passthrough spawns within the existing isolation boundary. In-sandbox detection is env-marker based and **deny-by-default** (`_inside_kirocrew_sandbox()` / `_IN_SANDBOX_MARKER`): the gate keys **solely** on the explicit, single-purpose `KIROCREW_SANDBOX_ACTIVE=1`, which is exported at exactly two sites, each immediately after that platform's credential-env scrub: the Linux launcher's `scrub_env` stage and the macOS `env` prefix built by `sandbox_exec_argv()`. It deliberately does **not** key on `KIROCREW_HOST_PID` — that variable is dual-purpose session-identity plumbing, and gating a security-relevant passthrough on a variable set for unrelated reasons would be a latent bypass. No unsandboxed code path sets the marker. The passthrough is SEL-audited on **every** invocation via `log_tool_invocation(outcome="allowed", metadata={"reason": "nested_sandbox_passthrough"}, critical=True)`, mirroring the `denied` event on the fail-closed path so the security decision is tamper-evidently recorded. `critical=True` gives it the same write reliability as the `denied`/`delegated` audits — the event is written **synchronously** after draining the async backlog, so a slow or wedged background writer cannot silently drop passthrough records. It stops short of full audit-or-deny (re-raise on SEL failure) deliberately: unlike `_delegate_to_kiro_internal_sandbox` — which on audit failure falls back to Kiro Crew's own seatbelt, an equally-safe audited layer — a nested passthrough has **no** safe alternative (seccomp denies the re-wrap by design), so failing the spawn on a SEL filesystem error would couple every in-sandbox MCP call to SEL health and reintroduce a prior in-sandbox spawn outage. On a hard write failure it therefore logs loudly and proceeds: the child is confined by the outer namespace + seccomp whether or not the record lands.
 
 **Passthrough tier comparison (downgrade detection)**: the marker alone proves *a* Kiro Crew sandbox is active, not *which tier* it was built at, so without a tier record the passthrough is tier-blind: an in-sandbox caller requesting `strict` under a `standard` outer sandbox silently runs at `standard`. Both launcher sites therefore export a companion `KIROCREW_SANDBOX_LEVEL=<standard|cc|strict>` (`_IN_SANDBOX_LEVEL_VAR`) beside the marker, with the same non-droppable placement (after the Linux launcher's env-scrub loop; after the macOS `env -u` flags), and `cli.main()` drops an inherited copy at the same site where it drops the marker itself (a stale ancestor's value would otherwise be read as the active tier). The passthrough resolves the requested mode to a tier via the shared `_mode_to_level()` helper and compares it against the active tier on the `standard(1) < cc(2) < strict(3)` ordinal order; an absent or unrecognized level var (an outer tree launched by an older build) reads as `unknown`, which carries no ordinal claim, so no downgrade can be proven against it, the passthrough is unaffected, and nothing crashes. Every passthrough audit event carries `requested_tier`, `active_tier`, `tier_known`, and `tier_downgrade` in its SEL metadata — `tier_known` separates "proven no downgrade" from "unprovable" — so a downgrade is *visible in the audit log* rather than inferred. On a proven downgrade (`requested > active`) the passthrough additionally emits a per-call `SECURITY:` warning naming both tiers and the executable, and prefixes the returned argv with the requested tier's `env -u` scrub (`_sandbox_env_unset_args` — a delta in practice, since the outer launcher already removed the shared prefixes): the one slice of the stricter tier that IS enforceable without a nested wrap (agent-denied credential env keys a `standard` outer launcher never scrubbed). The `env` binary is resolved only at a trusted absolute path (`_unset_env_argv`); when none exists the scrub is skipped with a loud warning rather than resolving `env` through a PATH this environment controls. It deliberately does **not** fail closed: refusing the downgrade breaks every in-sandbox caller that legitimately requests `strict` from a `standard` app-backend sandbox (Dev Fleet Sync/Provision), and the file-level residual gap is exactly what the audit records.
 
@@ -746,7 +758,7 @@ Config: `agent.sandbox` in `config.json` — `"auto"` (standard), `"strict"`, or
 
 Wired into `AcpClient._spawn()` — all kiro-cli processes are sandboxed. Parent Kiro Crew process is unaffected. Zero new dependencies (stdlib + system binaries only).
 
-**Linux namespace sandbox**: Fork child → child calls `unshare(CLONE_NEWUSER)` → parent writes identity UID/GID map (`uid uid 1` / `gid gid 1`) to `/proc/<child>/{setgroups,uid_map,gid_map}` → child calls `unshare(CLONE_NEWNS)`, sets mount propagation private (`MS_REC|MS_PRIVATE`), bind-mounts empty dirs over credential paths (per mode), scrubs sensitive env vars (`AWS_SECRET*`, `SSH_AUTH_SOCK`, etc.), and execs the agent. Two-pipe synchronization ensures correct ordering. The child retains the real UID/GID so all toolchains (JVM ByteBuddy, Gradle, npm, etc.) work without workarounds. Implemented as a Python launcher script (`_build_launcher_script()`) spawned by `namespace_argv()`.
+**Linux namespace sandbox**: Fork child → child calls `unshare(CLONE_NEWUSER)` → parent writes identity UID/GID map (`uid uid 1` / `gid gid 1`) to `/proc/<child>/{setgroups,uid_map,gid_map}` → child calls `unshare(CLONE_NEWNS)`, sets mount propagation private (`MS_REC|MS_PRIVATE`), bind-mounts empty dirs over credential paths (per mode), scrubs sensitive env vars (`AWS_SECRET*`, `SSH_AUTH_SOCK`, etc.), and execs the agent. Two-pipe synchronization ensures correct ordering. The child retains the real UID/GID so all toolchains (JVM ByteBuddy, Gradle, npm, etc.) work without workarounds. Implemented as the stdlib-only program `sandbox_launcher_program`, rendered with the spawn's plan by `_build_launcher_script()` and spawned by `namespace_argv()`.
 
 **The launcher's parent is the pid the gateway tracks**, because it never execs: it writes the maps and then blocks in `waitpid` for the life of the session. So anything that identifies an agent process from its command line sees `<interpreter> -I -S <run dir>/kirocrew_sandbox_<pid>_<rand>.py <harness argv…>` rather than the harness. The shape's three CONSTANT parts are the module constants `_LAUNCHER_INTERPRETER_FLAGS`, `_SANDBOX_ARTIFACT_PREFIX` and `_LAUNCHER_SCRIPT_SUFFIX`, which `session_pid`'s gate and `clone_setup`'s traceback regex both read directly off this module rather than copying. `namespace_launcher_script_dir()` is the one part that is not a constant (`<config_dir>/run`, normalized because `mkstemp` returns an `abspath` on 3.12+) and is therefore a named function, read by `_ensure_run_dir()` here and by that gate: resolving it goes through `config_dir()`, which creates the data home and can raise, so a caller on a per-PID hot path matches everything free first and asks for the directory last. The tmpdir fallback `_ensure_run_dir()` degrades to is NOT part of the exported shape — it is shared with every other user of the host, so it must not decide which process trees are reclaimable, and `gettempdir()` therefore stays on the fallback branch where it was (an eager call fails on a read-only-root container with no writable tmp). Both `mkstemp` calls take their prefix and suffix from those same constants rather than repeating them, which is what makes the accessor truthful; `session_pid`'s managed-agent gate (the kill authorization for the PID-file reclaim) is that reader, and a copied literal there would have cost every sandboxed root its reclaim the day a launcher flag was added. Recognising the shape changes nothing the sandbox seals, masks or exposes. Full gate contract in [session.md](session.md) §Reclaim identity.
 

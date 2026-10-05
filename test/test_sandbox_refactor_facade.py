@@ -826,11 +826,13 @@ def _imported_modules(module: ModuleType) -> set[str]:
     return found
 
 
-#: The layers under the facade: the plan imports the standard library and nothing else,
-#: and the two renderers import the plan and nothing else of the package. So the plan
-#: stays pure, and neither renderer can reach back into ``kiro_crew.sandbox`` for a rule.
+#: The layers under the facade: the plan and the launcher program import the standard
+#: library and nothing else, and the two renderers import the plan and nothing else of
+#: the package. So the plan stays pure, the program stays runnable as a stdlib script,
+#: and neither renderer can reach back into ``kiro_crew.sandbox`` for a rule.
 _LAYERED: dict[str, frozenset[str]] = {
     "kiro_crew.sandbox_plan": frozenset(),
+    "kiro_crew.sandbox_launcher_program": frozenset(),
     "kiro_crew.sandbox_launcher": frozenset({"kiro_crew.sandbox_plan"}),
     "kiro_crew.sandbox_seatbelt": frozenset({"kiro_crew.sandbox_plan"}),
 }
