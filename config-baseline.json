@@ -719,7 +719,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Spawn Min Memory GB",
-      "help": "Available memory (GB) that must remain after admitting a subagent start. A dedicated-process start is priced at what such a runtime settles at (about 1 GB until runs of that agent have been measured, then their learned size capped at 2 GB, never below subagent_cost_gb); one that shares its parent's runtime at about 0.35 GB less. A spawn that does not fit waits in the queue and is re-checked after admit_wait_secs; one in temporary or incognito memory mode, or with task_queue_enabled off, is lost if the gateway restarts. On macOS a start also waits while the kernel reports memory pressure and one of this gateway's dedicated subagents is running. 0 disables the check, that wait included, and then sizes the auto subagent cap (max_subagents=0) from available memory instead.",
+      "help": "Available memory (GB) that must remain after admitting a subagent start. A dedicated-process start is priced at what such a runtime settles at (about 1 GB until runs of that agent have been measured, then their learned size capped at 2 GB, never below subagent_cost_gb); one that shares its parent's runtime at about 0.35 GB less. A spawn that does not fit waits in the queue and is re-checked when memory can have moved, at the latest after admit_wait_secs; one in temporary or incognito memory mode, or with task_queue_enabled off, is lost if the gateway restarts. On macOS a start also waits while the kernel reports memory pressure and one of this gateway's dedicated subagents is running. 0 disables the check, that wait included, and then sizes the auto subagent cap (max_subagents=0) from available memory instead.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2.0
@@ -819,7 +819,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Admit Wait (seconds)",
-      "help": "How long an admitted task may wait for its resources before it goes back to queued, and how long a spawn deferred by the memory posture gate waits before it is re-checked. Clamped to 1..3600.",
+      "help": "How long an admitted task may wait for its resources before it goes back to queued, and the longest a spawn deferred by the memory floor waits before it is re-checked. Clamped to 1..3600.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30,
@@ -863,7 +863,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Lane Weights",
-      "help": "Per-lane weight overrides for the task dispatcher, keyed by lane (a root session key, or 'system'). Unlisted lanes weigh 1. Values are clamped to 1..64. Weights shape the share of picks, never a hard cap: a lane with nothing pending costs the others nothing.",
+      "help": "Per-lane weight overrides for the task dispatcher, keyed by lane (a root session key, or 'system'). Unlisted lanes weigh 1. Values are clamped to 1..64. Weights shape the share of picks and, while a lane waits for memory, each lane's share of running dedicated subagents; never a hard cap: a lane with nothing pending costs the others nothing.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}

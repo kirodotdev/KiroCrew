@@ -1420,6 +1420,27 @@ class CancellationCoordinator(ManagerComponent):
                 reason="shutdown memory-pressure recheck",
             )
         self._manager._pressure_recheck_handle = None
+        memory_sampler = getattr(self._manager, "_memory_sampler_handle", None)
+        if memory_sampler is not None and not memory_sampler.cancelled():
+            self._manager._cancel_task_intentionally(
+                memory_sampler,
+                reason="shutdown memory sampler",
+            )
+        self._manager._memory_sampler_handle = None
+        memory_sample = getattr(self._manager, "_memory_sample_task", None)
+        if memory_sample is not None and not memory_sample.done():
+            self._manager._cancel_task_intentionally(
+                memory_sample,
+                reason="shutdown memory sampler tick",
+            )
+        self._manager._memory_sample_task = None
+        memory_fit = getattr(self._manager, "_memory_fit_task", None)
+        if memory_fit is not None and not memory_fit.done():
+            self._manager._cancel_task_intentionally(
+                memory_fit,
+                reason="shutdown memory fit pass",
+            )
+        self._manager._memory_fit_task = None
         # Do not clear or release retained claims here. Their durable rows are
         # still ADMITTED, so process teardown ends the in-memory reservation and
         # the next boot reconciles them to QUEUED as one atomic ownership change.

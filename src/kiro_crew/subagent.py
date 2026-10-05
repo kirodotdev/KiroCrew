@@ -50,7 +50,11 @@ if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.providers.base import LLMProvider
-    from kiro_crew.subagent_manager.admission.types import QueuedRun, QueuedRunListing
+    from kiro_crew.subagent_manager.admission.types import (
+        MemoryWait,
+        QueuedRun,
+        QueuedRunListing,
+    )
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import (
@@ -2385,14 +2389,25 @@ def _owns_dedicated_runtime(
     """
     if any(not priced_shared for _price, priced_shared in claim_prices.values()):
         return True
-    return any(
+    return any(_holds_dedicated_runtime(info) for info in agents)
+
+
+def _holds_dedicated_runtime(info: SubagentInfo) -> bool:
+    """Whether *info* is a live row with a dedicated process of its own, running or warming.
+
+    Admitted at the dedicated price and not confirmed shared, and past the
+    points where a row has no process yet (parked at the spawn approval, or
+    approved and waiting for the pump to release it). The one row predicate
+    behind the macOS hold (:func:`_owns_dedicated_runtime`) and the per-lane
+    memory share, which counts a lane's dedicated children with it.
+    """
+    return (
         not info.done
         and not info.queued
         and not info._session_sharing
         and not info._start_priced_shared
         and not _parked_at_spawn_approval(info)
         and not (info._start_release is not None and info._exec_started is None)
-        for info in agents
     )
 
 
@@ -3664,6 +3679,18 @@ class SubagentManager:
         # leaves it to the gate, which re-checks the floor before the pressure
         # hold. Process-local, as the hold's own clocks are.
         self._floor_deferred_ids: set[str] = set()
+        # The starts this process holds back for memory, from their first
+        # deferral to their admission, start or end (subagent.md, *Memory
+        # waits: event wake and the per-lane share*): what the event wake
+        # brings forward, what the per-lane share reads, and what keeps the
+        # sampler running -- it runs only while this is not empty.
+        self._memory_waits: dict[str, "MemoryWait"] = {}
+        # The fit pass in flight (``wake_memory_waits``), and whether a wake
+        # arrived during it, so one more pass runs after it.
+        self._memory_fit_task: "asyncio.Task[None] | None" = None
+        self._memory_wake_again = False
+        self._memory_sampler_handle: asyncio.TimerHandle | None = None
+        self._memory_sample_task: "asyncio.Task[None] | None" = None
         # Rows the pump has popped from the window but not yet claimed. Their
         # durable state is still QUEUED, so without this set every store-backed
         # depth read between pop and claim counts them as waiting.
@@ -5360,6 +5387,7 @@ class SubagentManager:
         self._floor_waits.pop(agent_id, None)
         self._held_approval_modes.pop(agent_id, None)
         self._floor_deferred_ids.discard(agent_id)
+        self._admission.memory_wait_ended(agent_id)
 
     # ── Continuable conversations (keep=True) ─────────────────────────────
 
@@ -6089,6 +6117,7 @@ class SubagentManager:
                 getattr(self, "_retained_claim_retry_handle", None),
                 *(retry.handle for retry in getattr(self, "_queue_depth_retries", {}).values()),
                 getattr(self, "_pressure_recheck_handle", None),
+                getattr(self, "_memory_sampler_handle", None),
             )
         )
         followup_watcher = any(

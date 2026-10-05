@@ -1515,6 +1515,46 @@ class TaskStore:
                 raise TaskStoreUnavailable(f"task defer failed: {exc}") from exc
         return cur.rowcount == 1
 
+    def expedite(self, task_ids: Sequence[str]) -> int:
+        """Make the deferred rows among *task_ids* eligible now; how many were.
+
+        The early end of a :meth:`defer`: a waiting row whose ``next_run_at`` is
+        still ahead is brought to now, so the next dispatch read may take it.
+        It appends NO event. The deferral's own ``deferred`` event stays the
+        record of the park, and :meth:`deferred_longer_than` counts only a row
+        parked now, so a row brought forward and then claimed is never counted.
+        One brought forward and parked AGAIN before its old ``until`` is
+        charged the gap between the two: that span is cut at the next
+        deferral, not at this call, so at most what was left of the deferral
+        counts. The memory wake brings forward only rows that now fit, so that
+        gap is a re-check that lost a race. A row that is not waiting, or not
+        deferred, is left as it is.
+        """
+        ids = [str(i) for i in task_ids if i]
+        if not ids:
+            return 0
+        ts = self.now()
+        changed = 0
+        with self._lock:
+            conn = self._c()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for i in range(0, len(ids), _EVENT_ID_CHUNK):
+                    chunk = ids[i : i + _EVENT_ID_CHUNK]
+                    marks = ", ".join("?" for _ in chunk)
+                    cur = conn.execute(
+                        "UPDATE tasks SET next_run_at=?, updated_at=? "
+                        f"WHERE id IN ({marks}) AND state IN {_SQL_CLAIMABLE} "
+                        "AND next_run_at>?",
+                        (ts, ts, *chunk, ts),
+                    )
+                    changed += max(0, cur.rowcount)
+                conn.execute("COMMIT")
+            except sqlite3.Error as exc:
+                self._rollback(conn)
+                raise TaskStoreUnavailable(f"task expedite failed: {exc}") from exc
+        return changed
+
     # -- waits (taskq.waits) ------------------------------------------------
 
     def enter_wait(

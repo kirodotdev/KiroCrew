@@ -35,6 +35,38 @@ WINDOW_ENTRY_RECOVERING = "_recovering_row"
 #: ``next_run_at``. Popped with ``_lane`` before the entry reaches ``spawn``.
 MEMORY_WAIT_UNTIL_KEY = "_memory_wait_until"
 
+#: The memory cause the spawn gate records for a start the per-lane memory
+#: share holds back (``_MemoryWakeMixin.lane_share_holds``): another lane waits
+#: for memory and this start's lane already runs its share of dedicated
+#: children. A cause of its own, so the gate words the wait without a figure
+#: (no reading was taken) and the wake knows no host reading can release it.
+MEMORY_CAUSE_LANE_SHARE = "lane_share"
+
+#: How often the memory sampler runs a fit pass while a start waits for memory
+#: (seconds). It runs ONLY while one does (``_MemoryWakeMixin``), so a start
+#: held by memory another program frees is not left to its admit wait.
+MEMORY_SAMPLER_SECS = 5.0
+
+
+@dataclass
+class MemoryWait:
+    """One start this process holds back for memory, from its first deferral to its end.
+
+    ``start_gb`` is what the floor charges the start for itself (None: the
+    configured cost; 0 for a nested start that shares its parent's runtime),
+    ``price_gb`` what its row owes once admitted (None: the configured cost).
+    The fit pass rebuilds the start's bar from them. ``nested`` exempts it from
+    the per-lane share. ``since`` is monotonic.
+    """
+
+    lane: str
+    parent_session_key: str
+    since: float
+    start_gb: float | None
+    price_gb: float | None
+    nested: bool
+    durable: bool
+
 
 def outcome_task_state(outcome: str) -> str | None:
     """The terminal task state of a run's recorded outcome (``SubagentInfo.outcome``).

@@ -1011,6 +1011,9 @@ class TerminalCoordinator(ManagerComponent):
             if self._manager._release_slot(info):
                 self._manager._running_count = max(0, self._manager._running_count - 1)
                 self._manager._drain_queue()
+            # The reap ended its process: a start waiting for memory is
+            # re-checked now (a no-op when none waits).
+            self._manager._admission.wake_memory_waits("child_terminal")
 
             try:
                 sel().log_tool_invocation(

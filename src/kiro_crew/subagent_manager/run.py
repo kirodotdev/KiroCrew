@@ -1200,6 +1200,10 @@ class RunEventCoordinator(ManagerComponent):
                 if self._manager._release_slot(info):
                     self._manager._running_count -= 1
                     self._manager._drain_queue()
+                # The run's session is torn down, so what it held is free memory
+                # again: a start waiting for memory is re-checked now, not at its
+                # admit wait (a no-op when none waits).
+                self._manager._admission.wake_memory_waits("child_terminal")
                 # A run that ended while parked on a wait: its resume entry
                 # must not hand a slot to a finished run, and its dependency
                 # scope must stop counting it (a finished probe is the scope's

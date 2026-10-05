@@ -37,6 +37,19 @@ missed the 90 s MCP readiness deadline. The gate now moves on what says its
 starts are in trouble -- memory, gate init failures, slow inits -- and a
 cut gate climbs back once those stay quiet.
 
+**Memory waits are admission's, not the controller's.** With the count bounds
+gone, memory is the pool every chat's subagents share, and the two rules that
+keep it fair live in subagent admission
+(`subagent_manager/admission/`), not here ([subagent.md](subagent.md),
+*Memory waits: event wake and the per-lane share*): a start waiting for memory
+is re-checked on the events that move memory (a run's terminal, a wait
+ending, a sampler that runs only while a start waits and also sees a warming
+row settle), each
+one host reading that starts only what now fits, instead of on a fixed poll,
+and while another chat waits for memory, a chat already running its share
+of dedicated children does not get the next memory admission. Neither reads or
+writes the effective cap, and the controller's own sampling is unchanged.
+
 ## Modules
 
 | Module | Role |

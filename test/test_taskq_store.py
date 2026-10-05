@@ -405,6 +405,52 @@ def test_defer_keeps_row_queued_but_ineligible_until_clock_passes(
     assert [e.kind for e in store.events("d")] == ["accepted", "deferred"]
 
 
+def test_expedite_ends_a_deferral_early_and_writes_no_event(store: TaskStore, clock: Clock) -> None:
+    """The memory wake's store half: a parked row is eligible now, nothing else moves."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("parked"), _rec("ready"), _rec("ran")])
+    store.defer("parked", wait=30, reason="low memory")
+    assert store.claim("ran") is not None
+    clock.t += 10
+    assert store.expedite(["parked", "ready", "ran", "absent"]) == 1
+    assert [r.id for r in store.fetch_dispatchable(kind, limit=10)] == ["parked", "ready"]
+    assert [e.kind for e in store.events("parked")] == ["accepted", "deferred"]
+    assert store.state_of("ran") == model.ADMITTED
+    # Brought forward, it is not parked now, so the max wait does not count it;
+    # 10 s of its first park count once it is parked again.
+    assert store.deferred_longer_than(kind, 1) == []
+    store.defer("parked", wait=30, reason="low memory")
+    clock.t += 25
+    assert [r.id for r in store.deferred_longer_than(kind, 35)] == ["parked"]
+    assert store.deferred_longer_than(kind, 36) == []
+    assert store.expedite([]) == 0
+
+
+def test_a_row_parked_again_after_an_expedite_is_charged_the_gap(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The bound on what an expedite leaves counted: the gap up to the re-park,
+    never past the old deferral's end."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("late"), _rec("later")])
+    t0 = clock.t
+    store.defer("late", wait=30, reason="low memory")
+    store.defer("later", wait=30, reason="low memory")
+    clock.t = t0 + 10
+    assert store.expedite(["late", "later"]) == 2
+    # Re-parked 10 s after the expedite, inside the old deferral: charged.
+    clock.t = t0 + 20
+    store.defer("late", wait=40, reason="low memory")
+    # Re-parked past the old deferral's end: charged only up to it.
+    clock.t = t0 + 40
+    store.defer("later", wait=30, reason="low memory")
+    clock.t = t0 + 41
+    # late: 20 (t0..t0+20) + 21 = 41; later: 30 (t0..t0+30) + 1 = 31.
+    assert [r.id for r in store.deferred_longer_than(kind, 41)] == ["late"]
+    assert [r.id for r in store.deferred_longer_than(kind, 31)] == ["late", "later"]
+    assert store.deferred_longer_than(kind, 42) == []
+
+
 def test_deferred_longer_than_counts_the_time_a_row_was_parked(
     store: TaskStore, clock: Clock
 ) -> None:

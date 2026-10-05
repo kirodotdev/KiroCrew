@@ -26,7 +26,7 @@ Files:
 | Module | Owns |
 |---|---|
 | `model.py` | `TaskRecord`, the state vocabulary (`STATES`), the one validated `TRANSITIONS` table, `check_transition`, side-effect classes, lease/backoff constants. |
-| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, the owed-report reads (`finish(report_owed=)`, `mark_reported`, `owed_reports`), `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
+| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer`, `expedite` (a deferral ended early, with no event) and `deferred_longer_than`, the owed-report reads (`finish(report_owed=)`, `mark_reported`, `owed_reports`), `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
 | `migrate.py` | Schema versioning (`SCHEMA_VERSION`, `apply_schema`) and the idempotent legacy import. |
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
@@ -948,7 +948,14 @@ the row from its `ts` to its `until`, cut short by the next deferral or by now,
 and a gap between a lapsed deferral and the next one (the row eligible, waiting
 to be picked) is not counted. Every re-check appends one more `deferred` event,
 so a re-check never restarts the clock, and the newest event alone says nothing
-about how long the row has waited. The subagent adapter fails each row it returns past
+about how long the row has waited. `expedite(task_ids)` ends a deferral early
+(the subagent adapter's memory wake, [subagent.md](subagent.md) *Memory waits*):
+a still-parked waiting row's `next_run_at` becomes now, with no event. A row
+then claimed is never counted; one parked again before its old `until` is
+charged the gap up to that re-park, because the earlier span is cut at the next
+deferral, so at most what was left of the deferral counts (the wake brings
+forward only rows that now fit, so this is a re-check that lost a race). A row
+not waiting or not deferred is left alone. The subagent adapter fails each row it returns past
 `agent.subagent_queue_max_wait_secs` with a generation-fenced `finish` and
 reports `never started: waiting for memory`
 ([subagent.md](subagent.md) § Durable task queue).

@@ -27,7 +27,8 @@ still apply. A restricted start that does not fit the floor waits in that
 in-memory window instead of a store deferral: its entry carries
 `MEMORY_WAIT_UNTIL_KEY` (monotonic, `now + admit_wait_secs`), the pump's pick
 skips it until then, and a timer re-pumps when it passes
-(`arm_memory_wait`). That timer is armed one clock tick past the stamp, and a
+(`arm_memory_wait`), unless a memory wake clears the stamp sooner (*Memory
+waits: event wake and the per-lane share*). That timer is armed one clock tick past the stamp, and a
 wake that still finds the stamp ahead re-arms instead of draining: asyncio may
 run a handle up to its clock resolution early (15.6 ms on Windows), and a pass
 that skipped the entry would arm nothing. A restricted start never claims a
@@ -343,7 +344,8 @@ so every later admission charges a row at the price it was admitted at:
 
 At defaults with nothing warming or learned: a shared start needs 2.65 GiB
 free, the first dedicated start 3.0 GiB, a second while the first warms
-4.0 GiB.
+4.0 GiB, and a nested start that shares its parent's runtime 2.0 GiB (*Memory
+waits: event wake and the per-lane share*; RFC Q12, D4).
 
 **What each outstanding start owes.** The next start its own price. A claim
 admitted but not registered yet (a `ClaimPoint` awaiting the taskq writer) is
@@ -435,7 +437,11 @@ start clock resumes when the wait ends, a cancel included: the wait is added to
 `_start_queue_wait_ms`, like any start-queue wait.
 
 **What the floor guarantees, honestly.** Admission never takes the host below
-the floor at the prices above, and the prices are projections. The floor is not
+the floor at the prices above, and the prices are projections, with one stated
+exception: a nested start that shares its parent's runtime is checked with its
+own price at 0 (*Memory waits* below), so it can take the host to
+the floor less its shared price (the floor gives way by one shared start, not
+by a fan-out). The floor is not
 above `resource_critical_gb` (both 2.0 at defaults, and posture counts equal as
 critical), so a host admission has filled to the floor reads `critical`: cron
 defers its firings and the adaptive controller cuts and pauses the MCP spawn
@@ -468,6 +474,103 @@ shrink as work finishes), so it would throttle new starts the floor already
 gates, which is the count bound this change removed. An operator whose fan-outs
 are build-heavy pins `agent.max_subagents` or raises
 `agent.spawn_min_memory_gb`.
+
+**Memory waits: event wake and the per-lane share.** A start the floor defers,
+durable or not, is recorded from the deferral that BEGINS its wait until it
+fits, starts or ends (`_memory_waits`, one `MemoryWait` per start;
+`memory_wait_began` in the gate, `memory_wait_ended` when it fits and from
+`_forget_pending_start`; `subagent_manager/admission/memory_wake.py`). The
+record is process-local, like the pressure hold's clocks.
+
+- **The gate audits every deferral it decides.** Each one writes
+  the WARNING and the `deferred_low_memory` SEL row (cause `lane_share` with no
+  figures for a share hold) and refreshes the record; a wait that ends because
+  the start fits logs one INFO line with how long it waited. A fit pass is not
+  a gate decision and audits nothing (below).
+- **An event wake is a fit pass, and a fit pass that finds no room writes
+  nothing.** A run reaching its terminal (`_run`'s `finally` after the session
+  teardown, and the reap, for a run whose own `finally` never comes), a wait
+  ending while a root start waits in another lane (it may be what the share
+  held that start for; a wait ending frees no memory, so only the share can
+  have moved, and a same-lane end wakes nothing) and each
+  sampler tick call `wake_memory_waits`, which runs one `_fit_pass` (one at a
+  time; a wake during one runs one more after it). The pass takes ONE host
+  reading through the gate's own single-flight reader
+  (`_host_memory_reading_off_loop`) and rebuilds each wait's bar from the
+  current state the way the gate builds it (the floor, every start still owed
+  but not in the reading, and the start's own charge, `MemoryWait.start_gb`).
+  Oldest wait first, it brings forward a wait the reading clears, counting what
+  the waits it already brought forward will charge (`price_gb`), unless the
+  per-lane share would hold it. A wait that does not fit is LEFT PARKED: no
+  store write, no `deferred` event, no depth frame, no audit row, so a host
+  that stays short costs one reading per event. A reading with a cause
+  (unanswered, an unreadable cgroup) brings nothing forward, as the gate would
+  defer on it; an unmeasurable one (-1), or a floor turned off, brings every
+  wait forward, as the gate admits then. Brought forward means: a window
+  entry's `MEMORY_WAIT_UNTIL_KEY` is set to 0.0 (still a floor wait, so the
+  pick leaves it to the gate) and its `_floor_waits` park is cut at now; a
+  durable row is brought forward with `TaskStore.expedite` on the writer
+  thread, which writes no event, and the pump runs once that has landed so the
+  refill can take the row; the gate then decides it as always.
+- **The admit wait stays as the backstop, and it is the one re-check that
+  still writes.** A row re-checked when its deferral lapses and still short is
+  re-parked through `store.defer`, which appends a `deferred` event, and its
+  depth frame is re-published: one per `agent.admit_wait_secs`, the cadence
+  before event wake. That event is the park record the max wait measures (§
+  Durable task queue, *A memory deferral has a max wait*): `task_events` is
+  append-only and `deferred_longer_than` sums parked spans from it, so making
+  the backstop write nothing needs a parked-since record in the store, a
+  schema change this does not make. A restart drops the in-process record; a
+  parked row is then re-checked at its lapse and its wait recorded again.
+- **The sampler runs only while a start waits.** The first recorded wait arms
+  it and the last one ending cancels it (`_arm_memory_sampler`,
+  `_disarm_memory_sampler`). Every
+  `MEMORY_SAMPLER_SECS` (5 s) it prunes records whose start no longer waits (a
+  registered run; a restricted entry in neither the window nor dispatch; a
+  durable row no longer `CLAIMABLE`, read on the writer thread), the backstop
+  for an exit that raced the deferral, and runs a fit pass, so memory another
+  program frees is seen within a tick. A warming row that settles (it owes no
+  start price any more, so every waiting start's bar drops) is seen the same
+  way: the pass rebuilds the bar from `_row_settled` each tick, so the reaper's
+  RSS sweep needs no wake of its own, and a settle costs at most one tick.
+- **The per-lane memory share** (`lane_share_holds`). With count
+  caps gone, memory is the pool every chat's subagents share, so one chat's
+  wave could still take every start that fits while another chat waited. While
+  another lane has a recorded wait and runs fewer dedicated children than its
+  share, a ROOT start of a lane already running at least its own share waits as
+  a memory wait, whatever the host reads, and no reading is taken: the cause is
+  `lane_share`, the label `low_memory` with no figures, the detail "waiting for
+  memory: subagents of another chat are waiting for memory and this chat
+  already runs its share". A lane's share is its `agent.lane_weights` weight's
+  part of the dedicated children running across the contending lanes (a
+  dedicated child running, `_holds_dedicated_runtime`, the same row predicate
+  the macOS hold counts, or a recorded wait): with three equal lanes running 2,
+  1 and 0, each share is 1, so both the lane at 2 and the lane at exactly 1
+  are held while the third waits. The starved lane is below its share by
+  construction and is never held, so the share decides which lane the memory
+  goes to next and cannot deadlock: the held lane waits for the starved lane's
+  wait to end (it starts, or reaches the max wait) or for its own children to
+  end. A nested start is never held (its parent is a running tree of that
+  lane, which frees its memory only once its children have run), nor is a
+  claim re-entry. It applies whenever the floor is on, with or without an
+  explicit `max_subagents`, and adds no count cap; the weighted round-robin
+  still orders the pick. **Accepted trade-off:** the hold does not ask whether
+  the starved lane's start could fit now. A held lane whose start would fit
+  (a shared start, 2.65 GiB at defaults) can wait behind a starved lane whose
+  start cannot (a dedicated one, 3.0 GiB) until memory frees, the starved wait
+  ends, or its own max wait does (time held by the share counts toward it);
+  that is what keeps a chat that fits small starts from taking every start
+  while another chat waits. Why both halves stay:
+  [RFC Q12](../../request-for-change/rfc-overload-resilience.md).
+- **A nested child that shares its parent's runtime is admitted at ~0.**
+  Children-first ordering does not free memory: a parent that
+  yielded still holds its RSS. So a nested start whose `_sharing_plan` is shared
+  is checked against the floor with its own price at 0, which lets it take the
+  host down to the floor less its shared price, while its row still carries the
+  shared price (`_start_price_gb`), so every later admission charges it until it
+  settles. At defaults it is admitted at 2.0 GiB free, and a sibling arriving
+  while it warms needs 2.65 GiB, so the floor gives way by one shared start, not
+  by a fan-out. A dedicated nested child is priced as before.
 
 **macOS: the kernel memory-pressure hold.** The macOS reading of the floor has
 a second input: the kernel's `kern.memorystatus_vm_pressure_level`, read fresh
@@ -866,7 +969,9 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    price; see *Memory guard*): with a persistent row, **defer** (row stays
    `queued`, `next_run_at = now + admit_wait_secs`, pump wake-up armed, caller
    gets a `queued` id); without one, **queue** in the in-memory window, not
-   eligible until the same admit wait passes. The memory posture tier
+   eligible until the same admit wait passes. Either is re-checked sooner on a
+   memory wake, and a root start the per-lane memory share holds waits the same
+   way (*Memory waits: event wake and the per-lane share*). The memory posture tier
    (`resource_critical_gb`, `cached_admission_check`) is NOT consulted for
    spawns: the floor equals it at defaults, so a host admission has filled to
    the floor would read `critical` and hold every start at the line the floor
@@ -979,9 +1084,9 @@ made; no gate reads it back. Two consumers:
   One label per parent, last writer wins: it is the verdict on the most recent
   row the gate judged for that parent, not a per-row ledger. A parent holding a
   memory-deferred row and then a capacity-queued one shows `concurrency_limit`
-  until the deferred row is re-checked — which the pump does within
-  `admit_wait_secs` (default 30 s), re-labelling it or starting it — so the
-  label is never more than one admit wait stale. This is accepted: the
+  until the deferred row is re-checked — which the pump does on the next memory
+  wake, and at the latest within `admit_wait_secs` (default 30 s), re-labelling
+  it or starting it — so the label is never more than one admit wait stale. This is accepted: the
   alternative is a per-row label reconciled on every emit, for a chip that
   states a count, and a stale-by-one-wait label always reads as a wait that
   does exist for that parent.
@@ -2606,6 +2711,9 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   names them -- the sweep reads queued rows, the replay another incarnation's).
   A refused `finish` ends that sweep and leaves the row and the rest queued for
   the next one.
+  A memory wake that brings a parked row forward (`TaskStore.expedite`) writes
+  no event and leaves the row unparked, so it accrues nothing until its next
+  deferral starts the next span.
   A re-check does not restart the clock; a claim does. What is measured is parked
   time, not time since the first deferral: a row whose deferral merely LAPSED is
   eligible again and waits for a slot, so it is not ended, and the time it spends
@@ -2754,6 +2862,10 @@ The dispatcher's order is not global FIFO. The store side is in
   `parent_session_key` starts with `subagent:`); when no window entry
   qualifies the window is topped up with `children_only` rows and the pick
   runs once more.
+- **The lane weights also weigh memory.** The round-robin orders picks among
+  rows already queued; it cannot stop one lane's wave taking every start memory
+  allows. The per-lane memory share in the gate does (*Memory waits: event wake
+  and the per-lane share*), from the same `agent.lane_weights`.
 - **Refill (`taskq_refill_window`).** Every lane with a store row waiting gets
   its head into the window (a window full of one lane evicts that lane's
   YOUNGEST entries back to store-only — they are queued rows, refetched later

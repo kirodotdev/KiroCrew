@@ -953,6 +953,45 @@ Question text is kept as asked; the decision below it is final for this PR.
   it; `agent.adaptive_concurrency=false` turns the controller off.
   **Implementation:** [#17017](https://github.com/kirodotdev/KiroCrew/pull/17017),
   whose spec is [adaptive-concurrency.md](../system-specs/modules/adaptive-concurrency.md).
+- **Q12 (2026-10-07, accepted).** With Q11's count bounds gone, memory is the
+  pool every chat's subagents share. Three gaps remained (#16480): a start the
+  floor deferred was re-checked only when its admit wait lapsed; §6's promise
+  that a big batch "cannot starve a 3-task session" held for picks but not for
+  memory, since one chat's wave could take every start that fit while another
+  chat waited; and a nested child that shares its parent's runtime waited at the
+  floor although its parent, often waiting on exactly that child, already held
+  its memory, so only the max wait (Q10) could end it. Should admission own the
+  wake and the share, and where does the nested child stand against Q9's floor?
+  **Decision (U5 (b) of the #16480 redesign):**
+  - **Event wake.** A memory wait is recorded per start. A run's terminal (its
+    end or its reap), a wait ending, and a sampler that runs only while a wait
+    exists each take one host reading and bring forward only the waits it now
+    admits; a wake that finds no room writes nothing. The admit wait stays as
+    the restart-safe backstop and the one re-check that writes.
+  - **Per-lane memory share** (extends §6 to memory). While another lane waits
+    below its `agent.lane_weights` share of running dedicated children, a root
+    start of a lane at or above its own share waits too. Nested starts and claim
+    re-entries are exempt, and the starved lane is never held, so it cannot
+    deadlock. It is not a count cap.
+  - **The shared nested child (D4).** A nested start whose runtime is shared is
+    checked against the floor with its own price at 0; its row keeps the shared
+    price, so the floor gives way by one shared start, not a fan-out. Q9's
+    guarantee becomes: admission never takes the host below the floor, except
+    by one shared nested start's price.
+
+  **Residual (accepted):** the share does not ask whether the starved lane's
+  start could fit now, and time a start spends held by the share counts toward
+  its max wait. So a held start that would fit can end `never started: waiting
+  for memory` behind a starved lane whose start cannot fit. The alternatives
+  were rejected: lifting the hold whenever the starved start does not fit lets
+  small starts take memory as it frees and starve a dedicated one, which is the
+  starvation the share exists to stop; and not counting held time leaves a held
+  start with no bound while the other lane keeps queueing starts that never fit.
+  Reversal: `agent.lane_weights` reweights the share; `agent.spawn_min_memory_gb=0`
+  turns the floor, the share and the D4 exception off together.
+  **Implementation:** [#17030](https://github.com/kirodotdev/KiroCrew/pull/17030),
+  whose spec is [subagent.md](../system-specs/modules/subagent.md) *Memory waits:
+  event wake and the per-lane share*.
 
 ## 14. Waits, yielding and nested recovery (owner addendum, 2026-09-12 15:12)
 

@@ -74,6 +74,7 @@ class _GateMixin(ManagerComponent):
         TASK_STORE_UNAVAILABLE_CODE: str
         WINDOW_ENTRY_RECOVERING: str
         MEMORY_WAIT_UNTIL_KEY: str
+        MEMORY_CAUSE_LANE_SHARE: str
 
     def resolve_spawn_execution(
         self,
@@ -929,6 +930,14 @@ class _GateMixin(ManagerComponent):
         # unknown answer is the dedicated projection, since it may become one.
         candidate_price: float | None = None
         priced_shared = False
+        # A nested start that will share its parent's runtime: its
+        # parent is a live runtime of ours, already paid for and often waiting
+        # on exactly this child, so the start is admitted at ~0 against the
+        # floor -- it can take the host down to the floor less its shared price
+        # -- while its row still carries the shared price, so every later
+        # admission charges it until it settles. Without it, a parent waiting on
+        # its own child at the floor could only end at the max wait.
+        nested_shared = False
         settled = self._manager._learned_settled_gb
         # The fields the sharing decision reads, shared by the prediction's probe
         # and the row registered below so the two cannot describe different runs.
@@ -965,6 +974,7 @@ class _GateMixin(ManagerComponent):
                 if plan.shared is True:
                     candidate_price = _shared_start_price_gb(candidate_price)
                     priced_shared = True
+                    nested_shared = _is_child
             except Exception:
                 logger.debug("Subagent spawn: sharing prediction failed", exc_info=True)
             # RSS grows after a process starts. Reserve the unobserved part so
@@ -976,7 +986,7 @@ class _GateMixin(ManagerComponent):
                 agents_snapshot,
                 running_count=self._manager._running_count,
                 cost_gb=start_cost,
-                next_start_gb=candidate_price,
+                next_start_gb=0.0 if nested_shared else candidate_price,
                 settled_gb=settled,
                 claim_prices=[price for price, _ in self._manager._claim_prices.values()],
             )
@@ -985,7 +995,21 @@ class _GateMixin(ManagerComponent):
         # gate. ``min_mem`` is still the raw floor here: the reserve above is
         # only added to a positive one.
         floor_off = min_mem <= 0
-        if _dispatch_now or floor_off:
+        # The per-lane memory share: while another lane waits for
+        # memory below its share, a root start of a lane already at or above its
+        # own waits too, whatever the host reads, so the memory goes to the
+        # starved lane next. No reading is taken for it. A nested start is never
+        # held by it: its parent is a running tree of that lane, which frees its
+        # memory only once its children have run.
+        lane_held = (
+            not _dispatch_now
+            and not floor_off
+            and not _is_child
+            and self._manager._admission.lane_share_holds(parent_session_key, agent_id)
+        )
+        if lane_held:
+            mem_ok, avail_gb, memory_cause = False, -1.0, self.MEMORY_CAUSE_LANE_SHARE
+        elif _dispatch_now or floor_off:
             mem_ok, avail_gb, memory_cause = True, -1.0, ""
         elif _memory_reading is not None:
             # The second half of an off-loop read (``MemoryReadPoint``): the
@@ -1022,16 +1046,34 @@ class _GateMixin(ManagerComponent):
                 MEMORY_CAUSE_READ_UNANSWERED: (
                     "memory headroom unknown: the host memory reading did not answer in time"
                 ),
+                self.MEMORY_CAUSE_LANE_SHARE: (
+                    "waiting for memory: subagents of another chat are waiting for memory "
+                    "and this chat already runs its share"
+                ),
             }.get(memory_cause, "")
             unknown_usage = bool(unknown_note)
-            logger.warning(
-                "Subagent spawn deferred: %s, need %.2f GB (this start "
-                "priced at %.2f GB, plus the starts still warming, with "
-                "agent.spawn_min_memory_gb left over).",
-                unknown_note if unknown_usage else f"only {avail_gb:.2f} GB available",
-                min_mem,
-                candidate_price or 0.0,
+            # The record keeps what this start charges, which the event wake's
+            # fit pass rebuilds the bar from.
+            self._manager._admission.memory_wait_began(
+                agent_id,
+                parent_session_key=parent_session_key,
+                start_gb=0.0 if nested_shared else candidate_price,
+                price_gb=candidate_price,
+                nested=_is_child,
+                durable=_durable,
             )
+            if lane_held:
+                # No reading was taken and the bar is not what holds it.
+                logger.warning("Subagent spawn deferred: %s (per-lane memory share).", unknown_note)
+            else:
+                logger.warning(
+                    "Subagent spawn deferred: %s, need %.2f GB (this start "
+                    "priced at %.2f GB, plus the starts still warming, with "
+                    "agent.spawn_min_memory_gb left over).",
+                    unknown_note if unknown_usage else f"only {avail_gb:.2f} GB available",
+                    min_mem,
+                    candidate_price or 0.0,
+                )
             sel().log_tool_invocation(
                 session_key=parent_session_key or "",
                 source="subagent",
@@ -1041,7 +1083,8 @@ class _GateMixin(ManagerComponent):
                     # No figure when nothing was read: -1 is not an amount.
                     **(
                         {}
-                        if memory_cause == MEMORY_CAUSE_READ_UNANSWERED
+                        if memory_cause
+                        in (MEMORY_CAUSE_READ_UNANSWERED, self.MEMORY_CAUSE_LANE_SHARE)
                         else {"available_gb": avail_gb}
                     ),
                     "min_gb": min_mem,
@@ -1052,10 +1095,14 @@ class _GateMixin(ManagerComponent):
                 },
             )
             memory_detail = (
-                f"{unknown_note}; need {min_mem:.1f} GB"
-                if unknown_usage
-                else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
-                f"({candidate_price or 0.0:.2f} GB for this start)"
+                unknown_note
+                if lane_held
+                else (
+                    f"{unknown_note}; need {min_mem:.1f} GB"
+                    if unknown_usage
+                    else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
+                    f"({candidate_price or 0.0:.2f} GB for this start)"
+                )
             )
             # A floor wait carries no pressure clock (the hold below is not
             # evaluated for it): one an earlier hold started is dropped, so time
@@ -1064,9 +1111,11 @@ class _GateMixin(ManagerComponent):
             self._manager._pressure_hold_expired.discard(agent_id)
             memory_wait = {
                 "reason": QUEUED_REASON_LOW_MEMORY,
-                # No figure when nothing was read: -1 is not an amount.
+                # No figure when nothing was read: -1 is not an amount. A start
+                # the lane share holds names no bar either: the bar is not what
+                # holds it, so the UI says "waiting for memory" figure-less.
                 **({"available_gb": round(float(avail_gb), 2)} if avail_gb >= 0 else {}),
-                "required_gb": round(float(min_mem), 2),
+                **({} if lane_held else {"required_gb": round(float(min_mem), 2)}),
             }
             if _durable:
                 # Built ahead of the deferral, not after it: a durable defer the
@@ -1138,6 +1187,16 @@ class _GateMixin(ManagerComponent):
                 floor_now,
                 floor_now + round(self._manager._admission.taskq_admit_wait_secs() * 1e9),
             )
+        elif not _dispatch_now:
+            # The wait ends here: it fits now. Whatever follows (the cap, the
+            # stagger) is not a memory wait.
+            waited = self._manager._admission.memory_wait_ended(agent_id)
+            if waited is not None:
+                logger.info(
+                    "Subagent %s fits the memory floor after waiting %.0fs for memory",
+                    agent_id,
+                    time.monotonic() - waited.since,
+                )
         if (
             mem_ok
             and avail_gb < 0
