@@ -17,7 +17,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from turn_harness import ScriptedProvider, SlotSpec, TurnScript, run_turn
 
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    STOP_REASON_END_TURN,
+    AcpEvent,
+    TurnUsage,
+)
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.metrics.turns import (
     TURN_COST_METRIC,
     TURN_CREDITS_METRIC,
@@ -43,6 +53,36 @@ class _CapturingRecorder:
 
     def named(self, name):
         return [c for c in self.hist + self.ctr if c["name"] == name]
+
+
+class _ClaudeSilent(ScriptedProvider):
+    """A claude-backend session whose backend reports no served model id."""
+
+    capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
+
+
+class _ClaudeServed(_ClaudeSilent):
+    """The same session, reporting the id it actually served."""
+
+    _resolved_model_id = "served-model"
+
+
+async def _metered_turn(provider: type[ScriptedProvider]):
+    """One landed dashboard turn on a slot pinned to ``pinned-model``, metered."""
+    recorder = _CapturingRecorder()
+    landed = AcpEvent(
+        kind=EVENT_COMPLETE,
+        stop_reason=STOP_REASON_END_TURN,
+        usage=TurnUsage(input_tokens=900, output_tokens=120, credits=3.5, duration_ms=1500),
+    )
+    with patch("kiro_crew.metrics.turns.get_recorder", return_value=recorder):
+        record = await run_turn(
+            TurnScript(
+                events=[AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"), landed], provider=provider
+            ),
+            slot=SlotSpec(model="pinned-model"),
+        )
+    return recorder, record
 
 
 def _emit(**kwargs) -> _CapturingRecorder:
@@ -397,25 +437,22 @@ class TestServedBackendAttribution:
         assert PROVIDER_LABEL_KAS != PROVIDER_LABEL_DEFAULT
         assert provider_label(object()) == PROVIDER_LABEL_DEFAULT
 
-    def test_the_emit_site_reads_the_client_not_the_config_field(self):
-        """Pins the resolution, so a revert to `cfg.agent.provider` reddens here.
+    @pytest.mark.asyncio
+    async def test_the_turn_labels_its_metrics_with_the_served_backend(self):
+        """Through the real ``_run_chat``: a claude-backend turn says ``claude_code``.
 
-        Scoped to the assignment: `_run_chat` legitimately reads
-        `cfg.agent.provider` elsewhere, for the separate `provider_name` local the
-        model-resolution branches use.
-
-        The expression is now a capability read. It replaced a
-        `"claude_code" if is_claude_backend(client) else "acp"` ternary, whose
-        literals `provider_seam` returns unchanged -- so the value this emits, KAS
-        residue included, is the same one.
+        The label is the live client's capability read, never ``cfg.agent.provider``
+        -- that field is a one-value enum (``acp``), so reading it would stamp every
+        dashboard turn, claude_code included, with the same constant. The default
+        config here answers ``acp``, so only the client can produce this label.
         """
-        import inspect
-
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "_provider_name = capabilities_of(client).provider_seam" in src
-        assert "_provider_name = cfg.agent.provider" not in src
+        recorder, record = await _metered_turn(_ClaudeServed)
+        assert record.stop_reason == "end_turn"
+        for name in (TURN_METRIC, TURN_TOKENS_METRIC, TURN_CREDITS_METRIC):
+            samples = recorder.named(name)
+            assert samples, name
+            assert {sample["attrs"]["provider"] for sample in samples} == {"claude_code"}
+        assert len(recorder.named(TURN_CREDITS_METRIC)) == 1
 
     def test_chat_runner_does_not_import_provider_label(self):
         """The constraint that shaped the resolution above.
@@ -455,20 +492,23 @@ class TestServedBackendAttribution:
         # And it must not reach the ACP-layer predicate at all.
         assert "is_claude_backend" not in imported
 
-    def test_the_metric_model_prefers_the_served_id(self):
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [("served", "served-model"), ("silent", "pinned-model")],
+    )
+    async def test_the_metric_model_prefers_the_served_id(self, provider, model):
         """A fallback-served turn is attributed, not dropped from the split.
 
         The ROW blanks the model for that case on purpose (billing a model that
         never ran is wrong); the metric answers a different question, so it takes
-        `read_turn_model`'s served id and falls back to the row's value only when
-        the backend reported none.
+        the id the backend actually served, and falls back to the slot's model
+        only when the backend reported none.
         """
-        import inspect
-
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "model=_turn_model or _record_model" in src
+        adapter = _ClaudeServed if provider == "served" else _ClaudeSilent
+        recorder, _record = await _metered_turn(adapter)
+        for name in (TURN_METRIC, TURN_TOKENS_METRIC, TURN_CREDITS_METRIC):
+            assert {sample["attrs"]["model"] for sample in recorder.named(name)} == {model}
 
 
 class TestAggregatorReportsAmountsWithoutMsKeys:

@@ -23,7 +23,22 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from turn_harness import Raise, TurnScript, VirtualClock, Wait, run_turn
 
+from kiro_crew.acp.client import AcpProcessDied
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
+    EVENT_TOOL_CALL,
+    STOP_REASON_CANCELLED,
+    STOP_REASON_COMPACTION_FAILED,
+    STOP_REASON_END_TURN,
+    STOP_REASON_REFUSAL,
+    STOP_REASON_STALE_RECOVER,
+    STOP_REASON_TOOL_STALL,
+    AcpEvent,
+)
 from kiro_crew.dashboard.chat_runner import _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND
 from kiro_crew.dashboard.state import (
@@ -71,6 +86,49 @@ def _spawned_on_consumed(coro):
     its frame holds the dispatcher's keywords as ``kwargs``.
     """
     return coro.cr_frame.f_locals["kwargs"].get("_on_consumed")
+
+
+class _ObservedGate(asyncio.Event):
+    """A teardown gate that says when something starts waiting on it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.awaited = asyncio.Event()
+
+    async def wait(self) -> bool:  # type: ignore[override]
+        self.awaited.set()
+        return await super().wait()
+
+
+_END_TURN = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+
+async def _consumption_turn(*events):
+    """One real dashboard turn with the caller's consumption hooks recorded.
+
+    Each report is stamped with the virtual second it arrived at, so a test can
+    tell the event that reported it from the turn's end.
+    """
+    clock = VirtualClock()
+    reports: list[tuple] = []
+
+    def _consumed(consumed: bool = True) -> None:
+        reports.append(("consumed", consumed, clock.elapsed()))
+
+    def _irreversibly_consumed() -> None:
+        reports.append(("irreversible", clock.elapsed()))
+
+    record = await run_turn(
+        TurnScript(
+            events=list(events),
+            run_kwargs={
+                "_on_consumed": _consumed,
+                "_on_irreversibly_consumed": _irreversibly_consumed,
+            },
+        ),
+        clock=clock,
+    )
+    return reports, record
 
 
 def _pending_map(slot) -> dict[str, list[str]]:
@@ -318,52 +376,75 @@ class TestConsumptionSignalIsPerTurn:
     predecessor's callback runs, so a shared field would be reset by the successor
     and leave the earlier (already consumed) completion unsettled."""
 
-    def test_run_chat_reports_consumption_through_the_callers_hook(self):
-        import inspect
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("first", ["text", "tool"])
+    async def test_a_turn_reports_consumption_at_its_first_irreversible_event(self, first):
+        """Through the real ``_run_chat``: the first token or tool call makes the turn
+        non-replayable, so consumption -- irreversible -- is reported THERE, not at
+        the turn's end: recovery from then on requeues a continuation rather than
+        the announce, and only the caller's cell can settle the owed completion."""
+        opening = {
+            "text": AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+            "tool": AcpEvent(
+                kind=EVENT_TOOL_CALL, tool_call_id="t1", title="read_file", tool_kind="read"
+            ),
+        }[first]
+        reports, _record = await _consumption_turn(opening, Wait(10), _END_TURN)
+        assert reports == [("irreversible", 0.0), ("consumed", True, 0.0)]
 
-        from kiro_crew.dashboard import chat_runner as mod
+    @pytest.mark.asyncio
+    async def test_a_quiet_end_of_turn_reports_consumption_at_its_completion(self):
+        """A prompt consumed with nothing visible (thinking only) is reported by the
+        turn-complete event, or its result would be re-announced after a restart."""
+        thinking = AcpEvent(kind=EVENT_THINKING_CHUNK, text="pondering")
+        reports, _record = await _consumption_turn(thinking, Wait(10), _END_TURN)
+        assert reports == [("consumed", True, 10.0)]
 
-        src = inspect.getsource(mod._run_chat)
-        lines = src.splitlines()
-        # Reported on the two transitions that flip _turn_emitted ...
-        reported_after_flip = [
-            i
-            for i, ln in enumerate(lines)
-            if ln.strip() == "await _report_consumed(irreversible=True)"
-            and lines[i - 1].strip().startswith("_turn_emitted = True")
-        ]
-        assert len(reported_after_flip) == 2
-        # ... and on the provider's turn-complete event, which is what covers a
-        # prompt that was consumed and produced NOTHING -- but only for a real
-        # end-of-turn, since the same event carries the cut-short reasons whose
-        # recovery re-queues the prompt.
-        complete_at = src.index("elif event.kind == EVENT_COMPLETE:")
-        window = src[complete_at : complete_at + 1400]
-        assert "if event.stop_reason == STOP_REASON_END_TURN:\n" in window
-        gate_at = window.index("if event.stop_reason == STOP_REASON_END_TURN:")
-        assert window.index("await _report_consumed()") > gate_at
-        # An equality against that one reason -- not a set that could quietly
-        # readmit a cut-short turn (stale-recover, tool-stall, cancelled).
-        gate_line = window[gate_at : window.index("\n", gate_at)]
-        assert " in (" not in gate_line and " or " not in gate_line
-        assert src.count("await _report_consumed(irreversible=True)") == 2
-        assert src.count("await _report_consumed()") == 1
-        # The retraction lives in the FIRST empty-response branch and happens
-        # BEFORE the verbatim re-queue copies the callback. Reversing that order
-        # drops the callback and strands the delivery after a successful replay.
-        # Anchored on the rung marker rather than the branch condition: that
-        # condition carries the productive-turn guard and is reformatted whenever
-        # it grows a term, while the marker names the rung this invariant is about.
-        first_empty_at = src.index("_empty_rung = EMPTY_RUNG_REPLAY")
-        first_empty_end = src.index("            elif (", first_empty_at)
-        first_empty = src[first_empty_at:first_empty_end]
-        assert first_empty.count("await _report_consumed(False)") == 1
-        assert first_empty.index("await _report_consumed(False)") < first_empty.index(
-            "_queue_recovery("
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stop_reason",
+        [
+            STOP_REASON_CANCELLED,
+            STOP_REASON_STALE_RECOVER,
+            STOP_REASON_TOOL_STALL,
+            STOP_REASON_REFUSAL,
+            STOP_REASON_COMPACTION_FAILED,
+            "max_tokens",
+            None,
+        ],
+    )
+    async def test_a_cut_short_completion_reports_no_consumption(self, stop_reason):
+        """Only a real end of turn counts. Each cut-short reason requeues the prompt
+        itself, and reporting it consumed would start the retention clock on a
+        result the retry still has to deliver."""
+        reports, _record = await _consumption_turn(
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason)
         )
-        assert "_last_turn_emitted" not in src
-        drain = inspect.getsource(mod._start_next_queued_turn)
-        assert '_run_kwargs["_on_consumed"] = _note_consumed' in drain
+        assert reports == []
+
+    @pytest.mark.asyncio
+    async def test_a_failure_before_any_output_reports_no_consumption(self):
+        """A process that dies before the first event consumed nothing: the prompt is
+        requeued, and the requeue still carries the caller's hook."""
+        reports, record = await _consumption_turn(Raise(AcpProcessDied("pipe broken")))
+        assert reports == []
+        [replay] = record.successors
+        assert replay.args[0] == "hello"
+        replay.kwargs["_on_consumed"](True)
+        assert reports == [("consumed", True, 0.0)]
+
+    @pytest.mark.asyncio
+    async def test_the_first_empty_reply_retracts_before_its_replay_takes_the_hook(self):
+        """The first empty reply retracts its end-of-turn report, and does so BEFORE
+        the verbatim replay copies the callback: copied while the report still read
+        consumed, the replay would carry none, and a successful replay could never
+        settle what it delivered."""
+        reports, record = await _consumption_turn(_END_TURN)
+        assert reports == [("consumed", True, 0.0), ("consumed", False, 0.0)]
+        [replay] = record.successors
+        assert replay.args[0] == "hello"
+        replay.kwargs["_on_consumed"](True)
+        assert reports[-1] == ("consumed", True, 0.0)
 
     def test_slot_carries_no_shared_consumption_flag(self):
         assert "_last_turn_emitted" not in _ChatSlot.__slots__
@@ -481,18 +562,74 @@ class TestTeardownGateOnQueuedSettlement:
         await task
         assert (agent_root / info.id / "tombstone.json").exists()
 
-    def test_the_drain_settles_only_through_the_manager(self):
-        import inspect
+    @pytest.mark.asyncio
+    async def test_the_drain_settles_through_the_runs_teardown_gate(self, agent_root, tmp_path):
+        """The drain's settlement is the manager's, which holds each tombstone until
+        that run's teardown has finished: written while the child is still being
+        killed, it would hide a live process from restart reconciliation."""
+        from chat_test_helpers import _make_state
 
-        from kiro_crew.dashboard import chat_runner as mod
+        state = _make_state(tmp_path / "state")
+        mgr = _manager()
+        state.subagents = mgr
+        gate = _ObservedGate()
+        mgr._teardown_gates["a1"] = gate
+        slot = state.get_or_create_slot("drain-gated")
+        _finished_run("a1", agent_root)
+        slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
+        done: asyncio.Future = asyncio.get_event_loop().create_future()
 
-        src = inspect.getsource(mod._arm_queued_delivery_settlement)
-        assert 'getattr(mgr, "settle_queued_delivery", None)' in src
-        # No second write path: the debt only exists because the manager's own
-        # completion callback created it, so a manager-less state cannot owe one,
-        # and a direct write would bypass the teardown gate.
-        assert not hasattr(mod, "_mark_queued_deliveries")
-        assert "mark_delivered" not in src
+        with patch(
+            "kiro_crew.dashboard.chat_runner.spawn_guarded_turn",
+            TestDrainSettlesDelivery()._turn_spawner(done),
+        ):
+            assert await _start_next_queued_turn(state, slot) is True
+        done.set_result(None)
+
+        # The settlement is waiting on the run's teardown, and has written nothing.
+        await asyncio.wait_for(gate.awaited.wait(), timeout=5)
+        assert not (agent_root / "a1" / "tombstone.json").exists()
+
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(*list(state._background_tasks)), timeout=5)
+        assert (agent_root / "a1" / "tombstone.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_state_with_no_manager_settles_nothing(self, agent_root, tmp_path):
+        """No second write path: the debt only exists because a manager's completion
+        callback created it, so a state without one leaves the folder for restart
+        reconciliation rather than writing a tombstone past the teardown gate."""
+        from chat_test_helpers import _make_state
+
+        state = _make_state(tmp_path / "state")
+        state.subagents = None
+        slot = state.get_or_create_slot("drain-unmanaged")
+        _finished_run("a1", agent_root)
+        slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
+        done: asyncio.Future = asyncio.get_event_loop().create_future()
+        writes = MagicMock()
+
+        # Every name a delivered tombstone is written through, so a write anywhere,
+        # not only into this run's folder, fails the turn's settlement here.
+        with (
+            patch("kiro_crew.subagent_persistence.mark_delivered", writes),
+            patch("kiro_crew.subagent.mark_delivered", writes),
+        ):
+            with patch(
+                "kiro_crew.dashboard.chat_runner.spawn_guarded_turn",
+                TestDrainSettlesDelivery()._turn_spawner(done),
+            ):
+                assert await _start_next_queued_turn(state, slot) is True
+            done.set_result(None)
+            # The turn's done-callbacks -- the settlement among them -- run before
+            # this await resumes, so whatever it was going to start has started.
+            await slot.task
+            pending = [task for task in state._background_tasks if not task.done()]
+            assert pending == []
+            assert writes.call_count == 0
+        assert not (agent_root / "a1" / "tombstone.json").exists()
 
 
 class TestDrainSettlesDelivery:

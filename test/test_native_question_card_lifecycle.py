@@ -11,11 +11,21 @@ consumed steer -- so the client keeps no lifecycle of its own for this kind.
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from turn_harness import TurnScript, run_turn
 
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
+    STOP_REASON_END_TURN,
+    AcpEvent,
+)
 from kiro_crew.dashboard.chat_runner import _post_native_question_card
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -212,18 +222,64 @@ async def test_unknown_slot_posts_nothing_and_does_not_raise() -> None:
     assert st._slots == {}
 
 
-def test_the_runner_has_no_bare_question_card_broadcast_left() -> None:
-    """The native tool branch was the last bare ``question_card`` emitter in the
-    runner. With the helper in place there must be no literal left, otherwise a
-    second identity-less card path has quietly returned."""
-    import inspect
-
-    from kiro_crew.dashboard import chat_runner
-
-    src = inspect.getsource(chat_runner._run_chat)
-    branch = src.index('event.title == "AskUserQuestion"')
-    assert (
-        "await _post_native_question_card(state, slot.key, event.tool_input)"
-        in src[branch : branch + 400]
+def _tool_call_turn(title: str) -> TurnScript:
+    return TurnScript(
+        events=[
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-ask",
+                title=title,
+                tool_kind="other",
+                tool_input=_tool_input(),
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
     )
-    assert '"question_card"' not in inspect.getsource(chat_runner)
+
+
+@pytest.mark.asyncio
+async def test_the_runners_ask_user_question_posts_a_server_owned_card() -> None:
+    """Through the real ``_run_chat``: kiro-cli's AskUserQuestion becomes ONE card
+    the server owns -- minted id, owner-only delivery, a pending record that keeps
+    the slot reading "needs input" after the turn -- not a bare broadcast whose
+    identity the client would have to invent."""
+    record = await run_turn(_tool_call_turn("AskUserQuestion"))
+    [card] = record.frames("question_card")
+    assert card.channel == "owners"
+    assert card.payload["slot"] == "chat-1"
+    assert card.payload["card_id"].startswith("card-")
+    assert "ask_id" not in card.payload
+    assert card.payload["native"] is True
+    assert card.payload["questions"][0]["question"] == "Which approach?"
+    assert record.frames("chat_done")[-1].payload["needs_input"] is True
+
+
+@pytest.mark.asyncio
+async def test_only_the_ask_user_question_tool_posts_a_card() -> None:
+    """The title gate: any other tool call with the same input posts nothing."""
+    record = await run_turn(_tool_call_turn("Read file"))
+    assert record.frames("question_card") == []
+    assert record.frames("chat_done")[-1].payload["needs_input"] is False
+
+
+def test_the_runner_has_no_bare_question_card_emitter_left() -> None:
+    """Kept as a source pin: a module-wide ABSENCE no single turn can prove.
+
+    The native tool branch was the last bare ``question_card`` emitter in the
+    runner; the turn tests above prove the branch they exercise posts through
+    the coordinator, but an emitter on a branch no scripted turn reaches would
+    be invisible to every one of them. So the literal must not appear in the
+    runner or in any ``chat_turn`` owner it composes -- scanning both keeps the
+    guard when code moves between them. Counted in ``test_source_pin_budget.py``.
+    """
+    from kiro_crew.dashboard import chat_runner, chat_turn
+
+    sources = [Path(chat_runner.__file__)] + sorted(Path(chat_turn.__file__).parent.glob("*.py"))
+    emitters = [
+        f"{path.name}:{node.lineno}"
+        for path in sources
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Constant) and node.value == "question_card"
+    ]
+    assert emitters == [], f"a second question_card emitter is back: {emitters}"

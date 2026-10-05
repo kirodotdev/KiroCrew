@@ -18,7 +18,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, drain_background_tasks
+from turn_harness import SlotSpec, TurnContext, TurnScript, run_turn
 
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.dashboard.chat_utils import remember_slack_options
 from kiro_crew.slack.format import (
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
@@ -65,6 +68,91 @@ def _set_recs(state, key, records):
     if hasattr(key, "key"):
         key = effective_session_key(key)
     set_options_records(state, key, records)
+
+
+def _mirror_slack() -> MagicMock:
+    """A Slack client a dashboard turn can mirror its streamed reply through."""
+    slack = MagicMock()
+    slack.post_message = AsyncMock(return_value="body-ts")
+    slack.start_stream = AsyncMock(return_value="stream-ts")
+    slack.append_stream = AsyncMock()
+    slack.stop_stream = AsyncMock()
+    slack.update_message = AsyncMock()
+    return slack
+
+
+_OPTIONS_REPLY = [
+    AcpEvent(kind=EVENT_TEXT_CHUNK, text="Pick one.\n\n[OPTIONS: A | B]"),
+    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+]
+
+
+async def _mirror_turn(*, relink_to: str | None = None, newer: PostedOptions | None = None):
+    """One Slack-linked dashboard turn whose reply ends in an OPTIONS tag.
+
+    With *relink_to*, the thread is relinked to that session while the mirror's
+    ``post_blocks`` is in flight, and *newer* is the control it records meanwhile.
+    """
+    slack = _mirror_slack()
+    owner: dict = {"key": None}
+    held: dict = {}
+
+    async def _post_blocks(_channel, _blocks, _text, _thread, *_a, **_k):
+        if relink_to is not None:
+            owner["key"] = relink_to
+            _set_recs(held["state"], relink_to, (newer,))
+        return "opt-mirror"
+
+    slack.post_blocks = AsyncMock(side_effect=_post_blocks)
+
+    def _arrange(ctx: TurnContext) -> None:
+        held["state"] = ctx.state
+        ctx.state.slack_client = slack
+        ctx.state.sessions.set_slack_link("dashboard:s1", "thread-1", "C-1")
+        ctx.state.sessions.get_session_for_thread = lambda _ts: owner["key"]
+
+    record = await run_turn(
+        TurnScript(events=_OPTIONS_REPLY, setup=_arrange), slot=SlotSpec(key="s1")
+    )
+    return slack, record, held["state"]
+
+
+async def _live_control_turn(message: str):
+    """A dashboard turn on a slot whose previous answer left a live OPTIONS control.
+
+    ``seen["at_acquisition"]`` is the slot's control store and the edit count at
+    the moment the turn asks for its session, if it gets that far.
+    """
+    slack = _mirror_slack()
+    seen: dict = {}
+
+    def _arrange(ctx: TurnContext) -> None:
+        seen["state"] = ctx.state
+        ctx.state.slack_client = slack
+        remember_slack_options(
+            ctx.state,
+            "dashboard:s1",
+            PostedOptions(channel="C-1", ts="opt-live", choices=("A", "B"), blocks=()),
+        )
+        acquire = ctx.state.sessions.get_or_create
+
+        async def _acquire(*args, **kwargs):
+            seen["at_acquisition"] = (
+                _recs(ctx.state, "dashboard:s1"),
+                slack.update_message.await_count,
+            )
+            return await acquire(*args, **kwargs)
+
+        ctx.state.sessions.get_or_create = _acquire
+
+    events = [
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+    ]
+    record = await run_turn(
+        TurnScript(events=events, message=message, setup=_arrange), slot=SlotSpec(key="s1")
+    )
+    return slack, record, seen["state"], seen
 
 
 def _posted_texts(slack: MagicMock) -> list[str]:
@@ -1998,31 +2086,34 @@ class TestControlPostedAfterTheWindowIsSpent:
             "the rollback must run on the abort path too, which returns early"
         )
 
-    def test_all_three_posting_paths_resolve_the_live_owner(self):
+    @pytest.mark.asyncio
+    async def test_the_dashboard_mirror_files_its_control_under_the_live_owner(self):
         """The dashboard mirror path must do what the other two already do.
 
         Rounds 23 and 26 gave the native footer and the transport path an
-        owner-resolved record plus owner-change supersession. The dashboard mirror
-        in ``chat_runner`` recorded under the bare ``session_key`` -- so a thread
-        relinked while ``post_blocks`` was in flight got its control filed where
-        the new owner's expiry never looks, and clickable into a conversation it
-        does not belong to.
+        owner-resolved record plus owner-change supersession. Through the real
+        ``_run_chat``: the thread is relinked to another session WHILE the mirror's
+        ``post_blocks`` is in flight, and that session records a control of its own
+        meanwhile. The control just posted must be filed under the new owner and
+        struck at once -- the question would be answered into a conversation that
+        moved on -- and only OUR control struck: the new owner's survives.
         """
-        import inspect
+        newer = PostedOptions(channel="C-1", ts="opt-newer", choices=("X",), blocks=())
+        slack, record, state = await _mirror_turn(relink_to="dashboard:other", newer=newer)
+        assert record.stop_reason == "end_turn"
+        assert slack.post_blocks.await_count == 1
+        assert [c.args for c in slack.update_message.await_args_list] == [("C-1", "opt-mirror")]
+        assert _recs(state, "dashboard:other") == (newer,)
+        assert _recs(state, "dashboard:s1") == ()
 
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner)
-        mirror = src[src.find("_mirror_blocks = build_options_blocks(") :][:2600]
-        assert "_pre_owner" in mirror, "the mirror path must capture the owner before posting"
-        assert "remember_slack_options(\n                            state,\n                            _owner," in mirror, (
-            "the record must use the re-resolved owner, not the key the turn started with"
-        )
-        assert "_owner != _pre_owner" in mirror, "an owner change must supersede"
-        assert "ts=_mirror_ts" in mirror, (
-            "the supersession expiry must be narrowed to OUR ts, or it strikes "
-            "through a control the new owner recorded meanwhile"
-        )
+    @pytest.mark.asyncio
+    async def test_an_unraced_mirror_control_stays_live_under_the_turns_own_key(self):
+        """No relink: the control is the turn's own, recorded and left clickable."""
+        slack, _record, state = await _mirror_turn()
+        assert slack.post_blocks.await_count == 1
+        assert slack.update_message.await_count == 0
+        [mine] = _recs(state, "dashboard:s1")
+        assert (mine.ts, mine.choices) == ("opt-mirror", ("A", "B"))
 
     def test_the_forget_uses_owner_keys_snapshotted_before_the_edit(self):
         """A relink during the submit's edit must not orphan the old owner's record.
@@ -2149,31 +2240,31 @@ class TestControlPostedAfterTheWindowIsSpent:
         # The body itself still reaches Slack, as its own message.
         assert "post_message(" in src, "the message body is still posted normally"
 
-    def test_a_local_dashboard_command_does_not_spend_the_control(self):
-        """`/goal` and `/prompts` return without an agent turn.
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/goal status", "/prompts"])
+    async def test_a_local_dashboard_command_does_not_spend_the_control(self, command):
+        """`/goal` and `/prompts` answer without an agent turn.
 
-        Each SLACK entry point's expiry runs below its short-circuits;
-        the dashboard path kept its expiry at the very top of ``_run_chat``, so a
+        Each SLACK entry point's expiry runs below its short-circuits; the
+        dashboard path once kept its expiry at the very top of ``_run_chat``, so a
         local command that never starts a turn still struck a pending question
         through -- leaving valid choices unanswerable with nothing on the way to
         answer them.
         """
-        import inspect
+        slack, record, state, _seen = await _live_control_turn(command)
+        assert record.allocations == [], "a local command acquires no session"
+        assert slack.update_message.await_count == 0
+        assert [p.ts for p in _recs(state, "dashboard:s1")] == ["opt-live"]
 
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        expiry = src.find("await expire_slack_options(state, session_key)")
-        assert expiry != -1, "the dashboard turn must still expire the control"
-        for local in ('if first_word == "/goal"', 'if first_word == "/prompts"'):
-            at = src.find(local)
-            assert at != -1, f"expected {local} in _run_chat"
-            assert at < expiry, (
-                f"{local} returns without a turn, so it must sit ABOVE the expiry"
-            )
-        acquisition = src.find("await state.sessions.get_or_create(")
-        assert acquisition != -1, "the dashboard turn must still acquire its provider"
-        assert expiry < acquisition, "the expiry must still run before the turn is acquired"
+    @pytest.mark.asyncio
+    async def test_a_turn_spends_the_control_before_it_acquires_its_session(self):
+        """A real turn does spend it -- before it waits on the session lease or
+        spawn, so a slow (or failed) acquisition never leaves the superseded
+        question clickable."""
+        slack, record, state, seen = await _live_control_turn("hello")
+        assert seen["at_acquisition"] == ((), 1), "spent when the session is acquired"
+        assert [c.args for c in slack.update_message.await_args_list] == [("C-1", "opt-live")]
+        assert record.stop_reason == "end_turn"
 
     @pytest.mark.asyncio
     async def test_linking_an_existing_thread_retires_its_prior_control(self, tmp_path):

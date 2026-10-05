@@ -42,17 +42,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import json
 import logging
+import uuid
 from pathlib import Path
 
 import pytest
 from chat_test_helpers import _make_state
+from turn_harness import Do, SlotSpec, TurnContext, TurnScript, run_turn
 
 from kiro_crew import autonudge, execution_context
 from kiro_crew import history as history_mod
+from kiro_crew import mcp_apps_render
 from kiro_crew import members as members_mod
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
+    AcpEvent,
+)
 from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.dashboard import chat_handlers as handlers
 from kiro_crew.dashboard import chat_runner, chat_summary
@@ -1721,10 +1730,83 @@ async def test_tool_result_rows_tighten_a_same_transcript_replacement(
     assert meta.get("memory_mode") == "temporary", "the tool rows landed under a looser line"
     assert meta[execution_context.EXECUTION_CONTEXT_KEY]["memory_mode"] == "temporary"
     assert execution_context.read_session_execution(HKEY).memory_mode == "temporary"
-    runner_source = inspect.getsource(chat_runner._run_chat)
-    assert (
-        "persist_rows=lambda: _persist_tool_result_rows(state, slot)" in runner_source
-    ), "the app-render path bypasses the tested rows-only privacy wrapper"
+
+
+@pytest.mark.asyncio
+async def test_the_app_render_path_writes_its_tool_rows_through_the_privacy_wrapper(
+    tmp_path, monkeypatch
+) -> None:
+    """Through the real ``_run_chat``: the MCP-app render persists its tool rows
+    only after a same-transcript replacement has been tightened.
+
+    A restricted turn is popped mid-stream and a same-key, persistent slot takes
+    its place -- sharing its transcript. When the render claims the app, its
+    rows-only write must already find the replacement temporary and its key
+    marked restricted: during a write that lands first, live-slot gates (summary,
+    memory, app 403 checks) would derive from the private rows. The end state
+    converges either way (the save's own callback tightens right after the
+    write), so the probe is taken at the moment of the write.
+    """
+    spool = tmp_path / "mcp-apps"
+    spool.mkdir()
+    monkeypatch.setenv("KIROCREW_MCP_APPS_SPOOL", str(spool))
+    sid = uuid.uuid4().hex
+    (spool / f"{sid}.json").write_text(
+        json.dumps(
+            {
+                "schema": mcp_apps_render.SPOOL_SCHEMA_VERSION,
+                "server": "excalidraw",
+                "tool": "create_view",
+                "html": "<h1>x</h1>",
+                "session_key": HKEY,
+            }
+        ),
+        encoding="utf-8",
+    )
+    held: dict = {}
+    writes: list[tuple[bool, str, bool]] = []
+    real_save = chat_runner.save_slot_off_loop
+
+    async def _probe(state, slot, *args, **kwargs):
+        if kwargs.get("rows_only"):
+            live = state._slots[NAME]
+            writes.append(
+                (live is held["replacement"], live.memory_mode, HKEY in state._restricted_keys)
+            )
+        return await real_save(state, slot, *args, **kwargs)
+
+    monkeypatch.setattr(chat_runner, "save_slot_off_loop", _probe)
+
+    def _replace_mid_turn(ctx: TurnContext) -> None:
+        # After preparation, so the turn's own binding checks have passed.
+        ctx.state._slots.pop(NAME)
+        held["replacement"] = ctx.state.get_or_create_slot(NAME)
+
+    record = await run_turn(
+        TurnScript(
+            events=[
+                Do(_replace_mid_turn),
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="tc-app-1",
+                    title="create_view",
+                    tool_name="create_view",
+                    mcp_server_name="excalidraw",
+                ),
+                AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="tc-app-1",
+                    tool_output=f"Done. [kirocrew-mcp-app:{sid}]",
+                    tool_final=True,
+                ),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="There you go."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        ),
+        slot=SlotSpec(key=NAME, memory_mode="temporary"),
+    )
+    assert record.frames("mcp_app_render"), "the render path never ran"
+    assert writes == [(True, "temporary", True)]
 
 
 @pytest.mark.asyncio
