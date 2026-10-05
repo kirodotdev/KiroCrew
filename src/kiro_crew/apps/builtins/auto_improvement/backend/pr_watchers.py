@@ -333,6 +333,21 @@ class WatcherState:
     #: isolated clone's origin is dead by design, so in that state the directory is the
     #: ONLY copy of the work and must survive teardown (and the orphan sweep).
     unexported_work: bool = False
+    #: True only when a disable (``stop_all``) stood this watcher down — never when the
+    #: operator stopped it per PR via ``stop(fp)`` or when the thread exited on its own.
+    #: ``STATUS_STOPPED`` alone cannot tell those apart (all three write the same status
+    #: and note), so the relaunch branch in :meth:`start` keys on this flag instead: only
+    #: a disable-stood-down watcher is re-driven by the next reconcile sweep, and an
+    #: operator's per-PR stop survives it.
+    stopped_by_disable: bool = False
+    #: Exported-patch sequence base, carried across a disable→enable relaunch. A relaunch
+    #: installs a fresh state whose pass counter restarts at 1, but the durable patch is
+    #: named ``<fp>.nudge-<n>.diff`` on disk and the fingerprint is stable, so a plain
+    #: ``attempt`` would make the new pass 1 overwrite an earlier incarnation's pass 1 —
+    #: and that earlier clone is already gone, so its patch is the only copy. Seeding this
+    #: from the prior incarnation's pass count makes the on-disk sequence monotone per
+    #: fingerprint, so no relaunch ever reuses a patch name.
+    export_base: int = 0
     started_at: float = 0.0
     updated_at: float = 0.0
     #: Bounded newest-last ring the UI polls, plus a monotone total so an
@@ -551,7 +566,52 @@ class PRWatcherRegistry:
         with self._lock:
             existing = self._watchers.get(fp)
             if existing is not None:
-                return existing
+                # Relaunch ONLY a watcher a disable stood down: ``stopped_by_disable``
+                # set, STATUS_STOPPED, and no live thread. The flag is the thing that
+                # tells a disable apart from the operator's own per-PR stop and the
+                # thread's natural exits — all three write STATUS_STOPPED with the same
+                # note, so status alone cannot. ``stop_all`` sets the flag; ``stop(fp)``
+                # clears it; a natural exit never sets it. Only the disable→enable gap
+                # should relaunch: the stopped entry stays in ``_watchers``, so returning
+                # it would make ``reconcile_failing_prs`` believe the PR is being driven
+                # while no thread runs, and it would sit undriven until a gateway restart.
+                # Any other terminal state (operator stop, exhausted, ready, error) is
+                # left exactly as it is: those are the operator's or the watcher's own
+                # decision, not the app being switched off, and relaunching them is out
+                # of this fix's scope.
+                #
+                # A stopped watcher that still holds UNEXPORTED work is also returned,
+                # never evicted: replacing it with a fresh ``WatcherState``
+                # (``unexported_work=False``) would let ``sweep_orphan_clones`` — or a
+                # fresh ``_ensure_clone`` — delete the kept clone that holds the only
+                # copy of that pass's commits. The clone's origin is dead, so that
+                # loss is unrecoverable. Keeping the entry preserves the clone. Nothing
+                # resets ``unexported_work`` to False (the only write is ``= True``), so
+                # a disable that lands mid-pass with unexported work keeps that watcher
+                # stopped across re-enable; a gateway restart (which clears the registry)
+                # is the only way it is re-driven. That is deliberate — the work stays
+                # safe on disk — and is the chosen behaviour, not a bug to relaunch into.
+                _thread = self._threads.get(fp)
+                relaunchable = (
+                    existing.status == STATUS_STOPPED
+                    and existing.stopped_by_disable
+                    and not existing.unexported_work
+                    and not (_thread is not None and _thread.is_alive())
+                )
+                if not relaunchable:
+                    return existing
+                # Carry the export sequence forward so the relaunched watcher's patches
+                # never reuse a name an earlier incarnation already wrote: its passes
+                # restart at 1, but ``_export_fix`` offsets by this base. ``export_base``
+                # itself accumulates, so a watcher stopped and relaunched repeatedly keeps
+                # advancing the on-disk sequence.
+                st.export_base = existing.export_base + existing.nudges
+                # Drop the stood-down entry's bookkeeping so the launch below starts a
+                # fresh thread. (``stop``/``_run_watcher`` also take the lock, so a
+                # thread that stops between checks only leaves its own stopped entry,
+                # which this clears.)
+                self._threads.pop(fp, None)
+                self._stop_flags.pop(fp, None)
             self._watchers[fp] = st
         if not is_watchable_pr(pr):
             # ``pr_recipe`` degrades to ``QUEUED:<fp>`` when it could not open a PR.
@@ -754,6 +814,12 @@ class PRWatcherRegistry:
             return False
         if stop_ev is not None:
             stop_ev.set()
+        # An operator stop must survive the next reconcile sweep, so clear the disable
+        # marker unconditionally — even for a watcher a disable already stood down. Once
+        # the operator stops it by hand it is an operator stop, and :meth:`start`'s
+        # relaunch branch must leave it alone.
+        with self._lock:
+            st.stopped_by_disable = False
         if st.status in _ACTIVE_STATUSES:
             self._set(st, status=STATUS_STOPPED, note="stopped by request")
         return True
@@ -766,6 +832,10 @@ class PRWatcherRegistry:
         for ev in flags:
             ev.set()
         for st in active:
+            # Mark these as disable-stood-down so :meth:`start`'s relaunch branch
+            # re-drives them on the next reconcile, while an operator's per-PR stop
+            # (which clears the flag) does not.
+            st.stopped_by_disable = True
             self._set(st, status=STATUS_STOPPED, note="stopped by request")
         return len(active)
 
@@ -1159,7 +1229,7 @@ class PRWatcherRegistry:
         # `_export_fix` swallows its own errors, so presence of the artifact is the strongest
         # signal: if the patch is on disk the work IS saved.
         try:
-            if (store.pr_queue_dir() / f"{st.fp}.nudge-{attempt}.diff").exists():
+            if (store.pr_queue_dir() / f"{st.fp}.nudge-{st.export_base + attempt}.diff").exists():
                 return True
             # Otherwise the only safe conclusion is "this pass produced nothing", and that
             # requires the diff to have SUCCEEDED. `returncode` is checked because a FAILING
@@ -1217,7 +1287,7 @@ class PRWatcherRegistry:
             proc = _git("-C", clone, "diff", f"{self._base_rev(st)}...HEAD", timeout=60)
             if proc.returncode != 0 or not (proc.stdout or "").strip():
                 return
-            path = store.pr_queue_dir() / f"{st.fp}.nudge-{attempt}.diff"
+            path = store.pr_queue_dir() / f"{st.fp}.nudge-{st.export_base + attempt}.diff"
             path.write_text(proc.stdout, encoding="utf-8")
         except (OSError, subprocess.SubprocessError) as exc:
             self._log(st, "error", f"could not export the fix patch: {exc}")
