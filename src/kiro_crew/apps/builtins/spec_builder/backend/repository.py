@@ -1249,18 +1249,6 @@ def _write_duplicate_marker_at(dir_fd: int, token: str) -> bool:
             os.close(fd)
 
 
-def _write_duplicate_marker(stage_dir: Path, token: str) -> bool:
-    """Create the provenance marker in a descriptor-pinned staging directory."""
-    opened_dir = _open_verified_dir(stage_dir)
-    if opened_dir is None:
-        return False
-    _real_dir, dir_fd = opened_dir
-    try:
-        return _write_duplicate_marker_at(dir_fd, token)
-    finally:
-        os.close(dir_fd)
-
-
 def _duplicate_marker_matches_at(dir_fd: int, token: str) -> bool:
     """Read a duplicate marker relative to an already verified directory."""
     fd = -1
