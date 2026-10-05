@@ -44,7 +44,6 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resol
 )
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 
 if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
@@ -52,7 +51,7 @@ if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.subagent_manager.admission.types import QueuedRun, QueuedRunListing
 
-from kiro_crew import name_grant, platform_compat
+from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     _kiro_agents_dir,
@@ -76,15 +75,13 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
 from kiro_crew.config.sections import SESSION_START_TIMEOUT_MIN, AgentConfig
-from kiro_crew.constants import (  # noqa: F401 - DENY_CAUSE_* resolved by run.py via bind_component_globals
+from kiro_crew.constants import (  # noqa: F401 - DENY_CAUSE_* resolved by admission/pump.py via bind_component_globals
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
     DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_HOOK_ERROR,
-    DENY_CAUSE_POLICY,
-    DENY_CAUSE_SURFACE_POLICY,
     INITIALIZE_TIMEOUT_SECS,
     SUBAGENT_COMPLETION_PREFIX,
     SUBAGENT_TIMEOUT_SECS,
@@ -106,12 +103,8 @@ from kiro_crew.effort import effort_settings_key, model_supports_effort
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
-    TOOL_AUTO_APPROVE,
-    TOOL_DENY,
     fire_tool_hooks,
     hook_gate_kwargs,
-    identity_grant_covers_child,
-    permission_pre_tool_block,
 )
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
@@ -119,7 +112,6 @@ from kiro_crew.llm_helpers import (
     TRANSIENT_RETRIES,
     FallbackState,
     _billing_stats,
-    _steer_host_deny,
     _sum_usage,
     acp_error_is_transient,
     advance_fallback_candidate,
@@ -131,7 +123,6 @@ from kiro_crew.llm_helpers import (
     transient_retry_delay,
 )
 from kiro_crew.mcp_gateway import STUB_MODULE
-from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.process_identity import (  # noqa: F401 - resolved by run.py/terminal.py via bind_component_globals
     MAX_ERROR_DETAIL_LEN,
@@ -4059,123 +4050,6 @@ class SubagentManager:
         if self._max_concurrent > old_cap:
             self._notify_cap_raised()
 
-    @staticmethod
-    async def _approve_and_log(
-        client,
-        request_id: str | int,
-        session_key: str,
-        event: LLMEvent,
-        *,
-        metadata: dict | None = None,
-        info: "SubagentInfo | None" = None,
-    ) -> None:
-        approval_sent = await client.approve_tool(request_id)
-        # An APPROVED child-origin escalation is side-effect activity: count
-        # it in tool_count so the transient-retry / cancel-respawn replay
-        # gates see it (an approved child mutation must never be replayed by
-        # a bare original prompt). Counted here — on the approval outcome —
-        # not at receipt: a purely rejected escalation executed nothing and
-        # must not permanently disable the run's replay budget.
-        if approval_sent is not False and info is not None and event.sub_session_id:
-            info.tool_count += 1
-        if approval_sent is False:
-            outcome = OUTCOME_REJECTED_TRANSPORT_FLOOR
-        elif metadata and metadata.get("reason"):
-            outcome = "auto_approved"
-        else:
-            outcome = "approved"
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="subagent",
-            tool_name=event.title,
-            tool_kind=event.tool_kind,
-            outcome=outcome,
-            request_id=request_id,
-            metadata=metadata,
-        )
-
-    @staticmethod
-    async def _reject_and_log(
-        client,
-        request_id: str | int,
-        session_key: str,
-        event: LLMEvent,
-        *,
-        cause: str | None,
-        reason: str = "",
-        error: str | None = None,
-        metadata: dict | None = None,
-    ) -> None:
-        """Audit a tool rejection, tell the model WHO refused it, then answer the wire.
-
-        The subagent surface's single reject funnel: every ``reject_tool`` on
-        this surface goes through here (``test_eval_subagent_deny_notice`` walks
-        ``subagent_manager/run.py`` to keep that true), so a path added later
-        cannot deny by omission.
-
-        *cause* is REQUIRED and says whether the HOST refused this call. A
-        rejected permission reaches the model as kiro-cli's fixed "User denied
-        tool execution"; for a host deny that is a refusal that never happened,
-        and the model abandons or routes around a call nobody objected to. So a
-        host cause (``DENY_CAUSE_POLICY`` for a hook or spec-gate verdict on the
-        call itself, ``DENY_CAUSE_SURFACE_POLICY`` for the unattended run
-        refusing a call nothing positively authorizes) steers the in-band notice
-        through ``llm_helpers._steer_host_deny`` BEFORE the reject -- while the
-        permission request is still unanswered the turn is provably in flight,
-        which is what gets the notice queued rather than dropped (see
-        ``kiro_crew.deny_notice``). ``None`` is the explicit verdict that this is
-        NOT a host deny and must stay bare: an interactive approver said no
-        (kiro-cli's wording is then the truth, and "this was NOT a user action"
-        would be a lie), or the run is bailing on a turn / escalation limit and
-        there is no continuing turn for a notice to correct. A caller has to
-        write one or the other; there is no default to inherit the wrong answer
-        from. *reason* is the host's own wording for the notice; the metric and
-        the SEL row keep their closed-enum ``error``.
-
-        The audit lands FIRST, before the steer and the reject, as on every other
-        deny surface: the steer is one more bounded await on the ACP pipe, and a
-        backend that stops reading stdin cancels this coroutine at the turn
-        deadline with the decision acted on and never audited if the row came
-        last.
-        """
-        # getattr: production LLMEvents always carry sub_session_id, but this
-        # static helper is also driven with lightweight test doubles.
-        if getattr(event, "sub_session_id", ""):
-            # Hang-resilience series: backend-child denials on the headless
-            # subagent surface (low-fidelity fail-close, escalation/turn-limit
-            # bails, interactive rejections). ``reason`` is a closed enum.
-            emit_counter(
-                CHILD_PERMISSION_DENIED,
-                {"surface": "subagent", "reason": error or "rejected"},
-            )
-        # The SEL audit lands FIRST, but a failure to WRITE it must not skip the
-        # steer and the reject below: the wire request stays unanswered if it
-        # does, hanging the turn (an unloadable SEL trust root -- a documented
-        # upgrade-window state, sel.py -- raises here and is permanent per
-        # process). Answering the model is the critical path; the audit is
-        # best-effort. The bail call sites in ``run.py`` wrap the whole funnel in
-        # the same spirit, but that outer guard only stops the raise propagating
-        # -- it cannot re-answer the request this skipped.
-        try:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="subagent",
-                tool_name=event.title,
-                tool_kind=event.tool_kind,
-                outcome="denied" if error else "rejected",
-                request_id=request_id,
-                error=error or "",
-                metadata=metadata,
-            )
-        except Exception:
-            logger.exception(
-                "SEL audit of subagent tool rejection failed; steering and "
-                "rejecting anyway so the request is still answered"
-            )
-        if cause is not None:
-            await _steer_host_deny(client, event, reason, cause=cause)
-        await client.reject_tool(request_id)
-
     def start_reaper(self) -> None:
         return self._monitor.start_reaper_impl()
 
@@ -6251,8 +6125,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     Path,
     SUBAGENT_COMPLETION_PREFIX,
     Stats,
-    TOOL_AUTO_APPROVE,
-    TOOL_DENY,
     TRANSIENT_RETRIES,
     VERDICT_DEAD,
     VERDICT_STUCK_INPUT,
@@ -6284,14 +6156,12 @@ _COMPONENT_GLOBAL_BINDINGS = (
     fire_tool_hooks,
     format_subagent_usage,
     hook_gate_kwargs,
-    identity_grant_covers_child,
     has_dashboard_surface,
     result_is_whole,
     write_finished_result,
     list_orphans,
     maintenance_executor,
     mark_delivered,
-    name_grant,
     os,
     platform_compat,
     provider_fallback_active,
@@ -6306,7 +6176,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     subprocess_executor,
     time,
     transient_retry_delay,
-    permission_pre_tool_block,
     turn_spec_hooks,
     invalidate_stale_kas_session,
     refuse_stale_switch,

@@ -125,8 +125,8 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 | Slack handler | `tool_call` (invoked/denied), `permission_request` (all outcomes) | `slack/handler.py` |
 | Dashboard chat | `tool_call` (invoked), `permission_request` (all outcomes) | `dashboard/chat.py` |
 | Chat persist seams | `output_anomaly` / `options_footer_glued_text` (`outcome=labelled`, `source` from the turn's session key, `metadata` `{count, chars, preview (redacted, 200 chars), directive_shaped}`) when a persisted turn carried text glued to its own `[OPTIONS:]` footer; skipped while SEL is cold so the first open never runs on the event loop | `dashboard/chat_runner.py` (`_log_glued_footer_text`) |
-| TaskRunner | Permission requests during decomposition and step execution | `taskrunner.py` |
-| Subagent | Permission requests during subagent execution | `subagent.py` |
+| TaskRunner | Permission requests during decomposition and step execution | `task_planner.py`, `tool_permission.py` (`TaskrunnerRows`, through `task_executor.py`'s `sel`) |
+| Subagent | Permission requests during subagent execution | `tool_permission.py` (`SubagentRows`, through `subagent.py`'s `sel`) |
 | Background tasks | Permission requests via `_resolve_permission()` | `llm_helpers.py` |
 | MCP core tools | `spawn_run`, `learn_add`, `task_run` calls and outcomes | `mcp_core.py` |
 | MCP cron tools | `cron_add`, `cron_remove`, etc. calls and outcomes | `mcp_cron.py` |

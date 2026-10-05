@@ -1188,9 +1188,14 @@ above has genuinely declined to carry it.
 
 ### Tool Approval Cascade
 
-When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval
-is decided in strict priority order:
+When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, the run hands
+it to `tool_permission.settle` with the subagent's ladder
+(`RunEventCoordinator._permission_policy` in `subagent_manager/run.py`). The
+ladder decides it in strict priority order and answers it on the wire:
 
+0. **Spec hooks** — on a turn whose agent spec's PreToolUse hooks gate the call
+   (`hooks.permission_pre_tool_block`), a delivered deny, or hooks that cannot
+   be read, → reject with the gate's own reason
 1. **Hook deny** — `hooks.on_tool_call()` returns `TOOL_DENY` → reject
 2. **Hook auto-approve** — `hooks.on_tool_call()` returns `TOOL_AUTO_APPROVE`
    (the `auto_approve_tools` globs / read-only allowlist — a grant made by
@@ -1211,7 +1216,8 @@ is decided in strict priority order:
 3. **Parent policy** — `parent_policy == "auto"` → auto-approve. Resolved once
    at `_run_inner` start (see the chain below); an active global YOLO folds
    into this snapshot rather than being re-read per event.
-4. **Interactive callback** — `on_tool_approval` (races dashboard + Slack, 2h timeout)
+4. **Interactive callback** — the per-subagent `on_tool_approval_factory` when
+   one is set, else `on_tool_approval` (races dashboard + Slack, 2h timeout)
 5. **Deny by default** — none of the above matched → reject
 
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
@@ -1232,12 +1238,35 @@ event's canonical MCP identity IS verified (`child_mcp_identity_trusted` — the
 `_meta.kiro` server/tool pair resolved from the tool_call cache, carrying the
 explicit `mcp_identity_trusted` provenance flag those cache hits set, resolved
 non-shell; the shape a remote MCP server produces by streaming empty
-`rawInput`), the **unconditional** `parent_policy == "auto"` grant still
+`rawInput`), two grants still stand. The **unconditional** `parent_policy == "auto"` grant still
 auto-approves — the call site reads the hoisted
 `AcpEvent.child_unconditional_grant_eligible` property: its decision consumes
 no agent-authored event data, only the
-arguments remain unverified. The hook auto-approve (title-pattern-matched) and
-every content-matching path stay fail-closed on the composite fidelity.
+arguments remain unverified. For such a child it is tried BEFORE the hook's
+grant. The hook's identity-keyed grant (`ToolHookResult.identity_grant`: the
+app-own-server rule, or an `auto_approve_tools` pattern matched against
+`@server/tool`) also stands, audited as `hook_identity_auto_approve`, because its
+matched input is that same verified identity. Every other hook auto-approve
+(title-pattern-matched) and every content-matching path stay fail-closed on the
+composite fidelity, and no program name is vouched for. An approver that raises
+on such a request counts as its rejection.
+
+**Answering.** The audit row is written before any wire I/O for a refusal, and
+after the wire answered for an approval (an approval the transport floor turns
+into a rejection is audited as `rejected_transport_floor`). A HOST refusal (the
+spec hooks, a hook deny, the fail-closed child answer, deny by default) steers
+the in-band deny notice before the reject; an approver's no, and the reject that
+precedes a `turn_limit` / `child_escalation_limit` bail, stay bare. A refusal row
+the audit cannot write is logged and the request is still answered; an approver
+that raises outside the fidelity gate, or a cancelled wait, leaves the request to
+the run's teardown. An approved
+backend-child escalation counts in `tool_count`, and every refusal of a backend
+child's request is one point of `kirocrew.acp.child_permission.denied`. The
+ladder's stages, its answering sequence, the shared adapters and this surface's
+SEL row vocabulary (`SubagentRows`) live in `tool_permission.py`; which stages
+the subagent runs and in which order live in `_permission_policy`, and what reads
+or moves this run's own state (the approval prompt's wait flag and crew-log
+pair, the log lines, the counter, `tool_count`) lives beside it in `run.py`.
 
 The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next

@@ -7,24 +7,23 @@ steer the real reason into the running turn first; the task runner
 turn) is the surface behind autonomous projects and cron-launched runs, which
 have no dashboard slot, and it must do the same.
 
-Two halves, mirroring ``test_llm_helpers_deny_notice.py`` and
-``test_messaging_deny_notice.py``:
-
-* a SOURCE-LEVEL guard that enumerates every ``reject_tool(`` site and every
-  call of the task runner's reject funnel, gives each a per-site verdict, and
-  fails when a host deny is not steered, when a user rejection or a teardown IS
-  steered, or when the SEL row is not written before the steer;
-* BEHAVIOURAL tests, one per deny reason, that drive the real ``execute_task``
-  / ``decompose`` with a provider double recording steer/reject ORDER. Order is
-  the mechanism: the steer must be written while the permission request is
-  still unanswered, because that is what proves the turn is in flight and gets
-  the notice queued instead of dropped.
+* BEHAVIOURAL tests, one per deny verdict, drive the real ``execute_task`` /
+  ``decompose`` with a provider double recording steer/reject ORDER. Order is the
+  mechanism: the steer must be written while the permission request is still
+  unanswered, because that is what proves the turn is in flight and gets the
+  notice queued instead of dropped. The step turn is settled by the task runner's
+  permission ladder (``tool_permission.settle``), whose general guarantees --
+  exactly one answer, audit first, a cause exactly when the host refused -- are
+  pinned once, through its interface, by ``test_tool_permission.py``.
+* ``task_planner`` denies inline, so a SOURCE-LEVEL guard enumerates every
+  ``reject_tool(`` site there with a per-site verdict, and fails when a host deny
+  is not steered or when the SEL row is not written before the steer.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
-import inspect
 import pathlib
 import re
 from dataclasses import dataclass
@@ -350,16 +349,6 @@ class _Site:
     verdict: str  # "host" (steered) | "user" (bare) | "teardown" (bare)
 
 
-#: ``task_executor`` denies through ONE funnel (``_reject_and_log``), whose
-#: required ``cause=`` keyword carries the verdict: a DENY_CAUSE_* name steers,
-#: ``None`` is the explicit "not a host deny". The sites are its call sites.
-_EXECUTOR_SITES = (
-    _Site('metadata={"reason": "spec_hook_deny"}', "host"),
-    _Site('error="hook_deny"', "host"),
-    _Site('metadata={"reason": "context_overflow"', "teardown"),
-    _Site("interactive_rejected", "user"),
-    _Site('metadata={"reason": "headless_no_authorization"}', "host"),
-)
 #: ``task_planner`` denies inline: audit, steer, reject at each site.
 _PLANNER_SITES = (
     _Site('error="hook_deny"', "host"),
@@ -367,11 +356,8 @@ _PLANNER_SITES = (
 )
 
 _REJECT = re.compile(r"^\s*await \w+\.reject_tool\(")
-_FUNNEL = re.compile(r"^\s*await _reject_and_log\(")
 _STEER = re.compile(r"^\s*await _steer_host_deny\(")
 _AUDIT = re.compile(r"^\s*sel\(\)\.log_tool_invocation\(")
-#: Lines a call's arguments may span (black wraps the metadata dict).
-_CALL_SPAN = 14
 
 
 def _lines(module: str) -> list[str]:
@@ -391,100 +377,6 @@ def _site_for(sites: tuple[_Site, ...], lines: list[str], lo: int, hi: int) -> _
         "verdict here, not a wider marker"
     )
     return hits[0]
-
-
-class TestTaskExecutorDeniesThroughOneSteeringFunnel:
-    """Coverage checkable from the source, not asserted in a PR body."""
-
-    MODULE = "task_executor.py"
-
-    def test_the_module_has_exactly_one_wire_reject_and_it_is_the_funnel(self):
-        lines = self._lines()
-        src = "\n".join(lines)
-        assert src.count(".reject_tool(") == 1, "every reject must go through _reject_and_log"
-        (i,) = _matches(_REJECT, lines)
-        funnel = inspect.getsource(task_executor._reject_and_log)
-        assert lines[i].strip() in funnel
-
-    def test_the_funnel_audits_then_steers_then_rejects(self):
-        body = inspect.getsource(task_executor._reject_and_log)
-        audit = body.index("history.log_tool_invocation(")
-        steer = body.index("await _steer_host_deny(")
-        reject = body.index("await client.reject_tool(")
-        assert audit < steer < reject, "audit first, then the notice, then the wire"
-        assert "if cause is not None:" in body, "None is the explicit not-a-host-deny verdict"
-
-    def test_the_cause_is_a_required_keyword_with_no_default(self):
-        sig = inspect.signature(task_executor._reject_and_log)
-        cause = sig.parameters["cause"]
-        assert cause.kind is inspect.Parameter.KEYWORD_ONLY
-        assert cause.default is inspect.Parameter.empty
-
-    def test_the_scan_finds_every_funnel_call_the_source_contains(self):
-        lines = self._lines()
-        src = "\n".join(lines)
-        # The def line is the one non-call spelling.
-        textual = src.count("_reject_and_log(") - 1
-        found = len(_matches(_FUNNEL, lines))
-        assert found == textual == len(_EXECUTOR_SITES), (found, textual, len(_EXECUTOR_SITES))
-
-    def test_every_call_carries_exactly_one_verdict(self):
-        lines = self._lines()
-        seen = sorted(site.fingerprint for _i, site in self._walk(lines))
-        assert seen == sorted(s.fingerprint for s in _EXECUTOR_SITES)
-
-    def test_every_host_deny_names_a_deny_cause_and_a_reason(self):
-        lines = self._lines()
-        bare: list[int] = []
-        for i, site in self._walk(lines):
-            if site.verdict != "host":
-                continue
-            block = "\n".join(lines[i : i + _CALL_SPAN])
-            if "cause=DENY_CAUSE_" not in block or "reason=" not in block:
-                bare.append(i + 1)
-        assert not bare, (
-            "these host denies hand the model kiro-cli's generic 'user denied' with "
-            f"nothing to correct it -- pass cause=DENY_CAUSE_* and a reason: lines {bare}"
-        )
-
-    def test_user_rejections_and_teardown_are_not_steered(self):
-        lines = self._lines()
-        for i, site in self._walk(lines):
-            if site.verdict == "host":
-                continue
-            block = "\n".join(lines[i : i + _CALL_SPAN])
-            assert "cause=None" in block, (
-                f"line {i + 1}: a genuine user rejection (or a teardown reject) must say so "
-                "with cause=None, never claim it was not a user action"
-            )
-            assert "DENY_CAUSE_" not in block
-
-    def test_exactly_one_user_rejection_is_allowlisted(self):
-        user = [s for s in _EXECUTOR_SITES if s.verdict == "user"]
-        assert len(user) == 1, (
-            "the allowlist must name each USER rejection individually -- a new one "
-            "needs its own per-site judgement, not a wider marker"
-        )
-
-    def test_no_stray_steer_outside_the_funnel(self):
-        # One spelling of the notice in the module, inside the funnel.
-        lines = self._lines()
-        assert len(_matches(_STEER, lines)) == 1
-        assert "await _steer_host_deny(" in inspect.getsource(task_executor._reject_and_log)
-
-    def test_the_funnel_delegates_to_the_shared_helper(self):
-        assert task_executor._steer_host_deny is llm_helpers._steer_host_deny
-
-    def _lines(self) -> list[str]:
-        return _lines(self.MODULE)
-
-    def _walk(self, lines: list[str]) -> list[tuple[int, _Site]]:
-        out: list[tuple[int, _Site]] = []
-        for i in _matches(_FUNNEL, lines):
-            # The fingerprint sits in the call's own arguments or the comment
-            # right above it; never read back past the previous call.
-            out.append((i, _site_for(_EXECUTOR_SITES, lines, max(0, i - 6), i + _CALL_SPAN)))
-        return out
 
 
 class TestEveryHostDenyInTaskPlannerSteersFirst:
@@ -553,3 +445,70 @@ class TestEveryHostDenyInTaskPlannerSteersFirst:
             out.append((i, _site_for(_PLANNER_SITES, lines, lo, i + 1)))
             previous = i
         return out
+
+
+# ── The step turn answers only through its ladder ────────────────────────────
+#
+# A source pin kept on purpose: no behaviour test can see a FUTURE answer path
+# that bypasses ``tool_permission.settle`` (no audit row, no notice). The ladder's
+# one answering adapter is pinned in ``test_tool_permission.py``.
+
+_ANSWER_CALLS = frozenset({"approve_tool", "reject_tool", "_steer_host_deny"})
+# The ``tool_permission.Wire`` port's own answers, called as methods (``wire.allow(ask)``).
+_WIRE_ANSWERS = frozenset({"allow", "refuse"})
+
+
+def _answer_calls_in(source: str) -> list[int]:
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and (
+            getattr(node.func, "attr", None) in _ANSWER_CALLS | _WIRE_ANSWERS
+            or getattr(node.func, "id", None) in _ANSWER_CALLS
+        )
+    ]
+
+
+def _answer_calls(module: str) -> list[int]:
+    return _answer_calls_in((_SRC / module).read_text(encoding="utf-8"))
+
+
+def _ladder_entries(module: str) -> dict[str, int]:
+    """How often *module* calls ``tool_permission.settle`` / ``tool_permission.bail``."""
+    counts: dict[str, int] = {}
+    for node in ast.walk(ast.parse((_SRC / module).read_text(encoding="utf-8"))):
+        func = getattr(node, "func", None) if isinstance(node, ast.Call) else None
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in ("settle", "bail")
+            and getattr(func.value, "id", None) == "tool_permission"
+        ):
+            counts[func.attr] = counts.get(func.attr, 0) + 1
+    return counts
+
+
+def test_the_scanned_module_holds_the_step_ladder():
+    # The scan below means something only while the step turn's request arm
+    # lives in the file it scans.
+    assert _ladder_entries("task_executor.py") == {"settle": 1}
+
+
+def test_the_step_turn_never_answers_the_wire_itself():
+    assert _answer_calls("task_executor.py") == [], (
+        "task_executor.py answers a permission request outside tool_permission.settle, "
+        "which skips the audit row and the deny notice"
+    )
+
+
+def test_the_answer_scan_sees_an_inline_surface():
+    # Non-vacuity: the planner answers inline, so the same scan finds it.
+    assert len(_answer_calls("task_planner.py")) >= len(_PLANNER_SITES)
+
+
+def test_the_answer_scan_flags_the_wire_ports_own_answers():
+    # Non-vacuity for the port's answers, which no inline surface calls.
+    source = (
+        "async def f(wire, ask):\n    await wire.allow(ask)\n    await wire.refuse(ask, None)\n"
+    )
+    assert _answer_calls_in(source) == [2, 3]

@@ -2557,8 +2557,8 @@ class TestSubagentUsageRow:
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
         manager._log_spawned(info)
         tombstone_credits = []
+        provider.reject_tool = AsyncMock()
         with (
-            patch.object(manager, "_reject_and_log", AsyncMock()),
             patch.object(
                 manager,
                 "_write_tombstone",

@@ -238,7 +238,8 @@ def _awaiting_spawn_approval(info: object) -> bool:
     """True only while a run is parked on the SPAWN-approval gate.
 
     ``_awaiting_approval`` alone is NOT sufficient: ``run.py`` sets the same
-    flag for TOOL approvals raised INSIDE a running subagent (three sites), so
+    flag for TOOL approvals raised INSIDE a running subagent (one approval
+    watch serving its three approvers), so
     reading it bare would report a run at turn 5 waiting on a tool prompt as
     though it were waiting to START -- rendering "waiting for spawn approval"
     and telling a caller to approve it "to start this run" that already

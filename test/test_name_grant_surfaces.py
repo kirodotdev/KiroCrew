@@ -157,7 +157,7 @@ class TestLoopSafetyPins:
         import inspect
         import pkgutil
 
-        from kiro_crew import llm_helpers, subagent, task_executor
+        from kiro_crew import llm_helpers, subagent, task_executor, tool_permission
         from kiro_crew.dashboard import chat_runner, chat_turn
         from kiro_crew.discord import transport_dispatch as discord_dispatch
         from kiro_crew.messaging import driver
@@ -177,6 +177,8 @@ class TestLoopSafetyPins:
             *owners,
             task_executor,
             subagent,
+            # The subagent's and the task runner's name check is made here.
+            tool_permission,
             driver,
             slack_handler,
             llm_helpers,

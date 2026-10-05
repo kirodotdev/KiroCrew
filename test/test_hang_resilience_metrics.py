@@ -194,32 +194,42 @@ async def test_routed_child_permission_emits_routed(recorded):
 
 @pytest.mark.asyncio
 async def test_subagent_child_reject_emits_denied(recorded):
+    """A backend child's request the subagent's permission ladder refuses is one
+    point of the series; a parent-origin refusal is not (child series only)."""
+    import logging
+
+    from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
+    from kiro_crew.hooks import TOOL_DENY, ToolHookResult
     from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
-    from kiro_crew.subagent import SubagentManager
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+    from kiro_crew.tool_permission import AcpWire, Ask, bail, settle
 
     client = MagicMock()
-
-    async def _noop(_rid):
-        return None
-
-    client.reject_tool = _noop
-    ev = LLMEvent(
-        kind=EVENT_PERMISSION_REQUEST,
-        request_id=9,
-        title="t",
-        sub_session_id="child-a",
-    )
-    with patch("kiro_crew.subagent.sel"):
-        await SubagentManager._reject_and_log(
-            client, 9, "k", ev, cause=None, error="child_escalation_limit"
+    client.reject_tool = AsyncMock()
+    client.supports_refusal_steer = False
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    try:
+        policy = manager._run_events._permission_policy(
+            SubagentInfo(id="a1", task="t"),
+            spec=TurnSpecHooks([], None, False, False),
+            parent_policy="",
+            consult=lambda event: ToolHookResult(action=TOOL_DENY, reason="denied"),
+            sel=MagicMock(),
+            log=logging.getLogger("kiro_crew.subagent"),
         )
-    hits = [a for n, a in recorded if n == metric_events.CHILD_PERMISSION_DENIED]
-    assert {"surface": "subagent", "reason": "child_escalation_limit"} in hits
-    # Parent-origin rejections do NOT emit (child series only).
-    ev2 = LLMEvent(kind=EVENT_PERMISSION_REQUEST, request_id=10, title="t")
-    with patch("kiro_crew.subagent.sel"):
-        await SubagentManager._reject_and_log(client, 10, "k", ev2, cause=None, error="hook_deny")
-    assert len([a for n, a in recorded if n == metric_events.CHILD_PERMISSION_DENIED]) == 1
+        child = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST, request_id=9, title="t", sub_session_id="child-a"
+        )
+        await bail(Ask(child, AcpWire(client), "k"), policy, "child_escalation_limit")
+        hits = [a for n, a in recorded if n == metric_events.CHILD_PERMISSION_DENIED]
+        assert {"surface": "subagent", "reason": "child_escalation_limit"} in hits
+        # Parent-origin rejections do NOT emit (child series only).
+        parent = LLMEvent(kind=EVENT_PERMISSION_REQUEST, request_id=10, title="t")
+        await settle(Ask(parent, AcpWire(client), "k"), policy)
+        assert len([a for n, a in recorded if n == metric_events.CHILD_PERMISSION_DENIED]) == 1
+        assert client.reject_tool.await_count == 2
+    finally:
+        manager.close()
 
 
 def test_dashboard_ceiling_emits_timeout_cause(recorded):

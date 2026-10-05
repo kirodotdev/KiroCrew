@@ -888,10 +888,16 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 
 ## Tool Approval
 
-Two-layer approval during step execution:
+`task_executor.execute_task()` hands every permission request of a step turn to
+`tool_permission.settle` with the step's ladder (`_step_permission_policy`, rebuilt
+when a mode switch changes whose spec hooks gate the turn). In order:
 
-1. `task_executor.execute_task()` evaluates hook rules first; an explicit hook auto-approval remains eligible, while a deny remains a denial. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the interactive prompt (or the headless deny-by-default) and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
-2. When no hook grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
+1. The agent spec's PreToolUse hooks, on a backend that never receives them, may block the call (`metadata.reason=spec_hook_deny`). Then the hook rules: a deny remains a denial, and an explicit hook auto-approval remains eligible. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the run's trust grant, then the interactive prompt (or the headless deny-by-default), and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
+2. The run's own trust grant (below).
+3. The mid-stream context check, which runs even for a request a hook or the run's trust already granted: past `_MID_STREAM_COMPACT_PCT` the request is rejected bare and the turn re-run after compaction.
+4. When nothing grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
+
+The SEL row is written before any wire I/O for a refusal, and a refusal row that cannot be written is raised before the wire rather than delivered unaudited, as is an exception from the interactive handler; an approval is audited after the wire answered (`approved`, or `rejected_transport_floor` when the transport floor turned it into a rejection). A HOST refusal steers the in-band deny notice before the reject; the interactive handler's no and the compaction reject stay bare. The ladder's stages, the shared adapters and this surface's SEL rows (`TaskrunnerRows`) live in `tool_permission.py`; what reads or moves the run's own state (its trust grant `_RunTrust`, its log lines, the watchdog's activity stamp) stays in `task_executor.py`.
 
 ### Per-run auto-approve (trust) toggle
 
@@ -965,7 +971,7 @@ rule mandates, with no independent approval state living on the run:
 
 ### Scope limitation (cron / MCP unattended runs)
 
-Per-run trust is reachable only through the dashboard launch endpoints' `_gate_auto_approve()` check. `cli_server.py` does not request it when it constructs the standalone runner, so `kirocrew run TASK.md` cannot turn on run-scoped tool approval. With no `on_tool_approval` callback, `task_executor.execute_task()` rejects every tool request that lacks explicit hook approval; `test_taskrunner_autoapprove.py::test_headless_no_authorization_rejects` pins this fail-closed posture.
+Per-run trust is reachable only through the dashboard launch endpoints' `_gate_auto_approve()` check. `cli_server.py` does not request it when it constructs the standalone runner, so `kirocrew run TASK.md` cannot turn on run-scoped tool approval. With no `on_tool_approval` callback, the step's permission ladder rejects every tool request that lacks explicit hook approval; `test_taskrunner_autoapprove.py::test_headless_no_authorization_rejects` pins this fail-closed posture.
 
 This tool-authorization default does not convert `requires_approval` into an unattended task gate: `execute_single_task()` continues a `requires_approval` task when no `on_approval` callback exists. A spec that needs an attended task boundary uses `force_approval`; the standalone CLI then stops as failed rather than proceeding.
 
