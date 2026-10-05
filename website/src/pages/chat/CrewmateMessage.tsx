@@ -1,23 +1,22 @@
 /**
- * CrewmateMessage — one of the crewmate's messages in its chat: the author line
- * (avatar + name + time) when the message opens a run, then the bubble in the
- * text column to the right of the avatar gutter. Every bubble of a run sits in
- * that same column, so consecutive messages read as one speaker.
+ * CrewmateMessage — one of the crewmate's messages in its chat: the bubble,
+ * placed in the row its run position dictates. The chat is a 1:1 thread with
+ * one speaker besides the user, and the DM header already names that speaker
+ * (face + name chip), so the message carries NO author line — no avatar, no
+ * name, no time row — and no avatar gutter; the bubble takes the full text
+ * column. Consecutive messages still read as one speaker through the grouped
+ * corners `crewmateBubbleClass` paints along a run.
  *
  * The bubble itself is the ordinary AssistantMessage (markdown, option chips,
  * hover actions all intact); this component only places it.
  */
 import type { ReactNode } from 'react'
-import CrewAvatar from '../../components/CrewAvatar'
-import {
-  CREWMATE_AVATAR_PX,
-  crewmateRowClass,
-  opensCrewmateRun,
-  type CrewmateRunPosition,
-} from '../../components/chat/crewmateBubbles'
-import { fmtMessageTime, fmtMessageTimeFull } from './messageTime'
+import { crewmateRowClass, type CrewmateRunPosition } from '../../components/chat/crewmateBubbles'
 
-/** Who is speaking: the crewmate's display name and its avatar record. */
+/** Who is speaking: the crewmate's display name and its avatar record. The
+ *  pane and the Members page resolve it once and hand it to the renderer,
+ *  whose presence check on it is what routes a chat through the crewmate
+ *  bubble at all; the reply-thread parent quote draws it. */
 export interface CrewmateIdentity {
   name: string
   avatar?: unknown
@@ -26,31 +25,10 @@ export interface CrewmateIdentity {
   label?: string
 }
 
-/** Avatar + gap: the text column every bubble aligns to. */
-const GUTTER_CLS = 'pl-[38px]'
-
-export default function CrewmateMessage({
-  crewmate, pos, ts, children,
-}: {
-  crewmate: CrewmateIdentity
-  pos: CrewmateRunPosition
-  ts?: string
-  children: ReactNode
-}) {
-  const opens = opensCrewmateRun(pos)
-  const time = ts ? fmtMessageTime(ts) : ''
+export default function CrewmateMessage({ pos, children }: { pos: CrewmateRunPosition; children: ReactNode }) {
   return (
     <div data-testid="crewmate-message" className={`min-w-0 ${crewmateRowClass(pos)}`}>
-      {opens && (
-        <div className="flex items-center gap-2.5 mb-1.5 min-w-0" data-testid="crewmate-author">
-          <CrewAvatar seed={crewmate.name} avatar={crewmate.avatar} size={CREWMATE_AVATAR_PX} />
-          <span className="text-[13px] leading-5 font-semibold text-text truncate">{crewmate.label || crewmate.name}</span>
-          {time && (
-            <span className="text-[11px] leading-4 text-muted tabular-nums shrink-0" title={fmtMessageTimeFull(ts)}>{time}</span>
-          )}
-        </div>
-      )}
-      <div className={`min-w-0 ${GUTTER_CLS}`}>{children}</div>
+      {children}
     </div>
   )
 }

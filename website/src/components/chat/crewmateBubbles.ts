@@ -14,9 +14,10 @@
  *    RENDER time by `filterCrewmateChat`. Nothing is deleted: the rows stay in
  *    the slot's transcript and the Work log reads them from there.
  *
- * 2. HOW A RUN LOOKS. Consecutive messages from the crewmate form a run,
- *    Slack-style: one avatar + name + time on the first message, one bubble per
- *    message, grouped corners on the run's (left) side. A run is ONE TURN's
+ * 2. HOW A RUN LOOKS. Consecutive messages from the crewmate form a run: one
+ *    bubble per message, grouped corners on the run's (left) side, and NO
+ *    author line (no avatar, name or time row) -- the DM header already names
+ *    the one speaker besides the user. A run is ONE TURN's
  *    bubbles (RFC screen 05): it breaks on a user message, on any other drawn
  *    row, and at a turn boundary the unfiltered transcript carries (a patrol
  *    wake or an envelope between two replies). `crewmateRunPosition`
@@ -35,15 +36,12 @@ import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 /** Where a message sits in a run of consecutive crewmate messages. */
 export type CrewmateRunPosition = 'single' | 'start' | 'cont' | 'end'
 
-/** Avatar edge on the author line, px. Matches the roster row's face size. */
-export const CREWMATE_AVATAR_PX = 28
-
 /** Rows that may sit between two of the crewmate's messages without ending the
  *  turn: the turn's own machinery (tool calls, thinking, the wire-only `done`)
  *  and state rows a run reads past. A user message, a patrol wake (`nudge`), an
  *  injected envelope (`inject`, `subagent`) or a cron notification opens a NEW
  *  turn, so the crewmate's next message opens a new run (RFC screen 05:
- *  "consecutive bubbles from one turn share the avatar"). */
+ *  "consecutive bubbles from one turn" group their corners). */
 const WITHIN_TURN_ROLES: ReadonlySet<string> = new Set([
   'tool', 'tool_call', 'tool_result', 'thinking', 'done', 'system', 'queued', 'permission', 'streaming',
 ])
@@ -65,7 +63,7 @@ function isStopCard(m: ChatMessage): boolean {
 
 /** Rows that carry state, not a message, and never draw on any surface. A run
  *  reads THROUGH them: a resolved approval between two of the crewmate's
- *  messages does not split its avatar in two. The stop card is the exception
+ *  messages does not split its corner grouping in two. The stop card is the exception
  *  among `system` rows: it IS drawn (the user pressed Stop and sees the card),
  *  so it is a boundary like an error row, not state the run reads past. */
 function isRunTransparent(m: ChatMessage): boolean {
@@ -177,7 +175,7 @@ export function crewmateRunPosition(
   return 'cont'
 }
 
-/** True for the message that carries the run's avatar, name and time. */
+/** True for the message that opens a run (its top-left corner is full). */
 export function opensCrewmateRun(pos: CrewmateRunPosition): boolean {
   return pos === 'single' || pos === 'start'
 }
@@ -208,8 +206,10 @@ export function crewmateBubbleClass(pos: CrewmateRunPosition): string {
   return `${BUBBLE_BASE} ${CORNERS[pos]}`
 }
 
-/** Vertical rhythm of a row: a run opens with a little air above its author
- *  line; bubbles inside a run sit close. */
+/** Vertical rhythm of a row. Bubbles inside a run sit close but never touch:
+ *  6px between two bordered surfaces reads as one speaker pausing, 2px read as
+ *  one bubble with a seam. A run opens with twice that, which is all that
+ *  separates two turns now that no author line does. */
 export function crewmateRowClass(pos: CrewmateRunPosition): string {
-  return opensCrewmateRun(pos) ? 'mt-1.5' : 'mt-0.5'
+  return opensCrewmateRun(pos) ? 'mt-3' : 'mt-1.5'
 }

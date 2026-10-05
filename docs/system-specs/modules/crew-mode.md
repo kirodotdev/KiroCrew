@@ -44,7 +44,7 @@ Missing history must never silently turn a private topic into Global memory.
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A crewmate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
-| `website/src/pages/chat/CrewmateMessage.tsx` | One crewmate message in its chat: author line on the run opener, bubble in the avatar gutter |
+| `website/src/pages/chat/CrewmateMessage.tsx` | One crewmate message in its chat: the bubble alone, placed by its run position (no author line, no avatar gutter) |
 
 Crew creation reports `409 agent_exists` for both an existing name and a
 concurrent name collision. The member-titled form uses its translated duplicate
@@ -1475,12 +1475,14 @@ when the roster's quote or recency moved since the read observed it, so a
 message the crewmate speaks while a roster read is in flight is never
 overwritten by the older answer.
 
-How it is drawn: the crewmate's messages form Slack-style **runs**. The first
-message of a run carries the author line — `CrewAvatar` seeded by the crewmate's
-name (its `avatar` record when it has one) at 28px, the name, the message time
-through the locale seam — and every message is its own bubble (`bg-card`,
-`border-border`, `max-w-[72ch]`) in the text column right of the avatar gutter,
-so consecutive bubbles share one avatar. Corner rule on the run's (left) side:
+How it is drawn: the crewmate's messages form **runs**. A message carries NO
+author line — no avatar, no name, no time row — and no avatar gutter: the chat
+is a 1:1 thread with one speaker besides the user, and the DM header's identity
+chip already names that speaker (#16617 retired the per-run author line #15167
+had made redundant). Every message is its own bubble (`bg-card`,
+`border-border`, `max-w-[72ch]`) in the full text column, and consecutive
+bubbles read as one speaker through their grouped corners alone. Corner rule on
+the run's (left) side:
 single = all corners full; first = bottom-left small; middle = top-left and
 bottom-left small; last = top-left small; right corners always full. A run is
 ONE TURN's bubbles (RFC screen 05): it breaks on a user message, on any row the
