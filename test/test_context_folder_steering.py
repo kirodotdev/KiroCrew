@@ -230,7 +230,11 @@ def test_steering_cap_truncates_with_the_marker_regardless_of_lazy_load(
 # ── Req 4.5 / no-op parity: empty dirs change nothing ──
 
 
-def test_empty_steering_dirs_is_byte_identical_to_omitting_the_argument(tmp_path, home, standards):
+def test_empty_steering_dirs_is_byte_identical_to_omitting_the_argument(
+    tmp_path, home, standards, ample_host_resources
+):
+    # ``ample_host_resources`` keeps the [RESOURCES] advisory out: it carries the
+    # live CPU load, so two builds on a loaded runner would differ.
     builder = _builder(tmp_path)
     a, _ = builder.build_message("hello", True, "dashboard:x")
     b, _ = builder.build_message("hello", True, "dashboard:x", steering_dirs=())
