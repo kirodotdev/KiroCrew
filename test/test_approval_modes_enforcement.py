@@ -1505,11 +1505,18 @@ class TestOnlyOneSurfaceWritesGrantDerivedTrust:
         import pathlib as _pl
 
         src = _pl.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        # dashboard/server.py composes its server_runtime owners into one namespace,
+        # so the two are read as one file.
+        runtime = src / "dashboard" / "server_runtime"
+        owners = sorted(runtime.glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
         found: set[str] = set()
         for path in src.rglob("*.py"):
-            if "_vendor" in path.parts:
+            if "_vendor" in path.parts or path.parent == runtime:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
+            if path == src / "dashboard" / "server.py":
+                text += "".join(o.read_text(encoding="utf-8", errors="replace") for o in owners)
             arms = "safety_override().activate" in text
             grants = "set_approval_policy(" in text and '"auto"' in text
             if arms and grants:

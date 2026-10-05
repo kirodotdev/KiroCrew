@@ -135,6 +135,7 @@ custom-rules:
       - "src/kiro_crew/slack/gateway.py"
       - "src/kiro_crew/slack/gateway_runtime/**/*.py"
       - "src/kiro_crew/dashboard/server.py"
+      - "src/kiro_crew/dashboard/server_runtime/**/*.py"
       - "src/kiro_crew/dashboard/handlers/**/*.py"
       - "src/kiro_crew/dashboard/messaging_api/**/*.py"
       - "src/kiro_crew/dashboard/file_api/**/*.py"

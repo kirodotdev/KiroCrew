@@ -3912,6 +3912,10 @@ class TestAppEventBusIsActuallyWired:
         from kiro_crew.dashboard.state import DashboardState
 
         src = inspect.getsource(server_mod)
+        # The app backend waves hand it over from a server_runtime owner.
+        owners = sorted((Path(server_mod.__file__).parent / "server_runtime").glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
+        src += "".join(path.read_text(encoding="utf-8") for path in owners)
         # Whatever the gateway hands to the hooks system must exist on the state.
         for attr in re.findall(r"broadcast_fn=state\.([A-Za-z_][A-Za-z0-9_]*)", src):
             assert hasattr(DashboardState, attr), (

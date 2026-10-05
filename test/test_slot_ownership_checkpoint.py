@@ -182,9 +182,15 @@ class TestEveryPerSlotRouteIsDecided:
         """A chain without it would serve every per-slot route undecided."""
         import kiro_crew.dashboard.server as server_mod
 
-        tree = ast.parse(Path(server_mod.__file__).read_text(encoding="utf-8"))
+        # Both chains are installed by a server_runtime owner server.py composes.
+        owners = sorted((Path(server_mod.__file__).parent / "server_runtime").glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
+        trees = [
+            ast.parse(path.read_text(encoding="utf-8"))
+            for path in (Path(server_mod.__file__), *owners)
+        ]
         chains = []
-        for node in ast.walk(tree):
+        for node in (node for tree in trees for node in ast.walk(tree)):
             if (
                 isinstance(node, ast.Assign)
                 and isinstance(node.targets[0], ast.Subscript)

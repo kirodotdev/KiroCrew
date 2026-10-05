@@ -1375,9 +1375,14 @@ class TestWaitHealthyRequiresTheCredential:
         server = (
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "server.py"
         )
+        # The credential helpers live in the server_runtime owners it composes.
+        owners = sorted((server.parent / "server_runtime").glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
+        text = server.read_text(encoding="utf-8")
+        text += "".join(path.read_text(encoding="utf-8") for path in owners)
         mints = [
             line.strip()
-            for line in server.read_text(encoding="utf-8").splitlines()
+            for line in text.splitlines()
             if line.strip().startswith("_internal_secret =")
         ]
         assert mints, "no internal-secret mint found in the dashboard server"

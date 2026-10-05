@@ -695,11 +695,20 @@ class TestTheRoute:
 
     def test_the_route_is_registered_and_strict_internal(self):
         """The create route once shipped dead for exactly this omission."""
+        from pathlib import Path
+
         from kiro_crew.dashboard import server as server_mod
 
         source = open(server_mod.__file__, encoding="utf-8").read()
-        assert '_deferred("session_control", "api_session_control_fork")' in source
-        assert '"/api/session-control/fork",' in source.split("_STRICT_INTERNAL_API_PATHS")[1]
+        # The route table lives in a server_runtime owner; the strict set stays here.
+        owners = sorted((Path(server_mod.__file__).parent / "server_runtime").glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
+        routes = source + "".join(path.read_text(encoding="utf-8") for path in owners)
+        assert '_deferred("session_control", "api_session_control_fork")' in routes
+        # The strict set is the only one left in server.py, so its segment ends at the
+        # mixed set that follows it.
+        strict = source.split("_STRICT_INTERNAL_API_PATHS")[1].split("_MIXED_INTERNAL_API_PATHS")[0]
+        assert '"/api/session-control/fork",' in strict
 
 
 # ── the tool layer ──────────────────────────────────────────────────────────────

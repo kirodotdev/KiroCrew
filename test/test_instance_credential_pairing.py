@@ -1006,12 +1006,19 @@ class TestTheSharedHelperOwnsThePairing:
 
         src = pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
         allowed = {pathlib.Path("config/loader.py")}
+        # dashboard/server.py composes its server_runtime owners into one namespace,
+        # so the two are read as one module.
+        runtime = pathlib.Path("dashboard/server_runtime")
+        owners = sorted((src / runtime).glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
         offenders = []
         for path in src.rglob("*.py"):
             rel = path.relative_to(src)
-            if rel in allowed:
+            if rel in allowed or rel.parent == runtime:
                 continue
             text = path.read_text(encoding="utf-8")
+            if rel == pathlib.Path("dashboard/server.py"):
+                text += "".join(owner.read_text(encoding="utf-8") for owner in owners)
             reads_per_port = "run_marker.read_secret(" in text
             reads_shared = '".local_secret"' in text
             if reads_per_port and reads_shared:

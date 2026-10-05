@@ -1179,7 +1179,7 @@ run **ceiling** is unaffected by that and is config-driven.
 
 ### HTTP surface
 
-Registered in `dashboard/server.py`, handled in
+Registered in `dashboard/server_runtime/mcp_routes.py`, handled in
 `dashboard/handlers/workflows.py`. These back both the chat `workflow_*` MCP tools
 (which call them with `X-Internal-Secret`) and the Workflows dashboard tab; the
 caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
@@ -1408,7 +1408,7 @@ call site safe without a try/except at each one.
 | `agent.workflow_run_timeout_secs` | 3600 | default wall-clock ceiling per run; clamped to 60..21600 by `clamp_run_timeout`, so it can be raised for long multi-phase investigations but never disabled |
 
 Workflow agent concurrency is **not** configurable: it is pinned at 4 in
-`dashboard/server.py` for the pool-bound reason above.
+`dashboard/server_runtime/workflow_startup.py` for the pool-bound reason above.
 
 ## Changing this contract
 

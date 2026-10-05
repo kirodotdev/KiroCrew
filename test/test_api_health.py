@@ -457,17 +457,43 @@ async def test_allowed_host_non_probe_passes_host_barrier() -> None:
         assert resp.status == 200
 
 
+def _entrypoint_and_chain_source(func) -> str:
+    """An entrypoint's source with the ``server_runtime`` chain installer it calls.
+
+    Each entrypoint builds its refusing barriers from the shared factories and hands
+    them to ``server_runtime.middleware_chain``, which holds the ordered chain and
+    the ``sel_audit_middleware`` closure, so a wiring pin reads both: the installer's
+    source replaces the call, so the keyword arguments of the call do not stand in
+    for the chain's own list entries.
+    """
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    installer = {
+        "start_dashboard": server_mod._install_dashboard_middlewares,
+        "start_api_server": server_mod._install_api_middlewares,
+    }[func.__name__]
+    src = inspect.getsource(func)
+    assert f"{installer.__name__}(" in src, f"{func.__name__} no longer installs its chain"
+    start = src.index(f"{installer.__name__}(")
+    depth = 0
+    for end in range(start, len(src)):
+        depth += {"(": 1, ")": -1}.get(src[end], 0)
+        if src[end] == ")" and depth == 0:
+            break
+    return src[:start] + inspect.getsource(installer) + src[end + 1 :]
+
+
 def test_both_servers_install_the_shared_host_barrier() -> None:
     """Wiring pin: BOTH entrypoints must build their Host barrier from the
     shared factory (the single exemption point the chain tests above cover),
     and neither may re-grow a private inline copy that could drop or widen
     the exemption independently."""
-    import inspect
-
     from kiro_crew.dashboard import server as server_mod
 
-    dashboard_src = inspect.getsource(server_mod.start_dashboard)
-    api_src = inspect.getsource(server_mod.start_api_server)
+    dashboard_src = _entrypoint_and_chain_source(server_mod.start_dashboard)
+    api_src = _entrypoint_and_chain_source(server_mod.start_api_server)
     for src, name in ((dashboard_src, "start_dashboard"), (api_src, "start_api_server")):
         assert (
             "_make_host_validation_middleware(" in src
@@ -486,15 +512,13 @@ def test_both_servers_install_the_shared_deny_audit_boundary() -> None:
     on one entrypoint only, the headless server would silently keep the old
     per-site guarantee while the dashboard had the structural one — the exact
     drift the shared factories exist to prevent."""
-    import inspect
-
     from kiro_crew.dashboard import server as server_mod
 
     for func, name in (
         (server_mod.start_dashboard, "start_dashboard"),
         (server_mod.start_api_server, "start_api_server"),
     ):
-        src = inspect.getsource(func)
+        src = _entrypoint_and_chain_source(func)
         assert (
             "_make_deny_audit_middleware(" in src
         ), f"{name} no longer installs the shared deny-audit boundary"
@@ -566,7 +590,7 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
         (server_mod.start_dashboard, "start_dashboard"),
         (server_mod.start_api_server, "start_api_server"),
     ):
-        assert 'outcome="denied"' not in inspect.getsource(func), (
+        assert 'outcome="denied"' not in _entrypoint_and_chain_source(func), (
             f"{name} re-grew a hand-rolled denial audit; route it through "
             "_audit_denied so the best-effort property holds "
             "(sel_audit_middleware's ok/error request audit is unaffected)"
@@ -583,7 +607,7 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
         (server_mod.start_dashboard, "start_dashboard"),
         (server_mod.start_api_server, "start_api_server"),
     ):
-        src = inspect.getsource(func)
+        src = _entrypoint_and_chain_source(func)
         assert "mark_audit_claimed(request)" in src, (
             f"{name}'s sel_audit_middleware no longer claims the requests it "
             "logs; the deny-audit boundary would double-record refusals it owns"
@@ -1048,15 +1072,13 @@ def test_both_request_audit_middlewares_attribute_through_audit_actor() -> None:
     call, which is where a forwarded action was mistaken for the owner's own. A
     re-grown flat literal there would be invisible to every test above.
     """
-    import inspect
-
     from kiro_crew.dashboard import server as server_mod
 
     for func, label in (
         (server_mod.start_dashboard, "dashboard_user"),
         (server_mod.start_api_server, "mcp_tool"),
     ):
-        src = inspect.getsource(func)
+        src = _entrypoint_and_chain_source(func)
         assert f'audit_actor(request, "{label}")' in src, (
             f"{func.__name__}'s sel_audit_middleware no longer derives its actor "
             "through audit_actor; a forwarded action would be filed as the person"

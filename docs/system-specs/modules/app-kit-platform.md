@@ -503,7 +503,7 @@ calls `_reset_all_sessions`, which drains every active session **and** the warm
 pool, so the next cold start reads the reverted row rather than the revert lying
 dormant. And the only writer that puts the live port back is
 `reconcile_enabled_app_resources`, whose single call site is the gateway boot path
-(`dashboard/server.py`) — the mid-turn rung `_recover_app_agent_binding` is gated
+(`dashboard/server_runtime/app_platform.py`) — the mid-turn rung `_recover_app_agent_binding` is gated
 on an UNRESOLVED agent binding, which a reverted port does not produce. So the
 self-heal is a restart, and nothing shorter. Both axes above plus this open cell
 are enumerated in one table by
@@ -719,7 +719,7 @@ URL deletes the whole class — neither piece exists any more. A duplicate check
 kept only as a cheap invariant: with distinct segments the filesystem cannot
 produce two identical routes, so a hit means the convention changed under us.
 
-Writer: `dashboard/server.py::discover_app_window_entries`
+Writer: `dashboard/server_runtime/static_assets.py::discover_app_window_entries`
 (`APP_WINDOW_URL_PREFIX = "app-windows"`);
 exclusion: `dashboard/token_auth.py::register_app_window_paths`.
 
@@ -2611,7 +2611,7 @@ it because the `Content-Type` is derived from the EXTENSION, not the bytes — w
 art named `.png` whose content is markup could still be sniffed into a document.
 
 Set on the response rather than in the middleware because
-`dashboard/server.py`'s security-header middleware uses `setdefault` precisely so a
+`dashboard/server_runtime/security_headers.py`'s security-header policy uses `setdefault` precisely so a
 handler can tighten its own answer. Applied to EVERY art response, not only `.svg`: a
 per-extension shortcut is one `if` away from a gap, and a mutation that narrows it to
 `.svg` is one of the cases pinned.
@@ -2687,7 +2687,7 @@ enumerates the `/apps/` sub-namespaces that have real handlers. A verb missing
 from it is classified as a React Router navigation, so the middleware answers the
 SPA shell and an `<img>` receives HTML with a 200 and renders nothing — silent,
 because the handler is never the thing that fails. The pre-existing drift guard
-cannot catch this (it scans `server.py` only, and its `"{" in p` escape hatch
+cannot catch this (it scans `server.py` and its `server_runtime/` owners only, and its `"{" in p` escape hatch
 treats any pattern route as a real handler without consulting the regex), so
 `test_apps_routes_get_paths_are_matched_by_the_apps_spa_regex` instantiates each
 `/apps/` route literal in `apps/routes.py` and matches the concrete path.

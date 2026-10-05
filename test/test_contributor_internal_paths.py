@@ -263,9 +263,13 @@ def test_both_middleware_sites_compose_through_the_helper() -> None:
     live in separate start functions that a test cannot run end to end cheaply.
     """
     import inspect
+    from pathlib import Path
 
     from kiro_crew.dashboard import server
 
-    src = inspect.getsource(server)
+    # The two chains are built by a server_runtime owner server.py composes.
+    owners = sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    src = inspect.getsource(server) + "".join(p.read_text(encoding="utf-8") for p in owners)
     assert src.count("mixed_internal_paths=_mixed_internal_api_paths()") == 2
     assert "mixed_internal_paths=_MIXED_INTERNAL_API_PATHS" not in src

@@ -4131,6 +4131,10 @@ def test_the_publisher_is_installed_after_the_listener_binds():
     from kiro_crew.dashboard import server
 
     source = inspect.getsource(server.start_dashboard)
+    # The boot phases it calls before the bind live in its server_runtime owners.
+    owners = sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    phases = "".join(path.read_text(encoding="utf-8") for path in owners)
     bind = source.index("await site.start()")
-    assert source.count("install_crew_log_publisher(") == 1
+    assert (source + phases).count("install_crew_log_publisher(") == 1
     assert source.index("install_crew_log_publisher(") > bind

@@ -174,7 +174,7 @@ graph TB
     subgraph "Entry Points"
         CLI_MOD[cli.py<br/>argparse CLI]
         SLACK_GW[slack/gateway.py<br/>service composition]
-        DASH_SRV[dashboard/server.py<br/>aiohttp + WebSocket]
+        DASH_SRV[dashboard/server.py<br/>aiohttp bootstrap, composed<br/>from dashboard/server_runtime/]
     end
 
     subgraph "Session Layer"
@@ -217,6 +217,7 @@ graph TB
     CLI_MOD --> SESS
     SLACK_GW --> SESS
     DASH_SRV --> SESS
+    DASH_SRV --> SEL
 
     SESS --> ACP_CLIENT
     SESS --> CTX

@@ -75,7 +75,7 @@ path to an existing file with no shell metacharacters. It is operator config, no
 app contribution, so no app can add to it by being installed.
 
 **App backends are eager.** `start_enabled_app_backends` runs at gateway startup
-(`dashboard/server.py`), so every enabled app with a backend costs a process at boot
+(`dashboard/server_runtime/app_platform.py`), so every enabled app with a backend costs a process at boot
 whether or not anything calls it. Every runtime adapter in this file pays that cost.
 
 ## 3. The matrix

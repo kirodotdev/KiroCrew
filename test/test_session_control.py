@@ -5226,6 +5226,11 @@ def test_session_control_is_not_imported_on_the_gateway_boot_path():
     from kiro_crew.dashboard import server as dashboard_server
 
     src = Path(dashboard_server.__file__).read_text(encoding="utf-8")
+    # The server_runtime owners server.py composes load with it, so their module-level
+    # imports are on the same boot path.
+    owners = sorted((Path(dashboard_server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    src += "".join(path.read_text(encoding="utf-8") for path in owners)
     for line in src.splitlines():
         if line.startswith("from kiro_crew.dashboard.handlers import"):
             assert "session_control" not in line, (

@@ -351,12 +351,18 @@ def _package_reexports() -> list[str]:
 
 
 def _server_handler_names() -> set[str]:
-    """``handlers.<name>`` attributes ``dashboard/server.py`` registers or calls."""
+    """``handlers.<name>`` attributes ``dashboard/server.py`` registers or calls, with
+    the ``server_runtime`` owners it composes (the MCP route table lives in one)."""
     from kiro_crew.dashboard import server
 
-    tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+    owners = sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    trees = [
+        ast.parse(path.read_text(encoding="utf-8")) for path in (Path(server.__file__), *owners)
+    ]
     return {
         node.attr
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)

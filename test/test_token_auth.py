@@ -2556,13 +2556,21 @@ def test_no_get_route_outside_shell_exclusions() -> None:
     _is_spa_shell_request gained its own /apps/ early-return branch).
     (Reads source rather than importing server.py to avoid heavy import side effects.)
     """
+    import glob
     import os
     import re as _re
 
     import kiro_crew.dashboard.token_auth as ta
 
-    server_path = os.path.join(os.path.dirname(ta.__file__), "server.py")
-    source = open(server_path, encoding="utf-8").read()
+    # server.py and the server_runtime owners it composes, which hold the MCP and
+    # build route tables.
+    dashboard_dir = os.path.dirname(ta.__file__)
+    server_paths = [
+        os.path.join(dashboard_dir, "server.py"),
+        *sorted(glob.glob(os.path.join(dashboard_dir, "server_runtime", "[!_]*.py"))),
+    ]
+    assert len(server_paths) > 1, "expected the server_runtime owners beside server.py"
+    source = "".join(open(path, encoding="utf-8").read() for path in server_paths)
     get_paths = _re.findall(r'add_get\(\s*["\']([^"\']+)["\']', source)
     assert get_paths, "expected add_get route literals in server.py"
 

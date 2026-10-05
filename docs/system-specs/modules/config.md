@@ -1577,7 +1577,7 @@ to re-warm the snapshot. `_run_chat` therefore guards the resolve, strictly behi
 common hot path — no `_app`, or already resolved):
 
 1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
-   loop** with the same pattern `server.py` uses at boot —
+   loop** with the same pattern the gateway boot uses (`dashboard/server_runtime/app_platform.py`) —
    `await loop.run_in_executor(subprocess_executor(), refresh_materialized_agents)`
    (`refresh_materialized_agents` never raises, so awaiting it via the executor is
    safe) — then **re-resolve once**. This recovers an app slot whose spec is on
@@ -1588,7 +1588,7 @@ common hot path — no `_app`, or already resolved):
    (`register_app`, `apps/bridges.py`, registers the app's MCP servers BEFORE its
    agents and publishes the snapshot synchronously; imported via a **local** import
    inside the function to avoid the top-level `apps`↔`dashboard` cycle, mirroring
-   `server.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
+   `dashboard/server_runtime/app_platform.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
    is used rather than the narrower `refresh_app_agents` because a never-materialized
    app also has unregistered MCP servers, and re-materializing only the agent would
    inline an empty server map — recreating an agent whose own `@<app>:<server>` tool
@@ -2219,7 +2219,7 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `set_timeout_secs` and `ChannelManager` binds `agent.max_channels` /
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
-live in `server.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates.py::apply_log_level_from_config`), and
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`). The log-level applier
@@ -2397,7 +2397,7 @@ watcher itself by `test_config_live.py`.
 
 Tests: `test/test_config_live.py` (diff, registry, lifecycle, fingerprint,
 dispatch order and scope, every write path, the schema/handler agreement, the
-`server.py` appliers, and the owned-applier shapes `watch_section` /
+`dashboard/server_runtime/config_watch.py` appliers, and the owned-applier shapes `watch_section` /
 `watch_object` / `bind`) and `test/test_channels_a_hot_reload.py` (every
 channel's applier, its fail-closed degrade refusal and its point-of-use reads,
 parametrized over the case table in `test/_hot_reload_helpers.py`;

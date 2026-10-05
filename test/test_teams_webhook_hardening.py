@@ -277,6 +277,13 @@ def test_both_servers_install_the_shared_csrf_barrier() -> None:
     ):
         src = inspect.getsource(func)
         assert "_make_csrf_middleware(" in src, f"{name} no longer uses the shared CSRF factory"
+        # The chain the barrier is handed to is installed by a server_runtime owner.
+        installer = {
+            "start_dashboard": server_mod._install_dashboard_middlewares,
+            "start_api_server": server_mod._install_api_middlewares,
+        }[name]
+        assert f"{installer.__name__}(" in src
+        src += inspect.getsource(installer)
         assert "async def csrf_middleware" not in src, (
             f"{name} re-introduced an inline CSRF middleware; keep the shared "
             "factory as the single exemption point"

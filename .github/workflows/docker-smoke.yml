@@ -31,6 +31,7 @@ on:
       # (handlers/core.py). A regression in ANY of them must fire this gate.
       - "src/kiro_crew/dashboard/origin.py"
       - "src/kiro_crew/dashboard/server.py"
+      - "src/kiro_crew/dashboard/server_runtime/**"
       - "src/kiro_crew/dashboard/handlers/core.py"
   workflow_dispatch:
 

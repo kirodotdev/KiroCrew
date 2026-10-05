@@ -115,8 +115,13 @@ def test_start_paths_use_hardened_runner() -> None:
     # Imported into the server module namespace -> both call sites resolve to it.
     assert dashboard_server.build_hardened_runner is build_hardened_runner
     import inspect
+    from pathlib import Path
 
     src = inspect.getsource(dashboard_server)
+    # The listener and site helpers live in the server_runtime owners it composes.
+    owners = sorted((Path(dashboard_server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    src += "".join(path.read_text(encoding="utf-8") for path in owners)
     # Neither start path may fall back to a bare web.AppRunner(app).
     assert "web.AppRunner(app)" not in src
     # Both start paths call the hardened runner. Match the call prefix (not a

@@ -2117,7 +2117,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_directive_apply.py",
         "dashboard/cron_inject.py",
         "dashboard/ws.py",
-        "dashboard/server.py",
+        # The gateway bootstrap's owner DM and workflow-result turn (owners that
+        # dashboard/server.py composes).
+        "dashboard/server_runtime/owner_notices.py",
+        "dashboard/server_runtime/workflow_startup.py",
         "dashboard/handlers/sessions.py",
         # Roster last-message previews: same preview + redaction chain as
         # handlers/sessions.py, feeding the same dashboard HTTP surface the

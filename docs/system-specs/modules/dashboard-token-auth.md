@@ -96,22 +96,33 @@ sequenceDiagram
 > with per-session revocation (`revoke_access_cookie`), an individual leaked
 > session can be killed without the global generation bump.
 
-Middleware chain (explicit ordering in `server.py`):
+Middleware chain, outermost first (the explicit list `start_dashboard` in `server.py`
+installs through `_install_dashboard_middlewares` in `server_runtime/middleware_chain.py`;
+the last two gates are appended by their lifecycle registrations):
 
 ```mermaid
 graph LR
-    Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> S[slot_ownership] --> G[spa_fallback]
+    L[route_latency] --> Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate]
 ```
 
-1. CSRF checks run first (reject cross-origin mutating requests)
-2. Token auth validates identity
-3. SEL audit logs the authenticated operation
-4. The per-slot checkpoint (`slot_ownership_middleware`,
+1. Route latency is outermost, so it times the full in-gateway handling, and the
+   deny-audit boundary sits inner to it only
+2. The host barriers and CSRF reject a wrong `Host` and a cross-origin mutating
+   request before token auth runs
+3. Token auth validates identity
+4. SEL audit logs the authenticated operation
+5. The per-slot checkpoint (`slot_ownership_middleware`,
    `dashboard/slot_ownership.py`) decides an app caller's reach on every
    `/api/chat/slots/{slot}/*` route before its handler runs. It reads the `app`
    claim token auth published, and a refusal it answers is inside the SEL audit
    record. It is not an auth layer: a request with no app claim passes it
    untouched. Contract: [App Kit platform §13](app-kit-platform.md).
+6. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
+   until the workflow service is ready, and `_crewmate_prune_gate`
+   (`_register_crewmate_prune_gate`, dashboard only) holds every mutating request,
+   and any request under `/api/members`, until the crewmate prune settles, 503
+   past its timeout.
+   Both RETURN their refusal, inner to `sel_audit`.
 
 `deny_audit` (`_make_deny_audit_middleware`, installed on both entrypoints) is
 outer to every barrier that can refuse, and `sel_audit` is inner to all of them —
@@ -124,9 +135,10 @@ for the mutating `/api/` requests it actually logs, and the two WebSocket-origin
 handlers that log their own denial. `token_auth` RETURNS its 401/403 rather than
 raising and audits each itself, so returned responses are not inspected. Not
 claiming is the safe direction — the boundary then records the refusal under a
-generic reason. The per-slot checkpoint is the one refusing layer inner to
-`sel_audit`: it RETURNS a 404 rather than raising, and writes its own
-`app_isolation` row for a slot that exists, so the boundary never sees it.
+generic reason. Three refusing layers sit inner to `sel_audit`, and each RETURNS
+rather than raises, so the boundary never sees them: the per-slot checkpoint (a
+404, plus its own `app_isolation` row for a slot that exists) and the two appended
+gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503).
 
 ## Components
 
@@ -518,38 +530,51 @@ async def send_dashboard_link(slack, user_id, ttl=3600) -> str:
 
 ### 5. `server.py` Integration
 
-`start_dashboard()` accepts `local_only: bool` and `configured_host: str`, wires the middleware:
+`start_dashboard()` accepts `local_only: bool` and `configured_host: str`, builds the
+barriers from the shared factories, and installs the chain
+(`server_runtime/middleware_chain.py`):
 
 ```python
 app.middlewares[:] = [
+    make_route_latency_middleware(),
     deny_audit_middleware,
     host_canonical_redirect,
     host_validation_middleware,
     no_cache_middleware,
     csrf_middleware,
-    token_auth_middleware(local_only=local_only),
+    token_auth_middleware(
+        internal_paths=_STRICT_INTERNAL_API_PATHS,
+        mixed_internal_paths=_mixed_internal_api_paths(),
+        local_only=local_only,
+        spa_shell_handler=handlers.index,
+        ...,
+    ),
     sel_audit_middleware,
     slot_ownership_middleware,
     spa_fallback,
 ]
-site = web.TCPSite(runner, bind_address_for(local_only), port)
+# appended before runner.setup(): _workflow_ready, then _crewmate_prune_gate
+site = web.SockSite(runner, _dashboard_sock)
+# _dashboard_sock: _reserve_dashboard_port(bind_address_for(local_only), port)
 ```
 
-The two internal-path sets passed to `token_auth_middleware` are module-level
-constants — `_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` — so
-the headless server (below) binds to the **same** sets and the two entrypoints
-cannot drift.
+The two internal-path sets passed to `token_auth_middleware` are the module-level
+`_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` in `server.py`, the
+second read through `_mixed_internal_api_paths()` so an edition's mixed paths join
+it — so the headless server (below) binds to the **same** sets and the two
+entrypoints cannot drift.
 
 #### `start_api_server()` — headless (`--slack-only`) parity
 
 The `--slack-only` gateway starts `start_api_server()` instead of
 `start_dashboard()`. It serves the **same** MCP tool route surface
-(`_register_mcp_routes`), so it mounts an auth chain at parity:
-`deny_audit_middleware → host_validation_middleware → csrf_middleware →
-token_auth_middleware(
+(`_register_mcp_routes`), so it mounts an auth chain at parity
+(`_install_api_middlewares`):
+`route_latency → deny_audit_middleware → host_validation_middleware →
+csrf_middleware → token_auth_middleware(
 internal_paths=_STRICT_INTERNAL_API_PATHS,
-mixed_internal_paths=_MIXED_INTERNAL_API_PATHS, spa_shell_handler=None) →
-sel_audit_middleware → slot_ownership_middleware`. It generates and persists the same
+mixed_internal_paths=_mixed_internal_api_paths(), spa_shell_handler=None) →
+sel_audit_middleware → slot_ownership_middleware`, then `_workflow_ready`. It generates and persists the same
 `~/.kiro/crew/.local_secret` (or the explicit `KIROCREW_HOME`), sets
 `app["local_secret"]`, and builds
 `app["allowed_origins"]`. `spa_shell_handler=None` because there is no UI — a
@@ -571,8 +596,8 @@ same-uid process can read `.local_secret`), but the session identity in
 any session's key. To close that gap, both server entrypoints additionally
 bind a `web.UnixSite` on the **same** `AppRunner` at
 `dashboard_socket_path(port)` (`~/.kiro/crew/dashboard-<port>.sock`,
-port-suffixed so multi-instance homes don't collide; see
-`server._start_unix_site`). Windows and any bind failure degrade to TCP-only
+port-suffixed so multi-instance homes don't collide; see `_start_unix_site` in
+`server_runtime/listener.py`). Windows and any bind failure degrade to TCP-only
 — today's behavior — after one log line. The socket file is unlinked
 best-effort at shutdown and self-heals from stale files at startup.
 
@@ -815,4 +840,4 @@ token flow, which could not clear it.
 9. Bounded concurrent nonces (`TokenStateManager`) — prevents unbounded memory growth while allowing active link nonces to refresh their eviction position
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
-12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
+12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `route_latency → deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain (then `_workflow_ready`) against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
