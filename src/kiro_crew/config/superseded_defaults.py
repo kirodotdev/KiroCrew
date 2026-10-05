@@ -935,9 +935,6 @@ def drop_acks(dotted_keys: list[str]) -> None:
     _update_acked(lambda existing: {k: v for k, v in existing.items() if k not in drop})
 
 
-_ABSENT = object()
-
-
 def _stored_value(base_data: dict, dotted_key: str) -> object:
     """Return what *base_data* stores at *dotted_key*, or ``_ABSENT``."""
     section, field = _split_dotted(dotted_key)
