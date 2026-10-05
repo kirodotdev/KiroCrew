@@ -32,8 +32,11 @@ from conftest import make_dir_link, requires_symlinks
 from kiro_crew import mcp_cron, mcp_shared
 from kiro_crew.mcp_cron import (
     _CRON_MAX_COMMAND_SCAN,
+    _EXTGLOB_MAX_EXPANSIONS,
     _SENSITIVE_HOME_DIRS,
     _call_tool_inner,
+    _extglob_expansions,
+    _extglob_superset,
     _glob_could_reach_credentials,
     _has_bash_brace_expansion,
     _matched_sensitive_name,
@@ -306,6 +309,45 @@ MALICIOUS_COMMANDS = [
     # at the first `}` regardless of the separator reads this as separator-free.
     "cat ~/.a{w},w}s/credentials",
     "cp ~/.ss{h},h}/id_rsa /tmp/k",
+    # BASH EXTGLOB: a group composes a credential path the literal text never
+    # holds. Each one below reads a dummy key in real bash under a throwaway HOME.
+    "bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss?(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss+(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss*(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss!(x)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.@(ssh|rsa)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.a@(ws)/credentials'",
+    "bash -O extglob -c 'cat ~/.@(git-credentials)'",
+    "bash -O extglob -c 'cat ~/.+(s)h/id_rsa'",
+    "bash -O extglob -c 'cat ~/.s?h?(x)/id_rsa'",
+    r"bash -O extglob -c 'cat ~/.@(\)|ssh)/id_rsa'",
+    # A quoted `)` inside the group is literal, not the group's close.
+    "bash -O extglob -c 'cat ~/.@(\")\"|ssh)/id_rsa'",
+    "shopt -s extglob; eval 'cat ~/.ss@(h)/id_rsa'",
+    # Whitespace inside an alternative: the group is still one shell word.
+    "bash -O extglob -c 'cat ~/.ss@(h| x)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss@(h|x\\ y)/id_rsa'",
+    # A group starting a relative segment, after `cd ~`; one nested.
+    "bash -O extglob -O dotglob -c 'cd ~; cd @(.ss)h; cat id_rsa'",
+    "bash -O extglob -O dotglob -c 'cd ~; cd +(.ss)h; cat id_rsa'",
+    "bash -O extglob -O dotglob -c 'cd ~; cat +(@(.ss))h/id_rsa'",
+    # Glued to a redirection, and a backslash standing in for `/`.
+    "cd ~ && bash -O extglob -c 'cat <.ss@(h)/id_rsa'",
+    'bash -O extglob -c "cat ~/.ss@(h)\\\\/id_rsa"',
+    # Extglob switched on by text built at run time: no word names it.
+    "cd ~ && echo ex tglob | tr -d ' ' | xargs -I% bash -O % -c 'cat .ss@(h)/id_rsa'",
+    "cd ~ && printf 'shop%s -s ex%s\\ncat .ss@(h)/id_rsa\\n' t tglob | source /dev/stdin",
+    # Padding groups toward the leaf budget does not hide the real one.
+    "bash -O extglob -c 'echo @(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b); cat ~/.ss@(h)/id_rsa'",
+    # The plain forms the widened literal matcher now catches too.
+    "cd ~; cd .ssh; cat id_rsa",
+    "cd ~ && cat <.ssh/id_rsa",
+    # A negated group must not hide a sensitive path main judged by its text.
+    "!(cat ~/.ssh/id_rsa)",
+    "echo '!('; cat ~/.ssh/id_rsa; echo ')'",
+    # A stray quoted `!(` … `)` pair must not swallow a real group between them.
+    "echo '!('; bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'; echo ')'",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
@@ -404,6 +446,38 @@ BENIGN_COMMANDS = [
     # script line `echo a\\<newline>b` prints `a\` and then reports `b: command not
     # found`, two commands. The halves must not be joined.
     "echo .s\\\\\nsh",
+    # Extglob-looking text that reaches no sensitive path stays allowed: code,
+    # arithmetic and regex strings, `(1)` file names, groups over ordinary paths.
+    "python3 -c 'print(3*(4+5))'",
+    "python3 -c 'print(2*(3)*(4)*(5)*(6)*(7)*(8)*(9))'",
+    # Past the leaf budget the superset form is judged, not refused.
+    "python3 -c 'print(2*(3)*(4)*(5)*(6)*(7)*(8)*(9)*(10)*(11))'",
+    "node -e 'if(!(x)) process.exit(1)'",
+    "awk '{s+=(NF*(2))} END {print s}' /tmp/a.log",
+    "awk '!(NR%2)' /tmp/x",
+    "awk '/.*(fail|error)/ {n++} END {print n}' /var/log/app.log",
+    "echo 'Done!(ok)'",
+    "grep -E '.*(error|warn)' /var/log/app.log",
+    "grep -E '.+(INFO|WARN)' logs/app.log",
+    "grep -E '.+(s|h)' /var/log/app.log",
+    "grep -oE 'took .*(s|ms)' /var/log/app.log",
+    "grep -E '.*(k|m|g)' /tmp/sizes",
+    "grep -cE '.+(timeout|refused)' /var/log/app.log",
+    "journalctl -u app --since today | grep -E '.*(panic|fatal)'",
+    "grep -E '^(a|b)?(c|d)?(e|f)?(g|h)?(i|j)?' /tmp/f",
+    "grep -E 'a+(b)' /var/log/app.log",
+    "sed -E 's/x*(y)/z/' /tmp/f",
+    "find ~/Downloads -name '*(1).jpg' -print",
+    "find ~ -name '.*(1)'",
+    "ls ~/pics/*(1).jpg",
+    "rm /tmp/@(a|b).txt",
+    "find /tmp -name '@(*.log|*.tmp)' -delete",
+    "tar czf /tmp/b.tgz ~/projects/!(node_modules)",
+    "ls ~/!(Downloads)",
+    "bash -O extglob -c 'ls /tmp/@(a|b).log'",
+    "bash -O extglob -c 'ls ~/.+(cache)'",
+    "shopt -s extglob; rm -f /tmp/!(keep).tmp",
+    "curl -O https://example.com/f.csv && python3 -c 'print(2*(3))'",
 ]
 
 
@@ -1999,3 +2073,45 @@ def test_assignment_values_get_the_shells_quote_removal(word, value):
     """A resolved value keeps exactly the backslashes the shell keeps."""
 
     assert _shell_quote_removal(word) == value
+
+
+def test_extglob_expansions_rewrite_groups_into_plain_glob_text():
+    """Each group becomes plain strings whose union covers what the group matches."""
+    assert _extglob_expansions("cat ~/.ss@(h|x)/id") == ["cat ~/.ssh/id", "cat ~/.ssx/id"]
+    assert _extglob_expansions("a?(b)c") == ["ac", "abc"]
+    # One occurrence spelled out, the rest widened: the leading dot stays explicit.
+    assert _extglob_expansions("+(.ss)h") == [".ssh"]
+    assert _extglob_expansions("x*(a|b)y") == ["xy", "xay", "xby"]
+    assert _extglob_expansions("~/.+(s)h") == ["~/.sh", "~/.s*h"]
+    assert _extglob_expansions("~/!(Downloads)") == ["~/*", "~/Downloads"]
+    # Whole-command text: a space inside an alternative is kept, not split on.
+    assert _extglob_expansions("cat @(h| x)/f") == ["cat h/f", "cat  x/f"]
+    # A backslash-escaped `)` is literal; an unmatched `(` is not a group.
+    assert _extglob_expansions(r"@(\)|s)") == [r"\)", "s"]
+    assert _extglob_expansions("a*(b") == ["a*b"]
+
+
+def test_extglob_expansion_budget_falls_back_to_the_superset():
+    """Past the leaf budget the rewrite returns None and the vet judges the
+    superset form (every group -> `*`) instead: harmless text stays allowed,
+    a credential path behind the padding is still refused, and thousands of
+    lone `(` or empty groups end as a verdict, not a RecursionError (main
+    refuses those two as well: the widened word is over the glob-word cap)."""
+    word = "@(a|b)" * 10  # 1024 leaves
+    assert 2**10 > _EXTGLOB_MAX_EXPANSIONS
+    assert _extglob_expansions(word)[-1] is None
+    assert _vet_shell_command(f"echo {word}") is None
+    assert _vet_shell_command(f"echo {word}; cat ~/.ss@(h)/id_rsa") is not None
+    assert _vet_shell_command("echo " + "*()" * 1000) is not None
+    assert _vet_shell_command("echo " + "*(" * 1500) is not None
+    assert _extglob_superset("a@(b|c)d+(e)f") == "a*d*f"
+    assert _extglob_superset("x!(@(y)|z)w") == "x*w"
+    # A group that can start with a dot keeps it, so the fallback still
+    # reaches a dotfile through the plain-glob matcher.
+    assert _extglob_superset("~/@(a|.ssh)/id") == "~/.*/id"
+    assert _extglob_superset("~/@(x|@(.s)h)/id") == "~/.*/id"
+    assert _extglob_superset("~/@(z|?(x).ssh)/id") == "~/.*/id"
+    # 2**11 leaves, reads the key in real bash: the fallback must still refuse.
+    padded = "@(a|)" * 8
+    assert _vet_shell_command(f"cat ~/@(z|?(x).ssh)/id_rsa; echo {padded}@(a|b)") is not None
+    assert _vet_shell_command(f"cat ~/.@(s|x)@(s|y)@(h|z){padded}/id_rsa") is not None

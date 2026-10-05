@@ -17,6 +17,7 @@ Tools:
 
 from __future__ import annotations
 
+import collections
 import fnmatch
 import json
 import logging
@@ -85,6 +86,7 @@ from kiro_crew.security import (
     scan_exfiltration_urls,
     sensitive_path_refusal,
 )
+from kiro_crew.security.readonly_bash import _EXTGLOB_RE
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
     MCP_CRON_SCHEMAS,
@@ -143,16 +145,26 @@ _CRON_CRED_PATH_RE = re.compile(
     r"(?:/|\s|['\"]|$)",
     re.IGNORECASE,
 )
+# The COMMAND form of the same matcher. A shell command line reaches the
+# directory through a redirection, a list separator or a backslash too:
+# `cat <.ssh/id_rsa`, `cd .ssh;`, `~/.ssh\\/id_rsa` (verified in real bash).
+# Script bodies keep `_CRON_CRED_PATH_RE`: Python source gets no shell grammar.
+_CRON_CMD_CRED_PATH_RE = re.compile(
+    r"(?:^|[\s'\"=@/~`<>|&;]|\$\{?HOME\}?)"
+    r"(" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
+    r"(?:[/\\\s'\";&|<>]|$)",
+    re.IGNORECASE,
+)
 # The matcher is case-insensitive, so map a hit back to the canonical entry
 # spelling for the refusal message.
 _SENSITIVE_HOME_DIRS_BY_LOWER = {d.lower(): d for d in _SENSITIVE_HOME_DIRS}
 
 
-def _matched_sensitive_name(text: str) -> str | None:
+def _matched_sensitive_name(text: str, pattern: re.Pattern[str] = _CRON_CRED_PATH_RE) -> str | None:
     """Return the ``_SENSITIVE_HOME_DIRS`` entry a literal reference in *text*
     hits (canonical spelling), or ``None``. One ``_CRON_CRED_PATH_RE`` search
     both detects the match and names it via its capturing group."""
-    m = _CRON_CRED_PATH_RE.search(text)
+    m = pattern.search(text)
     if m is None:
         return None
     return _SENSITIVE_HOME_DIRS_BY_LOWER.get(m.group(1).lower(), m.group(1))
@@ -295,6 +307,20 @@ _CRON_SHELL_KEYWORD_RE = re.compile(r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|whi
 # on a hostile `cat ????...`.
 _CRON_MAX_GLOB_WORD = 256
 
+# BASH EXTGLOB GROUPS `@(…)` `?(…)` `+(…)` `*(…)` `!(…)` are a FIFTH way to
+# compose a path: `bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'` reads
+# `~/.ssh/id_rsa`. Whether extglob is ON cannot be read off the text (a command
+# can switch it on with text it builds at run time), so the vet never asks: every
+# group in the WHOLE command is rewritten into plain-glob text and each rewrite
+# is judged by the literal and plain-glob checks that already exist. Rewriting
+# the whole command, not one word, keeps a group whose alternatives hold spaces
+# (`@(h| x)`) intact, and lets the plain-glob path do its own word split.
+_EXTGLOB_OP_RE = _EXTGLOB_RE
+# Leaf budget for one rewrite. `@(a|b)` / `?(a|b)` groups multiply alternatives;
+# past the budget the command is refused (adversarial input only — an ordinary
+# `grep -E '(a|b)?(c|d)?(e|f)?(g|h)?'` is 81 leaves).
+_EXTGLOB_MAX_EXPANSIONS = 512
+
 
 # Local variable assignments can smuggle path fragments past the vet:
 # `A=.s; B=sh; cp ~/$A$B/id_rsa ...` — the vetter sees `~/` and `/id_rsa` as
@@ -376,6 +402,145 @@ def _contains_glob_meta(value: str) -> bool:
         return True
     opening = value.find("[")
     return opening >= 0 and value.find("]", opening + 1) >= 0
+
+
+def _extglob_group_end(text: str, start: int) -> int | None:
+    """Index just past the ``)`` closing the group whose body starts at *start*.
+
+    A backslash escapes the next character and a quoted span is literal, so
+    ``@(")"|ssh)`` has two alternatives (``")"`` and ``ssh``), not one. ``None``
+    when the group never closes: bash treats a lone ``(`` as a syntax error, so
+    it is not a group.
+    """
+    depth = 1
+    pos = start
+    while pos < len(text) and depth > 0:
+        ch = text[pos]
+        if ch == "\\":
+            pos += 2
+            continue
+        if ch in "'\"":
+            close = text.find(ch, pos + 1)
+            pos = len(text) if close < 0 else close + 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        pos += 1
+    return pos if depth == 0 else None
+
+
+def _extglob_expansions(text: str, _budget: list[int] | None = None) -> list[str | None]:
+    """Rewrite every bash extglob group in *text* into plain-glob text.
+
+    Each group becomes a set of plain strings whose union matches at least what
+    the group matches, so the caller judges a SUPERSET:
+
+    - ``@(a|b)`` -> ``a``, ``b``; ``?(a|b)`` -> ``""``, ``a``, ``b``.
+    - ``+(a|b)`` -> ``a*``, ``b*``; ``*(a|b)`` -> ``""``, ``a*``, ``b*``. One
+      occurrence is spelled out, the rest is ``*``. Spelling the first one keeps
+      a leading dot explicit, so ``+(.ss)h`` still reaches ``.ssh`` while
+      ``grep -E '.+(INFO|WARN)'`` rewrites to ``.INFO*`` and reaches nothing.
+    - ``!(…)`` -> ``*``: a negation cannot be enumerated.
+
+    A backslash escapes the next character; an unmatched ``(`` is not a group, so
+    only that paren is dropped. A ``None`` entry means the leaf budget ran out.
+    """
+    if _budget is None:
+        _budget = [_EXTGLOB_MAX_EXPANSIONS]
+    # Every step spends budget, so a command stacked with thousands of groups
+    # or lone `(` ends as a refusal instead of a RecursionError.
+    _budget[0] -= 1
+    if _budget[0] < 0:
+        return [None]
+    m = _EXTGLOB_OP_RE.search(text)
+    if m is None:
+        return [text]
+    op_char = text[m.start()]
+    pos = _extglob_group_end(text, m.end())
+    before = text[: m.start()]
+    if pos is None:
+        return _extglob_expansions(before + op_char + text[m.end() :], _budget)
+    inner = text[m.end() : pos - 1]
+    after = text[pos:]
+    alts: list[str] = []
+    cur: list[str] = []
+    depth2 = 0
+    idx = 0
+    while idx < len(inner):
+        ch = inner[idx]
+        if ch == "\\":
+            cur.append(inner[idx : idx + 2])
+            idx += 2
+            continue
+        if ch in "'\"":
+            close = inner.find(ch, idx + 1)
+            end = len(inner) if close < 0 else close + 1
+            cur.append(inner[idx:end])
+            idx = end
+            continue
+        if ch == "(":
+            depth2 += 1
+        elif ch == ")":
+            depth2 -= 1
+        elif ch == "|" and depth2 == 0:
+            alts.append("".join(cur))
+            cur = []
+            idx += 1
+            continue
+        cur.append(ch)
+        idx += 1
+    alts.append("".join(cur))
+    if op_char == "!":
+        # `*` is the superset of what a negation matches; the inner alternatives
+        # ride along so a group nested in them is still rewritten.
+        alts = ["*", *alts]
+    elif op_char in "+*":
+        # One occurrence spelled plainly. When the enclosing word is a path
+        # (`~` or `/`), one followed by `*` as well, for the repetitions:
+        # `~/.+(s)h` -> `~/.s*h` reaches `.ssh`. A bare regex string is not a
+        # path, so `grep -E '.*(k|m|g)'` -> `.k` and never `.k*`, which the
+        # plain-glob matcher would read as the dotfile `.kube`.
+        word = before.rsplit(None, 1)[-1] if before and not before[-1].isspace() else ""
+        word += after.split(None, 1)[0] if after and not after[0].isspace() else ""
+        if "/" in word or "~" in word:
+            alts = alts + [a + "*" for a in alts]
+        if op_char == "*":
+            alts.insert(0, "")
+    elif op_char == "?":
+        alts.insert(0, "")
+    results: list[str | None] = []
+    for alt in alts:
+        for item in _extglob_expansions(before + alt + after, _budget):
+            results.append(item)
+            if item is None:
+                return results
+    return results
+
+
+def _extglob_superset(text: str) -> str:
+    """Widen every extglob group in *text* to a plain wildcard.
+
+    The result matches at least everything any alternative of any group can
+    match, so judging it is sound when the leaf budget of
+    ``_extglob_expansions`` ran out. A group that can start with a dot
+    (any ``.`` inside it, ``@(a|.ssh)`` or ``@(z|?(x).ssh)``) widens to ``.*``: the plain-glob
+    matcher never lets a bare ``*`` reach a dotfile, and the dot must survive.
+    Nested groups collapse with their parent.
+    """
+    out = text
+    while (m := _EXTGLOB_OP_RE.search(out)) is not None:
+        end = _extglob_group_end(out, m.end())
+        if end is None:
+            out = out[: m.start()] + out[m.start()] + out[m.end() :]
+            continue
+        inner = out[m.end() : end - 1]
+        # Any dot inside the group may start a segment once nested groups and
+        # alternatives resolve (`?(x).ssh`), so the superset keeps it.
+        star = ".*" if "." in inner else "*"
+        out = out[: m.start()] + star + out[end:]
+    return out
 
 
 #: ``_iter_shell_chars`` reports quote state as an int; the scans below read the
@@ -1320,10 +1485,35 @@ def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str
         _substitute_local_assignments(unescaped),
     )
     for variant in variants:
-        if (matched := _matched_sensitive_name(variant)) is not None:
+        # Extglob groups are rewritten into plain-glob text first, so every
+        # form a group can take is judged by the two checks below.
+        if (matched := _matched_sensitive_name(variant, _CRON_CMD_CRED_PATH_RE)) is not None:
             return _protected_path_refusal("command", matched)
         if _glob_could_reach_credentials(variant):
             return _protected_path_refusal("command", None)
+        if not _EXTGLOB_OP_RE.search(variant):
+            continue
+        # Each rewritten form is judged as a whole by the literal matcher, and
+        # by the plain-glob matcher only on the words the rewrite changed: the
+        # untouched words were judged on the variant above, and re-running
+        # fnmatch over a long command for every form made a 1 KB command with
+        # seven `?(x)` groups and forty glob words take over a minute.
+        variant_words = collections.Counter(variant.split())
+        for form in _extglob_expansions(variant):
+            if form is None:
+                # Too many alternatives to enumerate: judge the one superset
+                # form (every group -> `*`) and stop.
+                form = _extglob_superset(variant)
+                if (matched := _matched_sensitive_name(form, _CRON_CMD_CRED_PATH_RE)) is not None:
+                    return _protected_path_refusal("command", matched)
+                if _glob_could_reach_credentials(form):
+                    return _protected_path_refusal("command", None)
+                break
+            if (matched := _matched_sensitive_name(form, _CRON_CMD_CRED_PATH_RE)) is not None:
+                return _protected_path_refusal("command", matched)
+            changed = [w for w in form.split() if not variant_words[w]]
+            if changed and _glob_could_reach_credentials(" ".join(changed)):
+                return _protected_path_refusal("command", None)
     if _CRON_SECRET_ENV_RE.search(command):
         return "Error: cron command blocked: references a protected secret environment variable"
     # After resolving tracked local assignments, any variable reference STILL
