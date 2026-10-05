@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -2039,6 +2040,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.to_chat")
+    if app_denied is not None:
+        return app_denied
     slot_name = f"cron-{job_id}"
     # The job's tab key is held by an app's slot: it is not adopted (see
     # slot_ownership.app_holds_gateway_key), so there is no tab to open.
@@ -2212,6 +2216,9 @@ async def api_cron_history(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.history")
+    if app_denied is not None:
+        return app_denied
     try:
         limit = int(request.query.get("limit", "20"))
     except (ValueError, TypeError):
@@ -2239,6 +2246,9 @@ async def api_cron_history_detail(request: web.Request) -> web.Response:
     run_id = request.match_info["run_id"]
     if (_e := _invalid_path_id_response(run_id, "run_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.history_detail")
+    if app_denied is not None:
+        return app_denied
     detail = await state.crons.get_history().get_run_detail(job_id, run_id)
     if not detail:
         return web.json_response({"error": "run not found"}, status=404)
@@ -2398,6 +2408,9 @@ async def api_cron_script_source(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.script_source")
+    if app_denied is not None:
+        return app_denied
     # Freshness-guaranteed lookup, same rationale as api_cron_run: the job may
     # have been minted by another process and not yet be in the cache snapshot.
     job = await state.crons.get_job_async(job_id)
@@ -2449,9 +2462,31 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         offset = 0
-    runs, total = await state.crons.get_history().get_all_history(
-        job_id=job_id, limit=limit, offset=offset
-    )
+    app = _app_caller(request)
+    if app:
+        # An app sees only the runs of jobs it owns, judged by the same
+        # ``created_by`` stamp ``_refuse_foreign_app_job`` reads. The filter
+        # runs before pagination so ``total`` counts the app's own runs; the
+        # index is capped by ``cron_max_index_records``, so the full read is
+        # bounded. Function-local import for the reason ``api_crons`` gives.
+        from kiro_crew.apps.cron_sdk import app_owner_name
+
+        owned = {
+            j.id
+            for j in state.crons.list_jobs(include_disabled=True)
+            if app_owner_name(j.created_by) == app
+        }
+        rows, _ = await state.crons.get_history().get_all_history(
+            job_id=job_id, limit=sys.maxsize, offset=0
+        )
+        rows = [row for row in rows if row.get("job_id") in owned]
+        total = len(rows)
+        runs = rows[offset : offset + limit]
+        _audit_app_cron(app, "crons.history_all", "allowed", f"rows={total}")
+    else:
+        runs, total = await state.crons.get_history().get_all_history(
+            job_id=job_id, limit=limit, offset=offset
+        )
     # Enrich with job_name
     jobs_by_id = {j.id: j for j in state.crons.list_jobs(include_disabled=True)}
     for run in runs:
