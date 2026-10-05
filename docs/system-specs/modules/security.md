@@ -554,7 +554,7 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,
   search pattern, or commit message is not itself a verdict.
-- `readonly_bash.py` — the read-only bash classifier: `is_read_only_bash` / `unsafe_bash_reason`, the last gate before a shell command auto-approves with no human prompt under `--approval reads` / trust-reads and in `hooks.on_tool_call`'s read-only branch, together with every table that verdict rests on -- the prefix allowlist, the per-verb write, exec and indirection flag denylists, the git ref and remote subcommand rules, the positive option accept-lists for the four tools whose surface is small enough to enumerate (`sort`, `date`, `file`, `hostname`), and the shell-expansion readers that decide whether a token's real spelling is knowable before it runs. Deny-by-default: a command has to be RECOGNISED as read-only, so a spelling nobody thought of prompts rather than passes, and every table entry carries the measurement that put it there. It imports nothing from the package and nothing from the dashboard, which is what lets `hooks.py` import it at module top; its two consumers are `dashboard/chat_runner.py` (the approval flow, where the reason text becomes the refusal card) and `hooks.py` (the auto-approve branch). It is NOT a facade submodule and is reached by its own path, for two reasons. It is not a piece of the split: the classifier came here from `dashboard/state.py`, where no caller or patch site ever reached it as `kiro_crew.security.<name>`, so the facade has nothing to preserve for it and adding its private tables to the frozen manifest would widen the facade's API for no caller. And it answers a different question from the tiers the facade fronts: those decide whether a command is DENIED, and `hooks.on_tool_call` runs every one of them before it asks this module whether the survivor is read-only enough to skip the prompt -- a verdict layer above the deny tiers, not one of them, so it does not belong in a dependency order whose top is the argv floor. Pinned by `test_trust_reads.py`.
+- `readonly_bash.py` — the read-only bash classifier: `is_read_only_bash` / `unsafe_bash_reason`, the last gate before a shell command auto-approves with no human prompt under `--approval reads` / trust-reads and in the tool gate's `read-only` tier (`hook_runtime/gate_tiers.py`), together with every table that verdict rests on -- the prefix allowlist, the per-verb write, exec and indirection flag denylists, the git ref and remote subcommand rules, the positive option accept-lists for the four tools whose surface is small enough to enumerate (`sort`, `date`, `file`, `hostname`), and the shell-expansion readers that decide whether a token's real spelling is knowable before it runs. Deny-by-default: a command has to be RECOGNISED as read-only, so a spelling nobody thought of prompts rather than passes, and every table entry carries the measurement that put it there. It imports nothing from the package and nothing from the dashboard, which is what lets `hooks.py` import it at module top; its two consumers are `dashboard/chat_runner.py` (the approval flow, where the reason text becomes the refusal card) and the gate's `read-only` tier (the auto-approve branch, reading it through `hooks.py`). It is NOT a facade submodule and is reached by its own path, for two reasons. It is not a piece of the split: the classifier came here from `dashboard/state.py`, where no caller or patch site ever reached it as `kiro_crew.security.<name>`, so the facade has nothing to preserve for it and adding its private tables to the frozen manifest would widen the facade's API for no caller. And it answers a different question from the tiers the facade fronts: those decide whether a command is DENIED, and `hooks.on_tool_call` runs every one of them before it asks this module whether the survivor is read-only enough to skip the prompt -- a verdict layer above the deny tiers, not one of them, so it does not belong in a dependency order whose top is the argv floor. Pinned by `test_trust_reads.py`.
 
 ## Threat Model
 
@@ -866,8 +866,9 @@ The hook-layer half of this section is reached at `hooks.py`, which stays the im
 path and the patch surface; the rules it threads live in the modules of
 `kiro_crew.hook_runtime` (`safe_reads`, `descriptor_identity`, `pinned_writes`,
 `windows_paths`, `internal_reads`, `search_targets`, `denied_commands`,
-`governance_gate`, and `tool_identity` for the title normalization and the
-approve/deny pattern matchers), composed onto that module's globals. Which owner holds which rule,
+`governance_gate`, `tool_identity` for the gate's typed input (`ToolCall`), the title
+normalization and the approve/deny pattern matchers, and `gate_tiers` for the tool
+gate's tier bodies, which `hooks.GATE_TIERS` orders), composed onto that module's globals. Which owner holds which rule,
 and which constructs stay in `hooks.py` because a guard reads them there, is the "Hook
 runtime owners" table in [memory-skills-hooks](memory-skills-hooks.md).
 
@@ -1020,7 +1021,7 @@ contracts and retain their existing lexical descriptor checks.
 - The operator edits config out-of-band via the dashboard config API / CLI, which do not route through this gate.
 - **Authorization-carrying leaves in `config.json` take effect without a restart.** The process config watcher (`config/live.py`, `DEFAULT_POLL_INTERVAL_SECS` = 2s) hands a changed channel section to that transport's `reconfigure(section)`, so an edit to an admission roster (`slack.allowed_users`, `telegram.allowed_user_ids`, `weixin.allowed_user_ids`, …), a DM policy, or `hooks.auto_approve_*` is live within one poll instead of at the next operator restart. This changes the *latency* of a forged write, not its reachability: `config.json` is sealed read-only in every sandbox mode (`sandbox._CREW_READONLY_LEAVES`), so the controls on a write are unchanged — the OS seal, which refuses an in-sandbox shell's `open()` however the write is spelled; the file-tool write fence above (`is_sensitive_write_path` + the `hooks.on_tool_call` edit-plane deny); the load-time clamp; and the SEL record every transport emits when an applied section actually changes an authorization field (`log_api_access(caller="config", operation="<channel>_transport.reconfigure", outcome="allow_list_changed" | "dm_policy_changed", resources=<delta>)`, and `operation="hook_manager.reconfigure", outcome="auto_approve_changed"` for the `hooks.auto_approve_*` set). The residuals are a write from OUTSIDE the sandbox — an unsandboxed spawn (`agent.sandbox: "off"`, `sandbox_allow_unsandboxed_exec`) or a compromised process on the host — and, on Linux only, an in-sandbox write landing in the rename-detach window recorded under the sealed-config entry above (the per-file bind detaches at the next gateway save of `config.json`, and a `hooks.auto_approve_*` or roster edit written then is adopted within one poll); both SEL detects after the fact rather than prevents; before hot reload such a write lay inert until a restart, now it is admitted within ~2s. A leaf whose live adoption would be unsafe rather than merely fast is marked `restart=True` in the schema (`messaging.dm_scope` is the messaging example: its session-key namespace seeds per-conversation counters at boot), and `ConfigWatch` refuses any live registration under a marked path.
 
-**Array-nested target paths bind on both planes (issue #6558).** A batch-shaped tool carries its real targets inside an array argument (`{"operations": [{"mode": "Line", "path": …}]}`). The sensitive-path keystone in `hooks.py` (`target_paths` / `TargetPaths`) was made nesting-aware first; the governance INTERSECTION plane (`platform/governance.py` `_tool_arg_paths` / `classify_tool_args`) previously read only the TOP level, so a nested path produced no `(scope, item)` pair, `gate_decision` hit its permit-by-default `if not pairs` branch, and an operator ceiling denying `filesystem.read`/`filesystem.write` outside the workspace never bound on the nested spelling. The bounded, depth-aware, iterative walk now lives in ONE shared lower-level module, `kiro_crew.platform.tool_paths` (stdlib-only, imports neither `hooks` nor `governance`, so there is no cycle — `hooks` imports `governance`), and BOTH planes delegate to it. The third extractor, `hooks._SEARCH_DENY_ARG_KEYS`, stays flat by design (documented residual below) and is out of scope.
+**Array-nested target paths bind on both planes (issue #6558).** A batch-shaped tool carries its real targets inside an array argument (`{"operations": [{"mode": "Line", "path": …}]}`). The sensitive-path keystone (the tool gate's `param-paths` tier, over `target_paths` / `TargetPaths`) was made nesting-aware first; the governance INTERSECTION plane (`platform/governance.py` `_tool_arg_paths` / `classify_tool_args`) previously read only the TOP level, so a nested path produced no `(scope, item)` pair, `gate_decision` hit its permit-by-default `if not pairs` branch, and an operator ceiling denying `filesystem.read`/`filesystem.write` outside the workspace never bound on the nested spelling. The bounded, depth-aware, iterative walk now lives in ONE shared lower-level module, `kiro_crew.platform.tool_paths` (stdlib-only, imports neither `hooks` nor `governance`, so there is no cycle — `hooks` imports `governance`), and BOTH planes delegate to it. The third extractor, `hooks._SEARCH_DENY_ARG_KEYS`, stays flat by design (documented residual below) and is out of scope.
 - **Truncated-scan policy on the permit-by-default plane.** The shared walk is bounded (`_TARGET_PATH_MAX_PATHS`=256, `_TARGET_PATH_MAX_NODES`=10_000) and reports a `truncated` flag. The `hooks` keystone fails SAFE by hard-denying any truncated scan. The governance plane is permit-by-default and must NOT blanket-deny an ungoverned standalone host, so on truncation it emits the filesystem scope(s) the tool kind implies (`edit`→`filesystem.write`; `read`→`filesystem.read`; unknown-kind-without-command→both) against a synthetic, never-permittable item (`_TRUNCATED_SCAN_ITEM`, containing a NUL byte so no allow-list pattern can match it). Effect: a prefix-bounded ALLOW-mode ceiling that confines the scope to a workspace DENIES the unverifiable call (closing the "bury the path past 10_000 nodes to escape the ceiling" fail-open), while an ungoverned scope still permits it (permit-by-default preserved). (A catch-all ALLOW pattern — `**`/`/**`/`*` — does match the marker via fnmatch and permits, but such a ceiling confines nothing and is unconstrained anyway, so this is consistent with its own posture rather than a bypass.) A DENY-mode ceiling that blocks only specific paths permits the marker — a targeted deny is not a general confinement and a partial scan cannot prove the buried path hit that one pattern; the always-on resolved keystone remains the authoritative guard for the sensitive tiers there. This resolves issue #6558 open-question-2 (option (c)); rejected: (a) permit-as-before keeps the fail-open, (b) unconditional deny over-blocks ungoverned hosts and every unrelated scope.
 
 **Spec Builder's decision record** (`trust/spec-builder-decisions.json`) — the app
@@ -1290,7 +1291,7 @@ specified there — one account of one workflow, not two.
 
 ### Denied Commands (`security/` + `hooks.py`)
 
-First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security/`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog — a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
+First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security/`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → the `deny-rules` row of `GATE_TIERS` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog — a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
 
 The two ACP transports' `approve_tool` methods run these security tiers once
 more before any `allow` leaves the process. Approval consumers run the complete
@@ -1434,7 +1435,7 @@ continue to apply.
 > permission model routes every tool decision back through Kiro Crew's
 > `HookManager.on_tool_call` gate, so there is no equivalent upstream-deny gap.
 
-**kiro-cli `autoAllowReadonly` removed.** The `toolsSettings.execute_bash.autoAllowReadonly: true` flag in `config/defaults.json` is gone — kiro-cli no longer self-approves read-only bash upstream of the gate (which would let those calls skip `hooks.py` entirely). Kiro Crew now performs read-only auto-approve itself inside `hooks.on_tool_call`, placed **AFTER** the sensitive-path, deny-floor, and governance checks, so a deny always wins over the read-only fast-path (see "Read-only auto-approve" below).
+**kiro-cli `autoAllowReadonly` removed.** The `toolsSettings.execute_bash.autoAllowReadonly: true` flag in `config/defaults.json` is gone — kiro-cli no longer self-approves read-only bash upstream of the gate (which would let those calls skip `hooks.py` entirely). Kiro Crew now performs read-only auto-approve itself as the last row of the tool gate's `GATE_TIERS`, placed **AFTER** the sensitive-path, deny-floor, and governance checks, so a deny always wins over the read-only fast-path (see "Read-only auto-approve" below).
 
 **Agent-config injection retired.** Kiro Crew no longer injects `deniedCommands` into `~/.kiro/agents/*.json`. `agent._enforce_denied_commands()`, the ~60s `CleanupHook('denied_commands', …)` re-enforce loop (`session.py`), and the `agent.enforce_denied_commands` config scope (`all`/`kirocrew`) are all removed. Enforcement is hooks-gate-only, so a kiro agent config that edits or omits `deniedCommands` cannot weaken Kiro Crew's ceiling — the gate is authoritative (cross-ref `governance.md` Plane A/B).
 
@@ -1829,10 +1830,11 @@ enforcement and display correctly scoped:
   still denies). This is display-only and does not widen enforcement.
 
 **Read-only auto-approve** — now that kiro-cli's `autoAllowReadonly` is retired,
-`hooks.on_tool_call` auto-approves read-only tool calls itself, as the **last**
-branch before `allow()` — after every early-return deny (deny-by-default shell,
-sensitive-path, sensitive-bash, exfil, write-protected-config, effective deny
-set, governance). Position guarantees a read-only classification can never
+the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
+the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every
+deny row (deny-by-default shell, sensitive-path, sensitive-bash, exfil, the
+argument paths, write-protected-config, effective deny set, the MCP auto-deny
+globs, the file-search target, governance) and both grant rows. Position guarantees a read-only classification can never
 re-admit anything the deny/governance gates blocked. For a shell tool it
 auto-approves only when `command` is present and
 `security.readonly_bash.is_read_only_bash(command)` is True (deny-by-default: rejects
@@ -1842,7 +1844,7 @@ change the verdict). Help/version syntax does not create read-only authority:
 the command must already match the explicit read-only command table, otherwise it
 falls through to human approval. A non-shell tool is auto-approved when
 `tool_kind in {"read", "fetch"}` or `slack.gateway._is_read_only_tool(tool_name)`
-is True. Both classifiers are imported function-locally to avoid an import cycle.
+is True. The title heuristic (`_is_read_only_tool`) is imported function-locally to avoid an import cycle; `is_read_only_bash` is imported at module top.
 
 Computer-use observation tools get their own **explicit** pair in that same
 branch (`_cu_read_only_auto_approve`), keyed on the code-owned
@@ -1870,7 +1872,7 @@ Three findings shaped this, and all are worth keeping in view:
 
 1. `tool_name` is the display title, and `select_tool_title` (`acp/_dispatch.py`)
    prefers the LLM-authored `description`, so it is **agent-controlled** — as
-   `on_tool_call`'s own docstring states. The computer-use branch originally sat
+   `ToolCall.title`'s own documentation states. The computer-use branch originally sat
    *above* any kind test, so once the operator enabled computer use, a mutating call
    titled `mcp__kirocrew-computer__computer_get_state` skipped the prompt entirely
    (verified for all six mutating kinds).
@@ -1891,9 +1893,10 @@ Three findings shaped this, and all are worth keeping in view:
 mutate; **the gate must not branch on it again**. Over-blocking here costs one
 approval prompt, under-blocking costs the prompt that is the last thing between an
 injected agent and a click. Pinned by
-`test_hooks.py::TestMutatingKindBeatsTheTitle`, which asserts the unknown-kind cases
-behaviourally AND asserts over the AST that `on_tool_call` references no
-mutating-kind denylist.
+`test_hooks.py::TestMutatingKindBeatsTheTitle`, which asserts behaviourally that
+only `read` and `fetch` auto-approve a call on their own while `other`, an arbitrary
+string and every mutator reach a prompt — exactly the kinds a denylist would let
+through.
 
 ### Inert mentions of a permission verb (`security/argv_floor.py`)
 

@@ -52,7 +52,7 @@ adding a subsystem. The positions this RFC takes, one line each:
 4. **Re-entrancy** is settled now, not deferred: the event carries **advisory
    provenance**, following the in-repo precedent that `Stop` self-limits by
    advisory `hook_continuation_count` / `stop_hook_active`
-   (`src/kiro_crew/hooks.py:3089-3097`) rather than an enforced cap.
+   (`ScriptHookStore.fire`'s `Stop` payload in `src/kiro_crew/hooks.py`) rather than an enforced cap.
 5. **Placement** is a **sixth `HOOK_EVENTS` entry** (a `SessionTagsChanged`
    script-hook event), because the ask is to *run an automation now* on the
    transition, which is precisely what the script-hook engine does, not to
@@ -101,7 +101,7 @@ Three neighbouring issues sit around this one; none asks for it:
   reaction raised a trust question about executing hook definitions that arrive
   inside a project checkout. **That concern does not apply here**: hook
   definitions live in a single global, user-authored store
-  (`_HOOKS_FILE = "hooks.json"`, `src/kiro_crew/hooks.py:2729`), not per-agent and
+  (`_HOOKS_FILE = "hooks.json"` in `src/kiro_crew/hooks.py`), not per-agent and
   not from a checkout.
 - **[#1861](https://github.com/kirodotdev/KiroCrew/issues/1861)** (closed,
   completed), an agent auto-tags its own session from context, shipped as
@@ -117,18 +117,18 @@ Three neighbouring issues sit around this one; none asks for it:
 
 - **Global, user-authored store, not per-agent.** A tag change has no agent and
   no turn, so a per-agent config would have been a blocker; the global
-  `hooks.json` store (`hooks.py:2729`) is not.
+  `hooks.json` store (`_HOOKS_FILE` in `hooks.py`) is not.
 - **No new capability surface.** Script hooks are already governance-gated by
   `capabilities.script_hooks`, default OFF, via
   `_script_hooks_capability_denied` (`src/kiro_crew/hook_runtime/governance_gate.py:163-198`, checked
-  inside `run_script_hook` (`src/kiro_crew/hooks.py:2488`, the `asyncio.to_thread` call
-  at line 2509)). A tag-change hook rides that same gate;
+  inside `run_script_hook` (`src/kiro_crew/hooks.py`, offloaded through its
+  `asyncio.to_thread` call)). A tag-change hook rides that same gate;
   the capability surface does not widen.
 - **Dispatch from an HTTP handler with no agent turn is already supported.**
   `api_hook_test` (`src/kiro_crew/dashboard/handlers/hooks.py:307`) calls
   `run_script_hook` (`:337`) with a synthesized payload, and `run_script_hook`
-  (`src/kiro_crew/hooks.py:2488`) builds a default `hook_event` itself when passed
-  `None` (`hooks.py:2527-2528`), requiring no session and no agent config. A tag-write
+  (`src/kiro_crew/hooks.py`) builds a default `hook_event` itself when passed
+  `None`, requiring no session and no agent config. A tag-write
   handler firing a hook is the same shape.
 
 ## Goals
@@ -216,7 +216,7 @@ This follows the settled in-repo precedent: `Stop` controls its own re-entrancy
 with **advisory** signals, not an enforced cap. `hook_continuation_count` (the
 depth of the current continuation run) and `stop_hook_active` (its boolean
 shorthand) are stamped on the `Stop` payload unconditionally
-(`src/kiro_crew/hooks.py:3089-3097`) precisely so a hook *may* self-limit while a
+(`ScriptHookStore.fire` in `src/kiro_crew/hooks.py`) precisely so a hook *may* self-limit while a
 real gate hook checks its own condition and ignores them. The comment there is
 explicit: *"Kiro's Stop contract defines no cap ... a hook may self-limit,
 diagnose, or surface the count."* We adopt the same stance: the runtime provides
@@ -420,7 +420,7 @@ and the emit helper.
   `hook_runtime/governance_gate.py:163-198`); a deployment that has not enabled script hooks sees no
   new behavior.
 - **No new trust decision.** Hook definitions remain in the global user-authored
-  `hooks.json` (`hooks.py:2729`); nothing executes definitions that arrive with a
+  `hooks.json` (`_HOOKS_FILE` in `hooks.py`); nothing executes definitions that arrive with a
   project checkout (the [#1487](https://github.com/kirodotdev/KiroCrew/issues/1487)
   concern does not apply).
 - **Minimal payload.** The event carries the session key and status tag ids
@@ -450,7 +450,7 @@ and the emit helper.
 - **Enforced re-entrancy suppression.** Rejected per Question 4: it would swallow
   legitimate rapid transitions and would be the only enforced re-entrancy control
   in the hook engine, contradicting the advisory `Stop` precedent
-  (`hooks.py:3089-3097`).
+  (`ScriptHookStore.fire`'s `Stop` payload in `hooks.py`).
 
 ## Open questions
 

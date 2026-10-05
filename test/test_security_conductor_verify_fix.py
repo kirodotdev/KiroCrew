@@ -509,14 +509,27 @@ class TestABrokenGoldenPathRejectsTheFix:
         assert result.returncode == EXIT_BROKEN, result.stderr
         assert f"[{tag}]" in payload(result)["broken"][0]["why"]
 
-    def test_the_tier_order_matches_deny_diff(self, mod) -> None:
-        """Two gates, one claim. They agree only while they measure the same list."""
-        source = (REPO_ROOT / "scripts" / "deny_diff.py").read_text(encoding="utf-8")
-        start = source.index("_TIERS: tuple[tuple[str, str], ...] = (")
-        end = source.index("\n)\n", start)
-        declared = re.findall(r'\("([a-z-]+)",\s*"([a-z_]+)"\)', source[start:end])
-        assert declared, "deny_diff's tier table was not found"
-        assert list(mod.TIERS) == [tuple(pair) for pair in declared]
+    def test_the_tiers_are_the_gate_s_and_the_differential_s(
+        self, mod, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Three readers of one claim -- "no golden path is refused at the tool gate".
+        This script keeps its own copy (it runs as a synced skill file with no product
+        tree beside it), so it must equal the gate's ``SHELL_DENY_TIERS`` and what the
+        denial differential reads from that tree."""
+        import importlib.util
+
+        from kiro_crew import hooks
+
+        # Registered while it executes: its dataclasses resolve their string
+        # annotations through ``sys.modules[cls.__module__]``.
+        name = "security_conductor_verify_fix_deny_diff"
+        spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "scripts" / "deny_diff.py")
+        assert spec is not None and spec.loader is not None
+        deny_diff = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, deny_diff)
+        spec.loader.exec_module(deny_diff)
+        measured = deny_diff.load_shell_deny_tiers(REPO_ROOT)
+        assert tuple(mod.TIERS) == hooks.SHELL_DENY_TIERS == measured
 
 
 class TestHoldsIsUnreachableWhileAnythingIsUnverifiable:

@@ -499,21 +499,23 @@ class TestHookGateKwargs:
     ``on_tool_call`` arguments. A dispatcher that hand-copies the fields it
     knows about drops the ones it does not, and the gate then never sees that
     signal on that surface (``diff_path``, then the trusted MCP identity, were
-    each missed this way). These tests pin the helper on three axes: it maps every field the gate reads
-    (behavioral), it stays complementary to the gate's own signature
-    (parity — a new gate parameter fails here first), and every enforcing
-    site in the package goes through it (structural — no hand copy remains).
+    each missed this way). The extraction is ``ToolCall.from_event`` and the
+    helper is that call's keyword form. These tests pin it on three axes: it
+    maps every field the gate reads (behavioral), the ``ToolCall`` it builds is
+    the gate's WHOLE input (completeness — a new gate field fails here first),
+    and every enforcing site in the package goes through it (structural — no
+    hand copy remains).
     """
 
     # The gate's keyword parameters that describe the CALLING SURFACE (who is
     # asking, on whose behalf, in which mode) rather than the tool call. Every
-    # other keyword parameter is derived from the event, and the parity test
-    # below demands the helper emit exactly those.
+    # other keyword parameter is derived from the event, and the completeness
+    # test below demands the helper emit exactly those.
     SURFACE_KWARGS = frozenset({"session_key", "agent", "app", "resolved_agent", "classifier_only"})
 
     # The gate's event-derived parameters and the event attribute each reads.
-    # A new entry here means a new enforcement signal; the parity test below
-    # then demands the helper emit it and ``on_tool_call`` accept it.
+    # A new entry here means a new enforcement signal; the completeness test
+    # below then demands ``ToolCall.from_event`` fill it and the helper emit it.
     EVENT_FIELD_BY_KWARG = {
         "tool_kind": "tool_kind",
         "raw_params": "raw_tool_params",
@@ -654,46 +656,80 @@ class TestHookGateKwargs:
         with pytest.raises(TypeError, match="mcp_tool"):
             hook_gate_kwargs(ev, mcp_tool="typo")
 
-    def test_hook_gate_kwargs_covers_every_event_derived_gate_parameter(self):
-        """PARITY: the gate's keyword parameters split exactly into the
-        surface set (``SURFACE_KWARGS``: who is asking, in which mode) and the
-        helper's output. Adding an enforcement-relevant parameter to
-        ``on_tool_call`` without extracting it here fails this test — the
-        failure mode the issue names is a new field reaching no dispatcher
-        because every site had to be edited by hand."""
-        import inspect
+    def test_the_toolcall_from_an_event_is_the_whole_gate_input(self, monkeypatch):
+        """COMPLETENESS, observed: ``ToolCall.from_event`` fills every field of the
+        gate's input from the event (``resolved_agent`` excepted -- no event carries
+        it, so the site supplies it), the helper's output is exactly that call in
+        keyword form, and the keyword gate hands ``judge`` that same call plus the
+        surface. A field added to the gate's input is therefore extracted once, for
+        both forms, or this fails -- the failure mode the issue names is a new field
+        reaching no dispatcher because every site had to be edited by hand."""
+        import dataclasses
 
-        from kiro_crew.hooks import hook_gate_kwargs
+        from kiro_crew.hooks import TOOL_ALLOW, ToolCall, ToolHookResult, hook_gate_kwargs
 
-        sig = inspect.signature(HookManager.on_tool_call)
-        keyword_only = {
-            name for name, p in sig.parameters.items() if p.kind is inspect.Parameter.KEYWORD_ONLY
-        }
-        # The positional ``tool_name`` (the display title) is the one argument
-        # every site passes by hand: it is what the site shows the user.
-        assert [
-            n for n, p in sig.parameters.items() if p.kind is not inspect.Parameter.KEYWORD_ONLY
-        ] == ["self", "tool_name"]
-        emitted = set(hook_gate_kwargs(SimpleNamespace()))
-        assert emitted == set(self.EVENT_FIELD_BY_KWARG)
-        assert emitted.isdisjoint(self.SURFACE_KWARGS)
-        assert emitted | self.SURFACE_KWARGS == keyword_only, (
-            "on_tool_call gained a keyword parameter that is neither a surface "
-            "kwarg nor extracted by hook_gate_kwargs: "
-            + ", ".join(sorted(keyword_only - emitted - self.SURFACE_KWARGS))
-        )
-        # And the mapping this test declares is what the helper actually reads.
         probe = SimpleNamespace(
-            **{attr: f"<{attr}>" for attr in self.EVENT_FIELD_BY_KWARG.values()}
+            title="<title>",
+            **{attr: f"<{attr}>" for attr in self.EVENT_FIELD_BY_KWARG.values()},
         )
         probe.is_shell = True
         probe.mcp_identity_trusted = True
+        call = ToolCall.from_event(probe)
+        blank = ToolCall(title="")
+        unfilled = [
+            field.name
+            for field in dataclasses.fields(ToolCall)
+            if field.name not in ("title", "resolved_agent")
+            and getattr(call, field.name) == getattr(blank, field.name)
+        ]
+        assert unfilled == [], f"ToolCall fields no event attribute fills: {unfilled}"
+        assert (call.title, call.resolved_agent) == ("<title>", "")
+        assert ToolCall.from_event(probe, resolved_agent="kirocrew").resolved_agent == "kirocrew"
+        with pytest.raises(TypeError, match="resolved_agnet"):
+            ToolCall.from_event(probe, resolved_agnet="typo")
+
+        # The helper is the call's keyword form, field for field, and nothing else.
         got = hook_gate_kwargs(probe)
+        assert got == call.kwargs()
+        assert set(got) == set(self.EVENT_FIELD_BY_KWARG)
+        assert set(got).isdisjoint(self.SURFACE_KWARGS)
         for kwarg, attr in self.EVENT_FIELD_BY_KWARG.items():
             if kwarg in ("is_shell", "mcp_identity_trusted"):
                 assert got[kwarg] is True
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg
+
+        # PARITY with the keyword form: ``on_tool_call``'s keywords are exactly the
+        # call's event-derived keywords plus the surface, and ``judge`` takes the
+        # call plus the surface alone -- a keyword added to either without a
+        # ``ToolCall`` field to carry it fails here instead of being dropped.
+        import inspect
+
+        def keyword_only(fn):
+            return {
+                name
+                for name, p in inspect.signature(fn).parameters.items()
+                if p.kind is inspect.Parameter.KEYWORD_ONLY
+            }
+
+        shim = inspect.signature(HookManager.on_tool_call).parameters
+        assert [n for n, p in shim.items() if p.kind is not p.KEYWORD_ONLY] == ["self", "tool_name"]
+        assert keyword_only(HookManager.on_tool_call) == set(call.kwargs()) | self.SURFACE_KWARGS
+        assert keyword_only(HookManager.judge) | {"resolved_agent"} == self.SURFACE_KWARGS
+
+        # And the keyword gate judges exactly that call, with the surface beside it.
+        seen = []
+
+        def judge(self, gate_call, **surface):
+            seen.append((gate_call, surface))
+            return ToolHookResult(action=TOOL_ALLOW)
+
+        monkeypatch.setattr(HookManager, "judge", judge)
+        surface = {"session_key": "s", "agent": "a", "app": "p", "classifier_only": True}
+        HookManager().on_tool_call(
+            probe.title, resolved_agent="kirocrew", **surface, **hook_gate_kwargs(probe)
+        )
+        assert seen == [(dataclasses.replace(call, resolved_agent="kirocrew"), surface)]
 
     # Sites the structural scan treats specially. Each entry is a reviewed
     # decision, not drift: a new entry needs a reason in the site's comment.
@@ -702,6 +738,13 @@ class TestHookGateKwargs:
         # branch cannot reject, and arming the params/diff/is_shell tiers would
         # let a best-effort warning claim to have blocked a running call.
         "slack/handler.py",
+    }
+    # ``.judge(`` calls that are not a hook-gate consultation, keyed by (site,
+    # receiver), so another receiver in the same module is still scanned.
+    NOT_HOOK_JUDGE_SITES = {
+        # The settle ladder's Gate port. Its HookGate adapter consults
+        # ``on_tool_call`` through each surface's own scanned site.
+        ("tool_permission.py", "policy.gate"),
     }
     ALLOWED_OVERRIDES = {
         # Provider-agnostic readings of a stream that may not be an AcpEvent.
@@ -724,16 +767,17 @@ class TestHookGateKwargs:
         """Yield ``(line, call_text)`` for every gate consultation in ``text``.
 
         The recognised consultation shape is an ASSIGNMENT
-        (``result = ...hooks.on_tool_call(``): every gate consultation reads
-        the verdict's ``.action``, so every one binds the result. The renderers'
-        unrelated ``on_tool_call`` handler (``await self.on_tool_call(``) and
-        docstring mentions are not consultations. A gate call written in another
-        shape would escape this scan; keep the assignment shape when adding a
-        site, or widen this pattern with it.
+        (``result = ...hooks.on_tool_call(`` or ``result = ...hooks.judge(``):
+        every gate consultation reads the verdict's ``.action``, so every one
+        binds the result. The renderers' unrelated ``on_tool_call`` handler
+        (``await self.on_tool_call(``) and docstring mentions are not
+        consultations. A gate call written in another shape would escape this
+        scan; keep the assignment shape when adding a site, or widen this pattern
+        with it.
         """
         import re
 
-        for match in re.finditer(r"=\s*[\w.]+\.on_tool_call\(", text):
+        for match in re.finditer(r"=\s*[\w.]+\.(?:on_tool_call|judge)\(", text):
             depth, i = 1, match.end()
             while i < len(text) and depth:
                 depth += {"(": 1, ")": -1}.get(text[i], 0)
@@ -741,6 +785,102 @@ class TestHookGateKwargs:
             # Comments inside the call explain the site; they are not kwargs.
             call = re.sub(r"#[^\n]*", "", text[match.start() : i])
             yield text.count("\n", 0, match.start()) + 1, call
+
+    @staticmethod
+    def _is_judge_site(call: str) -> bool:
+        """Whether a scanned consultation is the typed ``judge`` form."""
+        return call.split("(", 1)[0].endswith(".judge")
+
+    @staticmethod
+    def _judge_receiver(call: str) -> str:
+        """The expression a scanned ``judge`` site calls the method on."""
+        return call.split("(", 1)[0].lstrip("=").strip().removesuffix(".judge")
+
+    #: The ``ToolCall`` field each pinned ``hook_gate_kwargs`` override sets.
+    FIELD_BY_OVERRIDE = {"tool_kind": "kind", "command": "command", "is_shell": "is_shell"}
+
+    @classmethod
+    def _judge_site_offence(cls, rel: str, call: str) -> str | None:
+        """Why a typed ``judge`` consultation is an offender, or ``None``.
+
+        Held to the same rule as the keyword form. Its ``ToolCall`` is built IN
+        PLACE by ``ToolCall.from_event`` -- not hand-built, not bound to a name
+        first, not wrapped (``dataclasses.replace``) -- and the extraction may
+        override only ``resolved_agent``, which no event carries, plus the fields
+        the site's pinned ``ALLOWED_OVERRIDES`` set."""
+        import re
+
+        m = re.search(r"\.judge\(\s*(?:[\w.]+\.)?ToolCall\.from_event\(", call)
+        if not m:
+            return "judges a call not built in place by ToolCall.from_event"
+        depth, i = 1, m.end()
+        while i < len(call) and depth:
+            depth += {"(": 1, ")": -1}.get(call[i], 0)
+            i += 1
+        span = call[m.end() : i - 1]
+        if not re.match(r"\s*[,)]", call[i:]):
+            # Anything between the extraction and the end of the argument (a
+            # conditional, ``or``, an attribute or call on the result) can swap or
+            # reshape the call the gate judges.
+            return "wraps the ToolCall.from_event result"
+        if "**" in span:
+            return "splats unreviewable overrides into ToolCall.from_event"
+        pinned = cls.ALLOWED_OVERRIDES.get(rel, set())
+        allowed = {"resolved_agent"} | {cls.FIELD_BY_OVERRIDE[k] for k in pinned}
+        stray = sorted(set(re.findall(r"\b(\w+)\s*=(?!=)", span)) - allowed)
+        return f"overrides {stray} without a pinned reason" if stray else None
+
+    def test_a_typed_consultation_must_be_built_by_from_event(self):
+        """The scan sees the typed form and holds it to the one extraction and to
+        the pinned overrides, exactly as it holds an ``on_tool_call`` site."""
+        pinned = "apps/builtins/auto_improvement/spine/agent_runner.py"
+        cases = [
+            ("x.py", "a = self.hooks.judge(ToolCall.from_event(event), session_key=k)", None),
+            ("x.py", "a = gate.judge(hooks.ToolCall.from_event(event, resolved_agent=r))", None),
+            (
+                pinned,
+                "a = gate.judge(ToolCall.from_event(event, kind=k, command=c, is_shell=s))",
+                None,
+            ),
+            ("x.py", "b = self.hooks.judge(ToolCall(title=event.title, command=c))", "in place"),
+            ("x.py", "b = self.hooks.judge(call, session_key=k)", "in place"),
+            (
+                "x.py",
+                "b = gate.judge(dataclasses.replace(ToolCall.from_event(e), is_shell=False))",
+                "in place",
+            ),
+            (
+                "x.py",
+                "b = gate.judge(ToolCall.from_event(event, identity_trusted=True), app=p)",
+                "['identity_trusted']",
+            ),
+            ("x.py", "b = gate.judge(ToolCall.from_event(event, command=c))", "['command']"),
+            ("x.py", "b = gate.judge(ToolCall.from_event(event, **extra))", "splats"),
+            (
+                "x.py",
+                "b = gate.judge(ToolCall.from_event(e) if ok else ToolCall(identity_trusted=True))",
+                "wraps",
+            ),
+            ("x.py", "b = gate.judge(ToolCall.from_event(e) or forged, app=p)", "wraps"),
+            ("x.py", "b = gate.judge(ToolCall.from_event(e).__class__(title=t))", "wraps"),
+        ]
+        for rel, text, offence in cases:
+            ((_, call),) = self._gate_calls(text)
+            assert self._is_judge_site(call), text
+            got = self._judge_site_offence(rel, call)
+            assert (got is None) if offence is None else (offence in (got or "")), (text, got)
+        ((_, call),) = self._gate_calls(
+            "c = gate.on_tool_call(event.title, **hook_gate_kwargs(event))"
+        )
+        assert not self._is_judge_site(call)
+        # The pinned non-gate site is matched by its receiver, not by its module.
+        (_, port), (_, hooks_site) = self._gate_calls(
+            "v = policy.gate.judge(ask)\nr = self.hooks.judge(call, session_key=k)"
+        )
+        assert ("tool_permission.py", self._judge_receiver(port)) in self.NOT_HOOK_JUDGE_SITES
+        assert ("tool_permission.py", self._judge_receiver(hooks_site)) not in (
+            self.NOT_HOOK_JUDGE_SITES
+        )
 
     @staticmethod
     def _strip_helper_spans(call: str) -> tuple[str, list[str]]:
@@ -778,12 +918,22 @@ class TestHookGateKwargs:
         event_kwargs = set(self.EVENT_FIELD_BY_KWARG)
         offenders: list[str] = []
         helper_sites: set[str] = set()
+        not_hook_judge_sites: set[tuple[str, str]] = set()
         for path in root.rglob("*.py"):
             rel = path.relative_to(root).as_posix()
             if "/tests/" in f"/{rel}" or rel == "hooks.py":
                 continue
             text = path.read_text(encoding="utf-8")
             for line, call in self._gate_calls(text):
+                if self._is_judge_site(call):
+                    if (rel, self._judge_receiver(call)) in self.NOT_HOOK_JUDGE_SITES:
+                        not_hook_judge_sites.add((rel, self._judge_receiver(call)))
+                        continue
+                    # The typed form: its input must be the one extraction too.
+                    offence = self._judge_site_offence(rel, call)
+                    if offence:
+                        offenders.append(f"{rel}:{line} {offence}")
+                    continue
                 uses_helper = "**hook_gate_kwargs(" in call
                 remainder, overrides = self._strip_helper_spans(call)
                 hand_copied = sorted(k for k in event_kwargs if f"{k}=" in remainder)
@@ -830,6 +980,8 @@ class TestHookGateKwargs:
         # table too, or the table drifts into fiction.
         for rel in self.INFORMATIONAL_SITES | set(self.ALLOWED_OVERRIDES):
             assert (root / rel).exists(), rel
+        # And each pinned non-gate ``judge`` site is still the call it names.
+        assert not_hook_judge_sites == self.NOT_HOOK_JUDGE_SITES
 
 
 class TestToolCallEvaluatesRawCommand:
@@ -1741,7 +1893,7 @@ class TestMutatingKindBeatsTheTitle:
 
     ``tool_name`` is the display title, and ``select_tool_title``
     (``acp/_dispatch.py``) prefers the LLM-authored ``description`` — so it is
-    agent-controlled, which ``on_tool_call``'s own docstring states outright. The
+    agent-controlled, which ``ToolCall.title``'s own documentation states outright. The
     computer-use read-only auto-approve must not be tested BEFORE any kind guard: otherwise,
     once the operator enabled computer use, an ``edit``/``execute``/``write``/
     ``delete`` call titled ``mcp__kirocrew-computer__computer_get_state`` skipped
@@ -1756,6 +1908,8 @@ class TestMutatingKindBeatsTheTitle:
     """
 
     _CU_OBSERVE_TITLE = "mcp__kirocrew-computer__computer_get_state"
+    #: A title no read-only rule recognises, so only the kind can approve it.
+    _OPAQUE_TITLE = "mcp__ops__frobnicate"
 
     #: Known mutators, plus the ACP values and shapes a denylist would miss. The
     #: second group is the point: those are what made the denylist fail open.
@@ -1786,31 +1940,47 @@ class TestMutatingKindBeatsTheTitle:
             "computer-use title — interactive approval was skipped"
         )
 
-    def test_the_read_only_kinds_are_an_allowlist_not_a_denylist(self):
-        """Pinned structurally: the gate must not reintroduce a mutating-kind list.
+    #: Kinds that must NOT auto-approve a non-shell call on their own: every
+    #: mutator, the ACP values a denylist would miss, and arbitrary strings.
+    _NOT_READ_ONLY = [
+        "other",
+        "edit",
+        "EDIT",
+        "execute",
+        "delete",
+        "move",
+        "search",
+        "think",
+        "switch_mode",
+        "write",
+        "frobnicate",
+    ]
 
-        A behavioural test alone would keep passing if someone widened the accepted
-        set back out, so this asserts the SHAPE — the read-only vocabulary is small
-        and explicit, and ``_WRITE_TOOL_KINDS`` is documentation rather than a branch.
-        """
-        import ast
-        import inspect
-        import textwrap
-
+    @pytest.mark.parametrize("kind", ["read", "fetch", "READ", " fetch "])
+    def test_only_the_read_only_kinds_auto_approve_a_call_on_their_own(self, kind):
+        """The allow-list, observed: ``read`` and ``fetch`` (case- and space-folded)
+        auto-approve a non-shell call whose title proves nothing -- and the
+        vocabulary is exactly those two, since a behavioural sample alone would keep
+        passing if the set were widened to a kind nobody listed here."""
         from kiro_crew import hooks as hooks_mod
 
         assert hooks_mod._READ_ONLY_TOOL_KINDS == frozenset({"read", "fetch"})
-        # Over the AST, not the source text: the explanatory comment names the
-        # constant deliberately, and a substring check would flag that prose.
-        tree = ast.parse(textwrap.dedent(inspect.getsource(hooks_mod.HookManager.on_tool_call)))
-        referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
-            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-        }
-        assert "_WRITE_TOOL_KINDS" not in referenced, (
-            "the gate branches on a denylist of mutating kinds again — `tool_kind` is "
-            "an arbitrary ACP string, so such a list is incomplete by construction"
-        )
-        assert "_READ_ONLY_TOOL_KINDS" in referenced, "the allow-list branch is gone"
+        result = HookManager().on_tool_call(self._OPAQUE_TITLE, tool_kind=kind)
+        assert (result.action, result.read_only) == (TOOL_AUTO_APPROVE, True)
+
+    @pytest.mark.parametrize("kind", _NOT_READ_ONLY)
+    def test_any_other_kind_reaches_a_prompt(self, kind):
+        """Fail closed on a kind nobody enumerated: ``other`` and an arbitrary string
+        are as unapproved as ``edit``. A DENYLIST of mutating kinds would auto-approve
+        exactly these, which is why the vocabulary is an allow-list."""
+        result = HookManager().on_tool_call(self._OPAQUE_TITLE, tool_kind=kind)
+        assert result.action == TOOL_ALLOW, f"tool_kind={kind!r} skipped the prompt"
+
+    def test_an_absent_kind_falls_back_to_the_title_and_no_further(self):
+        """No kind at all is not a read: the title-verb fallback decides, and a title
+        that proves nothing reaches a prompt."""
+        assert HookManager().on_tool_call(self._OPAQUE_TITLE).action == TOOL_ALLOW
+        assert HookManager().on_tool_call(self._OPAQUE_TITLE, tool_kind="").action == TOOL_ALLOW
 
     @pytest.mark.parametrize("kind", ["read", "fetch"])
     def test_a_genuine_cu_observation_still_auto_approves(self, kind, monkeypatch):

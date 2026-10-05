@@ -17,6 +17,7 @@ import os
 import time
 
 import pytest
+from test_gate_tiers import gate_world  # noqa: F401
 
 from kiro_crew import name_grant, platform_compat
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, HookManager, HooksConfig
@@ -261,15 +262,58 @@ class TestLoopSafety:
         # And it is the only thread dispatch in the module.
         assert inspect.getsource(name_grant).count("asyncio.to_thread(name_grant_refusal") == 1
 
-    def test_the_loop_bound_hook_no_longer_resolves_anything(self):
-        # `HookManager.on_tool_call` is synchronous and called on the loop, so it
-        # must not reach this module at all: not `shutil.which`, not a digest.
-        import inspect
+    @pytest.mark.usefixtures("gate_world")
+    def test_the_loop_bound_gate_never_resolves_a_name(self):
+        # `HookManager.judge` is synchronous and called on the loop, so it must not
+        # reach this module at all: not `shutil.which`, not a digest. Every entry
+        # point a resolution starts from raises here, and the gate still reaches the
+        # same verdict for a call decided by each of its rows and branches.
+        import shutil
+        import sys
 
-        from kiro_crew import hooks
+        from test_gate_tiers import ALL_SCENARIOS, judge_scenario
 
-        source = inspect.getsource(hooks.HookManager.on_tool_call)
-        assert "name_grant" not in source
+        def judge_all():
+            for param in ALL_SCENARIOS:
+                (scenario,) = param.values
+                verdict = judge_scenario(scenario)
+                assert (verdict.action, verdict.tier) == (scenario.action, scenario.tier), param.id
+
+        # One pass BEFORE the stubs go in. A row may import a module lazily (the
+        # read-only tier imports ``kiro_crew.slack.gateway``, which loads the
+        # dashboard chat runner), and a module first imported while a stub is
+        # installed binds it by name for good -- ``from kiro_crew.name_grant import
+        # ...`` -- where the undo never reaches, so every later test that module
+        # serves would call the stub.
+        judge_all()
+
+        def resolves(*_args, **_kwargs):
+            raise AssertionError("the gate resolved a program name on the loop")
+
+        with pytest.MonkeyPatch.context() as patch:
+            for entry in (
+                "name_grant_refusal",
+                "refusal_for_command_off_loop",
+                "refusal_for_event",
+                "program_names",
+                "environment_refusal",
+                "_program_refusal",
+            ):
+                patch.setattr(name_grant, entry, resolves)
+            patch.setattr(shutil, "which", resolves)
+            judge_all()
+
+        # Nothing kept a stub past the undo.
+        kept = sorted(
+            f"{name}.{attr}"
+            for name, module in list(sys.modules.items())
+            for attr, value in list(getattr(module, "__dict__", {}).items())
+            if value is resolves
+        )
+        assert kept == []
+        from kiro_crew.dashboard import chat_runner
+
+        assert chat_runner._name_grant_refusal_off_loop is name_grant.refusal_for_command_off_loop
 
 
 class TestShadowedResolution:

@@ -965,8 +965,8 @@ The four derived members are not shims. `shell_command`, `child_low_fidelity`,
 first-class SDK members computed by the driver (§5.2), because they are read on the
 permission path and losing them is not a deprecation — it is a security regression.
 Dropping `raw_tool_params` without them makes `shell_command` return `None` on
-`tool_call` events, every such shell call then hits `hooks.py:539`'s
-deny-by-default, and the `use_aws` regression `types.py:596-605` exists to prevent
+`tool_call` events, every such shell call then hits the gate's deny-by-default
+(`_tier_unverifiable_shell`, the `unverifiable-shell` row of `hooks.GATE_TIERS`), and the `use_aws` regression `types.py:596-605` exists to prevent
 comes back.
 
 PR 5's waves delete the shims per file as each consumer moves, and PR 6's exit

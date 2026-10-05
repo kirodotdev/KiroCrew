@@ -28,11 +28,13 @@ it.
 What counts as "refused"
 ------------------------
 The whole composite the tool gate applies to a shell command, in its order, not
-just the rule catalog -- see :data:`_TIERS`. Each of those checks returns a denial
-at ``hooks.on_tool_call``, so a gate that measured only the last would go green on
-a tightening of the first two and the green badge would then stand as evidence
-the question was asked. The reported tier says which one decided, because "the
-sensitive-command tier refused it" and "a catalog rule matched it" need different fixes.
+just the rule catalog -- ``hooks.SHELL_DENY_TIERS``, the shell checks of the
+gate's own tier table (``hooks.GATE_TIERS``), read by :func:`load_shell_deny_tiers`.
+Each of those checks returns a denial at ``hooks.on_tool_call``, so a gate that
+measured only the last would go green on a tightening of the first two and the
+green badge would then stand as evidence the question was asked. The reported
+tier says which one decided, because "the sensitive-command tier refused it" and
+"a catalog rule matched it" need different fixes.
 ``enabled_ids``/``denied_regexes`` are left at their defaults, which fails closed
 to every built-in rule enabled -- the strictest posture an operator can be
 running, and the only one that needs no config.
@@ -58,7 +60,8 @@ classifier is the thing under test, so importing it here would pin the harness
 to one side of the comparison; and an inline ``python -c "import kiro_crew..."``
 is itself refused by the argv floor this gate exists to keep honest. The child
 is this same file re-executed with :data:`_WORKER_FLAG`, which imports the
-product only in that mode.
+product only in that mode. The tier table is read as TEXT
+(``ast.literal_eval`` of ``hooks.SHELL_DENY_TIERS``), for the same reason.
 
 *The child is hermetic.* Every ``KIROCREW_*`` variable is stripped from the
 child's environment, and both the OS home and ``KIROCREW_HOME`` are repointed
@@ -87,6 +90,7 @@ removing it from both sides and passing.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import subprocess
@@ -114,24 +118,16 @@ _KINDS = frozenset({"shell", "test", "flow", "cron"})
 #: Platform selectors a row may declare.
 _PLATFORMS = frozenset({"any", "posix", "windows"})
 
-#: The deny checks this gate measures, in the order ``hooks.on_tool_call`` applies
-#: them to a shell command, as (tier name, attribute of ``kiro_crew.security``).
+#: Where the deny checks this gate measures are declared, relative to a tree: the
+#: tool gate's own ``SHELL_DENY_TIERS`` -- (tier name, attribute of
+#: ``kiro_crew.security``) in the order the gate applies them to a shell command.
 #:
-#: Declared as data rather than inline in the worker so ``test/test_deny_diff.py``
-#: can compare it against the hooks gate itself. The gate's whole claim is that a
-#: green means "no golden path is newly refused AT THE TOOL GATE", and that holds
-#: only while these two sets agree -- nothing about adding a fifth check over there
-#: would otherwise reach this file, so the differential would keep passing while
-#: quietly covering less of the product than it says.
-_TIERS: tuple[tuple[str, str], ...] = (
-    # No path tier: the gate reads a PATH there and a shell command is command text,
-    # which ``hooks.on_tool_call`` deliberately does not match paths in (the OS
-    # sandbox holds the credential stores away from the shell). Measuring it here
-    # would refuse a valid golden command whenever the resolver stalled.
-    ("sensitive-bash", "is_sensitive_bash_command"),
-    ("exfil", "audit_bash_exfiltration"),
-    ("deny-rules", "is_denied"),
-)
+#: Read from the gate rather than restated here, because the gate's whole claim is
+#: that a green means "no golden path is newly refused AT THE TOOL GATE", and that
+#: holds only while the measured checks are the gate's: a check added to the gate's
+#: table is measured on the next run, with no second copy to forget.
+_TIER_TABLE_FILE = Path("src") / "kiro_crew" / "hooks.py"
+_TIER_TABLE_NAME = "SHELL_DENY_TIERS"
 
 
 #: Seconds a single classification child may take for the WHOLE corpus. One
@@ -194,9 +190,9 @@ class Row:
 class Verdict:
     """What one ref's deny composite said about one command.
 
-    ``tier`` names which of :data:`_TIERS` decided, so a reader knows whether to
-    look at the sensitive-command tier, the exfiltration auditor or the rule catalog.
-    Empty when nothing refused.
+    ``tier`` names which tier of the measured table decided, so a reader knows
+    whether to look at the sensitive-command tier, the exfiltration auditor or the
+    rule catalog. Empty when nothing refused.
     """
 
     denied: bool
@@ -221,8 +217,8 @@ class Report:
     total_rows: int
     skipped_kind: int = 0
     skipped_platform: int = 0
-    #: Tiers declared in :data:`_TIERS` that the BASE tree does not carry, i.e. deny
-    #: checks this change introduces. Reported because they are the reason a whole
+    #: Measured tiers that the BASE tree does not carry, i.e. deny checks this change
+    #: introduces. Reported because they are the reason a whole
     #: tier's worth of rows can turn up as regressions at once.
     base_absent_tiers: list[str] = field(default_factory=list)
     regressions: list[tuple[Row, Verdict]] = field(default_factory=list)
@@ -383,6 +379,61 @@ def _rev_parse(repo_root: Path, ref: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The measured tier table
+# ---------------------------------------------------------------------------
+
+
+def load_shell_deny_tiers(repo_root: Path) -> tuple[tuple[str, str], ...]:
+    """The gate's ``SHELL_DENY_TIERS`` as it stands in *repo_root*'s ``hooks.py``.
+
+    *repo_root* is the tree this harness runs from, never a tree it classifies: the
+    table belongs to the JUDGE, exactly as the literal this replaced lived in this
+    file. In the denial-differential lane that is the change's own checkout, so a
+    PR that adds a check to the gate measures it; in the scope lanes it is the base
+    or default-branch checkout that supplies the harness, so the change under
+    judgement cannot shrink the composite it is measured by.
+
+    Parsed, never imported (see the module docstring), and read on demand rather
+    than at import: the scope lanes import this file alone, beside
+    ``scope_candidates.py``, for its row schema. Every failure is a
+    :class:`DenyDiffError` -- a table that cannot be read measured nothing.
+    """
+    path = repo_root / _TIER_TABLE_FILE
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise DenyDiffError(f"cannot read the tool gate's tier table in {path}: {exc}") from exc
+    for node in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        if not isinstance(target, ast.Name) or target.id != _TIER_TABLE_NAME or value is None:
+            continue
+        try:
+            table = ast.literal_eval(value)
+        except ValueError as exc:
+            raise DenyDiffError(f"{_TIER_TABLE_NAME} in {path} is not a literal: {exc}") from exc
+        if (
+            not isinstance(table, tuple)
+            or not table
+            or not all(
+                isinstance(pair, tuple)
+                and len(pair) == 2
+                and all(isinstance(part, str) and part for part in pair)
+                for pair in table
+            )
+        ):
+            raise DenyDiffError(
+                f"{_TIER_TABLE_NAME} in {path} is not a non-empty tuple of (name, attribute) pairs"
+            )
+        return tuple((name, attribute) for name, attribute in table)
+    raise DenyDiffError(f"{path} declares no {_TIER_TABLE_NAME}")
+
+
+# ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
 
@@ -417,13 +468,19 @@ def _child_env(checkout: Path, home: Path) -> dict[str, str]:
 
 
 def classify(
-    checkout: Path, commands: list[str], *, home: Path, side: str = "head"
+    checkout: Path,
+    commands: list[str],
+    *,
+    home: Path,
+    side: str = "head",
+    tiers: tuple[tuple[str, str], ...] | None = None,
 ) -> tuple[list[Verdict], list[str]]:
     """Classify *commands* with the deny composite living under *checkout*.
 
-    Returns the verdicts and the names of any declared tiers that tree does not
+    Returns the verdicts and the names of any measured tiers that tree does not
     carry. *side* decides what a missing tier MEANS, which is the whole reason it is
-    a parameter -- see :func:`_worker_main`.
+    a parameter -- see :func:`_worker_main`. *tiers* is the table to measure; by
+    default the one this harness's own tree declares (:func:`load_shell_deny_tiers`).
 
     One child for the whole list: the composite's import cost dwarfs its per-command
     cost, so per-row spawning would make the gate slower than the test suite it
@@ -431,10 +488,15 @@ def classify(
     """
     if not commands:
         return [], []
+    if tiers is None:
+        tiers = load_shell_deny_tiers(_repo_root())
+    if not tiers:
+        raise DenyDiffError("no tier table to measure: an empty table measures nothing")
     request = {
         "commands": commands,
         "expect_root": str((checkout / "src").resolve()),
         "side": side,
+        "tiers": [list(pair) for pair in tiers],
     }
     proc = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), _WORKER_FLAG],
@@ -517,24 +579,35 @@ def _worker_main() -> int:
         )
         return 2
 
-    # :data:`_TIERS` in ITS order, so the first tier to refuse here is the tier that
-    # would refuse in production.
-    #
+    # The measured table in ITS order, so the first tier to refuse here is the tier
+    # that would refuse in production. The parent read it from the harness's own
+    # tree and hands the SAME table to both sides.
+    try:
+        tiers = [(str(name), str(attribute)) for name, attribute in payload["tiers"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"worker: request carries no tier table: {exc}", file=sys.stderr)
+        return 2
+    if not tiers:
+        # An empty table would mark every command allowed on both sides: a clean
+        # report that measured nothing.
+        print("worker: request carries an empty tier table", file=sys.stderr)
+        return 2
+
     # A tier the tree does not carry means opposite things on the two sides, and the
-    # difference is the gate's own primary use case. The worker is always THIS file
-    # at head, so it iterates head's tier table against whichever tree it was
-    # pointed at; a PR that adds a deny check adds it to both the table and
-    # ``security``, and the BASE tree then has no such attribute. Refusing there
-    # would exit 2 on exactly the tightening this gate exists to measure. The honest
-    # reading is that a check which did not exist at base refused nothing at base,
-    # so the tier is skipped and its refusals at head surface as regressions -- which
-    # is the answer the reviewer wanted.
+    # difference is the gate's own primary use case. The table is the harness's, so
+    # it is iterated against whichever tree the worker was pointed at; a PR that
+    # adds a deny check adds it to both the gate's table and ``security``, and the
+    # BASE tree then has no such attribute. Refusing there would exit 2 on exactly
+    # the tightening this gate exists to measure. The honest reading is that a check
+    # which did not exist at base refused nothing at base, so the tier is skipped
+    # and its refusals at head surface as regressions -- which is the answer the
+    # reviewer wanted.
     #
     # At HEAD the same absence is coverage silently lost, so it stays an error.
     strict = side != "base"
     checks: list[tuple[str, Callable[[str], object]]] = []
     absent: list[str] = []
-    for name, attribute in _TIERS:
+    for name, attribute in tiers:
         check = getattr(security, attribute, None)
         if check is None:
             if strict:
@@ -622,10 +695,16 @@ def differential(
     head_home.mkdir(parents=True, exist_ok=True)
     base_tree = resolve(repo_root, base, workdir / "base")
     head_tree = resolve(repo_root, head, workdir / "head")
+    # ONE table, the harness's, for both trees, as the literal it replaced was. In a
+    # lane whose harness is the base or default-branch checkout, a tier the change
+    # drops is still applied to head; in the denial-differential lane the table is
+    # head's, and a dropped tier is a change to the gate's own table, which its
+    # order golden (test/test_gate_tiers.py) reds on.
+    tiers = load_shell_deny_tiers(repo_root)
     base_verdicts, report.base_absent_tiers = classify(
-        base_tree, commands, home=base_home, side="base"
+        base_tree, commands, home=base_home, side="base", tiers=tiers
     )
-    head_verdicts, _ = classify(head_tree, commands, home=head_home, side="head")
+    head_verdicts, _ = classify(head_tree, commands, home=head_home, side="head", tiers=tiers)
 
     for row, before, after in zip(selected, base_verdicts, head_verdicts):
         if after.denied and not before.denied:

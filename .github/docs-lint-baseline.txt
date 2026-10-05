@@ -268,7 +268,6 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	chat_runner.py:7
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	chat_runner.py:7487
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	chat_runner.py:867
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	dashboard/chat_runner.py:6624
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	hooks.py:539
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	knowledge/llm_pool.py:325
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	messaging/driver.py:468
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/bootstrap.py:220-229
@@ -506,16 +505,10 @@ line-ref	docs/request-for-change/rfc-session-tag-change-event.md	chat_tags.py:90
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	chat_tags.py:980
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	dashboard/handlers/hooks.py:307
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	hook_runtime/governance_gate.py:163-198
-line-ref	docs/request-for-change/rfc-session-tag-change-event.md	hooks.py:2527-2528
-line-ref	docs/request-for-change/rfc-session-tag-change-event.md	hooks.py:2729
-line-ref	docs/request-for-change/rfc-session-tag-change-event.md	hooks.py:3089-3097
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	hooks.py:93-99
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/dashboard/chat_tags.py:507
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/dashboard/handlers/hooks.py:307
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/hook_runtime/governance_gate.py:163-198
-line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/hooks.py:2488
-line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/hooks.py:2729
-line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/hooks.py:3089-3097
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/hooks.py:93-99
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	src/kiro_crew/validation.py:92-94
 line-ref	docs/request-for-change/rfc-session-tag-change-event.md	validation.py:92-94

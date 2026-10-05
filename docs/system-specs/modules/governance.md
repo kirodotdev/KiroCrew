@@ -3512,9 +3512,9 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `apply_selectable_denials`.
 - `dashboard/handlers/acp_backend_status.py` — `GET /api/acp-backends`
   (selectability ∩ install state, owner-only).
-- `hooks.py` — Plane A gate threading + the computer-use read-only auto-approve
-  (`_cu_read_only_auto_approve`, which reads the action-class table rather than a
-  governance row).
+- `hooks.py` — the computer-use read-only auto-approve (`_cu_read_only_auto_approve`,
+  which reads the action-class table rather than a governance row); the Plane A gate
+  threading is the tool gate's `governance` tier in `hook_runtime/gate_tiers.py`.
 - `sel.py` — `log_governance_decision`.
 - `messaging/identity.py` — `channel_inbound_permitted` (the per-message inbound
   `channels` gate) + its SEL audit disposition.

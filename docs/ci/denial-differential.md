@@ -57,10 +57,13 @@ in shell command text, because the OS sandbox keeps the credential stores away
 from the shell. Measuring the path fence here would refuse golden commands the
 tool gate allows.
 
-The list is **pinned, not asserted**: `test/test_deny_diff.py` reads the checks
-out of the hooks gate's own source and compares them with the script's declared
-tier table, so adding a fourth check over there reds this gate instead of silently
-escaping it.
+The list is **read, not restated**: the script measures the gate's own
+`hooks.SHELL_DENY_TIERS` — the shell checks of its tier table, `hooks.GATE_TIERS`,
+written out as a literal — which it reads with `ast.literal_eval` from the tree the
+harness runs from, never from a tree it classifies. `test/test_gate_tiers.py` pins
+that literal equal to the table's shell projection, pins that every per-target rule
+but the path rule names its shell check, and reds on any added row, so a check
+added to the gate is measured on the next run instead of silently escaping it.
 
 Every check is called with its default enabled set, which fails closed to every
 built-in rule enabled — the strictest posture an operator can be running, and the
@@ -69,10 +72,11 @@ only one that needs no config on the runner.
 ### A PR that ADDS a deny check
 
 That is the gate's primary use case, and it needs one rule to work at all. The
-child is always this script at head, so it iterates head's tier table against
-whichever tree it is pointed at — and the base tree of a check-adding PR has no
-such function. Treating that as an error would exit 2 on exactly the tightening
-the gate exists to measure.
+table is the harness's (in this lane the change's own checkout, so head's), and the
+script hands that one table to the child for both trees, so the base tree of a
+check-adding PR lacks the `kiro_crew.security` attribute the new row names.
+Treating that as an error would exit 2 on exactly the tightening the gate exists to
+measure.
 
 So a tier absent at **base** is skipped: a check that did not exist there refused
 nothing there, which is the truth, and the new check's refusals at head then
@@ -112,7 +116,8 @@ The gate calls the three `security.*` checks directly, so it measures the **rule
 not the hooks gate's own composition of them. That composition lives in
 `hooks.py` and `src/kiro_crew/hook_runtime/`: how the targets are built
 (`hook_runtime/search_targets.py` builds the search target), the effective
-denied set (`hook_runtime/denied_commands.py`), the context-derived enabled set.
+denied set (`hook_runtime/denied_commands.py`), the context-derived enabled set, and
+the tier bodies themselves (`hook_runtime/gate_tiers.py`).
 A tightening implemented in `hooks.py` or `hook_runtime/` runs this gate — both
 are in its trigger paths — and comes back empty, because none of the three
 functions changed.

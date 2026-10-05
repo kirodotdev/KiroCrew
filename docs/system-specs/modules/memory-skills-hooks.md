@@ -5209,7 +5209,8 @@ it sits. Nothing but `hooks.py` imports an owner.
 |---|---|
 | `denied_commands` | The keystone opt-out read (`load_denied_commands_state`), the boot parse and both live-reload splices, the governance force-pin lookup, and the effective regex set and operator notes the gate hands `PolicyAuthority.is_denied` |
 | `governance_gate` | The ceiling ∩ profile tool decision (`_governance_denial`), the `capabilities.spawn` decision, the `capabilities.script_hooks` gate, and their SEL audit rows |
-| `tool_identity` | What a call IS: the `spawn_run` identity test, the gate's event-field extraction (`hook_gate_kwargs`), the first-party-app and builtin-agent registry readers and writers, the host-known read-only built-in test, the canonical `@server/tool` reference, title normalization and the pattern matchers |
+| `tool_identity` | What a call IS: the gate's typed input (`ToolCall`, whose `from_event` is the one event-field extraction; `hook_gate_kwargs` is its keyword form), the `spawn_run` identity test, the first-party-app and builtin-agent registry readers and writers, the host-known read-only built-in test, the canonical `@server/tool` reference, title normalization and the pattern matchers |
+| `gate_tiers` | What each row of the tool gate checks: one tier body per `GATE_TIERS` row (the three per-target rules included), `GateFacts` (the call, the asking surface, and what the tiers derive from them — the one platform-context snapshot and every value built from it derived on first use and kept; the effective deny set is resolved twice from that one snapshot, for the enabled rule ids and for the deny-rules tier), and the table's projection and soundness checks (`shell_rules`, `gate_tier_problems`) |
 | `search_targets` | The file-search deny target: the scope-only grammar, its percent encoding, the home-variable substitution and the lexical root normalization |
 | `windows_paths` | UNC shape, the extended-length fold, the trusted-root probe gate, OS-layer representability and one link target's normalization |
 | `descriptor_identity` | Whether the descriptor a reader holds is still the regular file its validated name admitted: the pinned witness walk, the macOS case alias, the hardlink sibling and kernel-pathname containment |
@@ -5231,11 +5232,19 @@ What stays in `hooks.py`, and why, because a guard or a contract reads it there:
 - the public result and config types (`HookResult`, `ToolHookResult`, `HooksConfig`,
   `ScriptHook`, `ScriptHookResult`, `FileTooLargeError` and the rule dataclasses), so
   their `__module__` and shapes are unchanged;
-- `ToolHookResult._count`, which `test/metrics/test_business_counters.py` pins to this
-  file, and `uncounted_gate`'s ContextVar;
-- `HookManager` with every method. `on_tool_call` stays the orchestrator: it is read by
-  `inspect.getsource` and as file text by three guards, it is patched at class level,
-  and its `_fail_closed_on_gate_crash` wrapper must keep its source visible;
+- `ToolHookResult._count`, whose counter `test/metrics/test_business_counters.py` reads
+  in this file, and `uncounted_gate`'s ContextVar;
+- the tool gate's ORDER: `GATE_TIERS`, its row types (`GateTier`, `GateRule`) and kind
+  vocabulary, and the literal `SHELL_DENY_TIERS`. The table is data a security review
+  reads in one place, and it is built after `compose` so every row holds the rebound
+  tier function (a row built before it would keep the owner's original, which a patch
+  of `hooks.<name>` never reaches). `SHELL_DENY_TIERS` is a literal because
+  `scripts/deny_diff.py` reads it as text (see the table below);
+- `HookManager` with every method. `judge(call, *, session_key, agent, app,
+  classifier_only)` walks `GATE_TIERS` under `_fail_closed_on_gate_crash`;
+  `on_tool_call` is its keyword form for the dispatchers that hold a call as keywords
+  (`**hook_gate_kwargs(event)`), keeps its signature, and is what every production
+  surface calls — the tests patch it at class and instance level;
 - `ScriptHookStore` with every method: `fire` is the dispatch the placement ruling
   keeps beside `run_script_hook`, `test_hook_events_kas_triggers` reads its source, and
   a class's methods do not split across files;
@@ -5244,14 +5253,50 @@ What stays in `hooks.py`, and why, because a guard or a contract reads it there:
 - `_hook_subprocess_env`, kept beside `_HOOK_BASE_ENV_KEYS` by choice: it is the one
   reader of the allowlist this page tells an operator to edit;
 - `_screen_windows_links`, which `test/link_screen_sites.py` keys by this path;
-- `_cu_read_only_auto_approve` and the Plane A gate threading, which `governance.md`
-  names here;
+- `_cu_read_only_auto_approve`, which `governance.md` names here (the Plane A gate
+  threading it names beside it is the `governance` tier in `gate_tiers`);
 - the two UNC root memos and their import-time priming: this module's body runs before
   `compose`, so priming an owner function would write its memo into the owner's
   namespace instead.
 
-New work goes to the owner of its responsibility; a new module-level value, a new
-`HookManager` method and a new store method go here.
+#### The tool gate's tiers (`hooks.GATE_TIERS`)
+
+`HookManager.judge` returns the first verdict a row hands back, stamped with that
+row's name in `ToolHookResult.tier` (a per-target rule's name for the `targets` row;
+`""` for the fall-through `allow`, a gate crash, the unsound-table refusal, and any result built elsewhere). Rows
+run in this order, and the kinds are monotone — every deny before the policy deny,
+every deny before any grant, the classifier last — so a grant can never re-admit what a
+deny blocked:
+
+| Row | Kind | Decides |
+|---|---|---|
+| `unverifiable-shell` | deny | a shell call whose command could not be recovered (deny-by-default) |
+| `targets` | deny | per-target rules `sensitive-path`, `sensitive-bash`, `exfil`, run TARGET-MAJOR over the normalized title then the raw command; a sandboxed shell's own command is spared the path rule. With no recovered command and no MCP server, the tool's own `command`/`cmd` argument then meets the shell rules only (`sensitive-bash`, `exfil`), never the path rule |
+| `param-paths` | deny | every path spelling in the arguments, and a target walk that hit its work cap |
+| `write-protected` | deny | a file edit (the `edit` kind or a diff block) of a write-protected config path, or one naming no or an unanchored target |
+| `deny-rules` | deny | the effective deny set through the snapshot's `PolicyAuthority`, over the title forms, the trusted identities, the command and that `command`/`cmd` argument |
+| `mcp-auto-deny` | deny | the operator's `auto_deny_tools` globs against the `_meta.kiro` `@server/tool` identity, verified or not (a deny can only deny) |
+| `search-target` | deny | the operator's own rules against a file search's synthesized scope target |
+| `governance` | deny_policy | the ceiling ∩ active profile (`_governance_denial`) |
+| `app-own-server` | grant | a builtin app agent calling its own declared MCP server |
+| `operator-grants` | grant | the operator's `auto_approve_tools` patterns |
+| `read-only` | classify | the read-only classifier; the only auto-approve under `classifier_only` |
+
+`classifier_only` skips both grant rows (each grant body steps aside, after resolving the owner app as before). `gate_tier_problems` checks the table when
+the module loads; an unsound table is not raised at import (that would fail every
+test at collection, the one naming the problem included) — `judge` refuses every call
+with `GATE_TABLE_UNSOUND_REASON` instead. `SHELL_DENY_TIERS` is the table's shell
+projection (`sensitive-bash`, `exfil`, `deny-rules`) written out:
+`scripts/deny_diff.py` reads it with `ast.literal_eval` from the tree the harness runs
+from, never from a tree it classifies, and the security-conductor's `verify_fix.py`
+keeps an equal copy because it runs as a synced skill file. `test/test_gate_tiers.py`
+pins the order, the soundness check, one scenario per row and every deny under every
+grant, and pins `SHELL_DENY_TIERS` to the projection.
+
+New work goes to the owner of its responsibility. A new gate check is a tier body in
+`gate_tiers` plus its row in `GATE_TIERS`, placed by kind; a new fact about a call is a
+`ToolCall` field filled by `from_event`. A new module-level value, a new `HookManager`
+method and a new store method go here.
 
 ### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
 

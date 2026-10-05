@@ -4,7 +4,9 @@ The hook subsystem's rules are split by responsibility across the modules of thi
 package, and ``kiro_crew.hooks`` stays their only import path and their only patch
 surface: nothing but the facade imports an owner.
 
-Each owner holds functions moved verbatim from the one-module file. :func:`compose`
+Each owner holds functions moved verbatim from the one-module file, plus the
+definitions added since (the gate's tiers and ``GateFacts`` in ``gate_tiers``,
+``ToolCall`` in ``tool_identity``). :func:`compose`
 makes every function an owner defines run on the facade module's globals rather than
 its own. 127 production modules import ``kiro_crew.hooks``, and the tests patch its
 names -- ``hooks.MAX_FILE_BYTES``, ``.validate_file_path``, ``._fd_real_path``,
