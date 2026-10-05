@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { GitBranch, Lightbulb, Plus, X } from 'lucide-react'
+import { FolderGit2, GitBranch, Lightbulb, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
 import ErrorNotice from './ErrorNotice'
 
@@ -36,6 +36,15 @@ export interface FollowUpCardProps {
    * directory is not a repo.
    */
   projectIsRepo?: boolean
+  /**
+   * Open the session's project picker. When the project is SET but is not a
+   * git repo (``projectDir && projectIsRepo === false``), the card offers a
+   * one-click "Set project…" affordance that calls this, so the common cause
+   * — a session whose project pointer never left the non-repo default while
+   * work happened in a clone elsewhere — is a single click to fix rather than
+   * a dead end. Absent (or with no project at all) the affordance is not shown.
+   */
+  onSetProject?: () => void
 }
 
 /**
@@ -58,6 +67,7 @@ function FollowUpCard({
   onSkip,
   projectDir,
   projectIsRepo,
+  onSetProject,
 }: FollowUpCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Offer the worktree action only when there is a project directory AND it is
@@ -66,6 +76,11 @@ function FollowUpCard({
   // button that would work, and let the server refuse a genuine non-repo (the
   // card renders that inline). Only an explicit `false` hides the action.
   const canWorktree = !!projectDir && projectIsRepo !== false
+  // The common cause of the hidden worktree action is a session whose project
+  // pointer is set to a non-repo directory while the real work happened in a
+  // clone elsewhere. When that is the case AND a picker opener was provided,
+  // offer a one-click fix instead of leaving the user to find the project chip.
+  const canSetProject = !!projectDir && projectIsRepo === false && !!onSetProject
   // Index of the item whose worktree is being created, so only that row shows
   // a pending state and double-clicks cannot fire two `worktree add` calls.
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
@@ -143,6 +158,21 @@ function FollowUpCard({
                 >
                   <GitBranch size={13} aria-hidden="true" />
                   {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
+                </button>
+              )}
+              {/* The project is set but is not a git repo, so the worktree
+                  action is hidden (above). Offer a one-click way to point the
+                  session at a git clone — the usual fix when the project
+                  pointer was never retargeted off a non-repo default — rather
+                  than leaving the user to hunt for the composer's Project chip. */}
+              {canSetProject && (
+                <button
+                  onClick={onSetProject}
+                  disabled={busyIndex !== null}
+                  title={i18nT('components.followUpCard.point_this_session_at_a_git_repo_to_branch_from')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-accent/40 text-accent bg-bg hover:bg-accent/10"
+                >
+                  <FolderGit2 size={13} aria-hidden="true" /> {i18nT('components.followUpCard.set_project')}
                 </button>
               )}
               <button

@@ -2373,7 +2373,9 @@
       "start_in_new_worktree": "Start in new worktree",
       "this_session_has_no_project_directory_so_there_i": "This session has no project directory, so there is no repository to branch from",
       "worktree_disabled_no_project_directory": "\"Add to this session\" pre-fills the composer — nothing is sent until you press send. Worktrees are unavailable here: this session has no project directory (pick one with the composer's Project chip).",
-      "worktree_unavailable_project_not_a_repo": "\"Add to this session\" pre-fills the composer — nothing is sent until you press send. Worktrees are unavailable here: this session's project directory is not a git repository (point the session at a git clone to branch from one)."
+      "worktree_unavailable_project_not_a_repo": "\"Add to this session\" pre-fills the composer — nothing is sent until you press send. Worktrees are unavailable here: this session's project directory is not a git repository (point the session at a git clone to branch from one).",
+      "set_project": "Set project…",
+      "point_this_session_at_a_git_repo_to_branch_from": "Point this session at a git repository so worktrees can branch from it"
     },
     "inboundLinkChip": {
       "driven_from": "Driven from {{label}}",

@@ -88,6 +88,35 @@ describe('FollowUpCard', () => {
     expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
   })
 
+  it('offers a one-click Set-project action when the project is set but not a repo', () => {
+    const onSetProject = vi.fn()
+    setup({ projectDir: '/not/a/repo', projectIsRepo: false, onSetProject })
+    const setBtn = screen.getByRole('button', { name: /set project/i })
+    expect(setBtn).toBeInTheDocument()
+    // The dead worktree button is still gone, not merely replaced in place.
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    fireEvent.click(setBtn)
+    expect(onSetProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not offer Set-project when there is no project at all', () => {
+    // Nothing to retarget from, and the picker is reachable from the composer;
+    // the footer already explains the no-project case.
+    setup({ projectDir: undefined, onSetProject: vi.fn() })
+    expect(screen.queryByRole('button', { name: /set project/i })).not.toBeInTheDocument()
+  })
+
+  it('does not offer Set-project for a repo project (the worktree action is shown instead)', () => {
+    setup({ projectDir: '/repo', projectIsRepo: true, onSetProject: vi.fn() })
+    expect(screen.queryByRole('button', { name: /set project/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
+  })
+
+  it('does not offer Set-project for a non-repo project when no opener was provided', () => {
+    setup({ projectDir: '/not/a/repo', projectIsRepo: false })
+    expect(screen.queryByRole('button', { name: /set project/i })).not.toBeInTheDocument()
+  })
+
   it('offers the worktree action optimistically while the repo probe is unresolved', () => {
     // `projectIsRepo === undefined` means "not resolved yet". A slow git probe
     // must not hide a button that will work; the server still refuses a genuine

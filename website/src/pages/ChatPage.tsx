@@ -6236,6 +6236,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     projectIsRepo={projectGitError ? false : projectGit?.repo}
                     onAddToSession={followupAddToSession}
                     onStartInWorktree={followupStartInWorktree}
+                    // When the project is set but not a repo the card offers a
+                    // one-click "Set project…" that opens the same picker as the
+                    // composer's Project chip.
+                    onSetProject={() => setProjectPickerOpen(true)}
                     onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}
                   />
                 </div>
