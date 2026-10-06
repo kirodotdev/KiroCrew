@@ -82,15 +82,87 @@ async def commit_step(run: Project, step: Task) -> str:
     return sha
 
 
+# Bounded retry budget for a ``reset --hard`` that a Windows sharing violation
+# aborts. On Windows an open handle on a tracked file the reset must rewrite
+# (an AV scanner, an editor, a still-running prior step) makes ``git`` fail to
+# unlink that file, so the reset aborts with exit 128 while nothing is actually
+# wrong -- the hold is transient. POSIX unlinks an open file, so there is no
+# such window there and a reset failure is a genuine fault that must surface at
+# once rather than after a second of sleeping. Shape and numbers mirror
+# ``atomic_write.replace_with_retry`` (~0.45s worst-case added latency on a
+# doomed revert); they are a heuristic, not a measured hold-time distribution.
+_REVERT_MAX_ATTEMPTS = 10
+_REVERT_BACKOFF_SECONDS = 0.05
+
+# Signatures git prints to stderr when a held handle blocks the unlink the
+# reset needs (``_git`` folds stderr into the RuntimeError it raises, so the
+# message text is all we have to key off). The reporter's 3/3 probe hit
+# "unable to unlink old ... Invalid argument" / "Could not reset index file";
+# a mid-rewrite hold on NTFS also surfaces as a WinError 32 sharing violation
+# ("being used by another process" / "Permission denied" / "Device or resource
+# busy"). Matched case-insensitively against the whole message.
+_SHARING_VIOLATION_SIGNS = (
+    "unable to unlink",
+    "could not reset index file",
+    "being used by another process",
+    "sharing violation",
+    "permission denied",
+    "device or resource busy",
+)
+
+
+def _is_sharing_violation(exc: Exception) -> bool:
+    """True when *exc* looks like a Windows held-handle unlink failure.
+
+    Windows-only on purpose: on POSIX a ``reset --hard`` can unlink a file held
+    open, so a failure there is a real fault (bad path, corrupt index) that must
+    not be retried into a false success.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    text = str(exc).casefold()
+    return any(sign in text for sign in _SHARING_VIOLATION_SIGNS)
+
+
 async def revert_step(run: Project) -> None:
-    """Revert the last commit (failed step). No-op if git-disabled or nothing to revert."""
+    """Revert the last commit (failed step). No-op if git-disabled or nothing to revert.
+
+    ``commit_hashes.pop()`` runs ONLY after the reset actually succeeds, so the
+    recorded history never diverges from the worktree. A reset blocked by a
+    transient Windows sharing violation (a held handle on a tracked file the
+    reset must rewrite) is retried a bounded number of times; a reset that still
+    fails -- or fails for any other reason -- is surfaced at WARNING, not
+    swallowed at debug, so an operator at default log levels can tell "reverted"
+    from "revert refused" instead of silently proceeding on an un-reverted tree.
+    """
     if not run.git_enabled or not run.commit_hashes:
         return
-    try:
-        await _git(run.work_dir, "reset", "--hard", "HEAD~1")
-        run.commit_hashes.pop()
-    except Exception:
-        logger.debug("git revert failed", exc_info=True)
+    for attempt in range(_REVERT_MAX_ATTEMPTS):
+        try:
+            await _git(run.work_dir, "reset", "--hard", "HEAD~1")
+            run.commit_hashes.pop()
+            return
+        except Exception as exc:
+            if _is_sharing_violation(exc) and attempt < _REVERT_MAX_ATTEMPTS - 1:
+                logger.debug(
+                    "git revert contended at %s (held handle?); retrying (attempt %d/%d)",
+                    run.work_dir,
+                    attempt + 1,
+                    _REVERT_MAX_ATTEMPTS,
+                    exc_info=True,
+                )
+                await asyncio.sleep(_REVERT_BACKOFF_SECONDS)
+                continue
+            # Exhausted the retry window, or a failure that is not a transient
+            # sharing violation: do NOT pop -- commit_hashes stays consistent
+            # with the un-reverted worktree -- and make the failure visible.
+            logger.warning(
+                "git revert failed for %s; leaving commit_hashes unchanged "
+                "(worktree may not be reverted)",
+                run.work_dir,
+                exc_info=True,
+            )
+            return
 
 
 async def get_state_summary(run: Project) -> str:
