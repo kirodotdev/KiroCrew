@@ -72,9 +72,7 @@ class TestTtlSweeper:
         live = _MAX_PERSISTED_NOTIFICATIONS
         rows = [_json.dumps(_note(title=f"live-{i}")) for i in range(live)]
         rows += [
-            _json.dumps(
-                _note(priority="passive", ttl=60, ts=str(time.time() - 120))
-            )
+            _json.dumps(_note(priority="passive", ttl=60, ts=str(time.time() - 120)))
             for _ in range(live + 1)  # push past the 2x trim threshold
         ]
         path.write_text("\n".join(rows) + "\n", encoding="utf-8")
@@ -101,9 +99,7 @@ class TestTtlSweeper:
             _persist_notification(_note(title=f"live-{i}"))
         # 50 newer expired-passive rows push the file over the cap
         for i in range(50):
-            _persist_notification(
-                _note(priority="passive", ttl=60, ts=str(time.time() - 120))
-            )
+            _persist_notification(_note(priority="passive", ttl=60, ts=str(time.time() - 120)))
         loaded = _load_notifications()
         titles = {n.get("title") for n in loaded}
         assert len(loaded) == live  # every live row survives
@@ -133,9 +129,7 @@ class TestTtlSweeper:
         assert sweep_expired_notifications(log) == 0
 
     def test_iso_timestamp_supported(self):
-        old_iso = datetime.fromtimestamp(
-            time.time() - 120, tz=timezone.utc
-        ).isoformat()
+        old_iso = datetime.fromtimestamp(time.time() - 120, tz=timezone.utc).isoformat()
         log = [_note(priority="passive", ttl=60, ts=old_iso)]
         assert sweep_expired_notifications(log) == 1
 
@@ -181,9 +175,7 @@ class TestTtlSweeper:
 
     def test_delivery_sweeps_lazily(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
-        state._notification_log.append(
-            _note(priority="passive", ttl=60, ts=str(time.time() - 120))
-        )
+        state._notification_log.append(_note(priority="passive", ttl=60, ts=str(time.time() - 120)))
         state._deliver_note(_note(title="fresh"))
         titles = [n["title"] for n in state._notification_log]
         assert titles == ["fresh"]
@@ -254,9 +246,7 @@ class TestTrimUnservableLines:
         # row is a dict would hand it a live slot and let it displace real history.
         live = _MAX_PERSISTED_NOTIFICATIONS
         rows = [json.dumps(_note(title=f"live-{i}")) for i in range(live)]
-        rows += [
-            json.dumps({"channel": [], "title": f"poison-{i}"}) for i in range(live + 1)
-        ]
+        rows += [json.dumps({"channel": [], "title": f"poison-{i}"}) for i in range(live + 1)]
 
         kept = self._trim(tmp_path / "notifications.jsonl", rows)
 
@@ -269,10 +259,7 @@ class TestTrimUnservableLines:
         # it, so parsing the raw line would call a row the loader serves unservable
         # and delete servable history. The kept bytes must stay unnormalized.
         live = _MAX_PERSISTED_NOTIFICATIONS
-        rows = [
-            "\u00a0" + json.dumps(_note(title=f"live-{i}")) + "\u00a0"
-            for i in range(live)
-        ]
+        rows = ["\u00a0" + json.dumps(_note(title=f"live-{i}")) + "\u00a0" for i in range(live)]
         rows += [f'{{"a": "x{i}' for i in range(live + 1)]
 
         kept = self._trim(tmp_path / "notifications.jsonl", rows)
@@ -365,12 +352,8 @@ class TestSendNotificationToolIdentity:
     def test_verified_identity_travels_in_payload(self, monkeypatch):
         from kiro_crew import mcp_core
 
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9"
-        )
-        monkeypatch.setattr(
-            mcp_core, "_vet_messaging_governance", lambda *a, **k: None
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9")
+        monkeypatch.setattr(mcp_core, "_vet_messaging_governance", lambda *a, **k: None)
         posted: list = []
 
         def fake_post(path, payload):
@@ -391,15 +374,9 @@ class TestSendNotificationToolIdentity:
         # contradicting the actual outcome.
         from kiro_crew import mcp_core
 
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9"
-        )
-        monkeypatch.setattr(
-            mcp_core, "_vet_messaging_governance", lambda *a, **k: None
-        )
-        monkeypatch.setattr(
-            mcp_core, "_post", lambda *a, **k: {"ok": False, "error": "boom"}
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9")
+        monkeypatch.setattr(mcp_core, "_vet_messaging_governance", lambda *a, **k: None)
+        monkeypatch.setattr(mcp_core, "_post", lambda *a, **k: {"ok": False, "error": "boom"})
         result = mcp_core._call_tool_inner("send_notification", {"title": "t"})
         assert result.startswith("Error:")
 
@@ -423,9 +400,7 @@ class TestSendNotificationToolIdentity:
         sel_mock.log_governance_decision = lambda **kw: audits.append(kw)
         monkeypatch.setattr("kiro_crew.sel.sel", lambda: sel_mock)
         assert (
-            mcp_core._vet_messaging_governance(
-                "dashboard:chat-9", tool_name="send_notification"
-            )
+            mcp_core._vet_messaging_governance("dashboard:chat-9", tool_name="send_notification")
             is None
         )
         assert audits and audits[0]["outcome"] == "allowed"
@@ -439,9 +414,7 @@ class TestSendNotificationToolIdentity:
         # trail.
         from kiro_crew import mcp_core
 
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9"
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9")
 
         class Deny:
             permitted = False
@@ -491,20 +464,14 @@ class TestSendNotificationToolIdentity:
         # notification path must deny on error (deny-by-default backend rule).
         from kiro_crew import mcp_core
 
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9"
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9")
 
         def _boom(*a, **k):
             raise RuntimeError("governance backend down")
 
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance_profiles.governance_permits", _boom
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance_profiles.governance_permits", _boom)
         posted: list = []
-        monkeypatch.setattr(
-            mcp_core, "_post", lambda *a, **k: posted.append(a) or {"ok": True}
-        )
+        monkeypatch.setattr(mcp_core, "_post", lambda *a, **k: posted.append(a) or {"ok": True})
         result = mcp_core._call_tool_inner("send_notification", {"title": "t"})
         assert "fail-closed" in result
         assert not posted  # nothing published on governance error
@@ -517,9 +484,7 @@ class TestSendNotificationToolIdentity:
         def _boom(*a, **k):
             raise RuntimeError("governance backend down")
 
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance_profiles.governance_permits", _boom
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance_profiles.governance_permits", _boom)
         assert mcp_core._vet_messaging_governance("dashboard:chat-9") is None
 
 
@@ -556,15 +521,24 @@ class TestAgentEndpointAuthWiring:
 
 
 class TestAgentPushEndpoint:
-    def _app(self, state, *, internal_auth: bool = True) -> web.Application:
+    def _app(
+        self, state, *, internal_auth: bool = True, session_key: str = "cli:agent-session-1"
+    ) -> web.Application:
         # internal_auth=True mirrors the production transport: the tool's
         # X-Internal-Secret path is the only one that reaches this handler
         # (the middleware sets request["internal_auth"] on it). Pass False
         # to simulate a loopback dashboard-cookie caller.
+        #
+        # session_key mirrors the X-Session-Key the send_notification tool always
+        # sends: the handler REQUIRES it (a session-output note with no producing
+        # session would egress under only the host governance profile). Pass "" to
+        # simulate a caller that presented none.
         @web.middleware
         async def _auth_marker(request, handler):
             if internal_auth:
                 request["internal_auth"] = True
+            if session_key and not request.headers.get("X-Session-Key"):
+                request = request.clone(headers={**request.headers, "X-Session-Key": session_key})
             return await handler(request)
 
         app = web.Application(middlewares=[_auth_marker])
@@ -580,30 +554,86 @@ class TestAgentPushEndpoint:
         # internal-secret marker.
         state = _make_state(monkeypatch, tmp_path)
         sel_mock = MagicMock()
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging._sel", lambda: sel_mock
-        )
-        async with TestClient(
-            TestServer(self._app(state, internal_auth=False))
-        ) as client:
-            resp = await client.post(
-                "/api/notifications/agent", json={"title": "cookie spoof"}
-            )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging._sel", lambda: sel_mock)
+        async with TestClient(TestServer(self._app(state, internal_auth=False))) as client:
+            resp = await client.post("/api/notifications/agent", json={"title": "cookie spoof"})
             assert resp.status == 403
-        assert not any(
-            n.get("title") == "cookie spoof" for n in state._notification_log
-        )
+        assert not any(n.get("title") == "cookie spoof" for n in state._notification_log)
         denied = [
-            kw
-            for _, kw in sel_mock.log_api_access.call_args_list
-            if kw.get("outcome") == "denied"
+            kw for _, kw in sel_mock.log_api_access.call_args_list if kw.get("outcome") == "denied"
         ]
         assert denied
 
     @pytest.mark.asyncio
-    async def test_oversized_body_rejected_before_decoding(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_publish_without_a_producing_session_is_refused(self, monkeypatch, tmp_path):
+        # A session-output note carries the fixed source="system" and no other producer
+        # name, so with no X-Session-Key it reaches the bridge with NO session subject
+        # (_claimed_session returns '' and no cron subject is added) and would egress
+        # under only the permissive HOST governance profile -- bypassing the producing
+        # session's own profile. The route REQUIRES the trusted producer identity and
+        # refuses fail-closed when it is absent.
+        state = _make_state(monkeypatch, tmp_path)
+        sel_mock = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging._sel", lambda: sel_mock)
+        async with TestClient(TestServer(self._app(state, session_key=""))) as client:
+            resp = await client.post(
+                "/api/notifications/agent",
+                json={"title": "ungoverned egress"},
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "producer_session_required"
+        assert not any(n.get("title") == "ungoverned egress" for n in state._notification_log)
+        denied = [
+            kw for _, kw in sel_mock.log_api_access.call_args_list if kw.get("outcome") == "denied"
+        ]
+        assert denied, "the fail-closed refusal must be audited"
+
+    @pytest.mark.asyncio
+    async def test_refusal_holds_even_when_the_denial_audit_raises(self, monkeypatch, tmp_path):
+        # F2: a degraded SEL (an unconstructable singleton or a raising writer) must not
+        # turn the missing-producer authorization refusal into a 500. The 403 is the
+        # security outcome and it has to hold whether or not the audit row lands --
+        # the guard catches the audit failure and returns 403 regardless.
+        state = _make_state(monkeypatch, tmp_path)
+        sel_mock = MagicMock()
+
+        def _raise_on_denied(**kwargs):
+            # F2 is scoped to the refusal audit specifically: the missing-producer
+            # denial must still return 403 when its own audit raises. Only that
+            # outcome="denied" call is made to raise here, so the test exercises the
+            # F2 guard rather than the route's pre-existing success-path audits.
+            if kwargs.get("outcome") == "denied":
+                raise RuntimeError("SEL trust root unreadable")
+
+        sel_mock.log_api_access.side_effect = _raise_on_denied
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging._sel", lambda: sel_mock)
+        async with TestClient(TestServer(self._app(state, session_key=""))) as client:
+            resp = await client.post(
+                "/api/notifications/agent",
+                json={"title": "ungoverned egress under broken SEL"},
+            )
+            assert resp.status == 403, "a raising audit must not become a 500"
+            assert (await resp.json())["code"] == "producer_session_required"
+        assert not any(
+            n.get("title") == "ungoverned egress under broken SEL" for n in state._notification_log
+        ), "nothing is published on the refused path even when the audit fails"
+        # The trusted producer identity is PROPAGATED: the published note carries the
+        # producing session_key, which is exactly the governance subject the bridge's
+        # _claimed_session reads so the agent's own profile is vetted.
+        state = _make_state(monkeypatch, tmp_path)
+        async with TestClient(
+            TestServer(self._app(state, session_key="cli:agent-session-7"))
+        ) as client:
+            resp = await client.post(
+                "/api/notifications/agent",
+                json={"title": "governed"},
+            )
+            assert resp.status == 200
+            note = (await resp.json())["note"]
+        assert note.get("session_key") == "cli:agent-session-7"
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_rejected_before_decoding(self, monkeypatch, tmp_path):
         # Without an endpoint cap the route inherits the server-wide
         # client_max_size and decodes megabytes on the event-loop thread. It
         # mirrors the app push endpoint's 64 KB bound.
@@ -616,9 +646,7 @@ class TestAgentPushEndpoint:
             assert resp.status == 413
 
     @pytest.mark.asyncio
-    async def test_publishes_through_system_agent_channel(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_publishes_through_system_agent_channel(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post(
@@ -666,9 +694,7 @@ class TestAgentPushEndpoint:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_non_string_and_non_list_fields_return_400_not_500(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_non_string_and_non_list_fields_return_400_not_500(self, monkeypatch, tmp_path):
         # Wrong-typed fields must not raise AttributeError/TypeError past the
         # validation catch -- that is a 500 where the contract says 400.
         state = _make_state(monkeypatch, tmp_path)
@@ -692,9 +718,7 @@ class TestAgentPushEndpoint:
         # system notifications past its rate limits.
         state = _make_state(monkeypatch, tmp_path)
         sel_mock = MagicMock()
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging._sel", lambda: sel_mock
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging._sel", lambda: sel_mock)
 
         @web.middleware
         async def _fake_app_token(request, handler):
@@ -709,15 +733,11 @@ class TestAgentPushEndpoint:
                 "/api/notifications/agent", json={"title": "spoofed system note"}
             )
             assert resp.status == 403
-        assert not any(
-            n.get("title") == "spoofed system note" for n in state._notification_log
-        )
+        assert not any(n.get("title") == "spoofed system note" for n in state._notification_log)
         # The denial is a permission decision on a security boundary — it must
         # land in the SEL audit trail.
         denied = [
-            kw
-            for _, kw in sel_mock.log_api_access.call_args_list
-            if kw.get("outcome") == "denied"
+            kw for _, kw in sel_mock.log_api_access.call_args_list if kw.get("outcome") == "denied"
         ]
         assert denied and denied[0]["caller"] == "app:some-app"
 
@@ -727,13 +747,9 @@ class TestAgentPushEndpoint:
         # persist job succeeded. A failed persist must surface as a 500, never a
         # silent acknowledgment.
         state = _make_state(monkeypatch, tmp_path)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.state._persist_notification", lambda note: False
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.state._persist_notification", lambda note: False)
         async with TestClient(TestServer(self._app(state))) as client:
-            resp = await client.post(
-                "/api/notifications/agent", json={"title": "must not ack"}
-            )
+            resp = await client.post("/api/notifications/agent", json={"title": "must not ack"})
             assert resp.status == 500
             assert "persist" in (await resp.json())["error"]
 
@@ -773,9 +789,7 @@ class TestRound17Fixes:
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
         assert mcp_core._resolve_session_key_strict() == ""
-        ctx = mcp_caller.CallerContext(
-            session_key="dashboard:chat-7", from_gateway=True
-        )
+        ctx = mcp_caller.CallerContext(session_key="dashboard:chat-7", from_gateway=True)
         mcp_caller.set_current_caller(ctx)
         try:
             assert mcp_core._resolve_session_key_strict() == "dashboard:chat-7"
@@ -783,9 +797,7 @@ class TestRound17Fixes:
         finally:
             mcp_caller.set_current_caller(None)
 
-    def test_warm_pool_send_notification_publishes_via_caller_context(
-        self, monkeypatch
-    ):
+    def test_warm_pool_send_notification_publishes_via_caller_context(self, monkeypatch):
         # End-to-end warm-pool shape: no env identity at all, caller context
         # installed by the dispatch loop -> the tool publishes with it.
         from kiro_crew import mcp_caller, mcp_core
@@ -817,12 +829,8 @@ class TestRound17Fixes:
         # MCP dispatch on the verified caller identity.
         from kiro_crew import mcp_core
 
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key", lambda: "channel:C1:agent-1"
-        )
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "channel:C1:agent-1"
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "channel:C1:agent-1")
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "channel:C1:agent-1")
         monkeypatch.setattr(mcp_core, "_vet_messaging_governance", lambda *a, **k: None)
         monkeypatch.setattr(mcp_core, "_vet_channel_governance", lambda *a, **k: None)
         audits: list = []
@@ -830,9 +838,7 @@ class TestRound17Fixes:
         sel_mock.log_tool_invocation = lambda **kw: audits.append(kw)
         monkeypatch.setattr("kiro_crew.sel.sel", lambda: sel_mock)
         posted: list = []
-        monkeypatch.setattr(
-            mcp_core, "_post", lambda *a, **k: posted.append(a) or {"ok": True}
-        )
+        monkeypatch.setattr(mcp_core, "_post", lambda *a, **k: posted.append(a) or {"ok": True})
         args = {"text": "hi"} if tool == "send_message" else {"title": "hi"}
         result = mcp_core._call_tool_inner(tool, args)
         assert result.startswith("Error:")
@@ -879,9 +885,7 @@ class TestRound17Fixes:
         # Phase 4 action contract.
         from kiro_crew import mcp_core
 
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9"
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-9")
         monkeypatch.setattr(mcp_core, "_vet_messaging_governance", lambda *a, **k: None)
         posted: list = []
 
@@ -891,9 +895,7 @@ class TestRound17Fixes:
 
         monkeypatch.setattr(mcp_core, "_post", fake_post)
         actions = [{"id": "open", "label": "Open run", "url": "/runs/7"}]
-        result = mcp_core._call_tool(
-            "send_notification", {"title": "t", "actions": actions}
-        )
+        result = mcp_core._call_tool("send_notification", {"title": "t", "actions": actions})
         assert "published" in result
         assert posted[0][1]["actions"] == actions
 

@@ -178,7 +178,16 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Re-pinned for notification-bridge B1 over main's advanced base: the two leaves added
+#: to ``_CREW_SECRET_LEAVES`` in ``paths.py`` (``notification_settings.json`` and its
+#: ``notification-settings-staging`` directory) with their security rationale, plus the
+#: bridge's HTTP surface -- the owner-only delivery-routing guard and ``bridge_transports``
+#: field in ``messaging_api/notifications.py``, the ``X-Session-Key`` producer-identity
+#: requirement in ``api_notification_agent_push``, and the steer 413/429 branch in
+#: ``messaging_api/run_control.py``. Feature code and its justification comments, disjoint
+#: from main's own growth. Value set BY MEASUREMENT after the rebase, not arithmetic.
+_PACKAGE_LINE_BUDGET = 28_461
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
