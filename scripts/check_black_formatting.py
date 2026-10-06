@@ -47,6 +47,23 @@ When no base ref is resolvable -- a bare push, a detached checkout -- the scope
 falls back to the whole tree rather than to nothing: a scoping mechanism that fails
 open would disable the gate exactly when its inputs are unusual.
 
+The same scope also bounds the WORK. Black runs only on the changed Python files
+under ``src/`` and ``test/``: a file this change does not touch cannot be its
+offender and cannot graduate on its own. Fork PRs always land on a hosted runner,
+where black over the whole tree takes ~13 min and ``backend-lint`` timed out at
+25 min about one run in three, so this keeps the black step to seconds.
+
+Three conditions still force the whole tree, because each can change the verdict
+for files the diff never names: an undeterminable scope, ``RATCHET_SCOPE_WHOLE_TREE``
+(the main-branch audit), and an edit to anything in ``FULL_TREE_TRIGGERS`` (the
+black pin and config in ``pyproject.toml``, or the exemption list in
+``.github/black-baseline.txt``). The gate scripts themselves are NOT triggers: an
+edit to them changes how the verdict is computed, not which files are dirty, and
+making them triggers meant a PR that edits the gate could never finish
+``backend-lint`` on a hosted runner (three heads of the scoping change itself timed
+out at 25 min, black alone taking 14m44s). A gate bug is caught by this module's
+own tests and by the whole-tree audit on ``main``.
+
 ## Refreshing
 
 ``--update-baseline`` only ever DELETES lines: entries that are now clean, and
@@ -72,6 +89,16 @@ DEFAULT_TARGETS = ("src", "test")
 # contributor's black defaults differ. Matches ci.yml and AGENTS.md.
 TARGET_VERSION = "py310"
 WOULD_REFORMAT = re.compile(r"^would reformat (.+)$")
+# A change to any of these can alter black's verdict for files the diff never names
+# (a new pin or config reformats differently; a baseline edit changes who is exempt),
+# so it is judged on the whole tree. The gate scripts are deliberately absent: see
+# "Scope" above.
+FULL_TREE_TRIGGERS = frozenset(
+    {
+        "pyproject.toml",
+        ".github/black-baseline.txt",
+    }
+)
 BLACK_PIN = re.compile(r"""^\s*["']black==([^"'\s]+)["']""", re.MULTILINE)
 HEADER = """\
 # Files that are not black-clean yet. The gate requires every OTHER file to be
@@ -186,6 +213,20 @@ def _load_scope():
     return module
 
 
+def _scoped_targets(changed: set[str] | None) -> tuple[str, ...] | None:
+    """The files black must look at for this change, or None for the whole tree."""
+    if changed is None or changed & FULL_TREE_TRIGGERS:
+        return None
+    roots = tuple(f"{name}/" for name in DEFAULT_TARGETS)
+    return tuple(
+        sorted(
+            path
+            for path in changed
+            if path.endswith((".py", ".pyi")) and path.startswith(roots) and (ROOT / path).is_file()
+        )
+    )
+
+
 def _read_baseline(path: Path) -> list[str]:
     if not path.is_file():
         raise SystemExit(
@@ -219,11 +260,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_baseline:
         _require_pinned_black()
 
-    unformatted = _unformatted(DEFAULT_TARGETS)
-
     baseline = set(_read_baseline(args.baseline))
 
     if args.update_baseline:
+        unformatted = _unformatted(DEFAULT_TARGETS)
         survivors = baseline & unformatted
         pruned = len(baseline) - len(survivors)
         _write_baseline(args.baseline, survivors)
@@ -231,9 +271,32 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     changed, scope_label = _load_scope().changed_paths()
-    unlisted = unformatted - baseline
+    targets = _scoped_targets(changed)
     print(f"black gate scope: {scope_label}", end="")
-    print("" if changed is None else f" ({len(changed)} changed file(s))")
+    if changed is None:
+        print("")
+    elif targets is None:
+        print(
+            f" ({len(changed)} changed file(s); whole tree, a black-config or baseline file changed)"
+        )
+    else:
+        print(f" ({len(changed)} changed file(s); {len(targets)} checked)")
+
+    if targets is None:
+        unformatted = _unformatted(DEFAULT_TARGETS)
+    elif targets:
+        unformatted = _unformatted(targets)
+    else:
+        unformatted = set()
+    unlisted = unformatted - baseline
+    if changed is None or targets is None:
+        graduated = sorted(baseline - unformatted)
+    else:
+        # Only a baselined file this change touched can have become clean, plus any
+        # entry whose file no longer exists (a delete or rename shows only the new
+        # path in the diff, so the old entry would otherwise go stale unseen).
+        missing = {entry for entry in baseline if not (ROOT / entry).is_file()}
+        graduated = sorted(((baseline & changed) | missing) - unformatted)
     if changed is None:
         new_offenders = sorted(unlisted)
     else:
@@ -242,7 +305,6 @@ def main(argv: list[str] | None = None) -> int:
         # so a PR's colour would depend on other people's formatting hygiene --
         # observed three times while landing this gate, once per rebase.
         new_offenders = sorted(unlisted & changed)
-    graduated = sorted(baseline - unformatted)
 
     for path in new_offenders:
         print(
@@ -266,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "black gate passed: nothing in scope is unformatted outside the baseline "
-        f"({len(unformatted)} known-unformatted file(s) still listed)."
+        f"({len(baseline)} known-unformatted file(s) still listed)."
     )
     return 0
 

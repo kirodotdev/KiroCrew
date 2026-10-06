@@ -183,6 +183,14 @@ def test_black_exiting_one_with_no_findings_is_not_a_clean_tree() -> None:
     assert "if proc.returncode == 1 and not found:" in source
 
 
+class _FakeScope:
+    def __init__(self, changed: set[str] | None) -> None:
+        self._changed = changed
+
+    def changed_paths(self) -> tuple[set[str] | None, str]:
+        return self._changed, "fake scope"
+
+
 def _stub_black_version(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
     """Report `version` for black only; other lookups reach the real function,
     since a narrow stub would hijack pytest's own plugin machinery too."""
@@ -265,8 +273,246 @@ def test_the_read_only_gate_still_runs_under_a_mismatched_black(
     # The gate records nothing, so a skew there must not block a drifted black.
     baseline = tmp_path / "black-baseline.txt"
     gate._write_baseline(baseline, {"kept.py"})
+    # A baseline entry whose file is gone is reported as stale, so the entry must exist.
+    (tmp_path / "kept.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    monkeypatch.setattr(gate, "_load_scope", lambda: _FakeScope(None))
 
     _stub_black_version(monkeypatch, "0.0.0-not-the-pin")
     monkeypatch.setattr(gate, "_unformatted", lambda targets: {"kept.py"})
 
     assert gate.main(["--baseline", str(baseline)]) == 0
+
+
+# --- Scoped work: black runs on the changed files, not the whole tree ---------
+#
+# Fork PRs always land on a hosted runner, where black over the whole tree took
+# ~13 min of a 25 min job and backend-lint timed out about one run in three. The
+# verdict was already scoped to the change; these pin that the WORK is too, and
+# that the conditions which must still see the whole tree do, and that editing the
+# gate itself does not.
+
+
+def _scoped_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    changed: set[str] | None,
+    unformatted: set[str],
+    baseline: list[str],
+    files: list[str],
+) -> tuple[list[tuple[str, ...]], list[str]]:
+    """Run gate.main() against a fake tree; return (black target calls, argv)."""
+    for name in files:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x = 1\n", encoding="utf-8")
+    baseline_file = tmp_path / "baseline.txt"
+    baseline_file.write_text("".join(f"{entry}\n" for entry in baseline), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_unformatted(targets: tuple[str, ...]) -> set[str]:
+        calls.append(tuple(targets))
+        # Black only reports files it was pointed at.
+        return {
+            path
+            for path in unformatted
+            if any(path == t or path.startswith(t.rstrip("/") + "/") for t in targets)
+        }
+
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    monkeypatch.setattr(gate, "_unformatted", fake_unformatted)
+    monkeypatch.setattr(gate, "_load_scope", lambda: _FakeScope(changed))
+    return calls, ["--baseline", str(baseline_file)]
+
+
+def test_scoped_targets_are_only_the_changed_python_files_under_the_gated_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name in ("src/a.py", "test/b.py", "src/notes.md", "scripts/tool.py"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    changed = {"src/a.py", "test/b.py", "src/notes.md", "scripts/tool.py", "src/deleted.py"}
+    # Not python, outside src/ and test/, and deleted files are all left out.
+    assert gate._scoped_targets(changed) == ("src/a.py", "test/b.py")
+    assert gate._scoped_targets(set()) == ()
+
+
+def test_stub_files_are_scoped_in_too(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # black formats .pyi as well as .py; a directory scan found stubs, so the
+    # explicit file list must not drop them.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "types.pyi").write_text("x: int\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    assert gate._scoped_targets({"src/types.pyi"}) == ("src/types.pyi",)
+
+
+def test_an_unknown_scope_still_judges_the_whole_tree() -> None:
+    assert gate._scoped_targets(None) is None
+
+
+@pytest.mark.parametrize("trigger", sorted(gate.FULL_TREE_TRIGGERS))
+def test_changing_a_black_config_or_baseline_file_forces_the_whole_tree(trigger: str) -> None:
+    assert gate._scoped_targets({"src/a.py", trigger}) is None
+
+
+@pytest.mark.parametrize(
+    "gate_script", ["scripts/check_black_formatting.py", "scripts/bounded_black.py"]
+)
+def test_editing_the_gate_itself_stays_scoped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, gate_script: str
+) -> None:
+    # The scoping change's own heads timed out backend-lint three times out of
+    # three because the gate script was a whole-tree trigger: a PR that edits the
+    # gate could never pass the gate on a hosted runner. Gate bugs are this file's
+    # job and the main-branch audit's, not a 15-minute whole-tree black run's.
+    assert (ROOT / gate_script).is_file(), gate_script
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    assert gate._scoped_targets({"src/a.py", gate_script}) == ("src/a.py",)
+
+
+def test_every_full_tree_trigger_is_a_real_file() -> None:
+    # A renamed trigger would silently stop forcing the whole tree.
+    for trigger in gate.FULL_TREE_TRIGGERS:
+        assert (ROOT / trigger).is_file(), trigger
+
+
+def test_a_pr_runs_black_only_on_its_changed_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"src/a.py", "README.md"},
+        unformatted=set(),
+        baseline=["src/old.py"],
+        files=["src/a.py", "src/old.py", "src/other.py"],
+    )
+    assert gate.main(argv) == 0
+    assert calls == [("src/a.py",)], "black was pointed at more than the changed file"
+
+
+def test_a_pr_touching_no_python_never_starts_black(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"README.md"},
+        unformatted=set(),
+        baseline=[],
+        files=["README.md"],
+    )
+    assert gate.main(argv) == 0
+    assert calls == []
+
+
+def test_a_changed_unformatted_file_outside_the_baseline_is_still_an_offender(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"src/a.py"},
+        unformatted={"src/a.py"},
+        baseline=[],
+        files=["src/a.py"],
+    )
+    assert gate.main(argv) == 1
+    assert "src/a.py" in capsys.readouterr().out
+
+
+def test_an_untouched_unformatted_file_is_not_this_prs_offender(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"src/a.py"},
+        unformatted={"src/elsewhere.py"},
+        baseline=[],
+        files=["src/a.py", "src/elsewhere.py"],
+    )
+    assert gate.main(argv) == 0
+
+
+def test_a_touched_baselined_file_that_became_clean_must_be_pruned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"src/old.py"},
+        unformatted=set(),
+        baseline=["src/old.py"],
+        files=["src/old.py"],
+    )
+    assert gate.main(argv) == 1
+    assert "src/old.py" in capsys.readouterr().out
+
+
+def test_an_untouched_baselined_file_is_not_checked_so_it_cannot_block_a_pr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Whole-tree graduation is the main-branch audit's job (RATCHET_SCOPE_WHOLE_TREE).
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"src/a.py"},
+        unformatted=set(),
+        baseline=["src/old.py"],
+        files=["src/a.py", "src/old.py"],
+    )
+    assert gate.main(argv) == 0
+
+
+def test_a_baseline_entry_for_a_file_that_no_longer_exists_is_still_caught(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A delete or rename shows only the new path in `git diff --name-only`, so the
+    # old entry is not in the changed set and would otherwise go stale unseen.
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"src/renamed.py"},
+        unformatted=set(),
+        baseline=["src/gone.py"],
+        files=["src/renamed.py"],
+    )
+    assert gate.main(argv) == 1
+    assert "src/gone.py" in capsys.readouterr().out
+
+
+def test_the_whole_tree_is_measured_when_the_scope_is_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed=None,
+        unformatted=set(),
+        baseline=[],
+        files=["src/a.py"],
+    )
+    assert gate.main(argv) == 0
+    assert calls == [gate.DEFAULT_TARGETS]
+
+
+def test_a_black_pin_change_measures_the_whole_tree_and_catches_graduation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A new pin can make an untouched baselined file clean; only the whole tree sees it.
+    calls, argv = _scoped_gate(
+        monkeypatch,
+        tmp_path,
+        changed={"pyproject.toml"},
+        unformatted=set(),
+        baseline=["src/old.py"],
+        files=["pyproject.toml", "src/old.py"],
+    )
+    assert gate.main(argv) == 1
+    assert calls == [gate.DEFAULT_TARGETS]
+    assert "src/old.py" in capsys.readouterr().out
