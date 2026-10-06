@@ -244,3 +244,135 @@ def test_a_real_babysit_instruction_infers_its_own_pr():
     target = infer(text)
     assert target is not None
     assert target.subject == "kirodotdev/KiroCrew#7542"
+
+
+# --- A bare ``PR <number>``, resolved against the session's own log ---------------
+#
+# The instruction supplies the number and the fact that it is a pull request; the
+# log supplies only the repository. Every case that does not leave exactly one
+# repository for that exact number must answer ``None`` -- today's plain timer.
+
+_LOG_WITH_URL = ("opened https://github.com/kirodotdev/KiroCrew/pull/14361 for review",)
+
+
+def _context(*chunks: str):
+    return lambda: list(chunks)
+
+
+def _refusing_context():
+    def _read():
+        raise AssertionError("the log must not be read for this text")
+
+    return _read
+
+
+def test_a_hashless_bare_number_resolves_from_a_url_in_the_session_log():
+    # W5's exact spelling. Base: ``_PR_BARE`` requires ``#`` and no context exists,
+    # so this was ``None`` and the loop fired blind on every tick.
+    target = infer("Babysit PR 14361 until green", context=_context(*_LOG_WITH_URL))
+    assert target is not None
+    assert target.kind == GH_PR
+    assert target.subject == "kirodotdev/KiroCrew#14361"
+    # The instruction named no host, so none is pinned, whatever the log spelled.
+    assert target.host_key == "default"
+    assert json.loads(target.message) == {"repo": "kirodotdev/KiroCrew", "pr": 14361}
+
+
+def test_the_hash_and_pull_request_spellings_resolve_the_same_way():
+    for text in ("Babysit PR #14361", "watch pull request 14361", "PRs 14361 until merged"):
+        target = infer(text, context=_context(*_LOG_WITH_URL))
+        assert target is not None, text
+        assert target.subject == "kirodotdev/KiroCrew#14361", text
+
+
+def test_without_a_context_a_bare_number_still_selects_nothing():
+    # Every existing caller (the judge's collector, ``_pr_identity``) passes no
+    # context and must keep the answer it had.
+    assert infer("Babysit PR 14361 until green") is None
+    assert infer("Babysit PR #14361 until green") is None
+
+
+def test_a_shorthand_in_the_log_resolves_the_same_subject_as_a_url():
+    target = infer("Babysit PR 14361", context=_context("see kirodotdev/KiroCrew#14361"))
+    assert target is not None
+    assert target.subject == "kirodotdev/KiroCrew#14361"
+    assert target.host_key == "default"
+    assert json.loads(target.message) == {"repo": "kirodotdev/KiroCrew", "pr": 14361}
+
+
+def test_two_spellings_of_one_repository_are_one_repository():
+    # GitHub slugs are case-insensitive, so a differently-cased shorthand is not a
+    # second repository.
+    target = infer(
+        "Babysit PR 14361",
+        context=_context("KIRODOTDEV/kirocrew#14361", *_LOG_WITH_URL),
+    )
+    assert target is not None
+    assert target.subject.lower() == "kirodotdev/kirocrew#14361"
+
+
+def test_two_repositories_naming_the_same_number_refuse():
+    assert (
+        infer(
+            "Babysit PR 14361",
+            context=_context(*_LOG_WITH_URL, "https://github.com/other/thing/pull/14361"),
+        )
+        is None
+    )
+    assert infer("Babysit PR 14361", context=_context(*_LOG_WITH_URL, "other/thing#14361")) is None
+
+
+def test_a_log_naming_only_other_numbers_or_an_issue_refuses():
+    assert infer("Babysit PR 14361", context=_context("https://github.com/o/r/pull/14360")) is None
+    # An issues/ link is not a pull request, whatever its number.
+    assert (
+        infer(
+            "Babysit PR 14361",
+            context=_context("https://github.com/kirodotdev/KiroCrew/issues/14361"),
+        )
+        is None
+    )
+    assert infer("Babysit PR 14361", context=_context()) is None
+
+
+def test_two_bare_numbers_refuse_without_reading_the_log():
+    # A log that WOULD resolve either number, so only the refusal can answer None.
+    reads: list[int] = []
+
+    def _log():
+        reads.append(1)
+        return ["https://github.com/o/r/pull/7", *_LOG_WITH_URL]
+
+    assert infer("Babysit PR 14361 after PR 7 lands", context=_log) is None
+    assert infer("PRs 14361 and 7", context=_log) is None
+    assert reads == []
+
+
+def test_text_that_decides_by_itself_never_reads_the_log():
+    url = "https://github.com/kirodotdev/KiroCrew/pull/42"
+    reads: list[int] = []
+
+    def _log():
+        # Resolves #7 and #42 alike, so a log read could only ever change the answer.
+        reads.append(1)
+        return ["https://github.com/o/r/pull/7", "https://github.com/o/r/pull/42"]
+
+    assert infer(f"Babysit {url}", context=_log).subject == "kirodotdev/KiroCrew#42"
+    # A refusal on the text's own grammar stays a refusal: the log cannot break it.
+    assert infer("drive kirodotdev/KiroCrew#42", context=_log) is None
+    assert infer(f"Babysit PR #7; blocked on {url}", context=_log) is None
+    assert infer("tidy the docs", context=_log) is None
+    assert reads == []
+
+
+def test_an_unreadable_log_refuses_rather_than_raising():
+    assert infer("Babysit PR 14361", context=_refusing_context()) is None
+
+
+def test_a_pull_request_url_spelling_a_different_number_in_the_text_is_not_bare():
+    # A hash-less ``PR <number>`` beside a URL for a different pull request is the
+    # URL rule's case, not a bare-number text. Pinned at its current answer: the
+    # hash-less spelling is invisible to ``_PR_BARE``, so the text gates on the URL.
+    url = "https://github.com/kirodotdev/KiroCrew/pull/7"
+    target = infer(f"Babysit PR 14361; blocked on {url}", context=_refusing_context())
+    assert target is not None and target.subject == "kirodotdev/KiroCrew#7"

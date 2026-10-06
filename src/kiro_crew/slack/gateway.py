@@ -8014,7 +8014,9 @@ class GatewayOrchestrator:
                     payload["observed_at"] = float(at)
                 return payload
 
-            targets = _judge.parse_targets(_judge.spec_of(loop), loop.message)
+            targets = _judge.parse_targets(
+                _judge.spec_of(loop), loop.message, watched=_judge.watched_pr_subject(loop)
+            )
             # Pruned to the targets this tick actually reads, not merely copied. The
             # collector only ever ADDS a key, the targets come from ``loop.message``, and
             # ``asdict`` persists whatever the map holds, so without this a retarget

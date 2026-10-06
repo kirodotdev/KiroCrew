@@ -1600,13 +1600,25 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # subject resolvable at all -- a session's key is not in its own prose -- and it is
     # the BINDING key, the same one the applier passes, so the ack names the subject the
     # loop will actually carry rather than a second derivation of it.
+    #
+    # ``session_texts`` is the session log a bare ``PR <number>`` resolves against. The
+    # MCP server's run of this handler is off the gateway's loop, so it reads it there.
+    # The gateway's directive replay runs this handler ON its event loop and discards
+    # the ack, so that run skips the read: the applier reads the log off-loop itself.
+    binding_key = str(mcp_core._autonudge_binding_key(sk) or "")
+    session_texts = (
+        None
+        if mcp_core.directive_capture_active()
+        else autonudge.read_session_texts(stored_message, binding_key, watch)
+    )
     gated = (
         autonudge.infer_monitor(
             stored_message,
             time.time(),
             judge=autonudge.scrubbed_judge_spec(judge_spec) if judge_spec else None,
             watch=watch,
-            slot_key=str(mcp_core._autonudge_binding_key(sk) or ""),
+            slot_key=binding_key,
+            session_texts=session_texts,
         )
         if (gate or watch)
         else None

@@ -88,7 +88,9 @@ MAX_TARGETS = _validation.MAX_JUDGE_TARGETS
 EVIDENCE_ROLES = frozenset({"assistant"})
 
 
-def parse_targets(spec: Mapping[str, Any] | None, message: str = "") -> list[str]:
+def parse_targets(
+    spec: Mapping[str, Any] | None, message: str = "", *, watched: str = ""
+) -> list[str]:
     """The targets to collect from: the spec's own list, else what *message* names.
 
     An explicit ``targets`` list adds or narrows; without one the loop's
@@ -100,6 +102,15 @@ def parse_targets(spec: Mapping[str, Any] | None, message: str = "") -> list[str
     :data:`SESSION_TARGET_RE`, or a string a pull-request target can be inferred
     from. Anything else is dropped rather than passed to a reader, because these
     strings come from the owner's tool call.
+
+    *watched* is the subject the loop's gh-pr monitor is bound to (see
+    :func:`watched_pr_subject`). It is used for ONE shape: an instruction naming its
+    pull request by number alone (``PR <number>``), whose repository the monitor's
+    resolver took from the session's own log. The text cannot be re-inferred here --
+    the log is not -- so without this the probe would read the pull request and the
+    collector would ask about nothing, and no comment would ever reach the judge.
+    Only when the number in the instruction IS the monitor's number, so it can never
+    put a pull request into the brief that the instruction did not name.
     """
     raw: list[str] = []
     narrowed = False
@@ -143,7 +154,43 @@ def parse_targets(spec: Mapping[str, Any] | None, message: str = "") -> list[str
         stripped = message.strip()
         if stripped not in out:
             out.append(stripped)
+    elif _is_bare_subject_of(message, watched) and watched.strip() not in out:
+        out.append(watched.strip())
     return out
+
+
+def watched_pr_subject(loop: Any) -> str:
+    """The subject *loop*'s gh-pr monitor is bound to, or ``""``. Never raises."""
+    monitor = getattr(loop, "monitor", None)
+    if monitor is None:
+        return ""
+    try:
+        from kiro_crew.probes import GH_PR
+
+        if getattr(monitor, "kind", "") != GH_PR:
+            return ""
+    except Exception:
+        return ""
+    target = getattr(monitor, "target", "")
+    return target if isinstance(target, str) else ""
+
+
+def _is_bare_subject_of(message: str, watched: str) -> bool:
+    """Whether *message* names *watched*'s pull request by its number alone."""
+    value = (watched or "").strip()
+    if not value or not message:
+        return False
+    try:
+        from kiro_crew.probes import targets as _targets
+
+        number = _targets.bare_pull_request_number(message)
+    except Exception:
+        logger.debug("nudge.wake: target inference unavailable", exc_info=True)
+        return False
+    if number is None:
+        return False
+    slug, sep, tail = value.rpartition("#")
+    return bool(sep) and "/" in slug and tail == str(number)
 
 
 def is_session_target(value: str) -> bool:

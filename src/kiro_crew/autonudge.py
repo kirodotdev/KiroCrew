@@ -143,6 +143,7 @@ from kiro_crew.autonudge_service.subject import (  # noqa: F401 -- re-exported
     infer_monitor,
     infer_subject,
     loop_subject,
+    read_session_texts,
 )
 from kiro_crew.autonudge_service.timers import (  # noqa: F401 -- re-exported
     _MONITOR_RETRY_BACKOFF_SECS,

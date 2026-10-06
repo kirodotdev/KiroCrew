@@ -143,8 +143,8 @@ bound and no blanket grant: normal PreToolUse governance and approvals apply.
 A rejected or timed-out approval is a stall, not success or permission to loosen
 security. Fix, commit and push only within the user's authorization.
 
-- Naming exactly ONE public GitHub PR by full URL in `message` can select
-  observation gating; a bare number or owner/repo shorthand cannot.
+- Name ONE public GitHub PR by full URL in `message` to select gating. A
+  bare `PR <n>` gates only if this session already named its URL.
 - `gate=true` is the default. Quiet subjects avoid turns, with eventual delivery
   after enough quiet intervals. Use `gate=false` for generic comments/advisory
   scans and duties that act despite silence, such as chasing a missing reviewer

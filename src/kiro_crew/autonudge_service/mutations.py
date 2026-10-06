@@ -52,7 +52,12 @@ from kiro_crew.autonudge_service.model import (
     new_goal_token,
     reason_in,
 )
-from kiro_crew.autonudge_service.subject import infer_monitor, infer_subject
+from kiro_crew.autonudge_service.subject import (
+    infer_monitor,
+    infer_subject,
+    needs_session_texts,
+    read_session_texts,
+)
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorCreationSurface
 
@@ -228,6 +233,14 @@ async def _add_unserialized(
 
     validate_runtime_secs(max_runtime_secs, allow_unbounded=True)
     idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
+    # A bare ``PR <number>`` resolves against the session's own log. Reading it is a
+    # whole-transcript read, so it runs in a worker thread BEFORE the lock is taken,
+    # never on the event loop and never while other mutations wait.
+    arm_session_texts = (
+        await asyncio.to_thread(read_session_texts, message, slot_key, watch)
+        if (gate or watch) and needs_session_texts(message, slot_key, watch)
+        else None
+    )
     async with self._lock:
         if admission_check is not None and not admission_check():
             raise NudgeAdmissionRefused("session changed before nudge arm committed")
@@ -357,6 +370,7 @@ async def _add_unserialized(
                     judge=stored_judge,
                     watch=watch,
                     slot_key=slot_key,
+                    session_texts=arm_session_texts,
                 )
                 # An explicit ``watch`` gates on its own, without ``gate``. This
                 # path defaults to UNGATED for the reason above, so requiring
@@ -548,6 +562,23 @@ async def _update_unserialized(
 
     if max_runtime_secs is not None:
         validate_runtime_secs(max_runtime_secs, allow_unbounded=True)
+    # The session log a retarget's bare ``PR <number>`` resolves against, read in a
+    # worker thread BEFORE the lock, keyed by the message and session it was read for.
+    # Inside the hold it is used only when the loop still carries exactly that pair;
+    # otherwise the bare number resolves nothing, the same as an unreadable log.
+    peeked = self._loops.get(loop_id)
+    retarget_key: tuple[str, str] | None = None
+    retarget_texts: list[str] | None = None
+    if peeked is not None:
+        peeked_message = message if message is not None else peeked.message
+        peeked_watch = str(watch or "").strip() or (
+            peeked.monitor.kind if peeked.monitor is not None else ""
+        )
+        if needs_session_texts(peeked_message, peeked.slot_key, peeked_watch):
+            retarget_key = (peeked_message, peeked.slot_key)
+            retarget_texts = await asyncio.to_thread(
+                read_session_texts, peeked_message, peeked.slot_key, peeked_watch
+            )
     async with self._lock:
         loop = self._loops.get(loop_id)
         if not loop:
@@ -728,6 +759,9 @@ async def _update_unserialized(
             # text alone, answers "this instruction names nothing observable", and leaves
             # the monitor None -- so the field would validate, reach here, and do nothing.
             watch_kind = requested_watch or (loop.monitor.kind if loop.monitor is not None else "")
+            session_texts = (
+                retarget_texts if retarget_key == (loop.message, loop.slot_key) else None
+            )
             inferred = (
                 infer_monitor(
                     loop.message,
@@ -735,6 +769,7 @@ async def _update_unserialized(
                     judge=loop.judge,
                     watch=watch_kind,
                     slot_key=loop.slot_key,
+                    session_texts=session_texts,
                 )
                 if loop.gate
                 else None
@@ -746,17 +781,23 @@ async def _update_unserialized(
             # "unchanged" and keep polling the wrong server. This is the
             # third of the three places that comparison had to reach; the
             # other two are the post-poll binding and the dedupe identity.
+            # The OLD subject is the one the current monitor was bound to, so a bare
+            # number in the previous message resolves against that, never the log.
+            from kiro_crew.autonudge_judge import watched_pr_subject
+
             old_probe = infer_subject(
                 str(previous.get("message") or ""),
                 previous.get("judge"),
                 watch=watch_kind,
                 slot_key=loop.slot_key,
+                monitor_target=watched_pr_subject(loop),
             )
             new_probe = infer_subject(
                 loop.message,
                 loop.judge,
                 watch=watch_kind,
                 slot_key=loop.slot_key,
+                session_texts=session_texts,
             )
             same_host = (old_probe.host_key if old_probe else None) == (
                 new_probe.host_key if new_probe else None

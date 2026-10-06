@@ -42,9 +42,29 @@ a different one, since a brief naming a blocker is an evidence scope and not a s
 declaration. A brief naming two or more pull requests leaves the instruction deciding,
 because a loop holds one monitor. Resolution can answer "no subject", in which case no
 probe is attached and the loop fires on its plain interval: an instruction naming a
-pull request only in a shorthand (`owner/name#123`, `PR #42`) carries no host and
-`#123` is equally an issue reference, and an instruction naming two at once is not
-resolved by preferring either. A loop that does resolve to one subject attaches
+pull request only in a shorthand (`owner/name#123`) carries no host and `#123` is
+equally an issue reference, and an instruction naming two at once is not resolved by
+preferring either. One source closes the bare-number gap: an instruction naming its
+pull request by number alone (`PR 14361`, `PR #14361`, `pull request 14361`) and
+nothing else takes the REPOSITORY from the loop's own session transcript, through
+`probes.targets.resolve_bare`. The transcript must name that exact number as a pull
+request -- a full `/pull/` URL or `owner/name#<number>` -- in exactly one repository;
+no repository, two repositories, or two numbers in the instruction leave the loop on
+its plain interval. Nothing is inferred from the project's git remote, and no host is
+pinned because the instruction named none. The transcript is read through the guarded
+`derive_messages` and only when the subject is decided (arm and retarget), by
+`subject.read_session_texts`, which the async arm and retarget paths run with
+`asyncio.to_thread` before taking the service lock and pass in as `session_texts`.
+The `monitor_start` handler reads it to shape its ack in the MCP server, but skips the
+read under the gateway's directive replay (`directive_capture_active()`), which runs
+on the event loop and discards the ack; inference itself never reads a transcript, so a bare number given no texts resolves
+nothing. A stored
+loop resolves the same instruction against its own monitor's target
+(`infer_subject(..., monitor_target=)`), so a tick reads no transcript and the binding
+cannot drift as the log grows. The judge's collector cannot re-read the
+transcript, so `parse_targets(..., watched=)` admits the gh-pr monitor's own subject
+for exactly this shape, and only when the instruction's number is the monitor's.
+A loop that does resolve to one subject attaches
 `PrWatchProbe`, which FETCHES that pull request every tick and hands the reading to
 the wake judge. A retarget that changes the subject advances `config_generation`, so a
 structural-terminal verdict recorded for the old subject cannot deactivate the new

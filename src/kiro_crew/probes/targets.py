@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Callable, Iterable
 
 from kiro_crew.probes import GH_PR, WORK_LEDGER
 
@@ -83,6 +84,26 @@ _PR_BARE = re.compile(
 
 #: The individual numbers inside a matched chain.
 _PR_BARE_NUMBER = re.compile(r"#(\d{1,12})")
+
+#: ``PR 42`` / ``PR #42`` / ``pull request 42`` -- the reference an instruction makes
+#: when it names its pull request by NUMBER ALONE, hash or no hash. Read only by
+#: :func:`bare_pull_request_number`, and only for text that names no URL and no
+#: shorthand, so it never takes part in :data:`_PR_BARE`'s ambiguity detection and
+#: never widens that pattern's contract.
+#:
+#: The hash is optional because people drop it: an instruction reading
+#: ``PR <number>`` with no hash is invisible to :data:`_PR_BARE`. Matching
+#: ordinary prose ("pull requests 3 of 5") is tolerable HERE in a way it is not for an
+#: ambiguity guard, because a number found by this pattern selects nothing on its own
+#: -- it gates a loop only when the session's own log names that exact number as a
+#: pull request of exactly one repository, see :func:`resolve_bare`.
+_PR_BARE_LOOSE = re.compile(
+    r"\b(?:PRs?|pull\s+requests?)\s*" r"(?P<chain>#?\d{1,12}\b(?:\s*(?:,|and|&)\s*#?\d{1,12}\b)*)",
+    re.IGNORECASE,
+)
+
+#: The individual numbers inside a :data:`_PR_BARE_LOOSE` chain.
+_PR_BARE_LOOSE_NUMBER = re.compile(r"#?(\d{1,12})")
 
 
 @dataclass(frozen=True)
@@ -197,8 +218,111 @@ def names_pull_request(text: str) -> bool:
     return any(_PR_BARE_NUMBER.search(bare.group("chain")) for bare in _PR_BARE.finditer(text))
 
 
-def infer(text: str, *, watch: str = "", slot_key: str = "") -> Target | None:
+def bare_pull_request_number(text: str) -> int | None:
+    """The ONE pull-request number *text* names by number alone, or ``None``.
+
+    ``None`` whenever *text* could already decide -- or refuse -- a subject by
+    itself: any full URL or ``owner/name#N`` shorthand in it keeps the text on the
+    path :func:`infer` has always taken, so nothing here can turn a refusal there
+    into a subject. Also ``None`` for two distinct numbers ("PR 42 after PR 7"), for
+    the same reason :func:`infer` refuses two URLs, and for zero.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    if _pull_requests_named(text) or _PR_SHORTHAND.search(text):
+        return None
+    numbers: set[int] = set()
+    for bare in _PR_BARE_LOOSE.finditer(text):
+        for digits in _PR_BARE_LOOSE_NUMBER.findall(bare.group("chain")):
+            numbers.add(int(digits))
+    if len(numbers) != 1:
+        return None
+    number = numbers.pop()
+    return number if number > 0 else None
+
+
+def resolve_bare(text: str, context: Iterable[str]) -> Target | None:
+    """Resolve *text*'s bare ``PR <number>`` against the session's own log, or ``None``.
+
+    *text* supplies the NUMBER and the fact that it is a pull request -- it said
+    "PR", which an ``issues/N`` link or a bare ``#N`` never does. *context* supplies
+    only the REPOSITORY: the strings of the session that armed the loop, scanned for
+    a full pull-request URL or an ``owner/name#N`` shorthand whose number is that same
+    number. Nothing is guessed: no project git remote, no default repository.
+
+    Exactly one repository or nothing. Two repositories naming the same number in
+    one session is precisely the doubt this module resolves by declining, and the
+    decline is today's behaviour -- the loop fires on its timer and the woken session
+    reads the pull request itself.
+
+    No host is pinned, whichever spelling the context used: the INSTRUCTION never
+    named one, so the subject resolves through the operator's gh configuration and
+    keys as ``"default"`` -- what :class:`Target` documents a shorthand subject to
+    mean. One answer for every spelling is also what lets the loop's stored monitor
+    (a canonical ``owner/name#N``, which cannot carry a host) reproduce the subject
+    the arm resolved without reading the log again.
+    """
+    number = bare_pull_request_number(text)
+    if number is None:
+        return None
+    slugs: dict[str, tuple[str, str]] = {}
+    for chunk in context:
+        if not isinstance(chunk, str) or not chunk:
+            continue
+        for owner, repo, found in _pull_requests_named(chunk):
+            if found == number:
+                slugs.setdefault(f"{owner}/{repo}".lower(), (owner, repo))
+        for match in _PR_SHORTHAND.finditer(chunk):
+            try:
+                found = int(match.group("pr"))
+            except ValueError:
+                continue
+            if found == number:
+                slug = (match.group("owner"), match.group("repo"))
+                slugs.setdefault(f"{slug[0]}/{slug[1]}".lower(), slug)
+    # Case-folded, because GitHub slugs are: ``Owner/Repo`` and ``owner/repo`` are
+    # one repository and must not read as two.
+    if len(slugs) != 1:
+        return None
+    ((owner, repo),) = slugs.values()
+    return _gh_pr_target(owner, repo, number, host=None)
+
+
+def _gh_pr_target(owner: str, repo: str, number: int, *, host: str | None) -> Target:
+    """The one place a gh-pr :class:`Target` is spelled."""
+    slug = f"{owner}/{repo}"
+    config: dict[str, object] = {"repo": slug, "pr": number}
+    if host is not None:
+        # Pinned whenever the spelling NAMED the host. The pin stops an ambient
+        # ``GH_HOST`` from re-pointing the slug at a different server, where a
+        # same-numbered pull request could be merged and retire a watch on a live one.
+        config["host"] = host
+    return Target(
+        kind=GH_PR,
+        subject=f"{slug}#{number}",
+        host_key=host if host is not None else "default",
+        # known_reds is deliberately absent: inference cannot know which reds
+        # are inherited from the base branch, and inventing that list would
+        # either suppress a real failure or wake on a known one. The woken agent
+        # is where that judgment already lives.
+        message=json.dumps(config),
+    )
+
+
+def infer(
+    text: str,
+    *,
+    watch: str = "",
+    slot_key: str = "",
+    context: Callable[[], Iterable[str]] | None = None,
+) -> Target | None:
     """Return the single subject *text* is about, or ``None``.
+
+    *context*, when given, is called -- only then, and at most once -- for a text
+    that names its pull request by number alone and so cannot select a subject by
+    itself; see :func:`resolve_bare`. It is a callable so that the common text, which
+    either names a URL or names no number at all, never pays for reading a log.
+    Every caller that omits it gets exactly the answer this function gave before.
 
     ``None`` on every doubtful case, and specifically when the text names more
     than one distinct pull request. That case is common and it is exactly where
@@ -222,7 +346,21 @@ def infer(text: str, *, watch: str = "", slot_key: str = "") -> Target | None:
         return work_ledger_target(slot_key)
     if not isinstance(text, str) or not text:
         return None
+    direct = _infer_from_text(text)
+    if direct is not None or context is None:
+        return direct
+    if bare_pull_request_number(text) is None:
+        return None
+    try:
+        return resolve_bare(text, context())
+    except Exception:
+        # The log is an optional source, read on the arming path and on every tick;
+        # an unreadable one must cost the gate, never the loop.
+        return None
 
+
+def _infer_from_text(text: str) -> Target | None:
+    """:func:`infer`'s answer from *text* alone -- the original, URL-only rule."""
     found = _pull_requests_named(text)
 
     # Exactly one subject, or nothing. Ambiguity is not resolved by preferring
@@ -260,23 +398,4 @@ def infer(text: str, *, watch: str = "", slot_key: str = "") -> Target | None:
                 continue
             if bare_number != number:
                 return None
-    slug = f"{owner}/{repo}"
-    config: dict[str, object] = {
-        "repo": slug,
-        "pr": number,
-        # Always pinned, because the only spelling that reaches here NAMED the
-        # host. The pin stops an ambient ``GH_HOST`` from re-pointing the slug at
-        # a different server, where a same-numbered pull request could be merged
-        # and retire a watch on a live one.
-        "host": _PUBLIC_HOST,
-    }
-    return Target(
-        kind=GH_PR,
-        subject=f"{slug}#{number}",
-        host_key=_PUBLIC_HOST,
-        # known_reds is deliberately absent: inference cannot know which reds
-        # are inherited from the base branch, and inventing that list would
-        # either suppress a real failure or wake on a known one. The woken agent
-        # is where that judgment already lives.
-        message=json.dumps(config),
-    )
+    return _gh_pr_target(owner, repo, number, host=_PUBLIC_HOST)

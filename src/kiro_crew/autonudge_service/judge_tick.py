@@ -167,7 +167,7 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
         # scope later arms every loop already carrying one.
         return None
     wake_when, quiet_when = judge.criteria_of(spec)
-    targets_wanted = judge.parse_targets(spec, loop.message)
+    targets_wanted = judge.parse_targets(spec, loop.message, watched=judge.watched_pr_subject(loop))
     if not targets_wanted:
         logger.debug("AutoNudge: loop %s has a judge spec naming no usable target", loop.id)
         return False
