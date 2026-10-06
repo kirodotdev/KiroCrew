@@ -3212,7 +3212,7 @@ class TestGlobalEventWithSlotDoesNotBypassScope:
             Path(__file__).resolve().parents[1]
             / "src" / "kiro_crew" / "slack" / "gateway.py"
         ).read_text(encoding="utf-8")
-        assert 'meta={"slot": slot.key}' in gw
+        assert 'meta={"slot": slot.key, **_HEARTBEAT_PRODUCER}' in gw
 
     def test_meta_merge_is_flat_so_slot_lands_top_level(self):
         """Source guard on the mechanism: bus.push merges meta keys flat."""

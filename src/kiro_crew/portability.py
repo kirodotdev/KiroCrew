@@ -2000,13 +2000,24 @@ def apply_import_zip(
             with contextlib.ExitStack() as swap_guard:
                 if "ui-prefs.json" in vetted_settings:
                     swap_guard.enter_context(ui_prefs.replacing_file())
+                publish_notifications: Callable[[], None] | None = None
                 if channel_settings is not None and "notification_settings.json" in vetted_settings:
                     channels, _dropped = cast(
                         "tuple[dict[str, dict[str, Any]], int]",
                         vetted_settings["notification_settings.json"],
                     )
-                    swap_guard.enter_context(channel_settings.replacing_file(channels))
-                _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+                    # The hold yields the publisher: the validated mapping is written and
+                    # stamped inside `_do_replace`'s rollback boundary, under this lock.
+                    publish_notifications = swap_guard.enter_context(
+                        channel_settings.replacing_file(channels)
+                    )
+                _do_replace(
+                    snap,
+                    mc,
+                    None,
+                    allow_unpinned=not staging_pinned,
+                    notification_publisher=publish_notifications,
+                )
             summary["items"].append("full replace")
             if "ui-prefs.json" in vetted_settings:
                 summary["ui_prefs_restored"] = True

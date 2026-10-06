@@ -66,8 +66,56 @@ class NotificationCoordinator:
                 "Dropped invalid notification (kind=%s)", kind, exc_info=True
             )
 
-    def deliver(self, state: Any, note: dict[str, Any]) -> None:
-        """Apply settings, fan out, and queue durable notification storage."""
+    def notify_returning_handle(
+        self,
+        state: Any,
+        kind: str,
+        title: str,
+        body: str,
+        *,
+        meta: dict | None,
+        url: str | None,
+        actions: list[dict[str, Any]] | None,
+        channel: str | None = None,
+    ) -> "asyncio.Future[bool] | bool | None":
+        """Like :meth:`notify`, but RETURN this note's own durability handle.
+
+        The orphan-recovery bell must credit delivery only once ITS write lands,
+        and must not re-read ``state.last_notification_persist`` -- a shared slot a
+        concurrent off-loop delivery can overwrite between the call and the read,
+        handing this note another's verdict. The handle is the sink's own return
+        (``DashboardState._deliver_note`` -> ``deliver``), surfaced here via the
+        bus's ``return_sink_result`` mode. Returns ``None`` when the payload was
+        invalid and dropped, exactly as :meth:`notify` swallows that case.
+        """
+        try:
+            payload = self._payload_from_legacy(
+                kind,
+                title,
+                body,
+                meta,
+                url=url,
+                actions=actions,
+                channel=channel,
+            )
+            return state.notification_bus.push(payload, return_sink_result=True)
+        except self._validation_error:
+            self._logger_provider().warning(
+                "Dropped invalid notification (kind=%s)", kind, exc_info=True
+            )
+            return None
+
+    def deliver(self, state: Any, note: dict[str, Any]) -> "asyncio.Future[bool] | bool":
+        """Apply settings, fan out, and queue durable notification storage.
+
+        Returns this delivery's DURABILITY HANDLE: the persist future on a
+        running loop, or the inline write's boolean off it. Returned rather than
+        left on ``state`` because a caller that gates an egress on durability
+        needs THIS note's answer -- two off-loop deliveries run concurrently, so
+        a shared field can hand one note the other's verdict, bridging a failed
+        write or withholding a good one. ``state.last_notification_persist`` is
+        still set for the push handlers that read it.
+        """
         for key, value in note.items():
             if key != "ts":
                 note[key] = self._redact_value(value)
@@ -85,12 +133,12 @@ class NotificationCoordinator:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._persist_one(note)
+            persisted = self._persist_one(note)
             state.last_notification_persist = None
-        else:
-            state.last_notification_persist = loop.run_in_executor(
-                self._executor_provider(), self._persist_one, dict(note)
-            )
+            return persisted
+        future = loop.run_in_executor(self._executor_provider(), self._persist_one, dict(note))
+        state.last_notification_persist = future
+        return future
 
     @staticmethod
     def register_sse(state: Any) -> asyncio.Queue[dict[str, Any]]:

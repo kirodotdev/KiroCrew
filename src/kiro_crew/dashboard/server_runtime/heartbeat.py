@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         resolve_loop_stall_exit_after,
         rotate_dumps,
         sweep_stale_dumps,
+        system_origin,
     )
 
 
@@ -225,7 +226,7 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
                         + ("".join(f"{ln}. " for ln in _attr_lines))
                         + f"Thread stacks: {_prior_dump}"
                     ),
-                    meta={"url": "/settings", "dump": str(_prior_dump)},
+                    meta=system_origin(url="/settings", dump=str(_prior_dump)),
                 )
             except Exception:
                 logger.debug("stall-exit notification failed", exc_info=True)
