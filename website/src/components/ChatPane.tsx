@@ -51,7 +51,7 @@ import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
-import { modelSupportsEffort } from '../lib/effort'
+import { modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
@@ -686,7 +686,7 @@ export default function ChatPane({
     paneSlot?.model_withheld,
     codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
   )
-  const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesQ.isError && (
+  const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
     selectionCapabilities
       ? selectionCapabilities.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
@@ -1937,7 +1937,7 @@ export default function ChatPane({
           variant="inline"
           className="mx-4 mt-2"
           testId="chat-pane-effort-capabilities-error"
-          message={provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
+          message={provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
         />
         {/* No hand-off: this pane holds an unsent draft; the reads retry in place. */}

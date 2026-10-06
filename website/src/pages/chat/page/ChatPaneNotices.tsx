@@ -5,6 +5,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import VoicePlaybackNotice from '../../../components/VoicePlaybackNotice'
 import { Btn } from '../../../components/ui'
 import { i18nT } from '../../../i18n/t'
+import { selectionCapabilitiesFailed } from '../../../lib/effort'
 import type { useProvider } from '../../../providers'
 import type { AppDispatch, RootState } from '../../../store'
 import { clearSwitchSlotGone, clearUndeletableHistory, clearUnresumableResume, switchSlotNoticeCopy } from '../../../store/chatSlice'
@@ -71,7 +72,7 @@ interface ChatPaneNoticesProps {
   /** For the effort-options notice: the slot's ACP capability read failed. */
   activeSlot: string | null
   provider: ReturnType<typeof useProvider>
-  selectionCapabilitiesQ: { isError: boolean }
+  selectionCapabilitiesQ: { isError: boolean; error?: unknown }
   /** For the model-default notice: the Settings default model read failed. */
   chipDefault: { failed: boolean }
   actionError: { title?: string; message: string; preserveOnSwitch?: boolean } | null
@@ -143,7 +144,7 @@ export default function ChatPaneNotices({
       />
       {/* No hand-off: navigating away would discard the unsent composer draft. */}
       <ErrorNotice
-        message={activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
+        message={activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)
           ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="effort-capabilities-error"

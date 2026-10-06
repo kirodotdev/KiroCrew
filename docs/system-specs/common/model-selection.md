@@ -329,7 +329,11 @@ its own once the cache refreshes with a list that carries it.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`; the composer then uses its existing
-  model-name heuristic until ACP reports the session's actual options. The same
+  model-name heuristic until ACP reports the session's actual options. A slot the
+  gateway has not registered yet answers 404 `slot_not_found`, and the composer
+  reads that the same way (`selectionCapabilitiesFailed` in `website/src/lib/effort.ts`):
+  only a real fault (403, 503 `peer_unavailable`, transport failure) shows the
+  "could not verify effort options" notice and hides the effort control. The same
   endpoint proxies a remote slot to its execution peer. Model and effort are ONE
   composer control (`docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md`):
   the model chip names the level in force, and the model picker embeds the effort

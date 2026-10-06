@@ -100,6 +100,18 @@ describe('ChatPaneNotices dismissals', () => {
     expect(screen.queryByText(i18nT('pages.chatPage.effort_options_unavailable'))).toBeNull()
   })
 
+  it('treats a 404 capability read as not-yet-known, not as a failure (#14817)', () => {
+    // A new chat's slot is not registered yet, so the read answers slot_not_found.
+    const notFound = Object.assign(new Error('not found'), { status: 404 })
+    const { unmount } = renderNotices(allUp({ selectionCapabilitiesQ: { isError: true, error: notFound } }))
+    expect(screen.queryByText(i18nT('pages.chatPage.effort_options_unavailable'))).toBeNull()
+    unmount()
+    // A real fault (peer unavailable) still says so.
+    const peerDown = Object.assign(new Error('peer unavailable'), { status: 503 })
+    renderNotices(allUp({ selectionCapabilitiesQ: { isError: true, error: peerDown } }))
+    expect(screen.getByTestId('effort-capabilities-error')).toHaveTextContent(i18nT('pages.chatPage.effort_options_unavailable'))
+  })
+
   it('says the Settings default model could not be read only for an open slot', () => {
     const { unmount } = renderNotices(allUp({ chipDefault: { failed: true } }))
     expect(screen.getByTestId('model-default-error')).toHaveTextContent(i18nT('pages.settings.chatPanel.failed_to_load_config'))
