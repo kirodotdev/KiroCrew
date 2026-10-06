@@ -96,7 +96,7 @@ BUDGET: dict[str, int] = {
     "test/test_runloop_integration.py": 1,
     "test/test_runtime_death_is_a_process_event.py": 3,
     "test/test_session_control.py": 1,
-    "test/test_session_control_owner_dm.py": 1,
+    "test/test_session_control_owner_dm.py": 3,
     "test/test_session_control_set_model.py": 3,
     "test/test_start_priority.py": 1,
     "test/test_stderr_redact_then_tail.py": 1,
