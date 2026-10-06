@@ -88,6 +88,54 @@ class TestConfigDir:
         assert result == tmp_path / ".kiro" / "crew"
 
 
+class TestScratchRootOverride:
+    """``valid_scratch_root_override()`` validates ``KIROCREW_SCRATCH_ROOT`` with
+    the same ``_is_unsafe_home`` predicate as ``KIROCREW_HOME``."""
+
+    def test_unset_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        assert paths.valid_scratch_root_override() is None
+
+    def test_valid_override_is_resolved(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "scratch-elsewhere"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(target))
+        assert paths.valid_scratch_root_override() == target.resolve()
+
+    def test_system_dir_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Same refusal shape as ``KIROCREW_HOME``: a drive/filesystem root is
+        # refused on every OS (``p == p.parent``) without being created.
+        if sys.platform == "win32":
+            system_dir = Path.cwd().anchor
+        else:
+            system_dir = "/usr"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", system_dir)
+        assert paths.valid_scratch_root_override() is None
+
+    def test_ancestor_of_config_dir_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Masking a path that equals or contains the data home would hide the policy
+        # ceiling and the operator's files below it, so it is refused.
+        home = tmp_path / "home" / ".kiro" / "crew"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # config_dir() itself.
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(paths.config_dir()))
+        assert paths.valid_scratch_root_override() is None
+        # An ancestor of config_dir().
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(tmp_path / "home"))
+        assert paths.valid_scratch_root_override() is None
+
+    def test_sibling_of_config_dir_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home" / ".kiro" / "crew"))
+        sibling = tmp_path / "data-drive" / "scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(sibling))
+        assert paths.valid_scratch_root_override() == sibling.resolve()
+
+
 class TestLedgerRoot:
     def test_link_is_refused_without_touching_its_target(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

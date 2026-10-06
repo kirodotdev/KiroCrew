@@ -90,11 +90,20 @@ from typing import Literal
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import (
+    SCRATCH_ROOT_ENV,
+    config_dir,
+    valid_scratch_root_override,
+)
 
 logger = logging.getLogger(__name__)
 
 _SUBDIR = "scratch"
+
+#: Distinct unsafe ``KIROCREW_SCRATCH_ROOT`` values already warned about, so the
+#: ignore-and-fall-back warning in :func:`scratch_root` fires once per value rather than
+#: on every allocation/sweep/log-cap call. Process-lifetime; a repointed value warns anew.
+_WARNED_UNSAFE_SCRATCH_ROOTS: set[str] = set()
 
 #: Owner-pid marker written by the spawner right after the child starts.
 OWNER_FILENAME = ".owner"
@@ -177,7 +186,42 @@ class SharedScratchJoinError(ScratchBoundaryError):
 
 
 def scratch_root() -> Path:
-    """The managed root: ``<data home>/scratch``."""
+    """The managed root: ``KIROCREW_SCRATCH_ROOT`` if set and safe, else
+    ``<data home>/scratch``.
+
+    The override points the bulky, disposable scratch tree at an explicit
+    directory independent of ``KIROCREW_HOME`` -- its reason to exist is the
+    Windows case where staged self-update installers under scratch fill the
+    system drive. An override naming a filesystem/drive root or a known
+    system directory is refused by :func:`valid_scratch_root_override` and
+    logged once, falling back to ``config_dir()/scratch`` -- the same
+    ignore-and-fall-back contract :func:`config_dir` applies to an unsafe
+    ``KIROCREW_HOME``. ``KIROCREW_SCRATCH`` (no ``_ROOT``) is unrelated: it is an
+    OUTPUT written by :func:`scratch_env` to tell child processes where their
+    scratch is, and setting it changes nothing here.
+
+    The override is used AS the managed root, so the subdirectory the sweep and
+    allocator operate on is the overridden path itself. :func:`valid_scratch_root_override`
+    resolves the override to a real path (as ``KIROCREW_HOME`` does), so a symlink or
+    junction AT the override name is followed to its target like any operator-chosen
+    directory; the link/junction refusal in :func:`allocate_scratch` still fires on a link
+    planted at an allocation BELOW that resolved root, exactly as it does under the default
+    location. The sandbox masks the resolved root as a hidden tree
+    (``sandbox._relocated_scratch_root_target``), so relocating scratch does not weaken the
+    per-session isolation the default location has.
+    """
+    override = valid_scratch_root_override()
+    if override is not None:
+        return override
+    raw = os.environ.get(SCRATCH_ROOT_ENV)
+    if raw and raw not in _WARNED_UNSAFE_SCRATCH_ROOTS:
+        # scratch_root() is called on every allocation, sweep and log-cap pass (every
+        # ~300s), so an unconditional warn would repeat the same line forever for a
+        # steadily-misconfigured value. Warn once per distinct offending value — a
+        # repointed-and-still-unsafe value warns again, which is what an operator
+        # fixing it needs to see.
+        _WARNED_UNSAFE_SCRATCH_ROOTS.add(raw)
+        logger.warning("%s=%s is a system directory, ignoring", SCRATCH_ROOT_ENV, raw)
     return config_dir() / _SUBDIR
 
 

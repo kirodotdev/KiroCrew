@@ -4016,6 +4016,12 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     developer who exports them does not flip the off-loop-IO guards strict for the
     whole suite.
 
+    ``KIROCREW_SCRATCH_ROOT`` is cleared so a developer who relocates their own
+    scratch tree (``agent_scratch.scratch_root()`` reads it) does not make
+    every test resolve scratch to that drive instead of the per-test home -- which
+    also flips the ``scratch_root() == config_dir()/"scratch"`` invariant a sandbox
+    seal test pins. A test that wants the override sets it itself.
+
     ``KIRO_HOME`` is deliberately NOT pinned here, even though the lazy
     ``config.paths.kiro_home()`` does name the operator's real machine-wide kiro-cli
     home. The env var takes precedence over ``Path.home()`` by design, and ~35 tests
@@ -4068,6 +4074,7 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
         "KIROCREW_BOUND_PORT",
         "KIROCREW_DEV_MODE",
         "KIROCREW_STRICT_ON_LOOP_PERSIST",
+        "KIROCREW_SCRATCH_ROOT",
     ):
         if _name in os.environ:
             monkeypatch.delenv(_name)

@@ -613,6 +613,90 @@ class TestARelocatedDataHomeIsCoveredToo:
         assert sandbox._relocated_crew_targets(("security_policy.json",)) == []
 
 
+class TestARelocatedScratchRootIsCoveredToo:
+    """``KIROCREW_SCRATCH_ROOT`` outside the data home must not escape the scratch mask.
+
+    The ``scratch`` leaf masks ``config_dir()/scratch`` as a whole so one session tree
+    cannot open another's scratch (``_CREW_HIDDEN_LEAVES``). The override points that root
+    at an arbitrary directory the ``config_dir()``-derived spellings never name, so without
+    ``_relocated_scratch_root_target`` the per-session scratch windows would sit under an
+    unmasked root and sandboxed sessions could read each other's trees.
+    """
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_the_launcher_masks_the_relocated_scratch_root(self, mode, tmp_path, monkeypatch):
+        root = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(root))
+        hidden, _readonly, _files = _launcher_sets(mode)
+        assert str(root.resolve()) in hidden, f"a relocated scratch root is unmasked in {mode}"
+
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_the_seatbelt_profile_masks_the_relocated_scratch_root(
+        self, mode, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(root))
+        profile = sandbox._build_seatbelt_profile(mode)
+        resolved = str(root.resolve())
+        assert f'(deny file-read* (subpath "{resolved}"))' in profile
+
+    def test_unset_override_adds_no_rule(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        assert sandbox._relocated_scratch_root_target() == []
+
+    def test_override_equal_to_default_adds_no_duplicate_rule(self, monkeypatch, tmp_path):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home" / ".kiro" / "crew"))
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(config_dir() / "scratch"))
+        assert sandbox._relocated_scratch_root_target() == []
+
+    def test_a_resolution_failure_never_breaks_a_spawn(self, monkeypatch):
+        def _boom() -> object:
+            raise RuntimeError("no override")
+
+        monkeypatch.setattr(sandbox, "valid_scratch_root_override", _boom)
+        assert sandbox._relocated_scratch_root_target() == []
+
+    def test_materialize_creates_an_absent_override_root_and_registers_it(
+        self, monkeypatch, tmp_path
+    ):
+        # An absent relocated root would be skipped by the isdir-guarded mask loop and then
+        # created unmasked by allocate_scratch; the materialiser must create it first.
+        root = tmp_path / "data-drive" / "kirocrew-scratch"
+        assert not root.exists()
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(root))
+        required: list[str] = []
+        created = sandbox._materialize_relocated_scratch_root(required)
+        resolved = os.path.normpath(str(root.resolve()))
+        assert root.is_dir()
+        assert resolved in created
+        assert resolved in required
+
+    def test_materialize_refuses_a_symlinked_override_root(self, monkeypatch, tmp_path):
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        link = tmp_path / "linked-scratch"
+        try:
+            link.symlink_to(victim, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/filesystem")
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(link))
+        # resolve() in the override follows the link, so if the resolved target is a real
+        # dir the materialiser establishes it; the refusal is for a symlink AT the resolved
+        # path. Point the override at a path whose final component is itself a link.
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            monkeypatch.setattr(sandbox, "valid_scratch_root_override", lambda: str(link))
+            sandbox._materialize_relocated_scratch_root([])
+
+    def test_materialize_is_a_noop_when_unset(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        required: list[str] = []
+        assert sandbox._materialize_relocated_scratch_root(required) == []
+        assert required == []
+
+
 class TestThirdPartyCredentialsKeepTheirExistingTiering:
     """The reconciliation must not quietly re-tier the non-crew credential entries."""
 

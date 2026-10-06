@@ -383,9 +383,14 @@ withholds the carve-out, so the owning backend cannot write that state and an un
 has nothing to expose; refusing there would let one optional app's on-disk layout stop every
 sandboxed spawn on the host. That case warns too.
 
-`scratch`, `backup` and `work` have no supported second name and refuse a link: each
-resolves to one managed path (`agent_scratch.scratch_root()` is `config_dir() / "scratch"`)
-with no override or env var, so a link there is not a relocation the product offers.
+`scratch`, `backup` and `work` were checked for a supported second name and refuse a
+planted *link* at the component: `backup` and `work` each resolve to one managed path with
+no override or env var, and `scratch` relocates only through the explicit
+`KIROCREW_SCRATCH_ROOT` env var (`agent_scratch.scratch_root()`, which otherwise is
+`config_dir() / "scratch"`). That override names a REAL directory used as the managed root
+itself, so it is not a link at the `scratch` component — the link refusal still fires on
+whatever root is in force. A link planted at the default `scratch` leaf is therefore still
+not a relocation the product offers; the supported relocation is the env var.
 
 `work` is the durable work root, `<data home>/work/<key>`: `work_root.allocate_work`
 creates a key's directory and `sweep_work_root` reclaims idle ones. It is a hidden crew

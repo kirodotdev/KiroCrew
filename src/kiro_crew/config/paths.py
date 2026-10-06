@@ -276,6 +276,67 @@ def _valid_override_home() -> Path | None:
     return p
 
 
+#: Environment override pointing the managed scratch root at an explicit
+#: directory, INDEPENDENT of ``KIROCREW_HOME``. The scratch tree is bulky,
+#: disposable per-process data (staged self-update installers, clones, build
+#: logs) that on Windows otherwise fills the system drive, so an operator may
+#: want it on a data drive without relocating the whole data home.
+SCRATCH_ROOT_ENV = "KIROCREW_SCRATCH_ROOT"
+
+
+def valid_scratch_root_override() -> Path | None:
+    """Return the resolved ``KIROCREW_SCRATCH_ROOT`` override iff set AND valid.
+
+    Mirrors :func:`_valid_override_home`: a filesystem/drive root or a known
+    system directory is refused via the SAME :func:`_is_unsafe_home` predicate,
+    so the scratch override and the data-home override agree on what is too
+    dangerous to write under. When refused, ``agent_scratch.scratch_root()``
+    ignores it and falls back to ``config_dir()/scratch`` with a one-line
+    warning, exactly as :func:`config_dir` does for an unsafe ``KIROCREW_HOME``.
+
+    This is the supported alternative to junctioning the scratch directory onto
+    another drive, which the auto-improvement clone-setup refuses for safety.
+    The returned path is used AS the managed root (not with a ``scratch``
+    subcomponent appended), which keeps ``agent_scratch``'s own link/junction
+    refusal on the managed root intact: the override names a real directory,
+    not a link planted at the ``scratch`` leaf.
+
+    It also refuses an override that EQUALS or CONTAINS the data home
+    (:func:`config_dir`) or the workspace base: the OS sandbox masks the resolved
+    scratch root as a hidden tree, so an override that is an ancestor of
+    ``config_dir()`` would hide the governance ceiling below it (turning a
+    tightest-wins policy into the permissive default) and hide the operator's own
+    work. A path on a different drive or a sibling of the data home is fine; only
+    an ancestor-or-equal of the protected trees is refused.
+    """
+    override = os.environ.get(SCRATCH_ROOT_ENV)
+    if not override:
+        return None
+    p = Path(override).expanduser().resolve()
+    if _is_unsafe_home(p):
+        return None
+    # Refuse a root that equals or contains a protected tree. Masking an ancestor of
+    # the data home hides the policy ceiling and the operator's files below it; the
+    # override is meant to RELOCATE scratch, never to shadow the home or workspace.
+    protected: list[Path] = []
+    try:
+        protected.append(config_dir())
+    except Exception:  # pragma: no cover - defensive; never block resolution on this
+        pass
+    try:
+        protected.append(_default_workspace_base())
+    except Exception:  # pragma: no cover - defensive
+        pass
+    for guarded in protected:
+        try:
+            guarded_resolved = guarded.resolve()
+        except Exception:  # pragma: no cover - defensive
+            continue
+        if p == guarded_resolved or p in guarded_resolved.parents:
+            return None
+    return p
+
+
 def shared_kiro_settings_writable() -> bool:
     """False when this process must not write the user's kiro-cli settings.
 

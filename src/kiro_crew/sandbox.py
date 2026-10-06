@@ -68,7 +68,7 @@ from kiro_crew import (
     sandbox_seatbelt,
 )
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.config.paths import config_dir, kiro_agents_dir, valid_scratch_root_override
 from kiro_crew.constants import (
     KIROCREW_SANDBOX_TOOL_ENV,
     KIROCREW_SANDBOX_TOOL_VALUE,
@@ -1357,6 +1357,7 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
         os.path.abspath(entry)
         for entry in (
             *_relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES)),
+            *_relocated_scratch_root_target(),
             *_relocated_policy_cache_dirs(),
         )
     )
@@ -2051,10 +2052,13 @@ _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
 #:   would turn an ordinary setup into a spawn failure for every agent on the host.
 #:
 #: Deliberately NOT here, having been checked for a supported second name and found to
-#: have none -- both resolve to one managed path with no override, so a link is not a
-#: relocation the product offers:
+#: have none that a LINK at the leaf would express, so a link there is not a relocation
+#: the product offers:
 #:
-#: * ``scratch`` -- ``agent_scratch.scratch_root()`` is ``config_dir() / "scratch"``;
+#: * ``scratch`` -- ``agent_scratch.scratch_root()`` is ``config_dir() / "scratch"`` by
+#:   default. ``KIROCREW_SCRATCH_ROOT`` relocates it to a REAL directory used as the root
+#:   itself (not a link at the ``scratch`` leaf), and :func:`_relocated_scratch_root_target`
+#:   masks that resolved root as a hidden tree, so the relocation is covered without a link;
 #: * ``work`` -- ``work_root.work_root()`` is ``config_dir() / "work"``, and the module
 #:   refuses a linked root at allocation and sweeps nothing through one;
 #: * ``backup`` -- no resolver in the tree reads an override for it either.
@@ -2923,6 +2927,71 @@ def _materialize_maskable_dirs(established: list[str] | None = None) -> list[str
             ) from exc
         created.append(target)
         _note_established(established, target)
+    return created
+
+
+def _materialize_relocated_scratch_root(established: list[str] | None = None) -> list[str]:
+    """Create the ``KIROCREW_SCRATCH_ROOT`` override root so the mask can bind over it.
+
+    The Linux namespace launcher's ``sensitive_dirs`` loop is guarded on ``isdir``, so a
+    mask target that does not yet exist gets no empty bind — and a relocated scratch root
+    pointed at an absent directory would then be CREATED unmasked by the first
+    :func:`agent_scratch.allocate_scratch`, leaving one session's scratch tree readable and
+    writable by any other sandboxed process. The default ``config_dir()/scratch`` cannot hit
+    this because its parent (the data home) is materialised and the ``scratch`` child is a
+    managed leaf; the override is an arbitrary path, so it needs its own materialiser.
+
+    Same fail-closed shape as :func:`_materialize_maskable_dirs`: a dangling link squatting
+    the name, a symlink/junction AT the root (even one resolving to a real directory), a
+    non-directory at the path, or a creation failure other than ``EEXIST`` refuses the spawn
+    rather than launching with the root unmasked. Parent directories are created with
+    ``makedirs`` because the override may be nested; only the final component is a mask
+    target and is checked no-follow. Does nothing when the override is unset or invalid
+    (:func:`valid_scratch_root_override` already fell back to the default, which is masked
+    the ordinary way).
+
+    Returns the paths it created/established, so a test can confirm each reaches the
+    launcher's hidden list.
+    """
+    created: list[str] = []
+    try:
+        override = valid_scratch_root_override()
+    except Exception as exc:  # pragma: no cover - defensive; resolution must not crash a spawn
+        raise SandboxCeilingUnsealable(
+            f"cannot resolve the scratch-root override to materialise its mask: {exc}"
+        ) from exc
+    if override is None:
+        return created
+    target = os.path.normpath(str(override))
+    _refuse_if_dangling_symlink(target)
+    _refuse_if_symlink_leaf(target)
+    if os.path.isdir(target):
+        _note_established(established, target)
+        return created
+    if os.path.exists(target):
+        raise SandboxCeilingUnsealable(
+            f"cannot mask the relocated scratch root {target}: a non-directory sits at the path"
+        )
+    parent = os.path.dirname(target)
+    if parent and not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, 0o700, exist_ok=True)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot create the parent of the relocated scratch root {target}: {exc}"
+            ) from exc
+    try:
+        os.mkdir(target, 0o700)
+    except FileExistsError:
+        _require_real_dir_nofollow(target)
+        _note_established(established, target)
+        return created
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot create the relocated scratch root {target}: {exc}"
+        ) from exc
+    created.append(target)
+    _note_established(established, target)
     return created
 
 
@@ -4834,6 +4903,44 @@ def _relocated_crew_targets(leaves: tuple[str, ...]) -> list[str]:
         if resolved != default:
             out.append(resolved)
     return out
+
+
+def _relocated_scratch_root_target() -> list[str]:
+    """The resolved scratch root when ``KIROCREW_SCRATCH_ROOT`` moves it off the data home.
+
+    ``agent_scratch.scratch_root()`` is ``config_dir() / "scratch"`` by default, and the
+    ``scratch`` leaf of :data:`_CREW_HIDDEN_LEAVES` masks it there (both ``$HOME``-joined
+    and, via :func:`_relocated_crew_targets`, the resolved ``config_dir()`` spelling). The
+    ``KIROCREW_SCRATCH_ROOT`` override (``config.paths.valid_scratch_root_override``)
+    points that root at an ARBITRARY directory unrelated to the data home, which neither
+    of those spellings covers -- so without this the per-session scratch window the sandbox
+    planner masks under ``scratch`` is dropped (``sandbox_plan`` discards a private window
+    that is not inside a hidden tree), and sandboxed sessions could read and modify each
+    other's scratch trees. Masking the resolved override root as a hidden tree restores the
+    isolation the default layout already has.
+
+    Returns the override path only when it is SET and VALID and differs from
+    ``config_dir()/scratch`` (the default, already masked), so the ordinary layout gains no
+    duplicate rule.
+
+    ``normpath``, never ``realpath``: lexical, like :func:`_relocated_crew_targets`. The one
+    ``Path.resolve()`` the override costs happens inside ``valid_scratch_root_override`` and
+    only when the env var is set, matching ``config_dir()``'s own resolve on the default
+    path. Never raises: an unresolvable override yields nothing and the default ``scratch``
+    masks still apply.
+    """
+    try:
+        override = valid_scratch_root_override()
+        if override is None:
+            return []
+        resolved = os.path.normpath(str(override))
+        default = os.path.normpath(os.path.join(str(config_dir()), "scratch"))
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug(
+            "could not resolve the scratch-root override for sandbox masking", exc_info=True
+        )
+        return []
+    return [resolved] if resolved != default else []
 
 
 #: Tier leaves NOT re-anchored under a pod child's remapped home, because they ARE
@@ -7540,7 +7647,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         tier_dirs = tuple(_sandbox_policy().strict_dirs())
     relocated_crew_hidden = tuple(
         _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES))
-    )
+    ) + tuple(_relocated_scratch_root_target())
     # The pod's remapped home, gated on ``KIROCREW_POD == "1"`` exactly as
     # ``config.paths`` gates the resolver, so a non-pod session's mask is unchanged.
     pod_os_home = (
@@ -7756,6 +7863,10 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
+    # A relocated scratch root (``KIROCREW_SCRATCH_ROOT``) is an arbitrary path the
+    # ``isdir``-guarded mask loop skips when absent; materialise it here so the mask always
+    # has a target to bind, and ``allocate_scratch`` never creates it unmasked.
+    _materialize_relocated_scratch_root(_required_targets)
     # And the ``sensitive_files`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
