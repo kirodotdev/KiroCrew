@@ -150,7 +150,7 @@ def test_l1_lists_a_re_entered_item(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     root = tmp_path / "workspace"
     root.mkdir()
     monkeypatch.setattr(fold, "_workspace", lambda: root)
-    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo: tmp_path / "cache")
+    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo, *_forge: tmp_path / "cache")
     (root / fold.AUDIT_LOG_NAME).write_text(
         "\n".join(
             [

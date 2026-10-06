@@ -137,10 +137,19 @@ def provider_root(
     positionally without special-casing; the scope depends only on provider+host.
     """
     del owner, repo
-    base = data_dir(root)
+    return data_dir(root) / provider_subpath(provider, host)
+
+
+def provider_subpath(provider: str, host: str) -> Path:
+    """The path of one provider+host's subtree RELATIVE to the data dir.
+
+    Pure path composition -- unlike :func:`provider_root` it creates nothing, which is
+    what a read-only consumer (the pipeline fold promises to write nothing) needs.
+    GitHub's legacy tree is the empty relative path, so existing data stays where it is.
+    """
     if provider == "github" and host == "github.com":
-        return base  # legacy layout — existing data stays exactly where it is
-    return base / _PROVIDER_SUBTREE / provider / _host_slug(host)
+        return Path()
+    return Path(_PROVIDER_SUBTREE) / provider / _host_slug(host)
 
 
 def repo_data_dir(owner: str, repo: str, root: Path | None = None) -> Path:

@@ -15,7 +15,12 @@ from functools import partial
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider, store
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    github_client,
+    gitlab_queries,
+    provider,
+    store,
+)
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
 
@@ -125,11 +130,13 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
     normalized stored shape ``{"edges", "nodes", ...}``.
 
     The single build path shared by the synchronous route (cold cache /
-    ``refresh=1``) and the background revalidation. Reads the open issues (the
-    graph's scope) plus the open pulls (node hints) from the caches the app
-    already keeps, syncs the native + inferred edges via
-    ``github_client.fetch_dependency_edges``, writes the deps cache, and re-reads
-    it so the caller gets the normalized/deduped shape a later cache hit would.
+    ``refresh=1``) and the background revalidation. Dispatches on
+    ``key.provider``:
+
+    * **GitHub** — ``github_client.fetch_dependency_edges``, unchanged.
+    * **GitLab** — ``gitlab_queries.fetch_dependency_edges``; no inferred edges.
+    * **Azure** (and any future unknown provider) — empty graph, written to
+      cache so subsequent requests are served stale rather than rebuilt.
 
     Holds the repo's rebuild mutex across fetch AND write, so a slow rebuild can
     never land on top of a newer one and re-stamp older edges as fresh.
@@ -153,15 +160,36 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
         # Under-claiming age is the safe direction: this rebuild can only lose
         # a CAS race it might have won, never persist stale data as fresh.
         fetch_started = time.time()
-        try:
-            issues = await routes._load_open_issues_for_reco(key)
-        except routes.GhCliError as exc:
-            raise _DepsScopeUnavailable(str(exc)) from exc
-        pulls = await routes._st(key, store.read_pulls_cache, owner, repo, state="open") or []
-        hints = _deps_node_hints(key, issues, pulls)
-        edges, nodes = await asyncio.to_thread(
-            partial(github_client.fetch_dependency_edges, owner, repo, issues, hints)
-        )
+        if key.provider == provider.GITLAB:
+            try:
+                issues = await routes._load_open_issues_for_reco(key)
+            except routes.GhCliError as exc:
+                raise _DepsScopeUnavailable(str(exc)) from exc
+            pkw = provider.call_kwargs(key)
+            edges, nodes = await asyncio.to_thread(
+                partial(
+                    gitlab_queries.fetch_dependency_edges,
+                    owner,
+                    repo,
+                    issues,
+                    None,
+                    host=pkw.get("host", key.host),
+                )
+            )
+        elif key.provider == provider.GITHUB:
+            try:
+                issues = await routes._load_open_issues_for_reco(key)
+            except routes.GhCliError as exc:
+                raise _DepsScopeUnavailable(str(exc)) from exc
+            pulls = await routes._st(key, store.read_pulls_cache, owner, repo, state="open") or []
+            hints = _deps_node_hints(key, issues, pulls)
+            edges, nodes = await asyncio.to_thread(
+                partial(github_client.fetch_dependency_edges, owner, repo, issues, hints)
+            )
+        else:
+            # Azure DevOps and any future provider: persist an empty graph so the
+            # cache-first path serves it stale rather than rebuilding on every request.
+            edges, nodes = [], {}
         await routes._st(
             key,
             store.write_deps_cache,
@@ -284,7 +312,7 @@ async def _handle_deps(request: web.Request) -> web.Response:
 
     # GitHub-native only in M1. A non-GitHub key returns an empty graph so the
     # client renders an empty dependency surface instead of an error.
-    if key.provider != provider.GITHUB:
+    if key.provider not in (provider.GITHUB, provider.GITLAB):
         return web.json_response(
             {
                 **routes._identity(key),

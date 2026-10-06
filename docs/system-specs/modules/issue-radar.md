@@ -1049,6 +1049,65 @@ the parent RUN and needs its id.
   cache is regenerate-only by design — it renders the last explicitly generated
   proposal until the user presses "Recommend labels" again.
 
+## Pipeline and Graph tabs by forge
+
+The Pipeline tab (`pipeline_routes.py`, mounted under `/api/apps/issue-radar/pipeline/`)
+is a READ-ONLY fold over the files the triage jobs write: an audit log, one dispatch-queue
+shard per repository, and the issue cache. It was github.com-only because those files
+were keyed on `owner/repo` alone, so a same-slug GitLab project would have been shown
+the GitHub repository's events, titles and credit costs under its own heading. The
+fix is a **forge split** (`pipeline_fold.Forge`), not a stamp on every event:
+
+- **Files are namespaced by forge.** Public GitHub keeps its original names
+  (`gh-autofix-audit.jsonl`, `gh-autofix-dispatch-queue.<slug>.jsonl`, the legacy issue
+  cache root), so nothing on disk moves. Every other forge reads
+  `autofix-audit.<provider>.<host>.jsonl`, `autofix-dispatch-queue.<provider>.<host>.<slug>.jsonl`
+  and the issue cache under `store.provider_subpath(provider, host)`. In the file
+  name a host's `:` is written as `_`, never `-`: `-` is a legal hostname character,
+  so `gitlab.example:8443` and `gitlab.example-8443` would otherwise share files. A GitLab
+  repository can therefore never be served another forge's, or another host's, rows.
+- **The GitLab queue slug is injective** (`_forge_repo_slug`): `/` -> `__`, a literal
+  `_` -> `_u`, anything else outside `[A-Za-z0-9.-]` -> `_` plus two hex digits. The
+  GitHub slug (`_repo_slug`) is left byte-identical because it is the GitHub jobs'
+  on-disk contract, and it is unambiguous there (a GitHub owner cannot contain `_` and
+  there are exactly two segments); nested GitLab group paths CAN carry `_` in any
+  segment, which is why `gitlab/proj/sub` and `gitlab__proj/sub` needed distinct files.
+- **Served forges:** public GitHub (no `provider`, or `github` with no host or a GitHub
+  host) and GitLab with an explicit `host`. The host is validated BEFORE the
+  connected-repo gate with the same grammar the `dashboard.gitlab_hosts` coercer
+  accepts (lowercase dotted labels, optional port 1-65535, bare IPv4 admitted), because
+  it becomes two filesystem path segments. Azure DevOps, GitHub Enterprise and a GitLab
+  request with no host are refused with `repo_provider_unsupported`. Authorization is
+  unchanged: the connected-repo gate matches provider + host + owner + repo. GitLab
+  `owner` may be a nested group path; every segment is validated individually.
+- **No writer ships here.** Kiro Crew ships no triage jobs for any forge; an operator's
+  own job appends events in the fold's schema to the forge's audit file and the tab
+  renders them. The crew "Item lanes" view (`crew_routes.py`) is still GitHub-only
+  and is out of this split's scope.
+
+The Graph tab's `/deps` (`http_routes/deps.py`) dispatches on provider: GitHub keeps
+`github_client.fetch_dependency_edges` (native + inferred edges); GitLab uses
+`gitlab_queries.fetch_dependency_edges`, which reads `/projects/:id/issues/:iid/links`
+through `gitlab_client.list_issue_links` for every open issue (`relates_to` ignored,
+only `blocks` / `is_blocked_by` become edges, all `source="native"`), under a
+`ThreadPoolExecutor(_LINKS_WORKERS)` with a `_MAX_LINKS_CALLS` cap. Three rules keep
+that graph honest:
+
+- **One issue's failed `/links` call degrades that issue** (DEBUG log, no edges), but a
+  `ProviderSetupError` -- no `glab`, or no session for the host -- propagates, cancels
+  the pool's remaining work and reaches the route as `deps_fetch_failed` 502, because
+  every call would fail the same way and swallowing it would persist a complete-looking
+  empty graph as fresh for the cache TTL. The previous cache stays intact.
+- **A link row is kept only when `references.relative` is `#<iid>`**, GitLab's form for
+  an issue in the project the request was made in. A cross-project link, or a row with
+  no references, is dropped rather than assumed local.
+- **The cap's overflow is counted and logged once per fetch** at WARNING (`N past
+  _MAX_LINKS_CALLS carry no edges`), so a truncated graph is distinguishable from a
+  complete one.
+
+Azure and any unknown provider persist an empty graph so the cache-first path serves it
+stale.
+
 ## Background Watcher
 
 An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new

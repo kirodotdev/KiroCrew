@@ -33,7 +33,7 @@ def test_cached_issue_detail_is_read_not_the_wrapper(
     """
     repo_dir = tmp_path / "repos" / "acme" / "widget"
     repo_dir.mkdir(parents=True)
-    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo: repo_dir)
+    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo, *_forge: repo_dir)
     (repo_dir / "issue-42.json").write_text(
         json.dumps(
             {
@@ -63,7 +63,7 @@ def test_a_flat_cached_record_still_works(tmp_path: Path, monkeypatch: pytest.Mo
     """A record with no wrapper is used as-is rather than thrown away."""
     repo_dir = tmp_path / "repos" / "acme" / "widget"
     repo_dir.mkdir(parents=True)
-    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo: repo_dir)
+    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo, *_forge: repo_dir)
     (repo_dir / "issue-7.json").write_text(
         json.dumps({"title": "flat", "labels": [{"name": "enhancement"}]}), encoding="utf-8"
     )
@@ -159,9 +159,9 @@ def test_hostile_owner_names_are_refused(owner: str) -> None:
 
 def test_a_real_owner_and_repo_are_accepted() -> None:
     result = routes._repo_params(_query(owner="acme-org", repo="widget"))
-    assert result == ("acme-org", "widget")
+    assert result == ("acme-org", "widget", routes.fold.GITHUB)
 
 
 def test_names_with_the_punctuation_github_allows_are_accepted() -> None:
     result = routes._repo_params(_query(owner="some-org", repo="my_repo.js"))
-    assert result == ("some-org", "my_repo.js")
+    assert result == ("some-org", "my_repo.js", routes.fold.GITHUB)

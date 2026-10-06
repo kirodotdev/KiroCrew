@@ -72,50 +72,73 @@ def _bad_request(message: str, code: str) -> web.Response:
 _REPO_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 
 
-def _reject_foreign_provider(request: web.Request) -> web.Response | None:
-    """Refuse a repository that is not on public GitHub. None means it is.
+#: A GitLab host as it is written in a URL: dotted labels and an optional port. Strict
+#: because the host reaches two filesystem paths (the forge's audit-log name and its
+#: issue-cache subtree) and a crafted value must never be able to escape them. It is
+#: checked BEFORE the connected-repo gate so the gate never sees a hostile string.
+#: The shape mirrors the ``dashboard.gitlab_hosts`` coercer in ``config.sections``
+#: (same label grammar, same 1-65535 port range) so this cannot refuse a host the
+#: operator was allowed to list, nor admit one the allowlist would have dropped.
+_GITLAB_HOST_NAME_RE = re.compile(r"\A[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
 
-    FAIL-CLOSED, and the alternative is worse than an error. A repository's real
-    identity is provider + host + owner/repo, but the pipeline's data is keyed on
-    ``owner/repo`` ALONE: the scheduled jobs that write the audit trail and the
-    dispatch-queue shard are GitHub-only, and the shard's filename is a slug of
-    ``owner/repo`` fixed byte-for-byte by those writers. So there is no GitLab or
-    Azure shard to read, and nothing in the trail marks which forge an event came
-    from.
 
-    Flattening the identity would therefore not degrade gracefully -- it would
-    answer CONFIDENTLY AND WRONGLY. A self-hosted GitLab repo sharing a slug with
-    a GitHub one would select the GitHub events, the GitHub issue cache and the
-    GitHub queue shard, then render that repository's titles, sessions and CREDIT
-    COSTS under the GitLab repository's heading, with nothing on screen marking
-    the substitution. Refusing says the true thing: this board has no data for
-    that repository.
+def _valid_gitlab_host(host: str) -> bool:
+    name, sep, port_text = host.rpartition(":")
+    if not sep:
+        name, port_text = host, ""
+    if not _GITLAB_HOST_NAME_RE.match(name):
+        return False
+    if not sep:
+        return True
+    if not (port_text.isascii() and port_text.isdigit()):
+        return False
+    return 0 < int(port_text) < 65536
 
-    Absent ``provider`` means public GitHub, matching every other Issue Radar
-    caller -- so an existing request that names no provider is unaffected.
+
+def _forge_params(request: web.Request) -> fold.Forge | web.Response:
+    """Resolve which forge the request names, or refuse one the pipeline has no data for.
+
+    The pipeline's files are split BY FORGE (see ``pipeline_fold.Forge``), so a
+    repository is only ever read from its own forge's audit log, queue shards and
+    issue cache. That split is what makes it safe to serve more than public GitHub:
+    the previous rule refused every other forge because the data was keyed on
+    ``owner/repo`` alone, and a same-slug GitLab project would have been shown the
+    GitHub repository's events, titles and credit costs under its own heading.
+
+    Public GitHub (no provider, or ``github`` with no host or a GitHub host) and GitLab
+    with an explicit host are served. Anything else -- Azure, GitHub Enterprise, a
+    GitLab request with no host -- is refused with ``repo_provider_unsupported``, which
+    the client renders as a stable "unsupported forge" state and stops polling on.
+    Authorization is unchanged and still comes from the connected-repo gate, which
+    matches provider + host + owner + repo.
+
+    Absent ``provider`` means public GitHub, matching every other Issue Radar caller,
+    so an existing request that names no provider is unaffected.
     """
     provider_name = (request.query.get("provider") or "").strip().lower()
     host = (request.query.get("host") or "").strip().lower()
-    if provider_name and provider_name != "github":
-        return _bad_request(
-            "the triage pipeline runs on GitHub repositories only",
-            "repo_provider_unsupported",
-        )
-    # A host is only ever set for a self-hosted forge; public GitHub carries none.
-    # Without this, provider=github&host=ghe.internal would pass the check above
-    # and still collide with the public repository of the same slug. The set of
-    # hosts that ARE public GitHub comes from the module that already owns that
-    # fact for this app, so there is one list rather than a second one here.
-    if host and host not in provider.GITHUB_URL_HOSTS:
-        return _bad_request(
-            "the triage pipeline runs on GitHub repositories only",
-            "repo_provider_unsupported",
-        )
-    return None
+    unsupported = _bad_request(
+        "the triage pipeline is not available for this repository's forge",
+        "repo_provider_unsupported",
+    )
+    if provider_name in ("", "github"):
+        # A host is only ever set for a self-hosted forge; public GitHub carries none.
+        # Without this, provider=github&host=ghe.internal would pass as public GitHub.
+        # The set of hosts that ARE public GitHub comes from the module that already
+        # owns that fact for this app, so there is one list rather than a second one.
+        if host and host not in provider.GITHUB_URL_HOSTS:
+            return unsupported
+        return fold.GITHUB
+    if provider_name != "gitlab":
+        return unsupported
+    host = provider.normalize_host(host, provider_name)
+    if not host or not _valid_gitlab_host(host):
+        return unsupported
+    return fold.Forge(provider=provider_name, host=host)
 
 
-def _repo_params(request: web.Request) -> tuple[str, str] | web.Response:
-    """Resolve owner/repo from the query string.
+def _repo_params(request: web.Request) -> tuple[str, str, fold.Forge] | web.Response:
+    """Resolve the forge and owner/repo from the query string.
 
     Validated rather than trusted: both become path segments when an issue cache
     entry is read, so anything that is not simply a name is refused here instead of
@@ -125,25 +148,24 @@ def _repo_params(request: web.Request) -> tuple[str, str] | web.Response:
     repo = (request.query.get("repo") or "").strip()
     if not owner or not repo:
         return _bad_request("owner and repo are required", "repo_required")
-    # The forge refusal comes BEFORE the name rule, because the name rule is
-    # GitHub's shape. GitLab nests a group path and Azure always carries
-    # "{organization}/{project}", so both put a slash in `owner` -- which this
-    # pattern rejects. Validating first therefore answered `repo_invalid` (a
-    # generic, retryable error the client offers a Retry for) on every Azure
-    # repository and every nested GitLab group, instead of the unsupported-forge
-    # state the client knows how to explain and stops polling on. Naming the wrong
-    # reason is worse than naming none. Safe to reorder: this guard reads only
+    # The forge check comes BEFORE the name rule, because the name rule is per-forge.
+    # GitLab nests a group path, so its `owner` legitimately holds slashes, while a
+    # GitHub owner never does. Validating names first would answer `repo_invalid` (a
+    # generic, retryable error the client offers a Retry for) for a forge the client
+    # should instead be told is unsupported. Safe to reorder: this guard reads only
     # `provider` and `host`, never the names below it.
-    foreign = _reject_foreign_provider(request)
-    if foreign is not None:
-        return foreign
-    for value in (owner, repo):
-        if not _REPO_NAME_RE.match(value):
-            return _bad_request("owner or repo is not a valid name", "repo_invalid")
-    return owner, repo
+    forge = _forge_params(request)
+    if isinstance(forge, web.Response):
+        return forge
+    owner_parts = owner.split("/") if not forge.is_github else [owner]
+    if not all(_REPO_NAME_RE.match(part) for part in owner_parts) or not _REPO_NAME_RE.match(repo):
+        return _bad_request("owner or repo is not a valid name", "repo_invalid")
+    return owner, repo, forge
 
 
-async def _reject_unconnected(owner: str, repo: str) -> web.Response | None:
+async def _reject_unconnected(
+    owner: str, repo: str, forge: fold.Forge = fold.GITHUB
+) -> web.Response | None:
     """Refuse a repository Issue Radar is not connected to. None means it is.
 
     This is the HOST APP's authorization gate, not a courtesy: every repo-scoped
@@ -164,7 +186,9 @@ async def _reject_unconnected(owner: str, repo: str) -> web.Response | None:
     Off the event loop: the gate reads the store's JSON from disk, exactly as
     ``http_routes`` does at each of its ``routes._connected`` call sites.
     """
-    if await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if await asyncio.to_thread(
+        store.is_repo_connected, owner, repo, provider=forge.provider, host=forge.host
+    ):
         return None
     return web.json_response(
         {
@@ -179,10 +203,9 @@ def _repo_key(owner: str, repo: str) -> str:
     """Join a VALIDATED pair into the ``"owner/repo"`` key the fold is scoped by.
 
     Only ever called with what ``_repo_params`` returned, which is why it can be a
-    plain join: both halves have matched ``_REPO_NAME_RE`` and the forge guard has
-    already refused anything that is not public GitHub, where ``owner/repo`` is the
-    whole identity. Dropping provider/host would be unsound before that refusal and
-    is redundant after it.
+    plain join: every segment has matched ``_REPO_NAME_RE``. Dropping provider/host
+    here is sound because the FORGE selects the files the key is looked up in (see
+    ``pipeline_fold.Forge``), so within one forge ``owner/repo`` is the whole identity.
     """
     # A repository KEY handed to the fold, not a response body: this is not a route
     # (the _handle_* functions are), the server is aiohttp rather than Flask, and
@@ -214,15 +237,18 @@ async def _handle_overview(request: web.Request) -> web.StreamResponse:
     history predates attribution.
     """
     hours = _int_query(request, "hours", fold.DEFAULT_RECENT_HOURS)
-    pair = _repo_params(request)
-    if isinstance(pair, web.Response):
-        return pair
-    unconnected = await _reject_unconnected(*pair)
+    resolved = _repo_params(request)
+    if isinstance(resolved, web.Response):
+        return resolved
+    owner, repo, forge = resolved
+    unconnected = await _reject_unconnected(owner, repo, forge)
     if unconnected is not None:
         return unconnected
-    scope = _repo_key(*pair)
+    scope = _repo_key(owner, repo)
     try:
-        result = await asyncio.to_thread(fold.fold_pipeline, recent_hours=hours, repo=scope)
+        result = await asyncio.to_thread(
+            fold.fold_pipeline, recent_hours=hours, repo=scope, forge=forge
+        )
     except fold.FoldError as exc:
         # The message is authored by the fold layer and names no absolute path.
         return web.json_response({"error": str(exc), "code": "unreadable"}, status=503)
@@ -257,8 +283,8 @@ async def _handle_step(request: web.Request) -> web.StreamResponse:
     resolved = _repo_params(request)
     if isinstance(resolved, web.Response):
         return resolved
-    owner, repo = resolved
-    unconnected = await _reject_unconnected(owner, repo)
+    owner, repo, forge = resolved
+    unconnected = await _reject_unconnected(owner, repo, forge)
     if unconnected is not None:
         return unconnected
     step = (request.query.get("step") or "").strip()
@@ -267,7 +293,7 @@ async def _handle_step(request: web.Request) -> web.StreamResponse:
     limit = _int_query(request, "limit", fold.MAX_ROWS)
     try:
         rows = await asyncio.to_thread(
-            fold.list_step_items, step, owner=owner, repo=repo, limit=limit
+            fold.list_step_items, step, owner=owner, repo=repo, limit=limit, forge=forge
         )
     except fold.QueueMigrationPending as exc:
         # Not a bad request: the operator has to run the migration. 503 so the
@@ -306,14 +332,17 @@ async def _handle_item_sessions(request: web.Request) -> web.StreamResponse:
     raw = (request.query.get("number") or "").strip()
     if not raw or not raw.isdecimal() or len(raw) > 9:
         return _bad_request("a numeric item number is required", "number_required")
-    scope = _repo_params(request)
-    if isinstance(scope, web.Response):
-        return scope
-    unconnected = await _reject_unconnected(*scope)
+    resolved = _repo_params(request)
+    if isinstance(resolved, web.Response):
+        return resolved
+    owner, repo, forge = resolved
+    unconnected = await _reject_unconnected(owner, repo, forge)
     if unconnected is not None:
         return unconnected
     try:
-        rows = await asyncio.to_thread(fold.list_item_sessions, int(raw), repo=_repo_key(*scope))
+        rows = await asyncio.to_thread(
+            fold.list_item_sessions, int(raw), repo=_repo_key(owner, repo), forge=forge
+        )
     except fold.QueueMigrationPending as exc:
         return web.json_response({"error": str(exc), "code": "queue_migration_pending"}, status=503)
     except fold.FoldError as exc:
