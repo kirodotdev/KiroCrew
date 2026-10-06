@@ -350,18 +350,23 @@ class SkillReadRefusal(NamedTuple):
     size_bytes: int | None = None  # the whole body, when the read measured it
     confined: bool = False  # ``capacity`` is the confined project body cap
     line: int | None = None  # over_capacity: the one line that fits no page
+    # outside_scope while the scope's catalog is still building: the key may yet
+    # resolve once the walk finishes, so the absence is not conclusive.
+    incomplete: bool = False
 
 
 class _ExactRead(NamedTuple):
     """One pass of the exact-key resolution chain, with its refusal classified.
 
     ``refusal`` is one of the three read reasons when ``content`` is ``None`` and
-    empty when a body was delivered.
+    empty when a body was delivered. ``incomplete`` marks an outside-scope miss
+    taken while the scope's catalog was still building.
     """
 
     content: str | None
     refusal: str
     confined: bool
+    incomplete: bool = False
 
 
 def _page_skill_body(
@@ -5789,7 +5794,7 @@ class SkillsLoader:
         if read.content is None:
             if read.confined and read.refusal == SKILL_READ_OVER_CAPACITY:
                 return SkillReadRefusal(read.refusal, PROJECT_SKILL_BODY_CAP, confined=True)
-            return SkillReadRefusal(read.refusal, bound)
+            return SkillReadRefusal(read.refusal, bound, incomplete=read.incomplete)
         return _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
 
     def _read_exact_key(
@@ -5835,7 +5840,11 @@ class SkillsLoader:
             elif entry is not None or reasons:
                 refusal = SKILL_READ_UNREADABLE
             else:
-                refusal = SKILL_READ_OUTSIDE_SCOPE
+                # While the first walk is unfinished the building-time resolver
+                # withholds the confined project tier by design, so a miss here
+                # cannot tell a correct project key from an absent one.
+                building = self.catalog_status(project_dir) == "building"
+                return _ExactRead(None, SKILL_READ_OUTSIDE_SCOPE, confined, building)
             return _ExactRead(None, refusal, confined)
         meta = self._parse_frontmatter_text(content)
         if meta.get("repo_scope") and not self._repo_scope_satisfied(

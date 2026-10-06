@@ -225,6 +225,50 @@ class TestRefusalMessages:
         assert f"{_CAPACITY + 11:,} bytes" in out
         assert "no page can hold it" in out
 
+    def test_an_over_wide_line_names_the_offset_that_resumes_paging(self, skills_root: Path):
+        """A paging loop that reaches an over-wide line must be told where to go
+        next, or it has no documented way to the lines after it."""
+        _skill(skills_root, "wide", "short\n" + "y" * (_CAPACITY + 10) + "\ntail line\n")
+        out = _read("wide", offset=5)
+        assert out.startswith("Error:")
+        match = re.search(r"continue with offset=(\d+)", out)
+        assert match, out
+        assert int(match.group(1)) == 6
+        rest = _read("wide", offset=int(match.group(1)))
+        assert not rest.startswith("Error:"), rest
+        content, next_offset = _rendered_page(rest)
+        assert content == "tail line\n" and next_offset is None
+
+    def test_a_miss_while_the_catalog_builds_is_not_reported_as_absent(
+        self, skills_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """While the first walk is unfinished the confined project tier is
+        withheld, so a correct project key misses; the answer must hedge rather
+        than tell the agent no skill has that key."""
+        monkeypatch.setattr(SkillsLoader, "catalog_status", lambda self, *_a, **_kw: "building")
+        out = _read("team/project-skill")
+        assert out.startswith("Error:")
+        assert "`team/project-skill`" in out
+        assert "not conclusive" in out and "still building" in out
+        assert "no skill here" not in out and "outside this agent's scope" not in out
+
+    def test_a_building_miss_carries_incomplete_on_the_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        root = tmp_path / "skills"
+        root.mkdir()
+        loader = SkillsLoader(skills_path=root, install_builtins=False)
+        try:
+            complete = loader.read_scoped_skill_page("absent")
+            assert isinstance(complete, SkillReadRefusal)
+            assert complete.reason == "outside_scope" and not complete.incomplete
+            monkeypatch.setattr(SkillsLoader, "catalog_status", lambda self, *_a, **_kw: "building")
+            building = loader.read_scoped_skill_page("absent")
+            assert isinstance(building, SkillReadRefusal)
+            assert building.reason == "outside_scope" and building.incomplete
+        finally:
+            loader.close()
+
 
 class TestGatewayContract:
     """The signed path: the gateway pages and diagnoses; the tool only renders."""

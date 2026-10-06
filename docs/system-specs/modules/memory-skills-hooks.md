@@ -3795,7 +3795,8 @@ that length off the ceiling, and passes the remainder as the read's `capacity`;
 the gateway accepts a smaller capacity and never a larger one. Without that, a
 page sized to the bare ceiling would lose its last lines to the response cut
 while the next offset already counted them as delivered. A single line wider
-than the capacity is refused by line number. The pager never materializes a body
+than the capacity is refused by line number, and the refusal names the next
+line's offset so a paging loop can continue past it. The pager never materializes a body
 line by line: the line count is a scan, the page start a walk of newline
 positions, and only the page's lines are copied out, so a newline-dense body at
 the file safety cap costs the body and the page, not one object per line. The
@@ -3811,7 +3812,11 @@ the tool renders one message per reason, never a sentence naming all three: a
 key the scope does not hold (including a body whose `repo_scope` this project
 does not satisfy, which the catalog never listed here) is outside the scope; a
 key the scope holds whose bytes the fenced reader declined is unreadable; a body
-over its bound is over capacity. A page asked for past the last line is an empty
+over its bound is over capacity. An outside-scope miss taken while that scope's
+catalog is still `building` carries `incomplete`, and the tool hedges -- not
+conclusive yet, retry the same key -- instead of asserting no skill has it,
+because the building-time resolver withholds the confined project tier until
+the walk finishes. A page asked for past the last line is an empty
 last page that still names the line count, not a refusal. `read_scoped_skill` keeps its
 whole-or-`None` contract for the required-skill and `$key` activation paths.
 An external mapping rooted above a catalog prunes that catalog before descent.
