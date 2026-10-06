@@ -11773,7 +11773,16 @@
       "archived_sessions_kept_other": "{{count}}টি আর্কাইভ করা সেশন পুরোনো সেশনে থাকবে",
       "archived_count_one": "{{count}}টি আর্কাইভ করা",
       "archived_count_other": "{{count}}টি আর্কাইভ করা",
-      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়"
+      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়",
+      "models": "মডেল অনুসারে ফিল্টার",
+      "model_default_label": "কোনো মডেল বাছাই করা হয়নি (এজেন্টের ডিফল্ট)",
+      "show_only_sessions_using_model": "শুধু {{name}} ব্যবহার করা সেশন দেখাও",
+      "stop_filtering_by_model": "{{name}} অনুসারে ফিল্টার বন্ধ করো",
+      "hide_sessions_on_these_models": "এই মডেলগুলোর সেশন লুকাও",
+      "hide_sessions_on_these_models_hint": "নির্বাচিত মডেল ব্যবহার করা সেশন বাদে সব সেশন দেখাও",
+      "tick_a_model_first": "আগে একটি মডেল বেছে নাও",
+      "not_models": "{{models}} নয়",
+      "hide_sessions_using_model": "{{name}} ব্যবহার করা সেশন লুকাও"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

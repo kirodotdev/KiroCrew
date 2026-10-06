@@ -12135,7 +12135,16 @@
       "archived_count_many": "{{count}} в архиве",
       "archived_count_one": "{{count}} в архиве",
       "archived_count_other": "{{count}} в архиве",
-      "waiting_for_memory": "Ожидание свободной RAM"
+      "waiting_for_memory": "Ожидание свободной RAM",
+      "models": "Фильтр по модели",
+      "model_default_label": "Модель не выбрана (по умолчанию агента)",
+      "show_only_sessions_using_model": "Показывать только сессии, использующие {{name}}",
+      "stop_filtering_by_model": "Отключить фильтр по {{name}}",
+      "hide_sessions_on_these_models": "Скрыть сессии на этих моделях",
+      "hide_sessions_on_these_models_hint": "Показывать все сессии, кроме использующих выбранные модели",
+      "tick_a_model_first": "Сначала выбери модель",
+      "not_models": "Кроме {{models}}",
+      "hide_sessions_using_model": "Скрыть сессии, использующие {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

@@ -11592,7 +11592,16 @@
       "deleting_folders": "正在删除…",
       "archived_sessions_kept_other": "{{count}} 个已归档会话保留在“较早的会话”中",
       "archived_count_other": "已归档 {{count}} 个",
-      "waiting_for_memory": "等待空闲内存"
+      "waiting_for_memory": "等待空闲内存",
+      "models": "按模型筛选",
+      "model_default_label": "未选择模型（智能体默认）",
+      "show_only_sessions_using_model": "仅显示使用 {{name}} 的会话",
+      "stop_filtering_by_model": "停止按 {{name}} 筛选",
+      "hide_sessions_on_these_models": "隐藏这些模型的会话",
+      "hide_sessions_on_these_models_hint": "显示除使用所选模型以外的所有会话",
+      "tick_a_model_first": "请先选择一个模型",
+      "not_models": "非 {{models}}",
+      "hide_sessions_using_model": "隐藏使用 {{name}} 的会话"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

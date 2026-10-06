@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY } from './persistence'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
@@ -133,6 +133,47 @@ export function useSessionFilterState() {
     setFilterTagIds(new Set())
     safeSetItem(TAG_FILTER_LS_KEY, '[]')
   }, [])
+  /** Model keys the list is narrowed to (a union, like tags), and whether the
+   *  selection is inverted. One state object so the direction can never outlive
+   *  the selection it applies to: clearing the keys drops the exclude flag too,
+   *  and the next model selected narrows the list, as it would after a reload.
+   *
+   *  A toggle also drops every stored key no session uses any more (`present`
+   *  is the menu's own row set, so the clicked row is always in it). The filter
+   *  ignores a stale key but, left stored, it would keep `exclude` alive with
+   *  nothing ticked on screen: tick X and X disappears, under a "Not X" chip. */
+  const [modelFilter, setModelFilter] = useState<StoredModelFilter>(readStoredModelFilter)
+  const filterModelKeys = modelFilter.keys
+  const filterModelsExcluded = modelFilter.exclude
+  const toggleModelFilter = useCallback((key: string, present: Iterable<string>) => {
+    setModelFilter(prev => {
+      const presentSet = new Set(present)
+      const keys = new Set([...prev.keys].filter(stored => presentSet.has(stored)))
+      // The direction survives only if it applied to something on screen
+      // BEFORE this tick; a direction carried by stale keys alone is dropped.
+      const hadSelection = keys.size > 0
+      if (keys.has(key)) keys.delete(key); else keys.add(key)
+      const next = { keys, exclude: prev.exclude && hadSelection && keys.size > 0 }
+      writeStoredModelFilter(next)
+      return next
+    })
+  }, [])
+  const setModelFilterExcluded = useCallback((exclude: boolean) => {
+    setModelFilter(prev => {
+      if (prev.exclude === exclude || prev.keys.size === 0) return prev
+      const next = { keys: prev.keys, exclude }
+      writeStoredModelFilter(next)
+      return next
+    })
+  }, [])
+  const clearModelFilter = useCallback(() => {
+    setModelFilter(prev => {
+      if (prev.keys.size === 0) return prev
+      const next = { keys: new Set<string>(), exclude: false }
+      writeStoredModelFilter(next)
+      return next
+    })
+  }, [])
   // Shelved = the Folders section is rolled up to its heading, so a long folder
   // list stops crowding the Filter and Sort rows. Purely cosmetic: shelving
   // changes nothing about which folders are hidden, and the heading keeps
@@ -199,6 +240,7 @@ export function useSessionFilterState() {
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   }
 }
 

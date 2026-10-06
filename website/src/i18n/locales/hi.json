@@ -11773,7 +11773,16 @@
       "archived_sessions_kept_other": "{{count}} आर्काइव किए गए सत्र पुराने सत्र में रहेंगे",
       "archived_count_one": "{{count}} आर्काइव किया गया",
       "archived_count_other": "{{count}} आर्काइव किए गए",
-      "waiting_for_memory": "खाली RAM की प्रतीक्षा में"
+      "waiting_for_memory": "खाली RAM की प्रतीक्षा में",
+      "models": "मॉडल के अनुसार फ़िल्टर",
+      "model_default_label": "कोई मॉडल नहीं चुना गया (एजेंट डिफ़ॉल्ट)",
+      "show_only_sessions_using_model": "केवल {{name}} का उपयोग करने वाले सत्र दिखाओ",
+      "stop_filtering_by_model": "{{name}} के अनुसार फ़िल्टर करना बंद करो",
+      "hide_sessions_on_these_models": "इन मॉडलों के सेशन छिपाओ",
+      "hide_sessions_on_these_models_hint": "चयनित मॉडल का उपयोग करने वाले सत्रों को छोड़कर सभी सत्र दिखाओ",
+      "tick_a_model_first": "पहले एक मॉडल चुनो",
+      "not_models": "{{models}} नहीं",
+      "hide_sessions_using_model": "{{name}} का उपयोग करने वाले सत्र छिपाओ"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

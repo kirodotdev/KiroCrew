@@ -4,6 +4,7 @@
  *  `SESSION_FILTERS` in ./filters. */
 import { DEFAULT_RECENT_WINDOW_MS } from '../recentWindow'
 import { DEFAULT_STALE_COLLAPSE_MS } from '../staleCollapse'
+import { safeSetItem } from '../../utils/safeStorage'
 import type { SidebarLane } from './types'
 
 // Recency window for the "Recent" filter: surfaces sessions whose last activity
@@ -89,6 +90,49 @@ export function readStoredTagFilter(): Set<string> {
   } catch {
     return new Set()
   }
+}
+
+/** The model filter, as one JSON object under this key: `{"keys": [...],
+ *  "exclude": bool}`. Inclusive like the tag filter above, and for the same
+ *  reason: a model seen for the first time must not start narrowing the list.
+ *
+ *  ONE key for the selection and its direction, not two, so a read cannot see a
+ *  selection without its direction (or the reverse) and the two cannot disagree
+ *  after a partial write. `keys` hold `normalizeModelKey` output, so a session
+ *  pinned to an alias and one pinned to the canonical id fall under one key. */
+export const MODEL_FILTER_LS_KEY = 'mc-session-model-filter'
+
+export interface StoredModelFilter {
+  keys: Set<string>
+  /** Show every session EXCEPT the selected models. */
+  exclude: boolean
+}
+
+/** A fresh value per read, like `readStoredTagFilter`: a shared Set would let one
+ *  in-place mutation poison every later read. */
+const noModelFilter = (): StoredModelFilter => ({ keys: new Set(), exclude: false })
+
+/** Read the persisted model filter. Same contract as `readStoredTagFilter`: a
+ *  throwing localStorage or a hand-corrupted value reads as "no filter". */
+export function readStoredModelFilter(): StoredModelFilter {
+  try {
+    const raw = localStorage.getItem(MODEL_FILTER_LS_KEY)
+    if (!raw) return noModelFilter()
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return noModelFilter()
+    const { keys, exclude } = parsed as { keys?: unknown; exclude?: unknown }
+    if (!Array.isArray(keys)) return noModelFilter()
+    const stored = new Set(keys.filter((key): key is string => typeof key === 'string'))
+    // A direction with nothing to apply to is not a state this code writes, so a
+    // hand-edited one reads as off rather than inverting the next selection.
+    return { keys: stored, exclude: exclude === true && stored.size > 0 }
+  } catch {
+    return noModelFilter()
+  }
+}
+
+export function writeStoredModelFilter(filter: StoredModelFilter) {
+  safeSetItem(MODEL_FILTER_LS_KEY, JSON.stringify({ keys: [...filter.keys], exclude: filter.exclude }))
 }
 
 /** Flat view ("explode chats out of folders") persistence key.

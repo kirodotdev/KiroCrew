@@ -6820,7 +6820,16 @@
       "include_top_level_folders": "Include top-level folders",
       "no_empty_folders": "No empty folders to delete.",
       "some_folders_kept": "Some folders were kept: they are no longer empty.",
-      "deleting_folders": "Deleting…"
+      "deleting_folders": "Deleting…",
+      "models": "Filter by model",
+      "model_default_label": "No model chosen (agent default)",
+      "show_only_sessions_using_model": "Show only sessions using {{name}}",
+      "stop_filtering_by_model": "Stop filtering by {{name}}",
+      "hide_sessions_on_these_models": "Hide sessions on these models",
+      "hide_sessions_on_these_models_hint": "Show all sessions except those on the selected models",
+      "tick_a_model_first": "Select a model first",
+      "not_models": "Not {{models}}",
+      "hide_sessions_using_model": "Hide sessions using {{name}}"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",

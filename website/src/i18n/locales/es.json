@@ -11954,7 +11954,16 @@
       "archived_count_many": "{{count}} archivadas",
       "archived_count_one": "{{count}} archivada",
       "archived_count_other": "{{count}} archivadas",
-      "waiting_for_memory": "Esperando RAM libre"
+      "waiting_for_memory": "Esperando RAM libre",
+      "models": "Filtrar por modelo",
+      "model_default_label": "Sin modelo elegido (predeterminado del agente)",
+      "show_only_sessions_using_model": "Mostrar solo las sesiones que usan {{name}}",
+      "stop_filtering_by_model": "Dejar de filtrar por {{name}}",
+      "hide_sessions_on_these_models": "Ocultar las sesiones en estos modelos",
+      "hide_sessions_on_these_models_hint": "Mostrar todas las sesiones excepto las que usan los modelos seleccionados",
+      "tick_a_model_first": "Selecciona un modelo primero",
+      "not_models": "No {{models}}",
+      "hide_sessions_using_model": "Ocultar las sesiones que usan {{name}}"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

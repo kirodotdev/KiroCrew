@@ -11592,7 +11592,16 @@
       "deleting_folders": "削除中…",
       "archived_sessions_kept_other": "アーカイブ済みのセッション {{count}} 件は「以前のセッション」に残ります",
       "archived_count_other": "アーカイブ済み {{count}} 件",
-      "waiting_for_memory": "空きRAM待ち"
+      "waiting_for_memory": "空きRAM待ち",
+      "models": "モデルで絞り込む",
+      "model_default_label": "モデル未選択（エージェントの既定）",
+      "show_only_sessions_using_model": "{{name}} を使用するセッションのみ表示",
+      "stop_filtering_by_model": "{{name}} でのフィルターを解除",
+      "hide_sessions_on_these_models": "これらのモデルのセッションを非表示",
+      "hide_sessions_on_these_models_hint": "選択したモデルを使用するセッション以外をすべて表示",
+      "tick_a_model_first": "先にモデルを選択",
+      "not_models": "{{models}} 以外",
+      "hide_sessions_using_model": "{{name}} を使用するセッションを非表示"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
