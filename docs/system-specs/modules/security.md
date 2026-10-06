@@ -2188,6 +2188,25 @@ Patterns with `*` use `fnmatch` glob matching; others use substring matching.
 The pattern list is `denied_rules.SUSPICIOUS_BASH_PATTERNS` itself (deletion,
 exfiltration and pipe-execution shapes); this document does not restate it.
 
+The `-d @` family (`data-exfil-curl-file-body`) is a fail-closed substring: it
+denies on the text alone and is never anchored to the curl command, because
+anchoring the denial to curl turns every shell construct that builds the string
+`curl` without writing it literally into a bypass, and no text matcher models
+bash evaluation. A benign program that merely contains the text is handled by a
+narrow carve-out that collapses the exploitable surface rather than enumerating
+spellings. `audit_bash_exfiltration()` reuses the deny-exception eligibility
+gate `denied_rules._exception_eligible` — the one blessed test for a single
+plain command, a character-class check over `_SHELL_ACTIVE_CHARS` that rejects
+any command substitution, process substitution, subshell, redirection or
+chaining and is deliberately quote-blind — and allows the hit only when that
+gate passes AND the command's first word is `date` or an inert-search verb
+(`grep`/`egrep`/`fgrep`). Those programs execute no subcommand, so an eligible
+invocation cannot reach an HTTP client. `sed` is not in the set because its `e`
+command and `s///e` flag run a shell. Anything with shell evaluation in it falls
+through to the unchanged denial — including the reporter's multi-statement
+diagnostic loop, which needs `$(…)` and is not carved out; its individual
+`date` conversion run on its own is.
+
 ### SEL Forward Callback (`sel.py`)
 
 `set_forward_callback()` enables centralized log integration (basin/ktap). Events are redacted via `redact()` before forwarding to strip credentials and exfiltration URLs from string fields. Callback failures are logged at debug level (never silently swallowed).

@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
+from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
 from .redaction import (
     _contains_fixed_credential,
     _text_contains_bare_secret,
@@ -2001,6 +2002,29 @@ def _exfil_rule_id_for_match(label: str, matched: str, rule_ids: tuple[str, ...]
     return rule_ids[0]
 
 
+# `-d @` is a bare substring, so it also fires on benign commands that egress
+# nothing (GNU `date` converting an epoch, `grep` for the literal `-d @`). The
+# denial stays on the text — fail-closed, never anchored to curl, since no text
+# matcher models bash. The carve-out relaxes it only for a command the
+# deny-exception gate judges a single plain command whose first word runs no
+# subcommand, so a `-d @` in it cannot reach an HTTP client.
+_DATA_EXFIL_FILE_BODY_RULE = "data-exfil-curl-file-body"
+
+#: `date` plus the inert-search verbs. `date` is local, not added to
+#: `_INERT_SEARCH_VERBS`, which must not grow the `rm -rf /` deny-exception.
+_CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
+
+
+def _data_at_carveout_allows(command: str) -> bool:
+    """A `-d @` hit in a benign `date`/`grep` command, not an upload: reuses
+    `denied_rules._exception_eligible` (the blessed single-plain-command test)
+    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand."""
+    if not _exception_eligible(command):
+        return False
+    words = command.split()
+    return bool(words) and words[0] in _CARVEOUT_VERBS
+
+
 def audit_bash_exfiltration(
     command: str, *, enabled_ids: "frozenset[str] | None" = None
 ) -> str | None:
@@ -2022,6 +2046,7 @@ def audit_bash_exfiltration(
     def _on(rule_id: str) -> bool:
         return enabled_ids is None or rule_id in enabled_ids
 
+    carveout_allows: bool | None = None
     for pattern in _BASH_EXFIL_PATTERNS:
         rule_id = _BASH_EXFIL_RULE_BY_PATTERN.get(pattern, "")
         if rule_id and not _on(rule_id):
@@ -2031,6 +2056,13 @@ def audit_bash_exfiltration(
             if fnmatch.fnmatch(lower, f"*{pat}*"):
                 return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
         elif pat in lower:
+            # Fail-closed denial, except an inert `date`/`grep` command (computed
+            # once per command and reused).
+            if rule_id == _DATA_EXFIL_FILE_BODY_RULE:
+                if carveout_allows is None:
+                    carveout_allows = _data_at_carveout_allows(command)
+                if carveout_allows:
+                    continue
             return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
     for rx, label in _BASH_EXFIL_RES:
         rule_ids = _BASH_EXFIL_RULE_BY_LABEL.get(label, ())
