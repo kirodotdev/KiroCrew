@@ -200,6 +200,26 @@ describe('ChatSidebar – PR chip', () => {
     expect(switchSlotMock).toHaveBeenCalledTimes(1)
   })
 
+  it('releases focus on a pointer click so the row action strip can hide', () => {
+    // The action strip is revealed on the row's focus-within; a chip left
+    // focused after a click would keep it showing once the pointer has gone.
+    renderSidebar({ onOpenSource: took() })
+    const a = chip()
+    a.focus()
+    expect(a).toHaveFocus()
+    clickChip(a, { detail: 1 })
+    expect(a).not.toHaveFocus()
+  })
+
+  it('keeps focus on the chip when it is activated from the keyboard', () => {
+    // Enter on a focused anchor dispatches a click with detail 0.
+    renderSidebar({ onOpenSource: took() })
+    const a = chip()
+    a.focus()
+    clickChip(a, { detail: 0 })
+    expect(a).toHaveFocus()
+  })
+
   it('lets a modifier click through to the provider in a new tab', () => {
     const onOpenSource = took()
     renderSidebar({ onOpenSource })

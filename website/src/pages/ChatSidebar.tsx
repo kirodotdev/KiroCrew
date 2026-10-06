@@ -522,6 +522,12 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
     // The row is a click-to-switch button; never let a chip click reach it,
     // whichever branch we take below.
     e.stopPropagation()
+    // A pointer click focuses the anchor, and the row's action strip is
+    // revealed on focus-within, so a focused chip would pin that strip visible
+    // after the pointer leaves the row. Drop focus on pointer clicks only
+    // (`detail` counts clicks; keyboard activation reports 0) so Enter on a
+    // focused chip leaves focus where a keyboard user expects it.
+    if (e.detail > 0) e.currentTarget.blur()
     if (!onOpenSource || !connected || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
     if (!isActive) onActivateSlot()
     if (!onOpenSource(slotKey, { url: link.url, kind: link.kind ?? 'change' })) return
