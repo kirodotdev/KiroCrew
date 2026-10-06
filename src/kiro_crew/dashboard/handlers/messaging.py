@@ -78,6 +78,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     pip_extra_install_command,
     read_bounded_json,
 )
+from kiro_crew.dashboard.handlers._shared import subagent_producer_meta as _subagent_producer_meta
 from kiro_crew.dashboard.handlers.browser_view_relay import ROUTE_PREFIX
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
 from kiro_crew.dashboard.messaging_api import channel_delivery as _owner_channel_delivery
@@ -701,11 +702,48 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # was, so refusing centrally would also refuse the person's own in-flight
     # calls on every internal route. This route refuses because of what it
     # publishes -- ``source="system"`` on the system.agent channel.
-    if caller_names_a_missing_slot(
-        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
-    ):
+    # Read ONCE and reused below as the note's producing session: the refusal
+    # and the attribution must be judging the same string, and the bridge's
+    # governance subject is exactly what this check has just vouched for.
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if not caller_key:
+        # REQUIRE the trusted producer identity on this session-output path. The note
+        # this route publishes carries the fixed ``source="system"`` and no other
+        # producer name, so without ``X-Session-Key`` it reaches the bridge with NO
+        # session subject: ``_claimed_session`` returns '' and no cron subject is added,
+        # and the note then egresses under only the permissive HOST governance profile --
+        # bypassing the producing session's own profile. An agent whose profile denies
+        # ``channels/slack`` is refused by ``send_message`` on that transport and would
+        # otherwise reach the same Slack DM through ``send_notification``. The producing
+        # session key is server-set from this header (a body cannot forge it), so
+        # requiring it here is what makes the bridge's per-session governance binding
+        # rather than optional. Fail-closed: no trusted producer, no publish.
+        try:
+            _sel().log_api_access(
+                caller=str(request.get("user") or request.remote or ""),
+                operation="notification_agent_push",
+                outcome="denied",
+                source="notifications_api",
+                error="no producing session identity (X-Session-Key); cannot vet session governance",
+            )
+        except Exception:
+            # A degraded SEL (an unconstructable singleton or a raising writer) must
+            # not turn this authorization refusal into a 500: the 403 is the security
+            # outcome and it has to hold whether or not the audit row lands.
+            logger.warning(
+                "SEL audit failed on missing-producer refusal; refusing anyway",
+                exc_info=True,
+            )
+        return web.json_response(
+            {
+                "error": "producing session identity required",
+                "code": "producer_session_required",
+            },
+            status=403,
+        )
+    if caller_names_a_missing_slot(getattr(state, "_slots", None), caller_key):
         _sel().log_api_access(
-            caller=str(request.headers.get("X-Session-Key") or ""),
+            caller=caller_key,
             operation="notification_agent_push",
             outcome="denied",
             source="notifications_api",
@@ -745,6 +783,24 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         url=body.get("url"),
         group_key=body.get("group_key"),
         actions=actions,
+        # The producing session, so the notification bridge vets the AGENT's own
+        # governance profile and not just the host's. REQUIRED above: this route
+        # refuses a publish that carries no ``X-Session-Key``, because such a note
+        # reaches the bridge with no session subject and egresses under only the
+        # permissive HOST profile. Without it an agent whose profile denies
+        # ``channels/slack`` is refused by ``send_message`` on that transport and then
+        # egresses to the same Slack DM through ``send_notification``. One producer, one
+        # transport, one policy, two answers.
+        #
+        # Server-set on THIS route, unlike the note claims the bridge normally
+        # reads: the agent publish path never passes the request body's ``meta``
+        # into the payload, so this key cannot be body-supplied here, and the
+        # missing-slot check above has already refused a ``dashboard:`` key whose
+        # slot is gone. It is still only ADDED to the bridge's subjects, never
+        # substituted for the host's, because the bridge cannot tell a server-set
+        # claim from a body-set one and the added-only polarity is what keeps a
+        # forged claim unable to widen anything.
+        meta={"session_key": caller_key, **_subagent_producer_meta(state, caller_key)},
     )
     try:
         note = state.notification_bus.push(payload)
@@ -1127,6 +1183,15 @@ async def api_send_message(request: web.Request) -> web.Response:
                 declared_session=declared_session,
                 is_cron_caller=is_cron_caller,
                 send_to_slack=send_to_slack,
+                # The kernel-attested owning app, server-set by the auth
+                # middleware (``request["app"]``) and NEVER a body field, so it
+                # cannot be forged to an app the caller does not own. Carried
+                # into the fallback as the bell note's ``producer_app`` subject
+                # so the bridge vets THAT app's own profile: without it an app
+                # permitted messaging but denied ``channels/slack`` reaches the
+                # owner's Slack DM through this fallback once ``system.agent`` is
+                # routed to Slack (GPT 6.1 F1).
+                caller_app=str(request.get("app") or ""),
             )
     finally:
         _audit_send_message(
