@@ -73,6 +73,7 @@ from kiro_crew.lesson_validation import (  # noqa: F401
 )
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
+from kiro_crew.owner_only_files import owner_only_opener, prepare_owner_only_sqlite
 from kiro_crew.project_scope import (  # noqa: F401
     canonical_scope,
     project_scope_satisfied,
@@ -656,8 +657,9 @@ def create_member_database(path: Path, *, member_id: str, store_id: str) -> None
         raise ValueError("A member and store identity are required")
     path = Path(path)
     platform_compat.make_owner_only_dir(path.parent)
-    # Exclusive creation prevents both clobbering data and concurrent provisioning.
-    with path.open("xb"):
+    # Exclusive creation prevents both clobbering data and concurrent provisioning,
+    # and the 0600 creation mode means the reservation is never readable by others.
+    with open(path, "xb", opener=owner_only_opener):
         pass
     platform_compat.restrict_to_owner(path)  # lockdown-ok: empty reservation; SQLite writes follow
     db = sqlite3.connect(path, isolation_level=None)
@@ -1523,6 +1525,10 @@ class VectorMemoryStore:
         # BEFORE the connect so the migrations do not run against a file another
         # local user can still write; repeated after it to cover what SQLite created.
         self._restrict_memory_files()
+        # And a NEW database is created 0600 before SQLite opens it, so none of
+        # its files exists readable even briefly (SQLite copies the database's
+        # mode onto -wal/-shm).
+        prepare_owner_only_sqlite(self._db_path)
         self._db = sqlite3.connect(
             str(self._db_path), check_same_thread=False, isolation_level=None
         )

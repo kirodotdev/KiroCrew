@@ -282,6 +282,7 @@ from kiro_crew.mcp_gateway.session_servers import (
     pooled_session_servers,
 )
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
@@ -2962,7 +2963,7 @@ class AcpClient:
         outright when the mkdir raises -- a session with no work dir has no
         diagnostic to report.
         """
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self._work_dir)  # 0700 only when it is in the data home
         # A stored skill-view name is never the agent to launch: it maps back to
         # the agent it was built from, whose current view the spawn prepares.
         # Folded into this hop for the reason above (it may read one sidecar).
@@ -7470,7 +7471,7 @@ class AcpClient:
             finally:
                 self._reset_state()
         if not self._work_dir_ready:
-            await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(ensure_directory, self._work_dir)
             self._work_dir_ready = True
         if self._process and self._process.returncode is None and self._session_id:
             return

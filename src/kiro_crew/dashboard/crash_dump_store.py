@@ -48,6 +48,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_compat import pid_exists
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ def get_dumps_dir() -> Path:
     set), so dumps land in ``<data home>/logs/crash-dumps/``.
     """
     d = config_dir() / "logs" / _DUMP_DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(d)  # logs/ and crash-dumps/ are born 0700
     return d
 
 
@@ -581,7 +582,7 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
         flags |= os.O_NOINHERIT | os.O_BINARY
     else:
         flags |= os.O_CLOEXEC
-    fd = os.open(str(path), flags, 0o644)
+    fd = os.open(str(path), flags, 0o600)  # a dump holds stacks and paths: owner-only
 
     f = DumpFile(fd, path)
     # Write a header so the file is identifiable even before a dump fires.

@@ -47,6 +47,7 @@ from typing import Any, Callable, Iterable, Sequence
 from kiro_crew import platform_compat
 from kiro_crew.metrics.events import TASKQ_COMPLETIONS, emit_counter
 from kiro_crew.on_loop_db import OnLoopDBGuard
+from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 from . import lanes as _lanes
 from . import migrate
@@ -594,6 +595,7 @@ class TaskStore:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             platform_compat.restrict_dir_to_owner(self._path.parent)
+            prepare_owner_only_sqlite(self._path)
             conn = sqlite3.connect(
                 str(self._path),
                 timeout=self._busy_timeout_secs,

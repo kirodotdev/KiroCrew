@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from kiro_crew.apps.manager import app_data_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
 
 APP_NAME = "personal-shopper"
 
@@ -123,7 +124,8 @@ class PreferenceStore:
 
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or _default_db_path()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdirs_owner_only(self.db_path.parent)
+        prepare_owner_only_sqlite(self.db_path)
         # One connection shared across the worker threads that `asyncio.to_thread`
         # hands route handlers, so every write goes through `_lock`: sqlite allows
         # a single writer, and the multi-statement FTS sync below must not

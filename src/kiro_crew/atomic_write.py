@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from kiro_crew import platform_compat
+from kiro_crew.owner_only_files import (
+    OWNER_ONLY_FILE_MODE,
+    is_owner_only_target,
+    mkdirs_owner_only,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1021,7 +1026,10 @@ def atomic_write(
     Windows rename retry above.
 
     *mode* sets explicit permissions (e.g. ``0o600`` for secrets).
-    ``None`` (default) applies umask-based permissions (matching ``open()``).
+    ``None`` (default) applies umask-based permissions (matching ``open()``),
+    except for a target inside the data home, which defaults to ``0o600`` with
+    any directory this call creates there at ``0o700``
+    (:mod:`kiro_crew.owner_only_files`).
 
     *newline* is passed straight to ``open()``. The default (``None``) applies
     universal-newline translation, which rewrites ``\\n`` to ``\\r\\n`` on
@@ -1143,6 +1151,15 @@ def atomic_write(
     # default after the lockdown has been applied.
     effective_mode = 0o600 if restrict_to_owner else mode
     path = Path(path)
+    # Inside the data home the default is owner-only, not the umask: transcripts,
+    # stores and config live there, and the policy is 0600 files / 0700 dirs
+    # (kiro_crew.owner_only_files). Only the DEFAULT changes -- an explicit
+    # *mode* still wins, so a caller that needs an executable or a shared file
+    # says so. mkstemp already creates the temp 0600, so the published file is
+    # never readable by others at any point.
+    in_data_home = is_owner_only_target(path)
+    if effective_mode is None and in_data_home:
+        effective_mode = OWNER_ONLY_FILE_MODE
     # Read the source's access-control xattrs BEFORE staging. A refusal here
     # (a lookup failure that is not "this filesystem has none") must abort before
     # any temp file exists, so there is nothing to clean up and the original is
@@ -1160,7 +1177,12 @@ def atomic_write(
     # is no third state: a descriptor this platform cannot use was refused above.
     pin = parent_dir_fd
     if pin is None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if in_data_home:
+            # Every directory this creates inside the data home is born 0700;
+            # Path.mkdir(parents=True) would create the intermediate ones 0755.
+            mkdirs_owner_only(path.parent)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     else:
         fd, tmp = _mkstemp_at(pin)

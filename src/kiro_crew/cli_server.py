@@ -63,6 +63,7 @@ from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
 from kiro_crew.memory import MemoryStore
+from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_GIT,
@@ -1155,7 +1156,8 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     # Open in append mode so successive restarts accumulate history in
     # one log file. The fd is owned by the child after Popen returns.
-    log_fh = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
+    # Created 0600, like every file in the data home (owner_only_files).
+    log_fh = open(log_path, "a", encoding="utf-8", opener=owner_only_opener)  # noqa: SIM115
 
     bin_path = _own_console_script() or shutil.which("kirocrew")
     if bin_path:

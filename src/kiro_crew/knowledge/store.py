@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
+from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3
 
@@ -888,6 +889,10 @@ class KnowledgeStore:
             if test_mode:
                 conn._owner_ident = threading.get_ident()
         else:
+            # Owner-only before SQLite creates anything: the library holds the
+            # user's ingested documents, and SQLite gives -wal/-shm the database
+            # file's own mode.
+            prepare_owner_only_sqlite(self._db_path)
             conn = sqlite3.connect(self._db_path, **connect_kwargs)
             if test_mode:
                 conn._owner_ident = threading.get_ident()

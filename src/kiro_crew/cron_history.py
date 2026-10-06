@@ -449,7 +449,9 @@ class CronHistoryStore:
         Returns True when records can be persisted, False to disable history.
         """
         try:
-            self._dir.mkdir(parents=True, exist_ok=True)
+            from kiro_crew.owner_only_files import ensure_directory
+
+            ensure_directory(self._dir)  # run records: 0700 in the data home
             return True
         except OSError as exc:
             # A denial scoped to this one leaf answers EPERM to BOTH os.mkdir

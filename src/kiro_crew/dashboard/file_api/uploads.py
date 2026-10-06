@@ -185,8 +185,10 @@ async def api_upload_file(request: web.Request) -> web.Response:
     that ACP's _send_prompt() can detect for image inlining.
     """
 
+    from kiro_crew.owner_only_files import ensure_directory
+
     upload_dir = _upload_dir()
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(upload_dir)  # 0700 in the data home: uploads are user files
     reader = await request.multipart()
     paths: list[str] = []
     allowed = (

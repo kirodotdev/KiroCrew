@@ -69,6 +69,7 @@ from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.log_redaction import install_log_redaction
 from kiro_crew.memory import MemoryStore
+from kiro_crew.owner_only_files import owner_only_opener, tighten_data_home
 from kiro_crew.platform import (
     PlatformCompositionError,
     boot_platform,
@@ -923,7 +924,9 @@ def _redirect_fds_to(path: Path, fds: tuple[int, ...] = (1, 2)) -> None:
     except OSError:
         pass  # a broken std stream must not abort gateway boot
     try:
-        raw_fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        # 0o600: this is gateway.log, which is owner-only like the rest of the data
+        # home (kiro_crew.owner_only_files). Only applies when this creates it.
+        raw_fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return
     try:
@@ -942,7 +945,31 @@ _LOG_FATAL_ERRNOS = frozenset({errno.ENOSYS, errno.EPERM, errno.EACCES, errno.ER
 _LOG_ERROR_STREAK_LIMIT = 3
 
 
-class _FdTrackingRotatingFileHandler(RotatingFileHandler):
+class _OwnerOnlyRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler whose log files are created ``0600``.
+
+    The stdlib opens the log with the builtin ``open``, so ``gateway.log`` -- and
+    the fresh file every rollover creates -- would come out at the umask default
+    (``0644``), readable by any local account that can reach the data home. The
+    log carries prompts, tool calls and paths, so it follows the data home's
+    owner-only policy. Only the creation mode changes; an existing file keeps its
+    mode (the startup sweep tightens one an older version created).
+    """
+
+    def _open(self):  # type: ignore[no-untyped-def]
+        # The stdlib's own handle on ``open`` (it survives interpreter teardown),
+        # read through getattr because typeshed does not declare it.
+        open_func = getattr(self, "_builtin_open", open)
+        return open_func(
+            self.baseFilename,
+            self.mode,
+            encoding=self.encoding,
+            errors=self.errors,
+            opener=owner_only_opener,
+        )
+
+
+class _FdTrackingRotatingFileHandler(_OwnerOnlyRotatingFileHandler):
     """RotatingFileHandler that re-points raw fds 1/2 after each rollover.
 
     In detached mode ``_redirect_fds_to`` aims the process's raw
@@ -1186,7 +1213,7 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     # renames gateway.log, and without re-pointing, the redirected raw fds
     # would follow the renamed inode through .1 → .2 → .3 → unlink, losing
     # later raw stderr from all retained logs.
-    handler_cls = _FdTrackingRotatingFileHandler if detached else RotatingFileHandler
+    handler_cls = _FdTrackingRotatingFileHandler if detached else _OwnerOnlyRotatingFileHandler
     # Seatbelt/sandbox children (e.g. ``kirocrew mcp-core`` under a sandboxed
     # agent profile) inherit a deny on ``gateway.log``. For those, opening the
     # file handler must not abort the process: the console handler
@@ -3291,6 +3318,14 @@ env var overrides it.
     # detach-spawned gateway needs double-write protection (stderr IS
     # gateway.log in that mode) — see _setup_cli_logging.
     _setup_cli_logging(args.command, args.verbose)
+    # Once per gateway start, still synchronous and before any service opens a
+    # store: drop group/other access from whatever an earlier version (or a
+    # writer that predates the owner-only policy) left in the data home.
+    # ensure_data_home above already made the home itself 0700; this repairs
+    # the tree inside it, bounded and best-effort (kiro_crew.owner_only_files).
+    # After the log setup so its one summary line reaches gateway.log.
+    if args.command == "gateway":
+        tighten_data_home(config_dir())
 
     # No subcommand given (`kirocrew` with no args) — show banner + help and exit.
     # Without this guard, the `args.command.startswith("mcp-")` branch later

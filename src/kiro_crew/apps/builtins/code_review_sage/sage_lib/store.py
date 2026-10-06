@@ -317,9 +317,11 @@ def mkdir_refusing_links(directory: str | os.PathLike) -> Path:
     bytes actually land, additionally pins the chain and so does not depend on
     this window.
     """
+    from kiro_crew.owner_only_files import ensure_directory
+
     d = Path(directory)
     refuse_linked_parents(d / _CHAIN_PROBE)
-    d.mkdir(parents=True, exist_ok=True)
+    ensure_directory(d)  # 0700 levels in the data home
     return d
 
 

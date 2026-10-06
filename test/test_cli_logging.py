@@ -495,7 +495,7 @@ class TestSetupCliLoggingDetached:
         def _deny(*_a, **_k):
             raise PermissionError(1, "Operation not permitted")
 
-        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
         with pytest.raises(PermissionError):
             _setup_cli_logging("gateway", 1)
@@ -526,9 +526,9 @@ class TestSetupCliLoggingForeground:
         for logger in (logging.getLogger(), logging.getLogger("kiro_crew")):
             assert not any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
         (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
-        # Foreground keeps the plain handler: no fds were redirected, so
-        # there is nothing to re-point on rollover.
-        assert type(fh) is RotatingFileHandler
+        # Foreground keeps the plain (owner-only) handler: no fds were redirected,
+        # so there is nothing to re-point on rollover.
+        assert type(fh) is cli_mod._OwnerOnlyRotatingFileHandler
         assert fh.level == logging.NOTSET
 
     def test_record_written_once_to_file(self):
@@ -559,7 +559,7 @@ class TestSetupCliLoggingForeground:
         def _deny(*_a, **_k):
             raise PermissionError(1, "Operation not permitted")
 
-        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
         _setup_cli_logging("mcp-core", 0)  # must not raise
         assert cli_mod._LOG_QUEUE_LISTENER is None
@@ -574,7 +574,7 @@ class TestSetupCliLoggingForeground:
             raise PermissionError(1, "Operation not permitted")
 
         redaction = MagicMock()
-        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli.install_log_redaction", redaction)
         _setup_cli_logging("gateway", 1)  # must not raise

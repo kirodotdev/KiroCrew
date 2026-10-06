@@ -377,7 +377,9 @@ def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
     :func:`flock_exclusive`. The lock file's CONTENT is never meaningful to
     the lock itself; this exists so contenders cannot watch it flicker empty.
     """
-    fd = open_create_or_existing(path, os.O_RDWR, 0o644)
+    # 0o600: a lock file is Kiro Crew's own and nobody else's to open; inside
+    # the data home every file is owner-only (kiro_crew.owner_only_files).
+    fd = open_create_or_existing(path, os.O_RDWR, 0o600)
     try:
         yield fd
     finally:
@@ -387,7 +389,7 @@ def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
 def open_create_or_existing(
     path: "str | os.PathLike[str]",
     flags: int,
-    mode: int = 0o644,
+    mode: int = 0o600,
     *,
     dir_fd: int | None = None,
 ) -> int:

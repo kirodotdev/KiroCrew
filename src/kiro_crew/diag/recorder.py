@@ -591,7 +591,9 @@ class Recorder:
 
     def _prepare_directory(self) -> bool:
         try:
-            self._dir().mkdir(parents=True, exist_ok=True)
+            from kiro_crew.owner_only_files import ensure_directory
+
+            ensure_directory(self._dir())  # 0700 in the data home
         except OSError:
             logger.warning("diag recorder cannot create its directory; disabling", exc_info=True)
             return False

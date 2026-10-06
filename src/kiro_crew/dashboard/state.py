@@ -111,6 +111,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
@@ -7132,7 +7133,7 @@ class DashboardState:
         """Lazy-init KnowledgeStore on first access."""
         if self._knowledge_store is None:
             db_dir = os.path.join(str(config_dir()), "workspace", "knowledge")
-            os.makedirs(db_dir, exist_ok=True)
+            mkdirs_owner_only(db_dir)
             self._knowledge_store = KnowledgeStore(os.path.join(db_dir, "knowledge.db"))
         return self._knowledge_store
 
@@ -10678,7 +10679,7 @@ def _persist_notification(note: dict[str, str]) -> bool:
     path = _notifications_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener) as f:
             f.write(json.dumps(note) + "\n")
         # Trim if file grows too large (keep last N lines)
         _maybe_trim_notifications(path)
@@ -10694,7 +10695,8 @@ def _rewrite_notifications(notifications: list[dict[str, str]]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = [json.dumps(n) + "\n" for n in notifications[-_MAX_PERSISTED_NOTIFICATIONS:]]
-        path.write_text("".join(lines), encoding="utf-8")
+        with open(path, "w", encoding="utf-8", opener=owner_only_opener) as f:
+            f.write("".join(lines))
     except Exception:
         logger.debug("Failed to rewrite notifications file", exc_info=True)
 

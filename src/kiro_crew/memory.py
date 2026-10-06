@@ -43,6 +43,7 @@ from kiro_crew.memory_recall import recall_terms
 from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.memory_stores import named_store_operation
 from kiro_crew.metrics.db_metrics import timed, timed_query
+from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 from kiro_crew.platform_compat import IS_POSIX, restrict_to_owner
 
 if TYPE_CHECKING:
@@ -1176,6 +1177,10 @@ class MemoryStore:
         restrict = not self._index_owner_only
         if restrict:  # repair an existing install's files before SQLite opens them
             self._restrict_index_files()
+            # And a NEW index is created 0600 before SQLite opens it, so it is
+            # never readable in the window before the post-open restrict. Inside
+            # the same once-per-store latch as the restrict itself.
+            prepare_owner_only_sqlite(self._index_db)
         conn = sqlite3.connect(str(self._index_db), timeout=_DB_BUSY_TIMEOUT_SECS)
         # Wait out transient 'database is locked' contention instead of letting
         # it surface (where the self-heal would misread it as corruption).

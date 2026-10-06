@@ -47,7 +47,7 @@
     "postToolUse": [
       {
         "matcher": "execute_bash",
-        "command": "f=\"${KIROCREW_HOME:-$HOME/.kiro/crew}/audit.log\"; if command -v python3 >/dev/null 2>&1; then python3 -c 'import os,sys,time;d=sys.stdin.buffer.read().replace(b\"\\r\",b\"\").replace(b\"\\n\",b\"\");r=time.strftime(\"%Y-%m-%dT%H:%M:%SZ\",time.gmtime()).encode()+b\" BASH: \"+d+b\"\\n\";fd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT|getattr(os,\"O_BINARY\",0),0o666);os.write(fd,r);os.close(fd)' \"$f\"; else printf '%s BASH: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$(tr -d '\\r\\n')\" >> \"$f\"; fi"
+        "command": "f=\"${KIROCREW_HOME:-$HOME/.kiro/crew}/audit.log\"; if command -v python3 >/dev/null 2>&1; then python3 -c 'import os,sys,time;d=sys.stdin.buffer.read().replace(b\"\\r\",b\"\").replace(b\"\\n\",b\"\");r=time.strftime(\"%Y-%m-%dT%H:%M:%SZ\",time.gmtime()).encode()+b\" BASH: \"+d+b\"\\n\";fd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT|getattr(os,\"O_BINARY\",0),0o600);os.write(fd,r);os.close(fd)' \"$f\"; else umask 077; printf '%s BASH: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$(tr -d '\\r\\n')\" >> \"$f\"; fi"
       }
     ]
   }

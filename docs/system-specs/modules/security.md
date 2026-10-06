@@ -2184,6 +2184,39 @@ exfiltration and pipe-execution shapes); this document does not restate it.
 
 `load_credentials()` in `loader.py` enforces `chmod 600` on `~/.kiro/crew/.env` at load time. If permissions are too open (group/other readable), they are tightened automatically. If `chmod` fails (e.g., file owned by another user), a warning is logged.
 
+### Data Home File Modes
+
+Threat: another local account reading transcripts, the knowledge library, logs or
+config. Under the usual `022` umask a file created without a mode is `0644` and a
+directory `0755`, so the data home's contents were readable wherever its path was
+traversable. The policy is every file under the data home `0600` and every directory
+`0700`, in three independent layers (`kiro_crew/owner_only_files.py` is the reference):
+
+- **At creation.** Stores create with the mode instead of `chmod`-ing after the write:
+  SQLite databases are pre-created `0600` before `connect` (`prepare_owner_only_sqlite`;
+  SQLite copies the database file's mode onto `-wal`/`-shm`/`-journal`, verified on the
+  bundled and the stdlib driver), transcripts, notifications, `gateway.log` (handler and
+  every rollover) and lock files open with a `0600` mode, directories are created `0700`
+  at every level, and `atomic_write` defaults to `0600` for any target in the data home.
+  The default `postToolUse` audit hook passes `0o600` to `os.open` and runs its `printf`
+  fallback under `umask 077` in its own one-command shell.
+- **The root.** `ensure_data_home()` makes the data home itself `0700` in every CLI
+  prologue, and `config_dir()` creates it `0700`.
+- **What already exists.** `tighten_data_home()` runs once per `kirocrew gateway` start in
+  the synchronous prologue: it removes group/other bits through no-follow descriptors,
+  never follows or modifies a symlink or its target, skips hard-linked files, other
+  owners and other filesystems, stops on `EROFS` or repeated refusals, and is bounded by
+  time and entry count. It skips `skills/`, whose permission bits the builtin-skill sync
+  fingerprints, so tightening it there would make every installed builtin read as
+  user-edited.
+
+The process umask is deliberately not changed: children inherit it, so files agents
+write into users' own repositories would become `0600` too. Windows is unchanged; the
+data home's inheritable owner-only DACL is what new files there receive.
+`test/test_owner_only_files.py` pins each layer and
+`test/integration/test_owner_only_boot.py` boots a fresh gateway and asserts no file or
+directory it creates (outside `skills/`) carries a group/other bit.
+
 ### Observe Mode Context Isolation
 
 `channel_history.push` in observe-mode channels is gated on `_user_authorized`. Only messages from the owner or allowlisted users are recorded in the history buffer. This prevents non-owner messages from influencing LLM context via prompt injection through shared channel traffic.

@@ -89,6 +89,7 @@ from kiro_crew.config.paths import (
 )
 from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
 from kiro_crew.platform import (
     current_context,
 )
@@ -1474,8 +1475,8 @@ def run_first_run_setup() -> None:
             logger.info("First-run: purged stale managed MCP entries: %s", removed)
         # Mark done even when nothing was removed, so the global mcp.json is
         # never re-read/rewritten on later starts.
-        _migrations_dir().mkdir(parents=True, exist_ok=True)
-        stale_marker.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+        mkdirs_owner_only(_migrations_dir())
+        write_text_owner_only(stale_marker, datetime.now(timezone.utc).isoformat() + "\n")
     except Exception:
         logger.warning("First-run: stale MCP purge failed", exc_info=True)
 

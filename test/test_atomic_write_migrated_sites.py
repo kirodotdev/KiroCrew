@@ -16,8 +16,9 @@ unaffected. Reverting either site to the hand-rolled form fails those tests, so
 they cannot pass by accident.
 
 The remaining assertions pin the semantics the migration had to PRESERVE, since a
-shared helper makes it easy to change them by accident: the umask default file
-mode (neither narrowed to ``0o600`` nor widened) and no leftover temp file.
+shared helper makes it easy to change them by accident: the default file mode
+(the umask's for the channel file, owner-only for the model-window cache, which
+lives in the data home) and no leftover temp file.
 Durability is unchanged too — both sites are best-effort by contract and neither
 passed ``fsync``, which is asserted by requiring ``fsync`` to stay absent from
 the recorded call kwargs.
@@ -159,13 +160,17 @@ class TestPersistKiroWindowsUsesSharedHelper:
         assert json.loads(path.read_text(encoding="utf-8"))["probe-model-zzz"] == 272_000
         assert squatter.is_dir(), "the helper must not have touched the squatter"
 
-    def test_persist_creates_the_parent_and_keeps_umask_default_mode(self):
-        """The helper owns the ``mkdir`` that creates the site's parent."""
+    def test_persist_creates_the_parent_and_lands_owner_only_in_the_data_home(self):
+        """The helper owns the ``mkdir`` that creates the site's parent.
+
+        The cache lives in the data home, where ``atomic_write``'s default mode
+        is owner-only (``kiro_crew.owner_only_files``) rather than the umask's.
+        """
         path = mr._kiro_windows_cache_path()
 
         mr.persist_kiro_windows()
 
         assert path.is_file()
         if os.name != "nt":
-            assert _mode_of(path) == _umask_default_mode()
+            assert _mode_of(path) == 0o600
         assert list(path.parent.glob("*.json.tmp")) == []

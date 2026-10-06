@@ -103,6 +103,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Sequence
 
 from kiro_crew._sqlite_compat import fts5_available, is_cjk_char, sqlite3
+from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.history_search import SearchNeedle
@@ -226,7 +227,9 @@ class SessionSearchIndex:
         conn = getattr(self._local, "conn", None)
         if conn is not None:
             return conn
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only from creation: the index holds a copy of every message.
+        mkdirs_owner_only(self._db_path.parent)
+        prepare_owner_only_sqlite(self._db_path)
         conn = sqlite3.connect(
             str(self._db_path),
             timeout=_CONNECT_TIMEOUT_SECS,

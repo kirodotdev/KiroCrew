@@ -49,6 +49,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform_compat import is_link_or_junction
@@ -78,7 +79,7 @@ def app_dir(name: str) -> Path:
 def app_data_dir(name: str) -> Path:
     """Return the app-scoped data directory: ``~/.kiro/crew/apps/{name}/data/``."""
     d = app_dir(name) / "data"
-    d.mkdir(parents=True, exist_ok=True)
+    ensure_directory(d)  # 0700 in the data home, apps/ and apps/<name>/ included
     return d
 
 
@@ -1513,7 +1514,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 # Same creator election as the provisioner: uninstall can race
                 # its first open before either caller holds the dependency lock.
                 _lfd = platform_compat.open_create_or_existing(
-                    _lock_name, _lflags, 0o644, dir_fd=_data_pin.fd,
+                    _lock_name, _lflags, 0o600, dir_fd=_data_pin.fd,
                 )
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
@@ -3669,7 +3670,7 @@ def register_builtin_apps() -> int:
         existing = _read_installed(name)
 
         dest = app_dir(name)
-        dest.mkdir(parents=True, exist_ok=True)
+        ensure_directory(dest)  # apps/<name>/ is born 0700 in the data home
 
         # A pre-existing entry this function did not write belongs to the USER:
         # they installed an app that happens to share this builtin's name. Taking

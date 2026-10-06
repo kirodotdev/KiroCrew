@@ -23,6 +23,7 @@ from kiro_crew.apps.builtins.auto_research.session_keys import is_campaign_id
 from kiro_crew.atomic_write import read_json_or
 from kiro_crew.config.paths import data_home
 from kiro_crew.on_loop_db import OnLoopDBGuard
+from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -111,7 +112,8 @@ _ON_LOOP_DB_GUARD = OnLoopDBGuard(
 def _get_db() -> sqlite3.Connection:
     _ON_LOOP_DB_GUARD.check()
     dbp = db_path()
-    dbp.parent.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(dbp.parent)
+    prepare_owner_only_sqlite(dbp)  # campaigns hold research findings: 0600 from creation
     # Explicit 30s busy timeout (vs the 5s driver default). The research worker
     # writes findings/status every cycle while the app's HTTP handlers also
     # read/write; the longer busy timeout absorbs brief write contention instead

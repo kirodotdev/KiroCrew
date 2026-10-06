@@ -134,6 +134,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     stream_and_collect_json,
 )
 from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE, mkdirs_owner_only, owner_only_opener
 from kiro_crew.preview_text import (  # noqa: F401 - facade re-export
     PREVIEW_MAX_CHARS,
     strip_markdown_preview,
@@ -1059,7 +1060,7 @@ def _archive_lines(
     import itertools
 
     adir = _archive_dir(base)
-    adir.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(adir)
     now = datetime.now()
     stamp = now.strftime("%Y%m%d-%H%M%S")
     safekey = _safe_key(key)
@@ -1082,7 +1083,7 @@ def _archive_lines(
         suffix = f"-{n}" if n else ""
         candidate = adir / f"{safekey}{ARCHIVE_SEGMENT_DELIMITER}{stamp}{suffix}.jsonl"
         try:
-            with candidate.open("x", encoding="utf-8") as f:
+            with open(candidate, "x", encoding="utf-8", opener=owner_only_opener) as f:
                 f.write(payload)
             break
         except FileExistsError:
@@ -1416,7 +1417,7 @@ def _write_thread_sidecar(path: Path, document: str) -> None:
     Session Storage's opener degrades.
     """
     parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(parent)
     if platform_compat.is_link_or_junction(parent) or not stat.S_ISDIR(os.lstat(parent).st_mode):
         raise ThreadStoreUnreadable(f"thread sidecar directory is not a directory: {parent}")
     if not platform_compat.IS_POSIX:
@@ -1429,7 +1430,7 @@ def _write_thread_sidecar(path: Path, document: str) -> None:
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
-        atomic_write_at(dir_fd, path.name, document)
+        atomic_write_at(dir_fd, path.name, document, mode=OWNER_ONLY_FILE_MODE)
     finally:
         os.close(dir_fd)
 
@@ -1943,7 +1944,7 @@ class ConversationLog:
                 state = ConversationLog._flock_state.get(lock_key)
                 if state is None:
                     lock_path = self._lock_path(key)
-                    lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    mkdirs_owner_only(lock_path.parent)
                     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
                     state = [fd, 0, 0]  # fd, depth, held
                     ConversationLog._flock_state[lock_key] = state
@@ -2112,8 +2113,8 @@ class ConversationLog:
         self._run_fd_cleanup_off_loop(_release_and_close)
 
     def init(self) -> None:
-        """Create sessions directory if missing."""
-        self._dir.mkdir(parents=True, exist_ok=True)
+        """Create sessions directory if missing (owner-only, like every transcript in it)."""
+        mkdirs_owner_only(self._dir)
 
     def _path(self, key: str) -> Path:
         p = self._dir / f"{_safe_key(key)}.jsonl"
@@ -2636,7 +2637,7 @@ class ConversationLog:
             created_now = False
             if not path.exists():
                 created_now = True
-                self._dir.mkdir(parents=True, exist_ok=True)
+                mkdirs_owner_only(self._dir)
                 meta: dict = {
                     "_type": "metadata",
                     "created_at": metadata_now_iso(),
@@ -2647,7 +2648,9 @@ class ConversationLog:
                 if tab_id:
                     meta["tab_id"] = tab_id
                     created_with_tab_id = True
-                path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+                # Created 0600: a transcript is the conversation itself.
+                with open(path, "w", encoding="utf-8", opener=owner_only_opener) as f:
+                    f.write(json.dumps(meta) + "\n")
 
             msg: dict = {
                 "role": role,
@@ -2690,7 +2693,7 @@ class ConversationLog:
 
             # Session transcripts are intentionally local plaintext JSONL (the
             # documented storage format), not a credential/secret store.
-            with open(path, "a", encoding="utf-8") as f:
+            with open(path, "a", encoding="utf-8", opener=owner_only_opener) as f:
                 f.write(json.dumps(msg) + "\n")  # lgtm[py/clear-text-storage-sensitive-data]
 
             # Invalidate cache since file changed

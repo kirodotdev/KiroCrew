@@ -1258,9 +1258,10 @@ def write_app_secret(app_name: str, secret: str) -> None:
     Creates the directory if needed and sets file mode to 0o600.
     """
     from kiro_crew.config.loader import config_dir
+    from kiro_crew.owner_only_files import mkdirs_owner_only
 
     secret_dir = config_dir() / "apps" / app_name
-    secret_dir.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(secret_dir)  # apps/ and apps/<name>/ are born 0700
     secret_path = secret_dir / ".app_secret"
     # os.O_TRUNC truncates any pre-existing file BEFORE the DACL tightens,
     # then restrict_to_owner locks it down while it is still empty, then we

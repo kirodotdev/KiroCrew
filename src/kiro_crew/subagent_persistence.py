@@ -29,6 +29,7 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retr
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.execution_context import ExecutionContext
 from kiro_crew.jsonl_util import rotate_jsonl_at
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 
@@ -675,7 +676,7 @@ def create_agent_folder(
     if execution.memory_mode != "persistent":
         _LIVE_RUN_STATES[_live_run_key(agent_id)] = state
     else:
-        d.mkdir(parents=True, exist_ok=True)
+        ensure_directory(d)
         _atomic_write(d / "state.json", state)
     return d
 
@@ -1454,7 +1455,7 @@ def record_slow_command(agent_id: str, **fields: object) -> None:
     entry = {"id": agent_id, "flagged": time.time(), **fields}
     base = _subagents_dir()
     try:
-        base.mkdir(parents=True, exist_ok=True)
+        ensure_directory(base)
         log_path = base / "slow_commands.jsonl"
         # Rotation (shared helper): O(1) rotate-by-rename at the cap, guarded
         # by a non-blocking try-lock so two writers hitting the cap together
@@ -2308,7 +2309,7 @@ def _cleanup_session_files_sync(
 
 def _atomic_write(path: Path, data: dict) -> None:
     """Write JSON atomically via temp file + rename, fsynced, owner-only."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     atomic_write(path, json.dumps(data, ensure_ascii=False), fsync=True, mode=0o600)
 
 

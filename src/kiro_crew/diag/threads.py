@@ -1075,8 +1075,10 @@ def _pyspy_output_path() -> "Any":
     import tempfile
     import time as _time
 
+    from kiro_crew.owner_only_files import mkdirs_owner_only
+
     root = _gil_staging_root()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mkdirs_owner_only(root)  # diag/ too, not only the leaf
     _reap_gil_staging(root, _time.time())
     # ``mkdtemp`` creates the directory 0700 itself; no chmod follows, so there is
     # no moment at which it carries wider permissions.

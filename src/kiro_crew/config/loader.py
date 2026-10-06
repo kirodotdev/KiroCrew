@@ -427,6 +427,7 @@ from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     memory_store_name_defect,
 )
+from kiro_crew.owner_only_files import GROUP_OTHER_BITS, is_owner_only_target
 from kiro_crew.session_start_sizing import AUTO as _SESSION_START_AUTO
 from kiro_crew.session_start_sizing import is_auto as _session_start_is_auto
 from kiro_crew.stt.limits import (  # noqa: F401
@@ -1668,8 +1669,9 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     * **Mode-preserving.** Because tmp+rename creates a NEW inode, the umask
       default (typically ``0644``) would silently replace an operator's tightened
       ``0600``. ``config.json`` can hold inline credentials, so a settings write
-      must never widen who can read it. An existing file's mode is carried over;
-      a newly created one defaults to owner-only.
+      must never widen who can read it. An existing file's mode is carried over
+      (minus group/other access inside the data home); a newly created one
+      defaults to owner-only.
 
     ``atomic_write``'s ``mode`` routes through ``fchmod_safe``, which applies the
     mode on POSIX and is a documented no-op on Windows.
@@ -1761,6 +1763,12 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
         mode = _stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
     except OSError:
         mode = 0o600
+    if is_owner_only_target(path):
+        # Preserving never means keeping it readable by others: inside the data
+        # home every file is owner-only (kiro_crew.owner_only_files), so a 0644
+        # left by an older version narrows to 0600 here. A config symlinked out of
+        # the home resolved to its target above and keeps the target's mode.
+        mode &= ~GROUP_OTHER_BITS
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, indent=2) + "\n"
     if platform_compat.IS_POSIX:

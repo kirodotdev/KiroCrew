@@ -341,7 +341,10 @@ def config_dir() -> Path:
         return memo[2]
     p = _valid_override_home()
     if p is not None:
-        p.mkdir(parents=True, exist_ok=True)
+        # 0o700 at creation: the home is owner-only from the moment it exists,
+        # not only after ``ensure_data_home`` tightens it. Applies to the leaf
+        # only -- missing parents are not the data home and keep their default.
+        p.mkdir(parents=True, exist_ok=True, mode=0o700)
         _config_dir_memo = (override_raw, _resolved_home, p)
         return p
     if os.environ.get("KIROCREW_HOME"):
@@ -350,7 +353,7 @@ def config_dir() -> Path:
             os.environ.get("KIROCREW_HOME"),
         )
     d = _resolve_default_home()
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)  # owner-only at creation, as above
     # Drop the recovery-pointer breadcrumb outside ~/.kiro/ (default path only).
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.

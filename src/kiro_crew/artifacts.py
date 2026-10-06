@@ -129,6 +129,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 - facade surface
     webapp_metadata_from_dict,
 )
 from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.publish_provider import DEFAULT_PROVIDER  # noqa: F401 - facade surface
 from kiro_crew.security import (
     canonical_path_refusal,
@@ -405,7 +406,7 @@ class ArtifactStore:
         # Keyed by the RESOLVED root so a symlinked alias of the same
         # directory still shares the lock, not just a literal path match.
         self._lock = _lock_for_root(resolved)
-        self._root.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self._root)  # 0700 when the root is in the data home
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -2355,8 +2356,7 @@ class ArtifactStore:
 
     def _write_artifact(self, art: Artifact, content: str) -> None:
         adir = self._artifact_dir(art.slug)
-        adir.mkdir(parents=True, exist_ok=True)
-        (adir / "versions").mkdir(parents=True, exist_ok=True)
+        ensure_directory(adir / "versions")  # creates adir too
         self._write_text(adir / "current.html", content)
         self._snapshot_version(art.slug, art.version, adir / "current.html")
         self._write_meta(art)
@@ -2372,8 +2372,7 @@ class ArtifactStore:
         gated byte writer.
         """
         adir = self._artifact_dir(art.slug)
-        adir.mkdir(parents=True, exist_ok=True)
-        (adir / "versions").mkdir(parents=True, exist_ok=True)
+        ensure_directory(adir / "versions")  # creates adir too
         self._write_text(adir / "current.html", art.content or "")
         self._snapshot_version(art.slug, art.version, adir / "current.html")
         assert art.image is not None  # set by create_image before this is called

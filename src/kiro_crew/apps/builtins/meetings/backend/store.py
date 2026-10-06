@@ -122,9 +122,11 @@ def ensure_data_dirs(root: Path | None = None) -> Path:
     shell blob prepended to a cron message. Nothing here overwrites an existing
     file, so a user's edits survive every restart.
     """
+    from kiro_crew.owner_only_files import ensure_directory
+
     data = data_dir(root)
     for name in k.DATA_SUBDIRS:
-        (data / name).mkdir(parents=True, exist_ok=True)
+        ensure_directory(data / name)  # meeting notes: 0700 in the data home
     dictionary = data / k.DICTIONARY_FILE
     if not dictionary.exists():
         atomic_write(dictionary, SEED_DICTIONARY)

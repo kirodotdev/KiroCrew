@@ -189,6 +189,7 @@ from kiro_crew.metrics.events import (
     SKILL_VIEW_FALLBACKS,
     emit_counter,
 )
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.providers.mirrors.registry import has_mirror, mirror_for
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.runtime_ownership import authorize_runtime_kill, outstanding_leases
@@ -2018,7 +2019,7 @@ class AcpRuntime:
 
         # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
         # slow storage; the loop must never wait on the kernel here.
-        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(ensure_directory, self._work_dir)  # 0700 in the data home
         # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
         # deny rules. Keep their workspace disjoint from the named voice-decoder
         # runtime so verified executable bytes cannot be replaced before spawn.
