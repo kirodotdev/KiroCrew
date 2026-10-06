@@ -1542,6 +1542,39 @@ def _get_memory(state: DashboardState):
     return state._standalone_memory  # type: ignore[attr-defined]
 
 
+def _lesson_caller_slot_key(state: DashboardState, session_key: str) -> str:
+    """Map a lesson caller's session key to its slot key, or ``""``.
+
+    Delegates to :func:`session_control.caller_slot_key` for the shared
+    resolution (history key, slot key, transcript stem) and adds ONLY a
+    fallback that matches each slot's :func:`effective_session_key`, so a
+    channel-born slot surfaced without a session-map binding -- whose turns run
+    on ``dashboard:<slot>`` -- still resolves to its own workspace.
+
+    That extra match belongs ONLY to the lesson read/write path, which is why
+    it lives here rather than in ``caller_slot_key``: widening the latter would
+    also change the ``authorize_target`` self-target guard that every
+    session-control verb consults, which this bug does not touch.
+    """
+    if not session_key:
+        return ""
+    from kiro_crew.dashboard import session_control
+
+    resolved = session_control.caller_slot_key(state, session_key)
+    if resolved:
+        return resolved
+    # Lazy, like the other session_control imports in this module.
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    for slot in list(getattr(state, "_slots", {}).values()):
+        try:
+            if session_key == effective_session_key(slot):
+                return slot.key
+        except Exception:
+            continue
+    return ""
+
+
 def _get_active_workspace(state: DashboardState, session_key: str = "") -> str:
     """Return the REQUESTING session's workspace, or 'default'.
 
@@ -1556,12 +1589,11 @@ def _get_active_workspace(state: DashboardState, session_key: str = "") -> str:
 
     A caller with no session key (``session_key`` empty) or whose slot cannot
     be found (headless/standalone, or a slot that does not exist) resolves to
-    ``'default'``.
+    ``'default'``. The slot is resolved through the lessons-local
+    :func:`_lesson_caller_slot_key`, not ``session_control.caller_slot_key``, so
+    the session-control self-target guard is unaffected by this path.
     """
-    # Lazy, like the other session_control imports in this module.
-    from kiro_crew.dashboard.session_control import caller_slot_key
-
-    slot = state.get_slot(caller_slot_key(state, session_key)) if session_key else None
+    slot = state.get_slot(_lesson_caller_slot_key(state, session_key)) if session_key else None
     ws = getattr(slot, "workspace", None) if slot is not None else None
     if ws and ws != "default":
         return ws

@@ -665,6 +665,23 @@ class TestApiServerAuth:
             await runner.cleanup()
 
     @pytest.mark.asyncio
+    async def test_get_lessons_denied_without_secret(self, tmp_path, monkeypatch):
+        # The all-workspaces lesson union is served on the operator's own BROWSER
+        # branch of GET /api/lessons (no X-Internal-Secret). That branch is only
+        # ever reached AFTER the token-auth middleware authenticates the request:
+        # an anonymous GET is 403'd before the handler runs, so the union is not
+        # reachable without dashboard operator auth.
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/api/lessons") as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
     async def test_get_crons_allowed_with_secret(self, tmp_path, monkeypatch):
         import aiohttp
 

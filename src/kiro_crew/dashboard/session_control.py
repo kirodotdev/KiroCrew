@@ -824,9 +824,6 @@ def caller_slot_key(state: "DashboardState", session_key: str) -> str:
     every operation here is slot-keyed. Resolution walks the live slots and
     matches on the key each slot actually writes, which is the same identity
     ``list_sessions`` reports — so "who am I" cannot disagree between the two.
-    The slot's effective session key is matched too: for a channel-born slot
-    surfaced without a session-map binding it is ``dashboard:<slot>``, the key
-    that slot's turns run on, which differs from its channel transcript key.
 
     An unresolvable caller is not fatal: it only means the self-target guard has
     nothing to compare against, which :func:`authorize_target` treats as a
@@ -837,12 +834,7 @@ def caller_slot_key(state: "DashboardState", session_key: str) -> str:
     for slot in list(state._slots.values()):
         try:
             history_key = slot_history_key(slot)
-            if session_key in (
-                history_key,
-                slot.key,
-                transcript_stem(history_key),
-                effective_session_key(slot),
-            ):
+            if session_key in (history_key, slot.key, transcript_stem(history_key)):
                 return slot.key
         except Exception:
             continue

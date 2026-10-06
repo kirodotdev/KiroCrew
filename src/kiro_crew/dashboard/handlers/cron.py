@@ -3003,6 +3003,26 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                 state._background_tasks.add(task)
                 task.add_done_callback(state._background_tasks.discard)
     else:
+        # A workspace-scoped write that names no workspace takes the requesting
+        # session's. When that resolves to "default" -- no key, or a key with no
+        # live slot -- the write would land in the GLOBAL file, which every
+        # workspace reads. Refuse it, like the delete route refuses
+        # scope='workspace' without a name, rather than widen its reach.
+        if (
+            not _lesson_silo
+            and scope == "workspace"
+            and not cleaned.get("workspace")
+            and _get_active_workspace(state, sk) == "default"
+        ):
+            return web.json_response(
+                {
+                    "error": "scope='workspace' requires a workspace name: this "
+                    "session has no workspace of its own; use scope='global' or "
+                    "name the workspace",
+                    "code": "workspace_required",
+                },
+                status=400,
+            )
         lesson = Lesson(
             rule=rule,
             category=category,
@@ -3868,15 +3888,30 @@ async def api_lessons(request: web.Request) -> web.Response:
             (le, ("global", None)) for le in rows
         ]
         if not _lesson_silo:
-            # Merge global + workspace-scoped lessons. A named workspace wins; an
-            # agent session sees only its own slot's workspace; the operator's own
-            # dashboard surface (no key, or the shared ``dashboard:ui`` key, which
-            # names no slot) lists every configured workspace, so each workspace
-            # row stays visible and deletable from the Memory tab.
+            # Merge global + workspace-scoped lessons. A named workspace wins; a
+            # session sees only its own slot's workspace. The all-workspaces
+            # union -- every configured workspace's rows, so each one stays
+            # visible and deletable from the operator's Memory tab -- is for the
+            # operator's own BROWSER surface ONLY: no key (or the shared
+            # ``dashboard:ui`` key, which names no slot) AND positively
+            # authenticated as the dashboard user.
+            #
+            # ``is_dashboard_user`` is set by the token-auth middleware to
+            # ``not app`` on every path that reaches a mixed-internal route
+            # like this one, so it is ``True`` only for a pure cookie/session
+            # browser caller (the operator) and ``False`` for an app token.
+            # Gating on it (rather than on ``internal_auth is not True``) means
+            # a keyless APP TOKEN -- which carries no ``internal_auth`` but is
+            # not the operator either -- falls through to the per-session branch
+            # and, with no resolvable slot, sees the global rows only. A keyless
+            # internal-secret agent (``internal_auth`` set) likewise never
+            # reaches the union. That is the cross-workspace data-isolation harm
+            # this PR removes: only the operator's own browser sees every
+            # workspace.
             sk = request.headers.get("X-Session-Key", "")
             if workspace:
                 union = [workspace]
-            elif sk in ("", "dashboard:ui"):
+            elif sk in ("", "dashboard:ui") and request.get("is_dashboard_user") is True:
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 union = sorted(cfg.workspaces)
             else:
