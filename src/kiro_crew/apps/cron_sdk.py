@@ -330,6 +330,9 @@ class CronSDK:
         enabled: bool,
         timezone: str,
         skip_dates: list[str] | None,
+        approval_mode: str,
+        timeout_secs: int,
+        timeout: int,
         folder_id: str = "",
     ) -> dict[str, Any]:
         """Build the kwargs common to the sync/async ``CronService.add_job``.
@@ -344,6 +347,26 @@ class CronSDK:
         locked save, so passing them at create keeps the fully-formed-on-first-
         save invariant instead of persisting a job that resolves to UTC and
         correcting it in a second write.
+
+        ``approval_mode``/``timeout_secs``/``timeout`` are threaded for the same
+        invariant, and each one has a reason a follow-up ``update_job`` cannot
+        serve:
+
+        * ``approval_mode`` decides whether the job's tool calls auto-approve.
+          Setting it in a second write leaves a window in which the job exists
+          on disk with hook-based approval, and a due-scan landing in that
+          window runs it under the mode the app did not ask for.
+        * ``timeout_secs`` is cross-validated against the subprocess timeout
+          ONLY at create (``build_job``); the update path range-checks it and
+          does not re-run that cross-check. Setting it after the fact therefore
+          skips the very check that refuses a wake budget too short to cover
+          its own subprocess, which is the duplicate-launch hazard that check
+          exists to prevent.
+        * ``timeout`` is what makes ``timeout_secs`` usable on the command and
+          script jobs an app most often registers: that cross-check compares the
+          wake budget against this value, falling back to 300s for a command and
+          30s for a script when it is unset, so without it an app cannot create
+          a command job with a wake budget under 305s at all.
         """
         return dict(
             name=name,
@@ -360,6 +383,9 @@ class CronSDK:
             enabled=enabled,
             timezone=timezone or "",
             skip_dates=skip_dates or None,
+            approval_mode=approval_mode or "",
+            timeout_secs=int(timeout_secs) if timeout_secs else 0,
+            timeout=int(timeout) if timeout else 0,
             folder_id=folder_id or "",
             created_by=self._owner_prefix,
         )
@@ -383,6 +409,9 @@ class CronSDK:
         enabled: bool = True,
         timezone: str = "",
         skip_dates: list[str] | None = None,
+        approval_mode: str = "",
+        timeout_secs: int = 0,
+        timeout: int = 0,
     ) -> Any:
         """Create a cron job owned by this app. **Synchronous** (preserves the
         published SDK contract). See :meth:`add_job_async` for the loop-native
@@ -397,6 +426,22 @@ class CronSDK:
         save, so an unknown zone or a malformed ``YYYY-MM-DD`` raises
         ``ValueError`` at create time instead of silently resolving to UTC when
         the job fires.
+
+        ``approval_mode`` is ``""`` (hook-based approval, the default) or
+        ``"auto"``, which auto-approves the job's tool calls. An unattended
+        agent job needs ``"auto"`` AT CREATE: with hook-based approval every
+        tool call waits on a prompt nobody is present to answer, so the run
+        stalls and repeated failures eventually auto-pause the job. Any other
+        value raises ``ValueError``.
+
+        ``timeout_secs`` is the per-wake execution budget in seconds (1..86400;
+        ``0`` keeps the 1800s default). ``timeout`` bounds only the
+        script/command subprocess (0..86400; ``0`` keeps the per-kind default of
+        30s for a script and 300s for a command). On a command or script job the
+        two are cross-validated here at create: the wake budget must cover the
+        subprocess timeout plus a cleanup allowance, because a shorter budget
+        cancels the executor future while the subprocess keeps running and the
+        next wake launches a duplicate.
 
         A manifest folder is NOT assignable here: app cron registration goes
         through :meth:`add_job_if_absent_async`, which is the only method
@@ -419,6 +464,8 @@ class CronSDK:
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
                 enabled=enabled, timezone=timezone, skip_dates=skip_dates,
+                approval_mode=approval_mode, timeout_secs=timeout_secs,
+                timeout=timeout,
             ),
         )
         self._audit_add(job)
@@ -441,6 +488,9 @@ class CronSDK:
         enabled: bool = True,
         timezone: str = "",
         skip_dates: list[str] | None = None,
+        approval_mode: str = "",
+        timeout_secs: int = 0,
+        timeout: int = 0,
     ) -> Any:
         """Event-loop-native :meth:`add_job`: routes through
         ``CronService.add_job_async`` (bounded store-lock spin offloaded to a
@@ -449,8 +499,11 @@ class CronSDK:
 
         ``timezone``/``skip_dates`` behave exactly as in :meth:`add_job` --
         validated at the persistence owner and folded into the single locked
-        save, so a job never exists with the wrong calendar settings. Folder
-        assignment is likewise absent for the reason given there.
+        save, so a job never exists with the wrong calendar settings.
+        ``approval_mode``/``timeout_secs``/``timeout`` likewise behave as in
+        :meth:`add_job`, and this is the variant an app hook actually calls, so
+        it is the one an unattended agent job needs ``approval_mode="auto"`` on.
+        Folder assignment is likewise absent for the reason given there.
         """
         # Off-loop: the vet stats the script, reads its body for the content
         # scan, and may walk the builtin manifest sources for the bundle root.
@@ -465,6 +518,8 @@ class CronSDK:
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
                 enabled=enabled, timezone=timezone, skip_dates=skip_dates,
+                approval_mode=approval_mode, timeout_secs=timeout_secs,
+                timeout=timeout,
             ),
         )
         self._audit_add(job)
@@ -487,6 +542,9 @@ class CronSDK:
         enabled: bool = True,
         timezone: str = "",
         skip_dates: list[str] | None = None,
+        approval_mode: str = "",
+        timeout_secs: int = 0,
+        timeout: int = 0,
         folder_id: str = "",
     ) -> Any:
         """Atomic add-if-absent by job name; returns None when already present.
@@ -500,6 +558,12 @@ class CronSDK:
         ``timezone``/``skip_dates`` are threaded through the same build as
         :meth:`add_job`, so the winning registrar's job is calendar-correct on
         its first and only save.
+        ``approval_mode``/``timeout_secs``/``timeout`` ride the same build for
+        the same reason. This method matters most for ``approval_mode``: it is
+        the one ``bridges`` calls for every manifest cron, and it returns None
+        when the name is already present, so an app that set the mode in a
+        follow-up ``update_job`` would skip that write on every registration
+        after the first and leave the job on whatever mode it was created with.
         """
         # Off-loop, same reason as add_job_async: this is the method `bridges`
         # awaits on the gateway loop for every app cron at enable and at start.
@@ -515,6 +579,8 @@ class CronSDK:
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
                 enabled=enabled, timezone=timezone, skip_dates=skip_dates,
+                approval_mode=approval_mode, timeout_secs=timeout_secs,
+                timeout=timeout,
                 folder_id=folder_id,
             ),
         )
