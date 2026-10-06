@@ -17,7 +17,7 @@ cd website && npm run i18n:check
 | CI job | Step | What it runs |
 |---|---|---|
 | `frontend-lint` | Check i18n extraction, key references and plurals | `npm run i18n:check` (the runner below) |
-| `frontend-test` | Unit tests | `npx vitest run --coverage`, which includes the diff-scoped `localeFormatting.test.ts` gates and the catalog duplicate-key guard `duplicateKeys.test.ts` (see below) |
+| `frontend-test` | Unit tests | `npx vitest run --coverage`, sharded across a matrix with each shard's coverage merged by `frontend-coverage-merge`; it includes the diff-scoped `localeFormatting.test.ts` gates and the catalog duplicate-key guard `duplicateKeys.test.ts` (see below) |
 | `e2e` | Run E2E and dedicated memory UI evidence in parallel | `python scripts/ci_e2e_parallel.py`; its `i18n` lane runs `npm --prefix website run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
 
 The render gate lives in the `e2e` job to reuse the Chromium install that job
@@ -55,8 +55,10 @@ Two structural properties of the runner:
 
 The `--check` flag on the two codemods is deliberately not `--dry-run`: dry-run
 reports and exits 0, which would make the step decorative. An unrecognised flag
-makes those scripts refuse to run rather than fall through to their destructive
-conversion path.
+makes `i18n-codemod.mjs` refuse to run rather than fall through to its
+destructive conversion path. `i18n-plural-codemod.mjs` reads only `--check` and
+does not reject other flags; that gap is tracked. CI always passes `--check`, so
+the gate itself is unaffected.
 
 ## The table
 
@@ -150,7 +152,8 @@ how the remediation gets planned. They just do not gate.
 
 ## Diff-scoped gates need a base commit
 
-Four checks read the branch against a base ref, supplied as `I18N_BASE_REF`:
+The diff-scoped checks read the branch against a base ref, supplied as
+`I18N_BASE_REF`:
 
 - On a pull request it is `github.event.pull_request.base.sha`, the commit the
   **merge ref** was computed against. NOT `origin/<base.ref>`: the branch tip is a
@@ -158,6 +161,8 @@ Four checks read the branch against a base ref, supplied as `I18N_BASE_REF`:
   job start, so anything that lands on main in between appears only on the base
   side and is charged to every PR running in that window. `base.sha` makes the two
   sides consistent by construction.
+- On a merge group it is `github.event.merge_group.base_sha`, the commit the
+  queued group was built on.
 - On a push to main it is `github.event.before`, the commit the push replaced, so
   a merge that only breaks in combination with another merge is still charged to a
   diff.
@@ -174,8 +179,8 @@ reason to stop checking. The render scanner and the diff-scoped vitest gates exi
 non-zero on an unresolvable configured ref for the same reason.
 
 A local run normally has no `I18N_BASE_REF`, and the table says so
-(`NOT RUN: no base commit supplied`) rather than accusing four working checks of
-having stopped measuring.
+(`NOT RUN: no base commit supplied`) rather than accusing the diff-scoped checks
+of having stopped measuring.
 
 ## Why a separate ESLint invocation
 
@@ -344,10 +349,11 @@ Known limits of the render gate, named rather than papered over:
 - **A PR whose base is not `main` never runs `ci.yml` at all**, because
   `pull_request: branches: [main]` filters on the base branch. A stacked PR gets no
   render gate until it is rebased.
-- **`main` verdicts are sampled, not per-commit.** The concurrency group permits
-  one pending run and GitHub evicts it when a newer one queues, so a commit whose
-  run was evicted has its delta fall between two `github.event.before` boundaries
-  and is never diffed.
+- **`main` verdicts are sampled, not per-commit, when `MERGE_QUEUE_ENABLED` is
+  not `'true'`.** The concurrency group permits one pending run and GitHub evicts
+  it when a newer one queues, so a commit whose run was evicted has its delta fall
+  between two `github.event.before` boundaries and is never diffed. With the merge
+  queue on, each merge group is diffed against its own `base_sha` before it lands.
 - **Truncation measurement is not fully deterministic.** It compares a measured
   truncation ratio against a budget, so a label within roughly 10% of its budget can
   flip between runs as font metrics settle. Re-run before chasing a `[vs-base]`
@@ -367,6 +373,17 @@ the whole point of the dynamic ledger is that those sites are the ones it cannot
 verify. The only residual cover is the render gate's `[vs-base]` under `en-XA`, and
 only for surfaces its harness actually mounts. Closing it needs a base-ref-anchored
 per-file dynamic-site diff, the same shape as `[vs-base]`.
+
+## Backend prose the UI matches: `backendPhrases.json`
+
+Some backend text is not copy the UI renders but a phrase it must match
+verbatim, such as the opening words of a backend error. Such phrases live in
+`website/src/lib/backendPhrases.json`, and the TypeScript reads them from there.
+A literal in a `.ts`/`.tsx` file would be counted by `[added-lines]` as
+untranslated user copy; the JSON file is outside that scan. The queued-reason
+`NEVER_STARTED_PREFIX` in
+[../system-specs/modules/subagent.md](../system-specs/modules/subagent.md) is the
+worked example.
 
 ## Catalog duplicate keys (`duplicateKeys.test.ts`)
 

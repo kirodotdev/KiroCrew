@@ -78,9 +78,9 @@ order:
    gateway spawns the fake instead of a real `kiro-cli`. The fake speaks the
    minimal ACP subset the client drives (`initialize`, `session/new`,
    `session/set_mode`, `session/set_model`, `session/prompt`) and switches
-   behavior on bracket markers in the prompt (`[[TOOL]]`, `[[PERMISSION]]`,
-   `[[GATED]]`, `[[SLOW]]`, `[[SLOW_NOACK]]`, `[[ERROR]]`), which is what makes
-   agent-driven specs deterministic offline. Spawned as the KAS relay (the
+   behavior on bracket markers in the prompt (the full marker set, such as
+   `[[TOOL]]` and `[[SLOW]]`, is documented in the `fake_acp_backend.py` module
+   docstring), which is what makes agent-driven specs deterministic offline. Spawned as the KAS relay (the
    `acp --agent-engine v3` argv, which is how crew-member DMs run by default) it
    also reports every managed MCP server the session declared as `connected`
    through `_kiro/mcp/status` / `_kiro/tools/didChange`, so the KAS harness's
@@ -123,9 +123,10 @@ Config facts worth knowing before you touch a spec:
 
 Playwright runs two projects. The `setup` project (`playwright/auth.setup.ts`)
 navigates once to `/?token=<PLAYWRIGHT_TOKEN>`, lets the gateway exchange the
-token for a session cookie, sets the `mc-onboarded` localStorage flag so the
-first-run theme overlay cannot intercept clicks, and persists the whole storage
-state. The `chromium` project declares `dependencies: ['setup']` and loads that
+token for a session cookie, sets two localStorage flags, and persists the whole
+storage state. `mc-onboarded` keeps the first-run theme overlay from
+intercepting clicks; `mc-crewmates-onboarded` keeps the Meet CrewMates chapter
+from covering the `/members` specs. The `chromium` project declares `dependencies: ['setup']` and loads that
 state, so raw tokens never appear in test-level traces or videos.
 
 The state path is `PLAYWRIGHT_STORAGE_STATE` or `playwright/.auth/state.json`,
@@ -301,9 +302,8 @@ intentional unavailable and mismatched bindings seeded only in the disposable
 gateway's configuration, verifies a healthy member can still be created, and
 performs a real identity-list Retry without claiming it repairs those bindings.
 No healthy peer store is implied by the deliberately mismatched declaration;
-the attempt manifest records that fixture limitation. These seven added capture
-points are authored and pending CI execution. Only a completed CI run can supply these recordings; source authoring
-alone is not rendered evidence.
+the attempt manifest records that fixture limitation. Only a completed CI run
+supplies these recordings; source authoring alone is not rendered evidence.
 Its retention is seven days, and it does not fail when setup produced no images.
 
 When the job fails, a final `if: failure()` step uploads
@@ -319,11 +319,6 @@ The job's log alone is not enough to triage a spec failure: it names
 previous session rendering for a few hundred ms after the first send) was
 narrowed for hours from that one line before a local run produced the snapshot.
 Download the artifact first; bisect second.
-
-The app-detail scenario also captures the compact Design Critique description
-at desktop and 390px widths. The separate `gallery-copy-ui-evidence` artifact
-retains those PNGs for seven days. Capture code alone is not rendered evidence;
-the current run must reach and pass that scenario before its images are used.
 
 `if-no-files-found: ignore`, deliberately: a run that fails before the specs
 start (a stalled browser install) has neither directory, and the upload must not
@@ -515,21 +510,14 @@ INSTALLED interpreter, so readiness needs no model, no network and no sign-in.
 `KIROCREW_SKIP_MODEL_DOWNLOAD=1` keeps the embedding model out of a 50-second
 ceiling.
 
-Two ceilings became load-bearing with that change and were not before. The
-install-duration ceiling previously measured the extraction of a 40-byte batch
-file, so it proved nothing about a real install; it now measures one, at 200 s,
-about twice the slowest measured green install.
+Two ceilings are load-bearing. The install-duration ceiling measures a real
+install, at 200 s, about twice the slowest measured green install.
 `MinStartupPycs` is passed as 750 rather than the script's 1000 default, because
 the default describes the full release bundle and this job omits the voice
 extras: the core closure of `kiro_crew.cli_server` measures about 990 sources, so
 750 leaves headroom for the win32 closure differing while still catching what the
 assertion exists for, which is bytecode filtered out of the artifact or a
 launcher redirecting imports into an empty user cache. Both land near zero.
-
-Before this the job staged a two-line `@echo off` batch file as its entire
-backend payload and therefore had to pass `-SkipGatewayValidation`, since there
-was no interpreter for the gateway leg to launch. The whole class of defect that
-leaves an installable-but-unbootable artifact had no PR gate at all.
 
 `build-windows.yml`'s nightly smoke job remains the broader one: it exercises the
 SIGNED installer, the Start Menu shortcut's target, the bundled CLI and a silent
@@ -556,30 +544,36 @@ The browser and private-namespace lanes above are Linux-only.
 `test/e2e/test_gateway_boot_matrix.py` is the one asset that boots a real gateway
 on **macOS and Windows too**, and `ci.yml`'s
 `e2e-boot-matrix` job is what runs it: `fail-fast: false`,
-`needs: [changes, await-fast-gate]`, 20 minutes, and `strategy.matrix.os` of `ubuntu-latest`
-and `windows-latest` on a pull request, plus `macos-15` on the push-to-main path.
-The mac leg is event-conditional for the queue, not the runtime: it waited ~200
-minutes for a `macos-15` runner on every pull request and was the only leg that did,
-while on main the wait costs nobody a merge. The real-Darwin boot stays covered
-twice — that leg, and `nightly.yml`'s `pod-scenarios`, which boots a real
-service-managed pod on `macos-15`.
+`needs: [changes, await-fast-gate]`, 20 minutes. `strategy.matrix.os` has three
+states:
+
+| Event | OS legs | `needs` |
+|---|---|---|
+| `pull_request`, `merge_group` | `ubuntu-latest`, `windows-latest` | must succeed |
+| push to `main`, `MERGE_QUEUE_ENABLED == 'true'` | `macos-15` alone | skipped; the condition admits the push |
+| push to `main`, variable not `'true'` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed |
+
+The mac leg is event-conditional for the queue, not the runtime: a `macos-15`
+runner waits about 200 minutes, so a mac leg on every pull request would hold
+every PR behind it, while on main the wait costs nobody a merge. With the queue
+on, the merge group already booted Linux and Windows on the same tree, so the
+push runs mac alone. The real-Darwin boot is covered twice: that leg, and
+`nightly.yml`'s `pod-scenarios`, which boots a real service-managed pod on
+`macos-15`.
 
 ### Why it exists
 
-Before it, no job on either of those runners started a gateway at all: the whole
-E2E surface is gated on `KIROCREW_E2E`, which only `setup.py test_e2e` sets, and
-only the Linux `e2e` job runs that. That is one of the two holes
-[#8117](https://github.com/kirodotdev/KiroCrew/pull/8117) fell through, reverted
-in
-[56f67aa43](https://github.com/kirodotdev/KiroCrew/commit/56f67aa43f00f9484c346a8d1669b39102a63c78).
-It added a settings-file probe to `sandbox.wrap_argv`'s Windows delegation
-branch, so on a fresh Windows host -- where that file does not exist -- the Kiro
-ACP spawn stopped delegating to Kiro CLI's own sandbox, fell through to the
-no-backend fail-closed path, and the gateway never became usable. The unit test
-that pinned that branch, `test/test_sandbox_argv.py`, is in
-`test/windows-collect-ignore.txt`, and the PR changed its mock to hardcode the
-one answer a fresh Windows host cannot give. No second unit test closes that;
-only a real boot on the real platform does.
+Outside this job, no macOS or Windows job starts a gateway: the whole E2E
+surface is gated on `KIROCREW_E2E`, which only `setup.py test_e2e` sets, and
+only the Linux `e2e` job runs that. A unit test cannot close that gap.
+[#8117](https://github.com/kirodotdev/KiroCrew/pull/8117) is the defining case:
+a settings-file probe in `sandbox.wrap_argv`'s Windows delegation branch made
+the Kiro ACP spawn on a fresh Windows host (where that file does not exist) fall
+through to the no-backend fail-closed path, so the gateway never became usable.
+The unit test that pins that branch, `test/test_sandbox_argv.py`, is in
+`test/windows-collect-ignore.txt`, and its mock can hardcode the one answer a
+fresh Windows host cannot give. Only a real boot on the real platform catches
+that.
 
 ### What it asserts
 
@@ -656,12 +650,12 @@ which is why `backend-test-sandbox` has to clear a sysctl to get one. On Windows
 the expectation is unconditionally the first, so a #8117-style regression cannot
 hide in the fail-closed branch.
 
-### `KIROCREW_E2E_MATRIX_REQUIRE=1`: the second marker
+### `KIROCREW_E2E_REQUIRE=1` on the boot matrix
 
-Same mechanism as `KIROCREW_E2E_REQUIRE` above, for a different module. An unmet
-PRECONDITION (the packaged fake ACP backend missing, `kiro_crew.testing` not
-importable) is a graceful `pytest.skip` on a local run and a `pytest.fail` on the
-job. Set it wherever you expect gateways to actually boot.
+The boot-matrix module reads the same `KIROCREW_E2E_REQUIRE` marker described
+above, and the `e2e-boot-matrix` job sets it. An unmet PRECONDITION (the packaged
+fake ACP backend missing, `kiro_crew.testing` not importable) is a graceful
+`pytest.skip` on a local run and a `pytest.fail` on the job.
 
 ## Real-`kiro-cli` opt-in smoke
 
@@ -961,7 +955,7 @@ unavailable. A pod pins `agent.sandbox=auto` with the unsandboxed opt-in off
 since a gateway whose every agent turn fails while `/health` answers 200 is the
 exact condition it exists to catch. The job runs
 `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, the same step
-`ci.yml`'s `e2e` and `backend-test-sandbox` jobs run, and then PROVES it with
+`ci.yml`'s `e2e-private-namespace` and `backend-test-sandbox` jobs run, and then PROVES it with
 `unshare --mount --map-root-user true` so a runner image that stops allowing it
 fails by name rather than six scenarios deep. Seeding
 `sandbox_allow_unsandboxed_exec` into the pod instead is deliberately not the
@@ -1076,29 +1070,39 @@ fails there.
 
 #### The hosted evidence on record
 
-The nightly matrix entry rests on one completed hosted run, made while a
-temporary unconditional version of that step existed on this branch:
-[run 34744065942, job 103688668718](https://github.com/kirodotdev/KiroCrew/actions/runs/34744065942/job/103688668718)
-on `windows-latest`, at revision `c56028aa9`, against the real Vite-built SPA.
-Its raw log reports the boot canary at `3 passed` in 76.26s and the full
-scenario suite at `55 passed` in 204.76s, exit code 0. That is the evidence
-behind removing `windows-latest` from `test/test_pod_scenario_matrix.py`'s
-`PENDING_VALIDATION` table. It is evidence for THAT revision. A later revision
-that changes a scenario body or the pod code it drives gets its own hosted
-Windows evidence either from a labelled PR run or from the nightly; this
-document records a run only after it has completed, never in advance.
-
-A subsequent **label-gated PR run** also completed successfully:
-[run 34759199939, job 103728957225](https://github.com/kirodotdev/KiroCrew/actions/runs/34759199939/job/103728957225),
-at revision `c2f7e39b224c9ab1ddbd2ca970a5b78a947f220e`. The PR label was verified
-before the push. The parent review session checked the raw logs: boot canary
-`3 passed` in 72.84s at 06:18:13 PDT on 2026-09-13, full scenario suite
-`55 passed` in 214.45s at 06:21:49 PDT, and job SUCCESS at 06:22:00 PDT.
-This is completed evidence for the labelled path, not merely the historical
-unconditional step. It does not root-cause the earlier unavailable-handle
-refusal at `312eaca3`, and it does not validate later, unpushed stop repairs.
-The strict `55 passed` assertion remains unchanged.
+`windows-latest` is out of `test/test_pod_scenario_matrix.py`'s
+`PENDING_VALIDATION` table on the strength of one completed hosted run of the full
+suite:
+[run 34744065942](https://github.com/kirodotdev/KiroCrew/actions/runs/34744065942/job/103688668718).
+That run is evidence for its own revision only. A revision that changes a
+scenario body or the pod code it drives gets its own hosted Windows evidence from
+a labelled PR run or from the nightly. The strict `55 passed` assertion holds on
+every path.
 
 The fixture-level Windows contracts that do run on every PR live in the sharded
 unit tests (`test/test_pod_windows*.py`, `test/test_pod_scenario_windows_client.py`)
 and in the boot canary above.
+
+## The nightly process-leak invariant
+
+`nightly.yml`'s `process-leak-invariant` job (`Process Leak Invariant + Chaos
+(Linux)`) runs `test/e2e/test_process_leak_invariant.py` and
+`test/e2e/test_process_chaos.py` on `ubuntu-latest`. It is not a PR gate.
+
+- **A real `systemd --user` session.** The suites need a usable `systemd --user`
+  scope backend. The job creates one the same way `pod-scenarios` does
+  (`sudo loginctl enable-linger "$USER"`, then exports `XDG_RUNTIME_DIR` and
+  `DBUS_SESSION_BUS_ADDRESS`), and proves it in the log by creating a transient
+  `systemd-run --user --scope`.
+- **The namespace sandbox.** It runs the same
+  `kernel.apparmor_restrict_unprivileged_userns=0` sysctl and
+  `unshare --mount --map-root-user true` proof as the pod and private-namespace
+  jobs, so the gateway's boot probe admits agent spawns.
+- **No silent skip.** `KIROCREW_E2E=1` and `KIROCREW_E2E_REQUIRE=1` turn each
+  unmet precondition into a failure, and an anchored `3 passed` grep over the log
+  fails the job when the suite reports any other count. Raise that count when a
+  test is added to either module.
+
+On failure the job uploads `process-leak.log` as the
+`process-leak-invariant-log` artifact; the reconciliation dump an assertion
+prints is the only place a surviving process is named.

@@ -36,12 +36,11 @@ false-positive fix looks like.
 
 ### "Refused" means the whole composite, not just the rule catalog
 
-A shell command at `hooks.on_tool_call` is refused by four checks, and this gate
-runs all four in the same order, reporting which one decided:
+A shell command at `hooks.on_tool_call` is refused by three checks, and this gate
+runs all three in the same order, reporting which one decided:
 
 | Tier | Check | Lives in |
 |---|---|---|
-| `sensitive-path` | `sensitive_path_refusal` — the reason-returning path fence built on `is_sensitive_path` | `security/paths.py` |
 | `sensitive-bash` | `is_sensitive_bash_command` — scan ceiling, IMDS reach, env-credential detector | `security/paths.py` |
 | `exfil` | `audit_bash_exfiltration` — egress and reverse-shell shapes | `security/exfil.py` |
 | `deny-rules` | `is_denied` — the rule catalog and the argv-structural floors | `security/__init__.py` |
@@ -50,11 +49,17 @@ Measuring only the last one would be the specific way this gate could ship a
 meaningless green: its trigger paths cover `paths.py` and `exfil.py`, so a
 tightening there would run it, come back empty, and leave the green badge
 standing as evidence the question had been asked. The tier is reported because
-"the path fence refused it" and "a catalog rule matched it" need different fixes.
+"the bash scan refused it" and "a catalog rule matched it" need different fixes.
+
+There is no path tier. The path fence (`sensitive_path_refusal`) reads a path,
+and a shell command is command text: `hooks.on_tool_call` does not match paths
+in shell command text, because the OS sandbox keeps the credential stores away
+from the shell. Measuring the path fence here would refuse golden commands the
+tool gate allows.
 
 The list is **pinned, not asserted**: `test/test_deny_diff.py` reads the checks
 out of the hooks gate's own source and compares them with the script's declared
-tier table, so adding a fifth check over there reds this gate instead of silently
+tier table, so adding a fourth check over there reds this gate instead of silently
 escaping it.
 
 Every check is called with its default enabled set, which fails closed to every
@@ -103,19 +108,21 @@ fails the job — a differential that could not run is not a pass.
 
 ### What a green does not cover
 
-The gate calls the four `security.*` checks directly, so it measures the **rules**,
-not `hooks.py`'s own composition of them: how the targets are built, the
-`raw_params` application of the path fence, the context-derived enabled set. A
-tightening implemented inside `hooks.py` itself runs this gate — `hooks.py` is in
-its trigger paths — and comes back empty, because none of the four functions
-changed.
+The gate calls the three `security.*` checks directly, so it measures the **rules**,
+not the hooks gate's own composition of them. That composition lives in
+`hooks.py` and `src/kiro_crew/hook_runtime/`: how the targets are built
+(`hook_runtime/search_targets.py` builds the search target), the effective
+denied set (`hook_runtime/denied_commands.py`), the context-derived enabled set.
+A tightening implemented in `hooks.py` or `hook_runtime/` runs this gate — both
+are in its trigger paths — and comes back empty, because none of the three
+functions changed.
 
 The tier pin narrows this but does not close it: it catches a check *added* to the
 gate, not a behavioural change in how the gate assembles what it checks. Closing it
 properly means driving commands through the gate's own target construction, which is
 async and needs a session context — a larger change than this gate, and worth doing
 separately if hooks-internal tightenings turn out to be a real source of false
-denials. Until then: a green here means "no golden path is newly refused by the four
+denials. Until then: a green here means "no golden path is newly refused by the three
 rule checks", and that is narrower than "no golden path is newly refused".
 
 ## The corpus
@@ -126,17 +133,13 @@ that is legitimate **by decision** plus the reason it is:
 
 ```json
 { "kind": "shell", "surface": "gh-read",
-  "command_or_flow": "gh pr view 9332 --json state",
+  "command_or_flow": "gh pr view 9332 --json state,mergeStateStatus,statusCheckRollup",
   "platform": "any", "reason": "Read-only PR status query." }
 ```
 
 That file is also what the security-conductor's `verify_fix.py` reads, so the
-fixer's acceptance gate and this one judge a change against **one** corpus. A
-second corpus was the earlier arrangement — a small fixture under `scripts/` that
-this gate classified while the seed only fed `verify_fix.py` — and two corpora can
-drift into disagreeing about what a golden path is. The fixture is retired; the
-rows it alone carried were folded into the seed by the same change that repointed
-this gate, so the handover withdrew nothing.
+fixer's acceptance gate and this one judge a change against **one** corpus. Two
+corpora could drift into disagreeing about what a golden path is.
 
 `surface` groups rows for a reader and is ignored by the gate.
 
@@ -180,10 +183,8 @@ new file covers the rows the old one carried.
 
 ## Why a three-platform matrix
 
-The rules read argv **shape** and the path fence reads real paths, and both
-differ per platform: Windows has its own tokenizer and separators, and the
-fence's home-directory ordering is macOS-specific (`Library/Application
-Support`, `/Volumes/<share>`). A Linux-only gate would pass a tightening that
+The rules read argv **shape**, and argv shape differs per platform: Windows has
+its own tokenizer and separators. A Linux-only gate would pass a tightening that
 breaks every operator on another OS. That is the same class of defect the
 [Cross-Platform Portability](ci-and-reviews.md) gate exists for and cannot see,
 because that one reads added lines rather than behaviour.
