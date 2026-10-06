@@ -110,7 +110,12 @@ clean machine) while still answering `--version` and `whoami` itself.
 `kiro-cli-chat` is the process every session is anyway and carries every
 subcommand the app uses. The Windows build administratively extracts the
 upstream MSI without installing it or writing PATH/registry state, then stages
-its one self-contained `kiro-cli.exe`; `kiro_cli.bundled_kiro_cli_entry` owns
+`kiro-cli.exe` plus the four Visual C++ runtime DLLs it imports
+(`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`, `msvcp140_1.dll`),
+copied from the build host's `System32`; a build host without the Visual C++
+2015-2022 x64 redistributable fails the build with that instruction. DirectML
+(`directml.dll`) is left to the host, where desktop Windows supplies it.
+`kiro_cli.bundled_kiro_cli_entry` owns
 the platform split. The release is pinned in two files that travel together:
 `packaging/kiro-cli-version`
 names the version and `packaging/kiro-cli-sha256` holds the sha256 of each
@@ -135,9 +140,10 @@ under `~/.cache/kirocrew-build/kiro-cli`,
 so a rebuild against the same pin fetches nothing. A `BUNDLED-VERSION` file
 beside the payload records provenance; a clean-room smoke — empty `HOME`, minimal
 `PATH`, so no install on the build host can answer for the staged binary — runs
-`--version` and then one ACP `initialize` round trip over stdio, the call every
-Kiro Crew session opens with, so the lane log on each platform proves the lone
-binary is self-contained there before it is sealed into the app; and a layout
+three probes: `--version`, `login --help`, and one ACP `initialize` round trip
+over stdio, the call every
+Kiro Crew session opens with, so the lane log on each platform proves the staged
+payload is self-contained there before it is sealed into the app; and a layout
 gate refuses a payload that carries a nested `.app`/`.framework` under
 `Resources/`, which the signing manifest cannot seal per file.
 
@@ -272,8 +278,10 @@ without overwriting each other. To validate a packaging change against every
 platform *without* publishing anything, dispatch `build-desktop.yml` manually —
 it builds the full matrix and uploads artifacts, with no publish lane attached.
 
-Anything you **distribute** for macOS should be the universal DMG — the
-host-arch build is a local-machine artifact.
+A **local** `UNIVERSAL=0` host-arch build is a local-machine artifact: distribute
+the universal DMG, or the CI-built signed single-arch DMGs below
+(`KiroCrew-arm64.dmg` / `KiroCrew-x64.dmg`), which nightly and both release
+channels publish.
 
 **Single-arch macOS DMGs in CI (opt-in).** `build-desktop.yml` has a second
 macOS job, `build-desktop-mac-single-arch`, behind the boolean input
@@ -353,9 +361,10 @@ wholesale so single- and dual-backend layouts both package.
 > and the packaging layer in the same change.
 
 **Trade-off:** the DMG carries two full Python backend trees, so it is
-roughly **2× the size** of a per-arch DMG — expect ~350–400 MB. That is the
-price of one artifact + one update feed; a per-arch feed split was
-explicitly deferred.
+roughly **2× the size** of a per-arch DMG. That is the price of one artifact
+for both arches. The universal app follows the channel's default feed,
+`feed/<channel>/latest-mac.yml`; the single-arch DMGs above follow their own
+`feed/<channel>/<arch>/latest-mac.yml`.
 
 Verify a universal build:
 
@@ -386,9 +395,10 @@ the arch-suffixed launcher.)
 include Rosetta 2)
 and uploads a single `unsigned-build-darwin-universal` artifact. Everything
 downstream (codesigning both slices, notarization, stapling, the update
-feed) is arch-indifferent: the feed schema is unchanged, `latest-mac.yml`
-points at the one universal zip, and installed arm64 apps auto-update onto
-it seamlessly. No Intel runner and no per-arch feed split are needed.
+feed) is arch-indifferent: `feed/<channel>/latest-mac.yml` points at the one
+universal zip, and installed arm64 and Intel apps on the universal build
+auto-update onto it. No Intel runner is needed; the single-arch DMGs come from
+the separate `build-desktop-mac-single-arch` job and their per-arch feeds.
 
 #### Why no *true* universal2 backend?
 
@@ -451,8 +461,9 @@ always on Linux) steps 2–5 run once for the host arch into the unsuffixed
 Step by step:
 
 1. **Frontend** — in `website/`, runs `npm ci` (or `npm install`) + `npm run
-   build`, then copies `website/dist` into `src/kiro_crew/static/dist`. The
-   script aborts if `website/dist/index.html` is missing.
+   build` into `website/dist`; it does not write `src/kiro_crew/static/dist`
+   (step 4 stages `website/dist` into the bundle). The script aborts if
+   `website/dist/index.html` is missing.
 2. **PBS interpreter** — uses `uv python install cpython-3.12` to provision a
    self-contained python-build-standalone interpreter. PBS interpreters use
    `@executable_path`-relative dylib references, making the bundle portable
@@ -487,6 +498,9 @@ The script honors these environment flags:
 | `TARGET_ARCH=arm64` / `TARGET_ARCH=x86_64` | macOS, with `UNIVERSAL=0`: build the single-arch app for the NAMED arch rather than the host's (x86_64 on Apple Silicon runs under Rosetta 2). Arch-gates the backend and the shell; the artifact always carries `-arm64` / `-x64`. Refused outside macOS or with any other value |
 | `SKIP_FRONTEND=1` | Reuse an already-built `website/dist` |
 | `SKIP_ELECTRON=1` | Stop after the bundled backend (no electron-builder) |
+| `BUNDLE_KIRO_CLI=0` | Ship without the bundled kiro-cli (default `1` stages it; see [Bundled kiro-cli](#bundled-kiro-cli--the-app-carries-its-own-agent-runtime)) |
+| `KIRO_CLI_VERSION=<version>` / `latest` | Override the `packaging/kiro-cli-version` pin; `latest` resolves the upstream manifest instead (still sha256-verified) |
+| `KIROCREW_MANAGED_INSTALL_MARKER=<file>` | Bake that JSON file into the app as the externally-managed marker; a missing or malformed file fails the build (see [Baking the marker into the app](#baking-the-marker-into-the-app-editions)) |
 
 ## The bundled backend (python-build-standalone)
 
@@ -544,7 +558,13 @@ When the app starts, [`main.js`](../../website/electron/main.js) composes the
 desktop lifecycle and delegates gateway ownership to
 [`gateway-supervisor.js`](../../website/electron/gateway-supervisor.js). The
 supervisor first checks whether a gateway is already running. An existing
-gateway, including a local SSH forward to a remote gateway, is reused. Before
+gateway that this machine runs (a Kiro Crew process or its service) is reused.
+A port held by a process this app cannot attribute to itself, which is what a
+local SSH forward to a remote gateway looks like, is reused only when a remote
+crew is recorded for that port; otherwise the supervisor refuses it
+(`foreign-holder`) and the gateway-failure dialog offers **Add Remote Crew**
+(see [The gateway-failure dialog](#the-gateway-failure-dialog)). Adopting an
+unattributed holder would post this machine's local secret to it. Before
 reusing a same-family local gateway on a fixed-path POSIX install, the shell
 checks whether its sole listener is running from this app's current bundled
 backend path. If that bundled gateway reports an older version than the app,
@@ -724,6 +744,56 @@ finishes before the gateway permits a retry.
 Hosting setup in the gateway provides one implementation and one UI for the
 desktop app, local browser, remote browser, Linux, and Windows.
 
+### The gateway-failure dialog
+
+When this launch ends with no usable gateway, the shell shows one dialog
+(`gateway-wait.js` renders it; the supervisor's start-failure record decides
+the state). It always offers **Retry**, plus the actions the state allows:
+
+- **Add Remote Crew** / **Edit Remote Crew** opens the remote-crew form
+  (`runtime/gateway/remote-crew-prompt.js`) to save or correct the crew this
+  port reaches. Saving it is what makes a forwarded port adoptable next launch.
+- **Start Local Gateway** is the in-app way back from the "Run a local gateway"
+  opt-out ([remote-and-mobile](../guides/remote-and-mobile.md)), whose settings
+  page is served by the gateway that is not running. It turns the setting back
+  on. On this launch's own port it starts the gateway in place; on a port a
+  recorded crew uses it re-execs the app with a free, crew-free fallback port
+  pinned, because a gateway bound there would shadow that crew.
+
+The dialog also explains the refusals that start nothing:
+
+- **`crew-configured`**: the local gateway is on, but a recorded crew owns this
+  port, so the shell does not bind it. Start Local Gateway re-execs on a free
+  port when the app can relaunch itself; otherwise the dialog names the
+  terminal route (`KIROCREW_PORT` set to a port with no remote host).
+- **`foreign-holder`**: a program this app did not start serves the port and no
+  crew is recorded for it. The remedies are Add Remote Crew, or quitting that
+  program and retrying; Start Local Gateway is not offered.
+
+After a Start Local Gateway click, the record names the outcome so the next
+dialog describes it: the restarted copy never served a gateway (offered again),
+the fallback port was already busy (free it, then click again), or the new
+gateway answered but its port holder could not be identified (the app stops it;
+the terminal route is named instead of the button).
+
+### Crash diagnostics
+
+The shell keeps its own crash ledger beside `gateway-launch.log` in the app's
+logs directory (`runtime/crash/`, driven by `crash-collector.js`). The scan runs
+lazily, the first time the dashboard's crash notice asks for it. It reads the
+Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
+`.ips` diagnostic reports:
+
+- `crashes.log` records each new crash of this app, capped at 500 lines.
+- `crashes-seen.json` acknowledges each artifact once, so a crash is reported
+  once rather than on every launch, capped at 2000 keys.
+- At most 25 unseen artifacts are inspected per app session, and a dump that
+  reads short or unreadable on three consecutive scans is aged out.
+- A minidump proven to belong to another process (a child that inherited the
+  Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
+  Unreadable dumps, Electron-shaped strangers and this app's own dumps are
+  never deleted.
+
 ### Native window chrome
 
 The dashboard's 42px top bar is also the window titlebar on macOS and Windows.
@@ -748,6 +818,12 @@ shortcut even while hidden.
 The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
 Linux retains the window manager's native frame and menu bar.
+
+In macOS native fullscreen AppKit owns the top strip (pointing at it slides the
+menu bar down), so the dashboard pads the app frame (`data-testid="app-frame"`)
+down by `round(24 / zoomFactor)` CSS px (`MAC_FULLSCREEN_TOP_RESERVE_PX` in
+`website/src/lib/electron.ts`), which keeps the header clickable below that
+strip.
 
 #### The frameless window-drag band
 
@@ -800,7 +876,7 @@ together with the scroller attribute it keys on.
 
 #### Focus mode: verify these seams after an Electron or Radix bump
 
-Focus mode (hide the shell chrome behind hover) rests on four mechanisms that
+Focus mode (hide the shell chrome behind hover) rests on five mechanisms that
 key on behavior no API contract guarantees, and each fails **silently** — the
 unit tests mock these seams, so a broken one still passes CI and only manual
 macOS testing catches it. Run this short checklist whenever you bump Electron or
@@ -817,10 +893,13 @@ Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`)
 2. **Peek the header, then move the pointer down into the content.** The header
    should close. Peek the rail, then move the pointer right past the rail track —
    it should close too. Exercises the **positional** close in
-   [`website/src/shell/focus/focusChrome.ts`](../../website/src/shell/focus/focusChrome.ts) (`departWhen: clientY > 48`
-   for the top peek, `clientX > 248` for the rail): the revealed header doubles
+   [`website/src/shell/focus/focusChrome.ts`](../../website/src/shell/focus/focusChrome.ts) (`departWhen: clientY > topReservePx + 48`
+   for the top peek, where `topReservePx` is the macOS-fullscreen offset and `0`
+   otherwise; `clientX > railWidth + 12` for the rail, where the rail width
+   follows its collapse toggle): the revealed header doubles
    as the drag surface and a drag region eats pointer events before hit-testing,
-   so the close is driven by pointer position, not by `mouseleave`. If a bump
+   so the close is driven by pointer position, not by `mouseleave`. Only one
+   overlay is revealed at a time. If a bump
    changes hover/pointer-event delivery, the peek sticks open or never opens.
 3. **Peek the header, then open the instance switcher.** The header must stay on
    screen while the switcher menu is open. Exercises the header-pin heuristic in
@@ -840,11 +919,23 @@ Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`)
    the conversation goes dead and shows an arrow cursor, or the header no longer
    drags. A headless display cannot answer this one, because the region set is
    resolved by the window rather than by the page.
+5. **Slam the pointer out through the top edge to reveal the header, park it
+   just outside the window, then move it well away.** The header should stay
+   while the pointer is parked and close once it travels away. Exercises the
+   cursor-distance dismissal in
+   [`website/electron/focus-cursor.js`](../../website/electron/focus-cursor.js):
+   off-window the renderer gets no mouse events, so the main process polls
+   `screen.getCursorScreenPoint()` and reports through the preload
+   `watchCursorAway` bridge (embedded instance panes relay it with the
+   `mc-cursor-away` messages, `website/src/lib/cursorAway.ts`). If a bump
+   changes cursor-point or window-bounds reporting, an edge-summoned overlay
+   either never dismisses or closes the moment it opens.
 
 ### `find-bin.js` — locating the binary
 
 `findKirocrewBin()` checks well-known paths in order and returns the first
-executable it finds, falling back to bare `kirocrew` on `PATH`. The running
+executable it finds, falling back to bare `kirocrew` on `PATH` (refused for a
+packaged Windows app, step 5). The running
 process's CPU architecture (`process.arch`, injected as a parameter) selects
 the matching backend in a universal app:
 
@@ -863,7 +954,13 @@ the matching backend in a universal app:
 3. `<__dirname>/../bin/kirocrew`
 4. Well-known install paths under `$HOME` (e.g. `~/.local/bin/kirocrew`,
    `~/.kirocrew-app/.venv/bin/kirocrew`).
-5. Bare `"kirocrew"` (resolved via `PATH`).
+5. Bare `"kirocrew"` (resolved via `PATH`). A **packaged Windows** app refuses
+   to spawn this fallback (`isPathFallback`, checked in
+   `gateway-supervisor.js`): it means the bundled backend tree is gone, as an
+   install manager leaves it mid-update, and what `PATH` names is not this app's
+   backend. The launch shows the "installation still finishing" dialog instead,
+   whose probe re-runs this resolution and starts the backend once a probed path
+   is back. Unpackaged (source checkout) launches keep the `PATH` fallback.
 
 The function is pure — `fs`, `os`, `path`, `process.resourcesPath`,
 `__dirname`, and the arch are injected — so both arch branches are
@@ -891,8 +988,14 @@ commands, the incumbent snapshot and exit wait, and force-stop),
   the shell reads its startup config first while the backend performs the
   one-time migration; token lookup then falls through to the canonical home.
   A clean install never creates the legacy directory.
-- Honors the **`KIROCREW_PORT`** env var for the dashboard port (default `5476`,
-  validated to `1–65535`). `BACKEND_URL` / health checks target that port.
+- Honors the **`KIROCREW_PORT`** env var for the dashboard port when it is a
+  selectable port (`1–65535` except `80`, whose URL drops its port); an invalid
+  value is logged as a warning and treated as unset. Unset, the port comes from
+  `selectLaunchPort` (`host-config.js`), run after the legacy `remoteHost`
+  setting is migrated into `remoteHosts`: with the local gateway off it takes a
+  `dashboard.url` port that names a recorded crew, else the recorded crew's
+  port; otherwise the `dashboard.url` port, else `5476`. `BACKEND_URL` / health
+  checks target that port.
 - Sets `KIROCREW_PROJECT_DIR` to the packaged tree that contains `agents/` and
   `skills/`. POSIX builds use the Electron app's parent; Windows probes one and
   two levels above the Electron sources and takes the first tree carrying both
@@ -915,7 +1018,32 @@ commands, the incumbent snapshot and exit wait, and force-stop),
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close; the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
-  signal escalation contract.
+  signal escalation contract. On POSIX,
+  [`gateway-stop.js`](../../website/electron/gateway-stop.js) lists the child's
+  descendants before its SIGTERM, so a gateway a launcher shim forked is not
+  orphaned: after the child exits, each listed pid that is still a
+  `kirocrew gateway` command gets SIGTERM, then SIGKILL after a grace window.
+  Identity is re-read before each signal, so a recycled pid or a `kirocrew mcp-*`
+  child is never signalled.
+- When the other release family's app (Kiro Crew vs Kiro Crew Nightly) holds the
+  port, macOS
+  offers **Quit <other> & Continue**. Other platforms cannot quit that app for
+  the user, so `runtime/gateway/family-takeover.js` asks the user to quit it and
+  offers **I quit it — Retry** / **Cancel** for up to three rounds, then cancels
+  the launch. It refuses up front when the incumbent's PIDs cannot be captured,
+  so a respawn cannot race `gateway.lock`.
+- After the gateway answers, `upgrade-cache.js` (`clearCacheOnUpgrade`) clears
+  the renderer's HTTP cache, service workers and cache storage once per
+  app+gateway version pair (store key `lastCacheVersion`), then connects the
+  window again. A failed clear leaves the pair unrecorded, so the next launch
+  retries.
+- A renderer-recovery reload
+  ([`renderer-recovery.js`](../../website/electron/renderer-recovery.js)) adds
+  `?safe=1` to the dashboard URL, and the token retry keeps it. The SPA strips it
+  before routing (`website/src/lib/safeReload.ts`) and skips the first chat
+  auto-open, so a chat that crashes the renderer is not reopened on every reload.
+  If the app recovers to the dashboard without the chat you had open, that is
+  this guard; open the chat again from the sidebar.
 - On macOS, leaving native fullscreen is an asynchronous AppKit transition that
   can stall: the Space switches back and the real window is re-ordered in, but
   the full-display snapshot overlay AppKit animates during the exit stays on
@@ -1019,24 +1147,26 @@ files in your Downloads folder"*, and consent is recorded **per (app, folder)
 pair** — so an operation that incidentally touches three of those folders
 produces **three separate prompts**, one after another.
 
-Nothing Kiro Crew does at startup needs those folders. They were only ever
-reached *incidentally*, by the `@`-mention file picker's filesystem walk when it
-fell back to bare `$HOME` as a catch-all search root (no project selected). That
-single unscoped walk descended into `Downloads`/`Documents`/`Desktop` and
-tripped one prompt each.
+Nothing Kiro Crew does at startup needs those folders, and its own file walks
+stay out of them:
 
-Those walks now prune the TCC-protected folders when — and only when — the walk
-root is `$HOME` itself
-(`platform_compat.tcc_protected_dirs_for_walk`, applied in
-`dashboard/file_index.py` and the `/api/file-search` fallback). Two consequences
-worth knowing:
+- **`/api/file-search` has no bare-`$HOME` fallback root.** With no project it
+  searches `KIROCREW_PROJECT_DIR`, then `<data_home>/workspace`. A request that
+  names a root, including `?project=$HOME`, is scoped and walked in full.
+- **Walks rooted at `$HOME` itself are pruned.** The `@`-mention file index
+  (`dashboard/file_index.py`) and the unscoped `/api/file-search` walk call
+  `platform_compat.tcc_prune_walk_dirs`. At a `$HOME` root it drops the
+  TCC-protected top-level folders, and at `<root>/Library` it keeps only the
+  walkable children (the cloud mounts) and drops the rest, most of which is
+  Full-Disk-Access gated. Every other root and every deeper position is walked
+  unchanged.
+
+Two consequences worth knowing:
 
 - **Explicit access is unaffected.** If you point Kiro Crew at a project inside
-  `~/Documents`, browse to `~/Downloads` directly, or even name `$HOME` itself as
-  the project, the root is scoped by definition and is walked in full — only the
-  *unscoped* `$HOME` fallback prunes. macOS still shows its own one-time prompt
-  for that deliberate access — that is the expected OS contract, and granting it
-  once is enough.
+  `~/Documents` or browse to `~/Downloads` directly, that root is walked in full.
+  macOS still shows its own one-time prompt for that deliberate access — that is
+  the expected OS contract, and granting it once is enough.
 - **Pre-declaring usage strings would not have fixed this.** Adding
   `NSDocumentsFolderUsageDescription` and friends to `Info.plist` only changes
   the *wording* of each prompt; it does not reduce the count. Not reading the
