@@ -375,6 +375,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/workflows.py::api_workflow_run_intent": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/workflows.py::api_workflow_run_promote": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/workflows.py::api_workflow_run_rerun": ("None", _UNBOUNDED_USER_CONTENT),
+    # A branch switch names a project path, a branch, and an optional remote ref
+    # to track: control fields only, so the shared default ceiling applies.
+    "handlers/git_branches.py::api_project_git_switch": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # handlers/files.py and its file_api owners: bodies name paths and routing
     # fields -- the file bytes travel in api_file_write's body, which is the one
     # uncapped site.

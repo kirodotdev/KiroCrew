@@ -3,7 +3,7 @@ import { markComposerResize } from '../utils/composerResize'
 import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
-import CopyBranchButton from './CopyBranchButton'
+import BranchSwitcher from './BranchSwitcher'
 import RejectDropdown from './RejectDropdown'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -1368,7 +1368,7 @@ function ChatInput({
           {onProjectClick && (
           /* Two sibling buttons inside one visual pill, NOT a nested button:
              the folder segment opens the project picker and the branch segment
-             copies. A <button> inside a <button> is invalid HTML and browsers
+             opens the branch picker. A <button> inside a <button> is invalid HTML and browsers
              collapse it, so the pill is a plain container and each segment owns
              its own click target and hover state. */
           <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted">
@@ -1390,14 +1390,16 @@ function ChatInput({
           {!shelfCompact && !!projectBranch && (
             <>
               <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
-              {/* Copying stays enabled while a response is running — unlike
-                  switching project, reading the branch name is harmless. A git
-                  ref IS code, so it sets `font-mono` itself (the pill container
-                  does not supply it). */}
-              <CopyBranchButton
+              {/* Opens the branch picker (switch / track / create), which keeps
+                  click-to-copy in its footer. Disabled while a response runs,
+                  like the folder segment: a checkout would change files under
+                  the turn. A git ref IS code, so the trigger sets `font-mono`
+                  itself (the pill container does not supply it). */}
+              <BranchSwitcher
+                variant="chip"
+                projectDir={project ?? ''}
                 branch={projectBranch}
-                label={projectDetached ? 'commit' : 'branch name'}
-                className="max-w-[220px] font-mono opacity-70 hover:opacity-100 hover:text-text"
+                disabledReason={isRunning ? i18nT('components.branchSwitcher.stop_response_to_switch') : undefined}
               />
             </>
           )}

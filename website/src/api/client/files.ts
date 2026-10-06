@@ -67,6 +67,34 @@ export const FILE_SEARCH_TIMEOUT_MS = 15_000
  *  them. */
 export const BROWSE_FILES_TIMEOUT_MS = 10_000
 
+/** One row of `GET /api/project/git/branches`. `switchable` is false when the
+ *  name came back redacted, so echoing it to the switch route could not work. */
+export interface GitBranchRow {
+  name: string
+  sha: string
+  date: string
+  author: string
+  subject: string
+  switchable: boolean
+  current?: boolean
+  upstream?: string
+  ahead?: number
+  behind?: number
+  upstreamGone?: boolean
+}
+
+export interface GitBranchList {
+  repo: boolean
+  current?: string | null
+  detached?: boolean
+  head?: string
+  local: GitBranchRow[]
+  remote: GitBranchRow[]
+  truncated?: boolean
+  /** Present when checkout is refused for this repository (a declared filter driver). */
+  switchBlocked?: 'filter'
+}
+
 export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
   const projects = {
     // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
@@ -102,6 +130,11 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
+    /** Local branches (newest commit first) plus remote branches with no local twin. See `handlers/git_branches.py`. */
+    projectGitBranches: (path: string) => fetch('/api/project/git/branches?path=' + encodeURIComponent(path)).then(j) as Promise<GitBranchList>,
+    /** Check out `branch`; `create` makes it at HEAD, `track` makes it tracking `<remote>/<name>`. Owner-only. */
+    projectGitSwitch: (body: { path: string; branch: string; create?: boolean; track?: string }) =>
+      post('/api/project/git/switch', body).then(j) as Promise<{ ok: true; branch: string; previous: string | null }>,
     projectTree: (path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
       fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
     workspaces: () => fetch('/api/workspaces').then(j),

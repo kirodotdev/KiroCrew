@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
 import { api } from '../api/client'
 import DetailPanel from './DetailPanel'
+import BranchSwitcher from './BranchSwitcher'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { findReport } from '../utils/errorReport'
@@ -59,9 +60,11 @@ interface GitPanelProps {
   projectDir: string
   onFileOpen?: (path: string) => void
   onClose: () => void
+  /** True while this chat's response runs: a checkout would change files under the turn. */
+  busy?: boolean
 }
 
-export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelProps) {
+export default function GitPanel({ projectDir, onFileOpen, onClose, busy = false }: GitPanelProps) {
   const prevBranch = useRef<string | undefined>(undefined)
 
   const { data: status, refetch: refetchStatus, isLoading: statusLoading, error: statusError } = useQuery({
@@ -213,13 +216,23 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
             </span>
           ) : (
             <>
-              {/* Branch name */}
-              <GitBranch size={14} className="text-accent shrink-0" />
-              <span className="text-[12px] font-medium text-text truncate">
-                {status?.branch || (noRepository
-                  ? i18nT('components.gitPanel.not_a_repository')
-                  : i18nT('components.gitPanel.loading'))}
-              </span>
+              {/* Branch name, and the switcher once the repository is known. */}
+              {isRepository ? (
+                <BranchSwitcher
+                  projectDir={projectDir}
+                  branch={status?.branch}
+                  disabledReason={busy ? i18nT('components.branchSwitcher.stop_response_to_switch') : undefined}
+                />
+              ) : (
+                <>
+                  <GitBranch size={14} className="text-accent shrink-0" />
+                  <span className="text-[12px] font-medium text-text truncate">
+                    {noRepository
+                      ? i18nT('components.gitPanel.not_a_repository')
+                      : i18nT('components.gitPanel.loading')}
+                  </span>
+                </>
+              )}
 
               {/* Ahead/behind pill */}
               {status && (status.ahead != null || status.behind != null) && (
