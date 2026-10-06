@@ -3164,6 +3164,128 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     return carried, ttl_ceiling
 
 
+def producer_identity_meta(
+    state: DashboardState, key: str, *, persisted: bool = True
+) -> dict[str, str]:
+    """Bridge governance identities for a note the session *key* publishes, or ``{}``.
+
+    ``persisted=False`` keeps the lookup to in-memory registries, for a caller on
+    the event loop (see :func:`_session_agent_names`).
+
+    A session's own notice (``send_notification``, or ``send_message`` falling back to
+    the bell) names its session key, which the bridge vets under that key's surface.
+    That is not the whole producer: the AGENT the session runs has its own task-bound
+    profile, and an app may own the session. Both are looked up here from trusted
+    server-side registries -- never from the request -- so the bridge asks every
+    profile the producer is governed by:
+
+    * a running subagent: ``SubagentInfo.agent`` and ``SubagentInfo.app``;
+    * a dashboard slot, by name or by the session it runs under
+      (``linked_session_key``): the slot's selected ``agent``;
+    * a cron job: every agent the stored job dispatches (``agent_id``, or its
+      sequence) and its captured execution selection;
+    * any of them: the owning app, through ``derive_caller_app``.
+
+    Added-only on the bridge side, so a miss narrows nothing and a hit can only
+    tighten.
+    """
+    from kiro_crew.dashboard import token_auth as _auth
+
+    def _text(value: object) -> str:
+        # Registry fields are strings; anything else names no identity.
+        return value.strip() if isinstance(value, str) else ""
+
+    if not key:
+        return {}
+    agent = ""
+    app = ""
+    manager = getattr(state, "subagents", None)
+    for info in getattr(manager, "running", ()) if manager is not None else ():
+        if key in (f"subagent:{info.id}", info.conversation_key):
+            from kiro_crew.execution_context import producer_agent_names
+
+            agent = "\n".join(
+                producer_agent_names(
+                    getattr(info, "agent", ""), getattr(info, "execution_context", None)
+                )
+            )
+            app = _text(getattr(info, "app", ""))
+            break
+    raw_slots = getattr(state, "_slots", None)
+    slots = raw_slots if isinstance(raw_slots, dict) else None
+    raw_jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    jobs = raw_jobs if isinstance(raw_jobs, list) else None
+    if not agent and slots is not None:
+        slot = slots.get(key.split(":", 1)[-1]) if ":" in key else None
+        if slot is None:
+            slot = _auth._slot_by_linked_key(slots, key)
+        agent = _text(getattr(slot, "agent", "")) if slot is not None else ""
+    if not agent and key.startswith("cron:") and jobs is not None:
+        parts = key.split(":")
+        job_id = parts[1] if len(parts) > 1 else ""
+        for job in list(jobs):
+            if job_id and getattr(job, "id", None) == job_id:
+                from kiro_crew.cron_service.identity import cron_job_agent_names
+
+                agent = "\n".join(cron_job_agent_names(job))
+                break
+    if not agent:
+        agent = "\n".join(_session_agent_names(state, key, persisted=persisted))
+    if not app:
+        raw_agents = getattr(manager, "_agents", None) if manager is not None else None
+        subagents = raw_agents if isinstance(raw_agents, dict) else None
+        app = _text(_auth.derive_caller_app(slots, key, jobs, subagents))
+    meta: dict[str, str] = {}
+    if agent:
+        meta["producer_agent"] = agent
+    if app:
+        meta["producer_app"] = app
+    return meta
+
+
+def _session_agent_names(state: DashboardState, key: str, *, persisted: bool = True) -> list[str]:
+    """The agent a live or recorded session *key* runs as, when no registry named it.
+
+    A session can select its agent with no dashboard slot behind it (a Slack thread
+    after ``/agent``, a hook run, the heartbeat), so the slot, subagent and cron
+    registries miss it. The trusted sources left are the live session the gateway
+    holds and the execution record bound to the key; a session found in either but
+    naming no agent runs the configured default, which is named instead. A key found
+    in neither names nothing, and the bridge then refuses the note as unattributed.
+
+    ``persisted=False`` reads the in-memory live session only, for callers on the
+    event loop: the execution record can fall through to a transcript read (and a
+    legacy backfill rewrite), and the default needs the config, both disk work. The
+    bridge finishes the lookup off the loop (``persisted=True``) for every session a
+    routed note names.
+    """
+    from kiro_crew.execution_context import producer_agent_names, read_session_execution
+    from kiro_crew.notifications.attribution import default_agent_names
+
+    live_agent = ""
+    live = False
+    sessions = getattr(state, "sessions", None)
+    try:
+        has_session = getattr(sessions, "has_session", None)
+        live = has_session(key) is True if callable(has_session) else False
+        if live:
+            reader = getattr(sessions, "_get_session_agent", None)
+            value = reader(key) if callable(reader) else ""
+            live_agent = value if isinstance(value, str) else ""
+    except Exception:  # noqa: BLE001 - an unreadable registry names nothing
+        logger.debug("live session agent lookup failed", exc_info=True)
+    if not persisted:
+        return producer_agent_names(live_agent, None)
+    try:
+        execution = read_session_execution(key)
+    except Exception:  # noqa: BLE001 - an unreadable record names nothing
+        execution = None
+    names = producer_agent_names(live_agent, execution)
+    if not names and (live or execution is not None):
+        names = default_agent_names()
+    return names
+
+
 def inherited_session_memory_mode(state: DashboardState, key: str) -> str | None:
     """Read only restrictions captured by trusted child creation in this process."""
     from kiro_crew.messaging.privacy_mode import strictest

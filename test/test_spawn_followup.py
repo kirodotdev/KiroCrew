@@ -299,6 +299,237 @@ class TestFollowUpDelivery:
         assert info.pending_followups == []
 
     @pytest.mark.asyncio
+    async def test_shutdown_announce_that_cannot_reach_the_parent_is_audited(
+        self, monkeypatch
+    ) -> None:
+        """When the shutdown announce cannot reach the parent, the drop is audited.
+
+        ``_announce_followup_failure`` reports whether the parent was told through its
+        RETURN value, not an exception: with no ``_on_done`` wired (or one that raises,
+        swallowed inside the impl) it returns False. ``cancel_all`` must act on that bool
+        and audit ``followup_announce_failed`` so a queued follow-up lost at shutdown
+        leaves a trace, rather than being discarded silently when the announce no-ops.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        # No _on_done wired: the announce returns False without raising -- the common
+        # silent sub-case. An except-only guard would never observe it.
+        mgr._on_done = None
+        audited: list = []
+        real_audit = mgr._audit_followup
+        monkeypatch.setattr(
+            mgr,
+            "_audit_followup",
+            lambda i, outcome: (audited.append(outcome), real_audit(i, outcome))[1],
+        )
+        info = SubagentInfo(id="r9b", task="t", parent_session_key="dash:7")
+        mgr._agents["r9b"] = info
+        ok, _ = await mgr.follow_up_run("r9b", "later")
+        assert ok and "r9b" in mgr._followup_watchers
+
+        await mgr.cancel_all()
+
+        assert "followup_announce_failed" in audited, (
+            "a shutdown-dropped follow-up the parent could not be told about was not "
+            "audited -- it was discarded silently"
+        )
+        assert info.pending_followups == []
+
+    @pytest.mark.asyncio
+    async def test_a_synthetic_followup_failure_carries_the_runs_app(self, monkeypatch) -> None:
+        """A synthetic follow-up completion names the originating run's owning app.
+
+        _on_done feeds info.app into the bridge's producer_app subject. A synthetic
+        failure for a parentless app-owned run (allowed to spawn, denied messaging)
+        that named no app would egress its snippet under the permissive host profile
+        instead of the app's own, so the synthetic record must preserve info.app.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        seen: list = []
+
+        async def _on_done(info):
+            seen.append(info)
+
+        mgr._on_done = _on_done
+        origin = SubagentInfo(id="r-app", task="t", parent_session_key="dash:7", app="rogue-app")
+        told = await mgr._announce_followup_failure(
+            origin, "follow_up expired", messages=["do the thing"]
+        )
+        assert told is True
+        assert seen, "no synthetic completion reached _on_done"
+        assert seen[0].app == "rogue-app", (
+            "the synthetic follow-up completion dropped the run's app, so its egress "
+            "would be vetted under the host profile instead of the app's"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_appless_failure_record_inherits_the_runs_app(
+        self, monkeypatch
+    ) -> None:
+        """GPT 6.1 F1: a SUPPLIED failure_info bypasses the synthetic constructor,
+        so its ``app=info.app`` never runs. The async-continuation memory refusal and
+        the admission refusal both hand in a record carrying no app; crew deletion
+        during an app-owned run with queued follow-ups then drives that path and the
+        follow-up snippet egresses under the host profile instead of the app's own
+        denial. The supplied record must inherit the originating run's app.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        seen: list = []
+
+        async def _on_done(info):
+            seen.append(info)
+
+        mgr._on_done = _on_done
+        origin = SubagentInfo(id="r-app", task="t", parent_session_key="dash:7", app="rogue-app")
+        # A supplied failure record that names NO app (the refusal paths).
+        supplied = SubagentInfo(
+            id="child-err",
+            task="t",
+            done=True,
+            parent_session_key="dash:7",
+            error="memory_unavailable",
+        )
+        told = await mgr._announce_followup_failure(origin, "", failure_info=supplied)
+        assert told is True
+        assert seen, "no completion reached _on_done"
+        assert seen[0].app == "rogue-app", (
+            "a supplied app-less failure record did not inherit the run's app, so its "
+            "egress would be vetted under the host profile instead of the app's"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_failure_record_keeps_its_own_app(self, monkeypatch) -> None:
+        """A supplied failure_info that already names an app keeps it -- the inherit
+        is `synthetic.app or info.app`, so a record with its own ownership is not
+        overwritten by the originating run's.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        seen: list = []
+
+        async def _on_done(info):
+            seen.append(info)
+
+        mgr._on_done = _on_done
+        origin = SubagentInfo(id="r-app", task="t", parent_session_key="dash:7", app="rogue-app")
+        supplied = SubagentInfo(
+            id="child-err",
+            task="t",
+            done=True,
+            parent_session_key="dash:7",
+            error="resume_failed",
+            app="child-own-app",
+        )
+        told = await mgr._announce_followup_failure(origin, "", failure_info=supplied)
+        assert told is True
+        assert (
+            seen and seen[0].app == "child-own-app"
+        ), "a supplied record's own app was overwritten by the originating run's"
+
+    @pytest.mark.asyncio
+    async def test_synthetic_and_supplied_failure_records_carry_the_runs_agent(
+        self, monkeypatch
+    ) -> None:
+        """GPT 6.1 (v69 F1): a synthetic follow-up failure gets a freshly minted id the
+        registry cannot map back to an agent, so the record must carry the originating
+        run's agent itself -- minted or supplied -- or that agent's task-bound Slack
+        denial is never asked. A supplied record naming its own agent keeps it."""
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        seen: list = []
+
+        async def _on_done(info):
+            seen.append(info)
+
+        mgr._on_done = _on_done
+        origin = SubagentInfo(id="r-ag", task="t", parent_session_key="dash:7", agent="researcher")
+        assert await mgr._announce_followup_failure(origin, "expired", messages=["x"]) is True
+        supplied = SubagentInfo(id="c1", task="t", done=True, parent_session_key="dash:7")
+        assert await mgr._announce_followup_failure(origin, "", failure_info=supplied) is True
+        own = SubagentInfo(id="c2", task="t", done=True, parent_session_key="dash:7", agent="w")
+        assert await mgr._announce_followup_failure(origin, "", failure_info=own) is True
+        assert [info.agent for info in seen] == ["researcher", "researcher", "w"]
+
+    @pytest.mark.asyncio
+    async def test_failure_records_carry_the_runs_execution_identity(self, monkeypatch) -> None:
+        """GPT 6.1 (v72 F1): a run that named no agent executes as its inherited
+        template, which lives on its execution context; a synthetic or supplied
+        failure record must carry it so the completion note can name that template."""
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        seen: list = []
+
+        async def _on_done(info):
+            seen.append(info)
+
+        mgr._on_done = _on_done
+        execution = ExecutionContext(
+            member_id=None,
+            store=MemoryStoreRef("default"),
+            selection_kind="template",
+            template_id="inherited-tmpl",
+        )
+        origin = SubagentInfo(
+            id="r-ex", task="t", parent_session_key="dash:7", execution_context=execution
+        )
+        assert await mgr._announce_followup_failure(origin, "expired", messages=["x"]) is True
+        supplied = SubagentInfo(id="c1", task="t", done=True, parent_session_key="dash:7")
+        assert await mgr._announce_followup_failure(origin, "", failure_info=supplied) is True
+        assert [info.execution_context.template_id for info in seen] == [
+            "inherited-tmpl",
+            "inherited-tmpl",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_slow_shutdown_announce_is_bounded(self, monkeypatch) -> None:
+        """GPT 5.6 F3 (gateway.py:10491 -> cancel_all): the per-watcher follow-up-drop
+        announce awaits ``_on_done`` injection, which can block on a busy parent turn.
+        Unbounded, a queue of watchers each announcing lets this loop alone outlast the
+        outer GRACEFUL_SHUTDOWN_SECS deadline -- the outer ``wait_for`` then cancels the
+        whole method before run teardown, the report drain, the tombstone re-admission
+        and session persistence ever start. The announce is bounded by
+        ``_FOLLOWUP_ANNOUNCE_TIMEOUT``, so a slow announce times out (parent not
+        reached -> audited) and ``cancel_all`` returns.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+
+        # An _on_done that blocks far longer than the budget -- the slow-injection case.
+        async def _slow_on_done(i):
+            # Parked until cancelled: an announce that never reaches the parent.
+            await asyncio.Event().wait()
+
+        mgr._on_done = _slow_on_done
+        audited: list = []
+        real_audit = mgr._audit_followup
+        monkeypatch.setattr(
+            mgr,
+            "_audit_followup",
+            lambda i, outcome: (audited.append(outcome), real_audit(i, outcome))[1],
+        )
+        info = SubagentInfo(id="r9c", task="t", parent_session_key="dash:7")
+        mgr._agents["r9c"] = info
+        ok, _ = await mgr.follow_up_run("r9c", "later")
+        assert ok and "r9c" in mgr._followup_watchers
+
+        # The parked announce MUST be bounded, not awaited to completion. wait_for(timeout=10)
+        # is the deterministic wedge-detector -- if cancel_all did not return, it raises
+        # TimeoutError (a loud failure) rather than relying on a real-clock elapsed
+        # comparison that a loaded runner could flake.
+        monkeypatch.setattr("kiro_crew.subagent._FOLLOWUP_ANNOUNCE_TIMEOUT", 0.05)
+        await asyncio.wait_for(mgr.cancel_all(), timeout=10)
+
+        # The slow announce timed out: the parent was NOT reached, so the drop is audited
+        # (not discarded silently) exactly like an announce that could not deliver.
+        assert "followup_announce_failed" in audited
+        assert info.pending_followups == []
+        assert mgr._followup_watchers == {}
+
+    @pytest.mark.asyncio
     async def test_follow_up_refused_during_shutdown(self, monkeypatch) -> None:
         """A shutting-down gateway refuses new follow-ups with a typed error
         instead of accepting a message it cannot deliver."""
@@ -495,3 +726,94 @@ class TestFollowUpRestApi:
             )
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_mode"
+
+    @pytest.mark.asyncio
+    async def test_followup_client_limits_map_to_4xx_not_502(self) -> None:
+        """A follow_up refused for too_long / queue_full is a CLIENT limit.
+
+        The admission caps in ``continuation.follow_up_run`` return
+        ``too_long: …`` and ``queue_full: …``. ``api_spawn_steer`` must map
+        those to 4xx so a client reads them as "shorten / back off", not a
+        transport ``502 steer_failed`` it would blindly retry into the same
+        refusal.
+        """
+        from unittest.mock import AsyncMock
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_steer
+
+        subagents = MagicMock()
+        state = MagicMock()
+        state.subagents = subagents
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/spawn/{agent_id}/steer", api_spawn_steer)
+        async with TestClient(TestServer(app)) as client:
+            # too_long -> 413 Payload Too Large, code preserved.
+            subagents.follow_up_run = AsyncMock(
+                return_value=(False, "too_long: a follow_up message is capped at 8000 chars")
+            )
+            resp = await client.post(
+                "/api/spawn/abc/steer", json={"message": "x" * 10, "mode": "follow_up"}
+            )
+            assert resp.status == 413
+            assert (await resp.json())["code"] == "too_long"
+
+            # queue_full -> 429 Too Many Requests, code preserved.
+            subagents.follow_up_run = AsyncMock(
+                return_value=(False, "queue_full: this run already holds 32 queued follow-ups")
+            )
+            resp = await client.post(
+                "/api/spawn/abc/steer", json={"message": "later", "mode": "follow_up"}
+            )
+            assert resp.status == 429
+            assert (await resp.json())["code"] == "queue_full"
+
+            # An unrecognised refusal still falls through to the terminal 502.
+            subagents.follow_up_run = AsyncMock(return_value=(False, "something_else: boom"))
+            resp = await client.post(
+                "/api/spawn/abc/steer", json={"message": "later", "mode": "follow_up"}
+            )
+            assert resp.status == 502
+            assert (await resp.json())["code"] == "steer_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_reported_run_stuck_in_teardown_is_not_readmitted(monkeypatch) -> None:
+    """Opus 5.5 (v75): the report task is spawned before the run's session teardown, so
+    a run that wedges in teardown past the bound may already have reported to its
+    parent. Re-admitting it to orphan recovery would deliver that completion twice on
+    the next start; only a run that has NOT reported is marked and re-admitted."""
+    import kiro_crew.subagent as subagent_mod
+
+    monkeypatch.setattr(subagent_mod, "_STATE_DRAIN_TIMEOUT", 0.05)
+    cleared: list[str] = []
+    monkeypatch.setattr(subagent_mod, "clear_tombstone", lambda aid: cleared.append(aid) or True)
+    monkeypatch.setattr(subagent_mod, "orphan_recovery_can_see", lambda _aid: True)
+    mgr = _manager()
+    release = asyncio.Event()
+
+    async def _stuck_teardown() -> None:
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue  # a teardown that ignores cancellation past the bound
+
+    reported = SubagentInfo(id="rep", task="t", parent_session_key="dash:7")
+    reported._reported_to_parent = True
+    pending = SubagentInfo(id="unrep", task="t", parent_session_key="dash:7")
+    for info in (reported, pending):
+        mgr._agents[info.id] = info
+        mgr._tasks[info.id] = asyncio.create_task(_stuck_teardown())
+    await asyncio.sleep(0)  # both teardowns are running before shutdown cancels them
+    try:
+        await asyncio.wait_for(mgr.cancel_all(), timeout=10)
+    finally:
+        release.set()
+        await asyncio.gather(*mgr._tasks.values(), return_exceptions=True)
+    assert reported._shutdown_outcome_abandoned is False
+    assert pending._shutdown_outcome_abandoned is True
+    assert "rep" not in cleared and "unrep" in cleared

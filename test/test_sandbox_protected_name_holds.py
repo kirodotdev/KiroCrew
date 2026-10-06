@@ -333,7 +333,21 @@ class TestLeafOnlyPopulationIsRecorded:
     #: tier lists hold ``.vault`` only at the two ``$HOME``-joined spellings,
     #: so the resolved ``config_dir()`` spelling is a third, leaf-only name,
     #: the same hold ``kas`` gets there.
-    EXPECTED: dict[str, int] = {"standard": 269, "cc": 276, "strict": 277}
+    #:
+    #: +6 per tier for notification-bridge B1, on top of main's base counts above.
+    #: The six are the same TWO logical names across the two crew-data-home roots
+    #: (``~/.kiro/crew`` and ``~/.kirocrew``), counted through both the
+    #: ``SENSITIVE_FILES`` and ``SENSITIVE_DIRS`` planes:
+    #: ``notification_settings.json`` (the ``deliver_to`` route file that authorizes
+    #: owner-DM egress) and ``notification-settings-staging`` (the writer's atomic-rename
+    #: staging directory, a whole-directory mask exactly like the baselined
+    #: ``md-notebook-staging`` and ``aws-control-staging`` siblings above). Both sit as
+    #: direct children of the data home, whose ROOT is writable in every sandbox and so
+    #: cannot itself carry a stand-in mask -- the same reason those existing staging
+    #: siblings are leaf-only. The Security Scope Review adjudicated these additions:
+    #: 11 candidates, 0 confirmed newly-refused operations -- a reviewed tightening.
+    #: Value set BY MEASUREMENT after the rebase, not arithmetic.
+    EXPECTED: dict[str, int] = {"standard": 275, "cc": 282, "strict": 283}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -252,6 +252,29 @@ _MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
 #: publish rename is still atomic.
 _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
 
+#: The notification channel-settings file's name under the crew data home.
+#:
+#: Spelled here rather than imported from ``notifications.settings`` for the reason
+#: ``_LIVE_TARGET_LEAF`` is: this module stays out of the config-loader import chain.
+#: ``test_sandbox_notification_settings_mask.py`` pins the two spellings equal, so a
+#: rename on either side reddens instead of silently unmasking the leaf.
+_NOTIFICATION_SETTINGS_LEAF: str = "notification_settings.json"
+
+#: The settings writer's staging directory, a TOP-LEVEL leaf in the crew data home.
+#:
+#: The leaf mask above covers the settings file's NAME, never a sibling temp, and
+#: ``atomic_write`` stages its ``mkstemp`` temp in the target's parent -- the data-home
+#: root, which is writable and visible in every sandbox. So the owner's own PUT wrote the
+#: REAL routing bytes to an unmasked name, where a same-UID sandbox could hold the temp's
+#: descriptor across the rename and a crash between write and rename left the bytes
+#: readable indefinitely. The writer stages HERE instead, exactly as md-notebook's state
+#: writers do for the same reason (see ``_MD_NOTEBOOK_STAGING_LEAF``).
+#:
+#: A TOP-LEVEL directory rather than one beside the settings file, for the reason
+#: ``aws-control-staging`` records: a mask covers the leaf, not its ancestors. It stays on
+#: the same filesystem as the target, which is the only property the publish rename needs.
+_NOTIFICATION_SETTINGS_STAGING_LEAF: str = "notification-settings-staging"
+
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Gateway diagnostics: recorded host and gateway state, plus loop-stall dumps.
@@ -297,6 +320,27 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "quarantined-clones",
     "apps/meetings/data/edits",
     "whatsapp",
+    # The notification channel settings. Fenced from agent FILE TOOLS by
+    # ``security._CREW_SECRET_LEAVES``; masked here because that gate is the only
+    # thing standing between a spawned shell and this file, and ``deliver_to`` in
+    # it AUTHORIZES the bridge to send notes off the host as owner DMs -- write the
+    # route, wait for the next gateway start, and egress is armed without the owner
+    # ever being asked. HIDDEN rather than READONLY: the document is constructed
+    # only by ``DashboardState`` in the gateway process, so nothing inside the
+    # sandbox reads it, and the empty mask is its reader's absent-equivalent
+    # anyway (``ChannelSettings._load`` treats absent and ``{}`` alike as "no
+    # channel has settings", which is the no-bridging default an install ships
+    # with). A DIRECT child of the data home, and materialised before every spawn
+    # by :func:`_materialize_notification_settings_mask_target` -- without that an
+    # install that has never saved a setting offers the mask loop no name, and the
+    # data-home root is writable in every sandbox, so the leaf a child creates
+    # there would be the real one.
+    _NOTIFICATION_SETTINGS_LEAF,
+    # The settings writer's staging directory. Whole DIRECTORY, so every temp name it
+    # ever holds is masked, present and future, and a crash between write and rename
+    # leaves the orphan inside the mask rather than beside the target. Nothing
+    # in-sandbox reads or writes it: the write happens in the GATEWAY process.
+    _NOTIFICATION_SETTINGS_STAGING_LEAF,
     # The refused-inbound spool. Fenced from agent FILE TOOLS by
     # ``security._CREW_SECRET_LEAVES``; masked here so a spawned command cannot
     # reach it either -- an entry an agent could write is posted on the next
@@ -1817,6 +1861,13 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "mcp-apps",
     "whatsapp",
     "backup",
+    # The notification settings writer's staging directory, by the same rule and with
+    # the same lazily-created shape: it is created on the first settings PUT, so a
+    # sandbox spawned before any owner has ever saved a channel setting finds the name
+    # absent, the mask loop skips it, and the directory the gateway creates later --
+    # carrying the real routing bytes mid-publish -- appears inside that running
+    # namespace's view.
+    _NOTIFICATION_SETTINGS_STAGING_LEAF,
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each
@@ -1876,6 +1927,24 @@ _LIVE_TARGET_PRECREATE_CONTENT: bytes = b'{\n  "checkout": null\n}\n'
 #: already treats as its absent default. NOT a zero-byte file, which is not valid
 #: JSON and would read as CORRUPT rather than as absent.
 _EMPTY_CEILING_DOCUMENT: bytes = b"{}\n"
+
+#: The masked notification channel-settings document materialised before a namespace
+#: spawn. Same gap as the two live-target/md-notebook constants close, and the payload is
+#: an EGRESS authorization: ``deliver_to`` is what lets the bridge send a note off the host
+#: as an owner DM, so an absent leaf -- the state of every install that has never saved a
+#: setting -- means the ``SENSITIVE_FILES`` loop's ``isfile`` guard skips the name, the
+#: data-home root is writable in every sandbox, and a child simply CREATES the real file
+#: with a route already armed. The gateway loads it at its next start and notes begin
+#: leaving.
+#:
+#: The document is the reader's absent-equivalent by construction, not by coincidence:
+#: ``ChannelSettings._load`` keeps its empty ``{}`` default both when the file is absent
+#: and when ``data.get("channel_settings", {})`` yields nothing, so an agent's masked view
+#: and a fresh install agree on "no channel has settings" -- the no-bridging default.
+#: :data:`_EMPTY_CEILING_DOCUMENT` is exactly that document, so it is reused rather than
+#: respelled. It is also why this is not a zero-byte file: zero length is not valid JSON
+#: and ``_load`` would log it as corrupt rather than read it as absent.
+_NOTIFICATION_SETTINGS_PRECREATE_CONTENT: bytes = _EMPTY_CEILING_DOCUMENT
 
 #: Prefix of the in-flight temp ``_publish_empty_ceiling`` stages in its target's
 #: parent. Named so a sweep of that directory can tell a gateway-owned temp mid-publish
@@ -2049,6 +2118,14 @@ _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
 #:   owner id"). It is the clearest member of the class ``_warn_if_alias_backed`` exists
 #:   for: a dotfile manager (chezmoi, stow) symlinks exactly this file, so refusing it
 #:   would turn an ordinary setup into a spawn failure for every agent on the host.
+#: * ``notification_settings.json`` -- the owner's notification routing, and dotfile
+#:   managers keep it as a link for the same reason they keep ``.env``. Tolerated rather
+#:   than refused because sibling controls answer it: the notification bridge reads
+#:   :func:`notification_settings_pointer_unfitness` before every fanout and delivers
+#:   nothing while the leaf is a link, and a file swapped in for the link arms nothing
+#:   either -- the settings store honours routes only from bytes matching the write stamp
+#:   it keeps in the masked staging directory. The failure is scoped to routing; agent
+#:   spawns proceed.
 #:
 #: Deliberately NOT here, having been checked for a supported second name and found to
 #: have none -- both resolve to one managed path with no override, so a link is not a
@@ -2061,7 +2138,7 @@ _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
 #:
 #: The HARDLINK shape is tolerated for every leaf, which is why it is a property of the
 #: pass rather than an entry here: see :func:`_refuse_aliased_masked_leaves`.
-_CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env"})
+_CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env", _NOTIFICATION_SETTINGS_LEAF})
 
 #: Masked leaves where a planted link at an INTERMEDIATE component DEGRADES instead of
 #: refusing, because a sibling control already answers that case.
@@ -3696,6 +3773,127 @@ def masked_credential_leaf_aliases() -> list[tuple[str, int, str, bool]]:
     return found
 
 
+def _materialize_notification_settings_mask_target(
+    established: list[str] | None = None,
+) -> str | None:
+    """Give the notification-settings mask its mount target, never refusing the spawn.
+
+    The leaf's failure is scoped to the FEATURE, not to agent spawning. A symlink or a
+    second hard link at the leaf -- the ordinary output of a dotfile manager or a snapshot
+    tool -- means the name is not maskable, and the answer to that is to stop routing, not
+    to stop agents: the notification bridge refuses to deliver while the leaf is unfit
+    (:func:`notification_settings_pointer_unfitness`, read by ``DashboardState``'s
+    dispatcher before every fanout) and ``kirocrew doctor`` names the leaf and the remedy.
+    So an unfit leaf is logged, left out of ``established`` (the launcher must not REQUIRE
+    a mask it cannot bind), and the spawn proceeds. A route an in-sandbox write arms
+    through the unmasked name is inert, because nothing delivers off an unfit leaf.
+    """
+    try:
+        return _publish_notification_settings_mask_target(established)
+    except SandboxCeilingUnsealable as exc:
+        logger.warning(
+            "notification routing is disabled until the settings leaf is fixed "
+            "(agent spawns are unaffected): %s",
+            exc,
+        )
+        return None
+
+
+def _publish_notification_settings_mask_target(
+    established: list[str] | None = None,
+) -> str | None:
+    """Publish the notification settings' absent-equivalent document so its mask can mount.
+
+    Why at all: the launcher's ``SENSITIVE_FILES`` loop guards on ``isfile``, so an absent
+    leaf is an UNMASKED leaf for every namespace, and the crew data home is writable at OS
+    level. That is not a narrow window here -- absent is the state of every install that
+    has never saved a channel setting -- so without this the mask added in
+    :data:`_CREW_HIDDEN_LEAVES` would be vacuous exactly when it matters: an in-sandbox
+    shell creates the file with ``deliver_to`` already armed, and the gateway routes notes
+    off the host at its next start.
+
+    A DIRECT child of the data home, so there is no agent-writable intermediate component
+    for a planted link to redirect and no per-component descent is needed -- the hazard
+    :func:`_materialize_md_notebook_mask_targets` walks chains to avoid has no path here.
+
+    The temp is staged in the target's own parent rather than in a masked directory, which
+    is where this differs from :func:`_materialize_live_target_mask_target`, and the reason
+    is the payload: that function publishes a code-execution input, while this document is
+    :data:`_EMPTY_CEILING_DOCUMENT` and carries no secret and no authority. What the
+    masked-staging treatment buys there is that a concurrent namespace cannot ``link(2)``
+    the temp and keep a second, unmasked write channel to the inode. That race is not
+    admitted here either: it is DETECTED, by the same
+    :func:`_refuse_unless_sole_regular_link` check the live-target path runs after its own
+    publish, and an extra link found there raises, which
+    :func:`_materialize_notification_settings_mask_target` turns into "routing disabled,
+    spawn proceeds". That one check is also what catches a symlink at the name, on both
+    the resolving and the dangling path, so it is the single guard here rather than one of
+    several. The condition persists until an operator removes the extra name, and this
+    module never unlinks it because ``lstat`` then ``unlink`` is not atomic.
+
+    Linux spawn path only, at the same site as the other materialisers: a Seatbelt deny is
+    a path rule that already holds for a name which does not exist yet, so macOS needs
+    nothing here. The LIVE data home only (``config_dir()``) -- a stub under the deprecated
+    spelling would be a file nothing reads. Resolving that home CREATES it when it is
+    absent, which is ``config_dir()``'s own contract rather than a choice this materialiser
+    makes, so the stub is published under the home that call establishes.
+
+    Never truncates and never removes: an existing regular file is left byte-for-byte
+    alone, whether it holds the owner's real settings or this stub. Returns the path if it
+    published one.
+    """
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for notification-settings masking")
+        return None
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, _NOTIFICATION_SETTINGS_LEAF)
+    # A SYMLINK at the name is the attack entry rather than just a nuisance: a mount
+    # follows its target, so the mask would bind over the referent while the lexical name
+    # stayed an agent-replaceable link in a writable directory. It needs no refusal of its
+    # own here, and that is measured rather than assumed --
+    # :func:`_refuse_unless_sole_regular_notification_leaf` already refuses it on BOTH
+    # paths, so adding the two generic helpers beside it was dead code (a mutation removing
+    # them reddened nothing, which is what sent them back out). A RESOLVING link reaches
+    # the check through the ``exists`` branch below; a DANGLING one reads as absent,
+    # ``os.link`` then fails EEXIST against the link name, and the lost-race check at the
+    # bottom refuses it.
+    if os.path.exists(target):
+        _refuse_unless_sole_regular_notification_leaf(target)
+        _note_established(established, target)
+        return None
+    if _publish_empty_ceiling(target, root, content=_NOTIFICATION_SETTINGS_PRECREATE_CONTENT):
+        _refuse_unless_sole_regular_notification_leaf(target)
+        _note_established(established, target)
+        return target
+    # A lost publish race is benign only if the winner cleared the same bar. Publishing is
+    # ``os.link``, which fails EEXIST rather than clobbering, so the ordinary loser finds a
+    # regular, singly-linked file here; anything else means the name is not maskable.
+    try:
+        _refuse_unless_sole_regular_notification_leaf(target)
+        # Validated on the winner's own terms, so established -- a race-loser still SAW the
+        # leaf present, and the launcher must require its mask exactly as for the winner.
+        _note_established(established, target)
+        return None
+    except FileNotFoundError:
+        # The winner unlinked the name in the window between the failed publish and this
+        # check: genuinely absent, nothing aliased, nothing to mask -- treated benign, the
+        # same "gone" reading the sibling live-target arm gives it.
+        pass
+    # Any OTHER outcome means the name is present but not maskable. Follow the convention
+    # every sibling materialiser uses -- raise :class:`SandboxCeilingUnsealable` so the
+    # spawn takes the remedy path -- rather than letting the bare exception escape into
+    # every Linux agent spawn, which is the shape the live-target arm below routes through
+    # the same class.
+    raise SandboxCeilingUnsealable(
+        f"cannot give the notification-settings mask a mount target at {target}, so the "
+        "leaf stays maskless and the notification bridge delivers nothing until it is "
+        "fixed."
+    )
+
+
 def _materialize_live_target_mask_target(
     established: list[str] | None = None,
 ) -> str | None:
@@ -3936,6 +4134,155 @@ def _refuse_unless_sole_regular_link(target: str) -> None:
         raise SandboxCeilingUnsealable(_live_target_irregular_detail(target))
     if st.st_nlink != 1:
         raise SandboxCeilingUnsealable(_live_target_multilink_detail(target, st.st_nlink))
+
+
+# The notification-settings leaf gets its OWN three sentences rather than reusing the
+# live-target pointer's. The two conditions are identical in shape -- a non-regular file,
+# a second hard link, or a symlink at a direct child of the data home all make the mask
+# bind the wrong thing -- but the pointer's wording describes "the live-target pointer"
+# and "the checkout the gateway execve's into", which names the wrong file and the wrong
+# consequence to an operator about to inspect notification_settings.json. The threat this
+# leaf's mask contains is the one the materialiser documents: a maskless settings leaf
+# lets an in-sandbox write arm ``deliver_to`` so the gateway routes notes off the host at
+# its next start. The interpolated path and symlink target pass through
+# ``safe_terminal_line`` for the reason the live-target group states: the sentence is
+# printed to a terminal verbatim and the symlink target is adversary-chosen bytes.
+def _notification_settings_irregular_detail(target: str) -> str:
+    """The refusal sentence for a non-regular file at the notification-settings leaf."""
+    return (
+        f"cannot mask {safe_terminal_line(target)}: a non-regular file (a link, FIFO, "
+        "socket, or device node) is sitting at the notification-settings leaf's path. "
+        "The launcher's isdir/isfile loops classify neither, so its mask would be "
+        "silently skipped for every sandbox, leaving a path an in-sandbox write could "
+        "use to arm notification routing. Remove or replace it with a regular file."
+    )
+
+
+def _notification_settings_multilink_detail(target: str, links: int) -> str:
+    """The refusal sentence for the notification-settings leaf under more than one name.
+
+    Names the ``find`` invocation rather than only the condition, for the reason the
+    live-target formatter does: a hard link is left by ordinary operation (``cp -al``,
+    rsnapshot, a dotfile manager), so the operator who meets this has no reason to know
+    which OTHER path shares the inode, and without the command the remedy names no file.
+    """
+    return (
+        f"cannot mask {safe_terminal_line(target)}: the notification-settings leaf has "
+        f"{links} hard links, so a mask over this name would leave another path able to "
+        "write the routing file unmasked -- and an in-sandbox write to it arms "
+        "``deliver_to`` so the gateway routes notes off the host at its next start. "
+        "List the names under the data home with the command "
+        f"find {shlex.quote(safe_terminal_line(os.path.dirname(target)))} -samefile "
+        f"{shlex.quote(safe_terminal_line(target))} "
+        "-- that searches the data home only, and the tools that leave a link here "
+        "(snapshot and backup runs, a dotfile manager) usually keep theirs somewhere "
+        "else, so if it reports just this leaf, run it again from the mount point "
+        "holding it with -xdev added: a hard link cannot cross a filesystem, but it can "
+        "sit anywhere on this one. Then remove the extra link(s) and restart."
+    )
+
+
+def _notification_settings_symlink_detail(target: str, points_at: str) -> str:
+    """The refusal sentence for a symlink squatting the notification-settings leaf's path.
+
+    Wording of its own rather than the live-target pointer's: that one says "a checkout
+    it controls", which names the wrong consequence for the routing file.
+
+    ``points_at`` is the one value here an adversary picks outright -- defused when the
+    sentence is built, as the live-target group above documents.
+    """
+    return (
+        f"cannot mask {safe_terminal_line(target)}: the notification-settings leaf is a "
+        f"SYMLINK -> {safe_terminal_line(points_at)}. "
+        "A mask binds over the link's target, not the name, so the name stays "
+        "replaceable in a writable directory and a sandboxed process could point it at "
+        "a routing file it controls, arming ``deliver_to`` for the next gateway start. "
+        "Replace it with a regular file."
+    )
+
+
+def _refuse_unless_sole_regular_notification_leaf(target: str) -> None:
+    """Raise unless the notification-settings leaf is a regular file with one hard link.
+
+    The counterpart of :func:`_refuse_unless_sole_regular_link` for the
+    notification-settings leaf, differing ONLY in which sentences it raises: this one
+    names that leaf and its routing-arming threat, where the shared helper names the
+    live-target pointer. The shape checks are identical because the hazard is identical --
+    a second name or a non-regular file leaves the mask binding the wrong thing. Split out
+    so the refusal and :func:`notification_settings_pointer_unfitness` share one string per
+    shape and the operator reads one diagnosis, in words about the file in front of them.
+
+    ``FileNotFoundError`` propagates so a publish-race caller can tell "gone" from "unfit".
+    """
+    st = os.lstat(target)
+    if not stat.S_ISREG(st.st_mode):
+        raise SandboxCeilingUnsealable(_notification_settings_irregular_detail(target))
+    if st.st_nlink != 1:
+        raise SandboxCeilingUnsealable(_notification_settings_multilink_detail(target, st.st_nlink))
+
+
+def notification_settings_pointer_unfitness() -> LiveTargetUnfitness | None:
+    """Classify the LIVE notification-settings leaf, WITHOUT spawning.
+
+    The ONE fitness read for this leaf, with two readers: the notification bridge refuses
+    to deliver while it returns non-``None`` (or raises), and ``kirocrew doctor`` reports
+    it. The shapes that make a leaf unfit --
+    a symlink from a dotfile manager, a second hard link from a snapshot tool -- are
+    ordinary operation nobody did wrong, and their only symptom is that bridged notes stop
+    arriving. ``kirocrew doctor`` is where an operator looks for
+    that, and this is the read that lets it answer, in the leaf's OWN words rather than the
+    live-target pointer's (which ``live_target_pointer_unfitness`` does not cover this leaf
+    at all, so before this read doctor was silent on it).
+
+    ``None`` means nothing to report: a healthy leaf, an absent one (the materialiser
+    publishes a stub), or no data home yet. Read-only and total, exactly as the live-target
+    classifier: it never creates, moves, or removes anything, a data home it cannot resolve
+    or stat is reported as nothing, and only a leaf that EXISTS but cannot be stat'd raises
+    (``None`` here means fit, and an unreadable leaf is unknown, not fit).
+
+    Reuses :class:`LiveTargetUnfitness` as the carrier -- it is a path + a shared sentence,
+    which is exactly what this returns too, and inventing a second identical NamedTuple
+    would be a distinction a caller only MIGHT want, the guess the live-target type's own
+    docstring declines to make.
+    """
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; doctor must survive a bad home
+        logger.debug("could not resolve the crew data home for notification-settings fitness")
+        return None
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, _NOTIFICATION_SETTINGS_LEAF)
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        # Absent is FIT: the materialiser publishes the absent-equivalent stub.
+        return None
+    except OSError:
+        # NOT fit -- unknown. Swallowing it would make doctor print nothing for a leaf it
+        # cannot classify, which reads as "checked, healthy" while every Linux spawn may
+        # still refuse on it. Doctor's caller turns the raise into "could not check (...)".
+        logger.debug("could not stat the notification-settings leaf %s", target, exc_info=True)
+        raise
+    if stat.S_ISLNK(st.st_mode):
+        points_at = "(unreadable)"
+        with contextlib.suppress(OSError):
+            points_at = os.readlink(target)
+        return LiveTargetUnfitness(
+            path=target,
+            detail=_notification_settings_symlink_detail(target, points_at),
+        )
+    if not stat.S_ISREG(st.st_mode):
+        return LiveTargetUnfitness(
+            path=target,
+            detail=_notification_settings_irregular_detail(target),
+        )
+    if st.st_nlink != 1:
+        return LiveTargetUnfitness(
+            path=target,
+            detail=_notification_settings_multilink_detail(target, st.st_nlink),
+        )
+    return None
 
 
 def live_target_pointer_unfitness() -> LiveTargetUnfitness | None:
@@ -7765,6 +8112,13 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
+    # The notification settings need one for the same reason as the pointer, and the
+    # absent case is not an edge here but the default: an install that has never saved a
+    # channel setting has no file at all, so the mask would be vacuous on exactly the
+    # hosts nobody has configured. The payload is an egress authorization (``deliver_to``
+    # arms the bridge), so a child that creates the leaf chooses where the owner's notes
+    # go.
+    _materialize_notification_settings_mask_target(_required_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by

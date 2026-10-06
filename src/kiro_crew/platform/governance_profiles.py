@@ -1253,6 +1253,7 @@ def vet_and_audit(
     app: str = "",
     fail_closed: bool = False,
     log_warning: bool = True,
+    agent: str = "",
 ) -> "object":
     """Evaluate one permission decision AND write its SEL audit record.
 
@@ -1276,6 +1277,7 @@ def vet_and_audit(
         scope,
         item,
         session_key=session_key,
+        agent=agent,
         app=app,
         log_warning=log_warning,
         fail_closed=fail_closed,

@@ -199,6 +199,28 @@ class WorkflowRunPublisher(Protocol):
     def status(self, run_id: str) -> dict[str, Any] | None: ...
 
 
+def _run_agent_names(run: Project | None) -> str:
+    """Every agent name *run* executes as, newline-separated, or ``""`` for no run.
+
+    The agent the run was started with, plus the selection its execution context
+    binds (what ``resolve_session_agent_bindings`` selects for the run's sessions
+    when no agent was named). Each is a ``producer_agent`` subject on the bridge,
+    which only ever adds subjects, so naming both can tighten and never widen.
+    """
+    if run is None:
+        return ""
+    names: list[str] = []
+    execution = run.execution_context
+    candidates = [run.agent]
+    if execution is not None:
+        candidates += [execution.selection_name, execution.template_id]
+    for name in candidates:
+        cleaned = name.strip() if isinstance(name, str) else ""
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+    return "\n".join(names)
+
+
 def _auto_approve_scope(task_id: str) -> str:
     """SafetyOverride scope key holding a run's per-run auto-approve grant.
 
@@ -652,7 +674,7 @@ class TaskRunner:
                     _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
                 },
                 workspace=run.work_dir or None,
-                scope_ref={"auto_approve": False, "agent": self._agent},
+                scope_ref={"auto_approve": False, "agent": run.agent},
                 side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
             )
         except _runner_adapter.RunnerAdmissionRefused as exc:
@@ -756,7 +778,7 @@ class TaskRunner:
                         _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
                     },
                     workspace=run.work_dir or None,
-                    scope_ref={"auto_approve": bool(run.auto_approve), "agent": self._agent},
+                    scope_ref={"auto_approve": bool(run.auto_approve), "agent": run.agent},
                     side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
                     parent_id=parent.task_id if parent is not None else None,
                 )
@@ -1162,6 +1184,7 @@ class TaskRunner:
                 workflow_slug=workflow_slug,
                 workflow_revision=workflow_revision,
                 execution_context=execution,
+                agent=agent,
             )
         except BaseException:
             if created_task_dir:
@@ -1184,7 +1207,11 @@ class TaskRunner:
                 try:
                     run.tasks = await asyncio.wait_for(
                         self._decompose(
-                            decompose_input, run.work_dir, task_id, start_priority=start_priority
+                            decompose_input,
+                            run.work_dir,
+                            task_id,
+                            agent=run.agent,
+                            start_priority=start_priority,
                         ),
                         timeout=180,
                     )
@@ -1434,6 +1461,7 @@ class TaskRunner:
             await self._apersist_runs()
 
             self._agent = agent
+            run.agent = agent
             history_key = await self._bound_history_key(run, f"taskrunner:run:{task_id}")
         except BaseException:
             self._release_start(task_id)
@@ -1552,6 +1580,7 @@ class TaskRunner:
         workspace_dir: str = "",
         auto_approve: bool = False,
         input_content: str | None = None,
+        agent: str | None = None,
     ) -> Project:
         self._require_workflow_ready()
         spec_path = Path(spec_path)
@@ -1592,6 +1621,7 @@ class TaskRunner:
             derived_from_workflow_id=existing.derived_from_workflow_id if existing else "",
             derived_from_revision=existing.derived_from_revision if existing else 0,
             execution_context=existing.execution_context if existing else self._capture_execution(),
+            agent=(agent if agent is not None else (existing.agent if existing else self._agent)),
         )
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
@@ -1629,9 +1659,13 @@ class TaskRunner:
                         "YAML spec %s is not in workflow format; falling back to LLM decomposition",
                         spec_path.name,
                     )
-                    run.tasks = await self._decompose(spec_content, run.work_dir, task_id)
+                    run.tasks = await self._decompose(
+                        spec_content, run.work_dir, task_id, agent=run.agent
+                    )
             else:
-                run.tasks = await self._decompose(spec_content, run.work_dir, task_id)
+                run.tasks = await self._decompose(
+                    spec_content, run.work_dir, task_id, agent=run.agent
+                )
             if not run.tasks:
                 run.status = "failed"
                 run.error = "Failed to decompose spec into tasks"
@@ -1827,7 +1861,7 @@ class TaskRunner:
     async def self_review(self, run: Project, task: Task, session_key: str = "") -> bool:
         """Delegate to standalone self_review for backward compat."""
         return await self_review_fn(
-            run, task, self._sessions, self._agent, session_key=session_key, ctx=self._ctx
+            run, task, self._sessions, run.agent, session_key=session_key, ctx=self._ctx
         )
 
     async def _execute_single_task(
@@ -1903,7 +1937,7 @@ class TaskRunner:
                 history_key=history_key,
                 sessions=self._sessions,
                 ctx=self._ctx,
-                agent=self._agent,
+                agent=run.agent,
                 on_notify=self._notify,
                 on_approval=self._on_approval,
                 on_tool_approval=self._on_tool_approval,
@@ -2001,7 +2035,7 @@ class TaskRunner:
             f"## Failed Task\n- \u274c {failed_task.title}: {err_detail}\n{may_have_run}\n"
             f"{memory_ctx}\n\nRe-plan the REMAINING work."
         )
-        new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id)
+        new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id, agent=run.agent)
         if not new_tasks:
             run.status = "failed"
             run.error = f"Re-plan failed after task {failed_task.index}"
@@ -2152,6 +2186,7 @@ class TaskRunner:
                     source=source,
                     auto_approve=bool(auto_approve),
                     execution_context=execution,
+                    agent=agent,
                 )
                 await self._bind_run_execution(
                     self._runs[task_id], f"{_SESSION_PREFIX}:{task_id}:runtime"
@@ -2179,6 +2214,7 @@ class TaskRunner:
                             source=source,
                             workspace_dir=workspace_dir,
                             auto_approve=auto_approve,
+                            agent=agent,
                             **(
                                 {"input_content": input_content}
                                 if input_content is not None
@@ -2496,6 +2532,7 @@ class TaskRunner:
                     )
                 raise
             self._agent = agent
+            run.agent = agent
         except BaseException:
             self._release_start(task_id)
             raise
@@ -2559,6 +2596,7 @@ class TaskRunner:
         work_dir: str = "",
         task_id: str = "",
         *,
+        agent: str = "",
         start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> list[Task]:
         return await decompose(
@@ -2567,7 +2605,7 @@ class TaskRunner:
             self._ctx,
             work_dir=work_dir or str(self._work_dir),
             task_id=task_id,
-            agent=self._agent,
+            agent=agent,
             start_priority=start_priority,
         )
 
@@ -2579,7 +2617,22 @@ class TaskRunner:
         # run attached (a lesson learned, say) carries no conversation and falls
         # back to the sink's own default destination.
         session_key = self._run_session_keys.get(run.task_id, "") if run else ""
-        await notify(title, body, run=run, callback=self._on_notify, session_key=session_key)
+        # The run's owning app, resolved from the SAME run, so the sink can bind a
+        # ``producer_app`` governance subject. A run started under an app token
+        # carries ``execution_context.app``; a dashboard, cron or CLI start leaves
+        # it empty and the note is vetted host-only exactly as before. Without it a
+        # run owned by an app that is allowed ``task_run`` but denies ``messaging``
+        # egresses its notice under the permissive host profile.
+        app = run.execution_context.app if run and run.execution_context is not None else ""
+        await notify(
+            title,
+            body,
+            run=run,
+            callback=self._on_notify,
+            session_key=session_key,
+            app=app,
+            agent=_run_agent_names(run),
+        )
 
     # ── History Integration ──
 
@@ -2667,6 +2720,9 @@ class TaskRunner:
                 if run is not None:
                     await self._bind_run_execution(run, runtime_key)
                 private_vectors = await context.ensure_store(private_store)
+            # The lesson call runs as the failing run's own agent, the same identity
+            # its steps executed and its notices name.
+            lesson_agent = run.agent if run is not None else ""
             prompt = (
                 "A task failed after multiple attempts.\n\n"
                 f'Task: "{task.title}"\n'
@@ -2678,9 +2734,9 @@ class TaskRunner:
                 "Respond with ONLY valid JSON."
             )
             result = (
-                await self._call_llm_for_lesson(prompt, runtime_key=runtime_key)
+                await self._call_llm_for_lesson(prompt, runtime_key=runtime_key, agent=lesson_agent)
                 if private_store
-                else await self._call_llm_for_lesson(prompt)
+                else await self._call_llm_for_lesson(prompt, agent=lesson_agent)
             )
             if not result or "rule" not in result:
                 return
@@ -2731,11 +2787,13 @@ class TaskRunner:
             logger.info("Lesson extracted from task %d: %s", task.index, rule)
             if run:
                 run.lessons_learned.append(rule)
-            await self._notify("\U0001f4dd Lesson learned", rule)
+            await self._notify("\U0001f4dd Lesson learned", rule, run=run)
         except Exception:
             logger.debug("Lesson extraction failed", exc_info=True)
 
-    async def _call_llm_for_lesson(self, prompt: str, *, runtime_key: str = "") -> dict | None:
+    async def _call_llm_for_lesson(
+        self, prompt: str, *, runtime_key: str = "", agent: str = ""
+    ) -> dict | None:
         session_key = f"{runtime_key}:lesson" if runtime_key else BACKGROUND_KEY
         if runtime_key:
             from kiro_crew.context import inherit_session_memory
@@ -2744,12 +2802,12 @@ class TaskRunner:
         try:
             if runtime_key:
                 client, _is_new, _resumed = await self._sessions.open_task_session(
-                    runtime_key, session_key, agent=self._agent or None
+                    runtime_key, session_key, agent=agent or None
                 )
             else:
                 client, _is_new, _resumed = await self._sessions.get_or_create(
                     session_key,
-                    agent=self._agent or None,
+                    agent=agent or None,
                 )
             return await stream_and_collect_json(client, prompt)
         except Exception:
@@ -2930,6 +2988,7 @@ class TaskRunner:
                         "workflow_revision": run.workflow_revision,
                         "derived_from_workflow_id": run.derived_from_workflow_id,
                         "derived_from_revision": run.derived_from_revision,
+                        "agent": run.agent,
                         "task_details": [
                             {
                                 "index": t.index,
@@ -3180,6 +3239,7 @@ class TaskRunner:
                     workflow_revision=int(item.get("workflow_revision") or 0),
                     derived_from_workflow_id=item.get("derived_from_workflow_id", ""),
                     derived_from_revision=int(item.get("derived_from_revision") or 0),
+                    agent=str(item.get("agent") or ""),
                 )
                 # Compensating control: never let per-run trust silently survive a
                 # gateway restart. A run recovered from an active state had its
