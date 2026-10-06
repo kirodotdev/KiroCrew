@@ -2579,7 +2579,16 @@ class TaskRunner:
         # run attached (a lesson learned, say) carries no conversation and falls
         # back to the sink's own default destination.
         session_key = self._run_session_keys.get(run.task_id, "") if run else ""
-        await notify(title, body, run=run, callback=self._on_notify, session_key=session_key)
+        # The run's owning app, resolved from the SAME run, so the sink can bind a
+        # ``producer_app`` governance subject. A run started under an app token
+        # carries ``execution_context.app``; a dashboard, cron or CLI start leaves
+        # it empty and the note is vetted host-only exactly as before. Without it a
+        # run owned by an app that is allowed ``task_run`` but denies ``messaging``
+        # egresses its notice under the permissive host profile.
+        app = run.execution_context.app if run and run.execution_context is not None else ""
+        await notify(
+            title, body, run=run, callback=self._on_notify, session_key=session_key, app=app
+        )
 
     # ── History Integration ──
 
