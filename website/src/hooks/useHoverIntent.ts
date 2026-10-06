@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { watchCursorAway } from '../lib/cursorAway'
+import { useTouchReplay } from './useTouchReplay'
 
 /** Delay before a hover opens the surface. Sweeping the pointer ACROSS a
  *  trigger on the way somewhere else must not fire it — the surface only
@@ -102,6 +103,10 @@ export interface HoverIntent {
    *  menu-button opener) — deliberately not on focus; see the note at the
    *  return site. */
   triggerProps: PointerHandlers & {
+    /** Record the pointer type, so a touch tap's replayed enter opens nothing. */
+    onPointerEnter: (e: { pointerType: string }) => void
+    onPointerDown: (e: { pointerType: string }) => void
+    onPointerUp: (e: { pointerType: string }) => void
     onKeyDown: (e: React.KeyboardEvent) => void
     onBlur: (e: React.FocusEvent) => void
   }
@@ -149,6 +154,9 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
   // Is the pointer currently out of the window? Only meaningful with
   // `dismissOnWindowExit`, which is what keeps it fed.
   const pointerOutside = useRef(false)
+  // Recorded from the trigger's own pointer events, so a touch tap's replayed
+  // mouseenter can be told from a real hover (see useTouchReplay).
+  const { fromTouch, pointerProps } = useTouchReplay()
   // Stop function for an in-flight off-window distance watch, or null. Holding
   // it is what makes the watch cancellable AND what marks a dismissal as already
   // pending, the way a live `closeTimer` does for the timed paths.
@@ -210,6 +218,10 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     // A hover cannot be intended while the pointer is off-window; this is also
     // what stops a just-dismissed surface reopening under a stationary pointer.
     if (by === 'hover' && pointerOutside.current) return
+    // A touch tap's replayed mouseenter is not a hover: opening from it (the
+    // intent timer is inside iOS's content-change window) costs the tap its
+    // click. Keyboard opens are untouched.
+    if (by === 'hover' && fromTouch()) return
     cancelPending()
     // A keypress is an explicit request — no intent delay to second-guess.
     if (by === 'keyboard') { setOpen(true); setOpenedBy('keyboard'); return }
@@ -218,7 +230,7 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
       setOpen(true)
       setOpenedBy('hover')
     }, openMs)
-  }, [enabled, openMs, cancelPending])
+  }, [enabled, openMs, cancelPending, fromTouch])
 
   const scheduleClose = useCallback((ms: number = closeMs) => {
     if (!enabled) return
@@ -408,6 +420,7 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     open,
     openedBy,
     triggerProps: {
+      ...pointerProps,
       onMouseEnter: () => scheduleOpen('hover'),
       onMouseLeave: onAnchorLeave,
       // Focus deliberately does NOT open. Opening on focus and then moving
