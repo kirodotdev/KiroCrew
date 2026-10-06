@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
+import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap, ArrowRightLeft, MoreHorizontal } from 'lucide-react'
+import MoveToCrewDialog from '../components/MoveToCrewDialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
@@ -65,6 +72,8 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
 
 export default function ProjectsPage() {
   const ime = useImeGuard()
+  // Crew-to-crew work migration (issue #7577): which run's move plan is open.
+  const [movingRunId, setMovingRunId] = useState<string | null>(null)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -582,6 +591,34 @@ export default function ProjectsPage() {
     </div>
   )
 
+  // The overflow carries ONE item: the move this change adds. The existing
+  // Chat / Discard / Restart / Schedule controls stay peer buttons in the
+  // header where they already were -- relocating them would make every current
+  // user relearn four positions for the sake of this feature.
+  const taskRunOverflow = selectedRun && !selectedRun.running ? (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        {/* Btn forwards its ref, which is what `asChild` needs. The overrides
+            keep the square icon-only footprint: Btn's own padding would widen
+            the cell the pinned actions column is sized for. */}
+        <Btn
+          type="button"
+          className="grid h-8 w-8 shrink-0 place-items-center px-0 py-0 text-muted hover:border-accent hover:text-accent"
+          aria-label={i18nT('components.moveToCrew.more_actions')}
+          title={i18nT('components.moveToCrew.more_actions')}
+        >
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </Btn>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => setMovingRunId(selectedRun.task_id)}>
+          <ArrowRightLeft size={14} aria-hidden="true" />
+          {i18nT('components.moveToCrew.menu_label')}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null
+
   // Three-part workspace shell, matching Issue Radar: a resizable/collapsible
   // rail, its drag handle, then a flush main column. The rail is present in
   // every state (including "no runs yet") so the page never reflows out from
@@ -589,6 +626,16 @@ export default function ProjectsPage() {
   // its own padding rather than inheriting page gutters.
   return (
     <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
+      {/* Crew-to-crew work migration (issue #7577): the task-run move surface.
+          Plans from the LIVE run record, which carries WorkingMemory and
+          current_task -- neither of which runs.json persists. */}
+      {movingRunId && (
+        <MoveToCrewDialog
+          unitId={movingRunId}
+          onPlan={toCrew => api.planTaskRunMove(movingRunId, toCrew)}
+          onClose={() => setMovingRunId(null)}
+        />
+      )}
       {rail.collapsed ? (
         <CollapsedRail width={rail.width} onExpand={rail.expand} horizontal={railBar} />
       ) : (
@@ -679,13 +726,16 @@ export default function ProjectsPage() {
                   // A body without the context is a failed hand-off, not a
                   // different kind of success — there is nothing to open chat with.
                   if (!res.ok || !res.context) return { ok: false, error: res.error }
-                  dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1')
+                  dispatch(setPendingInput(i18nT('pages.projectsPage.optimize_plan_prompt', { context: res.context }))); navigate('/chat?autoSend=1&newSession=1')
                   return res
                 })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.deleteTaskRun(selectedRun.task_id), () => { setSelectedRun(null); load() })}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
               </>}
               {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelPlan(), () => setSelectedRun(null))}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all" onClick={() => runAction(() => api.pauseTaskRun(selectedRun.task_id), load)}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
+              {/* One overflow trigger carrying only this change's move action.
+                  The controls that were already peers stay peers. */}
+              {taskRunOverflow}
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelTaskRunner(selectedRun.task_id), load)}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
@@ -713,6 +763,9 @@ export default function ProjectsPage() {
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
                   if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
                   void runAction(
+                    // `run __inline__:` is a machine protocol consumed by the cron
+                    // runner, not UI copy: translating it would make the job
+                    // unexecutable.
                     () => api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 }),
                     () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
                   )
