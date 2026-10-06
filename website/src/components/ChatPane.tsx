@@ -1948,6 +1948,9 @@ export default function ChatPane({
           // get the same mid-turn choice as the main chat, and a
           // `steer-only` host gets a plain send that steers.
           canSteer={busy}
+          // `doSteer` takes no `text`: the pane derives its chips from the same
+          // `busy` that gates the steer path, so a chip is never on screen while
+          // a send would steer, and the composer draft is the only steer payload.
           onSteer={doSteer}
           // AND a turn actually running: `busy` also covers a slot whose
           // sub-agents are still working, where the send starts a fresh turn and
@@ -1986,10 +1989,10 @@ export default function ChatPane({
           followUpLayout={chatConfig.followUpLayout}
           quickSend={dashCfg?.quick_send}
           followUpSourceKey={followUpSourceKey}
-          onFollowUpSelect={(o: string, e: React.MouseEvent) => {
+          onFollowUpSelect={(o: string, e: React.MouseEvent, _key: string | null | undefined, sendNow: (text: string) => void) => {
             // One-click Quick Send takes the same gate as ChatPage: enabled +
             // no shift + not busy + not already in multi-select.
-            if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, busy, followUpPickedRef.current.size, (t: string) => doSend(t))) return
+            if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, busy, followUpPickedRef.current.size, sendNow)) return
             // Regular options: toggle. Click unpicked → append + mark; click
             // picked → try to remove the text + unmark (if the user edited the
             // text so it no longer matches, leave the text alone — the chip

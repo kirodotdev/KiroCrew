@@ -95,6 +95,17 @@ export function useBusyTurnControls({
     [allQueuedMessages],
   )
 
+  // A text steer outside the composer (a chip's text, a question card's answer):
+  // an optimistic steer bubble the echo reconciles by sendId, then the
+  // receipt-aware steer POST, which hands the text back on a refused or
+  // unconfirmed steer.
+  const steerText = useCallback((text: string, slot: string, auto = false) => {
+    const steerSendId = mintSendId()
+    drainPendingChunks()
+    dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
+    steerMutation.mutate({ text, sendId: steerSendId, slot, auto })
+  }, [steerMutation, dispatch])
+
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing for the next one. Mirrors send()'s payload prep so pending
   // files ride along — images become `![image](path)` markdown and other
@@ -107,8 +118,11 @@ export function useBusyTurnControls({
   // the text inline via the 'steer_push' WS event. Composer, pending files,
   // paste blocks, and the per-slot drafts are all cleared HERE (not in
   // ChatInput) so text and attachments clear atomically.
-  const steer = useCallback((opts?: { auto?: boolean }) => {
+  const steer = useCallback((opts?: { auto?: boolean; text?: string }) => {
     if (!activeSlot) return
+    // A follow-up chip's own text, steered as-is: like an option send, it
+    // leaves the composer draft, attachments and staged quote alone.
+    const optionText = opts?.text
     // Nothing to inject into: the composer is busy purely because background
     // sub-agents are still running for this slot (spawn_run is fire-and-forget,
     // so the parent turn already ended). The intent is the same — act on this
@@ -117,7 +131,14 @@ export function useBusyTurnControls({
     // server-side hold that keeps a user message behind running sub-agents.
     // Delegating here, BEFORE the composer is read and cleared below, leaves
     // send() owning the draft, attachment and optimistic-bubble bookkeeping.
-    if (!slotRunning) { void send(undefined, undefined, true); return }
+    if (!slotRunning) { void send(optionText, undefined, true); return }
+    if (optionText) {
+      // Offline, a chip send is a no-op, as send() makes it: the chip stays.
+      if (!connected) return
+      composerRef.current?.voice()?.disarmForSend()
+      steerText(optionText, activeSlot, opts?.auto === true)
+      return
+    }
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
     // A staged quote alone is a payload; a slash command is not a send, so the
@@ -216,7 +237,7 @@ export function useBusyTurnControls({
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, slotRunning, send, steerMutation, messageQuote, saveDrafts, dispatch, setInput,
+  }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts,
     pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens])
@@ -335,10 +356,7 @@ export function useBusyTurnControls({
     const slot = activeSlot || undefined
     const isNativeCard = pendingQuestion?.native === true
     if (slot && isNativeCard && selectComposerBusy(store.getState(), slot)) {
-      const steerSendId = mintSendId()
-      drainPendingChunks()
-      dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
-      steerMutation.mutate({ text, sendId: steerSendId, slot })
+      steerText(text, slot)
       return
     }
     void send(text, slot)

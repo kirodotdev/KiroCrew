@@ -1402,7 +1402,8 @@ describe('ChatInput', () => {
       const onSelect = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} followUpOptions={['Go']} followUpPicked={new Set()} onFollowUpSelect={onSelect} quickSend={true} />)
       fireEvent.click(screen.getByRole('button', { name: 'Go' }))
-      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object))
+      // Fourth arg: the composer's chip send, which the host's quick-send uses.
+      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object), undefined, expect.any(Function))
     })
   })
 

@@ -45,8 +45,12 @@ export interface ChatInputProps {
    * message (`steer: "auto"`, `decisions/points/message_steer.py`). It rides this
    * callback rather than a second one because it is the same send down the same
    * route: only the flag differs, and a host that ignores the argument keeps
-   * today's behaviour, which is the steer this callback has always meant. */
-  onSteer?: (opts?: { auto?: boolean }) => void
+   * today's behaviour, which is the steer this callback has always meant.
+   *
+   * `text` is a follow-up chip's own text: steer exactly that, leaving the
+   * composer draft and its staging untouched (the rule an option send follows).
+   * A host that renders follow-up chips while busy must honour it. */
+  onSteer?: (opts?: { auto?: boolean; text?: string }) => void
   /** Whether the host may offer `Auto (Jev)` in the split button's mode picker:
    * the gateway reports the Decisions seam as permitted by governance AND
    * consented to. Defaults to false, so a surface that never asks cannot offer a
@@ -307,10 +311,14 @@ export interface ChatInputProps {
   /** Select a follow-up option — handler toggles text in input (see ChatPage wiring).
    *  Third arg is `followUpSourceKey` as it was when the chip was CLICKED (the
    *  chip debounces, and the row can advance inside that window); `undefined`
-   *  when no `followUpSourceKey` is supplied. */
-  onFollowUpSelect?: (option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => void
-  /** Immediate send (double-click / Send-now). Second arg is the click-time
-   *  row identity FollowUpBar already snapshots for onSelect. */
+   *  when no `followUpSourceKey` is supplied. Fourth arg sends an option the way
+   *  `onFollowUpSend` does after the composer's busy decision (steer or queue,
+   *  per the slot's busy-send mode): the host's quick-send uses it. */
+  onFollowUpSelect?: (option: string, event: React.MouseEvent, sourceKeyAtClick: string | null | undefined, sendNow: (text: string) => void) => void
+  /** A chip's immediate send (double-click / Send-now / quick send) when the
+   *  composer's busy decision does not steer it; a steered chip goes to
+   *  `onSteer` with its text. Second arg is the click-time row identity
+   *  FollowUpBar already snapshots for onSelect. */
   onFollowUpSend?: (text?: string, sourceKeyAtClick?: string | null) => void
   /** Quick Send enabled — clicking sends immediately */
   quickSend?: boolean

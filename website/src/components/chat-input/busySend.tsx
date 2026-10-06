@@ -13,7 +13,7 @@ import type { ComposerBusyMode } from './props'
 /* The composer's send path: `fireComposer` is every Enter and Send, idle or
    busy (it holds the send while a batch dictation transcribes, and holds an
    over-limit prompt until the send is repeated), and follow-up chips send
-   through `sendFollowUp`. While the slot is busy it decides whether
+   through `sendFollowUp`. While the slot is busy both decide whether
    the send steers the running turn or queues behind it, and `BusySendControls`
    renders the stop controls that replace the send button through a stop's soft
    and hard phases. */
@@ -24,7 +24,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
   isRunning: boolean
   stopState?: 'idle' | 'soft_pending' | 'killing'
   canSteer?: boolean
-  onSteer?: (opts?: { auto?: boolean }) => void
+  onSteer?: (opts?: { auto?: boolean; text?: string }) => void
   jevAutoAvailable: boolean
   disabled: boolean
   voiceTranscribing: boolean
@@ -110,9 +110,14 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
     haptic('medium')
     onStop?.()
   }, [onStop])
+  // A follow-up chip's send is a Send press carrying its own text, so it takes
+  // fireComposer's default busy decision (no chord, so never flipped): a chip
+  // steers wherever Send would, and queues only where Send would queue.
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
-    if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
-  }, [disabled, onFollowUpSend])
+    if (disabled) return
+    if (steerActive && onSteer) onSteer({ ...(steerAuto ? { auto: true } : {}), ...(text ? { text } : {}) })
+    else onFollowUpSend?.(text, sourceKeyAtClick)
+  }, [disabled, steerActive, steerAuto, onSteer, onFollowUpSend])
 
   return { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer, stopWithTap, sendFollowUp }
 }
