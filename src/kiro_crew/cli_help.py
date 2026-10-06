@@ -99,6 +99,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "Move it and back it up",
         (
             ("cloud", "Run Kiro Crew on your own AWS EC2 instance"),
+            ("mobile", "Manage per-device mobile SSH access"),
             ("tailnet", "Publish this dashboard on your tailnet (Tailscale)"),
             ("snapshot", "Create a portable backup of Kiro Crew state"),
             ("restore", "Restore Kiro Crew state from a snapshot"),

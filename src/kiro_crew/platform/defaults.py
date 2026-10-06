@@ -669,11 +669,12 @@ class DefaultJailProvider:
 
 
 class DefaultMobileConnectProvider:
-    """The personal-install phone-connection pair.
+    """The personal-install phone-connection methods.
 
     ``tailnet_qr`` rides the existing tailnet publish + QR mint surface
     (``/api/tailnet/mobile/*``); ``login_link`` rides the one-time mobile
-    sign-in link (``/api/auth/mobile-link``).  Descriptors only — each method's
+    sign-in link (``/api/auth/mobile-link``); ``ssh_device`` rides the
+    per-device SSH enrollment (``/api/mobile/ssh/*``).  Descriptors only — each method's
     own endpoint keeps its full guard stack.  An enterprise companion replaces
     this list via ``dataclasses.replace(ctx, mobile_connect=...)``.
     """
@@ -682,6 +683,7 @@ class DefaultMobileConnectProvider:
         return [
             MobileConnectMethod(id="tailnet_qr", kind="tailnet_qr"),
             MobileConnectMethod(id="login_link", kind="login_link"),
+            MobileConnectMethod(id="ssh_device", kind="ssh_device"),
         ]
 
 

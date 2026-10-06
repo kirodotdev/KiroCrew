@@ -164,6 +164,10 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again by two lines: the ``mobile-ssh`` leaf in
+#: ``_CREW_SECRET_LEAVES`` plus its one comment line, fencing the whole directory so
+#: the enrollment lock and atomic-write staging files cannot be rewritten by a run.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -181,7 +185,7 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for six stdout-only filters on the read-only bash allowlist (`tr`, `nl`,
 #: `rev`, `comm`, `od`, `column`) and their reason comment.
-_PACKAGE_LINE_BUDGET = 28_438
+_PACKAGE_LINE_BUDGET = 28_440
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
