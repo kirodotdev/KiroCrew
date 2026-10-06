@@ -982,7 +982,8 @@ class TestNotifyNudgeExpired:
         assert expected in body
         assert forbidden not in body
         assert loop.monitor.target in body
-        assert ds.notify.call_args.kwargs["meta"] is None
+        # A channel-bound loop names its session (for attribution) and no jump link.
+        assert ds.notify.call_args.kwargs["meta"] == {"session_key": loop.slot_key}
 
     def test_a_stalled_suppressed_red_is_not_described_as_fine(self):
         """The dominant stall is an ALREADY-ALERTED red, so the copy must not deny it.

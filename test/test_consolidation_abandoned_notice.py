@@ -32,7 +32,10 @@ def test_an_abandoned_span_posts_a_bell_note():
     assert "3100 messages" in body
     assert "dashboard:chat-1" in body
     assert "empty LLM result" in body
+    # System-originated (the consolidator gave up, no agent produced this note), so
+    # the bridge attributes it by the system tag and still asks the session's profile.
     assert kwargs["meta"] == {
+        "producer_system": "1",
         "session_key": "dashboard:chat-1",
         "kind": "consolidation-abandoned",
     }

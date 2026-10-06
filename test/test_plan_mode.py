@@ -59,7 +59,7 @@ def _make_runner(tmp_path: Path, steps_json: list[dict] | None = None) -> TaskRu
 
     if steps_json is not None:
 
-        async def _mock_decompose(spec, work_dir="", task_id="", start_priority=None):
+        async def _mock_decompose(spec, work_dir="", task_id="", start_priority=None, agent=""):
             return runner._parse_tasks(json.dumps(steps_json))
 
         runner._decompose = _mock_decompose  # type: ignore[assignment]
