@@ -448,7 +448,7 @@ class TestExecuteSuccessResetsCounter:
         # Cancel race: cancel() kills the sandboxed subprocess BEFORE
         # task.cancel(), and the gateway's cancelled branch returns None
         # without setting last_status — so the callback can return normally
-        # while the cancel marker is set. cancel() documents that it leaves
+        # while the run's cancel flag is set. cancel() documents that it leaves
         # consecutive_failures untouched; the ok-branch reset must not fire.
         svc = CronService(base_dir=tmp_path)
         job = self._job()
@@ -458,18 +458,15 @@ class TestExecuteSuccessResetsCounter:
             return None  # gateway cancelled branch: no bookkeeping, no last_status
 
         svc._on_job = cancelled_shape
-        meta = _RunClaim(trigger="scheduled", claimed_at=0.0)  # the marker keys on identity
-        svc._runs.cancelled.mark(job.id, meta)
-        try:
-            asyncio.run(svc._execute(job, meta))
-        finally:
-            svc._runs.cancelled.consume(job.id, meta)
+        meta = _RunClaim(trigger="scheduled", claimed_at=0.0)
+        meta.cancelled = True  # cancel() flags the claim it took
+        asyncio.run(svc._execute(job, meta))
         assert job.consecutive_failures == 3
 
     def test_another_runs_cancel_marker_does_not_suppress_the_reset(self, tmp_path: Path) -> None:
-        # The marker is keyed by run, not by job: one left by a cancelled prior
-        # run whose finalizer is still pending is not THIS run's, so a clean
-        # return from this run still resets the counter.
+        # The cancel flag lives on the run's claim, not on the job: a cancelled
+        # prior run whose finalizer is still pending is not THIS run, so a
+        # clean return from this run still resets the counter.
         svc = CronService(base_dir=tmp_path)
         job = self._job()
         job.consecutive_failures = 3
@@ -480,9 +477,6 @@ class TestExecuteSuccessResetsCounter:
         svc._on_job = succeeding
         prior_run = _RunClaim(trigger="manual", claimed_at=0.0)
         this_run = _RunClaim(trigger="manual", claimed_at=1.0)
-        svc._runs.cancelled.mark(job.id, prior_run)
-        try:
-            asyncio.run(svc._execute(job, this_run))
-        finally:
-            svc._runs.cancelled.consume(job.id, prior_run)
+        prior_run.cancelled = True
+        asyncio.run(svc._execute(job, this_run))
         assert job.consecutive_failures == 0

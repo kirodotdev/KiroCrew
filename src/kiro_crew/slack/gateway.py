@@ -3824,8 +3824,8 @@ class GatewayOrchestrator:
                         # last_status="ok" AND call record_success(), fabricating a
                         # run that never happened and refilling the auto-pause
                         # budget. The cancelled branch above escapes that only
-                        # because _execute additionally checks self._cancelled_jobs
-                        # membership, and a refused overlap is not in that set.
+                        # because _execute additionally checks the run claim's
+                        # cancel flag, and a refused overlap never sets it.
                         #
                         # So use the established deliberately-neutral shape of the
                         # starvation and fire-time-denial paths: last_status="error"
@@ -4236,7 +4236,7 @@ class GatewayOrchestrator:
                         # lifts auto-pause) on every non-error return — Skip
                         # included, since this branch returns None without
                         # setting last_status="error" — and its reset is guarded
-                        # by the _cancelled_jobs cancel-race check. Resetting in
+                        # by the claim.cancelled cancel-race check. Resetting in
                         # this branch would bypass that guard and could re-enable
                         # a job cancelled mid-tick.
                         # Result-less like the deny paths: a Skip that carried the

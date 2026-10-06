@@ -1,10 +1,11 @@
-"""A run's occupancy of its job: the run claim, its fences, and the markers keyed to it.
+"""A run's occupancy of its job: the run claim and its fences.
 
 One claim (:class:`_RunClaim`) per job in flight holds every piece of per-run
-state; :class:`RunClaims` is the only place a claim is stored, fenced, taken and
-released, so a field added to the claim inherits every fence. The cancel and
-reap markers (:class:`_RunMarkers`) and the run-generation counter live here
-too, because each is keyed to the claim or allocated while a claim is held.
+state -- the cancel and reap markers included, as two flags on the claim;
+:class:`RunClaims` is the only place a claim is stored, fenced, taken and
+released, so a field added to the claim inherits every fence. The
+run-generation counter lives here too, because it is allocated while a claim
+is held.
 
 Loop-owned: every claim, fence and release happens on the event loop, await-free.
 """
@@ -84,61 +85,28 @@ class _RunClaim:
     #: with one release: the taker finishes it in a ``finally`` around its
     #: kill awaits, so a teardown that fails still pops the claim it took.
     taken: bool = False
-
-
-class _RunMarkers:
-    """Cancel / reap markers keyed by job id AND the run they were set for.
-
-    ``cancel()`` and the reaper mark the run whose claim they took, and a
-    finalizer consumes only a marker set for its own claim (identity, like
-    every claim fence in :class:`RunClaims`). Keyed by job id alone, a marker
-    is shared by every run of the job: a finalizer stalled in its executor
-    round trip consumes a replacement run's marker, that run's finalizer then
-    finds none and appends a failure row after the cancelled row ``cancel()``
-    already wrote for it -- and two cancellations landing before either is
-    consumed collapse into one marker, so one of the two runs finalizes as if
-    it had completed. Every question asked of a marker names the run: there is
-    no by-job-id membership, because no product path has a job-id-only question
-    to ask.
-    """
-
-    __slots__ = ("_marks",)
-
-    def __init__(self) -> None:
-        self._marks: dict[str, list[_RunClaim]] = {}
-
-    def mark(self, job_id: str, run: _RunClaim) -> None:
-        """Set the marker for ``run``; a run already marked is not marked twice."""
-        if not self.has(job_id, run):
-            self._marks.setdefault(job_id, []).append(run)
-
-    def has(self, job_id: str, run: _RunClaim | None) -> bool:
-        """Whether ``run`` -- this claim, not an equal one -- is marked."""
-        return any(mark is run for mark in self._marks.get(job_id, ()))
-
-    def consume(self, job_id: str, run: _RunClaim | None) -> bool:
-        """Remove ``run``'s marker, leaving every other run's in place."""
-        marks = self._marks.get(job_id)
-        if not marks:
-            return False
-        for index, mark in enumerate(marks):
-            if mark is run:
-                del marks[index]
-                if not marks:
-                    del self._marks[job_id]
-                return True
-        return False
+    #: Set by ``cancel()`` on the claim it took, before its kill awaits: this
+    #: run was cancelled by the user, so its finalizer writes no terminal row
+    #: of its own (``cancel()`` writes the cancelled row) and ``_execute``
+    #: leaves ``consecutive_failures`` alone. A flag on the claim cannot
+    #: outlive its run or be read by another run of the job, so no site has
+    #: to consume it.
+    cancelled: bool = False
+    #: Set by ``_force_reap`` on the claim it took, before its kill awaits:
+    #: the reaper killed this run and writes its terminal row, so the run's
+    #: finalizer writes none. Same lifetime as ``cancelled``.
+    reaped: bool = False
 
 
 class RunClaims:
-    """Every job's run claim, the markers keyed to it, and the generations handed out.
+    """Every job's run claim and the generations handed out.
 
     ``claims`` maps a job id to the claim of the run that occupies the job;
     membership is "the job is running" for the due-scan, the next-wake
     computation, ``run_job`` and the manual-run route, and a claim is released
-    by popping it, one operation for every field. ``reaped`` and ``cancelled``
-    are the reaper's and ``cancel()``'s markers (:class:`_RunMarkers`), consumed
-    by the finalizer of the run they were set for. ``generations`` is the highest
+    by popping it, one operation for every field -- the cancel and reap flags
+    (:attr:`_RunClaim.cancelled`, :attr:`_RunClaim.reaped`) included, so they
+    go with the run they were set for. ``generations`` is the highest
     run generation this process has allocated per job (see
     :meth:`next_generation`): service state, not job state, because every store
     reload replaces the job objects and a counter kept on one of them would be
@@ -147,8 +115,6 @@ class RunClaims:
 
     def __init__(self) -> None:
         self.claims: dict[str, _RunClaim] = {}
-        self.reaped = _RunMarkers()
-        self.cancelled = _RunMarkers()
         self.generations: dict[str, int] = {}
 
     def claim(self, job_id: str, trigger: str) -> _RunClaim:
@@ -175,8 +141,8 @@ class RunClaims:
         never released by an older run, and a run that ``cancel()`` or the
         reaper has taken releases nothing: they finish it after their kill
         awaits, while its claim still keeps every other claimant out. The cancel
-        and reap markers are keyed by the same object (:class:`_RunMarkers`), so
-        a finalizer consumes only the marker set for its own run.
+        and reap flags live on the same object, so a finalizer reads only the
+        flags set for its own run.
         """
         stored = self.claims.get(job_id)
         return stored is not None and stored is claim and not stored.taken

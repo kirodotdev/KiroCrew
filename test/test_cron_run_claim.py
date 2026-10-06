@@ -134,6 +134,8 @@ class TestReleaseClearsEveryField:
             "_job_start_monotonic",
             "_job_jitter",
             "_job_run_meta",
+            "_reaped_jobs",
+            "_cancelled_jobs",
         ):
             assert not hasattr(svc, retired), f"{retired} exists beside _claims"
         assert {f.name for f in dataclasses.fields(_RunClaim)} == {
@@ -145,6 +147,8 @@ class TestReleaseClearsEveryField:
             "jitter",
             "task",
             "taken",
+            "cancelled",
+            "reaped",
         }
 
     def test_release_of_an_unstored_claim_is_a_noop(self) -> None:
@@ -300,7 +304,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
             first = asyncio.get_running_loop().create_task(svc.cancel("j1"))
             await asyncio.wait_for(parked.wait(), timeout=5)
             assert claim.taken and svc._claims["j1"] is claim
-            assert svc._runs.cancelled.has("j1", claim)
+            assert claim.cancelled
 
             second = await svc.cancel("j1")
 
@@ -338,7 +342,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
         """
         svc, job, claim, task = _cancel_fixture(tmp_path)
         assert svc._runs.take("j1") is claim  # a cancel() inside its kill await
-        svc._runs.cancelled.mark("j1", claim)
+        claim.cancelled = True
         generation_before = svc._runs.generations.get("j1", 0)
 
         with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
@@ -347,9 +351,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
         assert svc._claims.get("j1") is claim, "the reap popped the cancel's taken claim"
         task.cancel.assert_not_called()
         svc._sessions.reset.assert_not_awaited()
-        assert not svc._runs.reaped.has(
-            "j1", claim
-        ), "the reap marked a run cancel() already marked"
+        assert not claim.reaped, "the reap marked a run cancel() already marked"
         assert job.last_status != "error" and not (job.last_error or "").startswith("Reaped")
         assert (
             svc._runs.generations.get("j1", 0) == generation_before
@@ -591,8 +593,8 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
         assert replacement.task is not None
         replacement.task.cancel.assert_not_called()
         assert reset_keys == ["cron:j1"], "the sweep reset a replacement run's session"
-        assert not svc._runs.reaped.has("j2", replacement)
-        assert not svc._runs.reaped.has("j2", stale_b)
+        assert not replacement.reaped
+        assert not stale_b.reaped
         assert job_b.last_status != "error" and not (job_b.last_error or "").startswith("Reaped")
         _runs, total_b = await svc._history.get_job_history("j2")
         assert total_b == 0, "the sweep wrote a timeout row for a run seconds old"
@@ -631,7 +633,7 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
         assert replacement.task is not None
         replacement.task.cancel.assert_not_called()
         svc._sessions.reset.assert_not_awaited()
-        assert not svc._runs.reaped.has("j2", replacement)
+        assert not replacement.reaped
         assert job_b.last_status != "error"
         _runs, total = await svc._history.get_job_history("j2")
         assert total == 0
@@ -709,3 +711,39 @@ class TestTaskTracking:
         assert svc.discard_finished_run("j1") is True
         assert "j1" not in svc._claims
         assert svc.discard_finished_run("j1") is False
+
+
+class TestCancelAndReapFlagsLiveOnTheClaim:
+    """The cancel and reap markers are two flags on the run's claim, not side maps.
+
+    A marker kept in a job-id-keyed map outlives its run unless every exit of
+    the run consumes it by hand; a flag on the claim object goes with the claim,
+    so there is no consume site to miss. ``RunClaims`` therefore holds the
+    claims and the generation counter and nothing else keyed by job id.
+    """
+
+    def test_run_claims_keeps_no_per_run_side_map(self) -> None:
+        from kiro_crew.cron_service import claims as claims_module
+
+        assert set(vars(claims_module.RunClaims())) == {"claims", "generations"}, (
+            "RunClaims grew a job-id-keyed map beside the claims; per-run state "
+            "belongs on _RunClaim, where releasing the claim releases it"
+        )
+        assert not hasattr(claims_module, "_RunMarkers")
+        fields = {f.name: f.default for f in dataclasses.fields(_RunClaim)}
+        assert fields["cancelled"] is False and fields["reaped"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_flag_goes_with_its_claim(self, tmp_path: Any) -> None:
+        """cancel() flags the claim it took; the job's next claim starts unflagged."""
+        svc, _job, claim, _task = _cancel_fixture(tmp_path)
+
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+            assert await svc.cancel("j1") is True
+
+        assert "j1" not in svc._claims
+        assert claim.cancelled and not claim.reaped, "cancel() did not flag the run it took"
+        replacement = svc._claim_run("j1", "manual")
+        assert (
+            not replacement.cancelled and not replacement.reaped
+        ), "the cancelled run's flag reached the next run of the job"

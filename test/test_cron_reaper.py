@@ -132,7 +132,7 @@ class TestCronReaper:
 
         assert job.last_status == "error"
         assert "Reaped" in (job.last_error or "")
-        assert svc._runs.reaped.has("expired1", claim)
+        assert claim.reaped
         assert "expired1" not in svc._claims  # released
         # ``ends_conversation``: the reaper has given up on the run, so its conversation
         # is over and its sub-agent runs end with it. Asserting the whole call keeps a
@@ -158,7 +158,9 @@ class TestCronReaper:
         sessions = _mock_sessions()
         svc._sessions = sessions
 
-        svc._claims["ok1"] = _RunClaim(trigger="scheduled", claimed_at=time.time() - 60)  # 60s old
+        claim = svc._claims["ok1"] = _RunClaim(
+            trigger="scheduled", claimed_at=time.time() - 60
+        )  # 60s old
 
         with (
             patch("kiro_crew.sel.sel"),
@@ -168,7 +170,7 @@ class TestCronReaper:
                 await svc._reaper_loop()
 
         # Should not have been reaped
-        assert not svc._runs.reaped._marks  # nothing reaped
+        assert not claim.reaped  # nothing reaped
         sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -179,7 +181,7 @@ class TestCronReaper:
 
         done_task = MagicMock()
         done_task.done.return_value = True
-        svc._claims["done1"] = _RunClaim(
+        claim = svc._claims["done1"] = _RunClaim(
             trigger="scheduled", claimed_at=time.time() - _JOB_TIMEOUT_SECS - 60, task=done_task
         )
 
@@ -190,7 +192,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert not svc._runs.reaped._marks  # nothing reaped
+        assert not claim.reaped  # nothing reaped
         assert "done1" not in svc._claims  # cleaned up
 
     @pytest.mark.asyncio
@@ -398,7 +400,7 @@ class TestCronReaper:
         job = _make_job("reaped1")
         svc._jobs = [job]
         claim = svc._claim_run("reaped1", "scheduled")
-        svc._runs.reaped.mark("reaped1", claim)
+        claim.reaped = True
 
         with (
             patch.object(svc, "_execute_with_timeout", new_callable=AsyncMock),
@@ -407,7 +409,6 @@ class TestCronReaper:
             await svc._run_job_isolated(job, claim)
 
         mock_merge.assert_not_called()
-        assert not svc._runs.reaped.has("reaped1", claim)  # cleaned up
 
     @pytest.mark.asyncio
     async def test_reaped_flag_prevents_merge_on_cancel(self) -> None:
@@ -418,7 +419,7 @@ class TestCronReaper:
         job = _make_job("reaped2")
         svc._jobs = [job]
         claim = svc._claim_run("reaped2", "scheduled")
-        svc._runs.reaped.mark("reaped2", claim)
+        claim.reaped = True
 
         with (
             patch.object(svc, "_execute_with_timeout", side_effect=asyncio.CancelledError),
@@ -428,7 +429,6 @@ class TestCronReaper:
                 await svc._run_job_isolated(job, claim)
 
         mock_merge.assert_not_called()
-        assert not svc._runs.reaped.has("reaped2", claim)
 
     @pytest.mark.asyncio
     async def test_non_reaped_job_merges_normally(self) -> None:
@@ -497,7 +497,7 @@ class TestCronReaper:
             await svc._force_reap("nosess1", _JOB_TIMEOUT_SECS + 10, claim=claim)
 
         assert job.last_status == "error"
-        assert svc._runs.reaped.has("nosess1", claim)
+        assert claim.reaped
 
     @pytest.mark.asyncio
     async def test_job_start_time_tracked(self) -> None:
@@ -569,7 +569,7 @@ class TestCronReaper:
         job.timeout_secs = 5400  # 90 min
         svc._jobs = [job]
         # Running for 2000s — past default 1800 but within custom 5400
-        svc._claims["custom1"] = _RunClaim(
+        claim = svc._claims["custom1"] = _RunClaim(
             trigger="scheduled", claimed_at=time.time() - 2000, task=_live_task()
         )
 
@@ -577,7 +577,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert not svc._runs.reaped._marks  # nothing reaped
+        assert not claim.reaped  # nothing reaped
 
     @pytest.mark.asyncio
     async def test_reaper_kills_job_exceeding_custom_timeout(self, tmp_path: object) -> None:
@@ -601,7 +601,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert svc._runs.reaped.has("custom2", claim)
+        assert claim.reaped
         assert job.last_status == "error"
         assert "exceeded 5400s deadline" in (job.last_error or "")
 
@@ -615,7 +615,7 @@ class TestCronReaper:
         job.timeout_secs = 600  # below 1800 floor
         svc._jobs = [job]
         # Running for 1000s — past job.timeout_secs but within floor
-        svc._claims["floor1"] = _RunClaim(
+        claim = svc._claims["floor1"] = _RunClaim(
             trigger="scheduled", claimed_at=time.time() - 1000, task=_live_task()
         )
 
@@ -623,7 +623,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert not svc._runs.reaped._marks  # nothing reaped
+        assert not claim.reaped  # nothing reaped
 
     @pytest.mark.asyncio
     async def test_reaper_caps_at_86400(self, tmp_path: object) -> None:
@@ -647,7 +647,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert svc._runs.reaped.has("cap1", claim)
+        assert claim.reaped
         assert "exceeded 86400s deadline" in (job.last_error or "")
 
     @pytest.mark.asyncio
@@ -671,7 +671,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert svc._runs.reaped.has("ghost1", claim)
+        assert claim.reaped
 
 
 def _one_sweep() -> Any:
@@ -699,7 +699,7 @@ class TestReaperMonotonicDeadline:
         svc._jobs = [job]
         # Wall clock says the job has been running past its deadline only
         # because the host was suspended; it has actually executed for 60s.
-        svc._claims["slept1"] = _RunClaim(
+        claim = svc._claims["slept1"] = _RunClaim(
             trigger="scheduled",
             claimed_at=time.time() - _JOB_TIMEOUT_SECS - 600,
             started_monotonic=time.monotonic() - 60,
@@ -711,7 +711,7 @@ class TestReaperMonotonicDeadline:
                 await svc._reaper_loop()
 
         mock_reap.assert_not_awaited()
-        assert not svc._runs.reaped._marks  # nothing reaped
+        assert not claim.reaped  # nothing reaped
 
     @pytest.mark.asyncio
     async def test_reaper_still_kills_genuine_overrun_on_monotonic_clock(self) -> None:
@@ -861,7 +861,7 @@ class TestReaperMonotonicDeadline:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        assert svc._runs.reaped.has("legacy1", claim)
+        assert claim.reaped
 
 
 class TestReaperReleasesFinishedTask:
@@ -906,7 +906,7 @@ class TestReaperReleasesFinishedTask:
             stale = asyncio.get_running_loop().create_task(_died_before_cleanup())
             await asyncio.gather(stale, return_exceptions=True)
             assert stale.done()
-            svc._claims[job.id] = _RunClaim(
+            claim = svc._claims[job.id] = _RunClaim(
                 trigger="scheduled",
                 claimed_at=time.time() - 60,
                 started_monotonic=time.monotonic() - 60,
@@ -928,7 +928,7 @@ class TestReaperReleasesFinishedTask:
                 "so the due-scan keeps skipping every scheduled fire of it"
             )
             # Released, not reaped: the run was over, there was nothing to kill.
-            assert not svc._runs.reaped._marks
+            assert not claim.reaped
             svc._sessions.reset.assert_not_awaited()
 
             # The next tick fires the job again.
@@ -1217,7 +1217,7 @@ class TestReaperRecordsAFailedSigkill:
         assert total == 1 and runs[0]["status"] == "timeout"
         assert "; kill failed: " in runs[0]["error"]
         assert "refused1" not in svc._claims
-        assert svc._runs.reaped.has("refused1", claim)
+        assert claim.reaped
         assert job.last_status == "error"
 
     @pytest.mark.asyncio

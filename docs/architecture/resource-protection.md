@@ -521,10 +521,10 @@ itself and the injection works as described above.
 - **The reaper's `reaped` flag prevents double cleanup.** When the reaper force-kills a
   subagent it sets `info.reaped = True`. `_run()`'s `CancelledError` handler and `finally`
   block check the flag and skip their own cleanup (release, reset, decrement, announce) to
-  avoid double side effects. The cron reaper uses the same pattern: it marks the run it reaped in the claim-keyed
-  `RunClaims.reaped` marker (`_RunMarkers`, `cron_service/claims.py`), and `_run_job_isolated`
-  consumes only the marker set for its own claim, so it does not merge a stale result after
-  the reaper has already updated job state.
+  avoid double side effects. The cron reaper uses the same pattern: it sets the `reaped`
+  flag on the claim of the run it reaped (`_RunClaim.reaped`, `cron_service/claims.py`), and
+  `_run_job_isolated` reads the flag off its own claim, so it does not merge a stale result
+  after the reaper has already updated job state.
 
 - **`asyncio.shield` in the task runner protects cleanup from cancellation.** When a task run
   is cancelled, `_cleanup_run_sessions` is wrapped in `asyncio.shield()` so session resets
