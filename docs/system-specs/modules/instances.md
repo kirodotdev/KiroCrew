@@ -1427,14 +1427,17 @@ using either alone costs a platform:
   PIDs use, in-process (no subprocess), and microsecond resolution on macOS, where
   `process_start_time`'s `ps -o lstart=` spelling is only 1-second granular, so a
   PID recycled inside the same second would reproduce an identical value.
-- `platform_compat.process_start_time()` is the fallback, and it is what keeps
-  **Windows** working: it reads the process creation `FILETIME` (100-ns units)
-  through a query-only handle, while `get_process_start_id()` implements Linux and
-  macOS only and answers `None` everywhere else. Without this leg the token is
-  empty on every Windows host, so a pod there could never prove ownership — an
-  unsatisfiable requirement rather than a strict one. `metrics.md` records the same
-  trap reached from the other direction: `get_process_start_id` used alone as a
-  liveness test "judged every owner dead on that entire platform".
+- `platform_compat.process_start_time()` is the fallback, and on **Windows** it is
+  what `get_process_start_id()` dispatches to: it reads the process creation
+  `FILETIME` (100-ns units) through a query-only handle. `get_process_start_id()`
+  now implements all three platforms — Linux `/proc` field 22, macOS libproc, and
+  the Windows `process_start_time()` leg — and answers `None` only on an
+  unrecognised host or a failed read, never on Windows categorically (issue #8473).
+  Without the Windows leg the token would be empty on every Windows host, so a pod
+  there could never prove ownership — an unsatisfiable requirement rather than a
+  strict one. `metrics.md` records the complementary trap: `get_process_start_id`
+  must not be used alone as a *liveness* test, because a `None` (a process it may
+  not introspect) must read as "identity unknown", never as "owner dead".
 
 The fallback's value is whitespace-collapsed, because the macOS `ps` spelling is
 space-padded and the reader requires a single token; Windows returns a bare

@@ -1292,11 +1292,11 @@ class TestRunMarkerDiscovery:
         monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: "1730.000042")
         assert run_marker.pid_start_token(4242) == "1730.000042"
 
-        # The preferred producer implements Linux and macOS only. When it says
-        # nothing, the fallback is consulted rather than the token going empty --
-        # that fallback is the ONLY start identity available on Windows (a
-        # creation FILETIME), so skipping it would make a pod there permanently
-        # unprovable.
+        # The preferred producer answers None on an unrecognised host or a
+        # failed read. When it says nothing, the fallback is consulted rather
+        # than the token going empty -- that fallback is the ONLY start identity
+        # available on Windows (a creation FILETIME), so skipping it would make a
+        # pod there permanently unprovable.
         monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: None)
         monkeypatch.setattr(platform_compat, "process_start_time", lambda pid: "133724160000000000")
         assert run_marker.pid_start_token(4242) == "133724160000000000"

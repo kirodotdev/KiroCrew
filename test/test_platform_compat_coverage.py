@@ -647,6 +647,18 @@ class TestGetProcessStartId:
         monkeypatch.setattr(pc, "process_start_time", lambda pid: None)
         assert pc.get_process_start_id(5) is None
 
+    def test_a_nonpositive_pid_is_unknown_without_a_platform_read(self, monkeypatch):
+        # pid <= 0 names no process, so the guard answers None before dispatch --
+        # the win32 producer (and every other platform's) is never consulted.
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+
+        def _refuse(_pid):
+            raise AssertionError("get_process_start_id read a non-positive pid")
+
+        monkeypatch.setattr(pc, "process_start_time", _refuse)
+        assert pc.get_process_start_id(0) is None
+        assert pc.get_process_start_id(-1) is None
+
     def test_identity_never_contains_a_colon(self, monkeypatch):
         # Callers embed the value in colon-delimited records.
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=17, usec=1), ret=136)

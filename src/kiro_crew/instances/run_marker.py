@@ -161,12 +161,13 @@ def pid_start_token(pid: int) -> str:
       inside the same second would reproduce an identical token there and the
       guard would silently pass.
     - :func:`kiro_crew.platform_compat.process_start_time` is the fallback, and
-      it is what keeps **Windows** working: it reads the process creation
-      ``FILETIME`` (100-ns units) through a query-only handle, while
-      ``get_process_start_id`` implements Linux and macOS only and answers
-      ``None`` everywhere else. Without this leg the token is empty on every
-      Windows host, so a pod there could never prove ownership at all — an
-      unsatisfiable requirement rather than a strict one.
+      on **Windows** it is what ``get_process_start_id`` dispatches to: it reads
+      the process creation ``FILETIME`` (100-ns units) through a query-only
+      handle. ``get_process_start_id`` implements all three platforms and answers
+      ``None`` only on an unrecognised host or a failed read. Without the Windows
+      leg the token would be empty on every Windows host, so a pod there could
+      never prove ownership at all — an unsatisfiable requirement rather than a
+      strict one.
 
     The fallback's value is whitespace-collapsed because the macOS ``ps``
     spelling is space-padded and the reader requires a single token; Windows

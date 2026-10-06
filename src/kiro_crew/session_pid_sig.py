@@ -33,7 +33,7 @@ Publication records the process
 incarnation (``platform_compat.get_process_start_id`` — the same identity
 ``session_pid.py`` writes into its ``<gw>:<pid>:<start_token>`` sweep
 records) and BOTH readers refuse on a proven mismatch, while an absent
-(legacy file) or unreadable (Windows) token stays "unknown", never a
+(legacy file) token stays "unknown", never a
 mismatch. Same-uid only: this is a robustness/misattribution guard, not a
 privilege boundary — the recycled process already runs as the same user.
 
