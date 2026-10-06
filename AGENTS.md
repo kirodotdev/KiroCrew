@@ -299,7 +299,14 @@ Tests MUST be deterministic: wait on a signal, never sleep as a barrier; never s
 to make timestamps differ (set them); one clock, injected or frozen at the module's
 own binding; never assert an order you did not define; no literal port for a real
 listener (bind 0); no network beyond loopback; every self-unblocked await bounded.
-`AUTOSDE.yaml`'s `tests-are-deterministic` rule blocks these in review. Contract:
+`AUTOSDE.yaml`'s `tests-are-deterministic` rule blocks these in review, the SAST
+job's `semgrep/test-determinism.yaml` refuses the commonest on a new line, and
+`test/test_flake_pattern_ratchet.py` counts per file the clock, wait, port, environment
+and module-cache shapes those patterns miss, failing a change that adds one to a file
+(measured against its merge-base; a deliberate one carries `# flake-ok: <reason>`).
+CI's Backend Tests checkout is depth 1 today, so the ratchet is a local, pre-push gate:
+run `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing.
+Contract:
 [testing-conventions § Determinism contract](docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
 
 ## Cross-platform

@@ -2,12 +2,12 @@ rules:
   # ─── Shapes the Determinism contract rules out, on the lines a change adds ──
   # docs/system-specs/common/testing-conventions.md § Determinism contract names
   # each one and the shape to use instead. The tree already holds thousands of
-  # them, counted per file by test/test_flake_pattern_ratchet.py; these rules
-  # run diff-scoped in the SAST job (`--baseline-commit`), so they refuse only a
-  # NEW site and never report one an author did not touch. A line that keeps a
-  # shape on purpose says why with `# nosemgrep: <rule id>` plus the reason, the
-  # same way it carries `# flake-ok: <reason>` for the ratchet; for the autouse
-  # fixture rule that line is the fixture's `def` line.
+  # them; these rules run diff-scoped in the SAST job (`--baseline-commit`), so
+  # they refuse only a NEW site and never report one an author did not touch.
+  # test/test_flake_pattern_ratchet.py counts per file only the shapes these
+  # patterns miss, so no site needs both markers. A line that keeps a shape on
+  # purpose says why with `# nosemgrep: <rule id>` plus the reason; for the
+  # autouse fixture rule that line is the fixture's `def` line.
 
   - id: kirocrew.test-sleep-as-barrier
     patterns:

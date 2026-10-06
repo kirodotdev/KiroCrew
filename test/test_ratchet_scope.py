@@ -42,6 +42,11 @@ scope = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scope)
 
 
+#: Config a ``git -c ...`` that ran the suite (a pre-push hook) exports to its children.
+#: git reads it after ``GIT_CONFIG_COUNT``, so it would override any pin set there.
+_GIT_COMMAND_LINE_CONFIG = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+
+
 def _fixture_git_env() -> dict[str, str]:
     """Env for a fixture git call: no inherited location, templates, hooks, or identity.
 
@@ -65,6 +70,7 @@ def _fixture_git_env() -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
     }
+    env.pop("GIT_CONFIG_PARAMETERS", None)  # see _GIT_COMMAND_LINE_CONFIG
     count = int(env["GIT_CONFIG_COUNT"])
     env[f"GIT_CONFIG_KEY_{count}"] = "init.templateDir"
     env[f"GIT_CONFIG_VALUE_{count}"] = ""
@@ -138,7 +144,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _repo_template: Path) 
     # repository. Delete the whole location family -- monkeypatch restores it
     # after the test -- using the same canonical list the production env
     # builder strips.
-    for var in _GIT_LOCATION_VARS:
+    for var in (*_GIT_LOCATION_VARS, *_GIT_COMMAND_LINE_CONFIG):
         monkeypatch.delenv(var, raising=False)
     fixture_repo = tmp_path / "repo"
     shutil.copytree(_repo_template, fixture_repo)
@@ -558,3 +564,216 @@ def test_env_base_gates_delegate_to_the_shared_plumbing() -> None:
         source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "ratchet_scope.py" in source, f"{name} no longer uses the shared plumbing"
         assert r"\+(\d+)(?:,(\d+))?" not in source, f"{name} grew a private hunk parser back"
+
+
+# ── fork-aware helpers (change_merge_base / change_files / show_at) ────
+
+
+def _drop_ambient_git_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The helpers under test run git with the ambient env, so an exported ``GIT_DIR``
+    or ``GIT_INDEX_FILE`` (pytest run from a git hook) would answer for the wrong
+    repository, and an exported ``git -c`` config would change what they read. Delete
+    both, as the ``repo`` fixture above does."""
+    for var in (*_GIT_LOCATION_VARS, *_GIT_COMMAND_LINE_CONFIG):
+        monkeypatch.delenv(var, raising=False)
+
+
+def assert_fixture_ignores_ambient_git(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fixture: str,
+) -> None:
+    """Build *fixture* under an inherited ``GIT_INDEX_FILE`` and a ``GIT_TEMPLATE_DIR``
+    whose post-commit hook writes a marker: the foreign index stays untouched and the
+    hook never runs. A commit on the scrubbed env with only the template's hooks put
+    back proves the hook would run on this host, so the absence means something."""
+    template = tmp_path / "template"
+    (template / "hooks").mkdir(parents=True)
+    marker = tmp_path / "hook-ran"
+    hook = template / "hooks" / "post-commit"
+    # LF on every host: Git for Windows' sh would read a CRLF line's redirect target as
+    # "hook-ran\r" and the marker would never appear under its real name.
+    hook.write_text(
+        f'#!/bin/sh\necho ran > "{marker.as_posix()}"\n', encoding="utf-8", newline="\n"
+    )
+    hook.chmod(0o755)
+    index = tmp_path / "foreign-index"
+    index.write_bytes(b"not an index")
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(template))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(index))
+    hooks = (template / "hooks").as_posix()
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hooksPath'='{hooks}'")
+    scrubbed = _fixture_git_env()
+    assert "GIT_INDEX_FILE" not in scrubbed, "the fixture env keeps a foreign index"
+    assert "GIT_CONFIG_PARAMETERS" not in scrubbed, "the fixture env keeps git -c options"
+    request.getfixturevalue(fixture)
+    # The helpers under test read the ambient env: the fixture must have dropped both.
+    ambient = sorted({*_GIT_LOCATION_VARS, *_GIT_COMMAND_LINE_CONFIG} & set(os.environ))
+    assert not ambient, f"the fixture left {ambient} for the helpers under test"
+    assert index.read_bytes() == b"not an index", "a fixture git call used the foreign index"
+    assert not marker.exists(), "a fixture commit ran an inherited template hook"
+    copied = [path for path in tmp_path.rglob("post-commit") if template not in path.parents]
+    assert not copied, f"git init copied the inherited template's hook: {copied}"
+    control = tmp_path / "control"
+    control.mkdir()
+    env = _fixture_git_env()
+    env["GIT_TEMPLATE_DIR"] = str(template)
+    count = int(env["GIT_CONFIG_COUNT"])  # undo the scrubbed env's core.hooksPath pin
+    env[f"GIT_CONFIG_KEY_{count}"] = "core.hooksPath"
+    env[f"GIT_CONFIG_VALUE_{count}"] = ".git/hooks"
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "control"]):
+        subprocess.run(["git", *argv], cwd=control, env=env, check=True, capture_output=True)
+    assert marker.exists(), "the inherited hook never runs here, so this proves nothing"
+
+
+class _RepoHelper:
+    """A tiny ``Repo`` wrapper holding a ``git(*argv)`` runner so a fixture can keep both."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def git(self, *argv: str) -> str:
+        # The scrubbed fixture env: no inherited location, template hooks or identity.
+        return _git(self.root, *argv)
+
+    def __truediv__(self, name: str) -> Path:
+        return self.root / name
+
+
+class TestChangeMergeBase:
+    """The change-shaped base resolver, for a per-file comparison that must handle a
+    forked ``origin`` and a shallow CI checkout.
+    """
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _RepoHelper:
+        _drop_ambient_git_location(monkeypatch)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        root = tmp_path / "repo"
+        root.mkdir()
+        repo = _RepoHelper(root)
+        (root / "a.txt").write_text("one\n", encoding="utf-8")
+        repo.git("init", "-q")
+        repo.git("checkout", "-q", "-b", "main")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "base")
+        repo.git("checkout", "-q", "-b", "change")
+        (root / "b.txt").write_text("two\n", encoding="utf-8")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "add b.txt")
+        return repo
+
+    def test_the_fixture_ignores_ambient_git_state(self, request, monkeypatch, tmp_path) -> None:
+        assert_fixture_ignores_ambient_git(request, monkeypatch, tmp_path, "repo")
+
+    def test_the_local_base_branch_is_used_when_nothing_else_resolves(
+        self, repo: _RepoHelper
+    ) -> None:
+        base, how = scope.change_merge_base(cwd=repo.root, env={})
+        assert base == repo.git("rev-parse", "main") and "main" in how
+
+    def test_a_fork_s_stale_origin_loses_to_a_newer_upstream(self, repo: _RepoHelper) -> None:
+        # upstream/main picks up a commit origin/main has not (the fork lags).
+        repo.git("checkout", "-q", "main")
+        stale_main = repo.git("rev-parse", "main")
+        (repo / "c.txt").write_text("three\n", encoding="utf-8")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "merged upstream")
+        new_main = repo.git("rev-parse", "main")
+        # change rebases onto the new main so its merge-base with upstream/main is new_main.
+        repo.git("checkout", "-q", "change")
+        repo.git("rebase", "-q", "main")
+        repo.git("update-ref", "refs/remotes/origin/main", stale_main)
+        repo.git("update-ref", "refs/remotes/upstream/main", new_main)
+        base, how = scope.change_merge_base(cwd=repo.root, env={})
+        assert base == new_main and "upstream/main" in how
+
+    def test_the_env_override_wins_and_an_unresolvable_value_is_rejected(
+        self, repo: _RepoHelper
+    ) -> None:
+        change = repo.git("rev-parse", "change")
+        base, how = scope.change_merge_base(cwd=repo.root, env={"FLAKE_RATCHET_BASE": "change"})
+        assert base == change and "FLAKE_RATCHET_BASE" in how
+        assert (
+            scope.change_merge_base(cwd=repo.root, env={"FLAKE_RATCHET_BASE": "no-such-ref"})[0]
+            is None
+        )
+
+    def test_a_pull_request_merge_commit_s_first_parent_is_the_base(
+        self, repo: _RepoHelper
+    ) -> None:
+        before = repo.git("rev-parse", "main")
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "merge", "change")
+        base, how = scope.change_merge_base(cwd=repo.root, env={"GITHUB_BASE_REF": "main"})
+        assert base == before and "first parent" in how
+
+    def test_a_push_event_uses_the_first_parent_too(self, repo: _RepoHelper) -> None:
+        before = repo.git("rev-parse", "HEAD")
+        (repo / "a.txt").write_text("edited\n", encoding="utf-8")
+        repo.git("commit", "-q", "-am", "another")
+        base, how = scope.change_merge_base(cwd=repo.root, env={"GITHUB_EVENT_NAME": "push"})
+        assert base == before and "push" in how
+
+    def test_an_unreadable_merge_base_returns_none(self, tmp_path: Path, monkeypatch) -> None:
+        _drop_ambient_git_location(monkeypatch)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+        root = tmp_path / "bare"
+        root.mkdir()
+        assert scope.change_merge_base(cwd=root, env={})[0] is None
+
+
+class TestChangeFilesAndShowAt:
+    """``change_files`` reports (base path, now path) for each file the working tree
+    changes against *base*, and ``show_at`` reads a file's bytes at that base."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _RepoHelper:
+        _drop_ambient_git_location(monkeypatch)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        root = tmp_path / "repo"
+        root.mkdir()
+        repo = _RepoHelper(root)
+        (root / "a.txt").write_text("one\n", encoding="utf-8")
+        (root / "b.txt").write_text("two\n", encoding="utf-8")
+        (root / "to_delete.txt").write_text("gone\n", encoding="utf-8")
+        repo.git("init", "-q")
+        repo.git("checkout", "-q", "-b", "main")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "base")
+        repo.git("checkout", "-q", "-b", "change")
+        return repo
+
+    def test_the_fixture_ignores_ambient_git_state(self, request, monkeypatch, tmp_path) -> None:
+        assert_fixture_ignores_ambient_git(request, monkeypatch, tmp_path, "repo")
+
+    def _base(self, repo: _RepoHelper) -> str:
+        return repo.git("rev-parse", "main")
+
+    def test_adds_deletes_renames_copies_and_untracked_are_paired_right(
+        self, repo: _RepoHelper
+    ) -> None:
+        # one of each kind that change_files pairs: modify, rename, delete, add, untracked.
+        (repo / "a.txt").write_text("edited\n", encoding="utf-8")  # modify
+        repo.git("mv", "b.txt", "c.txt")  # rename
+        (repo / "e.txt").write_text("tracked add\n", encoding="utf-8")
+        repo.git("add", "e.txt")  # tracked add
+        repo.git("rm", "-q", "to_delete.txt")  # delete
+        (repo / "untracked.txt").write_text("outside git\n", encoding="utf-8")  # untracked
+        pairs = scope.change_files(self._base(repo), cwd=repo.root)
+        assert ("a.txt", "a.txt") in pairs
+        assert ("b.txt", "c.txt") in pairs
+        assert ("to_delete.txt", None) in pairs
+        assert (None, "e.txt") in pairs
+        assert (None, "untracked.txt") in pairs
+
+    def test_show_at_reads_bytes_at_the_base_and_returns_none_for_absent(
+        self, repo: _RepoHelper
+    ) -> None:
+        assert scope.show_at(self._base(repo), "a.txt", cwd=repo.root) == "one\n"
+        assert scope.show_at(self._base(repo), "nope.txt", cwd=repo.root) is None

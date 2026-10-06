@@ -352,3 +352,140 @@ def added_lines_at(frm: str, path: str, *, anchor_deletions: bool = False) -> se
     """
     diff = _git_strict("diff", "--unified=0", "--no-color", "--text", frm, "--", path)
     return parse_added_lines(diff, anchor_deletions=anchor_deletions)
+
+
+# ── change-shaped base resolver (added for test/test_flake_pattern_ratchet.py) ──
+
+
+def _git_result(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+    """Run git under *cwd* (default: the repo root), returning ``(code, stdout)``."""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd or ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.returncode, proc.stdout
+
+
+def _readable(rev: str, *, cwd: Path | None = None) -> bool:
+    return _git_result("cat-file", "-e", f"{rev}^{{commit}}", cwd=cwd)[0] == 0
+
+
+def _merge_base_with(ref: str, *, cwd: Path | None = None) -> str | None:
+    if not _readable(ref, cwd=cwd):
+        return None
+    code, out = _git_result("merge-base", "HEAD", ref, cwd=cwd)
+    return out.strip() if code == 0 and out.strip() else None
+
+
+def change_merge_base(
+    env_name: str = "FLAKE_RATCHET_BASE",
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[str | None, str]:
+    """``(the commit this change is measured against, how it was found)``, or ``(None, why not)``.
+
+    Shared base resolver for a change-SHAPED comparison (the fork- and
+    merge_group-aware counterpart of :func:`resolve_base`, which answers a
+    single-env-ref question). Order:
+
+    * ``env[env_name]`` when set to a resolvable revision (``FLAKE_RATCHET_BASE``
+      by default); an unresolvable value returns ``None`` with a reason.
+    * On CI, the merge commit's first parent for a pull request
+      (``GITHUB_BASE_REF``) or a ``push``/``merge_group`` event
+      (``GITHUB_EVENT_NAME``). A shallow clone with no parent object skips here.
+    * The NEWER merge-base of ``upstream/<base>`` and ``origin/<base>``: a
+      fork's ``origin`` is the fork, which can lag the canonical base, so
+      choosing by ancestry keeps the comparison honest. Where only one of the
+      two resolves, that one wins.
+    * The local ``<base>`` branch, as a last resort.
+
+    With none readable (a shallow local clone with no remote), ``None`` is
+    returned: a caller falls through to its own "compared nothing" path and
+    never judges against a stale stored count.
+
+    *cwd* and *env* exist so a self-test can run inside a scratch repository
+    with its own environment; both default to the repository root and
+    ``os.environ``.
+    """
+    environ = os.environ if env is None else env
+    override = environ.get(env_name, "").strip()
+    if override:
+        found = _merge_base_with(override, cwd=cwd)
+        if found is None:
+            return None, f"{env_name}={override} has no merge-base with HEAD"
+        return found, f"the merge-base with {override} ({env_name})"
+    pr_base = environ.get("GITHUB_BASE_REF", "").strip()
+    event = environ.get("GITHUB_EVENT_NAME", "")
+    code, out = _git_result("rev-list", "--parents", "-n", "1", "HEAD", cwd=cwd)
+    parents = out.split()[1:] if code == 0 else []
+    if parents and _readable(parents[0], cwd=cwd):
+        if pr_base and len(parents) >= 2:
+            return parents[0], "the pull request merge commit's first parent"
+        if not pr_base and event in ("push", "merge_group"):
+            return parents[0], f"the {event} commit's first parent"
+    branch = pr_base or "main"
+    candidates: list[tuple[str, str]] = []
+    for remote in ("upstream", "origin"):
+        found = _merge_base_with(f"{remote}/{branch}", cwd=cwd)
+        if found is not None:
+            candidates.append((found, f"{remote}/{branch}"))
+    if candidates:
+        best, ref = candidates[0]
+        for other, other_ref in candidates[1:]:
+            if (
+                other != best
+                and _git_result("merge-base", "--is-ancestor", best, other, cwd=cwd)[0] == 0
+            ):
+                best, ref = other, other_ref
+        return best, f"the merge-base with {ref}"
+    local = _merge_base_with(branch, cwd=cwd)
+    if local is not None:
+        return local, f"the merge-base with {branch}"
+    return None, (f"no merge-base with upstream/{branch}, origin/{branch} or {branch} is readable")
+
+
+def change_files(
+    base: str,
+    *,
+    cwd: Path | None = None,
+) -> list[tuple[str | None, str | None]]:
+    """``(path at base, path now)`` for each file the working tree changes against *base*.
+
+    The counterpart of :func:`changed_paths_at` for a change-shaped
+    comparison: a new file has no base path, a deleted one no current path,
+    git's rename detection pairs the two, and a copy (``--find-copies``) is
+    reported as a new file. Untracked files are included so a run before a
+    commit sees what the commit will hold.
+    """
+    code, out = _git_result("diff", "--name-status", "-M", "-C", "-z", base, "--", cwd=cwd)
+    if code != 0:
+        raise RuntimeError(f"git diff against {base} failed")
+    fields = out.split("\0")
+    pairs: list[tuple[str | None, str | None]] = []
+    index = 0
+    while index < len(fields) and fields[index]:
+        status = fields[index][0]
+        if status in "RC":
+            src, dst = fields[index + 1], fields[index + 2]
+            pairs.append((src, dst) if status == "R" else (None, dst))
+            index += 3
+            continue
+        path = fields[index + 1]
+        pairs.append(
+            (None, path) if status == "A" else (path, None) if status == "D" else (path, path)
+        )
+        index += 2
+    code, out = _git_result("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd)
+    pairs.extend((None, path) for path in out.split("\0") if code == 0 and path)
+    return pairs
+
+
+def show_at(base: str, path: str, *, cwd: Path | None = None) -> str | None:
+    """``path``'s text at *base*, or ``None`` if the file was absent there."""
+    code, out = _git_result("show", f"{base}:{path}", cwd=cwd)
+    return out if code == 0 else None

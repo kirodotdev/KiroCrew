@@ -110,8 +110,35 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   [Proving a determinism fix](#proving-a-determinism-fix).
 
 A line that must keep one of these shapes on purpose carries `# flake-ok: <reason>`
-(`// flake-ok: <reason>` in TypeScript) with a concrete reason. Review accepts the
-marker, and the reason is the record of why the rule does not apply there.
+(`// flake-ok: <reason>` in TypeScript) with a concrete reason, or `# nosemgrep: <rule
+id>` with the reason where a `semgrep/test-determinism.yaml` rule refuses it. Review
+accepts the marker, and the reason is the record of why the rule does not apply there.
+
+`test/test_flake_pattern_ratchet.py` counts, file by file, the shapes
+`semgrep/test-determinism.yaml`'s patterns miss, so no site needs both markers: patches of `asyncio.sleep`, of the
+`datetime` classes or of another module's `time` binding (`<mod>.time`,
+`"pkg.mod.time.<attr>"`, `mock.patch.object(time, ...)`), a `sys.modules` eviction with
+no restore in the same function, raw environment writes, duration bounds, literal waits
+under two seconds (the too-tight lost-run bound of class 6; a negative such as
+`assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
+ceilings, crew-log removals outside `eager.paused()`, and five frontend shapes. It fails a
+change that raises any file's count above that file's count at the change's merge-base:
+`FLAKE_RATCHET_BASE` when set, the first parent of a CI merge commit, else the newer
+merge-base with `upstream/main` or `origin/main` (fetch the remote your branch was cut
+from: `upstream` for a fork). The working tree is judged, untracked files included. A
+new file starts at zero, a deleted file passes, a rename git detects keeps its count,
+and a rise is forgiven only for a site that moved (the same class in an identical
+enclosing function, or the same line in TypeScript, that left another file in the same
+change; a function edited in place, or a site a `flake-ok` still excuses, has not
+left). When no merge-base is readable, the test
+warns `compared nothing` and passes rather than judge a change by sites other merged
+changes added. CI's Backend Tests checkout is depth 1 today, so it is a local, pre-push
+gate until that checkout keeps the merge commit's parents: run
+`python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing. It does not
+count an order assertion (D4) or a network call (D10): those rest on review. A
+`flake-ok` line whose reason has ten characters or more, words and not just punctuation
+or digits, is not counted. `python test/test_flake_pattern_ratchet.py` prints each
+file's current counts as the burn-down view; no committed file holds them.
 
 ## Patterns
 

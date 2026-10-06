@@ -7,8 +7,10 @@ import datetime
 import importlib
 import os
 import random
+import sys
 import time
 from datetime import date, timezone
+from unittest import mock
 
 import pytest
 
@@ -56,6 +58,9 @@ def test_reload(module):
     importlib.reload(module)
     # ok: kirocrew.test-in-process-reload
     importlib.import_module("json")
+    # An eviction is not a reload; test/test_flake_pattern_ratchet.py's K5 counts it.
+    # ok: kirocrew.test-in-process-reload
+    del sys.modules["json"]
 
 
 def test_clock_patches(monkeypatch, subject):
@@ -65,6 +70,18 @@ def test_clock_patches(monkeypatch, subject):
     monkeypatch.setattr("time.time", lambda: 0.0)
     # ok: kirocrew.test-stdlib-clock-rebound
     monkeypatch.setattr(subject, "time", object())
+    # The rule's patterns do not reach these clock and sleep patches;
+    # test/test_flake_pattern_ratchet.py's K3 counts them instead.
+    # ok: kirocrew.test-stdlib-clock-rebound
+    monkeypatch.setattr(asyncio, "sleep", lambda _seconds: None)
+    # ok: kirocrew.test-stdlib-clock-rebound
+    monkeypatch.setattr(datetime, "datetime", object())
+    # ok: kirocrew.test-stdlib-clock-rebound
+    monkeypatch.setattr(subject.time, "monotonic", lambda: 0.0)
+    # ok: kirocrew.test-stdlib-clock-rebound
+    monkeypatch.setattr("kiro_crew.acp.client.time.monotonic", lambda: 0.0)
+    # ok: kirocrew.test-stdlib-clock-rebound
+    mock.patch.object(time, "sleep")
 
 
 def test_local_time():
