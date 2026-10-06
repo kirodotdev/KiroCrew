@@ -1928,6 +1928,60 @@ async def test_reconcile_single_orphan_dm_is_not_wrapped_in_digest():
     assert "restart digest" not in msg
 
 
+@pytest.mark.asyncio
+async def test_reconcile_undelivered_digest_leaves_orphan_recoverable():
+    """GPT 5.6 F6 (monitoring.py reconcile): a digest-pending orphan (injection did not
+    deliver) must be tombstoned ONLY after the digest DM confirms delivery. list_orphans
+    skips ANY tombstoned folder regardless of recovery_action, so tombstoning before the
+    DM lands means a failed/unwired DM silently discharges the completion and its
+    follow-up queue with no replay. When the DM reports NOT delivered, the orphan must be
+    left un-tombstoned so the next start's list_orphans() re-delivers it.
+    """
+    # DM reports the owner was NOT reached (unwired/failed delivery).
+    dm = AsyncMock(return_value=False)
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
+
+    orphans = [{"id": "orph-x", "pid": None, "parent_session": "", "task": "lost task"}]
+    with (
+        patch("kiro_crew.subagent.list_orphans", return_value=orphans),
+        patch("kiro_crew.subagent.write_tombstone") as wt,
+        patch("kiro_crew.subagent.sel"),
+    ):
+        await mgr._reconcile_orphans()
+
+    dm.assert_awaited_once()
+    # The orphan must NOT have been tombstoned -- an undelivered digest leaves it
+    # recoverable rather than discharged.
+    tombstoned_ids = [c.args[0] for c in wt.call_args_list if c.args]
+    assert "orph-x" not in tombstoned_ids, (
+        "a digest-pending orphan was tombstoned despite the DM not being delivered -- "
+        f"its completion is now excluded from recovery. tombstoned={tombstoned_ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_delivered_digest_tombstones_the_orphan():
+    """The other half of F6: once the digest DM confirms delivery, the digest-pending
+    orphan IS tombstoned (so a reached owner does not leave the folder re-delivering on
+    every subsequent start)."""
+    dm = AsyncMock(return_value=True)
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
+
+    orphans = [{"id": "orph-y", "pid": None, "parent_session": "", "task": "told task"}]
+    with (
+        patch("kiro_crew.subagent.list_orphans", return_value=orphans),
+        patch("kiro_crew.subagent.write_tombstone") as wt,
+        patch("kiro_crew.subagent.sel"),
+    ):
+        await mgr._reconcile_orphans()
+
+    dm.assert_awaited_once()
+    tombstoned_ids = [c.args[0] for c in wt.call_args_list if c.args]
+    assert (
+        "orph-y" in tombstoned_ids
+    ), f"a digest-DELIVERED orphan was not tombstoned. tombstoned={tombstoned_ids}"
+
+
 def _streams_then_fails(error: Exception, text: str = "the answer "):
     def stream_factory(msg: str, *a, **kw):
         async def _gen():

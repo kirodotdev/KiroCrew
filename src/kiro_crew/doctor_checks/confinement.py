@@ -500,6 +500,75 @@ def _doctor_live_target_pointer(issues: list[str]) -> None:
         )
 
 
+def _doctor_notification_settings_pointer(issues: list[str]) -> None:
+    """Report a notification-settings leaf that will refuse the next agent spawn.
+
+    The same job :func:`_doctor_live_target_pointer` does for the live-target pointer, for
+    the same shape on the notification-settings leaf. ``sandbox`` masks that leaf so an
+    in-sandbox write cannot arm ``deliver_to`` and route notes off the host, and
+    ``_materialize_notification_settings_mask_target`` is fail-closed on every Linux spawn:
+    a symlink or a second hard link at the leaf leaves a writable path the mask does not
+    cover, so the launcher refuses rather than launch maskless. The shapes that trigger it
+    are ORDINARY operation -- ``cp -al`` and rsnapshot raise link counts, a dotfile
+    manager keeps the file as a link -- so the condition appears without anybody doing
+    anything wrong, and the first symptom is that every agent stops starting.
+
+    This leaf is NOT in ``_CREW_HARDLINK_REFUSED_LEAVES`` (its bytes are a routing config,
+    not a credential), so ``_doctor_masked_credential_aliases`` does not cover it and
+    ``live_target_pointer_unfitness`` names a different file; before this section doctor
+    was silent on the one leaf whose refusal this PR adds.
+
+    Linux only, for the reason the live-target section states: the refusal is on the
+    namespace launcher's path, and a macOS Seatbelt profile denies by path rule and never
+    needs a mount target. The sentence is the launcher's own
+    (``sandbox.notification_settings_pointer_unfitness``), not a paraphrase, so one
+    diagnosis reaches the operator whether through this line or the later refusal.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        unfit = cli_doctor.sandbox.notification_settings_pointer_unfitness()
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print("\nNotification Settings Leaf")
+        print(f"  leaf:        ⚠️  could not check ({render._safe_display(exc)})")
+        return
+    if unfit is None:
+        return
+    # ``credential_mask_applies`` rather than a mode comparison of this module's own, for
+    # the reason the pointer's section states: the refusal only runs when the launcher
+    # WRAPS a child, so an unwrapped host is unfit-but-refusing-nothing, and reporting
+    # "REFUSED" there would promise an outage that is not coming.
+    try:
+        confined = cli_doctor.sandbox.credential_mask_applies(
+            cli_doctor.sandbox.configured_sandbox_mode()
+        )
+    except Exception:  # noqa: BLE001 — an unreadable mode must not hide the leaf
+        confined = True
+    print("\nNotification Settings Leaf")
+    if confined:
+        print(f"  leaf:        ❌ agent spawns will be REFUSED — {unfit.path}")
+    else:
+        print(f"  leaf:        ⚠️  unfit, and will refuse spawns once confined — {unfit.path}")
+    # Whole tokens: the remedy names a path and a ``find`` invocation the operator copies,
+    # and the default wrap splits both.
+    render._print_wrapped(unfit.detail)
+    if confined:
+        render._print_wrapped(
+            "Until this is fixed every agent spawn on this host fails closed, and the "
+            "only other notice is a warning in the gateway log."
+        )
+        issues.append("notification-settings leaf")
+    else:
+        render._print_wrapped(
+            "This leaf is not what stops a spawn on this host: the launcher reaches the "
+            "mask it would break only when it WRAPS a child, and this host hands the "
+            "command over unwrapped or refuses it for a different reason. Whether agents "
+            "start at all is the Sandbox section's answer, not this one. Fix the leaf "
+            "before the host starts confining spawns, or the first one that does fails "
+            "closed."
+        )
+
+
 def _doctor_masked_credential_aliases(issues: list[str]) -> None:
     """Report a masked credential leaf that will refuse the next agent spawn.
 
